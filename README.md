@@ -1,4 +1,4 @@
-# PAM — Personal AI Memory
+# PAN — Personal AI Network
 
 Wearable AI pendant that captures everything you see and hear, stores it as searchable memory, and talks back to you in real-time.
 
@@ -99,6 +99,61 @@ This is like the difference between looking at a notification on your watch vs y
 1. **ESP32 Firmware** (Arduino/MicroPython) — camera capture, BLE streaming, screen driver, I2S audio
 2. **Android APK** — BLE connection, STT, TTS, Tailscale networking, always-on service
 3. **Server** — web API, Claude integration, memory database, search
+
+## Naming
+**PAN = Personal AI Network**
+
+Named after Pan (Πάν/Πας) — Greek for "all/everything." Also Pan the god — a satyr (σάτυρος), god of the wild and nature, with superhuman senses in the natural world. The name fits: a device that senses everything, remembers everything, networks everything.
+
+The "N" stands for Network because PAN IS a network — the pendant, phone, server, and docking modules all connected.
+
+## User Customization
+- **Custom wake name** — users choose their own. "Hey PAN," "Hey Jarvis," "Hey Friday," whatever they want. Not forced.
+- **Always-on by default** — captures photos and audio continuously
+- **Pause:** "PAN stop" / "PAN sleep" / tap and hold screen
+- **Resume:** "PAN wake up" / tap screen / auto-resume after configurable timeout
+- **Privacy mode:** "PAN go dark" — stops all recording, screen shows visible indicator so people around you know it's off
+- **Custom voice** — choose the TTS voice for responses
+- **Custom screen themes** — personalize the display
+
+## Voice Recognition Architecture
+
+Voice processing happens in three layers — cheap and fast at the bottom, expensive and smart at the top:
+
+### Layer 1: Wake Word Detection (on ESP32 — local, instant)
+- Tiny ML model runs directly on the ESP32-S3 chip
+- Only listens for ONE specific wake word pattern
+- Uses TensorFlow Lite Micro or ESP-SR (Espressif's speech recognition library)
+- Almost no battery drain (~5-10mA)
+- **NEVER leaves the device** — no network, no API, no latency
+- Response time: ~100ms
+
+### Layer 2: Speech-to-Text (on phone — local, fast)
+- Wake word triggers ESP32 → tells phone via BLE "they're talking to me"
+- Phone records the actual command/question
+- On-device STT (Google Speech API or Whisper) — still no API call
+- Text ready in under 500ms
+
+### Layer 3: AI Processing (server — smart, only when needed)
+- Text + latest photos + sensor data sent to server via Tailscale
+- Claude Code CLI processes and responds
+- This is the ONLY "expensive" step, and only fires when you actually ask something
+- Maybe 10-50 times per day — negligible API cost
+
+### Total Latency
+Wake word (~100ms) → you speak (~2-3 seconds) → STT (~500ms) → Claude (~1-2 seconds) → response audio
+**~3-5 seconds from finishing your sentence to hearing a response.**
+
+### Voice Security — Preventing Conflicts
+**Problem:** What if your friend says your wake word to mess with you or confuse your device?
+
+**Solutions (layered):**
+1. **Custom wake words** — set yours to "Hey Atlas," friend's is "Hey Nova." No conflict possible.
+2. **Voice fingerprinting** — phone learns YOUR specific voice pattern. Even if someone says the exact same wake word, the phone recognizes it's not you and ignores it. This uses speaker verification ML models that run locally on the phone.
+3. **Bluetooth pairing** — each PAN pendant only communicates with its paired phone. Even if two PANs are in the same room with the same wake word, each triggers only its own phone.
+4. **Confirmation mode** (optional) — for sensitive commands, PAN asks "Was that you?" and waits for confirmation before acting.
+
+In practice, voice fingerprinting + custom wake words makes false triggers nearly impossible.
 
 ## Project Status
 - [x] Hardware selected and ordered
