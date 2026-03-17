@@ -2,9 +2,36 @@
 
 PAM's pendant is the core — always on you, always sensing. But its capabilities expand through docking modules — small specialized stations that PAM connects to (magnetically or via USB-C) to gain additional sensing abilities.
 
+## Why Docking Modules Need PAM
+
+The modules work independently — they have their own sensors and could technically function alone with their own screen via Bluetooth. PAM doesn't physically do the analysis. So what does PAM add?
+
+**PAM is the brain, the memory, and the interface. The module is just hands.**
+
+1. **Interface** — results show on PAM's screen, PAM speaks them to you, you ask questions conversationally
+2. **Memory** — PAM stores every result, tracks trends over weeks/months, notices gradual changes you'd never catch ("your inflammation marker has been rising slowly for 3 weeks")
+3. **AI correlation** — PAM combines data from ALL its sources. Blood data alone is useful. Blood data + sleep patterns + environmental data + activity + air quality = a complete picture
+
+**Example:**
+> "Hey PAM, why do I feel tired today?"
+>
+> "Your CO2 was high in your bedroom last night, your sleep was restless based on accelerometer data, and your hemoglobin has been trending down for 2 weeks. You might want to eat more iron-rich foods and open your window at night."
+
+No single device could give that answer. Only PAM — with blood data, environmental sensors, motion data, and AI memory of your history — can correlate across all sources and give you an actual explanation.
+
+Without PAM, each module is just another disconnected gadget showing you a number. With PAM, every data point feeds into a unified AI that knows your whole picture and can reason about it.
+
+---
+
 ## Module 1: Blood Analysis Dock
 
-### Concept
+### Concept (Basic — €30-35, matchbox-sized)
+A small module using lensless microscopy for cell-level blood imaging. Good for cell counts, bacteria detection, and visual abnormalities.
+
+### Concept (Advanced — €100-120, bread-loaf-sized)
+A full personal blood lab that checks most of what your doctor checks annually — cholesterol, hormones, inflammation, liver/kidney function — using reagent strips, spectrophotometry, and fluorescence detection. Daily testing. Results in 2-3 minutes. Sits on your desk, PAM docks in magnetically or connects via Bluetooth.
+
+### How It Works (Basic — Lensless Microscopy)
 A matchbox-sized module that turns PAM into a personal blood lab. Prick your finger, put a drop of blood on the sample slot, PAM analyzes it using AI image recognition through a lensless microscope.
 
 ### How Lensless Microscopy Works
@@ -72,6 +99,50 @@ The real power is **daily monitoring**. A single blood test is a snapshot. Daily
 - **Calibration:** AI model needs training data — partner with labs that have large databases of blood cell images with known diagnoses
 - **Regulatory:** This is technically a medical device. For personal use/research = fine. For selling with medical claims = needs FDA/CE certification (expensive, long process). Selling as "educational/research tool, not for medical diagnosis" avoids this initially.
 - **Accuracy:** Won't replace a full CBC (complete blood count) from a hospital lab. But for daily trend monitoring and anomaly flagging ("something changed, go see a doctor"), it's more than sufficient.
+
+### Advanced Module Hardware (€100-120, bread-loaf-sized)
+
+Additional components beyond the basic lensless microscope:
+
+| Component | What It Does | Cost |
+|-----------|-------------|------|
+| Spectrophotometer (colorimetric) | Reads reagent strip color changes — cholesterol, glucose, hemoglobin, protein | €20-30 |
+| Electrochemical sensor array | Sodium, potassium, calcium, blood pH | €15-20 |
+| UV fluorescence reader | Detects hormones and proteins via immunoassay strips | €15-20 |
+| Tiny centrifuge | Separates blood into plasma (where cholesterol/hormones live) and cells | €10-15 |
+| Higher resolution image sensor | Sharper cell imaging for better AI analysis | €10 |
+
+### What the Advanced Module Detects
+
+| Health Marker | Method | Lab Cost Per Test |
+|--------------|--------|-------------------|
+| Cholesterol (HDL, LDL, total) | Reagent strip + spectrophotometer | €30-50 |
+| Blood glucose | Reagent strip (same as diabetic meters) | €1 |
+| Hemoglobin / anemia | Colorimetric analysis | €20-30 |
+| Testosterone | Immunoassay strip + fluorescence | €50-80 |
+| Cortisol (stress hormone) | Immunoassay strip + fluorescence | €40-60 |
+| Thyroid (TSH) | Immunoassay strip + fluorescence | €40-60 |
+| CRP (inflammation) | Immunoassay strip | €30-40 |
+| Vitamin D | Immunoassay strip + fluorescence | €40-60 |
+| Liver enzymes (ALT, AST) | Reagent strip + spectrophotometer | €30-50 |
+| Kidney function (creatinine) | Reagent strip | €20-30 |
+| White/red blood cell count | Lensless microscope + AI | €20-30 |
+| Bacteria/infection | Microscope + AI pattern recognition | €30-50 |
+
+**How reagent strips work:** Paper strips pre-loaded with chemicals that react with specific blood components. They change color proportionally to concentration. Camera + AI reads the color intensity and converts to a number. Same principle as pregnancy tests and glucose meters — just expanded to more markers.
+
+**Immunoassay strips** detect hormones (testosterone, cortisol, thyroid). They use antibodies that bind to specific hormones and produce a fluorescent signal readable by the UV fluorescence sensor. Cost: €1-3 per strip at scale.
+
+### Cost
+- **Module hardware:** €100-120 (one-time)
+- **Monthly consumables:** €10-20 (reagent strips, microfluidic chips, lancets)
+- **Per test cost:** ~€0.50-1.00
+- **Replaces:** €200-500+ in annual lab work
+
+### Daily Routine
+Wake up → prick finger → slot strip into module → PAM reads it while you make coffee → results on screen + stored in memory → AI tracks trends → alerts you if anything changes significantly
+
+---
 
 ## Module 2: Environmental Analysis Station (Future)
 A desktop dock with:
