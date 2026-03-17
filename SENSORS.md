@@ -95,9 +95,23 @@ Too large, need dedicated power, or require specialized equipment:
 **Fit in pendant: 22**
 **Beyond human capability: 15 pendant-sized + all 28 large ones = 43 out of 50**
 
+## The Numbers
+
+**Sensor categories vs specific sensors:**
+The ~50 number represents **distinct sensing modalities** — categories of what you're detecting. Within each category there are hundreds or thousands of specific sensor implementations. For example, "camera" is one modality but there are thousands of different image sensors. "Gas detection" is one modality but there are hundreds of sensors for different chemical compounds (MQ-2 for methane, MQ-3 for alcohol, MQ-7 for CO, etc). If you count every specific sensor variant ever manufactured, the number is in the **tens of thousands**. But they all fall into roughly 50-70 categories of "what type of thing are you detecting."
+
+The 50 listed here covers every commercially available sensing category. There are likely more in exotic physics labs, classified military applications, and experimental research — potentially pushing the total to 60-70 distinct modalities.
+
+**Fundamental sensing dimensions:**
+- Humans sense ~4 fundamental things: electromagnetic radiation (light), mechanical waves (sound/touch/balance), chemicals (smell/taste), and gravity
+- A fully loaded PAM pendant senses those same 4 plus: ionizing radiation, magnetic fields, electrical fields, spectral composition, ultrasonic, and precise geolocation — roughly **8-10 fundamental dimensions**
+- The large/lab sensors add: subatomic particles, gravitational waves, molecular structure, genetic code — pushing to ~15 fundamental dimensions
+
 ## Summary
-- Humans have ~11 true external senses
-- PAM v1 has 2 (camera + mic) — arrives March 18-20
-- PAM fully loaded could have 22 — all wearable on chest
-- Total known sensor types: ~50
-- Sensors that exceed human capability: 43 out of 50
+- Humans have ~11 true external senses (4 fundamental dimensions)
+- PAM v1 has 2 sensors (camera + mic) — arrives March 18-20
+- PAM fully loaded could have 22 sensors — all wearable on chest (8-10 fundamental dimensions)
+- Total known sensing categories: ~50-70
+- Total specific sensor implementations: tens of thousands
+- Sensors that exceed human capability: 43 out of ~50 categories
+- A fully loaded PAM pendant: 22 out of ~50-70 categories, superhuman in 15 of them
