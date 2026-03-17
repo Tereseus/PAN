@@ -78,6 +78,23 @@ Server (Northbridge / ProDesk1)
   └── Queryable from any machine / Discord bot
 ```
 
+## Display Philosophy — PAM is Screenless by Nature
+
+PAM's 1.69" pendant screen is tiny — useful only when you're glancing down at your chest. It's NOT PAM's primary display. PAM is a headless AI that pushes output to whatever screen makes the most sense in context:
+
+| Screen | When | Use Case |
+|--------|------|----------|
+| **Pendant (1.69")** | Glancing down, quick check | Short alerts, translation text, status icons |
+| **Phone** | Most of the time | Full responses, detailed data, conversation history |
+| **Watch (Huawei Band)** | Quick notification | Ping alerts, one-line summaries |
+| **Computer** | At desk | Full dashboard, charts, blood trends, detailed analysis |
+| **Docking station display** | Using a module | Blood results while testing, environmental readings |
+| **TV / Projector** | Sharing, reviewing | Show someone your data, review your day's captures |
+
+PAM doesn't care WHERE it displays. It sends information to the most appropriate screen based on context — like Bluetooth audio plays through whatever speaker is connected. The pendant screen is just one endpoint, and often not even the primary one.
+
+This is like the difference between looking at a notification on your watch vs your phone. Sometimes the watch is enough. Usually you want the phone. At your desk, you want the big screen. PAM adapts.
+
 ## Software Components
 1. **ESP32 Firmware** (Arduino/MicroPython) — camera capture, BLE streaming, screen driver, I2S audio
 2. **Android APK** — BLE connection, STT, TTS, Tailscale networking, always-on service
