@@ -393,6 +393,7 @@ body {
           <option value="phone_log">phone_log</option>
           <option value="PandantPhoto">PandantPhoto</option>
           <option value="SensorData">SensorData</option>
+          <option value="VisionAnalysis">VisionAnalysis</option>
         </select>
         <input type="text" id="event-search" placeholder="Search all data..." onkeydown="if(event.key==='Enter'){eventsOffset=0;loadEvents()}" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
         <input type="date" id="event-date-filter" onchange="eventsOffset=0;loadEvents()">
@@ -404,6 +405,12 @@ body {
       </div>
       <div id="event-list"></div>
       <div class="pagination" id="event-pagination"></div>
+    </div>
+
+    <!-- Photos -->
+    <div class="delete-section">
+      <h4>Captured Photos</h4>
+      <div id="photos-grid" style="display:flex;flex-wrap:wrap;gap:12px"></div>
     </div>
 
     <!-- Memory Items -->
@@ -491,7 +498,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 function loadPage(page) {
   switch(page) {
     case 'conversations': loadConversations(); break;
-    case 'data': loadStats(); loadEvents(); loadMemory(); break;
+    case 'data': loadStats(); loadEvents(); loadPhotos(); loadMemory(); break;
     case 'settings': loadSettings(); break;
   }
 }
@@ -588,6 +595,10 @@ async function loadConversations() {
         ${c.model ? `<span style="color:var(--text2);font-size:12px">${escapeHtml(c.model)}</span>` : ''}
       </div>
       ${transcript ? `<div class="convo-user">${escapeHtml(transcript)}</div>` : ''}
+      ${(() => {
+        const d = typeof c.data === 'string' ? (() => { try { return JSON.parse(c.data); } catch { return {}; } })() : (c.data || {});
+        return d.image_file ? `<div style="margin:8px 0"><img src="/photos/${escapeHtml(d.image_file)}" style="max-width:300px;max-height:200px;border-radius:8px;border:1px solid var(--border)" onerror="this.style.display='none'"></div>` : '';
+      })()}
       ${response ? `<div class="convo-response">${escapeHtml(response)}</div>` : ''}
       <div class="convo-expand" onclick="this.nextElementSibling.classList.toggle('open')">Show details</div>
       <div class="convo-detail">
@@ -936,6 +947,30 @@ async function renameDevice() {
     input.value = '';
     loadSettings();
   } catch {}
+}
+
+async function loadPhotos() {
+  const photos = await api('/api/photos');
+  const el = document.getElementById('photos-grid');
+  if (!photos.length) {
+    el.innerHTML = '<div style="color:var(--text2)">No photos captured yet.</div>';
+    return;
+  }
+  el.innerHTML = photos.map(p => `
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:8px;width:200px">
+      <a href="${p.url}" target="_blank"><img src="${p.url}" style="width:100%;border-radius:4px;cursor:pointer" onerror="this.parentElement.parentElement.style.display='none'"></a>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px">${fmtTime(p.created)}</div>
+      ${p.question ? `<div style="font-size:12px;margin-top:2px">${escapeHtml(p.question.slice(0, 50))}</div>` : ''}
+      ${p.description ? `<div style="font-size:11px;color:var(--accent);margin-top:2px">${escapeHtml(p.description.slice(0, 80))}</div>` : ''}
+      <button class="btn btn-danger btn-sm" style="margin-top:4px;font-size:10px" onclick="deletePhoto('${escapeHtml(p.filename)}', this)">Delete</button>
+    </div>
+  `).join('');
+}
+
+async function deletePhoto(filename, btn) {
+  if (!await requirePassword('delete this photo')) return;
+  await api('/api/photos/' + encodeURIComponent(filename), { method: 'DELETE' });
+  btn.closest('div').remove();
 }
 
 async function searchTranscripts() {

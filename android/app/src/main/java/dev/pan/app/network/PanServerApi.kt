@@ -31,4 +31,7 @@ interface PanServerApi {
 
     @GET("/api/v1/devices/commands/{id}/logs")
     suspend fun commandLogs(@retrofit2.http.Path("id") commandId: Long): Response<List<dev.pan.app.ui.commands.LogItem>>
+
+    @POST("/api/v1/vision")
+    suspend fun vision(@Body request: VisionRequest): Response<VisionResponse>
 }

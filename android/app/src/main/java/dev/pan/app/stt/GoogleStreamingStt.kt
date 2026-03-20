@@ -181,9 +181,11 @@ class GoogleStreamingStt @Inject constructor(
                 override fun onPartialResults(partialResults: Bundle?) {
                     val texts = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     val partial = texts?.firstOrNull() ?: return
-                    // Don't process partials while TTS is speaking
-                    if (isTtsSpeaking?.invoke() == true) return
-                    // Could show partial in UI if needed
+                    // If actual words are being recognized while TTS is playing,
+                    // that's the user talking — interrupt TTS immediately
+                    if (partial.isNotBlank() && isTtsSpeaking?.invoke() == true) {
+                        onInterrupt?.invoke()
+                    }
                 }
 
                 override fun onResults(results: Bundle?) {
@@ -254,13 +256,18 @@ class GoogleStreamingStt @Inject constructor(
     private fun restartListening() {
         if (!_enabled) return
         mainScope.launch {
-            // Wait for TTS to finish before restarting — prevents hearing ourselves
+            // Wait for TTS to finish before restarting
             var waitedMs = 0L
             while (isTtsSpeaking?.invoke() == true && waitedMs < 30000) {
                 delay(200)
                 waitedMs += 200
             }
-            delay(RESTART_DELAY_MS)
+            // Extra delay after TTS finishes to let room echo settle
+            if (waitedMs > 0) {
+                delay(1500) // 1.5s after TTS stops — room echo dies down
+            } else {
+                delay(RESTART_DELAY_MS)
+            }
             if (_enabled) {
                 startRecognizer()
             }

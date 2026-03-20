@@ -4,17 +4,22 @@ import android.Manifest
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import dagger.hilt.android.AndroidEntryPoint
 import dev.pan.app.service.PanForegroundService
+import dev.pan.app.tts.TtsManager
 import dev.pan.app.ui.navigation.PanNavGraph
 import dev.pan.app.ui.theme.PanTheme
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject lateinit var tts: TtsManager
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -48,6 +53,15 @@ class MainActivity : ComponentActivity() {
                 PanNavGraph()
             }
         }
+    }
+
+    // Any hardware key press (volume, power) stops TTS
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (tts.isSpeaking) {
+            tts.stop()
+            return true // consume the event
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     private fun startPanService() {

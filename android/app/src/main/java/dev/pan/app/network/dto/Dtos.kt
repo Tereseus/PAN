@@ -43,3 +43,12 @@ data class ServerStatus(
     val status: String,
     val timestamp: String
 )
+
+data class VisionRequest(
+    val image_base64: String,
+    val question: String
+)
+
+data class VisionResponse(
+    val description: String
+)

@@ -26,6 +26,7 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import dev.pan.app.MainActivity
 import dev.pan.app.audio.FeedbackSounds
+import dev.pan.app.camera.CameraCapture
 import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.network.SyncManager
@@ -56,6 +57,7 @@ class PanForegroundService : Service() {
     @Inject lateinit var tts: TtsManager
     @Inject lateinit var geminiBrain: GeminiBrain
     @Inject lateinit var voiceCollector: VoiceCollector
+    @Inject lateinit var cameraCapture: CameraCapture
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -148,9 +150,10 @@ class PanForegroundService : Service() {
                 panLog("Gemini: ${if (ready) "ready" else "not available, using server"}")
             }
 
-            // Start voice collection for training data (runs alongside STT)
+            // Voice collector logs — but don't start AudioRecord recording
+            // (conflicts with Google STT which needs exclusive mic access)
+            // Training data comes from STT transcripts only for now
             voiceCollector.onLog = { msg -> panLog(msg) }
-            voiceCollector.start()
 
             // Google Streaming STT — real-time transcription, no chunks
             sttEngine.startListening { text, isFinal ->
@@ -182,7 +185,8 @@ class PanForegroundService : Service() {
     // Stop STT before speaking, restart after TTS finishes
     private fun panSpeak(text: String) {
         sttEngine.registerTtsOutput(text)
-        sttEngine.stopListening()
+        // Keep STT running so user can say "stop talking" to interrupt
+        // Echo is handled by stripEcho + discarding results while TTS speaks
         tts.speak(text)
     }
 
@@ -215,12 +219,24 @@ class PanForegroundService : Service() {
         panLog("Heard: $text")
         lastAction.value = text
 
+        // Stop talking — only exact short phrases while TTS is active
+        if (tts.isSpeaking) {
+            if (lower.contains("stop") || lower.contains("enough") || lower.contains("shut up") || lower.contains("quiet")) {
+                tts.stop()
+                panLog("TTS stopped by user: $lower")
+                return
+            }
+            // TTS is still talking and user said something else — ignore it (probably echo)
+            return
+        }
+
         // Mute / unmute check — before any other processing
         if ((lower.contains("mute") && !lower.contains("unmute")) || lower.contains("shut up") || lower.contains("be quiet")) {
             panLog("PAN muted by voice command")
             isMuted = true
             sttEngine.enabled = false
             micEnabled.value = false
+            notificationManager?.notify(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = serverClient.isConnected.value))
             feedbackSounds.onCommandSent()
             serviceScope.launch { dataRepository.addUserMessage(text) }
             serviceScope.launch { dataRepository.addPanResponse("[PAN muted]") }
@@ -231,7 +247,7 @@ class PanForegroundService : Service() {
             isMuted = false
             sttEngine.enabled = true
             micEnabled.value = true
-            // Force restart the STT listener
+            notificationManager?.notify(Constants.NOTIFICATION_ID, buildNotification(listening = true, connected = serverClient.isConnected.value))
             sttEngine.startListening { t, f -> if (t.isNotBlank() && f) onSpeech(t) }
             feedbackSounds.onWakeWord()
             serviceScope.launch { dataRepository.addUserMessage(text) }
@@ -261,6 +277,11 @@ class PanForegroundService : Service() {
         // Quick local handling — use stripped text (no "hey pan" prefix)
         val localResponse = handleLocally(stripped, "")
         if (localResponse != null) {
+            // Camera commands are handled asynchronously — don't speak the placeholder
+            if (localResponse == "CAMERA_ASYNC") {
+                logToServer(text, "camera", "taking photo", "phone_camera")
+                return
+            }
             panLog("Local: $localResponse")
             logToServer(text, "local", localResponse, "phone_local")
             feedbackSounds.onCommandSent()
@@ -384,8 +405,82 @@ class PanForegroundService : Service() {
         return result
     }
 
+    // Camera trigger phrases — "what is this?", "what am I looking at?", etc.
+    private val cameraPatterns = listOf(
+        "what is this", "what's this", "what is that", "what's that",
+        "what am i looking at", "what am i seeing",
+        "take a photo", "take a picture", "take photo", "take picture",
+        "what do you see", "what can you see",
+        "look at this", "look at that",
+        "identify this", "identify that",
+        "what's in front of me", "what is in front of me",
+        "describe what you see", "describe this",
+        "what's around me", "what is around me",
+        "snap a photo", "snap a picture",
+        "capture this", "capture that"
+    )
+
+    private fun isCameraCommand(text: String): Boolean {
+        val lower = text.lowercase().trim()
+        return cameraPatterns.any { lower.contains(it) }
+    }
+
+    private fun handleCameraCommand(userText: String) {
+        val question = userText.ifBlank { "What is this?" }
+        panLog("Camera command detected: $question")
+        feedbackSounds.onCommandSent()
+        // Just chirp — don't speak, avoids TTS/STT feedback loop while photo processes
+
+        serviceScope.launch {
+            try {
+                // Check camera permission
+                val hasCameraPermission = ContextCompat.checkSelfPermission(
+                    this@PanForegroundService, Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+
+                if (!hasCameraPermission) {
+                    panLog("No camera permission")
+                    mainHandler.post { panSpeak("I don't have camera permission. Please grant it in settings.") }
+                    return@launch
+                }
+
+                // Take photo
+                panLog("Taking photo...")
+                val photoBytes = cameraCapture.takePhoto()
+                panLog("Photo captured: ${photoBytes.size} bytes")
+
+                // Convert to base64
+                val base64 = android.util.Base64.encodeToString(photoBytes, android.util.Base64.NO_WRAP)
+                panLog("Base64 encoded: ${base64.length} chars")
+
+                // Send to server for vision analysis
+                val description = serverClient.analyzeImage(base64, question)
+
+                if (description != null && description.isNotBlank()) {
+                    panLog("Vision result: ${description.take(100)}")
+                    addToHistory("User", "[photo] $question")
+                    addToHistory("PAN", description)
+                    dataRepository.addPanResponse(description)
+                    mainHandler.post { panSpeak(description) }
+                } else {
+                    panLog("Vision analysis failed — no response")
+                    mainHandler.post { panSpeak("I took a photo but couldn't analyze it. The server might be offline.") }
+                }
+            } catch (e: Exception) {
+                panLog("Camera command failed: ${e.message}")
+                mainHandler.post { panSpeak("I had trouble with the camera. ${e.message ?: ""}") }
+            }
+        }
+    }
+
     private fun handleLocally(text: String, intent: String): String? {
         val lower = wordsToNumbers(text.lowercase())
+
+        // Camera / vision commands — handle async, return a placeholder
+        if (isCameraCommand(lower)) {
+            handleCameraCommand(text)
+            return "CAMERA_ASYNC" // signal that this was handled
+        }
 
         // Time queries
         if (lower.contains("what time") || lower.contains("what's the time")) {
@@ -733,13 +828,17 @@ class PanForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "STOP_TTS") {
+            tts.stop()
+            panLog("TTS stopped from notification")
+        }
+
         if (intent?.action == "TOGGLE_MIC") {
             val newState = !sttEngine.enabled
             sttEngine.enabled = newState
             micEnabled.value = newState
             isMuted = !newState
             if (newState) {
-                voiceCollector.start()
                 sttEngine.startListening { t, f -> if (t.isNotBlank() && f) { voiceCollector.onTranscript(t); onSpeech(t) } }
             } else {
                 voiceCollector.stop()
@@ -805,6 +904,11 @@ class PanForegroundService : Service() {
             .setSilent(true)
             .setContentIntent(pendingIntent)
             .addAction(0, toggleLabel, togglePendingIntent)
+            .addAction(0, "Stop", PendingIntent.getService(
+                this, 2,
+                Intent(this, PanForegroundService::class.java).apply { action = "STOP_TTS" },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            ))
             .build()
     }
 

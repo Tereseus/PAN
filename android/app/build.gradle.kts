@@ -77,6 +77,11 @@ dependencies {
     // Core
     implementation(libs.core.ktx)
 
+    // CameraX — headless photo capture for vision commands
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+
     // Vosk — offline speech recognition (no profanity filter, no audio focus steal)
     implementation("com.alphacephei:vosk-android:0.3.47")
 

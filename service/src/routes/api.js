@@ -1,5 +1,12 @@
 import { Router } from 'express';
 import { insert, all, get, run } from '../db.js';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PHOTOS_DIR = join(__dirname, '..', 'data', 'photos');
+if (!existsSync(PHOTOS_DIR)) mkdirSync(PHOTOS_DIR, { recursive: true });
 
 const router = Router();
 
@@ -87,6 +94,52 @@ router.post('/photo', (req, res) => {
   });
 
   res.json({ ok: true });
+});
+
+router.post('/vision', async (req, res) => {
+  const { image_base64, question } = req.body;
+
+  if (!image_base64) {
+    return res.status(400).json({ error: 'missing image_base64' });
+  }
+
+  try {
+    const { claudeVision } = await import('../claude.js');
+    const prompt = question || 'What is in this image? Describe it concisely in 1-3 sentences.';
+    console.log(`[PAN Vision] Analyzing image (${image_base64.length} chars), question: "${prompt.slice(0, 80)}"`);
+
+    const description = await claudeVision(prompt, image_base64);
+    console.log(`[PAN Vision] Result: ${description.slice(0, 100)}`);
+
+    // Save the image to disk
+    const photoId = `vision-${Date.now()}`;
+    const photoFilename = `${photoId}.jpg`;
+    try {
+      writeFileSync(join(PHOTOS_DIR, photoFilename), Buffer.from(image_base64, 'base64'));
+      console.log(`[PAN Vision] Image saved: ${photoFilename}`);
+    } catch (e) {
+      console.error(`[PAN Vision] Failed to save image: ${e.message}`);
+    }
+
+    // Log the vision event with photo path
+    insert(`INSERT INTO events (session_id, event_type, data)
+      VALUES (:sid, :type, :data)`, {
+      ':sid': photoId,
+      ':type': 'VisionAnalysis',
+      ':data': JSON.stringify({
+        question: prompt,
+        description: description.slice(0, 500),
+        image_file: photoFilename,
+        image_size: image_base64.length,
+        timestamp: Date.now()
+      })
+    });
+
+    res.json({ description });
+  } catch (err) {
+    console.error('[PAN Vision] Error:', err.message);
+    res.status(500).json({ error: 'Vision analysis failed', description: 'I could not analyze the image right now.' });
+  }
 });
 
 router.post('/sensor', (req, res) => {
