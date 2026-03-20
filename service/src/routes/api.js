@@ -13,6 +13,10 @@ if (!existsSync(PHOTOS_DIR)) mkdirSync(PHOTOS_DIR, { recursive: true });
 
 const UI_SCRIPT = join(__dirname, '..', 'ui-automation.py');
 
+// Pending desktop actions queue — shared between all routes
+// Desktop agent (Electron tray) polls /actions and executes these
+const pendingActions = [];
+
 const router = Router();
 
 // Auto-register phone when it connects
@@ -295,10 +299,6 @@ router.post('/sensor', (req, res) => {
 
   res.json({ ok: true });
 });
-
-// Pending desktop actions queue (for terminal opens, etc.)
-// The service queues these; a user-session agent polls and executes them
-const pendingActions = [];
 
 router.post('/query', async (req, res) => {
   const { text, context, intent_hint } = req.body;

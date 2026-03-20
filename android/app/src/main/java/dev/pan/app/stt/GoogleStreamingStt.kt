@@ -112,6 +112,9 @@ class GoogleStreamingStt @Inject constructor(
         return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+            // Don't steal audio focus from music — allow coexistence
+            putExtra("android.speech.extra.DICTATION_MODE", true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             // Keep listening longer before giving up on silence
@@ -262,11 +265,10 @@ class GoogleStreamingStt @Inject constructor(
                 delay(200)
                 waitedMs += 200
             }
-            // Extra delay after TTS finishes to let room echo settle
             if (waitedMs > 0) {
-                delay(1500) // 1.5s after TTS stops — room echo dies down
+                delay(1000) // 1s after TTS stops
             } else {
-                delay(RESTART_DELAY_MS)
+                delay(100) // Minimal gap between restarts — reduces music interruption
             }
             if (_enabled) {
                 startRecognizer()

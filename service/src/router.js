@@ -96,6 +96,8 @@ If it IS for you, respond with JSON matching one of these:
 - Terminal/project: {"intent": "terminal", "action": "open", "project": "C:\\\\path", "name": "name", "response": "spoken response"}
 - System command: {"intent": "system", "command": "PowerShell command", "response": "spoken response"}
   Desktop path is the user's OneDrive\\Desktop (NOT the plain Desktop).
+- Browser action: {"intent": "browser", "action": "list_tabs|read_tab|activate_tab|type_text|click_element|navigate", "query": "tab name or URL", "text": "text to type or click", "response": "spoken response"}
+  Use this for reading web pages, checking messages, typing in browser, switching tabs.
 - Memory: {"intent": "memory", "action": "save|recall", "item_type": "type", "content": "content", "response": "spoken response"}
 - Calendar: {"intent": "calendar", "response": "spoken response"}
 - Conversation/question: {"intent": "query", "response": "your spoken answer"}
@@ -132,6 +134,36 @@ function processUnifiedResult(action, text, context) {
         };
       }
       return { intent: 'terminal', response: action.response || 'Terminal action processed.' };
+    }
+
+    case 'browser': {
+      // Execute browser action via the extension
+      try {
+        const browserCmd = globalThis._panBrowserCommand;
+        if (browserCmd) {
+          const result = await browserCmd(action.action || 'list_tabs', {
+            query: action.query || '',
+            text: action.text || '',
+            url: action.url || '',
+          });
+
+          if (result.ok) {
+            // For read_tab, summarize the content
+            if (action.action === 'read_tab' && result.text) {
+              return { intent: 'browser', response: action.response || result.text.slice(0, 500) };
+            }
+            if (action.action === 'list_tabs' && result.tabs) {
+              const tabList = result.tabs.map(t => t.title).slice(0, 10).join(', ');
+              return { intent: 'browser', response: action.response || `You have ${result.tabs.length} tabs open: ${tabList}` };
+            }
+            return { intent: 'browser', response: action.response || 'Done.' };
+          }
+          return { intent: 'browser', response: action.response || result.error || 'Browser action failed.' };
+        }
+        return { intent: 'browser', response: 'Browser extension not connected.' };
+      } catch (e) {
+        return { intent: 'browser', response: `Browser error: ${e.message}` };
+      }
     }
 
     case 'system': {
