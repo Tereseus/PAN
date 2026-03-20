@@ -1,25 +1,25 @@
-# PAM — Docking Modules
+# PAN — Docking Modules
 
-PAM's pendant is the core — always on you, always sensing. But its capabilities expand through docking modules — small specialized stations that PAM connects to (magnetically or via USB-C) to gain additional sensing abilities.
+PAN's Pandant is the core — always on you, always sensing. But its capabilities expand through docking modules — small specialized stations that PAN connects to (magnetically or via USB-C) to gain additional sensing abilities.
 
-## Why Docking Modules Need PAM
+## Why Docking Modules Need PAN
 
-The modules work independently — they have their own sensors and could technically function alone with their own screen via Bluetooth. PAM doesn't physically do the analysis. So what does PAM add?
+The modules work independently — they have their own sensors and could technically function alone with their own screen via Bluetooth. PAN doesn't physically do the analysis. So what does PAN add?
 
-**PAM is the brain, the memory, and the interface. The module is just hands.**
+**PAN is the brain, the memory, and the interface. The module is just hands.**
 
-1. **Interface** — results show on PAM's screen, PAM speaks them to you, you ask questions conversationally
-2. **Memory** — PAM stores every result, tracks trends over weeks/months, notices gradual changes you'd never catch ("your inflammation marker has been rising slowly for 3 weeks")
-3. **AI correlation** — PAM combines data from ALL its sources. Blood data alone is useful. Blood data + sleep patterns + environmental data + activity + air quality = a complete picture
+1. **Interface** — results show on PAN's screen, PAN speaks them to you, you ask questions conversationally
+2. **Memory** — PAN stores every result, tracks trends over weeks/months, notices gradual changes you'd never catch ("your inflammation marker has been rising slowly for 3 weeks")
+3. **AI correlation** — PAN combines data from ALL its sources. Blood data alone is useful. Blood data + sleep patterns + environmental data + activity + air quality = a complete picture
 
 **Example:**
-> "Hey PAM, why do I feel tired today?"
+> "Hey PAN, why do I feel tired today?"
 >
 > "Your CO2 was high in your bedroom last night, your sleep was restless based on accelerometer data, and your hemoglobin has been trending down for 2 weeks. You might want to eat more iron-rich foods and open your window at night."
 
-No single device could give that answer. Only PAM — with blood data, environmental sensors, motion data, and AI memory of your history — can correlate across all sources and give you an actual explanation.
+No single device could give that answer. Only PAN — with blood data, environmental sensors, motion data, and AI memory of your history — can correlate across all sources and give you an actual explanation.
 
-Without PAM, each module is just another disconnected gadget showing you a number. With PAM, every data point feeds into a unified AI that knows your whole picture and can reason about it.
+Without PAN, each module is just another disconnected gadget showing you a number. With PAN, every data point feeds into a unified AI that knows your whole picture and can reason about it.
 
 ---
 
@@ -29,13 +29,13 @@ Without PAM, each module is just another disconnected gadget showing you a numbe
 A small module using lensless microscopy for cell-level blood imaging. Good for cell counts, bacteria detection, and visual abnormalities.
 
 ### Concept (Advanced — €100-120, bread-loaf-sized)
-A full personal blood lab that checks most of what your doctor checks annually — cholesterol, hormones, inflammation, liver/kidney function — using reagent strips, spectrophotometry, and fluorescence detection. Daily testing. Results in 2-3 minutes. Sits on your desk, PAM docks in magnetically or connects via Bluetooth.
+A full personal blood lab that checks most of what your doctor checks annually — cholesterol, hormones, inflammation, liver/kidney function — using reagent strips, spectrophotometry, and fluorescence detection. Daily testing. Results in 2-3 minutes. Sits on your desk, PAN docks in magnetically or connects via Bluetooth.
 
 ### How It Works (Basic — Lensless Microscopy)
-A matchbox-sized module that turns PAM into a personal blood lab. Prick your finger, put a drop of blood on the sample slot, PAM analyzes it using AI image recognition through a lensless microscope.
+A matchbox-sized module that turns PAN into a personal blood lab. Prick your finger, put a drop of blood on the sample slot, PAN analyzes it using AI image recognition through a lensless microscope.
 
 ### How Lensless Microscopy Works
-No traditional lens or optics. The blood sample sits directly on a bare image sensor chip with an LED light source above it. The raw sensor image looks like shadows and diffraction patterns — not a traditional microscope image. Computational algorithms (running on PAM's ESP32 or offloaded to phone/server) reconstruct a magnified image from these patterns.
+No traditional lens or optics. The blood sample sits directly on a bare image sensor chip with an LED light source above it. The raw sensor image looks like shadows and diffraction patterns — not a traditional microscope image. Computational algorithms (running on PAN's ESP32 or offloaded to phone/server) reconstruct a magnified image from these patterns.
 
 This technology is proven — research groups at UCLA (Ozcan Lab) and Caltech have built fingertip-sized lensless microscopes achieving 1-2 micron resolution.
 
@@ -61,23 +61,23 @@ This technology is proven — research groups at UCLA (Ozcan Lab) and Caltech ha
 | **Total module cost** | Matchbox-sized | **€30-35** |
 
 ### How It Works
-1. Slide PAM pendant onto the blood dock (magnetic alignment)
-2. PAM detects the dock, switches to blood analysis mode on screen
+1. Slide PAN Pandant onto the blood dock (magnetic alignment)
+2. PAN detects the dock, switches to blood analysis mode on screen
 3. Prick finger with lancet
 4. Touch blood drop to the microfluidic sample chip in the dock
 5. LED illuminates the sample from above
 6. Lensless microscope sensor captures diffraction pattern
-7. PAM's ESP32 captures image, sends to phone/server
+7. PAN's ESP32 captures image, sends to phone/server
 8. AI reconstructs microscope image and analyzes:
    - Cell counts (RBC, WBC, platelets)
    - Cell morphology (shape abnormalities)
    - Foreign bodies (bacteria, parasites)
    - Anomalous cells (potential cancer markers)
-9. Results displayed on PAM's screen in seconds
+9. Results displayed on PAN's screen in seconds
 10. Pop out used microfluidic chip, dispose, slot new one
 
 ### Why This Matters
-| Traditional Blood Test | PAM Blood Module |
+| Traditional Blood Test | PAN Blood Module |
 |-----------------------|-----------------|
 | Once a year (maybe) | Every single day |
 | Wait days for results | Seconds |
@@ -140,16 +140,16 @@ Additional components beyond the basic lensless microscope:
 - **Replaces:** €200-500+ in annual lab work
 
 ### Daily Routine
-Wake up → prick finger → slot strip into module → PAM reads it while you make coffee → results on screen + stored in memory → AI tracks trends → alerts you if anything changes significantly
+Wake up → prick finger → slot strip into module → PAN reads it while you make coffee → results on screen + stored in memory → AI tracks trends → alerts you if anything changes significantly
 
 ---
 
 ## Module 2: Environmental Analysis Station (Future)
 A desktop dock with:
-- Full spectrometer (hundreds of channels vs pendant's 11)
+- Full spectrometer (hundreds of channels vs Pandant's 11)
 - Advanced gas chromatograph sensor
 - Water analysis (pH, dissolved minerals, contaminants)
-- PAM docks in, gains lab-grade chemical analysis
+- PAN docks in, gains lab-grade chemical analysis
 
 ## Module 3: Weather Station (Future)
 Outdoor-mounted module with:
@@ -157,7 +157,7 @@ Outdoor-mounted module with:
 - Rain gauge
 - Solar radiation sensor
 - Extended-range barometric pressure
-- PAM docks in or connects wirelessly — becomes your personal weather forecaster
+- PAN docks in or connects wirelessly — becomes your personal weather forecaster
 
 ## Module 4: Plant/Soil Analysis (Future)
 Garden/agriculture module:
@@ -166,6 +166,6 @@ Garden/agriculture module:
 - Light spectrum analysis for optimal growing conditions
 
 ## Philosophy
-PAM is not one device trying to do everything. PAM is a universal AI brain with basic always-on sensing (camera, mic, gas, temp, UV, etc.) that becomes specialized when docked into purpose-built modules. Like a Swiss Army knife where the handle (PAM) is always the same but the tools snap on and off.
+PAN is not one device trying to do everything. PAN is a universal AI brain with basic always-on sensing (camera, mic, gas, temp, UV, etc.) that becomes specialized when docked into purpose-built modules. Like a Swiss Army knife where the handle (PAN) is always the same but the tools snap on and off.
 
-The pendant is your daily companion. The modules are at home, in your car, at your desk, in your garden. Wherever PAM goes, it carries the knowledge from all its docking experiences in memory.
+The Pandant is your daily companion. The modules are at home, in your car, at your desk, in your garden. Wherever PAN goes, it carries the knowledge from all its docking experiences in memory.

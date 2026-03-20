@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Blue circle background -->
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M54,54m-48,0a48,48 0,1 1,96 0a48,48 0,1 1,-96 0" />
+
+    <!-- Π (Pi) letter in white -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,35 L78,35 L78,42 L74,42 L74,73 L66,73 L66,42 L42,42 L42,73 L34,73 L34,42 L30,42 Z" />
+</vector>

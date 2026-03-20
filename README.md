@@ -1,6 +1,6 @@
 # PAN — Personal AI Network
 
-Wearable AI pendant that captures everything you see and hear, stores it as searchable memory, and talks back to you in real-time.
+Wearable AI Pandant that captures everything you see and hear, stores it as searchable memory, and talks back to you in real-time.
 
 ## What It Does
 - Always-on camera (photo every few seconds) + continuous audio
@@ -55,7 +55,7 @@ All of these are available as small ESP32-compatible modules:
 ## Architecture
 
 ```
-PAM Pendant (ESP32-S3)
+PAN Pandant (ESP32-S3)
   ├── Camera (OV2640) → photo every N seconds
   ├── Microphone (PDM) → continuous audio
   ├── Screen (1.69" IPS) ← display responses/translations
@@ -68,8 +68,8 @@ Phone (Android APK)
   ├── Translation (on-device, Google Translate)
   ├── Sends data to server via Tailscale
   ├── Receives Claude responses
-  ├── Text-to-speech → sends audio to PAM speaker
-  └── Sends display text → PAM screen
+  ├── Text-to-speech → sends audio to PAN speaker
+  └── Sends display text → PAN screen
 
 Server (Northbridge / ProDesk1)
   ├── Web server accepting photos + transcripts
@@ -78,22 +78,22 @@ Server (Northbridge / ProDesk1)
   └── Queryable from any machine / Discord bot
 ```
 
-## Display Philosophy — PAM is Screenless by Nature
+## Display Philosophy — PAN is Screenless by Nature
 
-PAM's 1.69" pendant screen is tiny — useful only when you're glancing down at your chest. It's NOT PAM's primary display. PAM is a headless AI that pushes output to whatever screen makes the most sense in context:
+PAN's 1.69" Pandant screen is tiny — useful only when you're glancing down at your chest. It's NOT PAN's primary display. PAN is a headless AI that pushes output to whatever screen makes the most sense in context:
 
 | Screen | When | Use Case |
 |--------|------|----------|
-| **Pendant (1.69")** | Glancing down, quick check | Short alerts, translation text, status icons |
+| **Pandant (1.69")** | Glancing down, quick check | Short alerts, translation text, status icons |
 | **Phone** | Most of the time | Full responses, detailed data, conversation history |
 | **Watch (Huawei Band)** | Quick notification | Ping alerts, one-line summaries |
 | **Computer** | At desk | Full dashboard, charts, blood trends, detailed analysis |
 | **Docking station display** | Using a module | Blood results while testing, environmental readings |
 | **TV / Projector** | Sharing, reviewing | Show someone your data, review your day's captures |
 
-PAM doesn't care WHERE it displays. It sends information to the most appropriate screen based on context — like Bluetooth audio plays through whatever speaker is connected. The pendant screen is just one endpoint, and often not even the primary one.
+PAN doesn't care WHERE it displays. It sends information to the most appropriate screen based on context — like Bluetooth audio plays through whatever speaker is connected. The Pandant screen is just one endpoint, and often not even the primary one.
 
-This is like the difference between looking at a notification on your watch vs your phone. Sometimes the watch is enough. Usually you want the phone. At your desk, you want the big screen. PAM adapts.
+This is like the difference between looking at a notification on your watch vs your phone. Sometimes the watch is enough. Usually you want the phone. At your desk, you want the big screen. PAN adapts.
 
 ## Software Components
 1. **ESP32 Firmware** (Arduino/MicroPython) — camera capture, BLE streaming, screen driver, I2S audio
@@ -105,7 +105,7 @@ This is like the difference between looking at a notification on your watch vs y
 
 Named after Pan (Πάν/Πας) — Greek for "all/everything." Also Pan the god — a satyr (σάτυρος), god of the wild and nature, with superhuman senses in the natural world. The name fits: a device that senses everything, remembers everything, networks everything.
 
-The "N" stands for Network because PAN IS a network — the pendant, phone, server, and docking modules all connected.
+The "N" stands for Network because PAN IS a network — the Pandant, phone, server, and docking modules all connected.
 
 ## User Customization
 - **Custom wake name** — users choose their own. "Hey PAN," "Hey Jarvis," "Hey Friday," whatever they want. Not forced.
@@ -150,13 +150,14 @@ Wake word (~100ms) → you speak (~2-3 seconds) → STT (~500ms) → Claude (~1-
 **Solutions (layered):**
 1. **Custom wake words** — set yours to "Hey Atlas," friend's is "Hey Nova." No conflict possible.
 2. **Voice fingerprinting** — phone learns YOUR specific voice pattern. Even if someone says the exact same wake word, the phone recognizes it's not you and ignores it. This uses speaker verification ML models that run locally on the phone.
-3. **Bluetooth pairing** — each PAN pendant only communicates with its paired phone. Even if two PANs are in the same room with the same wake word, each triggers only its own phone.
+3. **Bluetooth pairing** — each PAN Pandant only communicates with its paired phone. Even if two PANs are in the same room with the same wake word, each triggers only its own phone.
 4. **Confirmation mode** (optional) — for sensitive commands, PAN asks "Was that you?" and waits for confirmation before acting.
 
 In practice, voice fingerprinting + custom wake words makes false triggers nearly impossible.
 
 ## Project Status
 - [x] Hardware selected and ordered
+- [x] Session memory logging (PAN/sessions/) — first software component
 - [ ] Hardware arrives (~March 18-20)
 - [ ] ESP32 firmware
 - [ ] Android app

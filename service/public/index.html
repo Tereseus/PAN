@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ΠΑΝ Dashboard</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg2: #161b22;
+  --bg3: #21262d;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text2: #8b949e;
+  --accent: #58a6ff;
+  --accent2: #3fb950;
+  --danger: #f85149;
+  --warn: #d29922;
+  --radius: 8px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* Header */
+.header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.header h1 span { color: var(--accent); }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex: 1;
+}
+.tab {
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text2);
+  white-space: nowrap;
+  border: none;
+  background: none;
+  transition: all 0.15s;
+}
+.tab:hover { color: var(--text); background: var(--bg3); }
+.tab.active { color: var(--text); background: var(--accent); color: #fff; }
+
+/* Content */
+.content { padding: 20px; max-width: 1200px; margin: 0 auto; }
+
+.page { display: none; }
+.page.active { display: block; }
+
+/* Cards */
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.card-header {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.card-header:hover { background: var(--bg3); }
+.card-body { padding: 16px; display: none; }
+.card-body.open { display: block; }
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-align: center;
+}
+.stat-card .value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.stat-card .label {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Event item */
+.event-item {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+.event-header {
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.event-header:hover { background: var(--bg3); }
+.event-type {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.type-PhoneAudio { background: #1f6feb33; color: #58a6ff; }
+.type-RouterCommand { background: #23863633; color: #3fb950; }
+.type-SessionStart { background: #d2992233; color: #d29922; }
+.type-SessionEnd { background: #8b949e33; color: #8b949e; }
+.type-PhoneSync { background: #a371f733; color: #a371f7; }
+.type-default { background: #30363d; color: #8b949e; }
+
+.event-time { color: var(--text2); font-size: 12px; white-space: nowrap; }
+.event-preview { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.event-detail {
+  display: none;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.event-detail.open { display: block; }
+.event-detail pre {
+  background: var(--bg);
+  padding: 12px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Conversation item */
+.convo-item {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  padding: 14px 16px;
+}
+.convo-meta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.convo-user {
+  color: var(--accent);
+  font-weight: 500;
+}
+.convo-response {
+  color: var(--accent2);
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--accent2);
+}
+.convo-expand {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 8px;
+}
+.convo-expand:hover { color: var(--accent); }
+.convo-detail {
+  display: none;
+  margin-top: 10px;
+}
+.convo-detail.open { display: block; }
+
+/* Buttons */
+.btn {
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.btn:hover { border-color: var(--accent); }
+.btn-danger { border-color: var(--danger); color: var(--danger); }
+.btn-danger:hover { background: var(--danger); color: #fff; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.toolbar select, .toolbar input {
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* Memory item */
+.memory-item {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.memory-content { flex: 1; }
+.memory-type {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #a371f733;
+  color: #a371f7;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: inline-block;
+}
+.memory-text { font-size: 14px; line-height: 1.5; }
+.memory-meta { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+/* Settings */
+.settings-section {
+  margin-bottom: 24px;
+}
+.settings-section h3 {
+  font-size: 15px;
+  margin-bottom: 12px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.settings-row {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.settings-row .label { color: var(--text2); font-size: 13px; }
+.settings-row .value { font-size: 14px; }
+
+/* Status indicators */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+.status-green { background: var(--accent2); }
+.status-red { background: var(--danger); }
+.status-yellow { background: var(--warn); }
+
+/* Pagination */
+.pagination {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+  align-items: center;
+}
+.pagination .info { color: var(--text2); font-size: 13px; }
+
+/* Loading */
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text2);
+}
+
+/* Delete day section */
+.delete-section {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.delete-section h4 { margin-bottom: 12px; }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .header { flex-wrap: wrap; padding: 10px; }
+  .tabs { width: 100%; }
+  .content { padding: 12px; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .event-header { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>ΠΑΝ</span> Dashboard</h1>
+  <div class="tabs">
+    <button class="tab active" data-page="conversations">Conversations</button>
+    <button class="tab" data-page="data">Data Management</button>
+    <button class="tab" data-page="settings">Settings</button>
+  </div>
+</div>
+
+<div class="content">
+
+  <!-- CONVERSATIONS PAGE -->
+  <div id="conversations" class="page active">
+    <div class="toolbar">
+      <select id="convo-filter" onchange="convoOffset=0;loadConversations()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
+        <option value="all">All</option>
+        <option value="voice">Voice</option>
+        <option value="commands">Commands</option>
+        <option value="photos">Photos</option>
+        <option value="sensors">Sensors</option>
+        <option value="system">System</option>
+      </select>
+      <input type="text" id="convo-search" placeholder="Search conversations..." onkeydown="if(event.key==='Enter'){convoOffset=0;loadConversations()}" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
+      <button class="btn" onclick="convoOffset=0;loadConversations()">Search</button>
+      <span class="info" id="convo-count"></span>
+    </div>
+    <div id="convo-list"></div>
+    <div class="pagination" id="convo-pagination"></div>
+  </div>
+
+  <!-- DATA MANAGEMENT PAGE (merged Activity Log + Data Management) -->
+  <div id="data" class="page">
+    <!-- Stats Overview -->
+    <div class="stats-grid" id="stats-grid">
+      <div class="stat-card"><div class="value">-</div><div class="label">Loading...</div></div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="delete-section">
+      <h4>Activity Log</h4>
+      <div class="toolbar">
+        <select id="event-type-filter" onchange="eventsOffset=0;loadEvents()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
+          <option value="">All Types</option>
+          <option value="PhoneAudio">PhoneAudio</option>
+          <option value="RouterCommand">RouterCommand</option>
+          <option value="SessionStart">SessionStart</option>
+          <option value="SessionEnd">SessionEnd</option>
+          <option value="PhoneSync">PhoneSync</option>
+          <option value="phone_log">phone_log</option>
+          <option value="PandantPhoto">PandantPhoto</option>
+          <option value="SensorData">SensorData</option>
+        </select>
+        <input type="text" id="event-search" placeholder="Search all data..." onkeydown="if(event.key==='Enter'){eventsOffset=0;loadEvents()}" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
+        <input type="date" id="event-date-filter" onchange="eventsOffset=0;loadEvents()">
+        <button class="btn" onclick="eventsOffset=0;loadEvents()">Search</button>
+        <span class="info" id="event-count"></span>
+      </div>
+      <div id="bulk-actions" style="display:none;padding:8px 0">
+        <button class="btn btn-danger" onclick="bulkDeleteSearch()">Delete all matching results</button>
+      </div>
+      <div id="event-list"></div>
+      <div class="pagination" id="event-pagination"></div>
+    </div>
+
+    <!-- Memory Items -->
+    <div class="delete-section">
+      <h4>Memory Items</h4>
+      <div id="memory-list"></div>
+      <div class="pagination" id="memory-pagination"></div>
+    </div>
+
+    <!-- Data Actions -->
+    <div class="delete-section">
+      <h4>Data Actions</h4>
+      <div class="toolbar">
+        <input type="date" id="delete-date" />
+        <button class="btn btn-danger" onclick="deleteDay()">Delete Day's Data</button>
+      </div>
+    </div>
+
+    <!-- Danger Zone -->
+    <div class="delete-section" style="border:1px solid var(--danger);border-radius:var(--radius);padding:16px;margin-top:12px">
+      <h4 style="color:var(--danger)">Danger Zone</h4>
+      <p style="color:var(--text2);font-size:13px;margin-bottom:12px">This permanently deletes ALL data from ΠΑΝ and syncs the deletion to the server. This cannot be undone.</p>
+      <button class="btn btn-danger" onclick="deleteAll()">Delete ALL Data</button>
+    </div>
+  </div>
+
+  <!-- SETTINGS PAGE -->
+  <div id="settings" class="page">
+    <div class="settings-section">
+      <h3>Server Health</h3>
+      <div id="health-status"></div>
+    </div>
+    <div class="settings-section">
+      <h3>Projects</h3>
+      <div id="projects-list"></div>
+    </div>
+    <div class="settings-section">
+      <h3>Connected Devices</h3>
+      <div id="devices-list"></div>
+      <div style="margin-top:10px">
+        <input type="text" id="rename-device-input" placeholder="Rename this device..." style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:200px;margin-right:8px">
+        <button onclick="renameDevice()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Rename</button>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3>Recent Sessions</h3>
+      <div id="sessions-list"></div>
+    </div>
+    <div class="settings-section">
+      <h3>Security</h3>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="password" id="pw-current" placeholder="Current password" autocomplete="off"
+          style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:150px;outline:none"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+        <input type="password" id="pw-new" placeholder="New password" autocomplete="off"
+          style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:150px;outline:none"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+        <button onclick="changePassword()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Change Delete Password</button>
+      </div>
+      <div style="font-size:12px;color:var(--text2);margin-top:6px">Default password: pan</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '/dashboard';
+let eventsOffset = 0;
+let convoOffset = 0;
+let memoryOffset = 0;
+const PAGE_SIZE = 50;
+
+// Tab navigation
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    const page = tab.dataset.page;
+    document.getElementById(page).classList.add('active');
+    loadPage(page);
+  });
+});
+
+function loadPage(page) {
+  switch(page) {
+    case 'conversations': loadConversations(); break;
+    case 'data': loadStats(); loadEvents(); loadMemory(); break;
+    case 'settings': loadSettings(); break;
+  }
+}
+
+// Programmatic tab switching (used by data management cards)
+function switchTab(pageName) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const tab = document.querySelector(`.tab[data-page="${pageName}"]`);
+  if (tab) tab.classList.add('active');
+  const page = document.getElementById(pageName);
+  if (page) page.classList.add('active');
+  loadPage(pageName);
+}
+
+// Helpers
+async function api(path, opts) {
+  const res = await fetch(API + path, opts);
+  return res.json();
+}
+
+function timeAgo(dateStr) {
+  const d = new Date(dateStr + (dateStr.includes('Z') ? '' : 'Z'));
+  const now = Date.now();
+  const diff = now - d.getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+  return Math.floor(diff/86400000) + 'd ago';
+}
+
+function fmtTime(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + (dateStr.includes('Z') ? '' : 'Z'));
+  return d.toLocaleString();
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function getTypeClass(type) {
+  const known = ['PhoneAudio','RouterCommand','SessionStart','SessionEnd','PhoneSync'];
+  for (const k of known) {
+    if (type && type.includes(k)) return 'type-' + k;
+  }
+  return 'type-default';
+}
+
+function toggleDetail(el) {
+  el.classList.toggle('open');
+}
+
+// CONVERSATIONS
+async function loadConversations() {
+  const filter = document.getElementById('convo-filter')?.value || 'all';
+  const search = document.getElementById('convo-search')?.value || '';
+  let url = `/api/conversations?limit=${PAGE_SIZE}&offset=${convoOffset}`;
+  if (filter !== 'all') url += `&filter=${filter}`;
+  if (search) url += `&q=${encodeURIComponent(search)}`;
+
+  const data = await api(url);
+  const el = document.getElementById('convo-list');
+  document.getElementById('convo-count').textContent = `${data.total} results`;
+
+  if (!data.conversations.length) {
+    el.innerHTML = '<div class="loading">No results found</div>';
+    return;
+  }
+
+  el.innerHTML = data.conversations.map(c => {
+    // Extract transcript from different event types
+    let transcript = c.transcript || '';
+    let response = c.response || '';
+
+    // For PhoneAudio events, extract transcript from data
+    if (!transcript && c.data) {
+      const d = typeof c.data === 'string' ? (() => { try { return JSON.parse(c.data); } catch { return {}; } })() : c.data;
+      transcript = d.transcript || d.text || '';
+    }
+
+    return `<div class="convo-item">
+      <div class="convo-meta">
+        <span class="event-type ${getTypeClass(c.event_type)}">${escapeHtml(c.event_type)}</span>
+        <span class="event-time">${fmtTime(c.created_at)} (${timeAgo(c.created_at)})</span>
+        ${c.route ? `<span class="event-type type-default">${escapeHtml(c.route)}</span>` : ''}
+        ${c.model ? `<span style="color:var(--text2);font-size:12px">${escapeHtml(c.model)}</span>` : ''}
+      </div>
+      ${transcript ? `<div class="convo-user">${escapeHtml(transcript)}</div>` : ''}
+      ${response ? `<div class="convo-response">${escapeHtml(response)}</div>` : ''}
+      <div class="convo-expand" onclick="this.nextElementSibling.classList.toggle('open')">Show details</div>
+      <div class="convo-detail">
+        <pre>${escapeHtml(JSON.stringify(c.data, null, 2))}</pre>
+        <div style="margin-top:8px">
+          <button class="btn btn-danger btn-sm" onclick="deleteEvent(${c.id}, this)">Delete</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  renderPagination('convo-pagination', convoOffset, data.total, (off) => { convoOffset = off; loadConversations(); });
+}
+
+// ACTIVITY LOG
+async function loadEvents() {
+  const type = document.getElementById('event-type-filter')?.value || '';
+  const date = document.getElementById('event-date-filter')?.value || '';
+  const search = document.getElementById('event-search')?.value || '';
+  let q = `/api/events?limit=${PAGE_SIZE}&offset=${eventsOffset}`;
+  if (type) q += `&type=${encodeURIComponent(type)}`;
+  if (date) q += `&date=${encodeURIComponent(date)}`;
+  if (search) q += `&q=${encodeURIComponent(search)}`;
+
+  const data = await api(q);
+  const el = document.getElementById('event-list');
+  document.getElementById('event-count').textContent = `${data.total} events`;
+
+  // Show bulk delete button if search is active and has results
+  const bulkEl = document.getElementById('bulk-actions');
+  if (bulkEl) {
+    bulkEl.style.display = (search || type || date) && data.total > 0 ? 'block' : 'none';
+  }
+
+  if (!data.events.length) {
+    el.innerHTML = '<div class="loading">No events found</div>';
+    return;
+  }
+
+  el.innerHTML = data.events.map(e => {
+    let parsed = {};
+    try { parsed = JSON.parse(e.data); } catch {}
+    const preview = parsed.transcript || parsed.user_text || parsed.text ||
+                    parsed.model || parsed.cwd || parsed.step || '';
+    return `
+    <div class="event-item">
+      <div class="event-header" onclick="toggleDetail(this.nextElementSibling)">
+        <span class="event-type ${getTypeClass(e.event_type)}">${escapeHtml(e.event_type)}</span>
+        <span class="event-time">${fmtTime(e.created_at)}</span>
+        <span class="event-preview">${escapeHtml(String(preview).slice(0, 120))}</span>
+      </div>
+      <div class="event-detail">
+        <div style="margin-bottom:8px;font-size:12px;color:var(--text2)">
+          ID: ${e.id} | Session: ${escapeHtml(e.session_id)}
+        </div>
+        <pre>${escapeHtml(JSON.stringify(parsed, null, 2))}</pre>
+        <div style="margin-top:8px">
+          <button class="btn btn-danger btn-sm" onclick="deleteEvent(${e.id}, this)">Delete</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  renderPagination('event-pagination', eventsOffset, data.total, (off) => { eventsOffset = off; loadEvents(); });
+}
+
+// DATA MANAGEMENT
+async function loadStats() {
+  const data = await api('/api/stats');
+  const grid = document.getElementById('stats-grid');
+
+  grid.innerHTML = `
+    <div class="stat-card" style="cursor:pointer" onclick="switchTab('events')"><div class="value">${data.total_events}</div><div class="label">Events →</div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="loadMemory()"><div class="value">${data.total_memory}</div><div class="label">Memory Items →</div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="switchTab('settings')"><div class="value">${data.total_sessions}</div><div class="label">Sessions →</div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="switchTab('settings')"><div class="value">${data.total_projects}</div><div class="label">Projects →</div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="switchTab('settings')"><div class="value">${data.total_devices}</div><div class="label">Devices →</div></div>
+    <div class="stat-card"><div class="value">${fmtSize(data.db_size_bytes)}</div><div class="label">DB Size</div></div>
+  `;
+
+  if (data.event_types && data.event_types.length) {
+    grid.innerHTML += data.event_types.map(et => `
+      <div class="stat-card" style="cursor:pointer" onclick="filterByEventType('${escapeHtml(et.event_type)}')">
+        <div class="value" style="font-size:20px">${et.count}</div>
+        <div class="label">${escapeHtml(et.event_type)} →</div>
+      </div>
+    `).join('');
+  }
+}
+
+function filterByEventType(type) {
+  // Route to Data Management Activity Log with the type pre-selected
+  switchTab('data');
+  setTimeout(() => {
+    const select = document.getElementById('event-type-filter');
+    if (select) { select.value = type; eventsOffset = 0; loadEvents(); }
+  }, 100);
+}
+
+async function loadMemory() {
+  const data = await api(`/api/memory?limit=${PAGE_SIZE}&offset=${memoryOffset}`);
+  const el = document.getElementById('memory-list');
+
+  if (!data.items.length) {
+    el.innerHTML = '<div class="loading">No memory items</div>';
+    return;
+  }
+
+  el.innerHTML = data.items.map(m => `
+    <div class="memory-item" id="mem-${m.id}">
+      <div class="memory-content">
+        <span class="memory-type">${escapeHtml(m.item_type)}</span>
+        ${m.confidence ? `<span style="color:var(--text2);font-size:12px;margin-left:8px">${(m.confidence * 100).toFixed(0)}% confidence</span>` : ''}
+        <div class="memory-text">${escapeHtml(m.content)}</div>
+        ${m.context ? `<div class="memory-meta">Context: ${escapeHtml(m.context)}</div>` : ''}
+        <div class="memory-meta">${fmtTime(m.created_at)}</div>
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="deleteMemory(${m.id})">Delete</button>
+    </div>
+  `).join('');
+
+  renderPagination('memory-pagination', memoryOffset, data.total, (off) => { memoryOffset = off; loadMemory(); });
+}
+
+// SETTINGS
+async function loadSettings() {
+  // Health
+  try {
+    const health = await (await fetch('/health')).json();
+    document.getElementById('health-status').innerHTML = `
+      <div class="settings-row">
+        <span class="label">Status</span>
+        <span class="value"><span class="status-dot status-green"></span>Running</span>
+      </div>
+      <div class="settings-row">
+        <span class="label">Server Time</span>
+        <span class="value">${fmtTime(health.timestamp)}</span>
+      </div>
+      <div class="settings-row">
+        <span class="label">Uptime</span>
+        <span class="value">Running</span>
+      </div>
+    `;
+  } catch (err) {
+    document.getElementById('health-status').innerHTML = `
+      <div class="settings-row">
+        <span class="label">Status</span>
+        <span class="value"><span class="status-dot status-red"></span>Error: ${escapeHtml(err.message)}</span>
+      </div>
+    `;
+  }
+
+  // Projects
+  const projects = await api('/api/projects');
+  const pel = document.getElementById('projects-list');
+  if (!projects.length) {
+    pel.innerHTML = '<div class="settings-row"><span class="label">No projects found</span></div>';
+  } else {
+    pel.innerHTML = projects.map(p => `
+      <div class="settings-row">
+        <div>
+          <div style="font-weight:500">${escapeHtml(p.name)}</div>
+          <div style="font-size:12px;color:var(--text2)">${escapeHtml(p.path)}</div>
+          ${p.classification ? `<div style="font-size:12px;color:var(--warn)">${escapeHtml(p.classification)}</div>` : ''}
+        </div>
+        <span class="event-time">${fmtTime(p.updated_at || p.created_at)}</span>
+      </div>
+    `).join('');
+  }
+
+  // Devices
+  const devices = await api('/api/devices');
+  const del = document.getElementById('devices-list');
+  if (!devices.length) {
+    del.innerHTML = '<div class="settings-row"><span class="label">No devices registered</span></div>';
+  } else {
+    del.innerHTML = devices.map(d => `
+      <div class="settings-row">
+        <div>
+          <div style="font-weight:500">${escapeHtml(d.name)} <span style="font-size:12px;color:var(--text2)">(${escapeHtml(d.hostname)})</span></div>
+          <div style="font-size:12px;color:var(--text2)">Type: ${escapeHtml(d.device_type)} | Last seen: ${fmtTime(d.last_seen)}</div>
+        </div>
+        <span class="status-dot ${isRecent(d.last_seen) ? 'status-green' : 'status-yellow'}"></span>
+      </div>
+    `).join('');
+  }
+
+  // Sessions
+  const sessions = await api('/api/sessions');
+  const sel = document.getElementById('sessions-list');
+  if (!sessions.length) {
+    sel.innerHTML = '<div class="settings-row"><span class="label">No sessions found</span></div>';
+  } else {
+    sel.innerHTML = sessions.slice(0, 20).map(s => `
+      <div class="settings-row">
+        <div>
+          <div style="font-size:13px">${escapeHtml(s.id?.slice(0, 20))}...</div>
+          <div style="font-size:12px;color:var(--text2)">${escapeHtml(s.cwd)} ${s.model ? '| ' + escapeHtml(s.model) : ''}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="event-time">${fmtTime(s.started_at)}</div>
+          <div style="font-size:11px;color:${s.ended_at ? 'var(--accent2)' : 'var(--warn)'}">${s.ended_at ? 'Ended' : 'Active'}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+}
+
+function isRecent(dateStr) {
+  if (!dateStr) return false;
+  const d = new Date(dateStr + (dateStr.includes('Z') ? '' : 'Z'));
+  return (Date.now() - d.getTime()) < 300000; // 5 min
+}
+
+// Delete actions
+// Password-protected delete — inline modal
+function requirePassword(action) {
+  return new Promise((resolve) => {
+    // Create modal overlay
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999';
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;width:350px;max-width:90vw';
+    modal.innerHTML = `
+      <h3 style="margin-bottom:8px;color:var(--danger)">Confirm Delete</h3>
+      <p style="color:var(--text2);margin-bottom:16px;font-size:14px">${action}</p>
+      <input type="password" id="delete-pw-input" placeholder="Enter password" autofocus
+        style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:12px;font-size:14px">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="delete-pw-cancel" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 16px;cursor:pointer">Cancel</button>
+        <button id="delete-pw-confirm" style="background:var(--danger);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Delete</button>
+      </div>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    const input = document.getElementById('delete-pw-input');
+    input.focus();
+
+    const cleanup = () => { overlay.remove(); };
+
+    document.getElementById('delete-pw-cancel').onclick = () => { cleanup(); resolve(false); };
+    overlay.onclick = (e) => { if (e.target === overlay) { cleanup(); resolve(false); } };
+    input.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+
+    const doConfirm = () => {
+      const pw = input.value;
+      if (!pw) { input.style.borderColor = 'var(--danger)'; return; }
+      fetch('/dashboard/api/verify-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw })
+      }).then(r => r.json()).then(data => {
+        cleanup();
+        if (data.valid) resolve(true);
+        else { alert('Incorrect password.'); resolve(false); }
+      }).catch(() => { cleanup(); resolve(false); });
+    };
+
+    document.getElementById('delete-pw-confirm').onclick = doConfirm;
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') doConfirm();
+      if (e.key === 'Escape') { cleanup(); resolve(false); }
+    };
+  });
+}
+
+async function deleteEvent(id, btnEl) {
+  if (!await requirePassword('delete this event')) return;
+  await api(`/api/events/${id}`, { method: 'DELETE' });
+  if (btnEl) btnEl.closest('.event-item, .convo-item')?.remove();
+}
+
+async function deleteMemory(id) {
+  if (!await requirePassword('delete this memory')) return;
+  await api(`/api/memory/${id}`, { method: 'DELETE' });
+  document.getElementById('mem-' + id)?.remove();
+}
+
+async function deleteDay() {
+  const date = document.getElementById('delete-date').value;
+  if (!date) return alert('Select a date first');
+  if (!await requirePassword(`delete ALL events for ${date}`)) return;
+  const result = await api(`/api/events/day/${date}`, { method: 'DELETE' });
+  alert(`Deleted ${result.deleted_count} events for ${date}`);
+  loadStats();
+  loadEvents();
+}
+
+async function bulkDeleteSearch() {
+  const type = document.getElementById('event-type-filter')?.value || '';
+  const date = document.getElementById('event-date-filter')?.value || '';
+  const search = document.getElementById('event-search')?.value || '';
+  const count = document.getElementById('event-count')?.textContent || '0';
+  if (!await requirePassword(`bulk delete ${count}`)) return;
+  let q = '/api/events/bulk?confirm=yes';
+  if (type) q += `&type=${encodeURIComponent(type)}`;
+  if (date) q += `&date=${encodeURIComponent(date)}`;
+  if (search) q += `&q=${encodeURIComponent(search)}`;
+  const result = await api(q, { method: 'DELETE' });
+  alert(`Deleted ${result.deleted_count || 0} events.`);
+  loadStats(); loadEvents();
+}
+
+async function deleteAll() {
+  if (!await requirePassword('open the nuclear delete zone')) return;
+  if (!await requirePassword('DELETE ALL DATA permanently — second confirmation')) return;
+  await api('/api/all?confirm=yes', { method: 'DELETE' });
+  alert('All data deleted.');
+  loadStats(); loadEvents(); loadMemory();
+}
+
+// Pagination helper
+function renderPagination(elId, currentOffset, total, onNav) {
+  const el = document.getElementById(elId);
+  const page = Math.floor(currentOffset / PAGE_SIZE) + 1;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <button class="btn btn-sm" ${currentOffset === 0 ? 'disabled' : ''} onclick="void(0)" id="${elId}-prev">Prev</button>
+    <span class="info">Page ${page} of ${totalPages}</span>
+    <button class="btn btn-sm" ${currentOffset + PAGE_SIZE >= total ? 'disabled' : ''} onclick="void(0)" id="${elId}-next">Next</button>
+  `;
+
+  document.getElementById(`${elId}-prev`)?.addEventListener('click', () => {
+    if (currentOffset > 0) onNav(currentOffset - PAGE_SIZE);
+  });
+  document.getElementById(`${elId}-next`)?.addEventListener('click', () => {
+    if (currentOffset + PAGE_SIZE < total) onNav(currentOffset + PAGE_SIZE);
+  });
+}
+
+// Rename device
+async function renameDevice() {
+  const input = document.getElementById('rename-device-input');
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    await fetch('/api/v1/devices/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, device_type: 'pc', capabilities: ['terminal', 'files', 'browser', 'apps'] })
+    });
+    input.value = '';
+    loadSettings();
+  } catch {}
+}
+
+async function searchTranscripts() {
+  const query = document.getElementById('search-transcripts').value.trim();
+  if (!query) return;
+  const results = await api(`/api/search?q=${encodeURIComponent(query)}`);
+  const el = document.getElementById('search-results');
+  if (!results.length) {
+    el.innerHTML = '<div style="color:var(--text2);padding:8px">No results found.</div>';
+    return;
+  }
+  el.innerHTML = results.map(r => {
+    const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+    const transcript = data.transcript || data.text || r.data;
+    return `<div class="event-item" style="margin-bottom:6px">
+      <div class="event-time">${fmtTime(r.created_at)}</div>
+      <div style="font-size:13px">${escapeHtml(typeof transcript === 'string' ? transcript : JSON.stringify(transcript).slice(0, 200))}</div>
+      <div style="font-size:11px;color:var(--text2)">${escapeHtml(r.event_type)}</div>
+    </div>`;
+  }).join('');
+}
+
+async function changePassword() {
+  const current = document.getElementById('pw-current').value;
+  const newPw = document.getElementById('pw-new').value;
+  if (!current || !newPw) return alert('Fill in both fields');
+  const res = await fetch('/dashboard/api/change-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current, newPassword: newPw })
+  });
+  const data = await res.json();
+  if (data.success) {
+    alert('Password changed.');
+    document.getElementById('pw-current').value = '';
+    document.getElementById('pw-new').value = '';
+  } else {
+    alert('Failed: ' + (data.error || 'wrong password'));
+  }
+}
+
+// Initial load
+loadConversations();
+</script>
+</body>
+</html>

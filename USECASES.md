@@ -1,6 +1,6 @@
-# PAM — Real-World Use Cases by Sensor
+# PAN — Real-World Use Cases by Sensor
 
-What people would know at all times with a fully loaded PAM.
+What people would know at all times with a fully loaded PAN.
 
 ## Safety (Could Save Your Life)
 
@@ -81,18 +81,18 @@ A gas sensor array pointed at an open surgical site could theoretically:
 - "Early signs of infection at incision site"
 - "Tissue viability is declining in this area"
 
-This is active research but not yet in clinical use. PAM-style sensing in surgery could provide data surgeons currently cannot access.
+This is active research but not yet in clinical use. PAN-style sensing in surgery could provide data surgeons currently cannot access.
 
 ## V2 Hardware Notes
 
-### What fits inside the pendant (18 sensors):
-All sensors 2-3mm chip size, stackable on one PCB. Adds ~15g to pendant weight.
+### What fits inside the Pandant (18 sensors):
+All sensors 2-3mm chip size, stackable on one PCB. Adds ~15g to Pandant weight.
 
 ### What needs external mounting (4 sensors):
 | Sensor | Size | V2 Solution |
 |--------|------|-------------|
-| IR thermal camera (MLX90640) | 16x12mm | Side of pendant, or shoulder gimbal |
-| Ultrasonic (RCWL-1601) | 20x15mm | Top or side of pendant, needs air exposure |
+| IR thermal camera (MLX90640) | 16x12mm | Side of Pandant, or shoulder gimbal |
+| Ultrasonic (RCWL-1601) | 20x15mm | Top or side of Pandant, needs air exposure |
 | Radiation tube (RadSens/SBM-20) | 10x50mm | Side mount or shoulder unit |
 | pH sensor | Probe + module | Skip — spectrometer partially replaces |
 
@@ -105,7 +105,7 @@ The ESP32-S3 has one camera interface. For visible + thermal:
 Some combo visible+thermal cameras exist but are expensive and not ESP32-native.
 
 ### Heart rate through the case:
-MAX30102 uses infrared light through skin. Needs direct skin contact — small window/cutout in the 3D case back where sensor touches chest. Works perfectly since PAM is magnetically mounted against your body.
+MAX30102 uses infrared light through skin. Needs direct skin contact — small window/cutout in the 3D case back where sensor touches chest. Works perfectly since PAN is magnetically mounted against your body.
 
 ### The MVP sensor for V2:
 **BME688** — one $15 chip that combines gas detection + temperature + humidity + barometric pressure. Four sensor categories in a 3x3mm package. This single chip is the highest value addition after camera and mic.

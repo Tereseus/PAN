@@ -1,4 +1,4 @@
-# PAM Sensor Catalog
+# PAN Sensor Catalog
 
 Complete list of known sensing modalities, categorized by size and feasibility for wearable integration.
 
@@ -26,7 +26,7 @@ These detect stimuli from the external environment:
 - Fatigue — internal energy state
 - Itch — variant of pain/touch response
 
-## Sensors That Fit in PAM Pendant
+## Sensors That Fit in PAN Pandant
 Small enough (fingernail to coin sized), runs on 3.3-5V, ESP32 compatible:
 
 | # | Sensor | Module | Detects | Size | Beyond Human? |
@@ -54,10 +54,10 @@ Small enough (fingernail to coin sized), runs on 3.3-5V, ESP32 compatible:
 | 21 | Sound level (MAX4466) | MAX4466 | Decibel measurement | Small module | More precise than human |
 | 22 | Soil/liquid pH (PH-4502C) | PH-4502C | Acidity/alkalinity of liquids | Probe + module | YES — no human equivalent |
 
-**Total pendant-compatible sensors: 22**
+**Total Pandant-compatible sensors: 22**
 **Beyond human capability: 15 of 22**
 
-## Sensors That Exist But DON'T Fit in Pendant
+## Sensors That Exist But DON'T Fit in Pandant
 Too large, need dedicated power, or require specialized equipment:
 
 | # | Sensor | Size | What It Detects |
@@ -92,8 +92,8 @@ Too large, need dedicated power, or require specialized equipment:
 | 50 | Flux gate magnetometer | Bench-sized | Ultra-precise magnetic field measurement |
 
 **Total known sensing modalities: ~50**
-**Fit in pendant: 22**
-**Beyond human capability: 15 pendant-sized + all 28 large ones = 43 out of 50**
+**Fit in Pandant: 22**
+**Beyond human capability: 15 Pandant-sized + all 28 large ones = 43 out of 50**
 
 ## The Numbers
 
@@ -104,14 +104,14 @@ The 50 listed here covers every commercially available sensing category. There a
 
 **Fundamental sensing dimensions:**
 - Humans sense ~4 fundamental things: electromagnetic radiation (light), mechanical waves (sound/touch/balance), chemicals (smell/taste), and gravity
-- A fully loaded PAM pendant senses those same 4 plus: ionizing radiation, magnetic fields, electrical fields, spectral composition, ultrasonic, and precise geolocation — roughly **8-10 fundamental dimensions**
+- A fully loaded PAN Pandant senses those same 4 plus: ionizing radiation, magnetic fields, electrical fields, spectral composition, ultrasonic, and precise geolocation — roughly **8-10 fundamental dimensions**
 - The large/lab sensors add: subatomic particles, gravitational waves, molecular structure, genetic code — pushing to ~15 fundamental dimensions
 
 ## Summary
 - Humans have ~11 true external senses (4 fundamental dimensions)
-- PAM v1 has 2 sensors (camera + mic) — arrives March 18-20
-- PAM fully loaded could have 22 sensors — all wearable on chest (8-10 fundamental dimensions)
+- PAN v1 has 2 sensors (camera + mic) — arrives March 18-20
+- PAN fully loaded could have 22 sensors — all wearable on chest (8-10 fundamental dimensions)
 - Total known sensing categories: ~50-70
 - Total specific sensor implementations: tens of thousands
 - Sensors that exceed human capability: 43 out of ~50 categories
-- A fully loaded PAM pendant: 22 out of ~50-70 categories, superhuman in 15 of them
+- A fully loaded PAN Pandant: 22 out of ~50-70 categories, superhuman in 15 of them

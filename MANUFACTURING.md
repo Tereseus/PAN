@@ -1,4 +1,4 @@
-# PAM — Manufacturing Origins & Sensor Industry
+# PAN — Manufacturing Origins & Sensor Industry
 
 ## Who Makes What
 
@@ -48,7 +48,7 @@ Espressif owns the ESP32 entirely — nobody else makes it. It's their chip, the
 
 ## Geographic Summary
 
-| Region | Role in PAM | Key Companies |
+| Region | Role in PAN | Key Companies |
 |--------|-------------|---------------|
 | **China** | Computing platform (ESP32), board assembly, manufacturing | Espressif, Seeed Studio, QST |
 | **Germany** | Environmental and motion sensors | Bosch Sensortec |
@@ -61,20 +61,20 @@ Espressif owns the ESP32 entirely — nobody else makes it. It's their chip, the
 | **Italy** | Arduino software ecosystem | Arduino SRL |
 
 ## The Insight
-PAM is genuinely international:
+PAN is genuinely international:
 - **European sensors** detect the world (Germany, Switzerland, Austria, Belgium, France)
 - **American ICs** process audio and health data (Analog Devices, TI)
 - **Chinese computing** runs everything and connects it all (Espressif, Seeed)
 - **Italian software** provides the programming framework (Arduino)
 
-The real innovation in miniaturized sensing is European. China provides the cheap, powerful computing platform. America provides specialized analog/mixed-signal ICs. Together they make PAM possible at €65-75 retail.
+The real innovation in miniaturized sensing is European. China provides the cheap, powerful computing platform. America provides specialized analog/mixed-signal ICs. Together they make PAN possible at €65-75 retail.
 
 ## Cost at Scale
 
 | Component | Retail (1 unit) | At Scale (1000+ units) |
 |-----------|----------------|----------------------|
 | ESP32-S3 module (raw, not Seeed board) | €8-15 | ~€3 |
-| All pendant sensors on custom PCB | €80-120 | ~€40-50 |
+| All Pandant sensors on custom PCB | €80-120 | ~€40-50 |
 | 1.69" LCD screen | €8-10 | ~€4 |
 | Battery 1000mAh | €5-8 | ~€3 |
 | Speaker + MAX98357A amp | €5-8 | ~€2 |
@@ -82,14 +82,14 @@ The real innovation in miniaturized sensing is European. China provides the chea
 | PCB manufacturing + assembly | N/A | ~€5-10 |
 | **Total BOM** | **~€130 (V2 full sensors)** | **~€55-70** |
 | **Retail at cost** | — | **€75-85** |
-| **Includes:** | 15+ superhuman sensors, camera, mic, speaker, screen, battery, AI pendant | |
+| **Includes:** | 15+ superhuman sensors, camera, mic, speaker, screen, battery, AI Pandant | |
 
 Selling at €75-85 covers parts, assembly, packaging, shipping, and a small buffer for returns/defects. No profit margin. A genuine at-cost device to help people.
 
 For comparison:
-- Limitless Pendant (audio only, no camera, no sensors): $99
+- Limitless Pandant (audio only, no camera, no sensors): $99
 - Humane AI Pin (fewer sensors, failed product): $699
 - Apple Watch (fewer sensors): $399
-- PAM fully loaded: €75-85
+- PAN fully loaded: €75-85
 
 Nothing competes at this price point because nobody else is building for cost rather than profit.
