@@ -46,6 +46,9 @@ app.use('/api/v1/devices', devicesRouter);
 app.use('/dashboard', dashboardRouter);
 app.use('/dashboard', express.static(join(__dirname, '..', 'public')));
 
+// Serve captured photos (stored in src/data/photos by api.js)
+app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'running', timestamp: new Date().toISOString() });

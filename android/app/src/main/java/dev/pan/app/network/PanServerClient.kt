@@ -4,6 +4,8 @@ import android.util.Log
 import dev.pan.app.network.dto.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -62,6 +64,21 @@ class PanServerClient @Inject constructor(
             if (response.isSuccessful) response.body() else null
         } catch (e: Exception) {
             Log.e(TAG, "Query failed: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun analyzeImage(imageBase64: String, question: String): String? {
+        return try {
+            val response = api.vision(VisionRequest(imageBase64, question))
+            if (response.isSuccessful) {
+                response.body()?.description
+            } else {
+                Log.e(TAG, "Vision API failed: ${response.code()}")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Vision request failed: ${e.message}")
             null
         }
     }

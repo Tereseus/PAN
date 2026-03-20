@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import { all, get, run, insert, DB_PATH } from '../db.js';
-import { statSync } from 'fs';
+import { statSync, readdirSync, existsSync, unlinkSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
+
+const __dirname2 = dirname(fileURLToPath(import.meta.url));
+const PHOTOS_DIR = join(__dirname2, '..', 'data', 'photos');
 
 const router = Router();
 
@@ -40,6 +45,54 @@ router.post('/api/change-password', (req, res) => {
   if (hashPassword(current) !== storedHash) return res.json({ success: false, error: 'wrong password' });
   run("INSERT OR REPLACE INTO settings (key, value) VALUES ('delete_password', :hash)", { ':hash': hashPassword(newPassword) });
   res.json({ success: true });
+});
+
+// GET /dashboard/api/photos — list all captured photos
+router.get('/api/photos', (req, res) => {
+  if (!existsSync(PHOTOS_DIR)) return res.json([]);
+  try {
+    const files = readdirSync(PHOTOS_DIR)
+      .filter(f => f.endsWith('.jpg') || f.endsWith('.png'))
+      .map(f => {
+        const stat = statSync(join(PHOTOS_DIR, f));
+        // Find matching vision event
+        const event = get("SELECT * FROM events WHERE event_type = 'VisionAnalysis' AND data LIKE :f ORDER BY created_at DESC LIMIT 1",
+          { ':f': `%${f}%` });
+        let description = '';
+        let question = '';
+        if (event) {
+          try {
+            const d = JSON.parse(event.data);
+            description = d.description || '';
+            question = d.question || '';
+          } catch {}
+        }
+        return {
+          filename: f,
+          url: `/photos/${f}`,
+          size: stat.size,
+          created: stat.mtime.toISOString(),
+          description,
+          question
+        };
+      })
+      .sort((a, b) => new Date(b.created) - new Date(a.created));
+    res.json(files);
+  } catch (e) {
+    res.json([]);
+  }
+});
+
+// DELETE /dashboard/api/photos/:filename
+router.delete('/api/photos/:filename', (req, res) => {
+  const f = req.params.filename.replace(/[^a-zA-Z0-9._-]/g, '');
+  const path = join(PHOTOS_DIR, f);
+  try {
+    if (existsSync(path)) unlinkSync(path);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /dashboard/api/search?q=text — search all events by transcript text
@@ -129,20 +182,20 @@ router.get('/api/conversations', (req, res) => {
 
   // Map filter to event types
   const filterMap = {
-    'all': "('RouterCommand', 'PhoneAudio', 'PandantPhoto', 'SensorData', 'SessionStart', 'SessionEnd', 'Stop', 'UserPromptSubmit')",
+    'all': null, // null = no type filter, show everything
     'voice': "('RouterCommand', 'PhoneAudio')",
     'commands': "('RouterCommand')",
-    'photos': "('PandantPhoto')",
+    'photos': "('PandantPhoto', 'VisionAnalysis')",
     'sensors': "('SensorData')",
     'system': "('SessionStart', 'SessionEnd', 'Stop', 'UserPromptSubmit')",
   };
-  const typeFilter = filterMap[filter] || filterMap['all'];
+  const typeFilter = filterMap[filter] !== undefined ? filterMap[filter] : null;
 
-  let whereClause = `WHERE event_type IN ${typeFilter}`;
+  let whereClause = typeFilter ? `WHERE event_type IN ${typeFilter}` : '';
   const params = { ':limit': limit, ':offset': offset };
 
   if (search) {
-    whereClause += ` AND data LIKE :q`;
+    whereClause += whereClause ? ` AND data LIKE :q` : `WHERE data LIKE :q`;
     params[':q'] = `%${search}%`;
   }
 
@@ -161,8 +214,8 @@ router.get('/api/conversations', (req, res) => {
       event_type: e.event_type,
       session_id: e.session_id,
       created_at: e.created_at,
-      transcript: data.transcript || data.user_text || data.text || '',
-      response: data.response || data.response_text || '',
+      transcript: data.transcript || data.user_text || data.text || data.question || '',
+      response: data.response || data.response_text || data.description || '',
       route: data.route || data.intent || '',
       model: data.model || '',
       response_time_ms: data.response_time_ms || data.duration_ms || null,
