@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 16px;
+    }
+    h2 {
+      color: #90CAF9;
+      margin-bottom: 16px;
+      font-size: 18px;
+    }
+    .cmd {
+      background: #16213e;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+      border-left: 3px solid #333;
+    }
+    .cmd.completed { border-left-color: #4CAF50; }
+    .cmd.failed { border-left-color: #F44336; }
+    .cmd.pending { border-left-color: #FFA726; }
+    .cmd-text { font-size: 14px; margin-bottom: 4px; }
+    .cmd-meta { font-size: 11px; color: #666; }
+    .cmd-result { font-size: 12px; color: #aaa; margin-top: 4px; }
+    .status { font-weight: bold; }
+    .status.completed { color: #4CAF50; }
+    .status.failed { color: #F44336; }
+    .status.pending { color: #FFA726; }
+    .empty { color: #666; text-align: center; padding: 40px; }
+    .refresh { color: #1565C0; cursor: pointer; float: right; font-size: 13px; }
+    .refresh:hover { text-decoration: underline; }
+    .devices { margin-bottom: 24px; }
+    .device {
+      display: inline-block;
+      background: #16213e;
+      padding: 6px 12px;
+      border-radius: 16px;
+      margin-right: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .device-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #4CAF50;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+  <span class="refresh" onclick="load()">Refresh</span>
+  <h2>ΠΑΝ Commands</h2>
+
+  <div class="devices" id="devices"></div>
+  <div id="commands"><div class="empty">Loading...</div></div>
+
+  <script>
+    const PAN_URL = 'http://127.0.0.1:7777';
+
+    async function load() {
+      // Load devices
+      try {
+        const devRes = await fetch(`${PAN_URL}/api/v1/devices/list`);
+        const devices = await devRes.json();
+        document.getElementById('devices').innerHTML = devices.map(d =>
+          `<span class="device"><span class="device-dot"></span>${d.name}</span>`
+        ).join('');
+      } catch {}
+
+      // Load commands
+      try {
+        const cmdRes = await fetch(`${PAN_URL}/api/v1/devices/commands/history`);
+        const commands = await cmdRes.json();
+
+        if (commands.length === 0) {
+          document.getElementById('commands').innerHTML = '<div class="empty">No commands yet</div>';
+          return;
+        }
+
+        document.getElementById('commands').innerHTML = commands.map(c => `
+          <div class="cmd ${c.status}">
+            <div class="cmd-text">${c.text || c.command || '(no text)'}</div>
+            <div class="cmd-meta">
+              <span class="status ${c.status}">${c.status}</span>
+              &nbsp;|&nbsp; ${c.command_type} &nbsp;|&nbsp; ${c.target_device}
+              &nbsp;|&nbsp; ${c.created_at || ''}
+            </div>
+            ${c.result ? `<div class="cmd-result">${c.result.slice(0, 200)}</div>` : ''}
+          </div>
+        `).join('');
+      } catch {
+        document.getElementById('commands').innerHTML = '<div class="empty">Cannot reach PAN service</div>';
+      }
+    }
+
+    load();
+    setInterval(load, 5000);
+  </script>
+</body>
+</html>

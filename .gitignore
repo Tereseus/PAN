@@ -1,0 +1,37 @@
+# Build artifacts
+android/.gradle/
+android/.idea/
+android/app/build/
+android/build/
+android/local.properties
+
+# Gradle wrapper (too large for GitHub)
+android/gradle/wrapper/gradle-wrapper.jar
+
+# Node
+service/node_modules/
+service/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets - NEVER commit these
+service/src/claude.js
+.env
+*.credentials.json
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# Whisper (submodule, too large)
+whisper.cpp/
+
+# Whisper models
+android/app/src/main/assets/models/*.bin
+
+# Temp
+*.tmp
+*.log

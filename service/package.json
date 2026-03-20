@@ -1,0 +1,19 @@
+{
+  "name": "pan-service",
+  "version": "1.0.0",
+  "description": "PAN — Personal AI Network. Persistent intelligence layer.",
+  "type": "module",
+  "bin": {
+    "pan": "./pan.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "express": "^5.1.0",
+    "node-notifier": "^10.0.1",
+    "node-windows": "^1.0.0-beta.8",
+    "sql.js": "^1.11.0"
+  },
+  "devDependencies": {
+    "electron": "^41.0.3"
+  }
+}

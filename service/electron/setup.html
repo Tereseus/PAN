@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      padding: 32px;
+    }
+    .logo {
+      font-size: 48px;
+      font-weight: bold;
+      color: #90CAF9;
+      margin-bottom: 8px;
+    }
+    .motto {
+      color: #90CAF9;
+      font-size: 14px;
+      margin-bottom: 6px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      text-align: center;
+    }
+    .subtitle {
+      color: #888;
+      font-size: 13px;
+      margin-bottom: 32px;
+      font-style: italic;
+    }
+    label {
+      font-size: 14px;
+      margin-bottom: 8px;
+      align-self: flex-start;
+      width: 100%;
+      max-width: 320px;
+    }
+    input {
+      width: 100%;
+      max-width: 320px;
+      padding: 12px 16px;
+      border: 2px solid #333;
+      border-radius: 8px;
+      background: #16213e;
+      color: #fff;
+      font-size: 16px;
+      outline: none;
+      margin-bottom: 16px;
+    }
+    input:focus {
+      border-color: #1565C0;
+    }
+    .hint {
+      color: #666;
+      font-size: 12px;
+      margin-bottom: 24px;
+      max-width: 320px;
+    }
+    button {
+      padding: 12px 48px;
+      background: #1565C0;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    button:hover { background: #1976D2; }
+    button:disabled { background: #333; cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="logo">ΠΑΝ</div>
+  <div class="motto">Ἡ ΓΝΩΣΙΣ ἭΤΙΣ ΣΩΖΕΙ ΟΥ̓ΔΕΝΙ ΔΕΣΠΟΤΗ ἈΝΗΚΕΙ</div>
+  <div class="subtitle">Knowledge that saves belongs to no master</div>
+
+  <label>Name this device</label>
+  <input type="text" id="deviceName" placeholder="My PC" autofocus>
+  <div class="hint">This name shows on your phone and other devices so you know which computer you're talking to.</div>
+  <button id="saveBtn" onclick="save()">Save</button>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+    const config = ipcRenderer.sendSync('get-config');
+
+    const input = document.getElementById('deviceName');
+    const btn = document.getElementById('saveBtn');
+
+    if (config.deviceName) {
+      input.value = config.deviceName;
+    }
+
+    input.addEventListener('input', () => {
+      btn.disabled = !input.value.trim();
+    });
+
+    function save() {
+      const name = input.value.trim();
+      if (name) {
+        ipcRenderer.sendSync('save-device-name', name);
+      }
+    }
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') save();
+    });
+  </script>
+</body>
+</html>

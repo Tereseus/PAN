@@ -113,6 +113,48 @@ For enterprise, you'd use the **Claude API directly** — one API key per organi
 4. **Lock-in** — once your entire life memory is stored in a system powered by Claude, switching to GPT or Gemini means losing your memories. Powerful retention.
 5. **Data moat** — the company that has millions of people's continuous real-world sensor data has an unassailable competitive advantage in training grounded AI.
 
+## Release Strategy (Updated March 2026)
+
+**V1: Open Source**
+- Hardware designs, software, firmware all public
+- Tell people exactly what to buy to build it themselves
+- Sell pre-built pendants for people who don't want to DIY
+- Optional subscription for cloud features, self-hosted always free
+- Users bring their own API key or use PAN's hosted option
+
+**V2: Closed Source (if V1 succeeds)**
+- Premium hardware, polished software
+- V1 stays open for the community forever
+
+**Philosophy:** If it works for me, I'll use it regardless. If others want it, great. No VC pressure, no scaling requirements. The product exists because it automates my life — market success is a bonus.
+
+## Competitive Landscape (March 2026)
+
+| Product | Price | Status | Why PAN is different |
+|---------|-------|--------|---------------------|
+| Humane AI Pin | $699 | DEAD | Tried to replace phone |
+| Rabbit R1 | $199 | Struggling | Handheld gadget, no PC control |
+| Friend AI | $129 | Criticized | Novelty companion, no utility |
+| Limitless | ~$99 | ACQUIRED BY META | Passive recorder only |
+| Omi | $89 | Active, open source | Passive recorder, no PC control |
+| Bee | $50 | ACQUIRED BY AMAZON | Passive, cloud-only |
+| PLAUD | $159-179 | Active | Note-taker only |
+
+**Key insight:** Every competitor is either a passive recorder or a failed phone replacement. PAN is the only active agent that controls your computer, executes commands, and works across all devices.
+
+**Mortality doesn't apply to PAN** because:
+- Not VC-funded, no burn rate pressure
+- Creator uses it daily regardless of market
+- Open source means community sustains it
+- Works with existing devices, not trying to replace anything
+
+## Privacy Advantage Over Competitors
+- Competitors stream everything to their cloud (Bee→Amazon, Limitless→Meta)
+- PAN can run 100% locally — self-hosted server, local AI, your hardware
+- User controls the data, not a corporation
+- Mic/camera can be toggled off anytime
+- "Glasses suck" — a button on your shirt doesn't have social stigma
+
 ## Open Questions
 - Regulatory: medical device classification for blood analysis module?
 - Privacy: GDPR compliance for continuous recording in EU?

@@ -1,0 +1,40 @@
+// PAN Claude Interface — direct Anthropic API
+// Copy this to claude.js and add your API key
+
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const API_KEY = 'YOUR_API_KEY_HERE'; // Get from console.anthropic.com
+
+export async function claude(prompt, { model = 'claude-haiku-4-5-20251001', timeout = 15000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error(`[PAN Claude] API error ${response.status}: ${err.slice(0, 300)}`);
+      throw new Error(`API ${response.status}: ${err.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    let text = data.content?.[0]?.text || '';
+    text = text.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}

@@ -1,4 +1,4 @@
-# PAM — Dog Chemical Communication Theory
+# PAN — Dog Chemical Communication Theory
 
 ## The Hypothesis
 Dogs primarily communicate through chemical signals, not vocalizations. Barking is the adaptation they developed for humans. Between dogs, the primary communication channel is chemical — specifically through anal gland secretions and other scent-based signals.
@@ -79,8 +79,8 @@ This is a full data download. It's like scanning someone's entire social media p
 ### The Problem: Resolution
 - **A dog's nose:** ~300 million olfactory receptors, each sensitive to specific molecular shapes
 - **Best e-nose arrays (2026):** 32-64 sensor channels
-- **PAM pendant (BME688):** 4 gas sensing elements
-- **Gap:** We're at 0.002% of a dog's resolution with 64 channels, and 0.0001% with PAM's 4 channels
+- **PAN Pandant (BME688):** 4 gas sensing elements
+- **Gap:** We're at 0.002% of a dog's resolution with 64 channels, and 0.0001% with PAN's 4 channels
 
 64 channels vs 300 million is still garbage. It's like trying to understand a conversation by hearing 64 frequencies out of 300 million. You'll catch broad patterns but miss all nuance.
 
@@ -90,15 +90,15 @@ Even with better sensors, proximity matters. In a room full of smells — food, 
 - Massive parallel processing (300M receptors simultaneously)
 - Dedicated brain hardware (40x more brain area devoted to smell than humans)
 
-PAM would need to be close to the source to get a clean signal. In a home environment with one dog, ambient monitoring might work for strong signals (fear expression, health changes). For subtle communication, you'd need to be within a meter or less.
+PAN would need to be close to the source to get a clean signal. In a home environment with one dog, ambient monitoring might work for strong signals (fear expression, health changes). For subtle communication, you'd need to be within a meter or less.
 
-### What PAM Can Do Today (BME688 — 4 channels)
+### What PAN Can Do Today (BME688 — 4 channels)
 - Detect if a dog has expressed glands (sudden VOC spike)
 - Broad emotional categories: calm vs highly stressed
 - Maybe 2-3 distinguishable states
 - Air quality and general gas detection (always useful)
 
-### What 64-Channel E-Nose Could Do (Exists, Not Pendant-Sized Yet)
+### What 64-Channel E-Nose Could Do (Exists, Not Pandant-Sized Yet)
 - Individual dog identification
 - 5-6 emotional states
 - Health anomaly detection
@@ -111,12 +111,12 @@ PAM would need to be close to the source to get a clean signal. In a home enviro
 - Real-time emotional tracking
 - Veterinary-level health diagnostics
 - **Decode intentional chemical signaling — actual dog "words"**
-- Cross-species communication: dog speaks chemistry → PAM translates → human hears through speaker → human speaks → eventually map responses to outcomes dogs recognize
+- Cross-species communication: dog speaks chemistry → PAN translates → human hears through speaker → human speaks → eventually map responses to outcomes dogs recognize
 
 ## The Vision
-A future where PAM bridges the communication gap between species. Not through teaching dogs to understand human language (they've adapted to this somewhat already through facial recognition and tone), but by humans finally being able to understand the communication channel dogs have been using for tens of thousands of years.
+A future where PAN bridges the communication gap between species. Not through teaching dogs to understand human language (they've adapted to this somewhat already through facial recognition and tone), but by humans finally being able to understand the communication channel dogs have been using for tens of thousands of years.
 
-Dogs didn't lose their primary language when they were domesticated. We just never learned to listen. PAM could be the translator.
+Dogs didn't lose their primary language when they were domesticated. We just never learned to listen. PAN could be the translator.
 
 ## Why This Matters Beyond Dogs
 If chemical communication can be decoded for dogs, the same technology applies to:
@@ -125,4 +125,4 @@ If chemical communication can be decoded for dogs, the same technology applies t
 - Marine life (chemical gradients in water)
 - Even plants (volatile organic compounds for inter-plant communication — this is proven)
 
-PAM with advanced chemical sensing doesn't just talk to dogs. It opens a window into the chemical communication network that ALL life on Earth participates in — except humans, who lost most of their olfactory capability during evolution.
+PAN with advanced chemical sensing doesn't just talk to dogs. It opens a window into the chemical communication network that ALL life on Earth participates in — except humans, who lost most of their olfactory capability during evolution.
