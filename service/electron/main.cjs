@@ -54,6 +54,8 @@ async function pollActions() {
 }
 
 function handleAction(action) {
+  console.log(`[PAN Tray] Action received: ${action.type} - ${JSON.stringify(action).slice(0, 100)}`);
+
   if (action.type === 'terminal') {
     const name = action.name || 'PAN Terminal';
     const targetPath = action.path || path.join(os.homedir(), 'Desktop');
@@ -82,12 +84,14 @@ function handleAction(action) {
   }
 
   if (action.type === 'ui_automation') {
+    console.log(`[PAN Tray] UI automation: ${action.command}`);
     const uiScript = path.join(__dirname, '..', 'src', 'ui-automation.py');
     const parts = action.command.split(' ');
     const cmd = parts[0];
     const args = parts.slice(1);
 
     const { execFile } = require('child_process');
+    console.log(`[PAN Tray] Executing: python ${uiScript} ${cmd} ${args.join(' ')}`);
     execFile('python', [uiScript, cmd, ...args], {
       timeout: 15000,
       maxBuffer: 10 * 1024 * 1024,

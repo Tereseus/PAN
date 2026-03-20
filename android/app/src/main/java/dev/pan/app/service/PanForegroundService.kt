@@ -297,6 +297,7 @@ class PanForegroundService : Service() {
         addToHistory("User", text)
 
         serviceScope.launch {
+            try {
             val historyContext = getHistoryContext()
             val decision = geminiBrain.evaluate(text, historyContext)
             panLog("Decision: ${decision.action} | ${decision.response?.take(80) ?: ""}")
@@ -304,7 +305,7 @@ class PanForegroundService : Service() {
 
             when (decision.action) {
                 GeminiBrain.Action.AMBIENT -> {
-                    // Not for PAN — stay quiet
+                    panLog("Ambient (ignored): ${text.take(50)}")
                 }
 
                 GeminiBrain.Action.RESPOND -> {
@@ -344,12 +345,22 @@ class PanForegroundService : Service() {
                             if (responseText != "[AMBIENT]" && responseText.isNotBlank()) {
                                 mainHandler.post { panSpeak(responseText) }
                             }
+                        } else {
+                            panLog("Server returned null for: $text")
+                            logToServer(text, "error", "server returned null", "phone_error_null_response")
+                            mainHandler.post { panSpeak("Server didn't respond. It might be offline.") }
                         }
                     } catch (e: Exception) {
-                        panLog("Server failed: ${e.message}")
-                        mainHandler.post { panSpeak("Couldn't reach the server.") }
+                        panLog("Server failed for '$text': ${e.message}")
+                        logToServer(text, "error", e.message ?: "unknown", "phone_error_server_exception")
+                        mainHandler.post { panSpeak("Couldn't reach the server. ${e.message ?: ""}") }
                     }
                 }
+            }
+            } catch (e: Exception) {
+                panLog("FATAL onSpeech error for '$text': ${e::class.simpleName} ${e.message}")
+                logToServer(text, "error", "${e::class.simpleName}: ${e.message}", "phone_error_fatal")
+                mainHandler.post { panSpeak("Something broke. ${e.message ?: ""}") }
             }
         }
     }
