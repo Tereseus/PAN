@@ -3,10 +3,15 @@ import { insert, all, get, run } from '../db.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
+const execFilePromise = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = join(__dirname, '..', 'data', 'photos');
 if (!existsSync(PHOTOS_DIR)) mkdirSync(PHOTOS_DIR, { recursive: true });
+
+const UI_SCRIPT = join(__dirname, '..', 'ui-automation.py');
 
 const router = Router();
 
@@ -141,6 +146,142 @@ router.post('/vision', async (req, res) => {
     res.status(500).json({ error: 'Vision analysis failed', description: 'I could not analyze the image right now.' });
   }
 });
+
+// UI Automation — queued for desktop agent execution
+// The PAN service runs as LOCAL SYSTEM which can't see the user's desktop.
+// UI commands get queued here, the Electron tray app (user session) executes them.
+const pendingUiRequests = new Map(); // id -> { resolve, reject, timeout }
+
+router.post('/ui', (req, res) => {
+  const { command } = req.body;
+  if (!command) return res.status(400).json({ error: 'missing command' });
+
+  const id = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  // Queue the command for the desktop agent
+  pendingActions.push({
+    id, type: 'ui_automation', command,
+    timestamp: new Date().toISOString()
+  });
+
+  // Wait for the desktop agent to execute and return the result
+  const timeout = setTimeout(() => {
+    pendingUiRequests.delete(id);
+    res.json({ ok: false, error: 'Desktop agent timeout — is the tray app running?' });
+  }, 15000);
+
+  pendingUiRequests.set(id, {
+    resolve: (result) => {
+      clearTimeout(timeout);
+      pendingUiRequests.delete(id);
+      insert(`INSERT INTO events (session_id, event_type, data)
+        VALUES (:sid, :type, :data)`, {
+        ':sid': id,
+        ':type': 'UIAutomation',
+        ':data': JSON.stringify({ command, result: result.ok ? 'success' : result.error, timestamp: Date.now() })
+      });
+      res.json(result);
+    }
+  });
+});
+
+// Desktop agent posts UI results back here
+router.post('/ui/result', (req, res) => {
+  const { id, result } = req.body;
+  const pending = pendingUiRequests.get(id);
+  if (pending) {
+    pending.resolve(result || { ok: false, error: 'empty result' });
+  }
+  res.json({ ok: true });
+});
+
+// GET /api/v1/ui/screenshot — convenience endpoint
+router.get('/ui/screenshot', (req, res) => {
+  // Queue a screenshot command and wait for result
+  const id = `ui-ss-${Date.now()}`;
+  pendingActions.push({ id, type: 'ui_automation', command: 'screenshot', timestamp: new Date().toISOString() });
+
+  const timeout = setTimeout(() => {
+    pendingUiRequests.delete(id);
+    res.status(504).json({ ok: false, error: 'timeout' });
+  }, 10000);
+
+  pendingUiRequests.set(id, {
+    resolve: (result) => {
+      clearTimeout(timeout);
+      pendingUiRequests.delete(id);
+      if (result.ok && result.image_base64) {
+        res.set('Content-Type', 'image/jpeg');
+        res.send(Buffer.from(result.image_base64, 'base64'));
+      } else {
+        res.status(500).json(result);
+      }
+    }
+  });
+});
+
+// Browser extension bridge — the extension polls for commands and returns results
+const pendingBrowserCommands = [];
+const pendingBrowserResults = new Map(); // id -> { resolve, timeout }
+
+// Extension polls this for pending commands
+router.get('/browser/commands', (req, res) => {
+  const commands = [...pendingBrowserCommands];
+  pendingBrowserCommands.length = 0;
+  res.json(commands);
+});
+
+// Extension sends results back here
+router.post('/browser/result', (req, res) => {
+  const { id, result } = req.body;
+  const pending = pendingBrowserResults.get(id);
+  if (pending) {
+    pending.resolve(result);
+    pendingBrowserResults.delete(id);
+  }
+  res.json({ ok: true });
+});
+
+// Internal: send a browser command and wait for result
+async function browserCommand(action, params = {}, timeoutMs = 10000) {
+  const id = `br-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  pendingBrowserCommands.push({ id, action, ...params });
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingBrowserResults.delete(id);
+      resolve({ ok: false, error: 'Browser extension timeout — is it installed?' });
+    }, timeoutMs);
+
+    pendingBrowserResults.set(id, {
+      resolve: (result) => {
+        clearTimeout(timeout);
+        resolve(result);
+      }
+    });
+  });
+}
+
+// Public API for browser commands
+router.post('/browser', async (req, res) => {
+  const { action, ...params } = req.body;
+  if (!action) return res.status(400).json({ error: 'missing action' });
+
+  const result = await browserCommand(action, params);
+
+  // Log browser actions
+  insert(`INSERT INTO events (session_id, event_type, data)
+    VALUES (:sid, :type, :data)`, {
+    ':sid': `browser-${Date.now()}`,
+    ':type': 'BrowserAction',
+    ':data': JSON.stringify({ action, params, success: result.ok, timestamp: Date.now() })
+  });
+
+  res.json(result);
+});
+
+// Export browserCommand for use by router.js
+globalThis._panBrowserCommand = browserCommand;
 
 router.post('/sensor', (req, res) => {
   const { sensor_type, values, timestamp } = req.body;

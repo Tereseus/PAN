@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { width: 280px; padding: 16px; font-family: -apple-system, sans-serif; background: #0d1117; color: #e6edf3; }
+h2 { margin: 0 0 12px; font-size: 16px; }
+h2 span { color: #58a6ff; }
+.status { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.green { background: #3fb950; }
+.red { background: #f85149; }
+.info { font-size: 12px; color: #8b949e; margin-top: 8px; }
+button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; cursor: pointer; width: 100%; margin-top: 6px; font-size: 13px; }
+button:hover { background: #30363d; }
+#tab-count { font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h2><span>ΠΑΝ</span> Browser Bridge</h2>
+  <div class="status">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">Checking...</span>
+  </div>
+  <div id="tab-count"></div>
+  <button id="open-dashboard">Open Dashboard</button>
+  <div class="info">ΠΑΝ can read your tabs, navigate, and interact with web pages through this extension.</div>
+
+  <script>
+    // Check server connection
+    chrome.runtime.sendMessage({ action: 'getStatus' }, (res) => {
+      const dot = document.getElementById('status-dot');
+      const text = document.getElementById('status-text');
+      if (res?.connected) {
+        dot.classList.add('green');
+        text.textContent = 'Connected to ΠΑΝ server';
+      } else {
+        dot.classList.add('red');
+        text.textContent = 'Server not reachable';
+      }
+    });
+
+    // Show tab count
+    chrome.tabs.query({}, (tabs) => {
+      document.getElementById('tab-count').textContent = `${tabs.length} tabs open`;
+    });
+
+    // Open dashboard button
+    document.getElementById('open-dashboard').addEventListener('click', () => {
+      chrome.tabs.create({ url: 'http://127.0.0.1:7777/dashboard/' });
+    });
+  </script>
+</body>
+</html>

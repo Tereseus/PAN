@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "ΠΑΝ Browser Bridge",
+  "version": "1.0.0",
+  "description": "Connects your browser to ΠΑΝ — lets PAN read tabs, navigate, and interact with web pages.",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ΠΑΝ Browser Bridge"
+  },
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

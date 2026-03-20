@@ -81,6 +81,35 @@ function handleAction(action) {
     updateTrayTooltip(`Opened: ${name}`);
   }
 
+  if (action.type === 'ui_automation') {
+    const uiScript = path.join(__dirname, '..', 'src', 'ui-automation.py');
+    const parts = action.command.split(' ');
+    const cmd = parts[0];
+    const args = parts.slice(1);
+
+    const { execFile } = require('child_process');
+    execFile('python', [uiScript, cmd, ...args], {
+      timeout: 15000,
+      maxBuffer: 10 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      let result;
+      try {
+        result = JSON.parse(stdout);
+      } catch {
+        result = { ok: false, error: err?.message || stderr || 'parse error' };
+      }
+
+      // Send result back to server
+      fetch(`${PAN_URL}/api/v1/ui/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: action.id, result })
+      }).catch(() => {});
+
+      console.log(`[PAN UI] ${cmd}: ${result.ok ? 'OK' : result.error}`);
+    });
+  }
+
   if (action.type === 'command') {
     exec(`powershell.exe -Command "${action.command.replace(/"/g, '\\"')}"`, (err, stdout, stderr) => {
       const result = err ? (stderr || err.message) : (stdout || 'Done');
