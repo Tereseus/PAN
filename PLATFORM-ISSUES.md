@@ -40,6 +40,7 @@ PAN periodically checks these — when resolved, PAN auto-adapts.
 ## Windows
 
 ### 5. Windows UI Automation Tree Walking Is Extremely Slow
+**Filed:** [microsoft/PowerToys#46385](https://github.com/microsoft/PowerToys/issues/46385)
 **Problem:** `uiautomation.WalkControl()` takes 10-30+ seconds on complex apps (Chrome, VS Code). Makes real-time UI element discovery impractical.
 **Impact:** Can't quickly list interactive elements in a window for voice-controlled clicking.
 **What would fix it:** Faster UI Automation API, or a cached/indexed UI tree that updates incrementally.
@@ -48,6 +49,7 @@ PAN periodically checks these — when resolved, PAN auto-adapts.
 **Workaround:** Browser extension for web apps, pyautogui screenshot + Claude Vision for native apps
 
 ### 6. Windows Voice Typing (Win+H) Has No API/Event
+**Filed:** [microsoft/PowerToys#46383](https://github.com/microsoft/PowerToys/issues/46383)
 **Problem:** No way to programmatically detect when Windows Voice Typing activates/deactivates. PAN needs to know "user is speaking via dictation" to trigger voice recording.
 **Impact:** Can't automatically record user's voice for training when they use dictation.
 **What would fix it:** Windows event/callback when voice typing starts/stops. Or a registry key that updates in real-time.
@@ -69,8 +71,8 @@ PAN periodically checks these — when resolved, PAN auto-adapts.
 **Problem:** Claude Code's OAuth token (`sk-ant-oat01-*`) is rejected by the Anthropic Messages API. Error: "OAuth authentication is currently not supported."
 **Impact:** PAN can't use the existing Claude subscription for API calls. Required buying separate API credits ($10).
 **What would fix it:** Allow OAuth tokens for API access, or provide a way to generate API keys from a Claude subscription.
-**Filed:** Not yet
-**Status:** Unresolved
+**Filed:** [anthropics/claude-code#37205](https://github.com/anthropics/claude-code/issues/37205)
+**Status:** Open
 **Why it matters:** Users already pay $100/month for Claude Max. Making them also buy API credits for their own automation tools is friction that kills adoption.
 
 ### 9. `claude -p` Subprocess Overhead
