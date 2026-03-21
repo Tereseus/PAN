@@ -71,6 +71,8 @@ class PanForegroundService : Service() {
     private val convoTracker = ConversationTracker()
     private var isMuted = false
     private var flashlightOn = false
+    private var lastTtsDoneTime = 0L  // When TTS last finished speaking
+    private val TTS_COOLDOWN_MS = 1000L  // Ignore speech for 1s after TTS finishes
 
     // Recent conversation history — sent to server so Claude has context
     private val conversationHistory = mutableListOf<Pair<String, String>>() // role, text
@@ -133,14 +135,13 @@ class PanForegroundService : Service() {
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
             sttEngine.onInterrupt = { panLog("User interrupted TTS"); tts.stop() }
             tts.onSpeakingStateChanged = { speaking ->
-                if (!speaking && sttEngine.enabled && !sttEngine.isListening) {
-                    // TTS just finished — restart listening
-                    sttEngine.startListening(sttEngine.let {
-                        // Reuse existing callback
-                        { text: String, isFinal: Boolean ->
+                if (!speaking) {
+                    lastTtsDoneTime = System.currentTimeMillis()
+                    if (sttEngine.enabled && !sttEngine.isListening) {
+                        sttEngine.startListening { text, isFinal ->
                             if (text.isNotBlank() && isFinal) onSpeech(text)
                         }
-                    })
+                    }
                 }
             }
 
@@ -150,9 +151,9 @@ class PanForegroundService : Service() {
                 panLog("Gemini: ${if (ready) "ready" else "not available, using server"}")
             }
 
-            // Voice collector logs — but don't start AudioRecord recording
-            // (conflicts with Google STT which needs exclusive mic access)
-            // Training data comes from STT transcripts only for now
+            // Voice collector — DISABLED on phone (Android can't run two AudioRecords)
+            // Raw audio for voice training comes from PC mic or pendant
+            // Phone only saves transcripts via STT callback
             voiceCollector.onLog = { msg -> panLog(msg) }
 
             // Google Streaming STT — real-time transcription, no chunks
@@ -185,9 +186,9 @@ class PanForegroundService : Service() {
     // Stop STT before speaking, restart after TTS finishes
     private fun panSpeak(text: String) {
         sttEngine.registerTtsOutput(text)
-        // Keep STT running so user can say "stop talking" to interrupt
-        // Echo is handled by stripEcho + discarding results while TTS speaks
+        sttEngine.stopListening()  // Stop STT so it doesn't steal audio focus from TTS
         tts.speak(text)
+        // STT restarts when TTS finishes via onSpeakingStateChanged + cooldown
     }
 
     // Log every command to the server so it's always visible for debugging
@@ -218,6 +219,12 @@ class PanForegroundService : Service() {
 
         panLog("Heard: $text")
         lastAction.value = text
+
+        // Cooldown after TTS — ignore echo/residual audio for 2 seconds after PAN stops talking
+        if (System.currentTimeMillis() - lastTtsDoneTime < TTS_COOLDOWN_MS) {
+            panLog("Cooldown (ignoring post-TTS echo): ${lower.take(30)}")
+            return
+        }
 
         // Stop talking — only exact short phrases while TTS is active
         if (tts.isSpeaking) {
