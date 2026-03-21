@@ -32,40 +32,78 @@ The difference is like texting vs having a real conversation. Wake-word assistan
 
 ---
 
-## What PAN Can Do
+## What PAN Actually Does
 
-### On Your Phone
-| What You Say | What Happens |
-|-------------|-------------|
-| "Open YouTube" | Launches YouTube on your phone instantly |
-| "Set a timer for 5 minutes" | Timer starts, no UI interaction needed |
-| "Turn on flashlight" / "Turn it off" | Toggles your phone's flashlight |
-| "Navigate to the nearest gas station" | Opens Google Maps with directions |
-| "Call mom" | Opens the dialer |
-| "Play HUH on Spotify" | Opens Spotify and searches for the song |
-| "What time is it?" / "What's the date?" | Instant answer, no server needed |
-| "How much battery do I have?" | Tells you the percentage |
-| "Search for Greek restaurants near me" | Opens browser search |
-| "What is this?" | Takes a photo and describes what it sees |
+PAN automates multi-step processes across all your devices. You say ONE thing, PAN handles the 5-10 steps it takes to get there. That's the point.
 
-### On Your Computer
-| What You Say | What Happens |
-|-------------|-------------|
-| "Make a folder called Project X on my desktop" | Folder created instantly |
-| "Open the PAN project" | Opens a terminal in the project directory |
-| "Put my computer to sleep" | Computer sleeps |
-| "What tabs do I have open?" | Lists all your browser tabs by name |
-| "Read my Gmail" | Reads your inbox content through the browser extension |
-| "Go to my Instagram messages" | Switches to that tab |
-| "Type 'hello' in the message box" | Types into the focused browser field |
+### Multi-Step Automation
 
-### Conversational
-| What You Say | What Happens |
-|-------------|-------------|
-| "I was talking to my friend about ancient books, what was the one about geometry?" | PAN recalls: "Euclid's Elements" |
-| "Do you think robots will take over?" | PAN has a real conversation with you |
-| "What did I ask you earlier about cooking?" | PAN searches its memory and tells you |
-| "Mute" / "Shut up" | PAN stops listening (toggle back on anytime) |
+**"Reply to Jessica on Instagram — tell her I'll see her then."**
+
+What PAN does behind the scenes:
+1. Opens your browser's Instagram tab (browser extension)
+2. Reads all your open conversations
+3. Finds the most recent one from Jessica
+4. Opens that conversation
+5. Types "I'll see you then" in the message field
+6. Sends it
+7. Tells you "Done, replied to Jessica on Instagram"
+
+You said one sentence. PAN executed 7 steps across two devices.
+
+**"Show me VideoGameDonkey's newest video."**
+
+What PAN does:
+1. Opens YouTube in your browser
+2. Navigates to VideoGameDonkey's channel
+3. Finds the most recent upload
+4. Plays it
+5. Tells you the title
+
+You didn't search. You didn't scroll. You didn't click. You just said what you wanted.
+
+**"I had a conversation about swords yesterday, what was it about?"**
+
+What PAN does:
+1. Searches its memory database for "swords" across all conversations
+2. Finds the matching conversation (voice, text, or phone)
+3. Reads you the context — who said what, when, and what the conclusion was
+
+A separate AI session tried to find this by searching files for 7 minutes and found nothing. PAN found it in 1 second because it indexes everything you say.
+
+**"What is this thing under my car hood?"**
+
+What PAN does:
+1. Pendant laser activates — you aim at the part
+2. Pendant camera captures a photo of exactly where the laser points
+3. Photo sent to Claude Vision
+4. PAN identifies: "That's the oil filter housing. The thing next to it is the coolant reservoir."
+
+Your hands are covered in grease. You never touched your phone.
+
+### Cross-Device Orchestration
+
+The real power is that PAN treats your phone, computer, browser, and pendant as ONE system. A single voice command can:
+
+- Take a photo on your phone → analyze it on your PC → save the result in your database
+- Read a message on your computer → compose a reply → send it through Instagram on your phone
+- Detect a gas leak on the pendant → alert you via phone TTS → log the location on your PC
+- Hear you mention a recipe → save it to memory → set a timer → pull it up when you're cooking
+
+**Every device knows what every other device is doing.** Your phone knows what tabs are open on your computer. Your computer knows what your pendant camera is seeing. Your pendant knows what you just asked on your phone.
+
+### What You'll Never Do Again
+
+| Before PAN | With PAN |
+|-----------|---------|
+| Unlock phone → open app → tap search → type → scroll → tap | "Play that song" |
+| Switch to browser → find tab → scroll → click → read → switch back | "What did Jessica say?" |
+| Pick up phone → open camera → point → take photo → open Google Lens | "What is this?" |
+| Open terminal → cd to project → type command → wait → read output | "Open my project and run the tests" |
+| Grab phone → unlock → open Instagram → find conversation → type → send | "Tell Marcus I'm on my way" |
+| Search browser history → scan results → click → find the page | "Find that article about batteries I read last week" |
+
+The left column is 5-10 steps. The right column is your voice. PAN automates the steps between.
 
 ---
 
