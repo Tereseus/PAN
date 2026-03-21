@@ -45,25 +45,29 @@ PAN indexes every conversation across all devices. A separate AI session searche
 2. Finds the URL → opens email in browser
 3. Composes email with link → sends it
 
-**"Is there a gas leak in here?"**
-1. Pendant gas sensor (BME688) reads CO, VOC, and methane levels
-2. Cross-references with safety thresholds
-3. Reports: "CO at 12 ppm, safe but elevated. VOCs high — open a window."
-4. If levels are dangerous, PAN alerts you automatically without asking
+### Proactive Awareness
 
-**"How hot is that pipe?"**
-1. Pendant thermal camera (MLX90640) captures heat signature
-2. Identifies the pipe at 87°C, surrounding area at 22°C
-3. Warns you before you touch it
+PAN doesn't just respond to questions — it watches patterns over time and helps before you ask. You choose how much help you want.
 
-**"Is this wire live?"**
-1. Pendant EMF sensor (AD8317) detects electromagnetic field
-2. Confirms: active electrical current detected — don't cut it
+**Sun exposure:**
+PAN tracks your UV exposure and outdoor time via the pendant's UV sensor. After 3 hours outside with no sunscreen detected in your routine, PAN tells you: "You've been outside for 3 hours today. UV index is 7. You should put on sunscreen." It learned you don't wear sunscreen because it's been watching your habits for weeks.
 
-**"Am I getting sunburned?"**
-1. Pendant UV sensor (LTR390) reads current UV index
-2. Checks cumulative exposure over the last hour
-3. Reports: "UV index 8, high. You've been exposed for 40 minutes — apply sunscreen or move to shade."
+**Nutrition tracking:**
+The pendant camera sees every meal. PAN identifies what you're eating through vision analysis, estimates portions, and tracks your intake across the day. At dinner: "You've had about 1,400 calories today. You're 600 under your goal — this would be a good time for a bigger meal." No manual logging. No food diary app. PAN just sees your food and keeps track.
+
+**Air quality:**
+You walk into a room. The pendant's gas sensor detects elevated CO levels. You didn't ask — PAN tells you: "CO at 35 ppm in this room. That's above safe levels. Open a window or leave." It does this automatically because the sensor is always reading.
+
+**Sleep and activity patterns:**
+PAN knows when you wake up, when you go to bed, how much you move during the day. After a week of 5-hour sleep nights: "You've averaged 5.2 hours of sleep this week. That's down from your usual 7. You might want to get to bed earlier tonight."
+
+**Posture and ergonomics:**
+The accelerometer tracks your posture throughout the day. After 2 hours hunched over a desk: "You've been slouching for a while. Stand up and stretch."
+
+**Safety alerts:**
+You're about to drill into a wall. The EMF sensor detects a live wire behind the drywall. PAN warns you before you hit it. The thermal camera spots an overheating outlet you walked past. PAN flags it. The gas sensor picks up a slow methane leak in your garage. PAN alerts you before you can smell it.
+
+**The point:** PAN builds a picture of your habits, your health, your environment over time — and uses it to help. Not in a creepy way. You control exactly what PAN monitors, what it alerts you about, and how often. Turn off nutrition tracking. Turn off posture alerts. Keep the safety stuff on. It's your choice.
 
 ### Cross-Device Orchestration
 
@@ -72,7 +76,7 @@ PAN treats phone, PC, browser, and pendant as one system.
 - Pendant detects dangerous CO levels → alerts via phone TTS → logs GPS + sensor readings on PC
 - Ask about code from last week → PAN searches terminal history → opens the file in your editor
 - Pendant camera captures a document → Claude Vision extracts text → saves searchable in database
-- Pendant thermal camera spots a hot wire in the wall → alerts you before you drill into it
+- Pendant thermal camera spots an overheating outlet → alerts you before it becomes a fire hazard
 
 ---
 
