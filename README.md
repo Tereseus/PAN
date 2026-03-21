@@ -1,109 +1,58 @@
 # ΠΑΝ — Personal AI Network
 
-**Your voice controls everything.** Phone, computer, browser, any app — all through natural conversation. PAN remembers everything you say, everything you see, everything you do — and it's all yours.
+Voice-controlled AI operating system. Phone, computer, browser, wearable pendant — one unified system. Self-hosted, open source, all data on your hardware.
 
 ---
 
-## Always On. Always Listening. Always Yours.
+## What PAN Does
 
-PAN is an **always-on device**. It listens continuously. It sees continuously. It remembers continuously. This isn't a bug — it's the entire point.
+PAN routes voice commands across all your devices. One sentence triggers multi-step automation across your phone, PC, browser tabs, and pendant sensors. Always-on microphone — no wake word, no button press, continuous context.
 
-Think about how you use a voice assistant today. You pick up your phone, open an app, press a button, say a command, wait, get a response. That's 5 steps before anything happens. With PAN, you just talk. It's already listening. It already knows what you've been doing. It already has context.
+### Always-On vs Trigger-Based
 
-**"Hey Pan, what was that restaurant my friend mentioned yesterday?"**
-
-PAN was listening during that conversation. It transcribed it. It remembers. You don't need to write it down, take a photo of a menu, or search your messages. PAN heard it, stored it, and can recall it instantly.
-
-**"Pan, turn on my flashlight."**
-
-You're under your car trying to fix something. Your hands are covered in grease. You can't touch your phone. PAN hears you, turns on the flashlight. No hands needed. No wake word delay. It was already listening.
-
-**"What am I looking at?"**
-
-The pendant camera captures what's in front of you every 5 seconds. When you ask this, PAN sends the latest photo to Claude Vision and describes what it sees. You're looking at an engine part you don't recognize? PAN tells you it's the oil filter housing. You're at a store and can't read a sign in another language? PAN reads it for you.
-
-### Why Always-On Beats Trigger-Based
-
-Every other voice assistant makes you say a wake word first. "Hey Google." "Hey Siri." "Alexa." Then you get 5-10 seconds of attention before it stops listening.
-
-PAN doesn't work like that. PAN is always in the conversation. You can talk to it mid-sentence. You can reference something you said 10 minutes ago. You can have a back-and-forth discussion like you're talking to a person, because PAN has been listening the entire time and has the full context.
-
-The difference is like texting vs having a real conversation. Wake-word assistants are texting — fragmented, context-free, one message at a time. PAN is a real conversation — continuous, contextual, natural.
-
----
-
-## What PAN Actually Does
-
-PAN automates multi-step processes across all your devices. You say ONE thing, PAN handles the 5-10 steps it takes to get there. That's the point.
+Other assistants: wake word → 5-10 seconds of attention → done. PAN: continuous listening with full conversation context. You can reference something you said 10 minutes ago. You can interrupt mid-sentence. It's a conversation, not a command prompt.
 
 ### Multi-Step Automation
 
-**"Reply to Jessica on Instagram — tell her I'll see her then."**
-
-What PAN does behind the scenes:
-1. Opens your browser's Instagram tab (browser extension)
-2. Reads all your open conversations
-3. Finds the most recent one from Jessica
-4. Opens that conversation
-5. Types "I'll see you then" in the message field
-6. Sends it
-7. Tells you "Done, replied to Jessica on Instagram"
-
-You said one sentence. PAN executed 7 steps across two devices.
+**"Deploy my project."**
+1. Opens terminal on PC → navigates to project directory
+2. Runs test suite → waits for results
+3. Tests pass → git commit → git push
+4. Monitors CI pipeline
+5. Reports back: "All tests passed, deployed to production"
 
 **"Show me VideoGameDonkey's newest video."**
-
-What PAN does:
-1. Opens YouTube in your browser
-2. Navigates to VideoGameDonkey's channel
-3. Finds the most recent upload
-4. Plays it
-5. Tells you the title
-
-You didn't search. You didn't scroll. You didn't click. You just said what you wanted.
+1. Opens YouTube in browser (via browser extension)
+2. Navigates to the channel
+3. Finds most recent upload → plays it
+4. Tells you the title
 
 **"I had a conversation about swords yesterday, what was it about?"**
+1. Searches memory database for "swords" across all conversations — voice, text, phone, every device
+2. Finds the matching conversation
+3. Reads back the full context — who said what, when, what the conclusion was
 
-What PAN does:
-1. Searches its memory database for "swords" across all conversations
-2. Finds the matching conversation (voice, text, or phone)
-3. Reads you the context — who said what, when, and what the conclusion was
+PAN indexes every conversation across all devices. A separate AI session searched files for 7 minutes and found nothing. PAN found it in 1 second.
 
-A separate AI session tried to find this by searching files for 7 minutes and found nothing. PAN found it in 1 second because it indexes everything you say.
+**"What is this pill I found on the floor?"**
+1. Pendant spectrometer (AS7341) reads spectral signature
+2. Pendant camera captures photo → sends to Claude Vision
+3. Cross-references color, shape, spectral data, visible markings
+4. Identifies: "Ibuprofen 200mg — orange oval coating matches."
 
-**"What is this thing under my car hood?"**
-
-What PAN does:
-1. Pendant laser activates — you aim at the part
-2. Pendant camera captures a photo of exactly where the laser points
-3. Photo sent to Claude Vision
-4. PAN identifies: "That's the oil filter housing. The thing next to it is the coolant reservoir."
-
-Your hands are covered in grease. You never touched your phone.
+**"Find that article about battery tech I was reading last week and send it to my work email."**
+1. Searches browser history + PAN memory for "battery" articles from last week
+2. Finds the URL → opens email in browser
+3. Composes email with link → sends it
 
 ### Cross-Device Orchestration
 
-The real power is that PAN treats your phone, computer, browser, and pendant as ONE system. A single voice command can:
+PAN treats phone, PC, browser, and pendant as one system.
 
-- Take a photo on your phone → analyze it on your PC → save the result in your database
-- Read a message on your computer → compose a reply → send it through Instagram on your phone
-- Detect a gas leak on the pendant → alert you via phone TTS → log the location on your PC
-- Hear you mention a recipe → save it to memory → set a timer → pull it up when you're cooking
-
-**Every device knows what every other device is doing.** Your phone knows what tabs are open on your computer. Your computer knows what your pendant camera is seeing. Your pendant knows what you just asked on your phone.
-
-### What You'll Never Do Again
-
-| Before PAN | With PAN |
-|-----------|---------|
-| Unlock phone → open app → tap search → type → scroll → tap | "Play that song" |
-| Switch to browser → find tab → scroll → click → read → switch back | "What did Jessica say?" |
-| Pick up phone → open camera → point → take photo → open Google Lens | "What is this?" |
-| Open terminal → cd to project → type command → wait → read output | "Open my project and run the tests" |
-| Grab phone → unlock → open Instagram → find conversation → type → send | "Tell Marcus I'm on my way" |
-| Search browser history → scan results → click → find the page | "Find that article about batteries I read last week" |
-
-The left column is 5-10 steps. The right column is your voice. PAN automates the steps between.
+- Pendant detects dangerous CO levels → alerts via phone TTS → logs GPS + sensor readings on PC
+- Ask about code from last week → PAN searches terminal history → opens the file in your editor
+- Pendant camera captures a document → Claude Vision extracts text → saves searchable in database
+- "What was that song?" → checks what was playing on phone → tells you title and artist
 
 ---
 
@@ -122,6 +71,13 @@ Everything stays on YOUR devices. Not our servers. Not in the cloud. Not on Amaz
 | Voice training audio | Your PC: `service/src/data/voice/` | WAV files |
 | Phone conversations | Your phone's app storage | SQLite database |
 | Browser tab data | Your PC's PAN server | In-memory, flushed to SQLite |
+| Gas / air quality readings | Your PC: `data/sensors/gas/` | Timestamped JSON |
+| Spectral analysis | Your PC: `data/sensors/spectral/` | Timestamped JSON |
+| Thermal captures | Your PC: `data/sensors/thermal/` | Heatmap images + JSON |
+| UV / light / sound levels | Your PC: `data/sensors/uv/`, `light/`, `sound/` | Timestamped JSON |
+| Heart rate / SpO2 | Your PC: `data/sensors/heart/` | Timestamped JSON |
+| GPS / motion data | Your PC: `data/sensors/gps/`, `motion/` | Timestamped JSON |
+| EMF / radiation readings | Your PC: `data/sensors/emf/`, `radiation/` | Timestamped JSON |
 
 **There is no cloud sync by default.** Your data physically exists on your hard drive and your phone. If you unplug your computer, the data is right there in standard file formats you can open with any tool.
 
@@ -181,12 +137,6 @@ Nothing is hidden. Open the dashboard at `http://localhost:7777/dashboard/` and 
 
 **You can always switch.** Export your data (it's SQLite + files), move to self-hosted, delete your subscription data. No lock-in ever.
 
-### Why This Matters
-
-In 2025, Meta acquired Limitless — an AI pendant company. All user data went to Meta. In 2025, Amazon acquired Bee — another AI wearable. All user data went to Amazon.
-
-PAN can't be acquired because there's nothing to acquire. The software is open source. The data is on your hardware. If PAN the project disappears tomorrow, your data is still sitting on your hard drive in standard formats that any database tool can read.
-
 ---
 
 ## The Pendant
@@ -207,32 +157,30 @@ One case. 22 sensors. Size of a Zippo lighter. €155 total cost.
 
 **Build what you want.** All 22 sensors fit in one case. Use all of them or just the basics — your choice.
 
-| # | Sensor | What It Detects | Superhuman? | Data Location |
-|---|--------|----------------|-------------|---------------|
-| 1 | Camera (OV2640) | Photos every 5s, object identification | Perfect recall | `data/photos/` |
-| 2 | Microphone (PDM) | Voice, ambient audio, conversations | Always-on searchable | `data/audio/` |
-| 3 | Laser pointer | Aiming — "what is THIS specifically?" | Precision targeting | N/A (trigger) |
-| 4 | Flashlight LED | Illumination in dark spaces | N/A (utility) | N/A (toggle) |
-| 5 | Gas / E-Nose (BME688) | CO, gas leaks, smoke, VOCs, air quality | YES — like a dog's nose | `data/sensors/gas/` |
-| 6 | UV Sensor (LTR390) | Ultraviolet radiation — sunburn risk | YES — invisible to humans | `data/sensors/uv/` |
-| 7 | Thermal Camera (MLX90640) | Heat signatures, body heat, hot wires | YES — like a snake | `data/sensors/thermal/` |
-| 8 | Spectrometer (AS7341) | Material composition by light | YES — identify pills, metals, food | `data/sensors/spectral/` |
-| 9 | Magnetometer (QMC5883L) | Magnetic fields, compass, metal detection | YES — like migratory birds | `data/sensors/magnetic/` |
-| 10 | Accelerometer + Gyro (BMI270) | Motion, fall detection, steps, posture | Precise motion tracking | `data/sensors/motion/` |
-| 11 | GPS (L76K) | Location, speed, altitude | Every event geotagged | `data/sensors/gps/` |
-| 12 | Air Quality (SGP40) | VOC index, indoor air quality | YES — invisible to humans | `data/sensors/air/` |
-| 13 | Barometer (in BME688) | Atmospheric pressure, weather prediction | YES — storm detection | `data/sensors/pressure/` |
-| 14 | Temperature + Humidity (in BME688) | Ambient temp, humidity, mold risk | More precise than human | `data/sensors/temp/` |
-| 15 | Ambient Light (BH1750) | Light levels in lux — eye strain risk | More precise than human | `data/sensors/light/` |
-| 16 | Color Sensor (TCS34725) | Exact color values — paint matching | YES — precise color ID | `data/sensors/color/` |
-| 17 | Laser Distance / ToF (VL53L0X) | Distance measurement — instant tape measure | Laser precision | `data/sensors/distance/` |
-| 18 | Sound Level (MAX4466) | Decibel measurement — hearing damage alert | Calibrated measurement | `data/sensors/sound/` |
-| 19 | Heart Rate + SpO2 (MAX30102) | Pulse, blood oxygen (chest contact) | Continuous monitoring | `data/sensors/heart/` |
-| 20 | EMF Sensor (AD8317) | Electromagnetic fields — live wires | YES — **life-saving** | `data/sensors/emf/` |
-| 21 | Ultrasonic (RCWL-1601) | Echolocation — distance in darkness | YES — like bats | `data/sensors/ultrasonic/` |
-| 22 | Radiation (RadSens) | Ionizing radiation (optional module) | YES — **life-saving** | `data/sensors/radiation/` |
-
-**15 of 22 sensors detect things humans physically cannot sense.** 4 are life-saving (gas leaks, live wires, radiation, air quality).
+| # | Sensor | What It Does |
+|---|--------|-------------|
+| 1 | Camera (OV2640) | "What is this?" — identify anything you point at, read signs, translate text |
+| 2 | Microphone (PDM) | Always-on voice commands, conversation recall, ambient awareness |
+| 3 | Laser pointer | Aim at a specific object — "what is THIS?" with precision |
+| 4 | LED | Status indicator, utility light |
+| 5 | Gas Sensor (BME688) | Detect gas leaks, carbon monoxide, smoke — alerts you before you can smell it |
+| 6 | UV Sensor (LTR390) | "Am I getting sunburned?" — real-time UV exposure tracking |
+| 7 | Thermal Camera (MLX90640) | See heat through walls, find hot wires, detect body heat in darkness |
+| 8 | Spectrometer (AS7341) | Identify unknown pills, check food freshness, verify metals by spectral signature |
+| 9 | Magnetometer (QMC5883L) | Detect hidden magnets, find metal in walls, compass navigation |
+| 10 | Accelerometer + Gyro (BMI270) | Fall detection, step counting, posture alerts |
+| 11 | GPS (L76K) | Every event geotagged — "where was I when I said that?" |
+| 12 | Air Quality (SGP40) | "Is the air safe?" — VOC levels, mold risk, ventilation warnings |
+| 13 | Barometer (in BME688) | Weather prediction, altitude tracking, storm detection |
+| 14 | Temperature + Humidity (in BME688) | Ambient conditions logged — mold risk, comfort monitoring |
+| 15 | Ambient Light (BH1750) | Eye strain alerts, automatic brightness context |
+| 16 | Color Sensor (TCS34725) | Exact color matching — "is this the right paint color?" |
+| 17 | Laser Distance (VL53L0X) | Instant tape measure — point and get distance |
+| 18 | Sound Level (MAX4466) | "Is this too loud?" — hearing damage alerts at concerts, job sites |
+| 19 | Heart Rate + SpO2 (MAX30102) | Continuous pulse and blood oxygen monitoring |
+| 20 | EMF Sensor (AD8317) | Detect live wires behind walls — don't drill into electrical |
+| 21 | Ultrasonic (RCWL-1601) | Distance measurement in total darkness, obstacle detection |
+| 22 | Radiation (RadSens) | Ionizing radiation detection (optional safety module) |
 
 All sensor data is timestamped, geotagged, and searchable from the dashboard. Every reading correlates with what you were doing, where you were, and what was happening around you.
 
@@ -253,7 +201,7 @@ The pendant has its own microphone on a separate Bluetooth device. Music plays t
 
 **Pre-built:** We'll sell assembled pendants for people who don't want to build. Same hardware, same firmware, ready to use.
 
-**Battery:** Standard 18350 Li-ion — rechargeable via USB-C, or pop it out and swap a fresh one in 2 seconds. Same battery type used in flashlights and vapes. Available everywhere for €3-5.
+**Battery:** Standard 18350 Li-ion — rechargeable via USB-C, or swap a fresh one in 2 seconds. Common cell, available everywhere for €3-5.
 
 ---
 
@@ -273,7 +221,7 @@ Pendant (ESP32-S3)
 ├── Camera (smart capture)
 ├── Microphone (separate from phone)
 ├── 22 sensors
-├── Laser + Flashlight
+├── Laser pointer (precision targeting)
 ├── BLE streaming to phone
 └── 18350 swappable battery
 ```
@@ -312,29 +260,6 @@ Or search "PAN" in Windows Start Menu.
 
 ---
 
-## Why PAN Is Different
-
-Every competitor is either a **passive recorder** or a **failed phone replacement**.
-
-| Product | What It Does | What's Wrong With It |
-|---------|-------------|---------------------|
-| Humane AI Pin ($699) | Standalone device with projector | Dead. HP bought the assets. Tried to replace the phone. |
-| Rabbit R1 ($199) | Handheld AI gadget | It's just a worse phone. Why carry a second device? |
-| Limitless (~$99) | Records and transcribes | Acquired by Meta. Your data is now Meta's data. Passive only — can't DO anything. |
-| Omi ($89) | Open source pendant | Records and transcribes. Can't control your computer. Can't execute commands. |
-| Bee ($50) | Always-on clip | Acquired by Amazon. Streams everything to Amazon's cloud. |
-| PLAUD NotePin ($159) | Meeting recorder | Just records meetings. That's it. |
-
-**PAN is the only system that:**
-- **Controls your computer** via voice — terminal, files, browser, any app
-- **Executes commands** — it doesn't just record, it DOES things
-- Works across **phone + PC + wearable** as one unified system
-- Is **fully self-hosted** — your data on your hardware, always
-- Is **open source** — audit every line of code
-- Lets you **delete everything** — you own your data completely
-
----
-
 ## Tech Stack
 
 | Layer | Technology |
@@ -350,16 +275,16 @@ Every competitor is either a **passive recorder** or a **failed phone replacemen
 ## Project Status
 
 ### ✅ Working
-- Real-time voice conversation (sub-1-second responses)
-- 20+ phone commands (apps, flashlight, timer, alarm, navigation, media)
-- Camera + Claude Vision analysis
-- Browser extension (read/write any tab across all Chromium browsers)
-- Windows UI automation (screenshot, click, type, window management)
-- Android Accessibility Service (read/control any phone app)
-- Web dashboard with data management, photos, search, delete
-- Voice training data collection (hotkey-triggered, 30+ minutes recorded)
-- Electron desktop tray app with dashboard
-- Terminal project management with context restoration
+- Real-time voice conversation (sub-1-second responses via Claude)
+- Cross-device command routing (phone → PC → browser in one voice command)
+- Camera + Claude Vision analysis (point at anything, get an answer)
+- Browser extension (read/write any tab — not just search, full DOM control)
+- Windows UI automation (control any desktop application by voice)
+- Android Accessibility Service (read/control any phone app — no API needed)
+- Full conversation memory with search (every voice interaction, searchable)
+- Web dashboard with data management, photos, search, granular delete
+- Voice training data collection for custom TTS voice cloning
+- Terminal project management with full context restoration across sessions
 
 ### 🔨 Building
 - Piper voice cloning (training pipeline ready, runs overnight on GPU)
@@ -376,13 +301,9 @@ Every competitor is either a **passive recorder** or a **failed phone replacemen
 
 ## A Note On Open Source
 
-PAN was built entirely by Claude. Every line of code, every architecture decision, every feature. PAN can't exist without Claude. Claude's vision for what AI assistants should be is literally being implemented through PAN.
+PAN was built entirely by Claude. Every line of code, every architecture decision, every feature. PAN can't exist without Claude.
 
-If Anthropic wants to use this code, fork it, build on it, ship it as part of Claude — that's the whole point. The better AI assistants get, the more everyone benefits. The goal isn't to compete with Claude — it's to make AI more useful for everyone.
-
-If a company can take PAN's code and make something better, do it. If a developer can improve on what's here, do it. If Anthropic wants to integrate these ideas into Claude itself, that would be the best possible outcome.
-
-Open source means: **the idea matters more than who owns it.**
+If anyone wants to use this code, please do. The goal isn't competition — it's making AI assistants better for everyone. If someone can take what's here and build something better, that's a win.
 
 The subscription option exists for people who want hosted convenience. The self-hosted option exists for people who want privacy and control. Both are valid. Use whichever works for you.
 
@@ -394,4 +315,4 @@ Open source (V1). See LICENSE for details.
 
 **Tereseus** — [github.com/Tereseus](https://github.com/Tereseus)
 
-Built with Claude through AI Cyclosis — the recursive loop of human-AI development.
+Built with Claude.
