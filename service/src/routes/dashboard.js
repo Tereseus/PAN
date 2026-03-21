@@ -95,6 +95,127 @@ router.delete('/api/photos/:filename', (req, res) => {
   }
 });
 
+// GET /dashboard/api/jobs — list scheduled jobs and running processes
+router.get('/api/jobs', async (req, res) => {
+  const jobs = [];
+
+  // Check Windows scheduled tasks for PAN
+  try {
+    const { execSync } = await import('child_process');
+
+    // Get PAN scheduled tasks
+    const taskOutput = execSync(
+      'schtasks /query /tn "PAN-VoiceTraining" /fo CSV /nh 2>nul || echo "not found"',
+      { encoding: 'utf-8', timeout: 5000 }
+    ).trim();
+
+    if (!taskOutput.includes('not found')) {
+      const parts = taskOutput.split(',').map(s => s.replace(/"/g, ''));
+      jobs.push({
+        name: 'Voice Training',
+        description: 'Piper voice model training — transcribe + train overnight',
+        type: 'scheduled_task',
+        status: parts[2]?.trim()?.toLowerCase() || 'unknown',
+        schedule: 'Daily at 12:00 AM EST',
+        next_run: parts[1]?.trim() || null,
+      });
+    }
+  } catch {}
+
+  // PAN Service status
+  jobs.push({
+    name: 'PAN Service',
+    description: 'Core server on port 7777 — hooks, API, dashboard',
+    type: 'service',
+    status: 'running',
+    schedule: 'Auto-start on boot (Windows Service)',
+  });
+
+  // Voice Recorder
+  try {
+    const { execSync } = await import('child_process');
+    const procs = execSync('tasklist /fi "IMAGENAME eq python.exe" /fo CSV /nh 2>nul', {
+      encoding: 'utf-8', timeout: 5000
+    });
+    const recorderRunning = procs.includes('python.exe');
+    jobs.push({
+      name: 'Voice Recorder',
+      description: 'Hotkey-triggered mic recording for voice training data',
+      type: 'process',
+      status: recorderRunning ? 'running' : 'stopped',
+      schedule: 'Triggered by mouse side button (XButton1/XButton2)',
+    });
+  } catch {
+    jobs.push({
+      name: 'Voice Recorder',
+      description: 'Hotkey-triggered mic recording',
+      type: 'process',
+      status: 'unknown',
+    });
+  }
+
+  // Electron Tray
+  try {
+    const { execSync } = await import('child_process');
+    const procs = execSync('tasklist /fi "IMAGENAME eq electron.exe" /fo CSV /nh 2>nul', {
+      encoding: 'utf-8', timeout: 5000
+    });
+    jobs.push({
+      name: 'Desktop Agent (Electron)',
+      description: 'Tray app — executes UI automation, terminal opens, system commands',
+      type: 'process',
+      status: procs.includes('electron.exe') ? 'running' : 'stopped',
+      schedule: 'Manual start or via PAN shortcut',
+    });
+  } catch {}
+
+  // Classifier
+  jobs.push({
+    name: 'Event Classifier',
+    description: 'Classifies raw events into categories',
+    type: 'internal',
+    status: 'running',
+    schedule: 'Every 5 minutes',
+  });
+
+  // Project Sync
+  jobs.push({
+    name: 'Project Sync',
+    description: 'Scans disk for .pan files, syncs project database',
+    type: 'internal',
+    status: 'running',
+    schedule: 'Every 10 minutes',
+  });
+
+  // Issue Checker
+  jobs.push({
+    name: 'Issue Checker',
+    description: 'Checks filed GitHub issues for responses (Anthropic, Microsoft)',
+    type: 'internal',
+    status: 'ready',
+    schedule: 'Daily (not yet automated)',
+  });
+
+  // Voice training data stats
+  try {
+    const { execSync } = await import('child_process');
+    const stats = execSync('python src/voice-recorder.py --stats 2>nul', {
+      encoding: 'utf-8', timeout: 5000,
+      cwd: join(__dirname2, '..', '..')
+    });
+    const parsed = JSON.parse(stats);
+    jobs.push({
+      name: 'Voice Training Data',
+      description: `${parsed.segments} segments, ${parsed.total_minutes} min, ${parsed.storage_mb}MB`,
+      type: 'data',
+      status: parsed.total_minutes >= 30 ? 'ready' : 'collecting',
+      schedule: 'Accumulates via hotkey recording',
+    });
+  } catch {}
+
+  res.json({ jobs });
+});
+
 // GET /dashboard/api/search?q=text — search all events by transcript text
 router.get('/api/search', (req, res) => {
   const q = req.query.q;

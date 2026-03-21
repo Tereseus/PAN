@@ -429,6 +429,13 @@ body {
       </div>
     </div>
 
+    <!-- Scheduled Jobs -->
+    <div class="delete-section">
+      <h4>Scheduled Jobs & Processes</h4>
+      <div id="jobs-list"></div>
+      <button class="btn" onclick="loadJobs()" style="margin-top:8px">Refresh</button>
+    </div>
+
     <!-- Danger Zone -->
     <div class="delete-section" style="border:1px solid var(--danger);border-radius:var(--radius);padding:16px;margin-top:12px">
       <h4 style="color:var(--danger)">Danger Zone</h4>
@@ -498,7 +505,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 function loadPage(page) {
   switch(page) {
     case 'conversations': loadConversations(); break;
-    case 'data': loadStats(); loadEvents(); loadPhotos(); loadMemory(); break;
+    case 'data': loadStats(); loadEvents(); loadPhotos(); loadJobs(); loadMemory(); break;
     case 'settings': loadSettings(); break;
   }
 }
@@ -989,6 +996,31 @@ async function searchTranscripts() {
       <div class="event-time">${fmtTime(r.created_at)}</div>
       <div style="font-size:13px">${escapeHtml(typeof transcript === 'string' ? transcript : JSON.stringify(transcript).slice(0, 200))}</div>
       <div style="font-size:11px;color:var(--text2)">${escapeHtml(r.event_type)}</div>
+    </div>`;
+  }).join('');
+}
+
+async function loadJobs() {
+  const data = await api('/api/jobs');
+  const el = document.getElementById('jobs-list');
+  if (!data || !data.jobs) {
+    el.innerHTML = '<div style="color:var(--text2)">Could not load jobs.</div>';
+    return;
+  }
+
+  el.innerHTML = data.jobs.map(j => {
+    const statusColor = j.status === 'running' ? 'var(--accent2)' :
+                        j.status === 'ready' ? 'var(--accent)' :
+                        j.status === 'error' ? 'var(--danger)' : 'var(--text2)';
+    return `<div class="settings-row">
+      <div>
+        <div style="font-weight:500">${escapeHtml(j.name)}</div>
+        <div style="font-size:12px;color:var(--text2)">${escapeHtml(j.description || '')}</div>
+        ${j.schedule ? `<div style="font-size:11px;color:var(--text2)">Schedule: ${escapeHtml(j.schedule)}</div>` : ''}
+        ${j.last_run ? `<div style="font-size:11px;color:var(--text2)">Last run: ${fmtTime(j.last_run)}</div>` : ''}
+        ${j.next_run ? `<div style="font-size:11px;color:var(--text2)">Next run: ${escapeHtml(j.next_run)}</div>` : ''}
+      </div>
+      <span style="color:${statusColor};font-size:13px;font-weight:500">${escapeHtml(j.status)}</span>
     </div>`;
   }).join('');
 }
