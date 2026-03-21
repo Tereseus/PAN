@@ -119,7 +119,7 @@ Only return JSON.`
 }
 
 // Post-process the unified response into the correct return format
-function processUnifiedResult(action, text, context) {
+async function processUnifiedResult(action, text, context) {
   const intent = action.intent || 'query';
 
   switch (intent) {

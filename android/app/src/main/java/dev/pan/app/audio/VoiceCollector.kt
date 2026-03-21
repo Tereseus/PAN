@@ -8,24 +8,23 @@ import android.media.MediaRecorder
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * VoiceCollector — silently records raw audio alongside Google STT.
+ * VoiceCollector — records raw audio ONLY when the user is speaking to PAN.
  *
- * Saves audio in 30-second WAV segments to local storage.
- * Each segment gets paired with its transcript (from STT) for voice training.
- * Runs continuously while STT is active. Files are stored locally and
- * synced to the PAN server during off-hours for training.
+ * Uses a circular buffer that continuously captures mic audio.
+ * When STT produces a transcript (onTranscript), we know the user just spoke.
+ * At that point, save the last N seconds of buffered audio + the transcript.
+ * This guarantees every saved WAV is confirmed user speech, not TV/music/noise.
  *
- * Storage: ~1MB per minute of 16kHz mono audio. 8 hours = ~480MB.
- * Old segments are auto-cleaned after training data is extracted.
+ * Storage: only saves when you talk. ~1MB per 60s of speech.
  */
 @Singleton
 class VoiceCollector @Inject constructor(
@@ -34,9 +33,9 @@ class VoiceCollector @Inject constructor(
     companion object {
         private const val TAG = "VoiceCollector"
         private const val SAMPLE_RATE = 16000
-        private const val SEGMENT_SECONDS = 30
-        private const val SEGMENT_SAMPLES = SAMPLE_RATE * SEGMENT_SECONDS
-        private const val MAX_STORAGE_MB = 500 // Auto-clean when exceeding this
+        private const val BUFFER_SECONDS = 15  // Keep last 15 seconds in circular buffer
+        private const val BUFFER_SAMPLES = SAMPLE_RATE * BUFFER_SECONDS
+        private const val MAX_STORAGE_MB = 500
     }
 
     private var audioRecord: AudioRecord? = null
@@ -45,8 +44,10 @@ class VoiceCollector @Inject constructor(
     private var isRecording = false
     var onLog: ((String) -> Unit)? = null
 
-    // Transcript pairs: timestamp -> transcript text
-    private val transcriptBuffer = mutableMapOf<Long, String>()
+    // Circular buffer — always holds the last 15 seconds of audio
+    private val circularBuffer = ShortArray(BUFFER_SAMPLES)
+    private var writePos = 0
+    private var bufferFilled = false // true once we've wrapped around at least once
 
     private fun log(msg: String) {
         Log.i(TAG, msg)
@@ -59,19 +60,67 @@ class VoiceCollector @Inject constructor(
         return dir
     }
 
-    // Call this when STT produces a final transcript — pairs audio with text
+    /**
+     * Called when STT produces a final transcript.
+     * This means the user JUST spoke. Save the buffered audio + transcript.
+     */
     fun onTranscript(text: String) {
         if (text.isBlank()) return
-        transcriptBuffer[System.currentTimeMillis()] = text
+        if (!isRecording) return
+
+        // Snapshot the circular buffer
+        val audioSnapshot: ShortArray
+        val length: Int
+
+        synchronized(circularBuffer) {
+            if (bufferFilled) {
+                // Buffer has wrapped — copy from writePos to end, then start to writePos
+                length = BUFFER_SAMPLES
+                audioSnapshot = ShortArray(length)
+                val firstPart = BUFFER_SAMPLES - writePos
+                System.arraycopy(circularBuffer, writePos, audioSnapshot, 0, firstPart)
+                System.arraycopy(circularBuffer, 0, audioSnapshot, firstPart, writePos)
+            } else {
+                // Buffer hasn't wrapped yet — copy from start to writePos
+                length = writePos
+                if (length < SAMPLE_RATE) return // Less than 1 second, skip
+                audioSnapshot = ShortArray(length)
+                System.arraycopy(circularBuffer, 0, audioSnapshot, 0, length)
+            }
+        }
+
+        // Save to disk in background
+        scope.launch {
+            try {
+                val timestamp = System.currentTimeMillis()
+                val dir = getStorageDir()
+                val wavFile = File(dir, "voice_${timestamp}.wav")
+                val txtFile = File(dir, "voice_${timestamp}.txt")
+
+                writeWav(wavFile, audioSnapshot, length)
+                txtFile.writeText(text)
+
+                val seconds = length / SAMPLE_RATE.toFloat()
+                log("Saved ${String.format("%.1f", seconds)}s of confirmed speech: ${text.take(50)}")
+
+                cleanIfNeeded()
+            } catch (e: Exception) {
+                log("Save failed: ${e.message}")
+            }
+        }
     }
 
-    // Get stats about collected data
     fun getStats(): CollectionStats {
         val dir = getStorageDir()
         val wavFiles = dir.listFiles { f -> f.extension == "wav" } ?: emptyArray()
         val txtFiles = dir.listFiles { f -> f.extension == "txt" } ?: emptyArray()
         val totalBytes = wavFiles.sumOf { it.length() }
-        val totalSeconds = wavFiles.size * SEGMENT_SECONDS
+        val totalSeconds = wavFiles.sumOf { f ->
+            try {
+                val size = f.length() - 44 // WAV header
+                (size / 2 / SAMPLE_RATE).toInt()
+            } catch (_: Exception) { 0 }
+        }
         return CollectionStats(
             segmentCount = wavFiles.size,
             pairedCount = txtFiles.size,
@@ -92,40 +141,49 @@ class VoiceCollector @Inject constructor(
             )
 
             try {
+                // Use CAMCORDER source — uses a different mic than STT's VOICE_RECOGNITION
+                // This allows both to coexist on devices with multiple mics
+                val source = MediaRecorder.AudioSource.CAMCORDER
+
                 audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    source,
                     SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
-                    maxOf(bufferSize * 2, SEGMENT_SAMPLES * 2)
+                    maxOf(bufferSize * 2, BUFFER_SAMPLES * 2)
                 )
 
                 if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                    log("AudioRecord init failed")
+                    log("AudioRecord init failed — mic might be busy")
                     return@launch
                 }
 
                 audioRecord?.startRecording()
                 isRecording = true
-                log("Recording started for voice collection")
+                writePos = 0
+                bufferFilled = false
+                log("Circular buffer recording started (saves only on speech)")
+
+                val readBuffer = ShortArray(1024)
 
                 while (isActive) {
-                    // Record one segment
-                    val segment = ShortArray(SEGMENT_SAMPLES)
-                    var pos = 0
-
-                    while (pos < SEGMENT_SAMPLES && isActive) {
-                        val read = audioRecord?.read(segment, pos, minOf(1024, SEGMENT_SAMPLES - pos)) ?: -1
-                        if (read < 0) break
-                        pos += read
+                    val read = audioRecord?.read(readBuffer, 0, readBuffer.size) ?: -1
+                    if (read <= 0) {
+                        delay(10)
+                        continue
                     }
 
-                    if (pos >= SEGMENT_SAMPLES / 2) { // At least half a segment
-                        saveSegment(segment, pos)
+                    // Write to circular buffer
+                    synchronized(circularBuffer) {
+                        for (i in 0 until read) {
+                            circularBuffer[writePos] = readBuffer[i]
+                            writePos++
+                            if (writePos >= BUFFER_SAMPLES) {
+                                writePos = 0
+                                bufferFilled = true
+                            }
+                        }
                     }
-
-                    // Clean old files if storage is too high
-                    cleanIfNeeded()
                 }
             } catch (e: Exception) {
                 log("Recording error: ${e.message}")
@@ -144,67 +202,27 @@ class VoiceCollector @Inject constructor(
         recordingJob = null
     }
 
-    private fun saveSegment(samples: ShortArray, length: Int) {
-        try {
-            val timestamp = System.currentTimeMillis()
-            val dir = getStorageDir()
-            val wavFile = File(dir, "voice_${timestamp}.wav")
-
-            // Write WAV file
-            writeWav(wavFile, samples, length)
-
-            // Check if we have transcripts that overlap with this segment's timeframe
-            val segmentStart = timestamp - (SEGMENT_SECONDS * 1000)
-            val matchingTranscripts = transcriptBuffer.filter { (ts, _) ->
-                ts in segmentStart..timestamp
-            }
-
-            if (matchingTranscripts.isNotEmpty()) {
-                val txtFile = File(dir, "voice_${timestamp}.txt")
-                val combined = matchingTranscripts.values.joinToString(" | ")
-                txtFile.writeText(combined)
-
-                // Clean matched transcripts
-                matchingTranscripts.keys.forEach { transcriptBuffer.remove(it) }
-
-                log("Saved paired segment: ${length / SAMPLE_RATE}s audio + transcript")
-            } else {
-                log("Saved audio segment: ${length / SAMPLE_RATE}s (no transcript)")
-            }
-
-            // Keep transcript buffer from growing forever
-            if (transcriptBuffer.size > 100) {
-                val cutoff = System.currentTimeMillis() - 300_000 // 5 min
-                transcriptBuffer.keys.removeAll { it < cutoff }
-            }
-        } catch (e: Exception) {
-            log("Save failed: ${e.message}")
-        }
-    }
-
     private fun writeWav(file: File, samples: ShortArray, length: Int) {
         val byteLength = length * 2
         val fos = FileOutputStream(file)
 
-        // WAV header
         val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
         header.put("RIFF".toByteArray())
         header.putInt(36 + byteLength)
         header.put("WAVE".toByteArray())
         header.put("fmt ".toByteArray())
-        header.putInt(16) // chunk size
+        header.putInt(16)
         header.putShort(1) // PCM
         header.putShort(1) // mono
         header.putInt(SAMPLE_RATE)
-        header.putInt(SAMPLE_RATE * 2) // byte rate
-        header.putShort(2) // block align
-        header.putShort(16) // bits per sample
+        header.putInt(SAMPLE_RATE * 2)
+        header.putShort(2)
+        header.putShort(16)
         header.put("data".toByteArray())
         header.putInt(byteLength)
 
         fos.write(header.array())
 
-        // Audio data
         val byteBuffer = ByteBuffer.allocate(byteLength).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until length) {
             byteBuffer.putShort(samples[i])
@@ -219,17 +237,14 @@ class VoiceCollector @Inject constructor(
         val totalMB = files.sumOf { it.length() } / (1024.0 * 1024.0)
 
         if (totalMB > MAX_STORAGE_MB) {
-            // Delete oldest unpaired audio files first, then oldest paired
             val wavFiles = files.filter { it.extension == "wav" }.sortedBy { it.lastModified() }
             var freed = 0.0
             for (f in wavFiles) {
                 if (freed > totalMB - MAX_STORAGE_MB * 0.8) break
                 val txtFile = File(f.path.replace(".wav", ".txt"))
-                // Delete unpaired first
-                if (!txtFile.exists()) {
-                    freed += f.length() / (1024.0 * 1024.0)
-                    f.delete()
-                }
+                freed += f.length() / (1024.0 * 1024.0)
+                f.delete()
+                txtFile.delete()
             }
             log("Cleaned ${String.format("%.1f", freed)}MB of old recordings")
         }
