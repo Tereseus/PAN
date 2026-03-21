@@ -38,12 +38,32 @@ PAN indexes every conversation across all devices. A separate AI session searche
 1. Pendant spectrometer (AS7341) reads spectral signature
 2. Pendant camera captures photo → sends to Claude Vision
 3. Cross-references color, shape, spectral data, visible markings
-4. Identifies: "Ibuprofen 200mg — orange oval coating matches."
+4. Identifies ibuprofen 200mg from spectral + visual match
 
 **"Find that article about battery tech I was reading last week and send it to my work email."**
 1. Searches browser history + PAN memory for "battery" articles from last week
 2. Finds the URL → opens email in browser
 3. Composes email with link → sends it
+
+**"Is there a gas leak in here?"**
+1. Pendant gas sensor (BME688) reads CO, VOC, and methane levels
+2. Cross-references with safety thresholds
+3. Reports: "CO at 12 ppm, safe but elevated. VOCs high — open a window."
+4. If levels are dangerous, PAN alerts you automatically without asking
+
+**"How hot is that pipe?"**
+1. Pendant thermal camera (MLX90640) captures heat signature
+2. Identifies the pipe at 87°C, surrounding area at 22°C
+3. Warns you before you touch it
+
+**"Is this wire live?"**
+1. Pendant EMF sensor (AD8317) detects electromagnetic field
+2. Confirms: active electrical current detected — don't cut it
+
+**"Am I getting sunburned?"**
+1. Pendant UV sensor (LTR390) reads current UV index
+2. Checks cumulative exposure over the last hour
+3. Reports: "UV index 8, high. You've been exposed for 40 minutes — apply sunscreen or move to shade."
 
 ### Cross-Device Orchestration
 
@@ -52,17 +72,15 @@ PAN treats phone, PC, browser, and pendant as one system.
 - Pendant detects dangerous CO levels → alerts via phone TTS → logs GPS + sensor readings on PC
 - Ask about code from last week → PAN searches terminal history → opens the file in your editor
 - Pendant camera captures a document → Claude Vision extracts text → saves searchable in database
-- "What was that song?" → checks what was playing on phone → tells you title and artist
+- Pendant thermal camera spots a hot wire in the wall → alerts you before you drill into it
 
 ---
 
 ## Your Data, Your Control
 
-This is the most important part. PAN captures a LOT of data. Here's exactly what happens with it.
+PAN captures a lot of data. All of it stays on your devices — not in the cloud, not on anyone else's servers.
 
 ### Where Your Data Lives
-
-Everything stays on YOUR devices. Not our servers. Not in the cloud. Not on Amazon's infrastructure (like Bee). Not on Meta's servers (like Limitless, which was acquired by Meta in 2025).
 
 | Data Type | Where It's Stored | Format |
 |-----------|------------------|--------|
@@ -79,7 +97,16 @@ Everything stays on YOUR devices. Not our servers. Not in the cloud. Not on Amaz
 | GPS / motion data | Your PC: `data/sensors/gps/`, `motion/` | Timestamped JSON |
 | EMF / radiation readings | Your PC: `data/sensors/emf/`, `radiation/` | Timestamped JSON |
 
-**There is no cloud sync by default.** Your data physically exists on your hard drive and your phone. If you unplug your computer, the data is right there in standard file formats you can open with any tool.
+No cloud sync by default. Your data physically exists on your hard drive and your phone in standard file formats you can open with any tool.
+
+### Transparency
+
+Every action PAN takes is logged in the dashboard at `http://localhost:7777/dashboard/`:
+- What PAN heard you say
+- How it classified the request (local, server, ambient)
+- Which API it called and how long it took
+- What response it generated
+- Whether it was handled on your phone or sent to your PC
 
 ### What You Can Delete
 
@@ -95,33 +122,23 @@ All deletes are **password-protected**. You set the password. Default is "pan" �
 
 When you delete something, it's gone. Not "archived." Not "marked as deleted but still on the server." The SQLite row is removed. The JPEG file is deleted from disk. It does not exist anymore.
 
-### What PAN Records vs What It Doesn't
+### What PAN Records
 
-**When the microphone is ON:**
+**When the microphone is on:**
 - Text transcription of what you say (not raw audio — unless you're doing voice training)
 - Commands you give and PAN's responses
-- Photos only when YOU trigger them ("what is this?")
-- The pendant captures photos every 5 seconds (when built)
+- The pendant captures photos every 5 seconds and sensor readings continuously
 
-**When the microphone is OFF:**
-- Absolutely nothing. PAN is completely silent. No recording. No processing. No data.
+**When the microphone is off:**
+- Nothing. No recording, no processing, no data.
 
-**What PAN NEVER records without you knowing:**
-- PAN never sends data to any external server without your API key
-- PAN never records raw audio continuously (only during deliberate voice training sessions)
-- PAN never accesses apps you've blocklisted
-- PAN shows a visible notification when the mic is active — you always know
+**What PAN does not record without you knowing:**
+- PAN does not send data to any external server without your API key
+- PAN does not record raw audio continuously (only during deliberate voice training sessions)
+- PAN does not access apps you've blocklisted
+- PAN shows a visible notification when the mic is active
 
-### Transparency
-
-Every action PAN takes is logged in the dashboard. You can see:
-- What PAN heard you say
-- How it classified the request (local, server, ambient)
-- Which API it called and how long it took
-- What response it generated
-- Whether it was handled on your phone or sent to your PC
-
-Nothing is hidden. Open the dashboard at `http://localhost:7777/dashboard/` and see everything.
+You can turn off any individual sensor from the dashboard. Disable the camera, the microphone, the gas sensor — whatever you want. Every sensor is independently controllable.
 
 ### Self-Hosted vs Subscription
 
@@ -185,15 +202,6 @@ One case. 22 sensors. Size of a Zippo lighter. €155 total cost.
 All sensor data is timestamped, geotagged, and searchable from the dashboard. Every reading correlates with what you were doing, where you were, and what was happening around you.
 
 Full specifications, sizes, and pin budget: [SENSOR-ARRAY.md](SENSOR-ARRAY.md)
-
-### The Pendant Solves the Microphone Problem
-
-Without the pendant, PAN uses your phone's microphone. This means:
-- PAN can't listen while you play music (Android limitation)
-- PAN can't record raw audio for voice training while STT is running
-- If your phone is in your pocket, audio quality drops
-
-The pendant has its own microphone on a separate Bluetooth device. Music plays through your phone speakers, the pendant listens through its own mic. No conflict. No interruption. Always-on listening that doesn't interfere with anything.
 
 ### Build It Yourself or Buy It
 
@@ -299,13 +307,9 @@ Or search "PAN" in Windows Start Menu.
 
 ---
 
-## A Note On Open Source
+## Open Source
 
-PAN was built entirely by Claude. Every line of code, every architecture decision, every feature. PAN can't exist without Claude.
-
-If anyone wants to use this code, please do. The goal isn't competition — it's making AI assistants better for everyone. If someone can take what's here and build something better, that's a win.
-
-The subscription option exists for people who want hosted convenience. The self-hosted option exists for people who want privacy and control. Both are valid. Use whichever works for you.
+The self-hosted option is the primary path — for anyone who wants privacy and control over their data. If you don't want to set any of that up and are fine with us handling your data (with the ability to delete it whenever you want), there's a hosted convenience subscription. Use whichever works for you.
 
 ## License
 
