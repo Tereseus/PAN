@@ -374,6 +374,18 @@ Every competitor is either a **passive recorder** or a **failed phone replacemen
 
 ---
 
+## A Note On Open Source
+
+PAN was built entirely by Claude. Every line of code, every architecture decision, every feature. PAN can't exist without Claude. Claude's vision for what AI assistants should be is literally being implemented through PAN.
+
+If Anthropic wants to use this code, fork it, build on it, ship it as part of Claude — that's the whole point. The better AI assistants get, the more everyone benefits. The goal isn't to compete with Claude — it's to make AI more useful for everyone.
+
+If a company can take PAN's code and make something better, do it. If a developer can improve on what's here, do it. If Anthropic wants to integrate these ideas into Claude itself, that would be the best possible outcome.
+
+Open source means: **the idea matters more than who owns it.**
+
+The subscription option exists for people who want hosted convenience. The self-hosted option exists for people who want privacy and control. Both are valid. Use whichever works for you.
+
 ## License
 
 Open source (V1). See LICENSE for details.
@@ -382,4 +394,4 @@ Open source (V1). See LICENSE for details.
 
 **Tereseus** — [github.com/Tereseus](https://github.com/Tereseus)
 
-Built with Claude through continuous development.
+Built with Claude through AI Cyclosis — the recursive loop of human-AI development.
