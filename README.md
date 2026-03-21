@@ -4,6 +4,24 @@
 
 ΠΑΝ (PAN) is an open-source AI operating system that connects all your devices into one intelligent network. Talk to it like a person. It remembers everything. It automates everything.
 
+## Always On. Always Listening. Always Yours.
+
+PAN is an **always-on device**. The microphone listens continuously. The camera captures continuously (pendant). Every sensor feeds data continuously. This is by design — PAN is your external memory and your hands-free interface to every device you own.
+
+**Why always-on matters:**
+- You never have to pick up your phone to do something
+- You never miss a conversation, an idea, a moment
+- Context builds over time — PAN understands your day, your patterns, your preferences
+- Voice commands work instantly because PAN is already listening
+- The pendant sees what you see — ask "what is this?" anytime, anywhere
+
+**Why it's safe:**
+- All data stays on YOUR hardware — self-hosted, no cloud
+- Mute anytime — voice command, button press, or notification tap
+- Delete anything — individual events, entire days, everything
+- You see exactly what PAN records — full transparency in the dashboard
+- Open source — audit the code yourself
+
 ## What It Does Right Now
 
 🎤 **Voice Assistant** — Real-time conversation via your phone. Sub-1-second responses. Ask questions, give commands, have discussions.
@@ -14,7 +32,9 @@
 
 🌐 **Browser Automation** — Read any tab, type messages, click buttons, navigate — across Chrome, Edge, Brave, Firefox.
 
-📸 **Camera Vision** — "What is this?" → phone takes a photo → Claude Vision analyzes it → PAN describes what it sees.
+📸 **Camera Vision** — Always-on with the pendant (every 5 seconds). On-demand from phone. "What is this?" → Claude Vision analyzes → PAN describes what it sees.
+
+🧠 **Memory** — Every conversation, command, photo is searchable. Any Claude Code session can query PAN's memory instantly. Your external brain.
 
 📊 **Dashboard** — Web UI showing all conversations, photos, data management, device status, scheduled jobs.
 
