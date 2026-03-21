@@ -94,7 +94,8 @@ npx electron electron/main.cjs
 | "Open the PAN project" | Opens terminal on PC |
 | "Play HUH on Spotify" | Opens Spotify search |
 | "Put my computer to sleep" | Sleeps the PC |
-| "Mute" / "Shut up" | Mutes PAN |
+| "Mute" / "Shut up" / "Be quiet" | Mutes PAN |
+| "Stop" / "Enough" / "Come on man" | Stops PAN talking |
 | "What tabs do I have open?" | Lists browser tabs |
 
 ## Hardware — The Pendant
