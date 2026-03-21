@@ -156,7 +156,7 @@ def find_element(name):
         return {'ok': False, 'error': str(e)}
 
 def get_window_elements():
-    """Get all interactive elements in the focused window."""
+    """Get interactive elements in the focused window (shallow scan for speed)."""
     import uiautomation as auto
 
     try:
@@ -170,7 +170,12 @@ def get_window_elements():
                            'MenuItemControl', 'TabItemControl', 'HyperlinkControl',
                            'TreeItemControl'}
 
-        for control, depth in auto.WalkControl(focused, maxDepth=5):
+        import time
+        start_time = time.time()
+        for control, depth in auto.WalkControl(focused, maxDepth=3):
+            # Timeout after 5 seconds to avoid hanging on complex apps
+            if time.time() - start_time > 5:
+                break
             ctrl_type = control.ControlTypeName or ''
             if ctrl_type in interactive_types and control.Name:
                 rect = control.BoundingRectangle
@@ -182,10 +187,65 @@ def get_window_elements():
                         'y': rect.top + (rect.bottom - rect.top) // 2,
                     })
 
-            if len(elements) >= 50:
+            if len(elements) >= 30:
                 break
 
         return {'ok': True, 'elements': elements, 'window': focused.Name}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def click_element_by_name(name):
+    """Find a UI element by name in the focused window and click it."""
+    import uiautomation as auto
+    import pyautogui
+
+    try:
+        focused = auto.GetForegroundControl()
+        if not focused:
+            return {'ok': False, 'error': 'No focused window'}
+
+        search = name.lower()
+        import time
+        start_time = time.time()
+
+        for control, depth in auto.WalkControl(focused, maxDepth=4):
+            if time.time() - start_time > 5:
+                break
+            ctrl_name = (control.Name or '').lower()
+            if search in ctrl_name:
+                rect = control.BoundingRectangle
+                x = rect.left + (rect.right - rect.left) // 2
+                y = rect.top + (rect.bottom - rect.top) // 2
+                pyautogui.click(x, y)
+                return {'ok': True, 'clicked': control.Name, 'type': control.ControlTypeName, 'x': x, 'y': y}
+
+        return {'ok': False, 'error': f'Element "{name}" not found'}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+def read_window_text():
+    """Read all visible text from the focused window."""
+    import uiautomation as auto
+
+    try:
+        focused = auto.GetForegroundControl()
+        if not focused:
+            return {'ok': False, 'error': 'No focused window'}
+
+        texts = []
+        import time
+        start_time = time.time()
+
+        for control, depth in auto.WalkControl(focused, maxDepth=3):
+            if time.time() - start_time > 5:
+                break
+            if control.Name:
+                texts.append(control.Name)
+            if len(texts) >= 100:
+                break
+
+        return {'ok': True, 'window': focused.Name, 'text': '\n'.join(texts)}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 
@@ -223,6 +283,10 @@ if __name__ == '__main__':
             result = find_element(' '.join(args))
         elif cmd == 'elements':
             result = get_window_elements()
+        elif cmd == 'click_by_name':
+            result = click_element_by_name(' '.join(args))
+        elif cmd == 'read_text':
+            result = read_window_text()
         else:
             result = {'ok': False, 'error': f'Unknown command: {cmd}'}
     except Exception as e:
