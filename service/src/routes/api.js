@@ -287,6 +287,47 @@ router.post('/browser', async (req, res) => {
 // Export browserCommand for use by router.js
 globalThis._panBrowserCommand = browserCommand;
 
+// Phone accessibility service bridge
+const pendingA11yCommands = [];
+const pendingA11yResults = new Map();
+
+router.get('/accessibility/commands', (req, res) => {
+  const commands = [...pendingA11yCommands];
+  pendingA11yCommands.length = 0;
+  res.json(commands);
+});
+
+router.post('/accessibility/result', (req, res) => {
+  const { id, result } = req.body;
+  const pending = pendingA11yResults.get(id);
+  if (pending) {
+    pending.resolve(result);
+    pendingA11yResults.delete(id);
+  }
+  res.json({ ok: true });
+});
+
+router.post('/accessibility', async (req, res) => {
+  const { action, ...params } = req.body;
+  if (!action) return res.status(400).json({ error: 'missing action' });
+
+  const id = `a11y-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  pendingA11yCommands.push({ id, action, ...params });
+
+  const timeout = setTimeout(() => {
+    pendingA11yResults.delete(id);
+    res.json({ ok: false, error: 'Accessibility service timeout — is it enabled in Android Settings?' });
+  }, 15000);
+
+  pendingA11yResults.set(id, {
+    resolve: (result) => {
+      clearTimeout(timeout);
+      pendingA11yResults.delete(id);
+      res.json(result);
+    }
+  });
+});
+
 router.post('/sensor', (req, res) => {
   const { sensor_type, values, timestamp } = req.body;
 
