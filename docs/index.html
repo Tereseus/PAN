@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ΠAN</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    /* ── Matrix Π rain ── */
+    #matrix-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.35;
+    }
+
+    /* ── Click-to-play overlay ── */
+    #audio-gate {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: #0d1117;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: opacity 0.8s ease;
+    }
+    #audio-gate.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #audio-gate .pi-splash {
+      font-family: 'Times New Roman', serif;
+      font-size: 200px;
+      font-weight: bold;
+      color: #58a6ff;
+      text-shadow: 0 0 80px rgba(88, 166, 255, 0.5), 0 0 160px rgba(88, 166, 255, 0.2);
+      animation: pulse 2.5s ease-in-out infinite;
+      user-select: none;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.04); opacity: 0.8; }
+    }
+    @keyframes fade-in-out {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.8; }
+    }
+
+    /* ── Pause complaint banner ── */
+    .pause-banner {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(88, 166, 255, 0.08);
+      border-bottom: 1px solid #21262d;
+      padding: 10px 24px;
+      text-align: center;
+      font-size: 14px;
+      color: #8b949e;
+      transform: translateY(-100%);
+      transition: transform 0.4s ease;
+    }
+    .pause-banner.visible {
+      transform: translateY(0);
+    }
+    .pause-banner em { color: #e6edf3; }
+
+    /* ── Header / Hero ── */
+    .hero {
+      position: relative;
+      z-index: 1;
+      border-bottom: 1px solid #21262d;
+      padding: 48px 0 40px;
+      text-align: center;
+      background: radial-gradient(ellipse at 50% 0%, rgba(88, 166, 255, 0.06) 0%, transparent 60%);
+    }
+    .hero .logo {
+      font-family: 'Times New Roman', serif;
+      font-size: 80px;
+      font-weight: bold;
+      color: #e6edf3;
+      letter-spacing: 8px;
+      user-select: none;
+    }
+    .hero .logo .pi { color: #58a6ff; }
+    .hero .subtitle {
+      color: #484f58;
+      font-size: 13px;
+      margin-top: 8px;
+      letter-spacing: 3px;
+      text-transform: lowercase;
+      font-style: italic;
+    }
+
+    /* ── Now Playing bar ── */
+    .now-playing {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 24px;
+      padding: 8px 16px;
+      background: rgba(88, 166, 255, 0.04);
+      border: 1px solid #21262d;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #8b949e;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s;
+    }
+    .now-playing:hover { background: rgba(88, 166, 255, 0.08); }
+    .now-playing img {
+      width: 36px;
+      height: 36px;
+      border-radius: 4px;
+    }
+    .now-playing .track-info { text-align: left; }
+    .now-playing .track-name { color: #e6edf3; font-weight: 500; }
+    .now-playing .artist { color: #8b949e; font-size: 12px; }
+
+    .play-pause-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid #30363d;
+      background: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .play-pause-btn:hover { border-color: #58a6ff; }
+    .play-pause-btn svg {
+      width: 12px;
+      height: 12px;
+      fill: #e6edf3;
+    }
+
+    .eq-bars {
+      display: flex;
+      gap: 2px;
+      align-items: flex-end;
+      height: 16px;
+    }
+    .eq-bars span {
+      display: block;
+      width: 3px;
+      background: #58a6ff;
+      border-radius: 1px;
+      animation: eq 0.8s ease-in-out infinite alternate;
+    }
+    .eq-bars span:nth-child(1) { height: 6px; animation-delay: 0s; }
+    .eq-bars span:nth-child(2) { height: 12px; animation-delay: 0.15s; }
+    .eq-bars span:nth-child(3) { height: 8px; animation-delay: 0.3s; }
+    .eq-bars span:nth-child(4) { height: 14px; animation-delay: 0.1s; }
+    .eq-bars span:nth-child(5) { height: 5px; animation-delay: 0.25s; }
+    @keyframes eq {
+      0% { height: 4px; }
+      100% { height: 16px; }
+    }
+    .eq-bars.paused span { animation-play-state: paused; }
+
+    .volume-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .volume-control svg {
+      width: 14px;
+      height: 14px;
+      fill: #8b949e;
+    }
+    .volume-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 60px;
+      height: 4px;
+      border-radius: 2px;
+      background: #21262d;
+      outline: none;
+    }
+    .volume-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #58a6ff;
+      cursor: pointer;
+    }
+
+    /* ── GitHub-style nav tabs ── */
+    .repo-nav {
+      position: relative;
+      z-index: 1;
+      border-bottom: 1px solid #21262d;
+      padding: 0 24px;
+      background: #161b22;
+    }
+    .repo-nav ul {
+      list-style: none;
+      display: flex;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .repo-nav li a {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 16px;
+      color: #8b949e;
+      text-decoration: none;
+      font-size: 14px;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s;
+    }
+    .repo-nav li a:hover { color: #e6edf3; }
+    .repo-nav li a.active {
+      color: #e6edf3;
+      border-bottom-color: #f78166;
+    }
+    .repo-nav li a svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+
+    /* ── Main container ── */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* ── File tree ── */
+    .file-tree {
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 24px;
+      background: #0d1117;
+    }
+    .file-tree-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #161b22;
+      border-bottom: 1px solid #21262d;
+      font-size: 14px;
+    }
+    .file-tree-header .branch {
+      background: rgba(88, 166, 255, 0.1);
+      color: #58a6ff;
+      padding: 2px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .file-row {
+      display: flex;
+      align-items: center;
+      padding: 8px 16px;
+      border-bottom: 1px solid #21262d;
+      font-size: 14px;
+      transition: background 0.1s;
+    }
+    .file-row:last-child { border-bottom: none; }
+    .file-row:hover { background: #161b22; }
+    .file-row svg {
+      width: 16px;
+      height: 16px;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+    .file-row a {
+      color: #58a6ff;
+      text-decoration: none;
+    }
+    .file-row a:hover { text-decoration: underline; }
+
+    /* ── README section ── */
+    .readme-container {
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #0d1117;
+    }
+    .readme-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #161b22;
+      border-bottom: 1px solid #21262d;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .readme-header svg {
+      width: 16px;
+      height: 16px;
+      fill: #8b949e;
+    }
+    .readme-body {
+      padding: 32px 40px;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ── Markdown rendering ── */
+    .readme-body h1 {
+      font-size: 28px;
+      border-bottom: 1px solid #21262d;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+    }
+    .readme-body h2 {
+      font-size: 22px;
+      border-bottom: 1px solid #21262d;
+      padding-bottom: 8px;
+      margin-top: 32px;
+      margin-bottom: 16px;
+    }
+    .readme-body h3 {
+      font-size: 18px;
+      margin-top: 24px;
+      margin-bottom: 12px;
+    }
+    .readme-body p { margin-bottom: 16px; }
+    .readme-body ul, .readme-body ol {
+      padding-left: 24px;
+      margin-bottom: 16px;
+    }
+    .readme-body li { margin-bottom: 4px; }
+    .readme-body a { color: #58a6ff; text-decoration: none; }
+    .readme-body a:hover { text-decoration: underline; }
+    .readme-body code {
+      background: rgba(110, 118, 129, 0.2);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 85%;
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    }
+    .readme-body pre {
+      background: #161b22;
+      border-radius: 6px;
+      padding: 16px;
+      overflow-x: auto;
+      margin-bottom: 16px;
+    }
+    .readme-body pre code {
+      background: none;
+      padding: 0;
+      font-size: 13px;
+    }
+    .readme-body table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-bottom: 16px;
+    }
+    .readme-body th, .readme-body td {
+      border: 1px solid #21262d;
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .readme-body th {
+      background: #161b22;
+      font-weight: 600;
+    }
+    .readme-body img {
+      max-width: 100%;
+      border-radius: 6px;
+    }
+    .readme-body blockquote {
+      border-left: 3px solid #3b434b;
+      padding-left: 16px;
+      color: #8b949e;
+      margin-bottom: 16px;
+    }
+
+    /* ── Footer ── */
+    footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 40px 24px;
+      color: #484f58;
+      font-size: 12px;
+      border-top: 1px solid #21262d;
+      margin-top: 48px;
+    }
+
+    /* ── Loading ── */
+    .loading {
+      text-align: center;
+      padding: 60px;
+      color: #8b949e;
+    }
+    .spinner {
+      display: inline-block;
+      width: 32px;
+      height: 32px;
+      border: 3px solid #21262d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .hero .logo { font-size: 36px; }
+      .readme-body { padding: 20px; }
+      #audio-gate .pi-splash { font-size: 140px; }
+      #audio-gate .splash-name { font-size: 30px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Matrix rain canvas -->
+  <canvas id="matrix-canvas"></canvas>
+
+  <!-- Splash overlay -->
+  <div id="audio-gate">
+    <div class="pi-splash">&#928;</div>
+  </div>
+
+  <!-- Pause complaint banner -->
+  <div class="pause-banner" id="pause-banner">
+    <span id="pause-text"><em>Come on man... it's a good song</em></span>
+  </div>
+
+  <audio id="bgm" loop preload="auto">
+    <source src="audio/huh.mp3" type="audio/mpeg">
+  </audio>
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="logo"><span class="pi">&#928;</span></div>
+    <div class="subtitle">&#928;an remembers</div>
+    <div style="margin-top: 24px;">
+      <div class="now-playing" id="now-playing" onclick="togglePlay(event)">
+        <img src="img/huh-cover.jpg" alt="cover">
+        <div class="track-info">
+          <div class="track-name">Huh</div>
+          <div class="artist"><a href="https://open.spotify.com/track/085g51M9qTQpud064FgULU?si=cb210eb361114d4e" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:#8b949e;text-decoration:none;">Tetrahydrobaboono</a></div>
+        </div>
+        <div class="play-pause-btn" id="play-pause-btn">
+          <!-- pause icon (shown when playing) -->
+          <svg id="icon-pause" viewBox="0 0 16 16"><path d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5zm5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5z"/></svg>
+          <!-- play icon (shown when paused) -->
+          <svg id="icon-play" viewBox="0 0 16 16" style="display:none"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
+        </div>
+        <div class="eq-bars paused" id="eq-bars">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="volume-control" onclick="event.stopPropagation()">
+          <svg viewBox="0 0 16 16"><path d="M11.5 1a.5.5 0 0 1 .5.5v13a.5.5 0 0 1-1 0V1.5a.5.5 0 0 1 .5-.5zM6 3a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-1 0v-9A.5.5 0 0 1 6 3zm5.5 1a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM3.5 5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg>
+          <input type="range" class="volume-slider" id="volume" min="0" max="100" value="50">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Nav tabs -->
+  <nav class="repo-nav">
+    <ul>
+      <li>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/></svg>
+          Code
+        </a>
+      </li>
+    </ul>
+  </nav>
+
+  <!-- Main content -->
+  <div class="container">
+    <div class="file-tree" id="file-tree">
+      <div class="file-tree-header">
+        <span class="branch">main</span>
+      </div>
+      <div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading repository...</p></div>
+    </div>
+
+    <div class="readme-container">
+      <div class="readme-header">
+        <svg viewBox="0 0 16 16"><path d="M0 1.75A.75.75 0 0 1 .75 1h4.253c1.227 0 2.317.59 3 1.501A3.743 3.743 0 0 1 11.006 1h4.245a.75.75 0 0 1 .75.75v10.5a.75.75 0 0 1-.75.75h-4.507a2.25 2.25 0 0 0-1.591.659l-.622.621a.75.75 0 0 1-1.06 0l-.623-.621A2.25 2.25 0 0 0 5.258 13H.75a.75.75 0 0 1-.75-.75Zm7.251 10.324.004-5.073-.002-2.253A2.25 2.25 0 0 0 5.003 2.5H1.5v9h3.757a3.75 3.75 0 0 1 1.994.574ZM8.755 4.75l-.004 7.322a3.752 3.752 0 0 1 1.992-.572H14.5v-9h-3.495a2.25 2.25 0 0 0-2.25 2.25Z"/></svg>
+        README.md
+      </div>
+      <div class="readme-body" id="readme-body">
+        <div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading README...</p></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>&#928;an</footer>
+
+  <script>
+    const REPO = 'Tzuridis/PAN';
+    const API = 'https://api.github.com';
+
+    // ── Matrix Π Rain ──
+    const canvas = document.getElementById('matrix-canvas');
+    const ctx = canvas.getContext('2d');
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    const chars = '\u03A0'; // Just Π
+    const fontSize = 7;
+    const spacing = 8;
+    let columns = Math.floor(canvas.width / spacing);
+    let drops = new Array(columns).fill(1);
+
+    // Randomize initial positions so it doesn't all start from the top
+    for (let i = 0; i < drops.length; i++) {
+      drops[i] = Math.random() * canvas.height / fontSize;
+    }
+
+    function drawMatrix() {
+      ctx.fillStyle = 'rgba(13, 17, 23, 0.15)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = '#58a6ff';
+      ctx.font = 'bold ' + fontSize + 'px "Times New Roman", serif';
+
+      for (let i = 0; i < drops.length; i++) {
+        const char = chars[Math.floor(Math.random() * chars.length)];
+        ctx.globalAlpha = 0.3 + Math.random() * 0.5;
+        ctx.fillText(char, i * spacing, drops[i] * fontSize);
+
+        if (drops[i] * fontSize > canvas.height && Math.random() > 0.997) {
+          drops[i] = 0;
+        }
+        drops[i] += 0.15 + Math.random() * 0.2;
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Recalculate columns on resize
+    window.addEventListener('resize', () => {
+      columns = Math.floor(canvas.width / spacing);
+      const newDrops = new Array(columns).fill(0);
+      for (let i = 0; i < newDrops.length; i++) {
+        newDrops[i] = drops[i] || Math.random() * canvas.height / fontSize;
+      }
+      drops = newDrops;
+    });
+
+    let matrixRunning = true;
+
+    function matrixLoop() {
+      if (matrixRunning) drawMatrix();
+      requestAnimationFrame(matrixLoop);
+    }
+    matrixLoop();
+
+    // ── Audio ──
+    let isPlaying = false;
+
+    // Auto-fade splash after 3 seconds
+    setTimeout(() => {
+      const gate = document.getElementById('audio-gate');
+      const audio = document.getElementById('bgm');
+      audio.volume = 0.5;
+      audio.play().then(() => {
+        isPlaying = true;
+        updatePlayState();
+      }).catch(() => {
+        // Browser blocked autoplay — user can click play button
+      });
+      gate.classList.add('hidden');
+      setTimeout(() => gate.style.display = 'none', 900);
+    }, 3000);
+
+    // Also allow clicking splash to skip the wait
+    document.getElementById('audio-gate').addEventListener('click', function() {
+      const gate = this;
+      const audio = document.getElementById('bgm');
+      audio.volume = 0.5;
+      audio.play().then(() => {
+        isPlaying = true;
+        updatePlayState();
+      }).catch(() => {});
+      gate.classList.add('hidden');
+      setTimeout(() => gate.style.display = 'none', 900);
+    });
+
+    function togglePlay(e) {
+      const audio = document.getElementById('bgm');
+      const banner = document.getElementById('pause-banner');
+      const pauseText = document.getElementById('pause-text');
+      if (isPlaying) {
+        audio.pause();
+        isPlaying = false;
+        matrixRunning = false;
+        pauseText.innerHTML = '<em>Come on man, it\'s a good song</em>';
+        banner.classList.add('visible');
+      } else {
+        audio.play();
+        isPlaying = true;
+        matrixRunning = true;
+        // Show "Yeaa!" briefly then hide
+        pauseText.innerHTML = '<em>Yeaa!</em>';
+        setTimeout(() => {
+          banner.classList.remove('visible');
+        }, 1000);
+      }
+      updatePlayState();
+    }
+
+    function updatePlayState() {
+      const eq = document.getElementById('eq-bars');
+      const iconPause = document.getElementById('icon-pause');
+      const iconPlay = document.getElementById('icon-play');
+      if (isPlaying) {
+        eq.classList.remove('paused');
+        iconPause.style.display = '';
+        iconPlay.style.display = 'none';
+      } else {
+        eq.classList.add('paused');
+        iconPause.style.display = 'none';
+        iconPlay.style.display = '';
+      }
+    }
+
+    document.getElementById('volume').addEventListener('input', (e) => {
+      document.getElementById('bgm').volume = e.target.value / 100;
+    });
+
+    // ── Fetch repo contents ──
+    async function loadRepo() {
+      try {
+        const res = await fetch(`${API}/repos/${REPO}/contents/`);
+        if (!res.ok) throw new Error('API error');
+        const items = await res.json();
+
+        const folders = items.filter(i => i.type === 'dir').sort((a,b) => a.name.localeCompare(b.name));
+        const files = items.filter(i => i.type !== 'dir').sort((a,b) => a.name.localeCompare(b.name));
+        const sorted = [...folders, ...files];
+
+        const tree = document.getElementById('file-tree');
+        const header = tree.querySelector('.file-tree-header').outerHTML;
+        tree.innerHTML = header;
+
+        sorted.forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'file-row';
+          if (item.type === 'dir') {
+            row.innerHTML = `
+              <svg viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" fill="#8b949e"/></svg>
+              <a href="https://github.com/${REPO}/tree/main/${item.name}">${item.name}</a>`;
+          } else {
+            row.innerHTML = `
+              <svg viewBox="0 0 16 16"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z" fill="#8b949e"/></svg>
+              <a href="https://github.com/${REPO}/blob/main/${item.name}">${item.name}</a>`;
+          }
+          tree.appendChild(row);
+        });
+      } catch (e) {
+        document.getElementById('file-tree').innerHTML += '<div class="loading">Could not load file tree. <a href="https://github.com/' + REPO + '" style="color:#58a6ff">View on GitHub</a></div>';
+      }
+    }
+
+    // ── Fetch and render README ──
+    async function loadReadme() {
+      try {
+        const res = await fetch(`${API}/repos/${REPO}/readme`, {
+          headers: { 'Accept': 'application/vnd.github.html+json' }
+        });
+        if (!res.ok) throw new Error('API error');
+        const html = await res.text();
+        document.getElementById('readme-body').innerHTML = html;
+      } catch (e) {
+        document.getElementById('readme-body').innerHTML = '<div class="loading">Could not load README. <a href="https://github.com/' + REPO + '#readme" style="color:#58a6ff">View on GitHub</a></div>';
+      }
+    }
+
+    loadRepo();
+    loadReadme();
+  </script>
+</body>
+</html>
