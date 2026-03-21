@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ΠAN</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif:ital,wght@0,700;1,700&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -42,9 +43,9 @@
       pointer-events: none;
     }
     #audio-gate .pi-splash {
-      font-family: 'Times New Roman', serif;
+      font-family: 'Noto Serif', 'Georgia', serif;
       font-size: 200px;
-      font-weight: bold;
+      font-weight: 700;
       color: #58a6ff;
       text-shadow: 0 0 80px rgba(88, 166, 255, 0.5), 0 0 160px rgba(88, 166, 255, 0.2);
       animation: pulse 2.5s ease-in-out infinite;
@@ -97,7 +98,7 @@
       letter-spacing: 8px;
       user-select: none;
     }
-    .hero .logo .pi { color: #58a6ff; }
+    .hero .logo .pi { color: #58a6ff; font-family: 'Noto Serif', 'Georgia', serif; }
     .hero .subtitle {
       color: #484f58;
       font-size: 13px;
@@ -546,7 +547,7 @@
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       ctx.fillStyle = '#58a6ff';
-      ctx.font = 'bold ' + fontSize + 'px "Times New Roman", serif';
+      ctx.font = '700 ' + fontSize + 'px "Noto Serif", Georgia, serif';
 
       for (let i = 0; i < drops.length; i++) {
         const char = chars[Math.floor(Math.random() * chars.length)];
