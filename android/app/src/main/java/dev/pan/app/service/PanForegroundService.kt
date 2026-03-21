@@ -275,6 +275,31 @@ class PanForegroundService : Service() {
             )
         }
 
+        // Spotify / music — check BEFORE stripping since "play X on spotify" is clear
+        if (lower.contains("play") && (lower.contains("spotify") || lower.contains("song"))) {
+            val songQuery = lower
+                .replace(Regex("(?:hey |hi |ok )?(?:pan|pam|ben|pen)[,.]?\\s*"), "")
+                .replace(Regex("(?:can you |could you |please )?"), "")
+                .replace(Regex("(?:play|on spotify|on my phone|the song|song)"), "")
+                .trim()
+            if (songQuery.isNotBlank()) {
+                try {
+                    val spotifyIntent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                        data = Uri.parse("spotify:search:${Uri.encode(songQuery)}")
+                        setPackage("com.spotify.music")
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(spotifyIntent)
+                    feedbackSounds.onCommandSent()
+                    mainHandler.post { panSpeak("Playing $songQuery on Spotify.") }
+                    addToHistory("User", text)
+                    addToHistory("PAN", "Playing $songQuery on Spotify.")
+                    logToServer(text, "spotify", songQuery, "phone_spotify")
+                    return
+                } catch (_: Exception) {}
+            }
+        }
+
         // Strip "hey pan/pam/ben" prefix so local command matching works
         val stripped = lower
             .replace(Regex("^(?:hey |hi |ok |okay )?(?:pan|pam|ben|pen)[,.]?\\s*"), "")
@@ -538,6 +563,36 @@ class PanForegroundService : Service() {
                 val launched = launchPhoneApp(appName)
                 if (launched) return "Opening $appName."
                 // App not found on phone — let server try (might be a PC app)
+            }
+        }
+
+        // --- Spotify / Music commands ---
+        if ((lower.contains("play") && (lower.contains("spotify") || lower.contains("song") || lower.contains("music"))) ||
+            lower.startsWith("play ")) {
+            // Extract song/artist name
+            val songQuery = lower
+                .replace(Regex("(?:play|on spotify|on my phone|the song|song|please|can you)"), "")
+                .trim()
+            if (songQuery.isNotBlank()) {
+                try {
+                    val spotifyIntent = Intent(Intent.ACTION_VIEW).apply {
+                        data = Uri.parse("spotify:search:${Uri.encode(songQuery)}")
+                        setPackage("com.spotify.music")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(spotifyIntent)
+                    return "Searching Spotify for $songQuery."
+                } catch (e: Exception) {
+                    // Spotify not installed — try YouTube Music or generic
+                    try {
+                        val ytIntent = Intent(Intent.ACTION_VIEW).apply {
+                            data = Uri.parse("https://music.youtube.com/search?q=${Uri.encode(songQuery)}")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(ytIntent)
+                        return "Searching YouTube Music for $songQuery."
+                    } catch (_: Exception) {}
+                }
             }
         }
 
