@@ -172,7 +172,7 @@ router.post('/ui', (req, res) => {
   const timeout = setTimeout(() => {
     pendingUiRequests.delete(id);
     res.json({ ok: false, error: 'Desktop agent timeout — is the tray app running?' });
-  }, 15000);
+  }, 30000);
 
   pendingUiRequests.set(id, {
     resolve: (result) => {

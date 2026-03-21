@@ -93,7 +93,7 @@ function handleAction(action) {
     const { execFile } = require('child_process');
     console.log(`[PAN Tray] Executing: python ${uiScript} ${cmd} ${args.join(' ')}`);
     execFile('python', [uiScript, cmd, ...args], {
-      timeout: 15000,
+      timeout: 30000,
       maxBuffer: 10 * 1024 * 1024,
     }, (err, stdout, stderr) => {
       let result;
