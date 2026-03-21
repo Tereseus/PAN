@@ -113,27 +113,60 @@ One case. 22 sensors. Zippo-lighter size. €155.
 
 Full sensor list: [SENSOR-ARRAY.md](SENSOR-ARRAY.md)
 
-## The Philosophy
+## Your Data, Your Control
 
-### AI Cyclosis
-*The recursive loop of AI-driven development.*
+PAN is **self-hosted by default**. Your data never leaves your devices unless you want it to.
 
-AI identifies problems → developer builds solutions → solutions create new capabilities → new capabilities reveal new problems → AI identifies those → cycle continues.
+### Where Data Lives
+| Data | Location | Format |
+|------|----------|--------|
+| Voice transcripts | Your PC: `service/data/pan.db` | SQLite |
+| Photos (Vision) | Your PC: `service/src/data/photos/` | JPEG |
+| Voice training | Your PC: `service/src/data/voice/` | WAV |
+| Phone conversations | Your phone: app internal storage | SQLite |
+| Browser activity | Your PC: PAN server memory | SQLite |
 
-Each session starts further ahead because the AI retains memory from all previous sessions. The spiral doesn't just repeat — it ascends.
+### What You Control
+- **Delete anything** — individual events, entire days, all data. Password-protected.
+- **Search everything** — every conversation, command, photo is searchable from the dashboard
+- **See where it goes** — transparency logging shows which requests went local vs server
+- **Mute anytime** — voice command, notification button, or hardware button
+- **No cloud dependency** — PAN runs on YOUR computer, YOUR phone. No accounts required.
+- **Data retention** — you decide how long to keep data. Auto-cleanup configurable.
+- **Export your data** — it's SQLite + JPEG files. Standard formats. No lock-in.
 
-Read more: [AI-CYCLOSIS.md](AI-CYCLOSIS.md)
+### What PAN Records
+When the mic is on:
+- Voice transcripts (text only — raw audio NOT saved unless you trigger voice training)
+- Commands you give and PAN's responses
+- Photos only when YOU say "what is this?" (not continuous)
+- Browser tab titles when you ask about them
 
-### Why PAN Is Different
+When the mic is off: **nothing.** PAN is fully silent.
+
+### Self-Hosted vs Subscription
+| | Self-Hosted (Free) | Subscription (Planned) |
+|--|-------------------|----------------------|
+| Server | Your PC | Our cloud |
+| AI | Your API key | Included |
+| Data | Your hardware | Our servers (encrypted) |
+| Privacy | Maximum | Standard (we can't see your data) |
+| Setup | Manual | One-click |
+
+### Why Not Cloud?
+Competitors like Limitless got acquired by Meta. Bee got acquired by Amazon. Your data went with them. PAN can't be acquired because it runs on YOUR hardware. If PAN the project disappears tomorrow, your data is still on your PC in standard formats.
+
+## Why PAN Is Different
 
 Every competitor is either a **passive recorder** (Limitless, Omi, Bee, PLAUD) or a **failed phone replacement** (Humane AI Pin, Rabbit R1).
 
 PAN is the only system that:
-- **Controls your computer** via voice
-- **Executes commands**, not just records
+- **Controls your computer** via voice — not just records
+- **Executes commands** — files, apps, browser, terminal
 - Works across **phone + PC + wearable** as one system
-- Can be **fully self-hosted** — your data, your hardware
-- Is **open source** (V1)
+- **Fully self-hosted** — your data never leaves your devices
+- **Open source** (V1) — audit the code yourself
+- **Delete everything** — you own it, you control it, you destroy it
 
 Competitive analysis: [COMPETITIVE.md](COMPETITIVE.md)
 
