@@ -47,36 +47,36 @@ PAN indexes every conversation across all devices. A separate AI session searche
 
 ### Proactive Awareness
 
-PAN doesn't just respond to questions — it watches patterns over time and helps before you ask. You choose how much help you want.
+PAN doesn't just respond to questions — it learns your patterns over time and helps before you ask. You choose what it monitors and how much it tells you.
 
 **Sun exposure:**
-PAN tracks your UV exposure and outdoor time via the pendant's UV sensor. After 3 hours outside with no sunscreen detected in your routine, PAN tells you: "You've been outside for 3 hours today. UV index is 7. You should put on sunscreen." It learned you don't wear sunscreen because it's been watching your habits for weeks.
+PAN knows you've been outside for 3 hours. It knows the UV index at your GPS location. It knows from weeks of observation that you don't wear sunscreen. It tells you: "You should put on sunscreen. UV index is 7 and you've been outside since noon." It figured this out from GPS, UV sensor, time tracking, and your habits — not because you asked.
 
-**Nutrition tracking:**
-The pendant camera sees every meal. PAN identifies what you're eating through vision analysis, estimates portions, and tracks your intake across the day. At dinner: "You've had about 1,400 calories today. You're 600 under your goal — this would be a good time for a bigger meal." No manual logging. No food diary app. PAN just sees your food and keeps track.
+**Nutrition:**
+The pendant camera sees your meals. PAN identifies what you're eating through vision analysis, estimates portions, and tracks your intake. After lunch: "That's your third high-sugar meal today. You've had about 80g of sugar — that's over your daily target." No food diary app. No manual logging. PAN just sees what you eat and keeps track.
 
-**Air quality:**
-You walk into a room. The pendant's gas sensor detects elevated CO levels. You didn't ask — PAN tells you: "CO at 35 ppm in this room. That's above safe levels. Open a window or leave." It does this automatically because the sensor is always reading.
+**"Where did I leave my keys last night?"**
+PAN's camera captures photos continuously. It saw your keys on the kitchen counter at 11:47 PM. It tells you exactly where they are, with the photo to prove it.
 
-**Sleep and activity patterns:**
-PAN knows when you wake up, when you go to bed, how much you move during the day. After a week of 5-hour sleep nights: "You've averaged 5.2 hours of sleep this week. That's down from your usual 7. You might want to get to bed earlier tonight."
+**"Where's Marcus right now?"**
+Marcus also uses PAN and has shared his location with you. PAN checks his GPS: "Marcus is at the gym on 5th Street. He's been there for about 40 minutes." You don't need to call him, text him, or open an app. PAN networks between users who opt in to sharing.
 
-**Posture and ergonomics:**
-The accelerometer tracks your posture throughout the day. After 2 hours hunched over a desk: "You've been slouching for a while. Stand up and stretch."
+**"Tell Marcus I'm running late."**
+PAN opens whatever messaging app you use with Marcus — iMessage, WhatsApp, Instagram DM — types "Running late, be there in 20," and sends it. You didn't touch your phone. You didn't even say which app. PAN already knows which one you use with Marcus because it's seen your conversation history.
 
-**Safety alerts:**
-You're about to drill into a wall. The EMF sensor detects a live wire behind the drywall. PAN warns you before you hit it. The thermal camera spots an overheating outlet you walked past. PAN flags it. The gas sensor picks up a slow methane leak in your garage. PAN alerts you before you can smell it.
+**Safety:**
+You're about to drill into a wall. The EMF sensor detects a live wire behind the drywall — PAN warns you before you hit it. The thermal camera spots an overheating outlet you walked past — PAN flags it. The gas sensor picks up a methane leak in your garage — PAN alerts you before you can smell it.
 
-**The point:** PAN builds a picture of your habits, your health, your environment over time — and uses it to help. Not in a creepy way. You control exactly what PAN monitors, what it alerts you about, and how often. Turn off nutrition tracking. Turn off posture alerts. Keep the safety stuff on. It's your choice.
+You control all of this. Turn off nutrition tracking. Turn off location sharing. Keep safety alerts on. Every category is independently controllable — PAN only monitors what you tell it to.
 
 ### Cross-Device Orchestration
 
 PAN treats phone, PC, browser, and pendant as one system.
 
-- Pendant detects dangerous CO levels → alerts via phone TTS → logs GPS + sensor readings on PC
 - Ask about code from last week → PAN searches terminal history → opens the file in your editor
 - Pendant camera captures a document → Claude Vision extracts text → saves searchable in database
-- Pendant thermal camera spots an overheating outlet → alerts you before it becomes a fire hazard
+- Pendant thermal camera spots an overheating outlet → alerts you via phone → logs it on PC
+- You tell PAN to message someone → PAN picks the right app, types the message, sends it
 
 ---
 
@@ -185,7 +185,7 @@ One case. 22 sensors. Size of a Zippo lighter. €155 total cost.
 | 3 | Laser pointer | Aim at a specific object — "what is THIS?" with precision |
 | 4 | LED | Status indicator, utility light |
 | 5 | Gas Sensor (BME688) | Detect gas leaks, carbon monoxide, smoke — alerts you before you can smell it |
-| 6 | UV Sensor (LTR390) | "Am I getting sunburned?" — real-time UV exposure tracking |
+| 6 | UV Sensor (LTR390) | Tracks UV exposure over time — warns you based on your habits and location |
 | 7 | Thermal Camera (MLX90640) | See heat through walls, find hot wires, detect body heat in darkness |
 | 8 | Spectrometer (AS7341) | Identify unknown pills, check food freshness, verify metals by spectral signature |
 | 9 | Magnetometer (QMC5883L) | Detect hidden magnets, find metal in walls, compass navigation |
@@ -201,7 +201,7 @@ One case. 22 sensors. Size of a Zippo lighter. €155 total cost.
 | 19 | Heart Rate + SpO2 (MAX30102) | Continuous pulse and blood oxygen monitoring |
 | 20 | EMF Sensor (AD8317) | Detect live wires behind walls — don't drill into electrical |
 | 21 | Ultrasonic (RCWL-1601) | Distance measurement in total darkness, obstacle detection |
-| 22 | Radiation (RadSens) | Ionizing radiation detection (optional safety module) |
+| 22 | Radiation (RadSens) | Ionizing radiation detection |
 
 All sensor data is timestamped, geotagged, and searchable from the dashboard. Every reading correlates with what you were doing, where you were, and what was happening around you.
 
