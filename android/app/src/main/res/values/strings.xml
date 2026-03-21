@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PAN</string>
+    <string name="pan_accessibility_description">ΠΑΝ uses accessibility to read screen content and control apps by voice. This enables hands-free operation of any application on your phone.</string>
 </resources>
