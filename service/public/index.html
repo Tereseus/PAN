@@ -477,7 +477,7 @@ body {
           onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
         <button onclick="changePassword()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Change Delete Password</button>
       </div>
-      <div style="font-size:12px;color:var(--text2);margin-top:6px">Default password: pan</div>
+      <div style="font-size:12px;color:var(--text2);margin-top:6px">Change your delete password above.</div>
     </div>
   </div>
 
@@ -549,9 +549,16 @@ function fmtSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
+function redactPaths(str) {
+  if (!str) return str;
+  return String(str)
+    .replace(/[A-Z]:(\\\\|\\|\/)Users(\\\\|\\|\/)[^\\\/"\s,}]+(\\\\|\\|\/)/gi, 'C:\\Users\\user\\')
+    .replace(/\/home\/[^\/"\s,}]+\//gi, '/home/user/');
+}
+
 function escapeHtml(str) {
   if (!str) return '';
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return redactPaths(String(str)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function getTypeClass(type) {
