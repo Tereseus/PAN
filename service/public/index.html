@@ -563,10 +563,32 @@ function togglePrivacy() {
 
 function redactPaths(str) {
   if (!privacyMode || !str) return str;
-  return String(str)
+  // Get the current OS username to replace all occurrences
+  const username = (window.__panUsername || '');
+  let s = String(str)
     .replace(/[A-Z]:(\\\\|\\|\/)Users(\\\\|\\|\/)[^\\\/"\s,}]+(\\\\|\\|\/)/gi, 'C:\\Users\\user\\')
     .replace(/\/home\/[^\/"\s,}]+\//gi, '/home/user/');
+  // Also replace username in encoded paths like C--Users-username-Desktop
+  if (username) {
+    s = s.replace(new RegExp(username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), 'user');
+  }
+  return s;
 }
+
+// Detect username from first event data
+function detectUsername() {
+  fetch('/dashboard/api/events?limit=1').then(r => r.json()).then(d => {
+    if (d.events && d.events[0]) {
+      try {
+        const parsed = JSON.parse(d.events[0].data);
+        const cwd = parsed.cwd || parsed.transcript_path || '';
+        const match = cwd.match(/[A-Z]:[\\\/]Users[\\\/]([^\\\/]+)/i);
+        if (match) window.__panUsername = match[1];
+      } catch {}
+    }
+  }).catch(() => {});
+}
+detectUsername();
 
 function escapeHtml(str) {
   if (!str) return '';
