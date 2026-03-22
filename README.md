@@ -34,11 +34,12 @@ Other assistants: wake word → 5-10 seconds of attention → done. PAN: continu
 
 PAN indexes every conversation across all devices. A separate AI session searched files for 7 minutes and found nothing. PAN found it in 1 second.
 
-**"What is this pill I found on the floor?"**
-1. Pendant spectrometer (AS7341) reads spectral signature
-2. Pendant camera captures photo → sends to Claude Vision
-3. Cross-references color, shape, spectral data, visible markings
-4. Identifies ibuprofen 200mg from spectral + visual match
+**"Is this meat still good?"**
+1. Pendant spectrometer (AS7341) reads the light absorption spectrum of the surface
+2. Detects fat oxidation levels and moisture content — things invisible to a camera
+3. PAN tells you: "Oxidation levels are elevated. This has been sitting out too long."
+
+A camera can tell you something looks fresh. The spectrometer tells you if it actually is — by reading the chemical composition, not just the color.
 
 **"Find that article about battery tech I was reading last week and send it to my work email."**
 1. Searches browser history + PAN memory for "battery" articles from last week
@@ -214,7 +215,7 @@ One case. 22 sensors. Size of a Zippo lighter. €155 total cost.
 | 5 | Gas Sensor (BME688) | Detect gas leaks, carbon monoxide, smoke — alerts you before you can smell it |
 | 6 | UV Sensor (LTR390) | Tracks UV exposure over time — warns you based on your habits and location |
 | 7 | Thermal Camera (MLX90640) | See heat through walls, find hot wires, detect body heat in darkness |
-| 8 | Spectrometer (AS7341) | Identify unknown pills, check food freshness, verify metals by spectral signature |
+| 8 | Spectrometer (AS7341) | Analyze chemical composition — food freshness, material ID, detect fakes, check ripeness. Reads what things are made of, not just what they look like |
 | 9 | Magnetometer (QMC5883L) | Detect hidden magnets, find metal in walls, compass navigation |
 | 10 | Accelerometer + Gyro (BMI270) | Fall detection, step counting, posture alerts |
 | 11 | GPS (L76K) | Every event geotagged — "where was I when I said that?" |
