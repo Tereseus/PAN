@@ -1,10 +1,4 @@
-# ΠΑΝ — Sensor Array & Capabilities
-
-> **Ἡ γνῶσις ἥτις σῴζει οὐδενὶ δεσπότῃ ἀνήκει.**
->
-> **Knowledge that saves belongs to no master.**
->
-> **ΠΑΝ is now remembering.**
+# ΠΑΝ — Sensor Array
 
 22 sensors. Two modes of use.
 
