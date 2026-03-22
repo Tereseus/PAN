@@ -1,8 +1,10 @@
 package dev.pan.app.ui.settings
 
+import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.pan.app.ai.LocalLlm
 import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerApi
 import dev.pan.app.network.PanServerClient
@@ -17,8 +19,11 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val dataRepository: DataRepository,
     private val api: PanServerApi,
-    private val serverClient: PanServerClient
+    private val serverClient: PanServerClient,
+    private val application: Application
 ) : ViewModel() {
+
+    private val localLlm = LocalLlm(application)
 
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
     val serverUrl: StateFlow<String> = _serverUrl
@@ -57,6 +62,12 @@ class SettingsViewModel @Inject constructor(
     private val _selectedLlmModel = MutableStateFlow("llama-3.2-3b")
     val selectedLlmModel: StateFlow<String> = _selectedLlmModel
 
+    private val _llmStatus = MutableStateFlow("not_downloaded")
+    val llmStatus: StateFlow<String> = _llmStatus
+
+    private val _llmDownloadProgress = MutableStateFlow(0f)
+    val llmDownloadProgress: StateFlow<Float> = _llmDownloadProgress
+
     val isServerConnected: StateFlow<Boolean> = serverClient.isConnected
 
     init {
@@ -73,6 +84,27 @@ class SettingsViewModel @Inject constructor(
         }
         // Fetch device list from server
         refreshDevices()
+        // Check LLM status
+        refreshLlmStatus()
+    }
+
+    fun refreshLlmStatus() {
+        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == _selectedLlmModel.value }
+            ?: localLlm.getRecommendedModel()
+        _llmStatus.value = localLlm.getModelStatus(model)
+    }
+
+    fun downloadModel() {
+        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == _selectedLlmModel.value }
+            ?: localLlm.getRecommendedModel()
+        _llmStatus.value = "downloading"
+        _llmDownloadProgress.value = 0f
+        viewModelScope.launch {
+            val success = localLlm.downloadModel(model) { progress ->
+                _llmDownloadProgress.value = progress
+            }
+            _llmStatus.value = if (success) "downloaded" else "not_downloaded"
+        }
     }
 
     fun refreshDevices() {
