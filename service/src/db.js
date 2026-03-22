@@ -1,18 +1,11 @@
-// PAN Database — SQLite via sql.js (in-memory with periodic disk flush)
+// PAN Database — better-sqlite3 (direct disk writes, no data loss)
 //
-// Project discovery: .pan files are the source of truth for what is a "project".
-// syncProjects() scans desktop directories for .pan files, resolves symlinks to
-// deduplicate (e.g. Game/ -> WoE/ becomes one project), removes dead paths,
-// and uses project_name from .pan as the display name.
-//
-// detectProject() is called passively by hooks when Claude sessions start — it
-// registers new cwds. syncProjects() is the active scanner called on service
-// startup, every 10 minutes, and before terminal launch.
+// Every write goes directly to disk. No in-memory buffer.
+// No data loss on crash or service restart.
 
-import initSqlJs from 'sql.js';
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, statSync, realpathSync } from 'fs';
-import { sep } from 'path';
-import { join, dirname } from 'path';
+import Database from 'better-sqlite3';
+import { readFileSync, existsSync, mkdirSync, statSync, readdirSync, realpathSync } from 'fs';
+import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -24,89 +17,50 @@ if (!existsSync(DATA_DIR)) {
   mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// Initialize sql.js and load/create database
-const SQL = await initSqlJs();
+// Open database — writes go directly to disk
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL'); // Write-Ahead Logging for better concurrent access
+db.pragma('busy_timeout = 5000'); // Wait up to 5s if locked
 
-let db;
-if (existsSync(DB_PATH)) {
-  const buffer = readFileSync(DB_PATH);
-  db = new SQL.Database(buffer);
-} else {
-  db = new SQL.Database();
-}
-
-// Run schema
+// Run schema (CREATE IF NOT EXISTS — safe to run every startup)
 const schema = readFileSync(SCHEMA_PATH, 'utf-8');
-db.run(schema);
-save();
+db.exec(schema);
 
-// Persist to disk — with backup to prevent data loss
-function save() {
-  try {
-    const data = db.export();
-    const buf = Buffer.from(data);
-    // Don't save if the export is suspiciously small and existing DB is larger
-    if (existsSync(DB_PATH)) {
-      const existingSize = statSync(DB_PATH).size;
-      if (buf.length < existingSize * 0.5 && existingSize > 50000) {
-        console.error(`[DB] WARNING: Refusing to save — export (${buf.length}B) is much smaller than existing DB (${existingSize}B). Possible data loss.`);
-        return;
-      }
-    }
-    // Backup before overwriting
-    if (existsSync(DB_PATH)) {
-      const backupPath = DB_PATH + '.bak';
-      try { writeFileSync(backupPath, readFileSync(DB_PATH)); } catch {}
-    }
-    writeFileSync(DB_PATH, buf);
-  } catch (e) {
-    console.error(`[DB] Save failed: ${e.message}`);
+// Convert sql.js style params ({':key': val}) to better-sqlite3 style ({key: val})
+function fixParams(params) {
+  if (!params || typeof params !== 'object') return {};
+  const fixed = {};
+  for (const [k, v] of Object.entries(params)) {
+    const key = k.startsWith(':') ? k.slice(1) : k;
+    fixed[key] = v;
   }
+  return fixed;
 }
 
-// Auto-save every 10 seconds
-setInterval(save, 10000);
-
-// Save on exit
-process.on('exit', save);
-process.on('SIGINT', () => { save(); process.exit(0); });
-process.on('SIGTERM', () => { save(); process.exit(0); });
-
-// Query helpers that auto-save after writes
+// Query helpers — compatible with existing sql.js style params
 function run(sql, params = {}) {
-  db.run(sql, params);
-  save();
+  const stmt = db.prepare(sql);
+  return stmt.run(fixParams(params));
 }
 
 function get(sql, params = {}) {
   const stmt = db.prepare(sql);
-  stmt.bind(params);
-  if (stmt.step()) {
-    const result = stmt.getAsObject();
-    stmt.free();
-    return result;
-  }
-  stmt.free();
-  return null;
+  return stmt.get(fixParams(params)) || null;
 }
 
 function all(sql, params = {}) {
-  const results = [];
   const stmt = db.prepare(sql);
-  stmt.bind(params);
-  while (stmt.step()) {
-    results.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return results;
+  return stmt.all(fixParams(params));
 }
 
 function insert(sql, params = {}) {
-  db.run(sql, params);
-  const lastId = db.exec("SELECT last_insert_rowid()")[0]?.values[0]?.[0];
-  save();
-  return lastId;
+  const stmt = db.prepare(sql);
+  const result = stmt.run(fixParams(params));
+  return result.lastInsertRowid;
 }
+
+// save() is now a no-op — better-sqlite3 writes directly to disk
+function save() {}
 
 // Project auto-detection (from hooks — registers a cwd as a project)
 function detectProject(cwd) {
@@ -129,14 +83,13 @@ function detectProject(cwd) {
 }
 
 // Scan disk for real projects — .pan files are the source of truth
-// Resolves symlinks, removes dead paths, deduplicates by real path
 function syncProjects() {
   const SCAN_ROOTS = [
     join(process.env.USERPROFILE || 'C:\\Users\\user', 'OneDrive', 'Desktop'),
     join(process.env.USERPROFILE || 'C:\\Users\\user', 'Desktop'),
   ];
 
-  const seen = new Map(); // realPath -> { name, path, panData }
+  const seen = new Map();
 
   for (const root of SCAN_ROOTS) {
     if (!existsSync(root)) continue;
@@ -147,7 +100,6 @@ function syncProjects() {
     for (const entry of entries) {
       const entryPath = join(root, entry.name);
 
-      // Follow symlinks to check if it's a directory
       let isDir = false;
       let realPath = entryPath;
       try {
@@ -158,7 +110,6 @@ function syncProjects() {
 
       if (!isDir) continue;
 
-      // Check for .pan file — that's what makes it a PAN project
       const panFile = join(entryPath, '.pan');
       if (!existsSync(panFile)) continue;
 
@@ -167,7 +118,6 @@ function syncProjects() {
 
       const normalizedReal = realPath.replace(/\\/g, '/').replace(/\/$/, '');
 
-      // Deduplicate by real path — symlinks collapse to the same project
       if (!seen.has(normalizedReal)) {
         const name = panData.project_name || entry.name;
         seen.set(normalizedReal, { name, path: normalizedReal, panData });
@@ -175,7 +125,7 @@ function syncProjects() {
     }
   }
 
-  // Sync DB: remove projects whose paths no longer exist, add new ones
+  // Sync DB
   const existing = all("SELECT * FROM projects");
 
   for (const p of existing) {
@@ -188,7 +138,6 @@ function syncProjects() {
       console.log(`[PAN Sync] Removing dead project: ${p.name} (${p.path})`);
       run("DELETE FROM projects WHERE id = :id", { ':id': p.id });
     } else if (!hasPanFile && !seen.has(pPath)) {
-      // Path exists but no .pan file — not a PAN-tracked project
       console.log(`[PAN Sync] Removing non-PAN project: ${p.name} (no .pan file)`);
       run("DELETE FROM projects WHERE id = :id", { ':id': p.id });
     }
@@ -197,7 +146,6 @@ function syncProjects() {
   for (const [realPath, proj] of seen) {
     const existingByPath = get("SELECT * FROM projects WHERE path = :path", { ':path': realPath });
     if (existingByPath) {
-      // Update name if .pan file has a different one
       if (existingByPath.name !== proj.name) {
         run("UPDATE projects SET name = :name, updated_at = datetime('now') WHERE id = :id", {
           ':name': proj.name,
