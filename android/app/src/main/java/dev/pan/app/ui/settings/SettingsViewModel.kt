@@ -52,10 +52,10 @@ class SettingsViewModel @Inject constructor(
     val devices: StateFlow<List<DeviceItem>> = _devices
 
     // App preferences
-    private val _preferredMusicApp = MutableStateFlow("auto")
+    private val _preferredMusicApp = MutableStateFlow("Auto")
     val preferredMusicApp: StateFlow<String> = _preferredMusicApp
 
-    private val _preferredMessagingApp = MutableStateFlow("auto")
+    private val _preferredMessagingApp = MutableStateFlow("Auto")
     val preferredMessagingApp: StateFlow<String> = _preferredMessagingApp
 
     // Local LLM model selection
