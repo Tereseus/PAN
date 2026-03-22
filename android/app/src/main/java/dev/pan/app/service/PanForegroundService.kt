@@ -73,6 +73,7 @@ class PanForegroundService : Service() {
     private val convoTracker = ConversationTracker()
     private var isMuted = false
     private var flashlightOn = false
+    private var lastActionContext = "" // tracks what "it" / "that" refers to
     private var lastTtsDoneTime = 0L  // When TTS last finished speaking
     private val TTS_COOLDOWN_MS = 1000L  // Ignore speech for 1s after TTS finishes
 
@@ -554,7 +555,18 @@ class PanForegroundService : Service() {
     }
 
     private fun handleLocally(text: String, intent: String): String? {
-        val lower = wordsToNumbers(text.lowercase())
+        var lower = wordsToNumbers(text.lowercase())
+
+        // Context resolution — "turn it off", "do that again", etc.
+        if (lastActionContext.isNotBlank() &&
+            (lower.contains("turn it") || lower.contains("turn that") ||
+             lower == "turn it off" || lower == "turn it on" ||
+             lower == "off" || lower == "on" ||
+             lower.matches(Regex(".*\\b(it|that|this)\\b.*(on|off).*")))) {
+            lower = lower.replace("it", lastActionContext).replace("that", lastActionContext).replace("this", lastActionContext)
+            if (lower == "off") lower = "turn $lastActionContext off"
+            if (lower == "on") lower = "turn $lastActionContext on"
+        }
 
         // Camera / vision commands — handle async, return a placeholder
         if (isCameraCommand(lower)) {
@@ -722,6 +734,7 @@ class PanForegroundService : Service() {
                     cameraManager.setTorchMode(cameraId, flashlightOn)
                     flashlightOn
                 }
+                lastActionContext = "flashlight"
                 return if (flashlightOn) "Flashlight on." else "Flashlight off."
             } catch (e: Exception) {
                 panLog("Flashlight failed: ${e.message}")
