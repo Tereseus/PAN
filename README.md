@@ -351,4 +351,4 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 **Tereseus** — [github.com/Tereseus](https://github.com/Tereseus)
 
-Built by Tereseus, with Claude Code.
+Built with Claude Code.
