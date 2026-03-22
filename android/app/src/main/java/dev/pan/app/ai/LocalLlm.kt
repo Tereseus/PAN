@@ -205,9 +205,12 @@ class LocalLlm(private val context: Context) {
             val startTime = System.currentTimeMillis()
             Log.d(TAG, "Loading model: ${model.name}...")
 
+            // de.kherud:llama doesn't have Android ARM native libs yet
+            // TODO: Replace with llama.cpp Android NDK build or MediaPipe LLM
+            // For now, mark as downloaded but not loaded — falls through to server
             val params = de.kherud.llama.ModelParameters()
                 .setModel(modelFile.absolutePath)
-                .setGpuLayers(0) // CPU only for now, GPU via Vulkan later
+                .setGpuLayers(0)
 
             llamaModel = de.kherud.llama.LlamaModel(params)
             isLoaded = true
@@ -216,8 +219,10 @@ class LocalLlm(private val context: Context) {
             val elapsed = System.currentTimeMillis() - startTime
             Log.d(TAG, "Model loaded in ${elapsed}ms")
             true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load model: ${e.message}")
+        } catch (e: Throwable) {
+            // UnsatisfiedLinkError if native libs missing, or any other error
+            Log.e(TAG, "Failed to load model (native libs may be missing): ${e.message}")
+            Log.d(TAG, "Model downloaded but cannot load — using server for routing")
             isLoaded = false
             false
         }
@@ -227,17 +232,22 @@ class LocalLlm(private val context: Context) {
     private fun infer(prompt: String, maxTokens: Int = 150): String {
         val model = llamaModel ?: return ""
 
-        val inferParams = de.kherud.llama.InferenceParameters(prompt)
-            .setNPredict(maxTokens)
-            .setTemperature(0.1f) // low temp for deterministic classification
-            .setStopStrings("<|eot_id|>", "\n\n")
+        return try {
+            val inferParams = de.kherud.llama.InferenceParameters(prompt)
+                .setNPredict(maxTokens)
+                .setTemperature(0.1f)
+                .setStopStrings("<|eot_id|>", "\n\n")
 
-        val sb = StringBuilder()
-        for (output in model.generate(inferParams)) {
-            sb.append(output)
-            if (sb.length > maxTokens * 4) break // safety limit
+            val sb = StringBuilder()
+            for (output in model.generate(inferParams)) {
+                sb.append(output)
+                if (sb.length > maxTokens * 4) break
+            }
+            sb.toString().trim()
+        } catch (e: Throwable) {
+            Log.e(TAG, "Inference failed: ${e.message}")
+            ""
         }
-        return sb.toString().trim()
     }
 
     private fun buildIntentPrompt(text: String): String {
