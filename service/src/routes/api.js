@@ -381,7 +381,10 @@ router.post('/query', async (req, res) => {
     res.json({
       response_text: result.response,
       intent: result.intent,
-      action: result.action || null
+      route: result.intent || null,
+      query: result.query || result.searchTerm || null,
+      action: result.action || null,
+      response_time_ms: result.response_time_ms || null
     });
   } catch (err) {
     console.error('[PAN] Query error:', err.message);
