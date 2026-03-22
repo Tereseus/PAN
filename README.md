@@ -215,7 +215,7 @@ One case. 22 sensors. Size of a Zippo lighter. €155 total cost.
 | 5 | Gas Sensor (BME688) | Detect gas leaks, carbon monoxide, smoke — alerts you before you can smell it |
 | 6 | UV Sensor (LTR390) | Tracks UV exposure over time — warns you based on your habits and location |
 | 7 | Thermal Camera (MLX90640) | See heat through walls, find hot wires, detect body heat in darkness |
-| 8 | Spectrometer (AS7341) | Analyze chemical composition — food freshness, material ID, detect fakes, check ripeness. Reads what things are made of, not just what they look like |
+| 8 | Spectrometer (AS7341) | Analyze chemical composition at 1-5 cm — food freshness (fat oxidation, moisture, sugar content), material ID, detect fakes, check ripeness. Reads what things are actually made of, not just what they look like |
 | 9 | Magnetometer (QMC5883L) | Detect hidden magnets, find metal in walls, compass navigation |
 | 10 | Accelerometer + Gyro (BMI270) | Fall detection, step counting, posture alerts |
 | 11 | GPS (L76K) | Every event geotagged — "where was I when I said that?" |
