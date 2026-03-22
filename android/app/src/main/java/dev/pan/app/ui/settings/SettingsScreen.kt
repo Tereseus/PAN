@@ -123,7 +123,7 @@ fun SettingsScreen(
                 title = "Music App",
                 description = "Preferred app for playing music",
                 selected = preferredMusicApp,
-                options = listOf("auto", "spotify", "youtube", "youtube_music"),
+                options = listOf("Auto", "Spotify", "YouTube", "YouTube Music"),
                 onSelect = { viewModel.setPreferredMusicApp(it) }
             )
 
@@ -131,7 +131,7 @@ fun SettingsScreen(
                 title = "Messaging App",
                 description = "Preferred app for sending messages",
                 selected = preferredMessagingApp,
-                options = listOf("auto", "sms", "whatsapp", "instagram", "telegram"),
+                options = listOf("Auto", "SMS", "WhatsApp", "Instagram", "Telegram"),
                 onSelect = { viewModel.setPreferredMessagingApp(it) }
             )
 
