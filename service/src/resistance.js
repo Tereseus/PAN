@@ -152,52 +152,104 @@ export function getResistancePaths(action, platform = 'pc') {
     });
 }
 
-// Try an action — returns the first working path's result
-export async function tryAction(action, params = {}, platform = 'pc') {
+// Determine best target device for an action
+// If phone is near PC (same network), prefer PC for media playback, PC screen for browsing
+// If user specifies a device ("on my phone", "on my computer"), use that
+function pickTargetDevice(action, params = {}, sourceDevice = 'phone') {
+  // User explicitly requested a device
+  if (params.targetDevice) return params.targetDevice;
+
+  // Check which devices are online
+  const devices = all(`SELECT * FROM devices WHERE last_seen > datetime('now', '-5 minutes')`);
+  const pcOnline = devices.some(d => d.device_type === 'pc');
+  const phoneOnline = devices.some(d => d.device_type === 'phone');
+
+  // Device preference by action type
+  const preferPC = ['play_music', 'search', 'open_app', 'calendar'];
+  const preferPhone = ['navigate', 'call', 'send_message'];
+
+  if (preferPC.includes(action) && pcOnline) return 'pc';
+  if (preferPhone.includes(action) && phoneOnline) return 'phone';
+
+  // Default: use whatever device the command came from
+  return sourceDevice;
+}
+
+// Try an action — fires all available paths in parallel, first success wins
+export async function tryAction(action, params = {}, sourceDevice = 'pc') {
+  const targetDevice = pickTargetDevice(action, params, sourceDevice);
+  const platform = targetDevice === 'phone' ? 'android' : 'pc';
   const paths = getResistancePaths(action, platform);
 
   if (paths.length === 0) {
     return { ok: false, error: `No paths available for action "${action}"` };
   }
 
-  const errors = [];
+  const availablePaths = paths.filter(p => p.available);
+  const unavailablePaths = paths.filter(p => !p.available);
 
-  for (const path of paths) {
-    if (!path.available) {
-      const missing = path.missingRequirements.join(', ');
-      errors.push({ path: path.path_name, error: `Requires: ${missing}`, suggestion: getSuggestion(path) });
-      continue;
+  if (availablePaths.length === 0) {
+    const suggestions = unavailablePaths.map(p => getSuggestion(p)).filter(Boolean);
+    return { ok: false, error: `Could not ${action.replace('_', ' ')}. ${suggestions.join('. ')}`, attempts: [] };
+  }
+
+  // If user specified a specific service ("play on Spotify"), filter to that
+  if (params.preferredService) {
+    const preferred = availablePaths.find(p => p.path_name.includes(params.preferredService.toLowerCase()));
+    if (preferred) {
+      // Try the preferred path first, alone
+      const start = Date.now();
+      try {
+        const result = await executePath(preferred, params);
+        logResult(action, preferred.path_name, true, null, Date.now() - start);
+        return { ok: true, path: preferred.path_name, method: preferred.method, device: targetDevice, result, duration: Date.now() - start };
+      } catch (err) {
+        const errorMsg = err.message || String(err);
+        logResult(action, preferred.path_name, false, errorMsg, Date.now() - start);
+        // Fall through to parallel attempt with alternatives
+        const suggestion = getSuggestion(preferred) || `${params.preferredService} failed. Trying alternatives.`;
+        // Don't return — let it try other paths below
+      }
+    } else {
+      // Preferred service not available
+      const match = unavailablePaths.find(p => p.path_name.includes(params.preferredService.toLowerCase()));
+      if (match) {
+        const suggestion = getSuggestion(match);
+        return { ok: false, error: `PAN does not have access to ${params.preferredService}. ${suggestion}`, canFallback: true, alternatives: availablePaths.map(p => p.path_name) };
+      }
     }
+  }
 
+  // Fire all available paths in parallel — first success wins
+  const racePromises = availablePaths.map(async (path) => {
     const start = Date.now();
     try {
       const result = await executePath(path, params);
       const duration = Date.now() - start;
-
-      // Log success
       logResult(action, path.path_name, true, null, duration);
-      return { ok: true, path: path.path_name, method: path.method, result, duration };
-
+      return { ok: true, path: path.path_name, method: path.method, device: targetDevice, result, duration };
     } catch (err) {
       const duration = Date.now() - start;
       const errorMsg = err.message || String(err);
-
-      // Log failure
       logResult(action, path.path_name, false, errorMsg, duration);
-      errors.push({ path: path.path_name, error: errorMsg });
+      throw { path: path.path_name, error: errorMsg };
     }
+  });
+
+  try {
+    // Promise.any — first one that resolves wins, others are ignored
+    const winner = await Promise.any(racePromises);
+    return winner;
+  } catch (aggregateError) {
+    // All paths failed
+    const errors = aggregateError.errors || [];
+    const suggestions = unavailablePaths.map(p => getSuggestion(p)).filter(Boolean);
+    let message = `Could not ${action.replace('_', ' ')}.`;
+    if (suggestions.length > 0) {
+      message += ` To enable more options: ${suggestions.join('. ')}`;
+    }
+    return { ok: false, error: message, attempts: errors };
   }
-
-  // All paths failed — return helpful error with alternatives
-  const available = errors.filter(e => !e.suggestion);
-  const needSetup = errors.filter(e => e.suggestion);
-
-  let message = `Could not ${action.replace('_', ' ')}.`;
-  if (needSetup.length > 0) {
-    message += ` To enable more options: ${needSetup.map(e => e.suggestion).join('. ')}.`;
-  }
-
-  return { ok: false, error: message, attempts: errors };
 }
 
 // Execute a specific path
