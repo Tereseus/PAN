@@ -280,38 +280,6 @@ class PanForegroundService : Service() {
             )
         }
 
-        // Music — route through resistance system (preference → fallback paths)
-        if (lower.contains("play") && (lower.contains("song") || lower.contains("music") || lower.contains("spotify") || lower.contains("youtube"))) {
-            val songQuery = lower
-                .replace(Regex("(?:hey |hi |ok )?(?:pan|pam|ben|pen)[,.]?\\s*"), "")
-                .replace(Regex("(?:can you |could you |please )?"), "")
-                .replace(Regex("(?:play|on spotify|on youtube|on my phone|the song|song|music)"), "")
-                .trim()
-            if (songQuery.isNotBlank()) {
-                // Detect if user explicitly requested a service
-                val explicitService = when {
-                    lower.contains("youtube") -> "youtube"
-                    lower.contains("spotify") -> "spotify"
-                    else -> null
-                }
-                val result = resistanceClient.tryPlayMusic(this, songQuery, explicitService)
-                if (result.success && result.message != null) {
-                    feedbackSounds.onCommandSent()
-                    mainHandler.post { panSpeak(result.message) }
-                    addToHistory("User", text)
-                    addToHistory("PAN", result.message)
-                    logToServer(text, "music_resistance", songQuery, "phone_music")
-                    return
-                } else if (!result.success) {
-                    mainHandler.post { panSpeak(result.error ?: "Could not play $songQuery.") }
-                    addToHistory("User", text)
-                    addToHistory("PAN", result.error ?: "Could not play.")
-                    logToServer(text, "music_resistance_fail", result.error ?: "", "phone_music")
-                    return
-                }
-            }
-        }
-
         // "That didn't work" — report failure to resistance system
         if (lower.contains("didn't work") || lower.contains("that didn't") || lower.contains("try something else") || lower.contains("not working")) {
             val feedback = resistanceClient.reportLastFailed("play_music")
@@ -387,13 +355,36 @@ class PanForegroundService : Service() {
                 }
 
                 GeminiBrain.Action.SERVER -> {
-                    // Send to PAN server for PC actions
+                    // Send to PAN server — Claude classifies and responds
+                    val startTime = System.currentTimeMillis()
                     try {
                         val response = serverClient.askPanWithContext(text, null, historyContext)
+                        val elapsed = System.currentTimeMillis() - startTime
                         if (response != null) {
                             val responseText = response.response_text
-                            panLog("Server: ${responseText.take(100)}")
-                            addToHistory("PAN", responseText)
+                            panLog("Server (${elapsed}ms): ${responseText.take(100)}")
+
+                            // Check if server returned a phone-executable action
+                            val route = response.route ?: ""
+                            if (route == "music" || route == "play_music" || responseText.startsWith("Playing ")) {
+                                // Server classified as music — execute through resistance
+                                val songQuery = response.query ?: responseText.removePrefix("Playing ").removeSuffix(".")
+                                val explicitService = when {
+                                    lower.contains("youtube") -> "youtube"
+                                    lower.contains("spotify") -> "spotify"
+                                    else -> null
+                                }
+                                val result = resistanceClient.tryPlayMusic(this@PanForegroundService, songQuery, explicitService)
+                                val msg = result.message ?: result.error ?: responseText
+                                addToHistory("PAN", "$msg (${elapsed}ms)")
+                                dataRepository.addPanResponse(msg)
+                                feedbackSounds.onCommandSent()
+                                mainHandler.post { panSpeak(msg) }
+                                logToServer(text, "music_resistance", songQuery, "phone_music")
+                                return@launch
+                            }
+
+                            addToHistory("PAN", "$responseText (${elapsed}ms)")
                             dataRepository.addPanResponse(responseText)
                             if (responseText != "[AMBIENT]" && responseText.isNotBlank()) {
                                 mainHandler.post { panSpeak(responseText) }
