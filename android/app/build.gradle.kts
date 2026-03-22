@@ -85,9 +85,19 @@ dependencies {
     // Vosk — offline speech recognition (no profanity filter, no audio focus steal)
     implementation("com.alphacephei:vosk-android:0.3.47")
 
-    // Google ML Kit GenAI — on-device Gemini Nano
+    // Google ML Kit GenAI — on-device Gemini Nano (backup)
     implementation("com.google.mlkit:genai-prompt:1.0.0-beta1")
 
-    // Google AI Edge SDK — direct AICore access (fallback)
+    // Google AI Edge SDK — direct AICore access (backup)
     implementation("com.google.ai.edge.aicore:aicore:0.0.1-exp01")
+
+    // llama.cpp for Android — local LLM inference
+    implementation("de.kherud:llama:4.2.0")
+}
+
+// NDK for llama.cpp native code
+android.packaging {
+    jniLibs {
+        useLegacyPackaging = true
+    }
 }
