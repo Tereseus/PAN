@@ -58,16 +58,32 @@ The pendant camera sees your meals. PAN identifies what you're eating through vi
 **"Where did I leave my keys last night?"**
 PAN's camera captures photos continuously. It saw your keys on the kitchen counter at 11:47 PM. It tells you exactly where they are, with the photo to prove it.
 
-**"Where's Marcus right now?"**
-Marcus also uses PAN and has shared his location with you. PAN checks his GPS: "Marcus is at the gym on 5th Street. He's been there for about 40 minutes." You don't need to call him, text him, or open an app. PAN networks between users who opt in to sharing.
-
 **"Tell Marcus I'm running late."**
-PAN opens whatever messaging app you use with Marcus — iMessage, WhatsApp, Instagram DM — types "Running late, be there in 20," and sends it. You didn't touch your phone. You didn't even say which app. PAN already knows which one you use with Marcus because it's seen your conversation history.
+PAN opens whatever messaging app you use with Marcus — types "Running late, be there in 20," and sends it. You didn't touch your phone. You didn't even say which app. PAN already knows which one you use with Marcus because it's seen your conversation history.
 
 **Safety:**
 You're about to drill into a wall. The EMF sensor detects a live wire behind the drywall — PAN warns you before you hit it. The thermal camera spots an overheating outlet you walked past — PAN flags it. The gas sensor picks up a methane leak in your garage — PAN alerts you before you can smell it.
 
-You control all of this. Turn off nutrition tracking. Turn off location sharing. Keep safety alerts on. Every category is independently controllable — PAN only monitors what you tell it to.
+You control all of this. Turn off nutrition tracking. Keep safety alerts on. Every category is independently controllable — PAN only monitors what you tell it to.
+
+### Connected PANs
+
+When two people both use PAN, their devices can coordinate automatically. Everything is opt-in — nothing is shared without both people agreeing.
+
+**Silent coordination:**
+You're in a meeting. PAN hears the meeting context and knows you're busy. Your partner sends you a message — their PAN holds it and delivers it when your meeting ends. Nobody configured this. PAN figured out you were occupied and queued non-urgent messages automatically.
+
+**Driving to the same place:**
+You and a friend are both heading to the same restaurant. Both PANs share ETAs automatically — "Sarah is 12 minutes away, you're 8 minutes away." No one had to text "how far are you?" No one had to share their location manually. Both PANs just coordinated.
+
+**"Is this the right part?"**
+Sarah is at the hardware store picking up a part for you. She holds it up and asks PAN. Her PAN captures the photo and sends it to yours as a conversation: "Sarah is asking if this is the right part." You see the photo, you reply: "No, it's the one with the blue cap." She hears your response through her PAN. No phone call, no photo upload, no texting back and forth.
+
+**Elderly parent monitoring:**
+Your parent's PAN detects a fall — accelerometer spike followed by no movement for 60 seconds. Their PAN alerts yours immediately with GPS location and vitals. They didn't press a button. They might not be able to. You're notified within seconds.
+
+**Shared memory:**
+"What did Jake and I decide about the trip?" PAN searches both your conversation histories (with permission) and reconstructs the full decision — even if parts happened over voice on different days across different devices.
 
 ### Cross-Device Orchestration
 
