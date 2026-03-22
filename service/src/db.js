@@ -21,6 +21,7 @@ if (!existsSync(DATA_DIR)) {
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL'); // Write-Ahead Logging for better concurrent access
 db.pragma('busy_timeout = 5000'); // Wait up to 5s if locked
+db.pragma('foreign_keys = OFF'); // Session IDs are free-form, not enforced FK
 
 // Run schema (CREATE IF NOT EXISTS — safe to run every startup)
 const schema = readFileSync(SCHEMA_PATH, 'utf-8');
