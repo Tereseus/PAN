@@ -56,8 +56,6 @@ The pendant has a **magnetic clip** — unclip it from your shirt, hold it up to
 - Plant/animal identification
 - Surgical field monitoring (medical)
 
-**Superhuman?** No — but PERFECT RECALL makes it superhuman
-
 ---
 
 ### 2. Microphone (PDM) — Built into XIAO
@@ -73,8 +71,6 @@ The pendant has a **magnetic clip** — unclip it from your shirt, hold it up to
 - "What song is playing?"
 - Meeting/conversation recording
 - Evidence capture
-
-**Superhuman?** No — but ALWAYS ON + SEARCHABLE is superhuman
 
 ---
 
@@ -96,7 +92,7 @@ The pendant has a **magnetic clip** — unclip it from your shirt, hold it up to
 - Surgical: "infected tissue detected at incision site"
 - Factory: continuous air safety monitoring
 
-★ = LIFE SAVING · **Superhuman? YES — like a dog's nose**
+★ = LIFE SAVING
 
 Highest value single addition after camera and mic.
 
@@ -113,8 +109,6 @@ Highest value single addition after camera and mic.
 - Permanent blacklight — CSI mode
 - "This surface hasn't been cleaned" (biological residue)
 - Skin cancer prevention through daily UV tracking
-
-**Superhuman? YES — UV is invisible to humans**
 
 ---
 
@@ -133,8 +127,6 @@ Highest value single addition after camera and mic.
 - Animal detection at night (wildlife, security)
 - "Your hands are cold — circulation issue?"
 
-**Superhuman? YES — like a snake's pit organ**
-
 ---
 
 ### 6. Magnetometer (QMC5883L) — €2 · 3x3mm
@@ -150,8 +142,6 @@ Highest value single addition after camera and mic.
 - Detect hidden electronics
 - Geomagnetic navigation (works without GPS)
 
-**Superhuman? YES — like migratory birds**
-
 ---
 
 ### 7. Air Quality (SGP40) — €8 · 2.4x2.4mm
@@ -165,8 +155,6 @@ Highest value single addition after camera and mic.
 - Long-term air quality logging (your home, office, commute)
 - "This restaurant kitchen has poor ventilation"
 - Factory worker safety — continuous exposure monitoring
-
-**Superhuman? YES — completely invisible to humans**
 
 ---
 
@@ -186,7 +174,7 @@ Highest value single addition after camera and mic.
 - Gemstone / mineral identification
 - Forgery detection (currency, documents, art)
 
-★ = KILLER FEATURE · **Superhuman? YES — identifies materials by light signature**
+★ = KILLER FEATURE
 
 ---
 
@@ -204,8 +192,6 @@ Highest value single addition after camera and mic.
 - Gesture control (tap Pandant = command)
 - Posture monitoring
 
-**Superhuman?** Matches human vestibular — but more precise
-
 ---
 
 ### 10. Ultrasonic Distance (RCWL-1601) — €2 · 20x15mm
@@ -219,8 +205,6 @@ Highest value single addition after camera and mic.
 - Parking distance sensing
 - Detect ultrasonic emitters (some security systems)
 - Detect approaching objects you can't see
-
-**Superhuman? YES — echolocation like bats**
 
 ---
 
@@ -237,7 +221,7 @@ Highest value single addition after camera and mic.
 - "Microwave oven is leaking RF"
 - Detect active surveillance equipment
 
-★ = LIFE SAVING · **Superhuman? YES — no animal has this**
+★ = LIFE SAVING
 
 ---
 
@@ -254,7 +238,7 @@ Highest value single addition after camera and mic.
 - Travel safety in unfamiliar regions
 - Continuous logging — "your daily exposure was X microsieverts"
 
-★ = LIFE SAVING · **Superhuman? YES — no animal has this**
+★ = LIFE SAVING
 
 ---
 
@@ -271,8 +255,6 @@ Highest value single addition after camera and mic.
 - "Your resting heart rate has increased 8bpm this week"
 - Stress indicator (elevated HR + context)
 
-**Superhuman?** Self-monitoring (humans can't read own vitals)
-
 ---
 
 ### 14. GSR / Skin Conductance (GSR module) — €3 · small module
@@ -286,8 +268,6 @@ Highest value single addition after camera and mic.
 - Emotional state correlation with events
 - "You get stressed every Monday at 9am" (pattern detection)
 - Meditation/calm feedback
-
-**Superhuman?** Self-monitoring
 
 ---
 
@@ -304,8 +284,6 @@ Highest value single addition after camera and mic.
 - "You spend 6 hours/week at this location"
 - Works without phone (Pandant has own GPS)
 
-**Superhuman? YES — precise coordinates no animal can match**
-
 ---
 
 ### 16. Ambient Light (BH1750) — €2 · 2x2mm
@@ -318,8 +296,6 @@ Highest value single addition after camera and mic.
 - Sleep hygiene — "your bedroom has too much light at night"
 - "This workspace is 150 lux — too dim, eye strain risk"
 - Light exposure logging for circadian health
-
-**Superhuman?** More precise than human perception
 
 ---
 
@@ -334,8 +310,6 @@ Highest value single addition after camera and mic.
 - Food color analysis (ripeness, freshness)
 - "That mole changed color" (skin health tracking)
 
-**Superhuman?** More precise than human color perception
-
 ---
 
 ### 18. Laser Distance / ToF (VL53L0X) — €3 · 4.4x2.4mm
@@ -348,8 +322,6 @@ Highest value single addition after camera and mic.
 - Gesture detection (hand wave near Pandant)
 - Object approach warning
 - Precise object positioning
-
-**Superhuman? YES — laser precision**
 
 ---
 
@@ -364,8 +336,6 @@ Highest value single addition after camera and mic.
 - Concert/club safety — "you've been at 95dB for 2 hours"
 - Construction site compliance monitoring
 
-**Superhuman?** More precise than human hearing
-
 ---
 
 ### 20. Temperature + Humidity (SHT40) — included in BME688
@@ -378,8 +348,6 @@ Highest value single addition after camera and mic.
 - Mold risk warning (high humidity sustained)
 - "Humidity dropped 20% in 1 hour — weather changing"
 - Comfort optimization — "your productivity peaks at 22°C"
-
-**Superhuman?** More precise than human thermoception
 
 ---
 
@@ -395,8 +363,6 @@ Highest value single addition after camera and mic.
 - Aviation/hiking altitude safety
 - "Pressure change may trigger your migraines"
 
-**Superhuman? YES — no animal this precise**
-
 ---
 
 ### 22. pH Sensor (PH-4502C) — €5 · probe + module
@@ -409,8 +375,6 @@ Highest value single addition after camera and mic.
 - Pool/aquarium maintenance
 - Food safety — "that milk is turning"
 - Wound pH monitoring (healing indicator)
-
-**Superhuman? YES — no human equivalent**
 
 Note: may skip for Pandant, spectrometer partially replaces
 
@@ -570,7 +534,6 @@ V1 fits easily on XIAO's native pins. V2 needs a €2 GPIO expander chip.
 | Metric | Value |
 |--------|-------|
 | Total sensors | 22 (20 practical, 2 optional) |
-| Beyond human capability | 15 of 22 |
 | Life-saving sensors | 4 (gas, EMF, radiation, spectrometer) |
 | V1 size | AirTag / coat button (~30mm) |
 | V1 cost | ~€30-40 (ESP32 + battery + case + laser + LED) |

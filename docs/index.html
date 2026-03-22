@@ -696,6 +696,13 @@
         if (!res.ok) throw new Error('API error');
         const html = await res.text();
         document.getElementById('readme-body').innerHTML = html;
+        // Rewrite relative links to point to GitHub repo
+        document.querySelectorAll('#readme-body a').forEach(a => {
+          const href = a.getAttribute('href');
+          if (href && !href.startsWith('http') && !href.startsWith('#') && !href.startsWith('/')) {
+            a.href = `https://github.com/${REPO}/blob/master/${href}`;
+          }
+        });
       } catch (e) {
         document.getElementById('readme-body').innerHTML = '<div class="loading">Could not load README. <a href="https://github.com/' + REPO + '#readme" style="color:#58a6ff">View on GitHub</a></div>';
       }

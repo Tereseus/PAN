@@ -29,33 +29,32 @@ These detect stimuli from the external environment:
 ## Sensors That Fit in PAN Pandant
 Small enough (fingernail to coin sized), runs on 3.3-5V, ESP32 compatible:
 
-| # | Sensor | Module | Detects | Size | Beyond Human? |
-|---|--------|--------|---------|------|---------------|
-| 1 | Camera (OV2640/OV3660) | Built into XIAO | Visible light, photos | Tiny | No (but perfect recall) |
-| 2 | Microphone (PDM) | Built into XIAO | Sound/audio | Tiny | No (but always recording) |
-| 3 | Gas sensor (MQ series / BME688) | BME688 | VOCs, CO, methane, hundreds of compounds | 3x3mm | YES — closer to dog's nose |
-| 4 | UV sensor (GUVA-S12SD / LTR390) | LTR390 | Ultraviolet light intensity | 2x2mm | YES — invisible to humans |
-| 5 | IR thermal sensor (MLX90640) | MLX90640 | Heat signatures, thermal imaging | 16x12mm | YES — like a snake's pit organ |
-| 6 | Magnetometer (LIS3MDL / QMC5883) | QMC5883L | Magnetic field direction/strength | 3x3mm | YES — like migratory birds |
-| 7 | Barometric pressure (BMP390 / BME280) | BME280 | Air pressure, altitude, weather changes | 2.5x2.5mm | YES — more precise than any animal |
-| 8 | Air quality (SGP40 / SCD41) | SGP40 | VOCs, CO2 levels, indoor air quality | 2.4x2.4mm | YES — invisible to humans |
-| 9 | Spectrometer (AS7341) | AS7341 | 11 light wavelength channels (spectral analysis) | 3.1x2mm | YES — identifies materials by light |
-| 10 | Accelerometer + Gyroscope (BMI270 / LSM6DSO) | BMI270 | Motion, rotation, vibration, orientation | 2.5x3mm | Matches human vestibular |
-| 11 | Temperature + Humidity (SHT40 / AHT20) | SHT40 | Ambient temp and humidity | 1.5x1.5mm | More precise than human |
-| 12 | Ultrasonic (RCWL-1601) | RCWL-1601 | Distance via echolocation | 20x15mm | YES — like bats |
-| 13 | EMF sensor (AD8317) | AD8317 | Electromagnetic field strength | Small module | YES — no animal has this |
-| 14 | Radiation (RadSens / SBM-20) | RadSens | Ionizing radiation (gamma, beta) | 10x50mm (tube) | YES — no animal has this |
-| 15 | Heart rate / SpO2 (MAX30102) | MAX30102 | Pulse, blood oxygen (on chest contact) | 5.6x3.3mm | Self-monitoring |
-| 16 | GSR (skin conductance) | GSR module | Stress, emotional arousal, sweat response | Small module | Self-monitoring |
-| 17 | GPS (L76K / NEO-6M) | Seeed GNSS module | Global position, speed, direction | Small module | YES — precise coordinates |
-| 18 | Ambient light (BH1750 / TSL2591) | BH1750 | Light intensity in lux | 2x2mm | More precise than human |
-| 19 | Color sensor (TCS34725) | TCS34725 | Precise RGB color values | 2x2.4mm | More precise than human |
-| 20 | Proximity sensor (VL53L0X) | VL53L0X | Precise distance to objects (laser ToF) | 4.4x2.4mm | YES — laser precision |
-| 21 | Sound level (MAX4466) | MAX4466 | Decibel measurement | Small module | More precise than human |
-| 22 | Soil/liquid pH (PH-4502C) | PH-4502C | Acidity/alkalinity of liquids | Probe + module | YES — no human equivalent |
+| # | Sensor | Module | Detects | Size |
+|---|--------|--------|---------|------|
+| 1 | Camera (OV2640/OV3660) | Built into XIAO | Visible light, photos | Tiny |
+| 2 | Microphone (PDM) | Built into XIAO | Sound/audio | Tiny |
+| 3 | Gas sensor (MQ series / BME688) | BME688 | VOCs, CO, methane, hundreds of compounds | 3x3mm |
+| 4 | UV sensor (GUVA-S12SD / LTR390) | LTR390 | Ultraviolet light intensity | 2x2mm |
+| 5 | IR thermal sensor (MLX90640) | MLX90640 | Heat signatures, thermal imaging | 16x12mm |
+| 6 | Magnetometer (LIS3MDL / QMC5883) | QMC5883L | Magnetic field direction/strength | 3x3mm |
+| 7 | Barometric pressure (BMP390 / BME280) | BME280 | Air pressure, altitude, weather changes | 2.5x2.5mm |
+| 8 | Air quality (SGP40 / SCD41) | SGP40 | VOCs, CO2 levels, indoor air quality | 2.4x2.4mm |
+| 9 | Spectrometer (AS7341) | AS7341 | 11 light wavelength channels (spectral analysis) | 3.1x2mm |
+| 10 | Accelerometer + Gyroscope (BMI270 / LSM6DSO) | BMI270 | Motion, rotation, vibration, orientation | 2.5x3mm |
+| 11 | Temperature + Humidity (SHT40 / AHT20) | SHT40 | Ambient temp and humidity | 1.5x1.5mm |
+| 12 | Ultrasonic (RCWL-1601) | RCWL-1601 | Distance via echolocation | 20x15mm |
+| 13 | EMF sensor (AD8317) | AD8317 | Electromagnetic field strength | Small module |
+| 14 | Radiation (RadSens / SBM-20) | RadSens | Ionizing radiation (gamma, beta) | 10x50mm (tube) |
+| 15 | Heart rate / SpO2 (MAX30102) | MAX30102 | Pulse, blood oxygen (on chest contact) | 5.6x3.3mm |
+| 16 | GSR (skin conductance) | GSR module | Stress, emotional arousal, sweat response | Small module |
+| 17 | GPS (L76K / NEO-6M) | Seeed GNSS module | Global position, speed, direction | Small module |
+| 18 | Ambient light (BH1750 / TSL2591) | BH1750 | Light intensity in lux | 2x2mm |
+| 19 | Color sensor (TCS34725) | TCS34725 | Precise RGB color values | 2x2.4mm |
+| 20 | Proximity sensor (VL53L0X) | VL53L0X | Precise distance to objects (laser ToF) | 4.4x2.4mm |
+| 21 | Sound level (MAX4466) | MAX4466 | Decibel measurement | Small module |
+| 22 | Soil/liquid pH (PH-4502C) | PH-4502C | Acidity/alkalinity of liquids | Probe + module |
 
 **Total Pandant-compatible sensors: 22**
-**Beyond human capability: 15 of 22**
 
 ## Sensors That Exist But DON'T Fit in Pandant
 Too large, need dedicated power, or require specialized equipment:
@@ -93,7 +92,7 @@ Too large, need dedicated power, or require specialized equipment:
 
 **Total known sensing modalities: ~50**
 **Fit in Pandant: 22**
-**Beyond human capability: 15 Pandant-sized + all 28 large ones = 43 out of 50**
+**Fit in Pandant: 22 out of 50**
 
 ## The Numbers
 
@@ -109,9 +108,8 @@ The 50 listed here covers every commercially available sensing category. There a
 
 ## Summary
 - Humans have ~11 true external senses (4 fundamental dimensions)
-- PAN v1 has 2 sensors (camera + mic) — arrives March 18-20
+- PAN v1 has 2 sensors (camera + mic)
 - PAN fully loaded could have 22 sensors — all wearable on chest (8-10 fundamental dimensions)
 - Total known sensing categories: ~50-70
 - Total specific sensor implementations: tens of thousands
-- Sensors that exceed human capability: 43 out of ~50 categories
-- A fully loaded PAN Pandant: 22 out of ~50-70 categories, superhuman in 15 of them
+- A fully loaded PAN Pandant: 22 out of ~50-70 categories
