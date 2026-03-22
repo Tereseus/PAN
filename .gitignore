@@ -32,6 +32,15 @@ whisper.cpp/
 # Whisper models
 android/app/src/main/assets/models/*.bin
 
+# Internal docs (not public)
+AI-CYCLOSIS.md
+BUSINESS.md
+COMPETITIVE.md
+DOG-COMMUNICATION.md
+MANUFACTURING.md
+MISSION.md
+STRATEGY.md
+
 # Temp
 *.tmp
 *.log
