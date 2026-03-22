@@ -40,10 +40,28 @@ const schema = readFileSync(SCHEMA_PATH, 'utf-8');
 db.run(schema);
 save();
 
-// Persist to disk
+// Persist to disk — with backup to prevent data loss
 function save() {
-  const data = db.export();
-  writeFileSync(DB_PATH, Buffer.from(data));
+  try {
+    const data = db.export();
+    const buf = Buffer.from(data);
+    // Don't save if the export is suspiciously small and existing DB is larger
+    if (existsSync(DB_PATH)) {
+      const existingSize = statSync(DB_PATH).size;
+      if (buf.length < existingSize * 0.5 && existingSize > 50000) {
+        console.error(`[DB] WARNING: Refusing to save — export (${buf.length}B) is much smaller than existing DB (${existingSize}B). Possible data loss.`);
+        return;
+      }
+    }
+    // Backup before overwriting
+    if (existsSync(DB_PATH)) {
+      const backupPath = DB_PATH + '.bak';
+      try { writeFileSync(backupPath, readFileSync(DB_PATH)); } catch {}
+    }
+    writeFileSync(DB_PATH, buf);
+  } catch (e) {
+    console.error(`[DB] Save failed: ${e.message}`);
+  }
 }
 
 // Auto-save every 10 seconds
