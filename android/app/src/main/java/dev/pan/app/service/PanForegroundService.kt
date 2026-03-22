@@ -63,6 +63,7 @@ class PanForegroundService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     private var notificationManager: NotificationManager? = null
+    private lateinit var resistanceClient: ResistanceClient
 
     // Dedup: prevent duplicate commands within 3 seconds
     private var lastProcessedText = ""
@@ -108,6 +109,10 @@ class PanForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         panLog("PAN service created")
+
+        // Initialize resistance client for path-of-least-resistance routing
+        resistanceClient = ResistanceClient(this)
+        resistanceClient.syncFromServer()
 
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
@@ -275,29 +280,45 @@ class PanForegroundService : Service() {
             )
         }
 
-        // Spotify / music — check BEFORE stripping since "play X on spotify" is clear
-        if (lower.contains("play") && (lower.contains("spotify") || lower.contains("song"))) {
+        // Music — route through resistance system (preference → fallback paths)
+        if (lower.contains("play") && (lower.contains("song") || lower.contains("music") || lower.contains("spotify") || lower.contains("youtube"))) {
             val songQuery = lower
                 .replace(Regex("(?:hey |hi |ok )?(?:pan|pam|ben|pen)[,.]?\\s*"), "")
                 .replace(Regex("(?:can you |could you |please )?"), "")
-                .replace(Regex("(?:play|on spotify|on my phone|the song|song)"), "")
+                .replace(Regex("(?:play|on spotify|on youtube|on my phone|the song|song|music)"), "")
                 .trim()
             if (songQuery.isNotBlank()) {
-                try {
-                    val spotifyIntent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                        data = Uri.parse("spotify:search:${Uri.encode(songQuery)}")
-                        setPackage("com.spotify.music")
-                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(spotifyIntent)
+                // Detect if user explicitly requested a service
+                val explicitService = when {
+                    lower.contains("youtube") -> "youtube"
+                    lower.contains("spotify") -> "spotify"
+                    else -> null
+                }
+                val result = resistanceClient.tryPlayMusic(this, songQuery, explicitService)
+                if (result.success && result.message != null) {
                     feedbackSounds.onCommandSent()
-                    mainHandler.post { panSpeak("Playing $songQuery on Spotify.") }
+                    mainHandler.post { panSpeak(result.message) }
                     addToHistory("User", text)
-                    addToHistory("PAN", "Playing $songQuery on Spotify.")
-                    logToServer(text, "spotify", songQuery, "phone_spotify")
+                    addToHistory("PAN", result.message)
+                    logToServer(text, "music_resistance", songQuery, "phone_music")
                     return
-                } catch (_: Exception) {}
+                } else if (!result.success) {
+                    mainHandler.post { panSpeak(result.error ?: "Could not play $songQuery.") }
+                    addToHistory("User", text)
+                    addToHistory("PAN", result.error ?: "Could not play.")
+                    logToServer(text, "music_resistance_fail", result.error ?: "", "phone_music")
+                    return
+                }
             }
+        }
+
+        // "That didn't work" — report failure to resistance system
+        if (lower.contains("didn't work") || lower.contains("that didn't") || lower.contains("try something else") || lower.contains("not working")) {
+            val feedback = resistanceClient.reportLastFailed("play_music")
+            mainHandler.post { panSpeak(feedback) }
+            addToHistory("User", text)
+            addToHistory("PAN", feedback)
+            return
         }
 
         // Strip "hey pan/pam/ben" prefix so local command matching works
@@ -566,35 +587,8 @@ class PanForegroundService : Service() {
             }
         }
 
-        // --- Spotify / Music commands ---
-        if ((lower.contains("play") && (lower.contains("spotify") || lower.contains("song") || lower.contains("music"))) ||
-            lower.startsWith("play ")) {
-            // Extract song/artist name
-            val songQuery = lower
-                .replace(Regex("(?:play|on spotify|on my phone|the song|song|please|can you)"), "")
-                .trim()
-            if (songQuery.isNotBlank()) {
-                try {
-                    val spotifyIntent = Intent(Intent.ACTION_VIEW).apply {
-                        data = Uri.parse("spotify:search:${Uri.encode(songQuery)}")
-                        setPackage("com.spotify.music")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(spotifyIntent)
-                    return "Searching Spotify for $songQuery."
-                } catch (e: Exception) {
-                    // Spotify not installed — try YouTube Music or generic
-                    try {
-                        val ytIntent = Intent(Intent.ACTION_VIEW).apply {
-                            data = Uri.parse("https://music.youtube.com/search?q=${Uri.encode(songQuery)}")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        startActivity(ytIntent)
-                        return "Searching YouTube Music for $songQuery."
-                    } catch (_: Exception) {}
-                }
-            }
-        }
+        // --- Music commands --- routed through resistance system in onSpeech
+        // handleLocally returns null for music so it's handled by the resistance router above
 
         // --- Phone automation commands ---
 
