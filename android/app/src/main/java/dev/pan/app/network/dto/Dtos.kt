@@ -27,7 +27,10 @@ data class QueryRequest(
 
 data class QueryResponse(
     val response_text: String,
-    val audio_url: String? = null
+    val audio_url: String? = null,
+    val route: String? = null,
+    val query: String? = null,
+    val response_time_ms: Long? = null
 )
 
 data class SyncBatch(
