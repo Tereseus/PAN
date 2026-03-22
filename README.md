@@ -76,11 +76,11 @@ You're in a meeting. PAN hears the meeting context and knows you're busy. Your p
 **Driving to the same place:**
 You and a friend are both heading to the same restaurant. Both PANs share ETAs automatically — "Sarah is 12 minutes away, you're 8 minutes away." No one had to text "how far are you?" No one had to share their location manually. Both PANs just coordinated.
 
-**"Is this the right part?"**
-Sarah is at the hardware store picking up a part for you. She holds it up and asks PAN. Her PAN captures the photo and sends it to yours as a conversation: "Sarah is asking if this is the right part." You see the photo, you reply: "No, it's the one with the blue cap." She hears your response through her PAN. No phone call, no photo upload, no texting back and forth.
+**"Is this the right one?"**
+You asked your friend to grab something from the store — PAN flagged it as a priority because you discussed it earlier. Your friend holds up the item, asks PAN. Their PAN captures the photo and sends it to yours: "Alex is asking if this is the right one." You see the photo, reply through PAN: "No, the other brand." They hear your response instantly. No phone call, no photo upload, no group chat.
 
-**Elderly parent monitoring:**
-Your parent's PAN detects a fall — accelerometer spike followed by no movement for 60 seconds. Their PAN alerts yours immediately with GPS location and vitals. They didn't press a button. They might not be able to. You're notified within seconds.
+**Emergency contact:**
+Your parent's PAN detects a fall — accelerometer spike followed by no movement for 60 seconds. PAN pulls their emergency contacts from their phone and makes every attempt to reach them — calls, texts, messages through every app it has access to. It sends the GPS location, vitals from the heart rate sensor, and what happened. They didn't press a button. They might not be able to. Their contacts are notified within seconds through every channel available.
 
 **Shared memory:**
 "What did Jake and I decide about the trip?" PAN searches both your conversation histories (with permission) and reconstructs the full decision — even if parts happened over voice on different days across different devices.
