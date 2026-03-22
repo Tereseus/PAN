@@ -46,6 +46,17 @@ class SettingsViewModel @Inject constructor(
     private val _devices = MutableStateFlow<List<DeviceItem>>(emptyList())
     val devices: StateFlow<List<DeviceItem>> = _devices
 
+    // App preferences
+    private val _preferredMusicApp = MutableStateFlow("auto")
+    val preferredMusicApp: StateFlow<String> = _preferredMusicApp
+
+    private val _preferredMessagingApp = MutableStateFlow("auto")
+    val preferredMessagingApp: StateFlow<String> = _preferredMessagingApp
+
+    // Local LLM model selection
+    private val _selectedLlmModel = MutableStateFlow("llama-3.2-3b")
+    val selectedLlmModel: StateFlow<String> = _selectedLlmModel
+
     val isServerConnected: StateFlow<Boolean> = serverClient.isConnected
 
     init {
@@ -56,6 +67,9 @@ class SettingsViewModel @Inject constructor(
             dataRepository.getSetting("vibration_enabled")?.let { _vibrationEnabled.value = it == "true" }
             dataRepository.getSetting("voice_response_enabled")?.let { _voiceResponseEnabled.value = it == "true" }
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
+            dataRepository.getSetting("preferred_music_app")?.let { _preferredMusicApp.value = it }
+            dataRepository.getSetting("preferred_messaging_app")?.let { _preferredMessagingApp.value = it }
+            dataRepository.getSetting("selected_llm_model")?.let { _selectedLlmModel.value = it }
         }
         // Fetch device list from server
         refreshDevices()
@@ -100,5 +114,20 @@ class SettingsViewModel @Inject constructor(
     fun setDeviceTarget(target: String) {
         _deviceTarget.value = target
         viewModelScope.launch { dataRepository.setSetting("device_target", target) }
+    }
+
+    fun setPreferredMusicApp(app: String) {
+        _preferredMusicApp.value = app
+        viewModelScope.launch { dataRepository.setSetting("preferred_music_app", app) }
+    }
+
+    fun setPreferredMessagingApp(app: String) {
+        _preferredMessagingApp.value = app
+        viewModelScope.launch { dataRepository.setSetting("preferred_messaging_app", app) }
+    }
+
+    fun setSelectedLlmModel(modelId: String) {
+        _selectedLlmModel.value = modelId
+        viewModelScope.launch { dataRepository.setSetting("selected_llm_model", modelId) }
     }
 }
