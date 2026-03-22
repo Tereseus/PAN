@@ -2,6 +2,8 @@
 
 Voice-controlled AI operating system. Phone, computer, browser, wearable pendant — one unified system. Self-hosted, open source, all data on your hardware.
 
+![PAN Dashboard](docs/dashboard.jpg)
+
 ---
 
 ## What PAN Does
