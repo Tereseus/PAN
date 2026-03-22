@@ -328,7 +328,7 @@ Or search "PAN" in Windows Start Menu.
 ### 🔨 Building
 - Piper voice cloning (training pipeline ready, runs overnight on GPU)
 - Voice fingerprinting (identify who's speaking)
-- Pendant hardware (components ordered)
+- Pendant hardware
 
 ### 📋 Planned
 - Linux support
