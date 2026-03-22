@@ -9,6 +9,13 @@ import { all, get, run, insert } from './db.js';
 
 // Ensure resistance tables exist
 try {
+  // User preferences — preferred apps per action category
+  run(`CREATE TABLE IF NOT EXISTS resistance_preferences (
+    action TEXT PRIMARY KEY,
+    preferred_path TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+
   run(`CREATE TABLE IF NOT EXISTS resistance_paths (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     action TEXT NOT NULL,
@@ -304,6 +311,108 @@ function logResult(action, pathName, success, error, durationMs) {
   } catch {}
 }
 
+// Preferences — set a preferred app/path for an action
+export function setPreference(action, preferredPath) {
+  run(`INSERT OR REPLACE INTO resistance_preferences (action, preferred_path, updated_at)
+       VALUES (:action, :path, datetime('now'))`, {
+    ':action': action, ':path': preferredPath,
+  });
+}
+
+export function getPreference(action) {
+  const pref = get(`SELECT preferred_path FROM resistance_preferences WHERE action = :action`, { ':action': action });
+  return pref?.preferred_path || null;
+}
+
+export function getAllPreferences() {
+  return all(`SELECT * FROM resistance_preferences`);
+}
+
+// Get action plan — the ordered list of methods to try for a given action
+// This is the API the phone and PC both call to know what to do
+export function getActionPlan(action, platform = 'pc') {
+  const paths = getResistancePaths(action, platform);
+  const preference = getPreference(action);
+
+  // Build ordered plan: preference first, then by resistance priority
+  const plan = [];
+  const unavailable = [];
+
+  // If there's a preference, put it first
+  if (preference) {
+    const prefPath = paths.find(p => p.path_name === preference || p.path_name.includes(preference));
+    if (prefPath && prefPath.available) {
+      plan.push({
+        path: prefPath.path_name,
+        method: prefPath.method,
+        platform: prefPath.platform,
+        preferred: true,
+        successRate: prefPath.successRate,
+      });
+    }
+  }
+
+  // Add remaining available paths in resistance order
+  for (const p of paths) {
+    if (plan.some(pp => pp.path === p.path_name)) continue; // skip if already added as preference
+    if (p.available) {
+      plan.push({
+        path: p.path_name,
+        method: p.method,
+        platform: p.platform,
+        preferred: false,
+        successRate: p.successRate,
+      });
+    } else {
+      unavailable.push({
+        path: p.path_name,
+        missing: p.missingRequirements,
+        suggestion: getSuggestion(p),
+      });
+    }
+  }
+
+  return { action, platform, plan, unavailable, preference };
+}
+
+// Report result — phone or PC calls this after trying a path
+export function reportResult(action, pathName, success, error = null, durationMs = null) {
+  logResult(action, pathName, success, error, durationMs);
+  return { logged: true };
+}
+
+// "That didn't work" — log failure for the last used path and get next suggestion
+export function reportLastFailed(action, platform = 'pc') {
+  // Find the most recently used path for this action
+  const lastLog = get(`SELECT * FROM resistance_log WHERE action = :action ORDER BY created_at DESC LIMIT 1`,
+    { ':action': action });
+
+  if (lastLog) {
+    // If it was logged as success, flip it to failure
+    if (lastLog.success) {
+      logResult(action, lastLog.path_name, false, 'User reported failure', null);
+    }
+  }
+
+  // Get the next best path
+  const plan = getActionPlan(action, platform);
+  const lastPath = lastLog?.path_name;
+  const nextPaths = plan.plan.filter(p => p.path !== lastPath);
+
+  if (nextPaths.length > 0) {
+    return {
+      message: `Got it. Trying ${nextPaths[0].path.replace(/_/g, ' ')} instead.`,
+      nextPath: nextPaths[0],
+      allPaths: nextPaths,
+    };
+  }
+
+  return {
+    message: `No other methods available for ${action.replace('_', ' ')}. ${plan.unavailable.map(u => u.suggestion).join('. ')}`,
+    nextPath: null,
+  };
+}
+
 // Add a new path (community/user discovered)
 export function addPath(action, pathName, method, platform, requires = [], priority = 50) {
   run(`INSERT OR REPLACE INTO resistance_paths (action, path_name, method, platform, requires, priority)
@@ -326,6 +435,7 @@ export function getResistanceStats() {
     FROM resistance_paths ORDER BY action, priority DESC`);
 
   const recentLogs = all(`SELECT * FROM resistance_log ORDER BY created_at DESC LIMIT 50`);
+  const preferences = getAllPreferences();
 
-  return { paths: pathStats, recent: recentLogs };
+  return { paths: pathStats, recent: recentLogs, preferences };
 }
