@@ -279,7 +279,7 @@ node install-service.js                    # Auto-start on boot
 ```
 
 ### Phone (Android)
-1. Build the APK from `android/` in Android Studio (or download the release)
+1. Build the APK from `android/` in Android Studio
 2. Install on your phone
 3. Set server URL in Settings → your PC's IP, port 7777
 4. Grant microphone and camera permissions
@@ -345,10 +345,10 @@ The self-hosted option is the primary path — for anyone who wants privacy and 
 
 ## License
 
-Open source (V1). See LICENSE for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Author
 
 **Tereseus** — [github.com/Tereseus](https://github.com/Tereseus)
 
-Built with Claude.
+Built by Tereseus, with Claude Code.
