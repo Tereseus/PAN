@@ -27,6 +27,8 @@ fun SettingsScreen(
     val preferredMusicApp by viewModel.preferredMusicApp.collectAsState()
     val preferredMessagingApp by viewModel.preferredMessagingApp.collectAsState()
     val selectedLlmModel by viewModel.selectedLlmModel.collectAsState()
+    val llmStatus by viewModel.llmStatus.collectAsState()
+    val llmDownloadProgress by viewModel.llmDownloadProgress.collectAsState()
 
     Scaffold(
         topBar = {
@@ -137,9 +139,43 @@ fun SettingsScreen(
 
             // Local LLM
             Text("Local AI Model", style = MaterialTheme.typography.titleMedium)
-            Text("On-device model for intent classification and offline use",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            // Status indicator
+            val statusColor = when (llmStatus) {
+                "loaded" -> MaterialTheme.colorScheme.primary
+                "downloaded" -> MaterialTheme.colorScheme.tertiary
+                "downloading" -> MaterialTheme.colorScheme.secondary
+                else -> MaterialTheme.colorScheme.error
+            }
+            val statusText = when (llmStatus) {
+                "loaded" -> "Installed & Running"
+                "downloaded" -> "Installed (not loaded)"
+                "downloading" -> "Downloading... ${(llmDownloadProgress * 100).toInt()}%"
+                "not_downloaded" -> "Not installed"
+                else -> llmStatus
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = statusColor.copy(alpha = 0.15f),
+                    modifier = Modifier.padding(end = 8.dp)
+                ) {
+                    Text(
+                        statusText,
+                        color = statusColor,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // Progress bar when downloading
+            if (llmStatus == "downloading") {
+                LinearProgressIndicator(
+                    progress = { llmDownloadProgress },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                )
+            }
 
             val llmOptions = listOf(
                 "llama-3.2-1b" to "Llama 3.2 1B (700MB, fast)",
@@ -157,6 +193,16 @@ fun SettingsScreen(
                         onClick = { viewModel.setSelectedLlmModel(value) }
                     )
                     Text(label, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+
+            // Download button if not installed
+            if (llmStatus == "not_downloaded") {
+                Button(
+                    onClick = { viewModel.downloadModel() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Download Model")
                 }
             }
         }
