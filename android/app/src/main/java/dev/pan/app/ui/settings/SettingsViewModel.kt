@@ -84,7 +84,12 @@ class SettingsViewModel @Inject constructor(
         }
         // Fetch device list from server
         refreshDevices()
-        // Check LLM status
+        // Check LLM status — sync selected model with what's recommended/downloaded
+        if (_selectedLlmModel.value == "llama-3.2-3b") {
+            // Default hasn't been changed by user — use recommended model
+            val recommended = localLlm.getRecommendedModel()
+            _selectedLlmModel.value = recommended.id
+        }
         refreshLlmStatus()
     }
 
@@ -161,5 +166,7 @@ class SettingsViewModel @Inject constructor(
     fun setSelectedLlmModel(modelId: String) {
         _selectedLlmModel.value = modelId
         viewModelScope.launch { dataRepository.setSetting("selected_llm_model", modelId) }
+        localLlm.selectModel(modelId)
+        refreshLlmStatus()
     }
 }
