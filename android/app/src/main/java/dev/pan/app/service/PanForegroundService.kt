@@ -64,6 +64,7 @@ class PanForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var notificationManager: NotificationManager? = null
     private lateinit var resistanceClient: ResistanceClient
+    private lateinit var localLlm: dev.pan.app.ai.LocalLlm
 
     // Dedup: prevent duplicate commands within 3 seconds
     private var lastProcessedText = ""
@@ -113,6 +114,27 @@ class PanForegroundService : Service() {
         // Initialize resistance client for path-of-least-resistance routing
         resistanceClient = ResistanceClient(this)
         resistanceClient.syncFromServer()
+
+        // Initialize local LLM — auto-download model if not present
+        localLlm = dev.pan.app.ai.LocalLlm(this)
+        serviceScope.launch {
+            val model = localLlm.getSelectedModel()
+            if (!localLlm.isModelDownloaded(model)) {
+                panLog("Local LLM: downloading ${model.name} (${model.sizeBytes / 1_000_000}MB)...")
+                val success = localLlm.downloadModel(model) { progress ->
+                    if ((progress * 100).toInt() % 10 == 0) {
+                        panLog("Model download: ${(progress * 100).toInt()}%")
+                    }
+                }
+                if (success) {
+                    panLog("Local LLM: ${model.name} downloaded successfully")
+                } else {
+                    panLog("Local LLM: download failed, will use server for routing")
+                }
+            } else {
+                panLog("Local LLM: ${model.name} ready")
+            }
+        }
 
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
