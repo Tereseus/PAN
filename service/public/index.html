@@ -381,7 +381,11 @@ body {
 
     <!-- Activity Log -->
     <div class="delete-section">
-      <h4>Activity Log</h4>
+      <h4 style="display:flex;align-items:center;gap:12px">Activity Log
+        <label style="font-size:12px;font-weight:normal;color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:4px">
+          <input type="checkbox" id="privacy-toggle" onchange="togglePrivacy()" style="cursor:pointer"> Hide paths
+        </label>
+      </h4>
       <div class="toolbar">
         <select id="event-type-filter" onchange="eventsOffset=0;loadEvents()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
           <option value="">All Types</option>
@@ -549,8 +553,16 @@ function fmtSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
+let privacyMode = false;
+
+function togglePrivacy() {
+  privacyMode = document.getElementById('privacy-toggle')?.checked || false;
+  loadEvents();
+  loadConversations();
+}
+
 function redactPaths(str) {
-  if (!str) return str;
+  if (!privacyMode || !str) return str;
   return String(str)
     .replace(/[A-Z]:(\\\\|\\|\/)Users(\\\\|\\|\/)[^\\\/"\s,}]+(\\\\|\\|\/)/gi, 'C:\\Users\\user\\')
     .replace(/\/home\/[^\/"\s,}]+\//gi, '/home/user/');
