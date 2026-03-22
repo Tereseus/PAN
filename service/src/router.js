@@ -100,6 +100,8 @@ If it IS for you, respond with JSON matching one of these:
   Use this for reading web pages, checking messages, typing in browser, switching tabs.
 - Memory: {"intent": "memory", "action": "save|recall", "item_type": "type", "content": "content", "response": "spoken response"}
 - Calendar: {"intent": "calendar", "response": "spoken response"}
+- Music/media: {"intent": "music", "query": "song or artist name", "service": "spotify|youtube|any", "response": "spoken response"}
+  Use this when the user wants to play music, a song, a video, or any media. Extract the song/artist name into "query". If they specify a service (Spotify, YouTube), include it. Otherwise use "any".
 - Conversation/question: {"intent": "query", "response": "your spoken answer"}
 
 Known projects: ${projectList}
@@ -134,6 +136,17 @@ async function processUnifiedResult(action, text, context) {
         };
       }
       return { intent: 'terminal', response: action.response || 'Terminal action processed.' };
+    }
+
+    case 'music': {
+      // Music — return route + query so the phone executes via resistance router
+      return {
+        intent: 'music',
+        route: 'music',
+        query: action.query || text,
+        service: action.service || 'any',
+        response: action.response || `Playing ${action.query || 'music'}.`,
+      };
     }
 
     case 'browser': {
