@@ -213,6 +213,93 @@ router.get('/api/jobs', async (req, res) => {
     });
   } catch {}
 
+  // Docker status
+  try {
+    const { execSync } = await import('child_process');
+    const dockerVersion = execSync('docker --version 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim();
+    const dockerRunning = execSync('docker info --format "{{.ContainersRunning}}" 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim();
+    jobs.push({
+      name: 'Docker',
+      description: dockerVersion,
+      type: 'service',
+      status: 'running',
+      detail: `${dockerRunning} container(s) running`,
+    });
+  } catch {
+    jobs.push({
+      name: 'Docker',
+      description: 'Container runtime for voice training and native builds',
+      type: 'service',
+      status: 'stopped',
+    });
+  }
+
+  // Piper Voice Model
+  try {
+    const modelDir = join(__dirname2, '..', 'data', 'voice_model');
+    const onnxPath = join(modelDir, 'pan-voice.onnx');
+    const configPath = join(modelDir, 'training_config.json');
+    const hasModel = existsSync(onnxPath);
+    const hasConfig = existsSync(configPath);
+    jobs.push({
+      name: 'Piper Voice Model',
+      description: hasModel ? 'Custom TTS voice trained and ready' : 'Voice model for text-to-speech',
+      type: 'ai_model',
+      status: hasModel ? 'ready' : hasConfig ? 'training' : 'not_started',
+    });
+  } catch {}
+
+  // Local LLM (phone)
+  try {
+    const devices = all(`SELECT * FROM devices WHERE device_type = 'phone' AND last_seen > datetime('now', '-5 minutes')`);
+    const phoneOnline = devices.length > 0;
+    jobs.push({
+      name: 'Local LLM (Phone)',
+      description: 'On-device AI model for intent classification',
+      type: 'ai_model',
+      status: phoneOnline ? 'connected' : 'offline',
+      detail: 'Phi 3.5 Mini — 2.3GB downloaded',
+    });
+  } catch {}
+
+  // Resistance Router stats
+  try {
+    const pathCount = get(`SELECT COUNT(*) as c FROM resistance_paths`);
+    const logCount = get(`SELECT COUNT(*) as c FROM resistance_log`);
+    const successRate = get(`SELECT ROUND(100.0 * SUM(success) / COUNT(*), 1) as rate FROM resistance_log`);
+    jobs.push({
+      name: 'Resistance Router',
+      description: `${pathCount?.c || 0} paths, ${logCount?.c || 0} attempts, ${successRate?.rate || 0}% success`,
+      type: 'internal',
+      status: 'running',
+    });
+  } catch {}
+
+  // Device preferences
+  try {
+    const prefs = all(`SELECT * FROM resistance_preferences`);
+    if (prefs.length > 0) {
+      jobs.push({
+        name: 'User Preferences',
+        description: prefs.map(p => `${p.action}: ${p.preferred_path}`).join(', '),
+        type: 'config',
+        status: 'configured',
+      });
+    }
+  } catch {}
+
+  // Connected devices
+  try {
+    const devices = all(`SELECT * FROM devices WHERE last_seen > datetime('now', '-10 minutes')`);
+    jobs.push({
+      name: 'Connected Devices',
+      description: devices.map(d => `${d.name} (${d.device_type})`).join(', ') || 'No devices connected',
+      type: 'devices',
+      status: devices.length > 0 ? 'online' : 'offline',
+      detail: `${devices.length} device(s)`,
+    });
+  } catch {}
+
   res.json({ jobs });
 });
 
