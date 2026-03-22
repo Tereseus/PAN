@@ -47,24 +47,48 @@ PAN indexes every conversation across all devices. A separate AI session searche
 
 ### Proactive Awareness
 
-PAN doesn't just respond to questions — it learns your patterns over time and helps before you ask. You choose what it monitors and how much it tells you.
+PAN learns your patterns over time and helps before you ask. You choose what it monitors and how much it tells you.
+
+**Face recognition:**
+You're at a party. Someone walks up to you. PAN's pendant camera recognizes them and whispers: "That's David. You met him at Jake's birthday in February. He works at the architecture firm and you talked about hiking." You greet him by name. You didn't have to awkwardly ask "have we met?"
+
+**Conversation capture:**
+Someone tells you their phone number during a conversation. PAN saves it automatically. Someone mentions a date or deadline — PAN adds it to your calendar. You tell a friend you'll send them that article — PAN sends it. No reminder, no follow-up task. It just does it.
+
+**Context bridging:**
+You're reading an article about a topic. PAN connects it to a conversation you had last week about the same thing and surfaces the connection. You walk into a meeting — PAN pulls up notes from the last meeting with these same people. You mention a restaurant someone recommended months ago — PAN already has the name, the address, and the menu.
+
+**Grocery:**
+You mention needing milk while talking to your partner. PAN adds it to your list. When you say "order groceries," PAN orders everything through delivery. It gets delivered to your house. You didn't open an app, you didn't browse a store, you didn't add items one by one.
+
+**Dentist:**
+"My teeth really hurt, I need to go to the dentist." PAN reaches out to your dentist's office, finds an available appointment slot, shares your symptoms. The dentist's AI responds with a time. PAN books it and tells you when to show up. You didn't make a phone call. You didn't sit on hold. You didn't fill out a form.
+
+**Real-time triggers:**
+You're discussing going to see a movie — PAN already found showtimes at nearby theaters before you finish the sentence. Traffic is bad and you have a meeting in 45 minutes — PAN tells you to leave now instead of when you planned.
 
 **Sun exposure:**
-PAN knows you've been outside for 3 hours. It knows the UV index at your GPS location. It knows from weeks of observation that you don't wear sunscreen. It tells you: "You should put on sunscreen. UV index is 7 and you've been outside since noon." It figured this out from GPS, UV sensor, time tracking, and your habits — not because you asked.
+PAN knows you've been outside for 3 hours. It knows the UV index at your GPS location. It knows from weeks of observation that you don't wear sunscreen. It tells you to put on sunscreen — not because you asked, but because it figured it out from GPS, UV sensor, time tracking, and your habits.
 
 **Nutrition:**
-The pendant camera sees your meals. PAN identifies what you're eating through vision analysis, estimates portions, and tracks your intake. After lunch: "That's your third high-sugar meal today. You've had about 80g of sugar — that's over your daily target." No food diary app. No manual logging. PAN just sees what you eat and keeps track.
+The pendant camera sees your meals. PAN identifies what you're eating through vision analysis, estimates portions, and tracks your intake. "That's your third high-sugar meal today — you're over your daily target." No food diary app. No manual logging. PAN sees what you eat and keeps track.
 
-**"Where did I leave my keys last night?"**
-PAN's camera captures photos continuously. It saw your keys on the kitchen counter at 11:47 PM. It tells you exactly where they are, with the photo to prove it.
+**"Where did I leave my keys?"**
+PAN's camera captures photos continuously. It saw your keys on the kitchen counter at 11:47 PM. It tells you exactly where they are, with the photo.
 
 **"Tell Marcus I'm running late."**
-PAN opens whatever messaging app you use with Marcus — types "Running late, be there in 20," and sends it. You didn't touch your phone. You didn't even say which app. PAN already knows which one you use with Marcus because it's seen your conversation history.
+PAN opens whatever messaging app you use with Marcus — types "Running late, be there in 20," and sends it. You didn't touch your phone. You didn't say which app. PAN knows which one you use with Marcus because it's seen your conversation history.
+
+**Translation:**
+You're in a foreign country. The pendant camera reads signs, menus, labels and transcribes (text) them in your language in real-time. Someone speaks to you in another language — PAN transcribes (text) and translates the conversation live.
 
 **Safety:**
 You're about to drill into a wall. The EMF sensor detects a live wire behind the drywall — PAN warns you before you hit it. The thermal camera spots an overheating outlet you walked past — PAN flags it. The gas sensor picks up a methane leak in your garage — PAN alerts you before you can smell it.
 
-You control all of this. Turn off nutrition tracking. Keep safety alerts on. Every category is independently controllable — PAN only monitors what you tell it to.
+**Health patterns:**
+PAN is not allowed to give health advice (advice). But you can ask it questions. "What is this spot on my arm?" — PAN captures it with the pendant camera, tracks how it's changed over time from previous photos, and gives you information to bring to your doctor. "Is there anything I've been eating that could make me feel this way?" — PAN reviews your nutrition history and gives you data, not diagnoses.
+
+You control all of this. Every category is independently controllable — PAN only monitors what you tell it to.
 
 ### Connected PANs
 
