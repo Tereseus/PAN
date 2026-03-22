@@ -120,19 +120,22 @@ class PanForegroundService : Service() {
         serviceScope.launch {
             val model = localLlm.getSelectedModel()
             if (!localLlm.isModelDownloaded(model)) {
-                panLog("Local LLM: downloading ${model.name} (${model.sizeBytes / 1_000_000}MB)...")
+                Log.d("PAN-LLM", "Downloading ${model.name} (${model.sizeBytes / 1_000_000}MB)...")
+                var lastLoggedPercent = -1
                 val success = localLlm.downloadModel(model) { progress ->
-                    if ((progress * 100).toInt() % 10 == 0) {
-                        panLog("Model download: ${(progress * 100).toInt()}%")
+                    val percent = (progress * 100).toInt()
+                    if (percent / 25 > lastLoggedPercent / 25) {
+                        lastLoggedPercent = percent
+                        Log.d("PAN-LLM", "Download: $percent%")
                     }
                 }
                 if (success) {
-                    panLog("Local LLM: ${model.name} downloaded successfully")
+                    Log.d("PAN-LLM", "${model.name} downloaded successfully")
                 } else {
-                    panLog("Local LLM: download failed, will use server for routing")
+                    Log.d("PAN-LLM", "Download failed, will use server for routing")
                 }
             } else {
-                panLog("Local LLM: ${model.name} ready")
+                Log.d("PAN-LLM", "${model.name} ready")
             }
         }
 
