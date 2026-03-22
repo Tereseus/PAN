@@ -6,9 +6,44 @@
 >
 > **ΠΑΝ is now remembering.**
 
-22 Sensors · 15 Superhuman
+22 sensors. Two modes of use.
 
-## V1 — Ships with Pandant (March 18-20, 2026)
+## How the Pendant Works
+
+The pendant sits on your chest. Most sensors work passively from there — reading the environment around you without any interaction. Some sensors need close range and require you to hold the pendant up to what you're scanning, or hold the object up to the pendant.
+
+### Passive Mode (on your chest, always running)
+
+| Sensor | Range | Notes |
+|--------|-------|-------|
+| Camera | Line of sight | Sees what you see. Captures photos every 5 seconds. |
+| Microphone | Room-scale | Picks up conversation, ambient audio. |
+| Gas / Air Quality | Ambient | Reads the air around you continuously. Detects leaks, smoke, VOCs. |
+| UV Sensor | Ambient | Reads UV from the sky. Tracks exposure over time. |
+| Barometer / Temp / Humidity | Ambient | Weather, altitude, mold risk. |
+| GPS | Satellite | Always tracking. Every event geotagged. |
+| Accelerometer / Gyro | On-body | Motion, steps, fall detection, posture. |
+| Heart Rate / SpO2 | Chest contact | Continuous pulse and blood oxygen. |
+| Ambient Light | Ambient | Light level monitoring, eye strain. |
+| Sound Level | Room-scale | Decibel measurement, hearing damage alerts. |
+| Laser Distance | Up to 2m | Points outward from chest. Instant tape measure. |
+| Ultrasonic | Up to 4m | Distance in darkness, obstacle detection. |
+| Thermal Camera | 1-5m | See heat signatures from across the room. Hot wires, body heat, overheating outlets. |
+
+### Active Mode (hold it up to something)
+
+| Sensor | Range | How to use |
+|--------|-------|-----------|
+| Spectrometer | 1-5 cm | Hold pendant up to the object, or hold the object up to the pendant. Reads chemical composition — food freshness, material ID, ripeness, fakes. |
+| Color Sensor | 1-2 cm | Same — hold it close. Reads exact color values for paint matching, material verification. |
+| EMF Sensor | 5-15 cm | Hold pendant near a wall to check for live wires before drilling. Works through drywall. |
+| Magnetometer | 5-20 cm | Hold near a surface to detect metal, hidden magnets, or get compass heading. |
+
+The pendant has a **magnetic clip** — unclip it from your shirt, hold it up to what you're scanning, clip it back. Takes 2 seconds.
+
+---
+
+## V1 — Ships with Pandant
 
 ### 1. Camera (OV2640) — Built into XIAO
 - **What:** Visible light photos, 2MP
