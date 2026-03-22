@@ -8,6 +8,12 @@ const PAN_URL = 'http://127.0.0.1:7777';
 const CONFIG_PATH = path.join(app.getPath('userData'), 'pan-config.json');
 const CLAUDE_PATH = path.join(process.env.APPDATA || '', 'npm', 'claude.cmd');
 
+// Single instance lock — if PAN is already running, focus the existing window
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+}
+
 let tray = null;
 let setupWindow = null;
 let commandsWindow = null;
@@ -307,6 +313,16 @@ ipcMain.on('save-device-name', (event, name) => {
 
   if (setupWindow) setupWindow.close();
   event.returnValue = true;
+});
+
+// When a second instance launches, focus the existing dashboard
+app.on('second-instance', () => {
+  if (dashboardWindow) {
+    if (dashboardWindow.isMinimized()) dashboardWindow.restore();
+    dashboardWindow.focus();
+  } else {
+    showDashboard();
+  }
 });
 
 // App lifecycle
