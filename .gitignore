@@ -29,6 +29,9 @@ service/src/claude.js
 # Whisper (submodule, too large)
 whisper.cpp/
 
+# Piper training repo (cloned, too large)
+piper/
+
 # Whisper models
 android/app/src/main/assets/models/*.bin
 
