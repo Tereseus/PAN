@@ -6,7 +6,7 @@ Voice-controlled AI operating system. Phone, computer, browser, wearable pendant
 
 ## What PAN Does
 
-PAN routes voice commands across all your devices. One sentence triggers multi-step automation across your phone, PC, browser tabs, and pendant sensors. Always-on microphone — no wake word, no button press, continuous context.
+PAN routes voice commands across all your devices. One sentence triggers multi-step automation across your phone, PC, browser tabs, and pendant sensors. Always-on microphone with continuous context.
 
 ### Always-On vs Trigger-Based
 
@@ -63,7 +63,7 @@ PAN learns your patterns over time and helps before you ask. You choose what it 
 
 **Sun exposure:** PAN tracks UV index at your location, knows you've been outside for 3 hours, knows from weeks of observation you don't wear sunscreen. Tells you to put it on.
 
-**Nutrition:** Pendant camera sees your meals, tracks intake. "Third high-sugar meal today — over your daily target." No food diary app, no manual logging.
+**Nutrition:** Pendant camera sees your meals, tracks intake. "Third high-sugar meal today — over your daily target."
 
 **Keys:** "Where did I leave my keys?" PAN's camera saw them on the kitchen counter at 11:47 PM. Shows you the photo.
 
@@ -82,16 +82,16 @@ Every category is independently controllable — PAN only monitors what you tell
 When two people both use PAN, their devices can coordinate automatically. Everything is opt-in — nothing is shared without both people agreeing.
 
 **Silent coordination:**
-You're in a meeting. PAN hears the meeting context and knows you're busy. Your partner sends you a message — their PAN holds it and delivers it when your meeting ends. Nobody configured this. PAN figured out you were occupied and queued non-urgent messages automatically.
+You're in a meeting. PAN hears the context and knows you're busy. Messages from other people are held and delivered when the meeting ends. PAN figures out when you're occupied and queues non-urgent messages automatically.
 
 **Driving to the same place:**
-You and a friend are both heading to the same restaurant. Both PANs share ETAs automatically — "Sarah is 12 minutes away, you're 8 minutes away." No one had to text "how far are you?" No one had to share their location manually. Both PANs just coordinated.
+You and a friend are both heading to the same restaurant. Both PANs share ETAs automatically — "Sarah is 12 minutes away, you're 8 minutes away."
 
 **"Is this the right one?"**
-You asked your friend to grab something from the store — PAN flagged it as a priority because you discussed it earlier. Your friend holds up the item, asks PAN. Their PAN captures the photo and sends it to yours: "Alex is asking if this is the right one." You see the photo, reply through PAN: "No, the other brand." They hear your response instantly. No phone call, no photo upload, no group chat.
+You asked your friend to grab something from the store — PAN flagged it as a priority because you discussed it earlier. Your friend holds up the item, asks PAN. Their PAN captures the photo and sends it to yours: "Alex is asking if this is the right one." You reply through PAN: "No, the other brand." They hear your response instantly.
 
 **Emergency contact:**
-Your parent's PAN detects a fall — accelerometer spike followed by no movement for 60 seconds. PAN pulls their emergency contacts from their phone and makes every attempt to reach them — calls, texts, messages through every app it has access to. It sends the GPS location, vitals from the heart rate sensor, and what happened. They didn't press a button. They might not be able to. Their contacts are notified within seconds through every channel available.
+Your parent's PAN detects a fall — accelerometer spike followed by no movement for 60 seconds. PAN pulls emergency contacts from the phone and reaches out through every channel available — calls, texts, messages through every app it has access to. Sends GPS location, vitals from the heart rate sensor, and what happened. Contacts are notified within seconds.
 
 **Shared memory:**
 "What did Jake and I decide about the trip?" PAN searches both your conversation histories (with permission) and reconstructs the full decision — even if parts happened over voice on different days across different devices.
