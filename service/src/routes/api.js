@@ -446,4 +446,52 @@ router.get('/stats', (req, res) => {
   res.json(stats);
 });
 
+// ── Resistance Router API ──
+// Phone and PC both call these to get action plans and report results
+
+import { getActionPlan, reportResult, reportLastFailed, setPreference, getPreference, getAllPreferences, getResistanceStats } from '../resistance.js';
+
+// GET /api/v1/resistance/plan?action=play_music&platform=android
+// Returns ordered list of methods to try
+router.get('/resistance/plan', (req, res) => {
+  const { action, platform } = req.query;
+  if (!action) return res.status(400).json({ error: 'action required' });
+  const plan = getActionPlan(action, platform || 'pc');
+  res.json(plan);
+});
+
+// POST /api/v1/resistance/result — report success or failure of a path
+router.post('/resistance/result', (req, res) => {
+  const { action, path, success, error, duration_ms } = req.body;
+  if (!action || !path) return res.status(400).json({ error: 'action and path required' });
+  reportResult(action, path, success, error, duration_ms);
+  res.json({ ok: true });
+});
+
+// POST /api/v1/resistance/failed — "that didn't work" — log failure, get next suggestion
+router.post('/resistance/failed', (req, res) => {
+  const { action, platform } = req.body;
+  if (!action) return res.status(400).json({ error: 'action required' });
+  const result = reportLastFailed(action, platform || 'pc');
+  res.json(result);
+});
+
+// POST /api/v1/resistance/preference — set preferred app for an action
+router.post('/resistance/preference', (req, res) => {
+  const { action, preferred } = req.body;
+  if (!action || !preferred) return res.status(400).json({ error: 'action and preferred required' });
+  setPreference(action, preferred);
+  res.json({ ok: true, action, preferred });
+});
+
+// GET /api/v1/resistance/preferences — get all preferences
+router.get('/resistance/preferences', (req, res) => {
+  res.json(getAllPreferences());
+});
+
+// GET /api/v1/resistance/stats — dashboard stats
+router.get('/resistance/stats', (req, res) => {
+  res.json(getResistanceStats());
+});
+
 export default router;
