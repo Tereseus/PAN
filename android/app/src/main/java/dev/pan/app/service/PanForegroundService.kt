@@ -131,12 +131,14 @@ class PanForegroundService : Service() {
                     }
                 }
                 if (success) {
-                    Log.d("PAN-LLM", "${model.name} downloaded successfully")
+                    Log.d("PAN-LLM", "${model.name} downloaded, loading...")
+                    localLlm.loadModel()
                 } else {
                     Log.d("PAN-LLM", "Download failed, will use server for routing")
                 }
             } else {
-                Log.d("PAN-LLM", "${model.name} ready")
+                Log.d("PAN-LLM", "${model.name} found, loading...")
+                localLlm.loadModel()
             }
         }
 
@@ -339,13 +341,43 @@ class PanForegroundService : Service() {
             return
         }
 
-        // Gemini Nano on-device — decides if this is for PAN, handles simple stuff,
-        // routes complex/PC actions to the server
         addToHistory("User", text)
 
         serviceScope.launch {
             try {
             val historyContext = getHistoryContext()
+
+            // Try local LLM first for intent classification
+            val localIntent = localLlm.classifyIntent(stripped)
+            if (localIntent.local && localIntent.intent != "unknown") {
+                val elapsed = localIntent.elapsedMs
+                panLog("Local LLM (${elapsed}ms): ${localIntent.intent} | ${localIntent.query}")
+                logToServer(text, "local_llm_${localIntent.intent}", localIntent.query, "local_llm")
+
+                when (localIntent.intent) {
+                    "play_music" -> {
+                        val result = resistanceClient.tryPlayMusic(
+                            this@PanForegroundService,
+                            localIntent.query,
+                            localIntent.service
+                        )
+                        val msg = result.message ?: result.error ?: "Could not play."
+                        addToHistory("PAN", "$msg (${elapsed}ms local)")
+                        dataRepository.addPanResponse(msg)
+                        feedbackSounds.onCommandSent()
+                        mainHandler.post { panSpeak(msg) }
+                        return@launch
+                    }
+                    "ambient" -> {
+                        panLog("Local LLM: ambient (ignored)")
+                        return@launch
+                    }
+                    // For other intents, fall through to server for now
+                    // TODO: handle send_message, navigate, open_app locally
+                }
+            }
+
+            // Gemini Nano / server fallback
             val decision = geminiBrain.evaluate(text, historyContext)
             panLog("Decision: ${decision.action} | ${decision.response?.take(80) ?: ""}")
             logToServer(text, decision.action.name, decision.response ?: "", "gemini_${decision.action.name.lowercase()}")

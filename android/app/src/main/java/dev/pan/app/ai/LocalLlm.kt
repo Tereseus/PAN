@@ -69,7 +69,7 @@ class LocalLlm(private val context: Context) {
     }
 
     // State
-    private var nativeHandle: Long = 0
+    private var llamaModel: de.kherud.llama.LlamaModel? = null
     private var isLoaded = false
     private var currentModel: ModelInfo? = null
 
@@ -192,18 +192,52 @@ class LocalLlm(private val context: Context) {
         }
     }
 
+    // Load the model into memory — call once after download
+    fun loadModel(): Boolean {
+        val model = getSelectedModel()
+        val modelFile = File(modelsDir, model.filename)
+        if (!modelFile.exists()) {
+            Log.w(TAG, "Model file not found: ${modelFile.absolutePath}")
+            return false
+        }
+
+        return try {
+            val startTime = System.currentTimeMillis()
+            Log.d(TAG, "Loading model: ${model.name}...")
+
+            val params = de.kherud.llama.ModelParameters()
+                .setModel(modelFile.absolutePath)
+                .setGpuLayers(0) // CPU only for now, GPU via Vulkan later
+
+            llamaModel = de.kherud.llama.LlamaModel(params)
+            isLoaded = true
+            currentModel = model
+
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.d(TAG, "Model loaded in ${elapsed}ms")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load model: ${e.message}")
+            isLoaded = false
+            false
+        }
+    }
+
     // Low-level inference — calls llama.cpp via JNI
     private fun infer(prompt: String, maxTokens: Int = 150): String {
-        // This will be implemented once the llama.cpp JNI bindings are confirmed
-        // For now, use a simple HTTP call to a local llama-server if running
-        // or return empty to fall through to server
-        //
-        // The actual JNI integration depends on which llama.cpp Android binding
-        // we end up using. The de.kherud:llama library provides:
-        //   LlamaModel(modelPath) -> model.generate(prompt, params) -> String
-        //
-        // TODO: Wire up actual JNI call once library is confirmed working
-        return ""
+        val model = llamaModel ?: return ""
+
+        val inferParams = de.kherud.llama.InferenceParameters(prompt)
+            .setNPredict(maxTokens)
+            .setTemperature(0.1f) // low temp for deterministic classification
+            .setStopStrings("<|eot_id|>", "\n\n")
+
+        val sb = StringBuilder()
+        for (output in model.generate(inferParams)) {
+            sb.append(output)
+            if (sb.length > maxTokens * 4) break // safety limit
+        }
+        return sb.toString().trim()
     }
 
     private fun buildIntentPrompt(text: String): String {
