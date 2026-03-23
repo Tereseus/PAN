@@ -32,6 +32,12 @@ whisper.cpp/
 # Piper training repo (cloned, too large)
 piper/
 
+# PersonaPlex (cloned, large model)
+personaplex/
+
+# llama.cpp (cloned for native build)
+llama.cpp/
+
 # Whisper models
 android/app/src/main/assets/models/*.bin
 
