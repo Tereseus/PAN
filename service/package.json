@@ -11,8 +11,10 @@
     "better-sqlite3": "^12.8.0",
     "express": "^5.1.0",
     "node-notifier": "^10.0.1",
+    "node-pty": "^1.1.0",
     "node-windows": "^1.0.0-beta.8",
-    "sql.js": "^1.11.0"
+    "sql.js": "^1.11.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "electron": "^41.0.3"

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 import java.io.File
 import java.net.URL
 
@@ -69,7 +70,7 @@ class LocalLlm(private val context: Context) {
     }
 
     // State
-    private var llamaModel: de.kherud.llama.LlamaModel? = null
+    private var engine: com.arm.aichat.InferenceEngine? = null
     private var isLoaded = false
     private var currentModel: ModelInfo? = null
 
@@ -82,12 +83,12 @@ class LocalLlm(private val context: Context) {
     }
 
     // Recommend best model for this device
+    // Prioritize speed — use 1B until GPU acceleration is confirmed working
     fun getRecommendedModel(): ModelInfo {
         val ram = getDeviceRamMb()
         Log.d(TAG, "Device RAM: ${ram}MB")
-        return AVAILABLE_MODELS
-            .filter { it.minRamMb <= ram }
-            .lastOrNull() ?: AVAILABLE_MODELS.first()
+        // Use 1B for speed until GPU backend is available
+        return AVAILABLE_MODELS.first() // llama-3.2-1b
     }
 
     // Get currently selected model
@@ -193,7 +194,7 @@ class LocalLlm(private val context: Context) {
     }
 
     // Load the model into memory — call once after download
-    fun loadModel(): Boolean {
+    suspend fun loadModel(): Boolean {
         val model = getSelectedModel()
         val modelFile = File(modelsDir, model.filename)
         if (!modelFile.exists()) {
@@ -205,14 +206,11 @@ class LocalLlm(private val context: Context) {
             val startTime = System.currentTimeMillis()
             Log.d(TAG, "Loading model: ${model.name}...")
 
-            // de.kherud:llama doesn't have Android ARM native libs yet
-            // TODO: Replace with llama.cpp Android NDK build or MediaPipe LLM
-            // For now, mark as downloaded but not loaded — falls through to server
-            val params = de.kherud.llama.ModelParameters()
-                .setModel(modelFile.absolutePath)
-                .setGpuLayers(0)
+            val eng = com.arm.aichat.AiChat.getInferenceEngine(context)
+            eng.loadModel(modelFile.absolutePath)
+            eng.setSystemPrompt("You are PAN's intent classifier. Classify user requests into JSON. Categories: play_music, send_message, navigate, open_app, search, calendar, camera, system, query, ambient. Always respond with only JSON.")
 
-            llamaModel = de.kherud.llama.LlamaModel(params)
+            engine = eng
             isLoaded = true
             currentModel = model
 
@@ -220,28 +218,20 @@ class LocalLlm(private val context: Context) {
             Log.d(TAG, "Model loaded in ${elapsed}ms")
             true
         } catch (e: Throwable) {
-            // UnsatisfiedLinkError if native libs missing, or any other error
-            Log.e(TAG, "Failed to load model (native libs may be missing): ${e.message}")
-            Log.d(TAG, "Model downloaded but cannot load — using server for routing")
+            Log.e(TAG, "Failed to load model: ${e.message}")
             isLoaded = false
             false
         }
     }
 
-    // Low-level inference — calls llama.cpp via JNI
-    private fun infer(prompt: String, maxTokens: Int = 150): String {
-        val model = llamaModel ?: return ""
+    // Low-level inference — calls llama.cpp via JNI (ARM64 native)
+    private suspend fun infer(prompt: String, maxTokens: Int = 150): String {
+        val eng = engine ?: return ""
 
         return try {
-            val inferParams = de.kherud.llama.InferenceParameters(prompt)
-                .setNPredict(maxTokens)
-                .setTemperature(0.1f)
-                .setStopStrings("<|eot_id|>", "\n\n")
-
             val sb = StringBuilder()
-            for (output in model.generate(inferParams)) {
-                sb.append(output)
-                if (sb.length > maxTokens * 4) break
+            eng.sendUserPrompt(prompt, maxTokens).collect { token ->
+                sb.append(token)
             }
             sb.toString().trim()
         } catch (e: Throwable) {

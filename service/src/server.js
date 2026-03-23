@@ -22,7 +22,9 @@ import apiRouter from './routes/api.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
 import { startClassifier, stopClassifier } from './classifier.js';
+import { startScout, stopScout } from './scout.js';
 import { syncProjects, get, insert, run } from './db.js';
+import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession } from './terminal.js';
 import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,10 +46,35 @@ app.use('/api/v1/devices', devicesRouter);
 
 // Dashboard (web UI + API)
 app.use('/dashboard', dashboardRouter);
-app.use('/dashboard', express.static(join(__dirname, '..', 'public')));
+app.use('/dashboard', express.static(join(__dirname, '..', 'public'), {
+  etag: false,
+  lastModified: true,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+}));
 
 // Serve captured photos (stored in src/data/photos by api.js)
 app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
+
+// Terminal API — list sessions, projects for terminal
+app.get('/api/v1/terminal/sessions', (req, res) => {
+  res.json({ sessions: listSessions() });
+});
+app.get('/api/v1/terminal/projects', (req, res) => {
+  res.json({ projects: getTerminalProjects() });
+});
+app.delete('/api/v1/terminal/sessions/:id', (req, res) => {
+  const killed = killSession(req.params.id);
+  res.json({ ok: killed });
+});
+// Send text to active terminal (phone voice commands → terminal)
+app.post('/api/v1/terminal/send', (req, res) => {
+  const { text, session_id } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  const sent = sendToSession(session_id || null, text + '\n');
+  res.json({ ok: sent, session: session_id || 'auto' });
+});
 
 // Health check
 app.get('/health', (req, res) => {
@@ -62,6 +89,9 @@ function start() {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
       console.log(`[PAN] Listening for Claude Code hooks...`);
 
+      // Start WebSocket terminal server on same HTTP server
+      startTerminalServer(server);
+
       // Sync projects with disk reality on startup
       syncProjects();
 
@@ -70,12 +100,12 @@ function start() {
       const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
       if (!existing) {
         insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
-          VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now'))`, {
+          VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'))`, {
           ':h': pcHost, ':name': pcHost
         });
         console.log(`[PAN] Registered PC: ${pcHost}`);
       } else {
-        run("UPDATE devices SET last_seen = datetime('now') WHERE hostname = :h", { ':h': pcHost });
+        run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
       }
 
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
@@ -83,6 +113,9 @@ function start() {
 
       // Start classification engine (every 5 minutes)
       startClassifier(5 * 60 * 1000);
+
+      // Start tool scout (every 12 hours — discovers new CLIs and tools)
+      startScout(12 * 60 * 60 * 1000);
 
       resolve(server);
     });
@@ -97,6 +130,7 @@ function start() {
 
 function stop() {
   stopClassifier();
+  stopScout();
   if (server) server.close();
 }
 
