@@ -1,6 +1,9 @@
 import { spawn } from 'child_process';
 import { insert, all, get } from './db.js';
 import { claude } from './claude.js';
+import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
+import * as playwright from './playwright-bridge.js';
+import { findSkill, getSkillPrompt, listSkills } from './skills.js';
 
 // Log a step in the command processing pipeline
 function logStep(commandId, step, detail) {
@@ -71,12 +74,18 @@ async function handleUnified(text, context) {
     ? `\nRecent conversation:\n${conversationHistory}\n`
     : '';
 
+  // NanoClaw: check for matching skill before calling Claude
+  const matchedSkill = findSkill(text);
+  const skillBlock = matchedSkill
+    ? (logStep(cmdId, 'skill_matched', matchedSkill.name), getSkillPrompt(matchedSkill))
+    : '';
+
   logStep(cmdId, 'unified_call', 'single Claude call for classify+handle');
 
   try {
     const raw = await claude(
       `You are PAN, a personal AI assistant. You listen to the user's speech through their phone microphone. You are conversational — respond naturally like talking to a friend, not like a robot. Keep responses short (1-2 sentences max, this is read aloud via TTS). Never censor the user's words.
-${historyBlock}
+${historyBlock}${skillBlock}
 The user's microphone just picked up: "${text}"
 
 FIRST: Decide if this speech is directed at you (PAN) or ambient.
@@ -94,6 +103,9 @@ If ambient: {"intent": "ambient", "response": "[AMBIENT]"}
 If it IS for you, respond with JSON matching one of these:
 
 - Terminal/project: {"intent": "terminal", "action": "open", "project": "C:\\\\path", "name": "name", "response": "spoken response"}
+- List terminal panes: {"intent": "terminal", "action": "list-panes", "response": "spoken response"}
+- Send text to pane: {"intent": "terminal", "action": "send-text", "pane_id": 0, "text": "command\\n", "response": "spoken response"}
+- Read pane output: {"intent": "terminal", "action": "get-text", "pane_id": 0, "response": "spoken response"}
 - System command: {"intent": "system", "command": "PowerShell command", "response": "spoken response"}
   Desktop path is the user's OneDrive\\Desktop (NOT the plain Desktop).
 - Browser action: {"intent": "browser", "action": "list_tabs|read_tab|activate_tab|type_text|click_element|navigate", "query": "tab name or URL", "text": "text to type or click", "response": "spoken response"}
@@ -129,12 +141,65 @@ async function processUnifiedResult(action, text, context) {
       if (action.action === 'open') {
         const path = action.project || process.env.USERPROFILE + '\\Desktop';
         const name = action.name || 'PAN Terminal';
+
+        // Try WezTerm CLI first — opens directly without needing the tray agent
+        try {
+          if (await weztermAvailable()) {
+            const result = await weztermOpen(path, name);
+            return {
+              intent: 'terminal',
+              response: action.response || `Opening terminal for ${name}`,
+              terminalResult: { ...result, name },
+              // No terminalAction — WezTerm handled it directly
+            };
+          }
+        } catch (e) {
+          console.error('[PAN Router] WezTerm open failed, falling back to tray:', e.message);
+        }
+
+        // Fallback: queue for the tray agent (old behavior)
         return {
           intent: 'terminal',
           response: action.response || `Opening terminal for ${name}`,
           terminalAction: { action: 'open', path, name }
         };
       }
+
+      // WezTerm-specific actions: send-text, get-text, list-panes
+      if (action.action === 'send-text' && action.pane_id != null) {
+        try {
+          if (await weztermAvailable()) {
+            await weztermSend(action.pane_id, action.text || '');
+            return { intent: 'terminal', response: action.response || `Sent text to pane ${action.pane_id}.` };
+          }
+        } catch (e) {
+          return { intent: 'terminal', response: `Failed to send text: ${e.message}` };
+        }
+      }
+
+      if (action.action === 'get-text' && action.pane_id != null) {
+        try {
+          if (await weztermAvailable()) {
+            const text = await weztermGet(action.pane_id);
+            return { intent: 'terminal', response: text.slice(-1000), paneText: text };
+          }
+        } catch (e) {
+          return { intent: 'terminal', response: `Failed to read pane: ${e.message}` };
+        }
+      }
+
+      if (action.action === 'list-panes') {
+        try {
+          if (await weztermAvailable()) {
+            const panes = await weztermList();
+            const summary = panes.map(p => `Pane ${p.pane_id}: ${p.title || p.cwd || 'untitled'}`).join(', ');
+            return { intent: 'terminal', response: action.response || summary || 'No panes open.', panes };
+          }
+        } catch (e) {
+          return { intent: 'terminal', response: `Failed to list panes: ${e.message}` };
+        }
+      }
+
       return { intent: 'terminal', response: action.response || 'Terminal action processed.' };
     }
 
@@ -150,22 +215,72 @@ async function processUnifiedResult(action, text, context) {
     }
 
     case 'browser': {
-      // Execute browser action via the extension
+      // Try Playwright MCP first, fall back to browser extension
+      const act = action.action || 'list_tabs';
+
+      // ── Playwright MCP (primary) ──
+      try {
+        if (await playwright.isAvailable()) {
+          let result;
+          switch (act) {
+            case 'navigate':
+            case 'open_url':
+              result = await playwright.navigateTo(action.url);
+              return { intent: 'browser', response: action.response || `Navigated to ${action.url}` };
+            case 'click':
+              result = await playwright.clickElement(action.selector || action.query);
+              return { intent: 'browser', response: action.response || 'Clicked.' };
+            case 'type':
+              result = await playwright.typeText(action.selector || action.query, action.text);
+              return { intent: 'browser', response: action.response || 'Typed text.' };
+            case 'read_tab':
+            case 'read_page':
+            case 'snapshot':
+              result = await playwright.readPage();
+              return { intent: 'browser', response: action.response || (result.text || '').slice(0, 500) };
+            case 'screenshot':
+              result = await playwright.screenshot();
+              return { intent: 'browser', response: action.response || 'Screenshot taken.' };
+            case 'list_tabs':
+              result = await playwright.listTabs();
+              if (result.ok && result.tabs) {
+                const tabList = result.tabs.map(t => t.title).slice(0, 10).join(', ');
+                return { intent: 'browser', response: action.response || `Tabs: ${tabList}` };
+              }
+              break; // fall through to extension
+            case 'new_tab':
+              result = await playwright.newTab(action.url);
+              return { intent: 'browser', response: action.response || `Opened new tab: ${action.url}` };
+            case 'close_tab':
+              result = await playwright.closeTab();
+              return { intent: 'browser', response: action.response || 'Tab closed.' };
+            default:
+              // Try raw passthrough for any Playwright MCP tool
+              result = await playwright.raw(`browser_${act}`, {
+                url: action.url, text: action.text, element: action.query, ref: action.query
+              });
+              return { intent: 'browser', response: action.response || result.text || 'Done.' };
+          }
+        }
+      } catch (e) {
+        console.log('[PAN Router] Playwright failed, falling back to extension:', e.message);
+      }
+
+      // ── Browser extension fallback ──
       try {
         const browserCmd = globalThis._panBrowserCommand;
         if (browserCmd) {
-          const result = await browserCmd(action.action || 'list_tabs', {
+          const result = await browserCmd(act, {
             query: action.query || '',
             text: action.text || '',
             url: action.url || '',
           });
 
           if (result.ok) {
-            // For read_tab, summarize the content
-            if (action.action === 'read_tab' && result.text) {
+            if (act === 'read_tab' && result.text) {
               return { intent: 'browser', response: action.response || result.text.slice(0, 500) };
             }
-            if (action.action === 'list_tabs' && result.tabs) {
+            if (act === 'list_tabs' && result.tabs) {
               const tabList = result.tabs.map(t => t.title).slice(0, 10).join(', ');
               return { intent: 'browser', response: action.response || `You have ${result.tabs.length} tabs open: ${tabList}` };
             }
@@ -173,7 +288,7 @@ async function processUnifiedResult(action, text, context) {
           }
           return { intent: 'browser', response: action.response || result.error || 'Browser action failed.' };
         }
-        return { intent: 'browser', response: 'Browser extension not connected.' };
+        return { intent: 'browser', response: 'No browser automation available — install Playwright or the browser extension.' };
       } catch (e) {
         return { intent: 'browser', response: `Browser error: ${e.message}` };
       }
@@ -193,7 +308,7 @@ async function processUnifiedResult(action, text, context) {
     case 'memory': {
       if (action.action === 'save') {
         insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at)
-          VALUES (:type, :content, :ctx, 1.0, datetime('now'))`, {
+          VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'))`, {
           ':type': action.item_type || 'note',
           ':content': action.content || text,
           ':ctx': JSON.stringify({ source: 'voice_command', original: text })
@@ -218,7 +333,7 @@ async function processUnifiedResult(action, text, context) {
 
     case 'calendar': {
       insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at)
-        VALUES (:type, :content, :ctx, 1.0, datetime('now'))`, {
+        VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'))`, {
         ':type': 'calendar_event',
         ':content': text,
         ':ctx': JSON.stringify({ source: 'voice_command', pending_calendar_sync: true })

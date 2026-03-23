@@ -32,7 +32,7 @@ whisper.cpp/
 # Piper training repo (cloned, too large)
 piper/
 
-# PersonaPlex (cloned, large model)
+# PersonaPlex (cloned, large model + HF token)
 personaplex/
 
 # llama.cpp (cloned for native build)
@@ -49,6 +49,9 @@ DOG-COMMUNICATION.md
 MANUFACTURING.md
 MISSION.md
 STRATEGY.md
+
+# Claude Code local settings
+.claude/settings.local.json
 
 # Temp
 *.tmp

@@ -4,7 +4,7 @@
 
 const http = require('http');
 const https = require('https');
-const { exec, spawn } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const notifier = require('node-notifier');
 const os = require('os');
 const path = require('path');
@@ -14,7 +14,22 @@ const readline = require('readline');
 const PAN_URL = 'http://127.0.0.1:7777';
 const POLL_INTERVAL = 2000;
 const CLAUDE_PATH = path.join(process.env.APPDATA || '', 'npm', 'claude.cmd');
+const WEZTERM_PATH = 'C:\\Program Files\\WezTerm\\wezterm.exe';
 const DEVICE_NAME = os.hostname();
+
+// Check if WezTerm is available
+let weztermAvailable = null;
+function checkWezterm() {
+  if (weztermAvailable !== null) return Promise.resolve(weztermAvailable);
+  return new Promise((resolve) => {
+    fs.access(WEZTERM_PATH, fs.constants.X_OK, (err) => {
+      weztermAvailable = !err;
+      console.log(`[PAN Tray] WezTerm available: ${weztermAvailable}`);
+      resolve(weztermAvailable);
+    });
+  });
+}
+checkWezterm();
 
 console.log(`[PAN Tray] Started on ${DEVICE_NAME}`);
 console.log(`[PAN Tray] Polling ${PAN_URL} every ${POLL_INTERVAL / 1000}s`);
@@ -62,25 +77,48 @@ function handleAction(action) {
     // Try to find original path for session resume
     const resumePath = findSession(targetPath) || targetPath;
 
+    // Try WezTerm CLI first, fall back to wt.exe
+    checkWezterm().then((hasWezterm) => {
+      if (hasWezterm) {
+        // Use WezTerm CLI to spawn a new pane
+        const args = ['cli', 'spawn', '--cwd', resumePath];
+        execFile(WEZTERM_PATH, args, { timeout: 10000, windowsHide: true }, (err, stdout) => {
+          if (err) {
+            console.log(`[PAN] WezTerm spawn failed, falling back to wt.exe: ${err.message}`);
+            openWithWindowsTerminal(resumePath, name, action);
+            return;
+          }
+          const paneId = parseInt(stdout.trim(), 10);
+          console.log(`[PAN] WezTerm opened pane ${paneId}: ${name} at ${resumePath}`);
+
+          notifier.notify({ title: 'PAN', message: `Opened: ${name} (WezTerm pane ${paneId})`, sound: false });
+
+          reportSuccess(action.id, `Opened ${name} (WezTerm pane ${paneId})`);
+        });
+      } else {
+        openWithWindowsTerminal(resumePath, name, action);
+      }
+    });
+  }
+
+  function openWithWindowsTerminal(resumePath, name, action) {
     const batPath = path.join(os.tmpdir(), `pan-t-${action.id || Date.now()}.bat`);
     fs.writeFileSync(batPath, `@echo off\ncd /d "${resumePath}"\necho === ${name} ===\n"${CLAUDE_PATH}" --continue\n`, 'ascii');
 
     spawn('wt.exe', [batPath], { detached: true, stdio: 'ignore', shell: true }).unref();
 
-    notifier.notify({
-      title: 'PAN',
-      message: `Opened: ${name}`,
-      sound: false
-    });
+    notifier.notify({ title: 'PAN', message: `Opened: ${name}`, sound: false });
+    console.log(`[PAN] Opened terminal (wt.exe): ${name} at ${resumePath}`);
 
-    console.log(`[PAN] Opened terminal: ${name} at ${resumePath}`);
+    reportSuccess(action.id, `Opened ${name}`);
+  }
 
-    // Report success
-    if (action.id) {
-      fetch(`${PAN_URL}/api/v1/devices/commands/${action.id}/status`, {
+  function reportSuccess(actionId, result) {
+    if (actionId) {
+      fetch(`${PAN_URL}/api/v1/devices/commands/${actionId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'completed', result: `Opened ${name}` })
+        body: JSON.stringify({ status: 'completed', result })
       }).catch(() => {});
     }
   }

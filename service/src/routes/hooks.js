@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { run, get, insert, detectProject } from '../db.js';
+import { broadcastNotification } from '../terminal.js';
 
 const router = Router();
 
@@ -52,7 +53,7 @@ router.post('/:eventType', (req, res) => {
     }
 
     if (eventType === 'SessionEnd') {
-      run(`UPDATE sessions SET ended_at = datetime('now'), transcript_path = :tp WHERE id = :id`, {
+      run(`UPDATE sessions SET ended_at = datetime('now','localtime'), transcript_path = :tp WHERE id = :id`, {
         ':id': sessionId,
         ':tp': payload.transcript_path || null
       });
@@ -64,6 +65,17 @@ router.post('/:eventType', (req, res) => {
       ':type': eventType,
       ':data': JSON.stringify(payload)
     });
+
+    // Notify dashboard clients of new events so chat updates instantly
+    if (eventType === 'UserPromptSubmit' || eventType === 'Stop') {
+      try {
+        broadcastNotification('chat_update', {
+          event_type: eventType,
+          session_id: sessionId,
+          timestamp: new Date().toISOString(),
+        });
+      } catch {}
+    }
 
     res.status(200).json({ ok: true });
   } catch (err) {

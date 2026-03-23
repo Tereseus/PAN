@@ -4,17 +4,37 @@
 // No data loss on crash or service restart.
 
 import Database from 'better-sqlite3';
-import { readFileSync, existsSync, mkdirSync, statSync, readdirSync, realpathSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, statSync, readdirSync, realpathSync, copyFileSync, renameSync } from 'fs';
 import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', 'data');
-const DB_PATH = join(DATA_DIR, 'pan.db');
 const SCHEMA_PATH = join(__dirname, 'schema.sql');
+
+// Database lives OUTSIDE OneDrive to prevent SQLite WAL corruption from cloud sync.
+// OneDrive can sync partial WAL files mid-write, destroying data on crash/restart.
+// Source code on OneDrive is fine — only the live database needs a local path.
+const DATA_DIR = join(process.env.LOCALAPPDATA || join(process.env.USERPROFILE || 'C:\\Users\\user', 'AppData', 'Local'), 'PAN', 'data');
+const DB_PATH = join(DATA_DIR, 'pan.db');
+
+// Legacy path — migrate if old DB exists and new one doesn't
+const LEGACY_DATA_DIR = join(__dirname, '..', 'data');
+const LEGACY_DB_PATH = join(LEGACY_DATA_DIR, 'pan.db');
 
 if (!existsSync(DATA_DIR)) {
   mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// Auto-migrate from legacy OneDrive path to local path
+if (existsSync(LEGACY_DB_PATH) && !existsSync(DB_PATH)) {
+  console.log(`[PAN DB] Migrating database from OneDrive to local: ${DB_PATH}`);
+  copyFileSync(LEGACY_DB_PATH, DB_PATH);
+  // Also copy WAL/SHM if they exist
+  if (existsSync(LEGACY_DB_PATH + '-wal')) copyFileSync(LEGACY_DB_PATH + '-wal', DB_PATH + '-wal');
+  if (existsSync(LEGACY_DB_PATH + '-shm')) copyFileSync(LEGACY_DB_PATH + '-shm', DB_PATH + '-shm');
+  // Rename old DB so it doesn't get used accidentally
+  try { renameSync(LEGACY_DB_PATH, LEGACY_DB_PATH + '.migrated'); } catch {}
+  console.log(`[PAN DB] Migration complete. Old DB renamed to pan.db.migrated`);
 }
 
 // Open database — writes go directly to disk
@@ -148,7 +168,7 @@ function syncProjects() {
     const existingByPath = get("SELECT * FROM projects WHERE path = :path", { ':path': realPath });
     if (existingByPath) {
       if (existingByPath.name !== proj.name) {
-        run("UPDATE projects SET name = :name, updated_at = datetime('now') WHERE id = :id", {
+        run("UPDATE projects SET name = :name, updated_at = datetime('now','localtime') WHERE id = :id", {
           ':name': proj.name,
           ':id': existingByPath.id
         });
