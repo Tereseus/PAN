@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PAN"
 include(":app")
+include(":llama-lib")
