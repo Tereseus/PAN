@@ -91,8 +91,8 @@ dependencies {
     // Google AI Edge SDK — direct AICore access (backup)
     implementation("com.google.ai.edge.aicore:aicore:0.0.1-exp01")
 
-    // llama.cpp for Android — local LLM inference
-    implementation("de.kherud:llama:4.2.0")
+    // llama.cpp for Android — local LLM inference (native ARM64 build)
+    implementation(project(":llama-lib"))
 }
 
 // NDK for llama.cpp native code
