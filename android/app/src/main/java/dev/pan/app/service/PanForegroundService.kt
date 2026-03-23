@@ -116,7 +116,7 @@ class PanForegroundService : Service() {
         resistanceClient = ResistanceClient(this)
         resistanceClient.syncFromServer()
 
-        // Initialize local LLM — auto-download model if not present
+        // Initialize local LLM — auto-download and load model
         localLlm = dev.pan.app.ai.LocalLlm(this)
         serviceScope.launch {
             val model = localLlm.getSelectedModel()

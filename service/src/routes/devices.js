@@ -18,7 +18,7 @@ router.post('/register', (req, res) => {
       name = COALESCE(:name, name),
       device_type = COALESCE(:type, device_type),
       capabilities = COALESCE(:caps, capabilities),
-      last_seen = datetime('now')
+      last_seen = datetime('now','localtime')
       WHERE hostname = :h`, {
       ':name': name || null,
       ':type': device_type || null,
@@ -27,7 +27,7 @@ router.post('/register', (req, res) => {
     });
   } else {
     insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
-      VALUES (:h, :name, :type, :caps, datetime('now'))`, {
+      VALUES (:h, :name, :type, :caps, datetime('now','localtime'))`, {
       ':h': deviceHostname,
       ':name': name || deviceHostname,
       ':type': device_type || 'pc',
@@ -74,7 +74,7 @@ router.get('/commands/pending', (req, res) => {
 // Update command status
 router.post('/commands/:id/status', (req, res) => {
   const { status, result } = req.body;
-  run(`UPDATE command_queue SET status = :status, result = :result, completed_at = datetime('now')
+  run(`UPDATE command_queue SET status = :status, result = :result, completed_at = datetime('now','localtime')
     WHERE id = :id`, {
     ':id': parseInt(req.params.id),
     ':status': status,

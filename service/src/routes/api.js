@@ -28,12 +28,12 @@ router.use((req, res, next) => {
     const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': phoneHost });
     if (!existing) {
       insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
-        VALUES (:h, :name, 'phone', '["voice","camera","sensors"]', datetime('now'))`, {
+        VALUES (:h, :name, 'phone', '["voice","camera","sensors"]', datetime('now','localtime'))`, {
         ':h': phoneHost, ':name': 'Phone'
       });
     } else {
       // Update last_seen every 5 minutes max (avoid hammering DB)
-      run("UPDATE devices SET last_seen = datetime('now') WHERE hostname = :h", { ':h': phoneHost });
+      run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': phoneHost });
     }
   }
   next();
@@ -362,7 +362,13 @@ router.post('/query', async (req, res) => {
     const result = await route(text, { source: 'phone', intent_hint, _commandId: cmdId, conversation_history: context });
 
     // Update the command record with results
-    if (result.intent === 'terminal' && result.terminalAction) {
+    if (result.intent === 'terminal' && result.terminalResult) {
+      // WezTerm handled it directly — mark as completed, no tray queue needed
+      run(`UPDATE command_queue SET command_type = 'terminal', status = 'completed', result = :result WHERE id = :id`, {
+        ':id': cmdId, ':result': JSON.stringify(result.terminalResult)
+      });
+    } else if (result.intent === 'terminal' && result.terminalAction) {
+      // Fallback: queue for tray agent
       run(`UPDATE command_queue SET command_type = 'terminal', command = :cmd, status = 'pending' WHERE id = :id`, {
         ':id': cmdId, ':cmd': JSON.stringify(result.terminalAction)
       });

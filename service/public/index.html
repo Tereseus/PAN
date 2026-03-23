@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ΠΑΝ Dashboard</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
 <style>
 :root {
   --bg: #0d1117;
@@ -19,6 +23,20 @@
   --radius: 8px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* xterm.js terminal fill container */
+#terminal-container .xterm { height: 100% !important; }
+#terminal-container .xterm-viewport { overflow-y: scroll !important; }
+#terminal-container .xterm-screen { min-height: 100%; }
+
+/* Thin minimal scrollbars everywhere */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #6c708644; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6c708688; }
+::-webkit-scrollbar-corner { background: transparent; }
+/* Firefox */
+* { scrollbar-width: thin; scrollbar-color: #6c708644 transparent; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   background: var(--bg);
@@ -67,7 +85,8 @@ body {
 .tab.active { color: var(--text); background: var(--accent); color: #fff; }
 
 /* Content */
-.content { padding: 20px; max-width: 1200px; margin: 0 auto; }
+.content { padding: 20px; max-width: 1600px; margin: 0 auto; }
+.page-terminal .content { max-width: 100%; padding: 8px 16px; }
 
 .page { display: none; }
 .page.active { display: block; }
@@ -330,6 +349,117 @@ body {
 }
 .delete-section h4 { margin-bottom: 12px; }
 
+/* Project cards */
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.project-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.project-card:hover { border-color: var(--accent); }
+.project-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.project-pct {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+.progress-fill.green { background: var(--accent2); }
+.progress-fill.blue { background: var(--accent); }
+.progress-fill.yellow { background: var(--warn); }
+.progress-fill.gray { background: var(--text2); }
+.milestone-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.milestone-row:last-child { border-bottom: none; }
+.milestone-name { flex: 1; color: var(--text); }
+.milestone-bar {
+  width: 80px;
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.milestone-pct {
+  font-size: 12px;
+  color: var(--text2);
+  width: 36px;
+  text-align: right;
+}
+.task-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.task-item:hover { background: var(--bg3); }
+.task-item:last-child { border-bottom: none; }
+.task-check {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.task-check.done { background: var(--accent2); border-color: var(--accent2); }
+.task-check.in_progress { background: var(--warn); border-color: var(--warn); }
+.task-title { flex: 1; }
+.task-title.done { text-decoration: line-through; color: var(--text2); }
+.add-task-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.add-task-row input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
   .header { flex-wrap: wrap; padding: 10px; }
@@ -337,6 +467,7 @@ body {
   .content { padding: 12px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .event-header { flex-wrap: wrap; }
+  .project-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -344,7 +475,10 @@ body {
 
 <div class="header">
   <h1><span>ΠΑΝ</span> Dashboard</h1>
+  <button onclick="refreshDashboard()" title="Refresh" style="background:none;border:1px solid var(--border);color:var(--text2);cursor:pointer;border-radius:var(--radius);padding:4px 10px;font-size:13px;margin-left:-12px">↻</button>
   <div class="tabs">
+    <button class="tab" data-page="projects">Projects</button>
+    <button class="tab" data-page="terminal">Terminal</button>
     <button class="tab active" data-page="conversations">Conversations</button>
     <button class="tab" data-page="data">Data Management</button>
     <button class="tab" data-page="settings">Settings</button>
@@ -352,6 +486,54 @@ body {
 </div>
 
 <div class="content">
+
+  <!-- PROJECTS PAGE -->
+  <div id="projects" class="page">
+    <div id="projects-overview" style="margin-bottom:24px">
+      <div class="loading">Loading projects...</div>
+    </div>
+    <div id="projects-detail"></div>
+  </div>
+
+  <!-- TERMINAL PAGE -->
+  <div id="terminal" class="page">
+    <div class="terminal-toolbar" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+      <select id="terminal-project" onchange="switchTerminalProject()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:14px">
+        <option value="">Loading projects...</option>
+      </select>
+      <span id="terminal-host" style="color:var(--text2);font-size:12px"></span>
+      <div style="flex:1"></div>
+      <span id="terminal-sessions-count" style="color:var(--text2);font-size:12px"></span>
+      <button class="btn btn-sm" onclick="newTerminalSession()">+ Shell</button>
+    </div>
+    <div style="display:flex;gap:0;height:calc(100vh - 130px)">
+      <!-- LEFT: Project overview / Chat history -->
+      <div style="width:260px;min-width:220px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius) 0 0 var(--radius);flex-shrink:0;overflow:hidden">
+        <div style="display:flex;border-bottom:1px solid var(--border);background:var(--bg2)">
+          <button id="left-tab-project" onclick="switchLeftTab('project')" style="flex:1;padding:6px;border:none;background:none;color:var(--text2);cursor:pointer;font-size:11px;border-bottom:2px solid transparent">Project</button>
+          <button id="left-tab-chat" onclick="switchLeftTab('chat')" style="flex:1;padding:6px;border:none;background:none;color:var(--text);cursor:pointer;font-size:11px;font-weight:600;border-bottom:2px solid var(--accent)">Chat</button>
+        </div>
+        <div id="terminal-sidebar" style="flex:1;background:var(--bg2);overflow-y:auto;padding:10px;font-size:12px">
+          <div style="color:var(--text2);padding:20px;text-align:center">Select a project</div>
+        </div>
+      </div>
+      <!-- CENTER: Terminal -->
+      <div id="terminal-container" style="flex:1;background:#1e1e2e;border:1px solid var(--border);border-left:none;border-right:none;min-width:0;position:relative;overflow:visible"></div>
+      <!-- RIGHT: Sections (Tasks, Bugs, custom) -->
+      <div id="terminal-right" style="width:280px;min-width:220px;background:var(--bg2);border:1px solid var(--border);border-radius:0 var(--radius) var(--radius) 0;overflow-y:auto;font-size:12px;flex-shrink:0">
+        <div style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">
+          <select id="right-section-select" onchange="switchRightSection()" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;font-weight:500">
+            <option value="tasks">Tasks</option>
+            <option value="bugs">Bugs</option>
+          </select>
+          <button class="btn btn-sm" style="font-size:10px;padding:3px 6px" onclick="addNewSection()" title="Add custom section">+</button>
+        </div>
+        <div id="right-content" style="padding:10px">
+          <div style="color:var(--text2);padding:12px;text-align:center">Select a project</div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- CONVERSATIONS PAGE -->
   <div id="conversations" class="page active">
@@ -502,16 +684,29 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     const page = tab.dataset.page;
     document.getElementById(page).classList.add('active');
+    // Terminal page gets full width
+    document.body.classList.toggle('page-terminal', page === 'terminal');
     loadPage(page);
   });
 });
 
 function loadPage(page) {
   switch(page) {
+    case 'projects': loadProjects(); break;
+    case 'terminal': initTerminal(); break;
     case 'conversations': loadConversations(); break;
     case 'data': loadStats(); loadEvents(); loadPhotos(); loadJobs(); loadMemory(); break;
     case 'settings': loadSettings(); break;
   }
+}
+
+function refreshDashboard() {
+  // Save current page to URL hash so we return to it after reload
+  const activePage = document.querySelector('.page.active');
+  if (activePage) {
+    window.location.hash = activePage.id;
+  }
+  window.location.reload(true);
 }
 
 // Programmatic tab switching (used by data management cards)
@@ -522,6 +717,7 @@ function switchTab(pageName) {
   if (tab) tab.classList.add('active');
   const page = document.getElementById(pageName);
   if (page) page.classList.add('active');
+  document.body.classList.toggle('page-terminal', pageName === 'terminal');
   loadPage(pageName);
 }
 
@@ -532,7 +728,11 @@ async function api(path, opts) {
 }
 
 function timeAgo(dateStr) {
-  const d = new Date(dateStr + (dateStr.includes('Z') ? '' : 'Z'));
+  // PAN stores timestamps in localtime — parse manually, don't append Z
+  const parts = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):?(\d{2})?/);
+  if (!parts) return '';
+  const [, y, mo, day, h, m, s] = parts;
+  const d = new Date(parseInt(y), parseInt(mo)-1, parseInt(day), parseInt(h), parseInt(m), parseInt(s||0));
   const now = Date.now();
   const diff = now - d.getTime();
   if (diff < 60000) return 'just now';
@@ -543,8 +743,15 @@ function timeAgo(dateStr) {
 
 function fmtTime(dateStr) {
   if (!dateStr) return '';
-  const d = new Date(dateStr + (dateStr.includes('Z') ? '' : 'Z'));
-  return d.toLocaleString();
+  // PAN stores timestamps in localtime (no timezone suffix) — don't append Z
+  // Just display as-is in a readable format
+  const parts = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):?(\d{2})?/);
+  if (!parts) return dateStr;
+  const [, y, mo, day, h, m, s] = parts;
+  const today = new Date();
+  const isToday = today.getFullYear() == y && (today.getMonth()+1) == parseInt(mo) && today.getDate() == parseInt(day);
+  const time = h + ':' + m + (s ? ':' + s : '');
+  return isToday ? time : `${mo}/${day} ${time}`;
 }
 
 function fmtSize(bytes) {
@@ -722,7 +929,7 @@ async function loadStats() {
     <div class="stat-card" style="cursor:pointer" onclick="switchTab('events')"><div class="value">${data.total_events}</div><div class="label">Events →</div></div>
     <div class="stat-card" style="cursor:pointer" onclick="loadMemory()"><div class="value">${data.total_memory}</div><div class="label">Memory Items →</div></div>
     <div class="stat-card" style="cursor:pointer" onclick="switchTab('settings')"><div class="value">${data.total_sessions}</div><div class="label">Sessions →</div></div>
-    <div class="stat-card" style="cursor:pointer" onclick="switchTab('settings')"><div class="value">${data.total_projects}</div><div class="label">Projects →</div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="switchTab('projects')"><div class="value">${data.total_projects}</div><div class="label">Projects →</div></div>
     <div class="stat-card" style="cursor:pointer" onclick="switchTab('settings')"><div class="value">${data.total_devices}</div><div class="label">Devices →</div></div>
     <div class="stat-card"><div class="value">${fmtSize(data.db_size_bytes)}</div><div class="label">DB Size</div></div>
   `;
@@ -857,7 +1064,10 @@ async function loadSettings() {
 
 function isRecent(dateStr) {
   if (!dateStr) return false;
-  const d = new Date(dateStr + (dateStr.includes('Z') ? '' : 'Z'));
+  const parts = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):?(\d{2})?/);
+  if (!parts) return false;
+  const [, y, mo, day, h, m, s] = parts;
+  const d = new Date(parseInt(y), parseInt(mo)-1, parseInt(day), parseInt(h), parseInt(m), parseInt(s||0));
   return (Date.now() - d.getTime()) < 300000; // 5 min
 }
 
@@ -1119,8 +1329,975 @@ async function changePassword() {
   }
 }
 
-// Initial load
-loadConversations();
+// ==========================================
+// PROJECTS PAGE
+// ==========================================
+
+let projectsData = null;
+
+function pctColor(pct) {
+  if (pct >= 80) return 'green';
+  if (pct >= 30) return 'blue';
+  if (pct > 0) return 'yellow';
+  return 'gray';
+}
+
+async function loadProjects() {
+  const data = await api('/api/progress');
+  projectsData = data;
+  const el = document.getElementById('projects-overview');
+  const detail = document.getElementById('projects-detail');
+
+  if (!data.projects || !data.projects.length) {
+    el.innerHTML = '<div class="loading">No projects registered. Create a .pan file in a project directory.</div>';
+    return;
+  }
+
+  // Overall stats
+  let totalTasks = 0, totalDone = 0;
+  for (const p of data.projects) {
+    totalTasks += p.total_tasks;
+    totalDone += p.done_tasks;
+  }
+  const overallPct = totalTasks > 0 ? Math.round(totalDone / totalTasks * 100) : 0;
+
+  let html = '';
+
+  // Overall progress bar
+  if (totalTasks > 0) {
+    html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:20px">
+      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
+        <span style="font-size:32px;font-weight:700;color:var(--accent)">${overallPct}%</span>
+        <span style="color:var(--text2);font-size:14px">${totalDone} / ${totalTasks} tasks complete across all projects</span>
+      </div>
+      <div class="progress-bar" style="height:12px">
+        <div class="progress-fill ${pctColor(overallPct)}" style="width:${overallPct}%"></div>
+      </div>
+    </div>`;
+  }
+
+  // Project cards grid
+  html += '<div class="project-grid">';
+  for (const p of data.projects) {
+    const clr = pctColor(p.percentage);
+    html += `<div class="project-card" onclick="showProjectDetail(${p.id})">
+      <h3>${escapeHtml(p.name)}</h3>
+      <div class="project-pct" style="color:var(--${clr === 'green' ? 'accent2' : clr === 'blue' ? 'accent' : clr === 'yellow' ? 'warn' : 'text2'})">${p.percentage}%</div>
+      <div class="progress-bar">
+        <div class="progress-fill ${clr}" style="width:${p.percentage}%"></div>
+      </div>
+      <div style="font-size:12px;color:var(--text2)">${p.done_tasks}/${p.total_tasks} tasks &middot; ${p.session_count} sessions</div>`;
+
+    // Milestone mini-view
+    if (p.milestones.length > 0) {
+      html += '<div style="margin-top:12px">';
+      for (const m of p.milestones) {
+        const mclr = pctColor(m.percentage);
+        html += `<div class="milestone-row">
+          <span class="milestone-name">${escapeHtml(m.name)}</span>
+          <div class="milestone-bar"><div class="progress-fill ${mclr}" style="width:${m.percentage}%"></div></div>
+          <span class="milestone-pct">${m.percentage}%</span>
+        </div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+}
+
+async function showProjectDetail(projectId) {
+  const detail = document.getElementById('projects-detail');
+  const data = await api(`/api/projects/${projectId}/tasks`);
+  const proj = projectsData?.projects?.find(p => p.id === projectId);
+  if (!proj) return;
+
+  let html = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px">
+    <div style="padding:16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+      <h3 style="font-size:18px">${escapeHtml(proj.name)} &mdash; Tasks</h3>
+      <button class="btn btn-sm" onclick="document.getElementById('projects-detail').innerHTML=''">&times; Close</button>
+    </div>`;
+
+  // Group tasks by milestone
+  const byMilestone = {};
+  const noMilestone = [];
+  for (const t of data.tasks) {
+    if (t.milestone_id) {
+      if (!byMilestone[t.milestone_id]) byMilestone[t.milestone_id] = [];
+      byMilestone[t.milestone_id].push(t);
+    } else {
+      noMilestone.push(t);
+    }
+  }
+
+  for (const m of data.milestones) {
+    const tasks = byMilestone[m.id] || [];
+    const done = tasks.filter(t => t.status === 'done').length;
+    const pct = tasks.length > 0 ? Math.round(done / tasks.length * 100) : 0;
+
+    html += `<div style="border-bottom:1px solid var(--border)">
+      <div style="padding:12px 16px;display:flex;align-items:center;gap:12px;background:var(--bg3)">
+        <strong style="flex:1">${escapeHtml(m.name)}</strong>
+        <span style="font-size:12px;color:var(--text2)">${done}/${tasks.length}</span>
+        <div class="milestone-bar"><div class="progress-fill ${pctColor(pct)}" style="width:${pct}%"></div></div>
+        <span style="font-size:12px;color:var(--text2)">${pct}%</span>
+      </div>`;
+
+    for (const t of tasks) {
+      const checkClass = t.status === 'done' ? 'done' : t.status === 'in_progress' ? 'in_progress' : '';
+      const checkIcon = t.status === 'done' ? '✓' : t.status === 'in_progress' ? '~' : '';
+      html += `<div class="task-item" onclick="cycleTask(${t.id}, '${t.status}', ${projectId})">
+        <div class="task-check ${checkClass}">${checkIcon}</div>
+        <span class="task-title ${t.status === 'done' ? 'done' : ''}">${escapeHtml(t.title)}</span>
+      </div>`;
+    }
+
+    // Add task input
+    html += `<div class="add-task-row">
+      <input type="text" placeholder="Add task..." id="add-task-${m.id}" onkeydown="if(event.key==='Enter')addTask(${projectId},${m.id},this.value)">
+      <button class="btn btn-sm" onclick="addTask(${projectId},${m.id},document.getElementById('add-task-${m.id}').value)">+</button>
+    </div>`;
+
+    html += '</div>';
+  }
+
+  if (noMilestone.length > 0) {
+    html += `<div style="border-bottom:1px solid var(--border)">
+      <div style="padding:12px 16px;background:var(--bg3)"><strong>Uncategorized</strong></div>`;
+    for (const t of noMilestone) {
+      const checkClass = t.status === 'done' ? 'done' : t.status === 'in_progress' ? 'in_progress' : '';
+      const checkIcon = t.status === 'done' ? '✓' : t.status === 'in_progress' ? '~' : '';
+      html += `<div class="task-item" onclick="cycleTask(${t.id}, '${t.status}', ${projectId})">
+        <div class="task-check ${checkClass}">${checkIcon}</div>
+        <span class="task-title ${t.status === 'done' ? 'done' : ''}">${escapeHtml(t.title)}</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // Add milestone
+  html += `<div style="padding:12px 16px">
+    <div style="display:flex;gap:8px">
+      <input type="text" id="add-milestone-${projectId}" placeholder="New milestone..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:13px" onkeydown="if(event.key==='Enter')addMilestone(${projectId},this.value)">
+      <button class="btn btn-sm" onclick="addMilestone(${projectId},document.getElementById('add-milestone-${projectId}').value)">+ Milestone</button>
+    </div>
+  </div>`;
+
+  html += '</div>';
+  detail.innerHTML = html;
+  detail.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function cycleTask(taskId, currentStatus, projectId) {
+  const next = currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'todo';
+  await fetch('/dashboard/api/tasks/' + taskId, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: next })
+  });
+  await loadProjects();
+  showProjectDetail(projectId);
+}
+
+async function addTask(projectId, milestoneId, title) {
+  title = title.trim();
+  if (!title) return;
+  await fetch('/dashboard/api/projects/' + projectId + '/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, milestone_id: milestoneId })
+  });
+  await loadProjects();
+  showProjectDetail(projectId);
+}
+
+async function addMilestone(projectId, name) {
+  name = name.trim();
+  if (!name) return;
+  await fetch('/dashboard/api/projects/' + projectId + '/milestones', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  await loadProjects();
+  showProjectDetail(projectId);
+}
+
+// ==========================================
+// TERMINAL
+// ==========================================
+
+let term = null;
+let termWs = null;
+let termFitAddon = null;
+let termSessionId = null;
+let termCurrentProject = null;
+let termInitialized = false;
+let termClaudeStarted = false;
+
+async function loadTerminalProjects() {
+  const data = await api('/api/projects');
+  const select = document.getElementById('terminal-project');
+  select.innerHTML = '<option value="">-- Select Project --</option>';
+  select.innerHTML += '<option value="__shell__">Shell (Desktop)</option>';
+  for (const p of data) {
+    select.innerHTML += `<option value="${escapeHtml(p.path)}" data-name="${escapeHtml(p.name)}" data-id="${p.id}">${escapeHtml(p.name)}</option>`;
+  }
+
+  // Show active sessions count
+  try {
+    const sess = await fetch('/api/v1/terminal/sessions').then(r => r.json());
+    const el = document.getElementById('terminal-sessions-count');
+    if (sess.sessions && sess.sessions.length > 0) {
+      el.textContent = sess.sessions.length + ' active';
+    } else {
+      el.textContent = '';
+    }
+  } catch {}
+}
+
+let termProjectData = null;
+let termTasksData = null;
+let termSectionsData = [];
+let currentRightSection = 'tasks';
+let rightMilestoneFilter = null;
+let currentLeftTab = 'chat';
+let chatRefreshInterval = null;
+
+function switchLeftTab(tab) {
+  currentLeftTab = tab;
+  document.getElementById('left-tab-project').style.color = tab === 'project' ? 'var(--text)' : 'var(--text2)';
+  document.getElementById('left-tab-project').style.borderBottom = tab === 'project' ? '2px solid var(--accent)' : '2px solid transparent';
+  document.getElementById('left-tab-project').style.fontWeight = tab === 'project' ? '600' : '400';
+  document.getElementById('left-tab-chat').style.color = tab === 'chat' ? 'var(--text)' : 'var(--text2)';
+  document.getElementById('left-tab-chat').style.borderBottom = tab === 'chat' ? '2px solid var(--accent)' : '2px solid transparent';
+  document.getElementById('left-tab-chat').style.fontWeight = tab === 'chat' ? '600' : '400';
+
+  if (tab === 'project') {
+    if (termCurrentProject && termCurrentProject.id) {
+      renderLeftProject();
+    }
+    if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
+  } else {
+    loadChatHistory();
+    // Auto-refresh chat every 10 seconds
+    if (chatRefreshInterval) clearInterval(chatRefreshInterval);
+    chatRefreshInterval = setInterval(loadChatHistory, 10000);
+  }
+}
+
+function renderLeftProject() {
+  const sidebar = document.getElementById('terminal-sidebar');
+  const proj = termProjectData;
+  if (!proj) {
+    sidebar.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">No project data</div>';
+    return;
+  }
+
+  let html = '';
+  html += `<div style="margin-bottom:10px">
+    <div style="font-weight:600;font-size:14px;margin-bottom:4px">${escapeHtml(proj.name)}</div>
+    <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px">
+      <span style="font-size:20px;font-weight:700;color:var(--accent)">${proj.percentage}%</span>
+      <span style="color:var(--text2);font-size:10px">${proj.done_tasks}/${proj.total_tasks}</span>
+    </div>
+    <div class="progress-bar" style="height:5px;margin-bottom:6px">
+      <div class="progress-fill ${pctColor(proj.percentage)}" style="width:${proj.percentage}%"></div>
+    </div>
+    <div style="font-size:10px;color:var(--text2)">${proj.session_count} sessions</div>
+  </div>`;
+
+  for (const m of proj.milestones) {
+    const mclr = pctColor(m.percentage);
+    html += `<div style="margin-bottom:8px;cursor:pointer" onclick="filterRightByMilestone(${m.id})">
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">
+        <span style="flex:1;font-size:11px;font-weight:500">${escapeHtml(m.name)}</span>
+        <span style="font-size:10px;color:var(--text2)">${m.percentage}%</span>
+      </div>
+      <div class="progress-bar" style="height:3px">
+        <div class="progress-fill ${mclr}" style="width:${m.percentage}%"></div>
+      </div>
+    </div>`;
+  }
+
+  sidebar.innerHTML = html;
+}
+
+async function loadChatHistory() {
+  const sidebar = document.getElementById('terminal-sidebar');
+
+  // Get recent events (prompts + responses)
+  const data = await api('/api/events?limit=30');
+  if (!data.events || data.events.length === 0) {
+    sidebar.innerHTML = '<div style="color:var(--text2);padding:12px;text-align:center">No conversation history</div>';
+    return;
+  }
+
+  let html = '<div style="display:flex;flex-direction:column;gap:8px">';
+
+  // Process events in chronological order (reverse since they come newest first)
+  const events = [...data.events].reverse();
+
+  for (const e of events) {
+    let parsed = {};
+    try { parsed = JSON.parse(e.data); } catch {}
+
+    if (e.event_type === 'UserPromptSubmit' && parsed.prompt) {
+      // User message
+      const text = parsed.prompt;
+      html += `<div style="background:var(--accent);color:#fff;border-radius:8px 8px 2px 8px;padding:8px 10px;font-size:11px;align-self:flex-end;max-width:95%;word-break:break-word">
+        ${escapeHtml(text)}
+        <div style="font-size:9px;opacity:0.7;margin-top:3px">${fmtTime(e.created_at)}</div>
+      </div>`;
+    } else if (e.event_type === 'Stop' && parsed.last_assistant_message) {
+      // Claude's response — full text, no truncation
+      const text = parsed.last_assistant_message;
+      html += `<div style="background:var(--bg3);border-radius:8px 8px 8px 2px;padding:8px 10px;font-size:11px;align-self:flex-start;max-width:95%;word-break:break-word;white-space:pre-wrap">
+        ${escapeHtml(text)}
+        <div style="font-size:9px;color:var(--text2);margin-top:3px">${fmtTime(e.created_at)}</div>
+      </div>`;
+    }
+  }
+
+  html += '</div>';
+  sidebar.innerHTML = html;
+
+  // Auto-scroll to bottom
+  sidebar.scrollTop = sidebar.scrollHeight;
+}
+
+async function loadTerminalSidebar(projectId, projectName) {
+  const sidebar = document.getElementById('terminal-sidebar');
+  const right = document.getElementById('right-content');
+
+  if (!projectId) {
+    sidebar.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">Select a project</div>';
+    right.innerHTML = '<div style="color:var(--text2);padding:12px;text-align:center">Select a project</div>';
+    return;
+  }
+
+  // Load progress, tasks, and custom sections in parallel
+  const [progress, tasks, sections] = await Promise.all([
+    api('/api/progress'),
+    api(`/api/projects/${projectId}/tasks`),
+    api(`/api/projects/${projectId}/sections`),
+  ]);
+
+  const proj = progress.projects.find(p => p.id === projectId);
+  termProjectData = proj;
+  termTasksData = tasks;
+  termSectionsData = sections || [];
+
+  // Update the section dropdown
+  const select = document.getElementById('right-section-select');
+  select.innerHTML = '<option value="tasks">Tasks</option><option value="bugs">Bugs</option>';
+  for (const s of termSectionsData) {
+    select.innerHTML += `<option value="custom-${s.id}">${escapeHtml(s.name)}</option>`;
+  }
+  select.value = currentRightSection;
+
+  if (!proj) {
+    sidebar.innerHTML = `<div style="padding:8px"><strong>${escapeHtml(projectName)}</strong><div style="color:var(--text2);margin-top:8px">No tasks yet</div></div>`;
+    right.innerHTML = '';
+    return;
+  }
+
+  // Render left panel based on active tab
+  if (currentLeftTab === 'project') {
+    renderLeftProject();
+  } else {
+    loadChatHistory();
+  }
+
+  renderRightPanel();
+}
+
+function switchRightSection() {
+  currentRightSection = document.getElementById('right-section-select').value;
+  rightMilestoneFilter = null;
+  renderRightPanel();
+}
+
+function filterRightByMilestone(milestoneId) {
+  rightMilestoneFilter = rightMilestoneFilter === milestoneId ? null : milestoneId;
+  currentRightSection = 'tasks';
+  document.getElementById('right-section-select').value = 'tasks';
+  renderRightPanel();
+}
+
+async function addNewSection() {
+  if (!termCurrentProject || !termCurrentProject.id) {
+    alert('Select a project first');
+    return;
+  }
+  const name = prompt('New section name (e.g. "Notes", "Design", "Hardware"):');
+  if (!name || !name.trim()) return;
+  try {
+    await fetch(`/dashboard/api/projects/${termCurrentProject.id}/sections`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() })
+    });
+    await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
+    // Switch to the new section
+    const select = document.getElementById('right-section-select');
+    select.value = select.options[select.options.length - 1].value;
+    switchRightSection();
+  } catch (e) {
+    alert('Failed to create section: ' + e.message);
+  }
+}
+
+function renderRightPanel() {
+  const el = document.getElementById('right-content');
+  const proj = termProjectData;
+  const data = termTasksData;
+
+  if (!proj || !data) {
+    el.innerHTML = '<div style="color:var(--text2);padding:12px;text-align:center">No data</div>';
+    return;
+  }
+
+  if (currentRightSection === 'tasks') {
+    renderRightTasks(el, proj, data);
+  } else if (currentRightSection === 'bugs') {
+    renderRightBugs(el, proj, data);
+  } else if (currentRightSection.startsWith('custom-')) {
+    const sectionId = parseInt(currentRightSection.replace('custom-', ''));
+    renderRightCustom(el, sectionId);
+  }
+}
+
+function renderRightTasks(el, proj, data) {
+  let html = '';
+
+  // Group tasks by milestone
+  const byMilestone = {};
+  const noMilestone = [];
+  for (const t of data.tasks) {
+    if (rightMilestoneFilter && t.milestone_id !== rightMilestoneFilter && t.milestone_id !== null) continue;
+    if (rightMilestoneFilter && t.milestone_id === null) continue;
+    if (t.milestone_id) {
+      if (!byMilestone[t.milestone_id]) byMilestone[t.milestone_id] = [];
+      byMilestone[t.milestone_id].push(t);
+    } else {
+      noMilestone.push(t);
+    }
+  }
+
+  if (rightMilestoneFilter) {
+    const m = data.milestones.find(m => m.id === rightMilestoneFilter);
+    html += `<div style="padding:4px 0 8px;display:flex;align-items:center;gap:6px">
+      <strong style="font-size:12px">${m ? escapeHtml(m.name) : 'Tasks'}</strong>
+      <button style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:11px" onclick="rightMilestoneFilter=null;renderRightPanel()">✕ clear</button>
+    </div>`;
+  }
+
+  for (const m of data.milestones) {
+    const tasks = byMilestone[m.id];
+    if (!tasks || tasks.length === 0) continue;
+
+    if (!rightMilestoneFilter) {
+      html += `<div style="font-size:11px;font-weight:600;color:var(--text2);padding:6px 0 3px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:0.5px">${escapeHtml(m.name)}</div>`;
+    }
+
+    for (const t of tasks) {
+      const icon = t.status === 'done' ? '✓' : t.status === 'in_progress' ? '◆' : '○';
+      const color = t.status === 'done' ? 'var(--accent2)' : t.status === 'in_progress' ? 'var(--warn)' : 'var(--text2)';
+      const strike = t.status === 'done' ? 'text-decoration:line-through;color:var(--text2)' : '';
+      html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;cursor:pointer" onclick="cycleTermTask(${t.id},'${t.status}')">
+        <span style="color:${color};flex-shrink:0;width:14px;text-align:center">${icon}</span>
+        <span style="flex:1;${strike}">${escapeHtml(t.title)}</span>
+      </div>`;
+    }
+  }
+
+  if (noMilestone.length > 0 && !rightMilestoneFilter) {
+    html += '<div style="font-size:11px;font-weight:600;color:var(--text2);padding:6px 0 3px;border-bottom:1px solid var(--border)">OTHER</div>';
+    for (const t of noMilestone) {
+      const icon = t.status === 'done' ? '✓' : t.status === 'in_progress' ? '◆' : '○';
+      const color = t.status === 'done' ? 'var(--accent2)' : t.status === 'in_progress' ? 'var(--warn)' : 'var(--text2)';
+      html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;cursor:pointer" onclick="cycleTermTask(${t.id},'${t.status}')">
+        <span style="color:${color};flex-shrink:0;width:14px">${icon}</span>
+        <span style="flex:1">${escapeHtml(t.title)}</span>
+      </div>`;
+    }
+  }
+
+  // Add task input
+  html += `<div style="margin-top:8px;display:flex;gap:4px">
+    <input type="text" id="right-add-task" placeholder="Add task..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px" onkeydown="if(event.key==='Enter')addRightTask()">
+    <button class="btn btn-sm" style="font-size:10px;padding:3px 6px" onclick="addRightTask()">+</button>
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+function renderRightBugs(el, proj, data) {
+  // Filter tasks that look like bugs (priority > 0 or title contains bug/fix/issue/error/broken)
+  const bugKeywords = /bug|fix|issue|error|broken|crash|fail/i;
+  const bugs = data.tasks.filter(t => t.priority > 0 || bugKeywords.test(t.title));
+
+  let html = '';
+  if (bugs.length === 0) {
+    html += '<div style="color:var(--text2);padding:12px;text-align:center">No bugs tracked</div>';
+    html += '<div style="color:var(--text2);padding:0 12px;text-align:center;font-size:11px">Add tasks with "bug" or "fix" in the title, or set priority > 0</div>';
+  } else {
+    for (const t of bugs) {
+      const icon = t.status === 'done' ? '✓' : '⚠';
+      const color = t.status === 'done' ? 'var(--accent2)' : 'var(--danger)';
+      const strike = t.status === 'done' ? 'text-decoration:line-through;color:var(--text2)' : '';
+      html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:4px 0;cursor:pointer" onclick="cycleTermTask(${t.id},'${t.status}')">
+        <span style="color:${color};flex-shrink:0">${icon}</span>
+        <span style="flex:1;${strike}">${escapeHtml(t.title)}</span>
+      </div>`;
+    }
+  }
+
+  // Add bug input
+  html += `<div style="margin-top:8px;display:flex;gap:4px">
+    <input type="text" id="right-add-bug" placeholder="Report bug..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px" onkeydown="if(event.key==='Enter')addRightBug()">
+    <button class="btn btn-sm" style="font-size:10px;padding:3px 6px" onclick="addRightBug()">+</button>
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+function renderRightCustom(el, sectionId) {
+  const section = termSectionsData.find(s => s.id === sectionId);
+  if (!section) {
+    el.innerHTML = '<div style="color:var(--text2);padding:12px">Section not found</div>';
+    return;
+  }
+
+  let html = '';
+  for (const item of (section.items || [])) {
+    const icon = item.status === 'done' ? '✓' : '○';
+    const color = item.status === 'done' ? 'var(--accent2)' : 'var(--text2)';
+    const strike = item.status === 'done' ? 'text-decoration:line-through;color:var(--text2)' : '';
+    html += `<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;cursor:pointer" onclick="cycleSectionItem(${item.id},'${item.status}',${sectionId})">
+      <span style="color:${color};flex-shrink:0;width:14px;text-align:center">${icon}</span>
+      <span style="flex:1;${strike}">${escapeHtml(item.content)}</span>
+    </div>`;
+  }
+
+  if (section.items.length === 0) {
+    html += '<div style="color:var(--text2);padding:8px;text-align:center">No items yet</div>';
+  }
+
+  html += `<div style="margin-top:8px;display:flex;gap:4px">
+    <input type="text" id="right-add-custom-${sectionId}" placeholder="Add item..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px" onkeydown="if(event.key==='Enter')addSectionItem(${sectionId})">
+    <button class="btn btn-sm" style="font-size:10px;padding:3px 6px" onclick="addSectionItem(${sectionId})">+</button>
+  </div>`;
+
+  // Delete section option
+  html += `<div style="margin-top:12px;text-align:center">
+    <button style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:10px" onclick="deleteSection(${sectionId})">Delete this section</button>
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+async function cycleSectionItem(itemId, currentStatus, sectionId) {
+  const next = currentStatus === 'open' ? 'done' : 'open';
+  await fetch('/dashboard/api/section-items/' + itemId, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: next })
+  });
+  if (termCurrentProject) await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
+}
+
+async function addSectionItem(sectionId) {
+  const input = document.getElementById('right-add-custom-' + sectionId);
+  const content = input.value.trim();
+  if (!content) return;
+  await fetch(`/dashboard/api/sections/${sectionId}/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content })
+  });
+  input.value = '';
+  if (termCurrentProject) await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
+}
+
+async function deleteSection(sectionId) {
+  if (!confirm('Delete this section and all its items?')) return;
+  await fetch('/dashboard/api/sections/' + sectionId, { method: 'DELETE' });
+  currentRightSection = 'tasks';
+  if (termCurrentProject) await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
+}
+
+async function cycleTermTask(taskId, currentStatus) {
+  const next = currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'todo';
+  await fetch('/dashboard/api/tasks/' + taskId, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: next })
+  });
+  // Reload sidebar data
+  if (termCurrentProject && termCurrentProject.id) {
+    await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
+  }
+}
+
+async function addRightTask() {
+  const input = document.getElementById('right-add-task');
+  const title = input.value.trim();
+  if (!title || !termCurrentProject) return;
+  // Add to the filtered milestone if one is active, otherwise no milestone
+  await fetch(`/dashboard/api/projects/${termCurrentProject.id}/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, milestone_id: rightMilestoneFilter || null })
+  });
+  input.value = '';
+  await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
+}
+
+async function addRightBug() {
+  const input = document.getElementById('right-add-bug');
+  const title = input.value.trim();
+  if (!title || !termCurrentProject) return;
+  await fetch(`/dashboard/api/projects/${termCurrentProject.id}/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, priority: 1 })
+  });
+  input.value = '';
+  await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
+}
+
+function initTerminal() {
+  loadTerminalProjects();
+
+  if (termInitialized && term) {
+    // Re-fit terminal when switching back to the tab
+    setTimeout(() => {
+      if (termFitAddon) {
+        try { termFitAddon.fit(); } catch {}
+        if (termWs && termWs.readyState === 1) {
+          termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+      }
+    }, 100);
+    return;
+  }
+
+  // Auto-connect to PAN project on first load
+  if (!termInitialized) {
+    termInitialized = true;
+    // Start chat refresh since chat is the default left tab
+    if (!chatRefreshInterval) {
+      chatRefreshInterval = setInterval(loadChatHistory, 10000);
+    }
+    // Wait for projects to load, then auto-select PAN
+    setTimeout(() => {
+      const select = document.getElementById('terminal-project');
+      for (const opt of select.options) {
+        if (opt.dataset && opt.dataset.name === 'PAN') {
+          select.value = opt.value;
+          switchTerminalProject();
+          return;
+        }
+      }
+      // If no PAN project, show placeholder
+      const container = document.getElementById('terminal-container');
+      container.innerHTML = `<div style="color:var(--text2);padding:40px;text-align:center">
+        <div style="font-size:48px;margin-bottom:16px">◈</div>
+        <div style="font-size:16px;margin-bottom:8px">PAN Terminal</div>
+        <div style="font-size:13px">Select a project to start</div>
+      </div>`;
+    }, 500);
+  }
+}
+
+async function connectTerminal(sessionId, projectName, cwd, projectId) {
+  if (termWs) { termWs.close(); termWs = null; }
+  if (term) { term.dispose(); term = null; }
+  termClaudeStarted = false;
+  termCurrentProject = { id: projectId, name: projectName, cwd };
+
+  const container = document.getElementById('terminal-container');
+  container.innerHTML = '';
+
+  // Load sidebar with project progress
+  loadTerminalSidebar(projectId, projectName);
+
+  term = new window.Terminal({
+    theme: {
+      background: '#1e1e2e',
+      foreground: '#cdd6f4',
+      cursor: '#f5e0dc',
+      cursorAccent: '#1e1e2e',
+      selectionBackground: '#45475a',
+      black: '#45475a',
+      red: '#f38ba8',
+      green: '#a6e3a1',
+      yellow: '#f9e2af',
+      blue: '#89b4fa',
+      magenta: '#cba6f7',
+      cyan: '#94e2d5',
+      white: '#bac2de',
+      brightBlack: '#585b70',
+      brightRed: '#f38ba8',
+      brightGreen: '#a6e3a1',
+      brightYellow: '#f9e2af',
+      brightBlue: '#89b4fa',
+      brightMagenta: '#cba6f7',
+      brightCyan: '#94e2d5',
+      brightWhite: '#a6adc8',
+    },
+    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+    fontSize: 14,
+    cursorBlink: true,
+    scrollback: 5000,
+    allowProposedApi: true,
+  });
+
+  termFitAddon = new window.FitAddon.FitAddon();
+  term.loadAddon(termFitAddon);
+  term.loadAddon(new window.WebLinksAddon.WebLinksAddon());
+
+  term.open(container);
+
+  // Fit after layout settles — multiple attempts to handle flex layout timing
+  function doFit() {
+    if (termFitAddon) {
+      try { termFitAddon.fit(); } catch {}
+      // Send resize to server if connected
+      if (termWs && termWs.readyState === 1) {
+        termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    }
+  }
+  setTimeout(doFit, 50);
+  setTimeout(doFit, 200);
+  setTimeout(doFit, 500);
+
+  // Watch for container size changes
+  const resizeObs = new ResizeObserver(() => doFit());
+  resizeObs.observe(container);
+
+  termSessionId = sessionId;
+
+  // Check if this session already exists BEFORE connecting
+  // (connecting creates the session if it doesn't exist)
+  let isReconnect = false;
+  try {
+    const sessData = await fetch('/api/v1/terminal/sessions').then(r => r.json());
+    isReconnect = sessData.sessions && sessData.sessions.some(s => s.id === sessionId);
+  } catch {}
+
+  // Use initial fit dimensions for WebSocket connection
+  doFit();
+  const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl = `${wsProto}://${location.hostname}:${location.port || 7777}/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${term.cols}&rows=${term.rows}`;
+
+  termWs = new WebSocket(wsUrl);
+
+  termWs.onopen = () => {
+    // Re-fit now that connection is open, and tell the server the real size
+    doFit();
+    setTimeout(doFit, 300);
+    term.focus();
+    document.getElementById('terminal-host').textContent = '';
+
+    // Only launch Claude if this is a NEW session (not reconnecting)
+    if (projectName && projectName !== 'Shell' && !isReconnect) {
+      setTimeout(async () => {
+        if (termWs && termWs.readyState === 1 && !termClaudeStarted) {
+          termClaudeStarted = true;
+
+          // Fetch recent chat context to inject after Claude loads
+          let contextMsg = null;
+          try {
+            const chatData = await api('/api/events?limit=6');
+            if (chatData.events && chatData.events.length > 0) {
+              const recent = [...chatData.events].reverse();
+              let parts = [];
+              for (const e of recent) {
+                let parsed = {};
+                try { parsed = JSON.parse(e.data); } catch {}
+                if (e.event_type === 'UserPromptSubmit' && parsed.prompt) {
+                  parts.push('User said: ' + parsed.prompt.substring(0, 150).replace(/\n/g, ' '));
+                } else if (e.event_type === 'Stop' && parsed.last_assistant_message) {
+                  parts.push('Claude said: ' + parsed.last_assistant_message.substring(0, 200).replace(/\n/g, ' '));
+                }
+              }
+              if (parts.length > 0) {
+                // Single line — no newlines, avoids bracketed paste mode
+                contextMsg = 'PAN context sync from another terminal: ' + parts.join(' | ') + ' — Continue where this left off.';
+              }
+            }
+          } catch {}
+
+          // Launch Claude
+          termWs.send(JSON.stringify({ type: 'input', data: 'claude --continue\n' }));
+
+          // Wait for Claude to be ready (poll terminal buffer for ">" prompt)
+          // Then send context as first message
+          if (contextMsg) {
+            let sent = false;
+            const poll = setInterval(() => {
+              if (sent) { clearInterval(poll); return; }
+              try {
+                // Read the current line from terminal buffer
+                const y = term.buffer.active.cursorY;
+                const line = term.buffer.active.getLine(y)?.translateToString().trim() || '';
+                // Claude Code shows ">" when ready for input
+                if (line.endsWith('>') || line === '>') {
+                  sent = true;
+                  clearInterval(poll);
+                  setTimeout(() => {
+                    if (termWs && termWs.readyState === 1) {
+                      termWs.send(JSON.stringify({ type: 'input', data: contextMsg + '\n' }));
+                    }
+                  }, 300);
+                }
+              } catch {}
+            }, 1000);
+            // Give up after 30s
+            setTimeout(() => clearInterval(poll), 30000);
+          }
+        }
+      }, 1500);
+    }
+  };
+
+  termWs.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      switch (msg.type) {
+        case 'output':
+          term.write(msg.data);
+          break;
+        case 'info':
+          document.getElementById('terminal-host').textContent = `${msg.host} — ${msg.project || 'shell'}`;
+          break;
+        case 'exit':
+          term.write('\r\n\x1b[38;5;243m[Session ended]\x1b[0m\r\n');
+          break;
+        case 'error':
+          term.write('\r\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\r\n');
+          break;
+        case 'chat_update':
+          // New message from another terminal — refresh chat panel instantly
+          if (currentLeftTab === 'chat') {
+            loadChatHistory();
+          }
+          break;
+      }
+    } catch {}
+  };
+
+  termWs.onclose = () => {
+    if (term) term.write('\r\n\x1b[38;5;243m[Disconnected]\x1b[0m\r\n');
+  };
+
+  // Copy/paste: Ctrl+C copies if selected (otherwise sends SIGINT), Ctrl+V pastes
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+
+    // Ctrl+C: copy if there's a selection
+    if (ev.ctrlKey && ev.key === 'c') {
+      const sel = term.getSelection();
+      if (sel && sel.length > 0) {
+        navigator.clipboard.writeText(sel);
+        term.clearSelection();
+        return false; // prevent sending to shell
+      }
+      return true; // no selection = send SIGINT
+    }
+
+    // Ctrl+V: paste from clipboard
+    if (ev.ctrlKey && ev.key === 'v') {
+      navigator.clipboard.readText().then(text => {
+        if (text && termWs && termWs.readyState === 1) {
+          termWs.send(JSON.stringify({ type: 'input', data: text }));
+        }
+      });
+      return false;
+    }
+
+    // Ctrl+Shift+C: always copy
+    if (ev.ctrlKey && ev.shiftKey && ev.key === 'C') {
+      const sel = term.getSelection();
+      if (sel) navigator.clipboard.writeText(sel);
+      return false;
+    }
+
+    // Ctrl+Shift+V: always paste
+    if (ev.ctrlKey && ev.shiftKey && ev.key === 'V') {
+      navigator.clipboard.readText().then(text => {
+        if (text && termWs && termWs.readyState === 1) {
+          termWs.send(JSON.stringify({ type: 'input', data: text }));
+        }
+      });
+      return false;
+    }
+
+    return true;
+  });
+
+  term.onData((data) => {
+    if (termWs && termWs.readyState === 1) {
+      termWs.send(JSON.stringify({ type: 'input', data }));
+    }
+  });
+
+  term.onResize(({ cols, rows }) => {
+    if (termWs && termWs.readyState === 1) {
+      termWs.send(JSON.stringify({ type: 'resize', cols, rows }));
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (termFitAddon && document.getElementById('terminal').classList.contains('active')) {
+      doFit();
+    }
+  });
+}
+
+function switchTerminalProject() {
+  const select = document.getElementById('terminal-project');
+  const value = select.value;
+  if (!value) return;
+
+  const option = select.selectedOptions[0];
+  const projectName = option.dataset.name || 'Shell';
+  const projectId = parseInt(option.dataset.id) || null;
+  const cwd = value === '__shell__' ? 'C:\\Users\\tzuri\\Desktop' : value;
+  const sessionId = 'dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
+
+  connectTerminal(sessionId, projectName, cwd, projectId);
+}
+
+function newTerminalSession() {
+  const id = 'dash-shell-' + Date.now();
+  connectTerminal(id, 'Shell', 'C:\\Users\\tzuri\\Desktop', null);
+  document.getElementById('terminal-project').value = '__shell__';
+}
+
+// Send text to the active terminal (used by phone commands)
+function sendToTerminal(text) {
+  if (termWs && termWs.readyState === 1) {
+    termWs.send(JSON.stringify({ type: 'input', data: text }));
+    return true;
+  }
+  return false;
+}
+
+// Initial load — restore page from hash if present
+const hashPage = window.location.hash.replace('#', '');
+if (hashPage && document.getElementById(hashPage)) {
+  switchTab(hashPage);
+} else {
+  loadConversations();
+}
 </script>
 </body>
 </html>

@@ -196,7 +196,7 @@ def step3_train():
         '-v', f'{training_dir_docker}:/dataset',
         '-v', f'{model_dir_docker}:/output',
     ] + gpu_flag + [
-        'rhasspy/piper-train',
+        'pan-piper-train',
         'python3', '-m', 'piper_train.preprocess',
         '--language', 'en-us',
         '--input-dir', '/dataset',
@@ -241,7 +241,7 @@ def step3_train():
         'docker', 'run', '--rm',
         '-v', f'{model_dir_docker}:/output',
     ] + gpu_flag + [
-        'rhasspy/piper-train',
+        'pan-piper-train',
         'python3', '-m', 'piper_train',
         '--dataset-dir', '/output',
         '--accelerator', 'gpu' if gpu_flag else 'cpu',
@@ -284,7 +284,7 @@ def step3_train():
         'docker', 'run', '--rm',
         '-v', f'{model_dir_docker}:/output',
     ] + gpu_flag + [
-        'rhasspy/piper-train',
+        'pan-piper-train',
         'python3', '-m', 'piper_train.export_onnx',
         latest_ckpt_docker,
         '/output/pan-voice.onnx',

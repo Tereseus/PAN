@@ -4,6 +4,8 @@
 $panUrl = "http://127.0.0.1:7777"
 $pollInterval = 2
 $claudePath = "$env:APPDATA\npm\claude.cmd"
+$weztermPath = "C:\Program Files\WezTerm\wezterm-gui.exe"
+$useWezterm = Test-Path $weztermPath
 
 Write-Host "[PAN Agent] Desktop agent started." -ForegroundColor Cyan
 
@@ -67,7 +69,13 @@ echo === $name ===
 "$claudePath" --continue
 "@ | Out-File -FilePath $batPath -Encoding ascii
 
-                Start-Process "wt.exe" -ArgumentList "$batPath"
+                if ($useWezterm) {
+                    # WezTerm: run as admin so Claude Code has full system access
+                    Start-Process $weztermPath -ArgumentList "start --cwd `"$resumePath`" -- cmd /k `"$claudePath`" --continue" -Verb RunAs
+                } else {
+                    # Fallback to Windows Terminal (also elevated)
+                    Start-Process "wt.exe" -ArgumentList "$batPath" -Verb RunAs
+                }
             }
         }
     }

@@ -13,7 +13,7 @@ try {
   run(`CREATE TABLE IF NOT EXISTS resistance_preferences (
     action TEXT PRIMARY KEY,
     preferred_path TEXT NOT NULL,
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
   )`);
 
   run(`CREATE TABLE IF NOT EXISTS resistance_paths (
@@ -38,7 +38,7 @@ try {
     success INTEGER NOT NULL,
     error TEXT,
     duration_ms INTEGER,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now','localtime'))
   )`);
 } catch {}
 
@@ -298,12 +298,12 @@ function logResult(action, pathName, success, error, durationMs) {
 
     // Update path stats
     if (success) {
-      run(`UPDATE resistance_paths SET success_count = success_count + 1, last_used = datetime('now')
+      run(`UPDATE resistance_paths SET success_count = success_count + 1, last_used = datetime('now','localtime')
            WHERE action = :action AND path_name = :path`, {
         ':action': action, ':path': pathName,
       });
     } else {
-      run(`UPDATE resistance_paths SET fail_count = fail_count + 1, last_used = datetime('now'), last_error = :error
+      run(`UPDATE resistance_paths SET fail_count = fail_count + 1, last_used = datetime('now','localtime'), last_error = :error
            WHERE action = :action AND path_name = :path`, {
         ':action': action, ':path': pathName, ':error': error,
       });
@@ -314,7 +314,7 @@ function logResult(action, pathName, success, error, durationMs) {
 // Preferences — set a preferred app/path for an action
 export function setPreference(action, preferredPath) {
   run(`INSERT OR REPLACE INTO resistance_preferences (action, preferred_path, updated_at)
-       VALUES (:action, :path, datetime('now'))`, {
+       VALUES (:action, :path, datetime('now','localtime'))`, {
     ':action': action, ':path': preferredPath,
   });
 }

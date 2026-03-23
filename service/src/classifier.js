@@ -61,7 +61,7 @@ async function classify() {
 
     for (const item of items) {
       insert(`INSERT INTO memory_items (session_id, event_id, item_type, content, context, confidence, classified_at)
-        VALUES (:sid, :eid, :type, :content, :ctx, :conf, datetime('now'))`, {
+        VALUES (:sid, :eid, :type, :content, :ctx, :conf, datetime('now','localtime'))`, {
         ':sid': events[0].session_id,
         ':eid': events[0].id,
         ':type': item.item_type || 'unknown',

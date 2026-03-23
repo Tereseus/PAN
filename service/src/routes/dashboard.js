@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { all, get, run, insert, DB_PATH } from '../db.js';
+import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -196,6 +197,27 @@ router.get('/api/jobs', async (req, res) => {
     schedule: 'Daily (not yet automated)',
   });
 
+  // Tool Scout
+  try {
+    const newFindings = get(`SELECT COUNT(*) as c FROM scout_findings WHERE status = 'new'`);
+    const totalFindings = get(`SELECT COUNT(*) as c FROM scout_findings`);
+    jobs.push({
+      name: 'Tool Scout',
+      description: `Discovers new AI CLIs and tools for PAN — ${newFindings?.c || 0} new, ${totalFindings?.c || 0} total`,
+      type: 'internal',
+      status: 'running',
+      schedule: 'Every 12 hours (BetterStack, GitHub Trending, Product Hunt)',
+    });
+  } catch {
+    jobs.push({
+      name: 'Tool Scout',
+      description: 'Discovers new AI CLIs and tools for PAN',
+      type: 'internal',
+      status: 'starting',
+      schedule: 'Every 12 hours',
+    });
+  }
+
   // Voice training data stats
   try {
     const { execSync } = await import('child_process');
@@ -251,7 +273,7 @@ router.get('/api/jobs', async (req, res) => {
 
   // Local LLM (phone)
   try {
-    const devices = all(`SELECT * FROM devices WHERE device_type = 'phone' AND last_seen > datetime('now', '-5 minutes')`);
+    const devices = all(`SELECT * FROM devices WHERE device_type = 'phone' AND last_seen > datetime('now','localtime', '-5 minutes')`);
     const phoneOnline = devices.length > 0;
     jobs.push({
       name: 'Local LLM (Phone)',
@@ -290,7 +312,7 @@ router.get('/api/jobs', async (req, res) => {
 
   // Connected devices
   try {
-    const devices = all(`SELECT * FROM devices WHERE last_seen > datetime('now', '-10 minutes')`);
+    const devices = all(`SELECT * FROM devices WHERE last_seen > datetime('now','localtime', '-10 minutes')`);
     jobs.push({
       name: 'Connected Devices',
       description: devices.map(d => `${d.name} (${d.device_type})`).join(', ') || 'No devices connected',
@@ -520,6 +542,331 @@ router.delete('/api/all', (req, res) => {
   run(`DELETE FROM command_logs`);
 
   res.json({ ok: true, message: 'all data deleted' });
+});
+
+// GET /dashboard/api/scout — list discovered tools
+router.get('/api/scout', (req, res) => {
+  const status = req.query.status || 'new';
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const findings = getFindings({ status, limit });
+  res.json({ findings, total: findings.length });
+});
+
+// POST /dashboard/api/scout/scan — trigger an immediate scan
+router.post('/api/scout/scan', async (req, res) => {
+  try {
+    const count = await scout();
+    res.json({ ok: true, new_findings: count });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /dashboard/api/scout/:id/status — update finding status
+router.post('/api/scout/:id/status', (req, res) => {
+  const { status } = req.body;
+  if (!['new', 'reviewed', 'integrated', 'dismissed'].includes(status)) {
+    return res.status(400).json({ error: 'invalid status' });
+  }
+  updateFinding(parseInt(req.params.id), status);
+  res.json({ ok: true });
+});
+
+// GET /dashboard/api/progress — project progress for WezTerm sidebar
+// Returns all projects with milestone/task completion percentages
+router.get('/api/progress', (req, res) => {
+  const projects = all("SELECT * FROM projects ORDER BY name");
+
+  const result = projects.map(p => {
+    // Get milestones for this project
+    const milestones = all(
+      "SELECT * FROM project_milestones WHERE project_id = :pid ORDER BY sort_order, name",
+      { ':pid': p.id }
+    );
+
+    // Get task counts per milestone and overall
+    const totalTasks = get(
+      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid",
+      { ':pid': p.id }
+    );
+
+    const milestonesWithProgress = milestones.map(m => {
+      const mTasks = get(
+        "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE milestone_id = :mid",
+        { ':mid': m.id }
+      );
+      const total = mTasks?.total || 0;
+      const done = mTasks?.done || 0;
+      const inProgress = mTasks?.in_progress || 0;
+      return {
+        id: m.id,
+        name: m.name,
+        description: m.description,
+        total,
+        done,
+        in_progress: inProgress,
+        percentage: total > 0 ? Math.round((done + inProgress * 0.5) / total * 100) : 0,
+      };
+    });
+
+    // Uncategorized tasks (no milestone)
+    const uncategorized = get(
+      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND milestone_id IS NULL",
+      { ':pid': p.id }
+    );
+
+    const total = totalTasks?.total || 0;
+    const done = totalTasks?.done || 0;
+    const inProgress = totalTasks?.in_progress || 0;
+
+    // Session count for activity
+    const sessionCount = get("SELECT COUNT(*) as c FROM sessions WHERE project_id = :pid", { ':pid': p.id });
+
+    return {
+      id: p.id,
+      name: p.name,
+      path: p.path,
+      description: p.description,
+      total_tasks: total,
+      done_tasks: done,
+      in_progress_tasks: inProgress,
+      percentage: total > 0 ? Math.round((done + inProgress * 0.5) / total * 100) : 0,
+      milestones: milestonesWithProgress,
+      uncategorized_tasks: uncategorized?.total || 0,
+      session_count: sessionCount?.c || 0,
+    };
+  });
+
+  // Activity stats
+  const totalEvents = get("SELECT COUNT(*) as c FROM events")?.c || 0;
+  const deviceCount = get("SELECT COUNT(*) as c FROM devices")?.c || 0;
+
+  res.json({
+    projects: result,
+    activity: { total_events: totalEvents, devices: deviceCount },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// GET /dashboard/api/projects/:id/tasks — all tasks for a project
+router.get('/api/projects/:id/tasks', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const milestones = all(
+    "SELECT * FROM project_milestones WHERE project_id = :pid ORDER BY sort_order, name",
+    { ':pid': pid }
+  );
+  const tasks = all(
+    "SELECT * FROM project_tasks WHERE project_id = :pid ORDER BY milestone_id, sort_order, title",
+    { ':pid': pid }
+  );
+  res.json({ milestones, tasks });
+});
+
+// POST /dashboard/api/projects/:id/milestones — create a milestone
+router.post('/api/projects/:id/milestones', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const { name, description } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const maxOrder = get("SELECT MAX(sort_order) as m FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
+  const id = insert(
+    "INSERT INTO project_milestones (project_id, name, description, sort_order) VALUES (:pid, :name, :desc, :order)",
+    { ':pid': pid, ':name': name, ':desc': description || null, ':order': (maxOrder?.m || 0) + 1 }
+  );
+  res.json({ id, name });
+});
+
+// POST /dashboard/api/projects/:id/tasks — create a task
+router.post('/api/projects/:id/tasks', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const { title, description, milestone_id, status, priority } = req.body;
+  if (!title) return res.status(400).json({ error: 'title required' });
+  const maxOrder = get("SELECT MAX(sort_order) as m FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
+  const id = insert(
+    "INSERT INTO project_tasks (project_id, milestone_id, title, description, status, priority, sort_order) VALUES (:pid, :mid, :title, :desc, :status, :pri, :order)",
+    {
+      ':pid': pid,
+      ':mid': milestone_id || null,
+      ':title': title,
+      ':desc': description || null,
+      ':status': status || 'todo',
+      ':pri': priority || 0,
+      ':order': (maxOrder?.m || 0) + 1,
+    }
+  );
+  res.json({ id, title, status: status || 'todo' });
+});
+
+// PUT /dashboard/api/tasks/:id — update a task (status, title, etc.)
+router.put('/api/tasks/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const { title, description, status, priority, milestone_id } = req.body;
+  const existing = get("SELECT * FROM project_tasks WHERE id = :id", { ':id': id });
+  if (!existing) return res.status(404).json({ error: 'not found' });
+
+  const updates = [];
+  const params = { ':id': id };
+
+  if (title !== undefined) { updates.push("title = :title"); params[':title'] = title; }
+  if (description !== undefined) { updates.push("description = :desc"); params[':desc'] = description; }
+  if (status !== undefined) {
+    updates.push("status = :status");
+    params[':status'] = status;
+    if (status === 'done' && existing.status !== 'done') {
+      updates.push("completed_at = datetime('now','localtime')");
+    }
+    if (status !== 'done') {
+      updates.push("completed_at = NULL");
+    }
+  }
+  if (priority !== undefined) { updates.push("priority = :pri"); params[':pri'] = priority; }
+  if (milestone_id !== undefined) { updates.push("milestone_id = :mid"); params[':mid'] = milestone_id; }
+
+  if (updates.length === 0) return res.json({ ok: true, unchanged: true });
+
+  run(`UPDATE project_tasks SET ${updates.join(', ')} WHERE id = :id`, params);
+  res.json({ ok: true });
+});
+
+// DELETE /dashboard/api/tasks/:id
+router.delete('/api/tasks/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  run("DELETE FROM project_tasks WHERE id = :id", { ':id': id });
+  res.json({ ok: true });
+});
+
+// DELETE /dashboard/api/milestones/:id — also deletes child tasks
+router.delete('/api/milestones/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  run("DELETE FROM project_tasks WHERE milestone_id = :id", { ':id': id });
+  run("DELETE FROM project_milestones WHERE id = :id", { ':id': id });
+  res.json({ ok: true });
+});
+
+// POST /dashboard/api/projects/:id/bulk-tasks — create multiple tasks at once
+// Body: { milestone_name: "...", tasks: ["task1", "task2", ...] }
+router.post('/api/projects/:id/bulk-tasks', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const { milestone_name, tasks } = req.body;
+  if (!tasks || !Array.isArray(tasks)) return res.status(400).json({ error: 'tasks array required' });
+
+  let milestoneId = null;
+  if (milestone_name) {
+    // Find or create milestone
+    const existing = get(
+      "SELECT id FROM project_milestones WHERE project_id = :pid AND name = :name",
+      { ':pid': pid, ':name': milestone_name }
+    );
+    if (existing) {
+      milestoneId = existing.id;
+    } else {
+      const maxOrder = get("SELECT MAX(sort_order) as m FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
+      milestoneId = insert(
+        "INSERT INTO project_milestones (project_id, name, sort_order) VALUES (:pid, :name, :order)",
+        { ':pid': pid, ':name': milestone_name, ':order': (maxOrder?.m || 0) + 1 }
+      );
+    }
+  }
+
+  let created = 0;
+  for (const task of tasks) {
+    const title = typeof task === 'string' ? task : task.title;
+    const status = (typeof task === 'object' && task.status) || 'todo';
+    if (!title) continue;
+    insert(
+      "INSERT INTO project_tasks (project_id, milestone_id, title, status, sort_order) VALUES (:pid, :mid, :title, :status, :order)",
+      { ':pid': pid, ':mid': milestoneId, ':title': title, ':status': status, ':order': created }
+    );
+    created++;
+  }
+  res.json({ ok: true, created, milestone_id: milestoneId });
+});
+
+// POST /dashboard/api/open-tabs — record which tabs are open (for session restore)
+router.post('/api/open-tabs', (req, res) => {
+  const { tabs } = req.body;
+  if (!tabs || !Array.isArray(tabs)) return res.status(400).json({ error: 'tabs array required' });
+
+  // Clear existing and replace
+  run("DELETE FROM open_tabs");
+  for (const tab of tabs) {
+    if (!tab.project_id) continue;
+    insert(
+      "INSERT INTO open_tabs (project_id, pane_id, tab_index) VALUES (:pid, :pane, :idx)",
+      { ':pid': tab.project_id, ':pane': tab.pane_id || null, ':idx': tab.tab_index || 0 }
+    );
+  }
+  res.json({ ok: true, saved: tabs.length });
+});
+
+// Custom sections per project
+router.get('/api/projects/:id/sections', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const sections = all("SELECT * FROM project_sections WHERE project_id = :pid ORDER BY sort_order, name", { ':pid': pid });
+  const result = sections.map(s => {
+    const items = all("SELECT * FROM section_items WHERE section_id = :sid ORDER BY sort_order", { ':sid': s.id });
+    return { ...s, items };
+  });
+  res.json(result);
+});
+
+router.post('/api/projects/:id/sections', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const maxOrder = get("SELECT MAX(sort_order) as m FROM project_sections WHERE project_id = :pid", { ':pid': pid });
+  const id = insert(
+    "INSERT INTO project_sections (project_id, name, sort_order) VALUES (:pid, :name, :order)",
+    { ':pid': pid, ':name': name, ':order': (maxOrder?.m || 0) + 1 }
+  );
+  res.json({ id, name });
+});
+
+router.delete('/api/sections/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  run("DELETE FROM section_items WHERE section_id = :id", { ':id': id });
+  run("DELETE FROM project_sections WHERE id = :id", { ':id': id });
+  res.json({ ok: true });
+});
+
+router.post('/api/sections/:id/items', (req, res) => {
+  const sid = parseInt(req.params.id);
+  const section = get("SELECT * FROM project_sections WHERE id = :id", { ':id': sid });
+  if (!section) return res.status(404).json({ error: 'section not found' });
+  const { content } = req.body;
+  if (!content) return res.status(400).json({ error: 'content required' });
+  const id = insert(
+    "INSERT INTO section_items (section_id, project_id, content) VALUES (:sid, :pid, :content)",
+    { ':sid': sid, ':pid': section.project_id, ':content': content }
+  );
+  res.json({ id, content });
+});
+
+router.put('/api/section-items/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const { status, content } = req.body;
+  const updates = [];
+  const params = { ':id': id };
+  if (status !== undefined) { updates.push("status = :status"); params[':status'] = status; }
+  if (content !== undefined) { updates.push("content = :content"); params[':content'] = content; }
+  if (updates.length === 0) return res.json({ ok: true });
+  run(`UPDATE section_items SET ${updates.join(', ')} WHERE id = :id`, params);
+  res.json({ ok: true });
+});
+
+router.delete('/api/section-items/:id', (req, res) => {
+  run("DELETE FROM section_items WHERE id = :id", { ':id': parseInt(req.params.id) });
+  res.json({ ok: true });
+});
+
+// GET /dashboard/api/open-tabs — get last open tabs for session restore
+router.get('/api/open-tabs', (req, res) => {
+  const tabs = all(`
+    SELECT ot.*, p.name as project_name, p.path as project_path
+    FROM open_tabs ot
+    JOIN projects p ON p.id = ot.project_id
+    ORDER BY ot.tab_index
+  `);
+  res.json(tabs);
 });
 
 export default router;
