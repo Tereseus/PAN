@@ -149,6 +149,14 @@ CREATE TABLE IF NOT EXISTS section_items (
 
 CREATE INDEX IF NOT EXISTS idx_section_items ON section_items(section_id);
 
+-- Key-value settings store (AutoDev config, user preferences, etc.)
+CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 -- Full-text search index for events — enables instant ranked search across all history
 -- content_text stores the clean extracted text, synced on insert via application code
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
