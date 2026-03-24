@@ -1144,11 +1144,11 @@ async function checkPermissions() {
 }
 
 async function respondPermission(sessionId, permId, response) {
-  // Send raw keypress (no \r) — Claude Code permission prompts respond to single keypress
-  await fetch('/api/v1/terminal/send', {
+  // Use SendInput (pyautogui) to inject real keyboard input — pty.write doesn't work for Claude permissions
+  await fetch('/api/v1/terminal/permissions/respond', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: response, session_id: sessionId, raw: true })
+    body: JSON.stringify({ response, perm_id: permId })
   });
 
   // Clear the permission server-side
@@ -1157,8 +1157,9 @@ async function respondPermission(sessionId, permId, response) {
   // Replace buttons with result text
   const div = document.getElementById('perm-' + permId);
   if (div) {
-    div.innerHTML = `<div style="font-size:13px;text-align:center;font-weight:500">${response === 'y' ? 'Allowed' : 'Denied'}</div>`;
-    div.style.background = response === 'y' ? '#2ea04333' : '#f8514933';
+    const allowed = response === '1' || response === 'y';
+    div.innerHTML = `<div style="font-size:13px;text-align:center;font-weight:500">${allowed ? 'Allowed' : 'Denied'}</div>`;
+    div.style.background = allowed ? '#2ea04333' : '#f8514933';
     div.style.color = 'var(--text)';
   }
 }

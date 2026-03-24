@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { run, get, insert, detectProject } from '../db.js';
+import { run, get, insert, detectProject, indexEventFTS } from '../db.js';
 import { broadcastNotification } from '../terminal.js';
 
 const router = Router();
@@ -60,11 +60,15 @@ router.post('/:eventType', (req, res) => {
     }
 
     // Store every event
-    insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+    const dataStr = JSON.stringify(payload);
+    const eventId = insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
       ':sid': sessionId,
       ':type': eventType,
-      ':data': JSON.stringify(payload)
+      ':data': dataStr
     });
+
+    // Index into FTS for instant search
+    indexEventFTS(eventId, eventType, dataStr);
 
     // Notify dashboard clients of new events so chat updates instantly
     if (eventType === 'UserPromptSubmit' || eventType === 'Stop') {

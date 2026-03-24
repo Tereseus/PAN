@@ -79,3 +79,20 @@ data class TerminalSendResponse(
     val ok: Boolean,
     val session: String? = null
 )
+
+data class PermissionsResponse(
+    val permissions: List<PermissionPrompt>
+)
+
+data class PermissionPrompt(
+    val id: Long,
+    val session_id: String,
+    val project: String?,
+    val prompt: String,
+    val timestamp: String
+)
+
+data class PermissionRespondRequest(
+    val response: String,
+    val perm_id: Long
+)

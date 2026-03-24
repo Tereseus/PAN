@@ -188,4 +188,74 @@ function syncProjects() {
   return final;
 }
 
-export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH };
+// Extract clean searchable text from an event's JSON data
+function extractEventText(eventType, dataStr) {
+  let data = {};
+  try { data = JSON.parse(dataStr); } catch { return null; }
+
+  if (eventType === 'RouterCommand') {
+    const q = data.text || '';
+    const a = data.result || data.response_text || '';
+    if (q || a) return `${q} ${a}`.trim();
+  }
+  if (eventType === 'UserPromptSubmit') {
+    const prompt = data.prompt || '';
+    if (prompt.length >= 10 && !prompt.startsWith('{') && !prompt.startsWith('['))
+      return prompt;
+  }
+  if (eventType === 'Stop') {
+    const msg = data.last_assistant_message || '';
+    if (msg.length >= 20) return msg;
+  }
+  if (eventType === 'PhoneAudio') {
+    const transcript = data.transcript || '';
+    const finals = transcript.match(/Final: (.+?)(?:\[|Heard|$)/g)
+      ?.map(m => m.replace(/^Final: /, '').replace(/\[.*$/, '').trim())
+      .filter(Boolean).join(' ');
+    if (finals) return finals;
+  }
+  if (eventType === 'VisionAnalysis') {
+    const desc = data.description || data.result || '';
+    if (desc) return desc;
+  }
+  return null;
+}
+
+// Index an event into FTS5 — called on every insert
+function indexEventFTS(eventId, eventType, dataStr) {
+  const text = extractEventText(eventType, dataStr);
+  if (text) {
+    try {
+      db.prepare('INSERT INTO events_fts(rowid, content_text) VALUES (?, ?)').run(eventId, text.slice(0, 2000));
+    } catch (err) {
+      // Ignore duplicates or FTS errors
+    }
+  }
+}
+
+// Backfill FTS index from existing events — run once on startup if needed
+function backfillFTS() {
+  const ftsCount = db.prepare('SELECT COUNT(*) as c FROM events_fts').get().c;
+  const eventsCount = db.prepare('SELECT COUNT(*) as c FROM events').get().c;
+
+  if (ftsCount >= eventsCount * 0.8) return; // already mostly indexed
+
+  console.log(`[PAN FTS] Backfilling: ${ftsCount} indexed / ${eventsCount} events`);
+  const events = db.prepare('SELECT id, event_type, data FROM events ORDER BY id').all();
+  let indexed = 0;
+  for (const e of events) {
+    const text = extractEventText(e.event_type, e.data);
+    if (text) {
+      try {
+        db.prepare('INSERT OR IGNORE INTO events_fts(rowid, content_text) VALUES (?, ?)').run(e.id, text.slice(0, 2000));
+        indexed++;
+      } catch {}
+    }
+  }
+  console.log(`[PAN FTS] Indexed ${indexed} events`);
+}
+
+// Run backfill on startup
+try { backfillFTS(); } catch (err) { console.error('[PAN FTS] Backfill error:', err.message); }
+
+export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS };

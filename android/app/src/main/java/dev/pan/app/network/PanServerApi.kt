@@ -47,4 +47,10 @@ interface PanServerApi {
 
     @POST("/api/v1/recall")
     suspend fun recall(@Body request: QueryRequest): Response<QueryResponse>
+
+    @GET("/api/v1/terminal/permissions")
+    suspend fun getPermissions(): Response<PermissionsResponse>
+
+    @POST("/api/v1/terminal/permissions/respond")
+    suspend fun respondPermission(@Body request: PermissionRespondRequest): Response<Unit>
 }

@@ -12,7 +12,7 @@ import javax.inject.Singleton
 
 @Singleton
 class PanServerClient @Inject constructor(
-    private val api: PanServerApi
+    internal val api: PanServerApi
 ) {
     companion object {
         private const val TAG = "PanServer"
