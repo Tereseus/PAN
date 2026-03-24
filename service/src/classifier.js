@@ -36,18 +36,17 @@ async function classify() {
     const data = JSON.parse(e.data);
     return {
       id: e.id,
-      session_id: e.session_id,
       type: e.event_type,
       cwd: e.cwd,
-      message: data.last_assistant_message || null,
-      prompt: data.prompt || null,
+      message: (data.last_assistant_message || '').slice(0, 300),
+      prompt: (data.prompt || '').slice(0, 300),
       timestamp: e.created_at
     };
   });
 
   try {
     const fullPrompt = `${CLASSIFICATION_PROMPT}\n\nEvents:\n${JSON.stringify(eventSummaries, null, 2)}`;
-    const text = await claude(fullPrompt, { model: 'sonnet', timeout: 60000 });
+    const text = await claude(fullPrompt, { model: 'claude-haiku-4-5-20251001', timeout: 60000, maxTokens: 2000 });
 
     let items;
     try {
@@ -57,18 +56,32 @@ async function classify() {
       return;
     }
 
-    if (!Array.isArray(items)) return;
+    if (!Array.isArray(items)) items = [];
 
+    // Insert extracted items
     for (const item of items) {
       insert(`INSERT INTO memory_items (session_id, event_id, item_type, content, context, confidence, classified_at)
         VALUES (:sid, :eid, :type, :content, :ctx, :conf, datetime('now','localtime'))`, {
         ':sid': events[0].session_id,
         ':eid': events[0].id,
         ':type': item.item_type || 'unknown',
-        ':content': item.content || '',
-        ':ctx': item.context ? JSON.stringify(item.context) : null,
+        ':content': (item.content || '').slice(0, 500),
+        ':ctx': item.context ? JSON.stringify(item.context).slice(0, 200) : null,
         ':conf': item.confidence || 0.5
       });
+    }
+
+    // Mark ALL processed events so they don't get re-classified
+    for (const e of events) {
+      // Insert a "classified" marker if no items were linked to this event
+      const hasItem = items.length > 0; // simplified — items link to events[0] only
+      if (!hasItem) {
+        insert(`INSERT INTO memory_items (session_id, event_id, item_type, content, confidence, classified_at)
+          VALUES (:sid, :eid, 'none', 'no extractable items', 0, datetime('now','localtime'))`, {
+          ':sid': e.session_id,
+          ':eid': e.id
+        });
+      }
     }
 
     console.log(`[PAN] Classified ${items.length} memory items from ${events.length} events`);

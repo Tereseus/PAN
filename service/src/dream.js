@@ -86,7 +86,7 @@ Extract memories as a JSON array. Each memory should be:
 Only extract things worth remembering weeks/months from now. Skip trivial interactions, debugging noise, and things already in existing memories.
 
 Output ONLY valid JSON array, nothing else. If nothing worth remembering, output [].`,
-      { maxTokens: 1000, timeout: 30000 }
+      { maxTokens: 2000, timeout: 45000 }
     );
 
     let memories = [];

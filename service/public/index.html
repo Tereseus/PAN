@@ -2973,6 +2973,29 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// Tab flashing — flashes browser tab title when attention needed (permission prompts, errors)
+let tabFlashInterval = null;
+const TAB_TITLE = 'ΠΑΝ Dashboard';
+
+function flashTab(message) {
+  if (tabFlashInterval) return; // already flashing
+  let on = false;
+  tabFlashInterval = setInterval(() => {
+    document.title = on ? `⚠ ${message}` : TAB_TITLE;
+    on = !on;
+  }, 800);
+  // Stop flashing when window gets focus
+  window.addEventListener('focus', stopFlashTab, { once: true });
+}
+
+function stopFlashTab() {
+  if (tabFlashInterval) {
+    clearInterval(tabFlashInterval);
+    tabFlashInterval = null;
+  }
+  document.title = TAB_TITLE;
+}
+
 // Initial load — restore page from hash if present
 const hashPage = window.location.hash.replace('#', '');
 if (hashPage && document.getElementById(hashPage)) {
