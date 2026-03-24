@@ -591,8 +591,8 @@ body {
   <button onclick="refreshDashboard()" title="Refresh" style="background:none;border:1px solid var(--border);color:var(--text2);cursor:pointer;border-radius:var(--radius);padding:2px 6px;font-size:11px;margin-left:4px">↻</button>
   <div class="tabs">
     <button class="tab active" data-page="terminal">Terminal</button>
-    <button class="tab" data-page="projects">Projects</button>
     <button class="tab" data-page="automation">Automation</button>
+    <button class="tab" data-page="projects">Projects</button>
     <button class="tab" data-page="conversations">Conversations</button>
     <button class="tab" data-page="data">Data Management</button>
     <button class="tab" data-page="settings">Settings</button>
@@ -600,8 +600,8 @@ body {
   <div class="mobile-nav">
     <select id="mobile-page-select" onchange="switchTab(this.value)">
       <option value="terminal" selected>Terminal</option>
-      <option value="projects">Projects</option>
       <option value="automation">Automation</option>
+      <option value="projects">Projects</option>
       <option value="conversations">Conversations</option>
       <option value="data">Data Management</option>
       <option value="settings">Settings</option>
@@ -705,6 +705,14 @@ body {
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <h3 style="margin:0;font-size:16px">Scout Findings</h3>
           <button class="btn btn-sm" onclick="runScout()">Scan Now</button>
+        </div>
+        <div style="margin-bottom:10px">
+          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Custom search topics (scout will look for these):</div>
+          <div style="display:flex;gap:6px">
+            <input type="text" id="scout-topic-input" placeholder="e.g. ESP32 BLE libraries, voice cloning, ..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">
+            <button class="btn btn-sm" onclick="addScoutTopic()">Add</button>
+          </div>
+          <div id="scout-topics" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px"></div>
         </div>
         <div id="automation-scout" style="display:grid;gap:6px">
           <div style="color:var(--text2)">Loading...</div>
@@ -3027,6 +3035,7 @@ document.addEventListener('keydown', (e) => {
 async function loadAutomation() {
   loadJobStatus();
   loadScoutFindings();
+  loadScoutTopics();
   loadAutoDevConfig();
   loadAutoDevLog();
 }
@@ -3034,16 +3043,17 @@ async function loadAutomation() {
 function loadJobStatus() {
   const el = document.getElementById('automation-jobs');
   const jobs = [
-    { name: 'Classifier', desc: 'Extracts memories from events', interval: 'Every 5 min' },
-    { name: 'Scout', desc: 'Discovers new AI tools & CLIs', interval: 'Every 12 hours' },
-    { name: 'Dream', desc: 'Consolidates memories overnight', interval: 'Every 6 hours' },
-    { name: 'AutoDev', desc: 'Automated development tasks', interval: 'Configurable' },
+    { name: 'Classifier', desc: 'Extracts memories from events', interval: 'Every 5 min', mandatory: true },
+    { name: 'Project Sync', desc: 'Scans disk for .pan files', interval: 'Every 10 min', mandatory: true },
+    { name: 'Scout', desc: 'Discovers new AI tools & CLIs', interval: 'Every 12 hours', mandatory: false },
+    { name: 'Dream', desc: 'Consolidates memories overnight', interval: 'Every 6 hours', mandatory: false },
+    { name: 'AutoDev', desc: 'Automated development tasks', interval: 'Configurable', mandatory: false },
   ];
   el.innerHTML = jobs.map(j => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px;background:var(--bg);border-radius:6px">
-      <span style="width:8px;height:8px;border-radius:50%;background:${j.name === 'AutoDev' ? 'var(--text2)' : 'var(--accent2)'};flex-shrink:0"></span>
+      <span style="width:8px;height:8px;border-radius:50%;background:${j.mandatory ? 'var(--accent2)' : 'var(--text2)'};flex-shrink:0"></span>
       <div style="flex:1">
-        <div style="font-weight:500;font-size:13px">${j.name}</div>
+        <div style="font-weight:500;font-size:13px">${j.name}${j.mandatory ? ' <span style="font-size:10px;color:var(--text2)">(required)</span>' : ''}</div>
         <div style="font-size:11px;color:var(--text2)">${j.desc}</div>
       </div>
       <span style="font-size:11px;color:var(--text2)">${j.interval}</span>
@@ -3077,6 +3087,39 @@ async function runScout() {
     await fetch('/dashboard/api/scout/run', { method: 'POST' });
     setTimeout(loadScoutFindings, 5000);
   } catch {}
+}
+
+async function loadScoutTopics() {
+  const el = document.getElementById('scout-topics');
+  try {
+    const row = await fetch('/api/v1/autodev/config').then(r => r.json());
+    const topics = row.scout_topics || [];
+    el.innerHTML = topics.map(t => `
+      <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:var(--bg3);border-radius:12px;font-size:11px">
+        ${escapeHtml(t)}
+        <span style="cursor:pointer;opacity:0.5" onclick="removeScoutTopic('${escapeHtml(t)}')">&times;</span>
+      </span>
+    `).join('') || '<span style="font-size:11px;color:var(--text2)">No custom topics</span>';
+  } catch {}
+}
+
+async function addScoutTopic() {
+  const input = document.getElementById('scout-topic-input');
+  const topic = input.value.trim();
+  if (!topic) return;
+  input.value = '';
+  const config = await fetch('/api/v1/autodev/config').then(r => r.json());
+  config.scout_topics = config.scout_topics || [];
+  if (!config.scout_topics.includes(topic)) config.scout_topics.push(topic);
+  await fetch('/api/v1/autodev/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+  loadScoutTopics();
+}
+
+async function removeScoutTopic(topic) {
+  const config = await fetch('/api/v1/autodev/config').then(r => r.json());
+  config.scout_topics = (config.scout_topics || []).filter(t => t !== topic);
+  await fetch('/api/v1/autodev/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+  loadScoutTopics();
 }
 
 async function loadAutoDevConfig() {
