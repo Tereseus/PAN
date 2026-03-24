@@ -2281,6 +2281,14 @@ async function loadChatHistory() {
       sidebar.scrollTop = sidebar.scrollHeight;
     }
   }
+
+  // Preserve scroll position — save it so nothing else can reset it
+  sidebar._savedScroll = sidebar.scrollTop;
+  requestAnimationFrame(() => {
+    if (sidebar._savedScroll !== undefined && Math.abs(sidebar.scrollTop - sidebar._savedScroll) > 100) {
+      sidebar.scrollTop = sidebar._savedScroll;
+    }
+  });
 }
 
 async function loadTerminalSidebar(projectId, projectName) {
@@ -2955,16 +2963,14 @@ function renderTabBar() {
     label.onclick = () => switchToTab(id);
     el.appendChild(label);
 
-    // Primary tab can't be closed — it holds the --continue session
-    if (!isPrimary || tab.project === 'Shell') {
-      const closeBtn = document.createElement('span');
-      closeBtn.textContent = '×';
-      closeBtn.style.cssText = 'margin-left:4px;opacity:0.5;font-size:14px;line-height:1';
-      closeBtn.onmouseenter = () => closeBtn.style.opacity = '1';
-      closeBtn.onmouseleave = () => closeBtn.style.opacity = '0.5';
-      closeBtn.onclick = (e) => { e.stopPropagation(); closeTab(id); };
-      el.appendChild(closeBtn);
-    }
+    // All tabs can be closed
+    const closeBtn = document.createElement('span');
+    closeBtn.textContent = '×';
+    closeBtn.style.cssText = 'margin-left:4px;opacity:0.5;font-size:14px;line-height:1';
+    closeBtn.onmouseenter = () => closeBtn.style.opacity = '1';
+    closeBtn.onmouseleave = () => closeBtn.style.opacity = '0.5';
+    closeBtn.onclick = (e) => { e.stopPropagation(); closeTab(id); };
+    el.appendChild(closeBtn);
 
     bar.appendChild(el);
   }
