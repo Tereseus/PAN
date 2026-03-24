@@ -25,6 +25,7 @@ import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
 import { startDream, stopDream } from './dream.js';
 import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
+import { startStackScanner, stopStackScanner, getAllStacks, scanStacks } from './stack-scanner.js';
 import { syncProjects, get, insert, run, indexEventFTS } from './db.js';
 import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission } from './terminal.js';
 import { hostname } from 'os';
@@ -155,6 +156,13 @@ app.post('/api/v1/autodev/run', async (req, res) => {
   res.json({ ok: true, message: 'AutoDev triggered' });
 });
 
+// Stack Scanner API
+app.get('/api/v1/stacks', (req, res) => res.json(getAllStacks()));
+app.post('/api/v1/stacks/scan', (req, res) => {
+  scanStacks();
+  res.json({ ok: true });
+});
+
 // Dictation — record from PC mic, transcribe via Haiku, return text
 app.post('/api/v1/dictate', async (req, res) => {
   const duration = Math.min(req.body?.duration || 5, 30); // max 30 seconds
@@ -228,6 +236,9 @@ function start() {
       // Start auto-dream (every 6 hours — consolidates events into structured memory)
       startDream(6 * 60 * 60 * 1000);
 
+      // Start Stack Scanner (every 6 hours — discovers tech stacks per project)
+      startStackScanner(6 * 60 * 60 * 1000);
+
       // Start AutoDev (checks hourly, runs at configured time — disabled by default)
       startAutoDev(60 * 60 * 1000);
 
@@ -247,6 +258,7 @@ function stop() {
   stopScout();
   stopDream();
   stopAutoDev();
+  stopStackScanner();
   if (server) server.close();
 }
 

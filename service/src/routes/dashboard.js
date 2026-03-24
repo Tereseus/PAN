@@ -588,10 +588,19 @@ router.post('/api/scout/scan', async (req, res) => {
 // POST /dashboard/api/scout/:id/status — update finding status
 router.post('/api/scout/:id/status', (req, res) => {
   const { status } = req.body;
-  if (!['new', 'reviewed', 'integrated', 'dismissed'].includes(status)) {
+  if (!['new', 'reviewed', 'integrated', 'dismissed', 'approved'].includes(status)) {
     return res.status(400).json({ error: 'invalid status' });
   }
   updateFinding(parseInt(req.params.id), status);
+  res.json({ ok: true });
+});
+
+// PATCH /dashboard/api/scout/:id — update finding (status, etc.)
+router.patch('/api/scout/:id', (req, res) => {
+  const { status } = req.body;
+  if (status) {
+    updateFinding(parseInt(req.params.id), status);
+  }
   res.json({ ok: true });
 });
 
