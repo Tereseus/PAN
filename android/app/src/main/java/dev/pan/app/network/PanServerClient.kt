@@ -2,6 +2,7 @@ package dev.pan.app.network
 
 import android.util.Log
 import dev.pan.app.network.dto.*
+import dev.pan.app.network.dto.TerminalSendRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.MediaType.Companion.toMediaType
@@ -80,6 +81,37 @@ class PanServerClient @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Vision request failed: ${e.message}")
             null
+        }
+    }
+
+    suspend fun recall(text: String): String? {
+        return try {
+            val response = api.recall(QueryRequest(text))
+            if (response.isSuccessful) response.body()?.response_text else null
+        } catch (e: Exception) {
+            Log.e(TAG, "Recall failed: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun searchConversations(query: String, limit: Int = 5): List<dev.pan.app.network.dto.ConversationItem> {
+        return try {
+            val response = api.searchConversations(query, limit)
+            if (response.isSuccessful) response.body()?.conversations ?: emptyList()
+            else emptyList()
+        } catch (e: Exception) {
+            Log.e(TAG, "Conversation search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    suspend fun sendTerminalCommand(text: String, sessionId: String? = null): Boolean {
+        return try {
+            val response = api.sendTerminalCommand(TerminalSendRequest(text, sessionId))
+            response.isSuccessful && (response.body()?.ok == true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Terminal send failed: ${e.message}")
+            false
         }
     }
 

@@ -24,7 +24,7 @@ import dashboardRouter from './routes/dashboard.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
 import { syncProjects, get, insert, run } from './db.js';
-import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession } from './terminal.js';
+import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission } from './terminal.js';
 import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -68,12 +68,25 @@ app.delete('/api/v1/terminal/sessions/:id', (req, res) => {
   const killed = killSession(req.params.id);
   res.json({ ok: killed });
 });
+// Permission prompts — mobile polls this to show Allow/Deny buttons
+app.get('/api/v1/terminal/permissions', (req, res) => {
+  res.json({ permissions: getPendingPermissions() });
+});
+app.delete('/api/v1/terminal/permissions/:id', (req, res) => {
+  clearPermission(parseInt(req.params.id));
+  res.json({ ok: true });
+});
 // Send text to active terminal (phone voice commands → terminal)
 app.post('/api/v1/terminal/send', (req, res) => {
-  const { text, session_id } = req.body;
+  const { text, session_id, raw } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
-  const sent = sendToSession(session_id || null, text + '\n');
-  res.json({ ok: sent, session: session_id || 'auto' });
+  // raw=true sends without appending \r (for single-keypress responses like permission prompts)
+  const toSend = raw ? text : text + '\r';
+  const sent = sendToSession(session_id || null, toSend);
+  console.log(`[PAN Send] "${text}" → ${session_id || 'auto'} (raw=${!!raw}, sent=${sent})`);
+  // Return debug info
+  const sessInfo = listSessions();
+  res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
 });
 
 // Health check

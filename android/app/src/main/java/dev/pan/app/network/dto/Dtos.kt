@@ -55,3 +55,27 @@ data class VisionRequest(
 data class VisionResponse(
     val description: String
 )
+
+data class ConversationSearchResponse(
+    val conversations: List<ConversationItem>,
+    val total: Int
+)
+
+data class ConversationItem(
+    val id: Long,
+    val event_type: String,
+    val created_at: String,
+    val transcript: String,
+    val response: String,
+    val route: String
+)
+
+data class TerminalSendRequest(
+    val text: String,
+    val session_id: String? = null
+)
+
+data class TerminalSendResponse(
+    val ok: Boolean,
+    val session: String? = null
+)

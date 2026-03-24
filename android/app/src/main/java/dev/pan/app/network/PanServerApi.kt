@@ -34,4 +34,17 @@ interface PanServerApi {
 
     @POST("/api/v1/vision")
     suspend fun vision(@Body request: VisionRequest): Response<VisionResponse>
+
+    @POST("/api/v1/terminal/send")
+    suspend fun sendTerminalCommand(@Body request: TerminalSendRequest): Response<TerminalSendResponse>
+
+    @GET("/dashboard/api/conversations")
+    suspend fun searchConversations(
+        @retrofit2.http.Query("q") query: String,
+        @retrofit2.http.Query("limit") limit: Int = 10,
+        @retrofit2.http.Query("filter") filter: String = "all"
+    ): Response<ConversationSearchResponse>
+
+    @POST("/api/v1/recall")
+    suspend fun recall(@Body request: QueryRequest): Response<QueryResponse>
 }

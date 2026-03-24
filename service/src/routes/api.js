@@ -151,6 +151,125 @@ router.post('/vision', async (req, res) => {
   }
 });
 
+// Recall — smart conversation search. Haiku extracts keywords, SQL pre-filters, Haiku summarizes.
+// Searches ALL event types: RouterCommand (Q&A), PhoneAudio (voice), UserPromptSubmit (terminal prompts), VisionAnalysis.
+router.post('/recall', async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+
+  try {
+    const { claude } = await import('../claude.js');
+    const startTime = Date.now();
+
+    // Step 1: Extract clean content from ALL events into a searchable index
+    // This is fast — just DB read + JSON parse, no AI call
+    const allEvents = all(
+      `SELECT id, event_type, data, created_at FROM events
+       WHERE event_type NOT IN ('SessionEnd', 'SessionStart')
+       ORDER BY created_at DESC`
+    );
+
+    const entries = [];
+    for (const e of allEvents) {
+      let data = {};
+      try { data = JSON.parse(e.data); } catch { continue; }
+
+      let content = null;
+      if (e.event_type === 'RouterCommand') {
+        const q = data.text || '';
+        const a = data.result || data.response_text || '';
+        if (q || a) content = `Voice: "${q}" → ${a}`;
+      } else if (e.event_type === 'UserPromptSubmit') {
+        const prompt = data.prompt || '';
+        if (prompt.length >= 10 && !prompt.startsWith('{') && !prompt.startsWith('['))
+          content = `Terminal: ${prompt}`;
+      } else if (e.event_type === 'Stop') {
+        const msg = data.last_assistant_message || '';
+        if (msg.length >= 20) content = `Claude: ${msg}`;
+      } else if (e.event_type === 'PhoneAudio') {
+        const transcript = data.transcript || '';
+        const finals = transcript.match(/Final: (.+?)(?:\[|Heard|$)/g)
+          ?.map(m => m.replace(/^Final: /, '').replace(/\[.*$/, '').trim())
+          .filter(Boolean).join('; ');
+        if (finals) content = `Heard: ${finals}`;
+      } else if (e.event_type === 'VisionAnalysis') {
+        const desc = data.description || data.result || '';
+        if (desc) content = `Saw: ${desc}`;
+      }
+
+      if (content) {
+        entries.push({ time: e.created_at, text: content.slice(0, 400) });
+      }
+    }
+
+    if (entries.length === 0) {
+      return res.json({ response_text: "No conversation history to search through." });
+    }
+
+    // Step 2: Quick keyword pre-filter from the query itself (no AI call needed)
+    // Pull meaningful words from the user's question
+    const stopWords = new Set(['what','when','where','who','how','did','do','does','is','are','was','were',
+      'the','a','an','in','on','at','to','for','of','and','or','but','with','about','we','i','me','my',
+      'you','your','it','that','this','have','has','had','can','could','would','should','will',
+      'talk','talked','say','said','discuss','discussed','tell','told','remember','recall','find',
+      'search','look','know','think','much','many','some','any','all','our','been','being','just']);
+    const queryWords = text.toLowerCase().split(/\s+/)
+      .map(w => w.replace(/[^a-z0-9]/g, ''))
+      .filter(w => w.length > 2 && !stopWords.has(w));
+
+    // Score entries by keyword matches — more matches = more relevant
+    let scored = entries.map(e => {
+      const lower = e.text.toLowerCase();
+      let score = 0;
+      for (const w of queryWords) {
+        if (lower.includes(w)) score += 1;
+      }
+      return { ...e, score };
+    });
+
+    // Take entries that match at least one keyword, sorted by relevance then recency
+    let relevant = scored.filter(e => e.score > 0)
+      .sort((a, b) => b.score - a.score || b.time.localeCompare(a.time));
+
+    // If keyword filter found too few, fall back to recent entries (let Haiku decide)
+    if (relevant.length < 5) {
+      // Add recent entries that weren't already matched
+      const matchedTimes = new Set(relevant.map(r => r.time));
+      const recent = entries.filter(e => !matchedTimes.has(e.time)).slice(0, 20);
+      relevant = [...relevant, ...recent];
+    }
+
+    // Step 3: Build context for Haiku — stay under ~3000 tokens (~12KB)
+    const TOKEN_BUDGET = 12000; // chars, ~3000 tokens
+    let snippetText = '';
+    let count = 0;
+    for (const e of relevant) {
+      const line = `[${e.time}] ${e.text}\n`;
+      if (snippetText.length + line.length > TOKEN_BUDGET) break;
+      snippetText += line;
+      count++;
+    }
+
+    // Step 4: Single Haiku call — search + answer in one shot
+    const summary = await claude(
+      `You are PAN, a personal AI memory system. The user asked: "${text}"
+
+Here are ${count} entries from their conversation/activity history (${entries.length} total entries exist):
+
+${snippetText}
+Answer the user's question based on these results. Be specific — mention dates, exact details, and what was said. If the answer isn't in the data, say so. Keep it to 2-4 sentences, conversational tone.`,
+      { maxTokens: 400, timeout: 20000 }
+    );
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[PAN Recall] "${text}" → ${count}/${entries.length} entries sent to Haiku, ${elapsed}ms`);
+    res.json({ response_text: summary.trim() });
+  } catch (err) {
+    console.error('[PAN Recall] Error:', err.message);
+    res.json({ response_text: 'I had trouble searching through conversations.' });
+  }
+});
+
 // UI Automation — queued for desktop agent execution
 // The PAN service runs as LOCAL SYSTEM which can't see the user's desktop.
 // UI commands get queued here, the Electron tray app (user session) executes them.

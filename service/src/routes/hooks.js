@@ -16,32 +16,18 @@ router.post('/:eventType', (req, res) => {
       return res.status(400).json({ error: 'missing session_id' });
     }
 
-    if (eventType === 'SessionStart') {
-      // Check if session exists
-      const existing = get("SELECT id FROM sessions WHERE id = :id", { ':id': sessionId });
-
-      if (existing) {
-        run(`UPDATE sessions SET
-          model = COALESCE(:model, model),
-          source = COALESCE(:source, source),
-          transcript_path = COALESCE(:tp, transcript_path)
-          WHERE id = :id`, {
-          ':id': sessionId,
-          ':model': payload.model || null,
-          ':source': payload.source || null,
-          ':tp': payload.transcript_path || null
-        });
-      } else {
-        run(`INSERT INTO sessions (id, cwd, model, source, transcript_path)
-          VALUES (:id, :cwd, :model, :source, :tp)`, {
-          ':id': sessionId,
-          ':cwd': cwd,
-          ':model': payload.model || null,
-          ':source': payload.source || null,
-          ':tp': payload.transcript_path || null
-        });
-      }
-
+    // Ensure session exists — upsert on every event so we never miss a session
+    // (SessionStart hook often fails because PAN server isn't running yet when Claude starts)
+    const existingSession = get("SELECT id FROM sessions WHERE id = :id", { ':id': sessionId });
+    if (!existingSession) {
+      run(`INSERT INTO sessions (id, cwd, model, source, transcript_path)
+        VALUES (:id, :cwd, :model, :source, :tp)`, {
+        ':id': sessionId,
+        ':cwd': cwd,
+        ':model': payload.model || null,
+        ':source': payload.source || null,
+        ':tp': payload.transcript_path || null
+      });
       // Auto-detect project
       if (cwd) {
         const project = detectProject(cwd);
@@ -50,6 +36,20 @@ router.post('/:eventType', (req, res) => {
           ':id': sessionId
         });
       }
+    }
+
+    if (eventType === 'SessionStart' && existingSession) {
+      // Update existing session with fresh metadata
+      run(`UPDATE sessions SET
+        model = COALESCE(:model, model),
+        source = COALESCE(:source, source),
+        transcript_path = COALESCE(:tp, transcript_path)
+        WHERE id = :id`, {
+        ':id': sessionId,
+        ':model': payload.model || null,
+        ':source': payload.source || null,
+        ':tp': payload.transcript_path || null
+      });
     }
 
     if (eventType === 'SessionEnd') {

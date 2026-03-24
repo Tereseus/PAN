@@ -27,6 +27,8 @@ fun SettingsScreen(
     val preferredMusicApp by viewModel.preferredMusicApp.collectAsState()
     val preferredMessagingApp by viewModel.preferredMessagingApp.collectAsState()
     val selectedLlmModel by viewModel.selectedLlmModel.collectAsState()
+    val classifierModel by viewModel.classifierModel.collectAsState()
+    val conversationModel by viewModel.conversationModel.collectAsState()
     val llmStatus by viewModel.llmStatus.collectAsState()
     val llmDownloadProgress by viewModel.llmDownloadProgress.collectAsState()
 
@@ -98,8 +100,8 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            val deviceOptions = listOf("auto" to "Auto (nearest device)") +
-                devices.map { it.hostname to "${it.name} (${it.device_type})" }
+            val deviceOptions = listOf("auto" to "Auto (Nearest Device)") +
+                devices.map { it.hostname to "${it.name} (${it.device_type.replaceFirstChar { c -> c.uppercase() }})" }
 
             deviceOptions.forEach { (value, label) ->
                 Row(
@@ -133,6 +135,15 @@ fun SettingsScreen(
                 selected = preferredMessagingApp,
                 options = listOf("Auto", "SMS", "WhatsApp", "Instagram", "Telegram"),
                 onSelect = { viewModel.setPreferredMessagingApp(it) }
+            )
+
+            val queryAnswerSource by viewModel.queryAnswerSource.collectAsState()
+            SettingDropdown(
+                title = "Query Answers",
+                description = "How to answer questions (local = on-device, cloud = API)",
+                selected = queryAnswerSource,
+                options = listOf("Cloud", "Local", "Auto"),
+                onSelect = { viewModel.setQueryAnswerSource(it) }
             )
 
             HorizontalDivider()
@@ -177,32 +188,155 @@ fun SettingsScreen(
                 )
             }
 
-            val llmOptions = listOf(
-                "llama-3.2-1b" to "Llama 3.2 1B (700MB, fast)",
-                "llama-3.2-3b" to "Llama 3.2 3B (2GB, recommended)",
-                "phi-3.5-mini" to "Phi 3.5 Mini (2.2GB, best quality)"
-            )
+            // Role assignments
+            Text("Classifier Model", style = MaterialTheme.typography.bodyLarge)
+            Text("Fast model for routing commands (runs first)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            llmOptions.forEach { (value, label) ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+            // Model list
+            dev.pan.app.ai.LocalLlm.AVAILABLE_MODELS.forEach { model ->
+                val modelStatus = viewModel.getModelStatus(model)
+                val sizeLabel = "${model.sizeBytes / 1_000_000}MB"
+                val isClassifier = classifierModel == model.id
+                val isConversation = conversationModel == model.id
+                val isDownloading = viewModel.isDownloading(model.id)
+
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = if (isClassifier || isConversation) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+                            else MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
                 ) {
-                    RadioButton(
-                        selected = selectedLlmModel == value,
-                        onClick = { viewModel.setSelectedLlmModel(value) }
-                    )
-                    Text(label, modifier = Modifier.padding(start = 8.dp))
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(model.name, style = MaterialTheme.typography.bodyMedium)
+                                Text("${model.description} ($sizeLabel)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            // Status chip
+                            val chipColor = when (modelStatus) {
+                                "loaded" -> MaterialTheme.colorScheme.primary
+                                "downloaded" -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.outline
+                            }
+                            val chipText = when (modelStatus) {
+                                "loaded" -> "Running"
+                                "downloaded" -> "Ready"
+                                "not_downloaded" -> ""
+                                else -> modelStatus
+                            }
+                            if (chipText.isNotEmpty()) {
+                                Surface(
+                                    shape = MaterialTheme.shapes.extraSmall,
+                                    color = chipColor.copy(alpha = 0.15f)
+                                ) {
+                                    Text(chipText, color = chipColor,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                                }
+                            }
+                        }
+
+                        // Download progress
+                        if (isDownloading) {
+                            LinearProgressIndicator(
+                                progress = { llmDownloadProgress },
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                            )
+                            Text("Downloading... ${(llmDownloadProgress * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+
+                        // Role assignment + action buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Role toggle buttons
+                            if (modelStatus == "downloaded" || modelStatus == "loaded") {
+                                FilterChip(
+                                    selected = isClassifier,
+                                    onClick = { viewModel.setClassifierModel(model.id) },
+                                    label = { Text("Classifier", style = MaterialTheme.typography.labelSmall) }
+                                )
+                                FilterChip(
+                                    selected = isConversation,
+                                    onClick = { viewModel.setConversationModel(model.id) },
+                                    label = { Text("Conversation", style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.weight(1f))
+
+                            // Action buttons
+                            if (modelStatus == "not_downloaded" || modelStatus == "incomplete") {
+                                Button(
+                                    onClick = { viewModel.downloadModel(model.id) },
+                                    enabled = !isDownloading,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) { Text("Download", style = MaterialTheme.typography.labelSmall) }
+                            }
+                            if (modelStatus == "downloaded" && modelStatus != "loaded") {
+                                OutlinedButton(
+                                    onClick = { viewModel.loadModel(model.id) },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) { Text("Load", style = MaterialTheme.typography.labelSmall) }
+                            }
+                            if (modelStatus == "downloaded" || modelStatus == "loaded") {
+                                TextButton(
+                                    onClick = { viewModel.deleteModel(model.id) },
+                                    colors = ButtonDefaults.textButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) { Text("Delete", style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                    }
                 }
             }
 
-            // Download button if not installed
-            if (llmStatus == "not_downloaded") {
-                Button(
-                    onClick = { viewModel.downloadModel() },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Download Model")
+            // Custom model input
+            var showCustom by remember { mutableStateOf(false) }
+            var customName by remember { mutableStateOf("") }
+            var customUrl by remember { mutableStateOf("") }
+
+            if (showCustom) {
+                OutlinedTextField(
+                    value = customName,
+                    onValueChange = { customName = it },
+                    label = { Text("Model Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = customUrl,
+                    onValueChange = { customUrl = it },
+                    label = { Text("GGUF URL (HuggingFace)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            if (customName.isNotBlank() && customUrl.isNotBlank()) {
+                                viewModel.addCustomModel(customName, customUrl)
+                                showCustom = false
+                                customName = ""
+                                customUrl = ""
+                            }
+                        }
+                    ) { Text("Add Model") }
+                    TextButton(onClick = { showCustom = false }) { Text("Cancel") }
+                }
+            } else {
+                TextButton(onClick = { showCustom = true }) {
+                    Text("+ Add Custom Model")
                 }
             }
         }

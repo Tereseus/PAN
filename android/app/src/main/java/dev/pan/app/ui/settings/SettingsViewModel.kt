@@ -20,10 +20,9 @@ class SettingsViewModel @Inject constructor(
     private val dataRepository: DataRepository,
     private val api: PanServerApi,
     private val serverClient: PanServerClient,
+    private val localLlm: LocalLlm,
     private val application: Application
 ) : ViewModel() {
-
-    private val localLlm = LocalLlm(application)
 
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
     val serverUrl: StateFlow<String> = _serverUrl
@@ -58,8 +57,19 @@ class SettingsViewModel @Inject constructor(
     private val _preferredMessagingApp = MutableStateFlow("Auto")
     val preferredMessagingApp: StateFlow<String> = _preferredMessagingApp
 
-    // Local LLM model selection
-    private val _selectedLlmModel = MutableStateFlow("llama-3.2-3b")
+    // Query answer source: "local" (on-device LLM), "cloud" (Haiku/API), "auto"
+    private val _queryAnswerSource = MutableStateFlow("cloud")
+    val queryAnswerSource: StateFlow<String> = _queryAnswerSource
+
+    // Dual model selection: classifier + conversation
+    private val _classifierModel = MutableStateFlow("qwen3-0.6b")
+    val classifierModel: StateFlow<String> = _classifierModel
+
+    private val _conversationModel = MutableStateFlow("")
+    val conversationModel: StateFlow<String> = _conversationModel
+
+    // Keep for backward compat with UI status display
+    private val _selectedLlmModel = MutableStateFlow("qwen3-0.6b")
     val selectedLlmModel: StateFlow<String> = _selectedLlmModel
 
     private val _llmStatus = MutableStateFlow("not_downloaded")
@@ -67,6 +77,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _llmDownloadProgress = MutableStateFlow(0f)
     val llmDownloadProgress: StateFlow<Float> = _llmDownloadProgress
+
+    // Track which model is currently being downloaded
+    private var downloadingModelId: String? = null
 
     val isServerConnected: StateFlow<Boolean> = serverClient.isConnected
 
@@ -80,36 +93,73 @@ class SettingsViewModel @Inject constructor(
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
             dataRepository.getSetting("preferred_music_app")?.let { _preferredMusicApp.value = it }
             dataRepository.getSetting("preferred_messaging_app")?.let { _preferredMessagingApp.value = it }
+            dataRepository.getSetting("query_answer_source")?.let { _queryAnswerSource.value = it }
+            dataRepository.getSetting("classifier_model")?.let { _classifierModel.value = it }
+            dataRepository.getSetting("conversation_model")?.let { _conversationModel.value = it }
+            // backward compat
             dataRepository.getSetting("selected_llm_model")?.let { _selectedLlmModel.value = it }
         }
-        // Fetch device list from server
         refreshDevices()
-        // Check LLM status — sync selected model with what's recommended/downloaded
-        if (_selectedLlmModel.value == "llama-3.2-3b") {
-            // Default hasn't been changed by user — use recommended model
-            val recommended = localLlm.getRecommendedModel()
-            _selectedLlmModel.value = recommended.id
-        }
         refreshLlmStatus()
     }
 
     fun refreshLlmStatus() {
-        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == _selectedLlmModel.value }
+        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == _classifierModel.value }
             ?: localLlm.getRecommendedModel()
         _llmStatus.value = localLlm.getModelStatus(model)
     }
 
-    fun downloadModel() {
-        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == _selectedLlmModel.value }
-            ?: localLlm.getRecommendedModel()
-        _llmStatus.value = "downloading"
+    fun getModelStatus(model: LocalLlm.ModelInfo): String = localLlm.getModelStatus(model)
+
+    fun downloadModel(modelId: String) {
+        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
+        downloadingModelId = modelId
         _llmDownloadProgress.value = 0f
         viewModelScope.launch {
-            val success = localLlm.downloadModel(model) { progress ->
+            localLlm.downloadModel(model) { progress ->
                 _llmDownloadProgress.value = progress
             }
-            _llmStatus.value = if (success) "downloaded" else "not_downloaded"
+            downloadingModelId = null
+            refreshLlmStatus()
         }
+    }
+
+    fun isDownloading(modelId: String): Boolean = downloadingModelId == modelId
+
+    fun deleteModel(modelId: String) {
+        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
+        localLlm.deleteModel(model)
+        refreshLlmStatus()
+    }
+
+    fun loadModel(modelId: String) {
+        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
+        viewModelScope.launch {
+            localLlm.loadModel(model)
+            refreshLlmStatus()
+        }
+    }
+
+    fun setClassifierModel(modelId: String) {
+        _classifierModel.value = modelId
+        viewModelScope.launch {
+            dataRepository.setSetting("classifier_model", modelId)
+            localLlm.selectClassifierModel(modelId)
+        }
+    }
+
+    fun setConversationModel(modelId: String) {
+        _conversationModel.value = modelId
+        viewModelScope.launch {
+            dataRepository.setSetting("conversation_model", modelId)
+            localLlm.selectConversationModel(modelId)
+        }
+    }
+
+    fun addCustomModel(name: String, url: String) {
+        val id = "custom-${name.lowercase().replace(" ", "-")}"
+        LocalLlm.addCustomModel(id, name, url, 500_000_000)
+        refreshLlmStatus()
     }
 
     fun refreshDevices() {
@@ -163,10 +213,17 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { dataRepository.setSetting("preferred_messaging_app", app) }
     }
 
+    fun setQueryAnswerSource(source: String) {
+        _queryAnswerSource.value = source
+        viewModelScope.launch { dataRepository.setSetting("query_answer_source", source) }
+    }
+
     fun setSelectedLlmModel(modelId: String) {
         _selectedLlmModel.value = modelId
         viewModelScope.launch { dataRepository.setSetting("selected_llm_model", modelId) }
         localLlm.selectModel(modelId)
         refreshLlmStatus()
     }
+
+    fun getDownloadProgress(): Float = _llmDownloadProgress.value
 }
