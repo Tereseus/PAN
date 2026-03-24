@@ -138,6 +138,35 @@ app.post('/api/v1/terminal/permissions/respond', async (req, res) => {
   }
 });
 
+// Dictation — record from PC mic, transcribe via Haiku, return text
+app.post('/api/v1/dictate', async (req, res) => {
+  const duration = Math.min(req.body?.duration || 5, 30); // max 30 seconds
+  try {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const __dir = dirname(fileURLToPath(import.meta.url));
+
+    // Record audio using Python sounddevice
+    const recordScript = join(__dir, 'dictate.py');
+    const { stdout } = await execFileAsync('python', [recordScript, String(duration)], {
+      timeout: (duration + 5) * 1000
+    });
+    const result = JSON.parse(stdout.trim());
+
+    if (result.text) {
+      res.json({ ok: true, text: result.text });
+    } else {
+      res.json({ ok: false, error: result.error || 'No transcription' });
+    }
+  } catch (err) {
+    console.error('[PAN Dictate] Error:', err.message);
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'running', timestamp: new Date().toISOString() });
