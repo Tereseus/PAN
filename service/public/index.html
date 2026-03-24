@@ -700,6 +700,17 @@ body {
         </div>
       </div>
 
+      <!-- Tech Stacks -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0;font-size:16px">Project Tech Stacks</h3>
+          <button class="btn btn-sm" onclick="rescanStacks()">Rescan</button>
+        </div>
+        <div id="automation-stacks" style="display:grid;gap:10px">
+          <div style="color:var(--text2)">Loading...</div>
+        </div>
+      </div>
+
       <!-- Scout Findings -->
       <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -716,6 +727,17 @@ body {
         </div>
         <div id="automation-scout" style="display:grid;gap:6px">
           <div style="color:var(--text2)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Approval Queue -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
+        <div style="margin-bottom:12px">
+          <h3 style="margin:0;font-size:16px">Approval Queue</h3>
+          <div style="font-size:11px;color:var(--text2);margin-top:2px">Scout recommendations and AutoDev proposals awaiting your review</div>
+        </div>
+        <div id="automation-approvals" style="display:grid;gap:8px">
+          <div style="color:var(--text2);font-size:12px">No pending approvals</div>
         </div>
       </div>
 
@@ -3034,10 +3056,82 @@ document.addEventListener('keydown', (e) => {
 
 async function loadAutomation() {
   loadJobStatus();
+  loadTechStacks();
   loadScoutFindings();
   loadScoutTopics();
+  loadApprovalQueue();
   loadAutoDevConfig();
   loadAutoDevLog();
+}
+
+async function loadTechStacks() {
+  const el = document.getElementById('automation-stacks');
+  try {
+    const stacks = await fetch('/api/v1/stacks').then(r => r.json());
+    if (!stacks || stacks.length === 0) {
+      el.innerHTML = '<div style="color:var(--text2);font-size:12px">No stacks detected. Click "Rescan" to scan projects.</div>';
+      return;
+    }
+    el.innerHTML = stacks.map(s => {
+      const langs = Object.entries(s.languages || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      const langsHtml = langs.map(([l, c]) => `<span style="padding:1px 6px;background:var(--bg3);border-radius:3px;font-size:10px">${l} (${c})</span>`).join(' ');
+      const depsHtml = (s.dependencies || []).slice(0, 8).map(d => `<span style="padding:1px 6px;background:var(--bg);border-radius:3px;font-size:10px">${escapeHtml(d)}</span>`).join(' ');
+      const more = (s.dependencies || []).length > 8 ? `<span style="font-size:10px;color:var(--text2)">+${s.dependencies.length - 8} more</span>` : '';
+      return `
+        <div style="padding:10px;background:var(--bg);border-radius:6px">
+          <div style="font-weight:500;font-size:14px;margin-bottom:4px">${escapeHtml(s.project_name)}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px">
+            ${(s.runtimes || []).map(r => `<span style="padding:2px 8px;background:var(--accent);color:#fff;border-radius:4px;font-size:11px;font-weight:500">${r}</span>`).join('')}
+            ${(s.frameworks || []).map(f => `<span style="padding:2px 8px;background:var(--accent2);color:#fff;border-radius:4px;font-size:11px">${f}</span>`).join('')}
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:3px">${langsHtml}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:3px">${depsHtml} ${more}</div>
+        </div>
+      `;
+    }).join('');
+  } catch {
+    el.innerHTML = '<div style="color:var(--text2);font-size:12px">Failed to load stacks</div>';
+  }
+}
+
+async function rescanStacks() {
+  await fetch('/api/v1/stacks/scan', { method: 'POST' });
+  setTimeout(loadTechStacks, 2000);
+}
+
+async function loadApprovalQueue() {
+  const el = document.getElementById('automation-approvals');
+  try {
+    const data = await api('/api/scout?status=new');
+    if (!data || data.length === 0) {
+      el.innerHTML = '<div style="color:var(--text2);font-size:12px">No pending approvals</div>';
+      return;
+    }
+    // Show new scout findings as approval items
+    el.innerHTML = data.slice(0, 10).map(f => `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px">
+        <div style="flex:1">
+          <div style="font-weight:500">${escapeHtml(f.tool_name)}</div>
+          <div style="color:var(--text2)">${escapeHtml(f.description || '')}</div>
+          <div style="color:var(--text2);font-size:10px;margin-top:2px">${escapeHtml(f.relevance || '')}</div>
+        </div>
+        <button class="btn btn-sm" style="background:var(--accent2);color:#fff;font-size:10px;padding:3px 8px" onclick="approveScoutFinding(${f.id})">Approve</button>
+        <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="dismissScoutFinding(${f.id})">Dismiss</button>
+      </div>
+    `).join('');
+  } catch {
+    el.innerHTML = '<div style="color:var(--text2);font-size:12px">Failed to load queue</div>';
+  }
+}
+
+async function approveScoutFinding(id) {
+  await fetch('/dashboard/api/scout/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'approved' }) });
+  loadApprovalQueue();
+}
+
+async function dismissScoutFinding(id) {
+  await fetch('/dashboard/api/scout/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'dismissed' }) });
+  loadApprovalQueue();
 }
 
 function loadJobStatus() {
