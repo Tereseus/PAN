@@ -115,9 +115,15 @@ class PanServerClient @Inject constructor(
         }
     }
 
-    suspend fun askPanWithContext(text: String, intentHint: String?, conversationHistory: String): QueryResponse? {
+    suspend fun askPanWithContext(
+        text: String, intentHint: String?, conversationHistory: String,
+        sensors: Map<String, Any?>? = null
+    ): QueryResponse? {
         return try {
-            val response = api.query(QueryRequest(text, conversationHistory, intentHint))
+            val sensorJson = if (sensors != null && sensors.isNotEmpty()) {
+                org.json.JSONObject(sensors).toString()
+            } else null
+            val response = api.query(QueryRequest(text, conversationHistory, intentHint, sensorJson))
             if (response.isSuccessful) response.body() else null
         } catch (e: Exception) {
             Log.e(TAG, "Query failed: ${e.message}")

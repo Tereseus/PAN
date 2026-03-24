@@ -39,6 +39,13 @@ class TtsManager @Inject constructor(
             tts?.setSpeechRate(1.1f)
             tts?.setPitch(0.95f)
 
+            // Use USAGE_ASSISTANT so volume keys adjust volume without stopping TTS
+            tts?.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            )
+
             val voices = tts?.voices
             if (voices != null) {
                 val preferred = voices.filter {
@@ -86,7 +93,15 @@ class TtsManager @Inject constructor(
     fun speak(text: String) {
         if (!ready || text.isBlank()) return
 
-        val spoken = if (text.length > 500) text.take(500) + "... see full response in the app." else text
+        // Strip markdown formatting so TTS doesn't read "star star bold star star"
+        var cleaned = text
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")  // **bold** → bold
+            .replace(Regex("\\*(.+?)\\*"), "$1")          // *italic* → italic
+            .replace(Regex("`(.+?)`"), "$1")               // `code` → code
+            .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")  // # headers
+            .replace(Regex("^[\\-*]\\s+", RegexOption.MULTILINE), "") // - bullet points
+            .trim()
+        val spoken = if (cleaned.length > 500) cleaned.take(500) + "... see full response in the app." else cleaned
         val params = Bundle()
         tts?.speak(spoken, TextToSpeech.QUEUE_ADD, params, "pan-${System.currentTimeMillis()}")
         Log.d(TAG, "Speaking: ${spoken.take(50)}...")
