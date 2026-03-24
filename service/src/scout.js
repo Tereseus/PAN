@@ -110,7 +110,10 @@ Return MAX 5 most relevant findings. If nothing relevant, return []. Only return
 
   try {
     const raw = await claude(prompt, { model: 'claude-haiku-4-5-20251001', timeout: 30000, maxTokens: 2000 });
-    return JSON.parse(raw);
+    // Extract JSON array from response — handle text before/after
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    return JSON.parse(match[0]);
   } catch (e) {
     console.error(`[PAN Scout] Analysis error for ${source.name}:`, e.message);
     return [];
