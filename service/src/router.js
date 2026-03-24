@@ -74,6 +74,27 @@ async function handleUnified(text, context) {
     ? `\nRecent conversation:\n${conversationHistory}\n`
     : '';
 
+  // Include sensor data if available
+  const sensors = context.sensors || null;
+  let sensorBlock = '';
+  if (sensors) {
+    const parts = [];
+    const phone = sensors.phone || {};
+    if (phone.gps) {
+      const addr = phone.gps.address ? ` (${phone.gps.address})` : '';
+      parts.push(`Location: ${phone.gps.lat?.toFixed(5)}, ${phone.gps.lng?.toFixed(5)}${addr}${phone.gps.altitude ? ` alt:${Math.round(phone.gps.altitude)}m` : ''}${phone.gps.speed ? ` speed:${phone.gps.speed.toFixed(1)}m/s` : ''}`);
+    }
+    if (phone.compass != null) parts.push(`Compass: ${Math.round(phone.compass)}°`);
+    if (phone.barometer_hpa != null) parts.push(`Pressure: ${phone.barometer_hpa.toFixed(0)}hPa`);
+    if (phone.light_lux != null) parts.push(`Light: ${Math.round(phone.light_lux)}lux`);
+    if (phone.accelerometer) parts.push(`Accel: x=${phone.accelerometer.x?.toFixed(1)} y=${phone.accelerometer.y?.toFixed(1)} z=${phone.accelerometer.z?.toFixed(1)}`);
+    const pendant = sensors.pendant || {};
+    if (pendant.temperature_c != null) parts.push(`Temp: ${pendant.temperature_c}°C`);
+    if (pendant.humidity_pct != null) parts.push(`Humidity: ${pendant.humidity_pct}%`);
+    if (pendant.gas) parts.push(`Gas: ${JSON.stringify(pendant.gas)}`);
+    if (parts.length > 0) sensorBlock = `\nUser's current sensor readings: ${parts.join(' | ')}\n`;
+  }
+
   // NanoClaw: check for matching skill before calling Claude
   const matchedSkill = findSkill(text);
   const skillBlock = matchedSkill
@@ -86,7 +107,7 @@ async function handleUnified(text, context) {
     const raw = await claude(
       `You are PAN, a personal AI assistant. You listen to the user's speech through their phone microphone. You are conversational — respond naturally like talking to a friend, not like a robot. Keep responses short (1-2 sentences max, this is read aloud via TTS). Never censor the user's words.
 ${historyBlock}${skillBlock}
-The user's microphone just picked up: "${text}"
+The user's microphone just picked up: "${text}"${sensorBlock}
 
 FIRST: Decide if this speech is directed at you (PAN) or ambient.
 Rules for deciding:
