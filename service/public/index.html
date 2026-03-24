@@ -3102,8 +3102,9 @@ async function rescanStacks() {
 async function loadApprovalQueue() {
   const el = document.getElementById('automation-approvals');
   try {
-    const data = await api('/api/scout?status=new');
-    if (!data || data.length === 0) {
+    const raw = await api('/api/scout?status=new');
+    const data = raw.findings || raw;
+    if (!data || !Array.isArray(data) || data.length === 0) {
       el.innerHTML = '<div style="color:var(--text2);font-size:12px">No pending approvals</div>';
       return;
     }
@@ -3158,8 +3159,9 @@ function loadJobStatus() {
 async function loadScoutFindings() {
   const el = document.getElementById('automation-scout');
   try {
-    const data = await api('/api/scout');
-    if (!data || data.length === 0) {
+    const raw = await api('/api/scout');
+    const data = raw.findings || raw;
+    if (!data || !Array.isArray(data) || data.length === 0) {
       el.innerHTML = '<div style="color:var(--text2);font-size:12px">No findings yet. Click "Scan Now" to discover tools.</div>';
       return;
     }
