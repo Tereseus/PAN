@@ -1,6 +1,6 @@
 {
   "name": "pan-service",
-  "version": "1.0.0",
+  "version": "0.3.1",
   "description": "PAN — Personal AI Network. Persistent intelligence layer.",
   "type": "module",
   "bin": {

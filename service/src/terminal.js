@@ -76,13 +76,11 @@ function startTerminalServer(httpServer) {
             }
           }
 
-          // Detect Claude Code permission prompts
-          // Format: "Do you want to proceed?" followed by numbered options (1. Yes, 2. Yes, 3. No)
+          // Permission detection DISABLED — pty.write() cannot interact with Claude Code's
+          // permission prompt (see https://github.com/anthropics/claude-code/issues/38299)
+          // Re-enable when Anthropic adds a permission hook or API
+          const permMatch = false;
           const stripped = data.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
-          permBuffer += stripped;
-          if (permBuffer.length > 4000) permBuffer = permBuffer.slice(-2000);
-          // Match "Do you want to proceed?" or "requires permission"
-          const permMatch = permBuffer.match(/(?:Do you want to proceed|requires permission)[?\s:].{0,200}/i);
           if (permMatch) {
             // Extract the command description from the buffer (look for the line before "requires permission")
             const lines = permBuffer.split('\n').map(l => l.trim()).filter(Boolean);
@@ -99,7 +97,7 @@ function startTerminalServer(httpServer) {
                 break;
               }
             }
-            const promptText = (description || permMatch[0]).trim().substring(0, 200);
+            const promptText = (description || 'Permission required').trim().substring(0, 200);
             permBuffer = ''; // reset so we don't re-fire
             // Deduplicate — don't fire if same prompt text was detected in last 30 seconds
             const isDupe = pendingPermissions.some(p =>
