@@ -58,6 +58,7 @@ class PanForegroundService : Service() {
     @Inject lateinit var geminiBrain: GeminiBrain
     @Inject lateinit var voiceCollector: VoiceCollector
     @Inject lateinit var cameraCapture: CameraCapture
+    @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -200,6 +201,10 @@ class PanForegroundService : Service() {
             startForeground(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = false))
             panLog("No mic permission — running without audio")
         }
+
+        // Start sensor collection (GPS, compass, accelerometer, etc.)
+        sensorContext.start()
+        panLog("Sensors started")
 
         acquireWakeLock()
         serviceScope.launch { syncManager.start() }
@@ -390,6 +395,40 @@ class PanForegroundService : Service() {
             .replace(Regex("^(?:hey |hi |ok |okay )?(?:pan|pam|ben|pen)[,.]?\\s*"), "")
             .replace(Regex("^(?:can you |could you |please )?"), "")
             .trim()
+
+        // Location queries need sensor data — always route to server
+        val lowerStripped = stripped.lowercase()
+        if (lowerStripped.contains("where am i") || lowerStripped.contains("my location") ||
+            lowerStripped.contains("my gps") || lowerStripped.contains("my coordinates") ||
+            lowerStripped.contains("what city") || lowerStripped.contains("what address")) {
+            val gps = sensorContext.gps
+            val addr = sensorContext.address
+            panLog("Location query → server (GPS=${gps != null} addr=$addr)")
+            serviceScope.launch {
+                try {
+                    // Append sensor data directly to the query text so Claude sees it
+                    var queryWithSensors = stripped
+                    if (gps != null) {
+                        queryWithSensors += "\n[SENSOR DATA: GPS lat=${gps.lat}, lng=${gps.lng}"
+                        if (gps.altitude != null) queryWithSensors += ", alt=${gps.altitude}m"
+                        if (gps.speed != null) queryWithSensors += ", speed=${gps.speed}m/s"
+                        if (addr != null) queryWithSensors += ", address=$addr"
+                        queryWithSensors += "]"
+                    }
+                    val response = serverClient.askPanWithContext(queryWithSensors, "query", getHistoryContext())
+                    if (response != null) {
+                        mainHandler.post { panSpeak(response.response_text) }
+                        addToHistory("User", text)
+                        addToHistory("PAN", response.response_text)
+                    } else {
+                        mainHandler.post { panSpeak("I couldn't get your location right now.") }
+                    }
+                } catch (e: Exception) {
+                    mainHandler.post { panSpeak("Location lookup failed: ${e.message}") }
+                }
+            }
+            return
+        }
 
         // Hardware-only instant commands (no LLM needed, zero latency)
         val instantResponse = handleInstantHardware(stripped)
@@ -606,7 +645,9 @@ class PanForegroundService : Service() {
                     // Send to PAN server — Claude classifies and responds
                     val startTime = System.currentTimeMillis()
                     try {
-                        val response = serverClient.askPanWithContext(text, null, historyContext)
+                        val sensorData = sensorContext.getContextEnvelope()
+                        panLog("Sensors: GPS=${sensorContext.gps != null} addr=${sensorContext.address} compass=${sensorContext.compass != null}")
+                        val response = serverClient.askPanWithContext(text, null, historyContext, sensorData)
                         val elapsed = System.currentTimeMillis() - startTime
                         if (response != null) {
                             val responseText = response.response_text
@@ -1266,6 +1307,7 @@ class PanForegroundService : Service() {
         sttEngine.destroy()
         mainHandler.post { tts.destroy() }
         syncManager.stop()
+        sensorContext.stop()
         releaseWakeLock()
         super.onDestroy()
     }

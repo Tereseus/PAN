@@ -449,7 +449,7 @@ router.post('/sensor', (req, res) => {
 });
 
 router.post('/query', async (req, res) => {
-  const { text, context, intent_hint } = req.body;
+  const { text, context, intent_hint, sensors } = req.body;
 
   if (!text) {
     return res.status(400).json({ error: 'missing text' });
@@ -466,7 +466,12 @@ router.post('/query', async (req, res) => {
     });
 
     const { route } = await import('../router.js');
-    const result = await route(text, { source: 'phone', intent_hint, _commandId: cmdId, conversation_history: context });
+    // Parse sensors — may be a JSON string or object
+    let parsedSensors = sensors;
+    if (typeof sensors === 'string') {
+      try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; }
+    }
+    const result = await route(text, { source: 'phone', intent_hint, _commandId: cmdId, conversation_history: context, sensors: parsedSensors });
 
     // Update the command record with results
     if (result.intent === 'terminal' && result.terminalResult) {

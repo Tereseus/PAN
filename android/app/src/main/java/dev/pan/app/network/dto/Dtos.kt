@@ -22,7 +22,8 @@ data class SensorUpload(
 data class QueryRequest(
     val text: String,
     val context: String? = null,
-    val intent_hint: String? = null
+    val intent_hint: String? = null,
+    val sensors: String? = null  // JSON string of sensor envelope
 )
 
 data class QueryResponse(
