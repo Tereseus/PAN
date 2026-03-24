@@ -76,15 +76,30 @@ function startTerminalServer(httpServer) {
             }
           }
 
-          // Detect Claude Code permission prompts — very specific pattern matching
-          // Claude Code shows: "Allow [tool]? (Y)es / (N)o" or similar with Y/n
+          // Detect Claude Code permission prompts
+          // Format: "Do you want to proceed?" followed by numbered options (1. Yes, 2. Yes, 3. No)
           const stripped = data.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
           permBuffer += stripped;
-          if (permBuffer.length > 2000) permBuffer = permBuffer.slice(-1000);
-          // Match Claude Code's exact permission format: "Allow [something]?" followed by Y/N options
-          const permMatch = permBuffer.match(/(?:Allow|Do you want to allow)\s+.{5,80}\?\s*(?:\(Y\)|Yes|Y\/n)/i);
+          if (permBuffer.length > 4000) permBuffer = permBuffer.slice(-2000);
+          // Match "Do you want to proceed?" or "requires permission"
+          const permMatch = permBuffer.match(/(?:Do you want to proceed|requires permission)[?\s:].{0,200}/i);
           if (permMatch) {
-            const promptText = permMatch[0].trim().substring(0, 200);
+            // Extract the command description from the buffer (look for the line before "requires permission")
+            const lines = permBuffer.split('\n').map(l => l.trim()).filter(Boolean);
+            let description = '';
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].includes('requires permission') || lines[i].includes('Do you want to proceed')) {
+                // Get the command from earlier lines
+                for (let j = Math.max(0, i - 3); j < i; j++) {
+                  if (lines[j] && !lines[j].startsWith('⚡') && lines[j].length > 3) {
+                    description = lines[j];
+                    break;
+                  }
+                }
+                break;
+              }
+            }
+            const promptText = (description || permMatch[0]).trim().substring(0, 200);
             permBuffer = ''; // reset so we don't re-fire
             // Deduplicate — don't fire if same prompt text was detected in last 30 seconds
             const isDupe = pendingPermissions.some(p =>

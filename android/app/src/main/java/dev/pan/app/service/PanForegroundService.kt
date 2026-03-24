@@ -213,6 +213,75 @@ class PanForegroundService : Service() {
                 )
             }
         }
+
+        // Permission prompt polling — check every 5 seconds, show Android notification
+        startPermissionPolling()
+    }
+
+    private var lastPermId: Long = 0
+
+    private fun startPermissionPolling() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(5000)
+                try {
+                    val response = serverClient.api.getPermissions()
+                    val perms = response.body()?.permissions ?: continue
+                    if (perms.isEmpty()) continue
+                    val latest = perms.last()
+                    if (latest.id == lastPermId) continue
+                    lastPermId = latest.id
+                    showPermissionNotification(latest)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun showPermissionNotification(perm: dev.pan.app.network.dto.PermissionPrompt) {
+        // Create a high-priority notification channel for permissions
+        val permChannelId = "pan_permissions"
+        val permChannel = NotificationChannel(
+            permChannelId, "PAN Permissions",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Claude Code permission prompts"
+            enableVibration(true)
+        }
+        notificationManager?.createNotificationChannel(permChannel)
+
+        // Allow action (sends "1" via SendInput)
+        val allowIntent = Intent(this, PanForegroundService::class.java).apply {
+            action = "PERMISSION_RESPOND"
+            putExtra("response", "1")
+            putExtra("perm_id", perm.id)
+        }
+        val allowPending = PendingIntent.getService(
+            this, 100, allowIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Deny action (sends "3" via SendInput)
+        val denyIntent = Intent(this, PanForegroundService::class.java).apply {
+            action = "PERMISSION_RESPOND"
+            putExtra("response", "3")
+            putExtra("perm_id", perm.id)
+        }
+        val denyPending = PendingIntent.getService(
+            this, 101, denyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, permChannelId)
+            .setContentTitle("ΠΑΝ Permission Required")
+            .setContentText(perm.prompt)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .addAction(0, "Allow", allowPending)
+            .addAction(0, "Deny", denyPending)
+            .build()
+
+        notificationManager?.notify(999, notification)
     }
 
     // Stop STT before speaking, restart after TTS finishes
@@ -1152,6 +1221,23 @@ class PanForegroundService : Service() {
         if (intent?.action == "STOP_TTS") {
             tts.stop()
             panLog("TTS stopped from notification")
+        }
+
+        if (intent?.action == "PERMISSION_RESPOND") {
+            val response = intent.getStringExtra("response") ?: "3"
+            val permId = intent.getLongExtra("perm_id", 0)
+            serviceScope.launch {
+                try {
+                    serverClient.api.respondPermission(
+                        dev.pan.app.network.dto.PermissionRespondRequest(response, permId)
+                    )
+                    panLog("Permission ${if (response == "1") "allowed" else "denied"} via notification")
+                } catch (e: Exception) {
+                    panLog("Permission respond failed: ${e.message}")
+                }
+            }
+            // Dismiss the notification
+            notificationManager?.cancel(999)
         }
 
         if (intent?.action == "TOGGLE_MIC") {
