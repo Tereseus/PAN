@@ -804,6 +804,74 @@ router.post('/api/projects/:id/bulk-tasks', (req, res) => {
   res.json({ ok: true, created, milestone_id: milestoneId });
 });
 
+// PUT /dashboard/api/projects/:id/bulk-tasks — bulk update/upsert tasks
+// Body: { tasks: [{ id?, title, status, milestone_name?, priority? }] }
+router.put('/api/projects/:id/bulk-tasks', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const { tasks } = req.body;
+  if (!tasks || !Array.isArray(tasks)) return res.status(400).json({ error: 'tasks array required' });
+
+  let updated = 0, created = 0;
+  for (const task of tasks) {
+    if (task.id) {
+      // Update existing
+      const sets = [];
+      const params = { ':id': task.id };
+      if (task.title) { sets.push('title = :title'); params[':title'] = task.title; }
+      if (task.status) { sets.push('status = :status'); params[':status'] = task.status; }
+      if (task.priority != null) { sets.push('priority = :priority'); params[':priority'] = task.priority; }
+      if (sets.length > 0) {
+        run(`UPDATE project_tasks SET ${sets.join(', ')} WHERE id = :id`, params);
+        updated++;
+      }
+    } else if (task.title) {
+      // Create new — find/create milestone if specified
+      let mid = task.milestone_id || null;
+      if (!mid && task.milestone_name) {
+        const existing = get("SELECT id FROM project_milestones WHERE project_id = :pid AND name = :name",
+          { ':pid': pid, ':name': task.milestone_name });
+        if (existing) mid = existing.id;
+        else mid = insert("INSERT INTO project_milestones (project_id, name) VALUES (:pid, :name)",
+          { ':pid': pid, ':name': task.milestone_name });
+      }
+      insert("INSERT INTO project_tasks (project_id, milestone_id, title, status, priority) VALUES (:pid, :mid, :title, :status, :pri)",
+        { ':pid': pid, ':mid': mid, ':title': task.title, ':status': task.status || 'todo', ':pri': task.priority || 0 });
+      created++;
+    }
+  }
+  res.json({ ok: true, updated, created });
+});
+
+// DELETE /dashboard/api/projects/:id/all-tasks — delete all tasks (and optionally milestones) for a project
+router.delete('/api/projects/:id/all-tasks', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const deleteMilestones = req.query.milestones === 'true';
+  const taskCount = get("SELECT COUNT(*) as c FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
+  run("DELETE FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
+  if (deleteMilestones) {
+    run("DELETE FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
+  }
+  res.json({ ok: true, deleted: taskCount?.c || 0, milestones_deleted: deleteMilestones });
+});
+
+// GET /dashboard/api/tasks/search — search tasks across all projects
+router.get('/api/tasks/search', (req, res) => {
+  const q = req.query.q || '';
+  const status = req.query.status || null;
+  let where = ['1=1'];
+  let params = {};
+  if (q) { where.push('t.title LIKE :q'); params[':q'] = `%${q}%`; }
+  if (status) { where.push('t.status = :status'); params[':status'] = status; }
+  const tasks = all(`SELECT t.*, p.name as project_name, m.name as milestone_name
+    FROM project_tasks t
+    JOIN projects p ON p.id = t.project_id
+    LEFT JOIN project_milestones m ON m.id = t.milestone_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY t.priority DESC, t.created_at DESC
+    LIMIT 100`, params);
+  res.json(tasks);
+});
+
 // POST /dashboard/api/open-tabs — record which tabs are open (for session restore)
 router.post('/api/open-tabs', (req, res) => {
   const { tabs } = req.body;
