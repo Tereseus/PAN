@@ -18,10 +18,7 @@ function hashPassword(pw) {
   return createHash('sha256').update(pw).digest('hex');
 }
 
-// Ensure settings table exists on first load
-try {
-  run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
-} catch {}
+// Settings table is created by schema.sql — no inline CREATE needed
 
 function getOrCreatePassword() {
   const existing = get("SELECT value FROM settings WHERE key = 'delete_password'");
