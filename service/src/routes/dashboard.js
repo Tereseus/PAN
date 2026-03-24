@@ -342,6 +342,7 @@ router.get('/api/events', (req, res) => {
   const type = req.query.type || null;
   const date = req.query.date || null;
   const search = req.query.q || null;
+  const sessionId = req.query.session_id || null;
 
   let where = [];
   let params = {};
@@ -357,6 +358,20 @@ router.get('/api/events', (req, res) => {
   if (search) {
     where.push("data LIKE :q");
     params[':q'] = `%${search}%`;
+  }
+  if (sessionId) {
+    where.push("session_id = :session_id");
+    params[':session_id'] = sessionId;
+  }
+  const projectPath = req.query.project_path || null;
+  if (projectPath) {
+    // Match events whose cwd contains this project path
+    // Events store cwd with JSON-escaped backslashes (\\\\) — normalize and match both forms
+    const fwd = projectPath.replace(/\\/g, '/');                    // C:/Users/tzuri/.../PAN
+    const bk = fwd.replace(/\//g, '\\\\');                          // C:\\Users\\tzuri\\...\\PAN (as in JSON)
+    where.push("(data LIKE :pp1 OR data LIKE :pp2)");
+    params[':pp1'] = `%${bk}%`;
+    params[':pp2'] = `%${fwd}%`;
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
@@ -425,8 +440,16 @@ router.get('/api/conversations', (req, res) => {
   const params = { ':limit': limit, ':offset': offset };
 
   if (search) {
-    whereClause += whereClause ? ` AND data LIKE :q` : `WHERE data LIKE :q`;
-    params[':q'] = `%${search}%`;
+    // Split search into words and AND them together for better matching
+    const words = search.split(/\s+/).filter(w => w.length > 0);
+    if (words.length > 0) {
+      const wordClauses = words.map((w, i) => {
+        params[`:q${i}`] = `%${w}%`;
+        return `data LIKE :q${i}`;
+      });
+      const combined = wordClauses.join(' AND ');
+      whereClause += whereClause ? ` AND (${combined})` : `WHERE (${combined})`;
+    }
   }
 
   const events = all(
@@ -445,7 +468,7 @@ router.get('/api/conversations', (req, res) => {
       session_id: e.session_id,
       created_at: e.created_at,
       transcript: data.transcript || data.user_text || data.text || data.question || '',
-      response: data.response || data.response_text || data.description || '',
+      response: data.response || data.response_text || data.result || data.description || '',
       route: data.route || data.intent || '',
       model: data.model || '',
       response_time_ms: data.response_time_ms || data.duration_ms || null,
