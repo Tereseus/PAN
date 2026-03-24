@@ -47,6 +47,24 @@ db.pragma('foreign_keys = OFF'); // Session IDs are free-form, not enforced FK
 const schema = readFileSync(SCHEMA_PATH, 'utf-8');
 db.exec(schema);
 
+// Migration: fix settings table if it was created by old dashboard.js (missing id, updated_at)
+const settingsCols = db.pragma('table_info(settings)').map(c => c.name);
+if (!settingsCols.includes('id')) {
+  console.log('[PAN DB] Migrating settings table to full schema...');
+  db.exec(`
+    ALTER TABLE settings RENAME TO _settings_old;
+    CREATE TABLE settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+    INSERT INTO settings (key, value) SELECT key, value FROM _settings_old;
+    DROP TABLE _settings_old;
+  `);
+  console.log('[PAN DB] Settings table migrated.');
+}
+
 // Convert sql.js style params ({':key': val}) to better-sqlite3 style ({key: val})
 function fixParams(params) {
   if (!params || typeof params !== 'object') return {};
