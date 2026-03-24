@@ -7,6 +7,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import dev.pan.app.ai.LocalLlm
 import dev.pan.app.data.PanDatabase
 import dev.pan.app.data.dao.*
 import javax.inject.Singleton
@@ -31,4 +32,8 @@ object AppModule {
 
     @Provides
     fun provideSettingsDao(db: PanDatabase): SettingsDao = db.settingsDao()
+
+    @Provides
+    @Singleton
+    fun provideLocalLlm(@ApplicationContext context: Context): LocalLlm = LocalLlm(context)
 }

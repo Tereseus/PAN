@@ -64,7 +64,7 @@ class PanForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var notificationManager: NotificationManager? = null
     private lateinit var resistanceClient: ResistanceClient
-    private lateinit var localLlm: dev.pan.app.ai.LocalLlm
+    @Inject lateinit var localLlm: dev.pan.app.ai.LocalLlm
 
     // Dedup: prevent duplicate commands within 3 seconds
     private var lastProcessedText = ""
@@ -75,7 +75,7 @@ class PanForegroundService : Service() {
     private var flashlightOn = false
     private var lastActionContext = "" // tracks what "it" / "that" refers to
     private var lastTtsDoneTime = 0L  // When TTS last finished speaking
-    private val TTS_COOLDOWN_MS = 1000L  // Ignore speech for 1s after TTS finishes
+    private val TTS_COOLDOWN_MS = 600L  // Ignore speech for 600ms after TTS finishes
 
     // Recent conversation history — sent to server so Claude has context
     private val conversationHistory = mutableListOf<Pair<String, String>>() // role, text
@@ -117,7 +117,6 @@ class PanForegroundService : Service() {
         resistanceClient.syncFromServer()
 
         // Initialize local LLM — auto-download and load model
-        localLlm = dev.pan.app.ai.LocalLlm(this)
         serviceScope.launch {
             val model = localLlm.getSelectedModel()
             if (!localLlm.isModelDownloaded(model)) {
@@ -323,21 +322,20 @@ class PanForegroundService : Service() {
             .replace(Regex("^(?:can you |could you |please )?"), "")
             .trim()
 
-        // Quick local handling — use stripped text (no "hey pan" prefix)
-        val localResponse = handleLocally(stripped, "")
-        if (localResponse != null) {
-            // Camera commands are handled asynchronously — don't speak the placeholder
-            if (localResponse == "CAMERA_ASYNC") {
+        // Hardware-only instant commands (no LLM needed, zero latency)
+        val instantResponse = handleInstantHardware(stripped)
+        if (instantResponse != null) {
+            if (instantResponse == "CAMERA_ASYNC") {
                 logToServer(text, "camera", "taking photo", "phone_camera")
                 return
             }
-            panLog("Local: $localResponse")
-            logToServer(text, "local", localResponse, "phone_local")
+            panLog("Instant: $instantResponse")
+            logToServer(text, "instant", instantResponse, "phone_instant")
             feedbackSounds.onCommandSent()
-            mainHandler.post { panSpeak(localResponse) }
+            mainHandler.post { panSpeak(instantResponse) }
             addToHistory("User", text)
-            addToHistory("PAN", localResponse)
-            serviceScope.launch { dataRepository.addPanResponse(localResponse) }
+            addToHistory("PAN", instantResponse)
+            serviceScope.launch { dataRepository.addPanResponse(instantResponse) }
             return
         }
 
@@ -349,17 +347,31 @@ class PanForegroundService : Service() {
 
             // Try local LLM first for intent classification
             val localIntent = localLlm.classifyIntent(stripped)
-            if (localIntent.local && localIntent.intent != "unknown") {
-                val elapsed = localIntent.elapsedMs
-                panLog("Local LLM (${elapsed}ms): ${localIntent.intent} | ${localIntent.query}")
-                logToServer(text, "local_llm_${localIntent.intent}", localIntent.query, "local_llm")
 
-                when (localIntent.intent) {
+            // Override: force recall if user mentions conversations/history/remember
+            val recallKeywords = listOf("conversation", "conversations", "what did we talk", "what did i say",
+                "do you remember", "remember when", "look up what", "find what i said", "search for what",
+                "what we said about", "what i asked", "look in the", "were we talking about",
+                "were we saying about", "what were we saying", "what were we talking",
+                "we talked about", "we discussed", "we were discussing", "did i mention",
+                "did we mention", "did we discuss", "search in the", "find in the")
+            val forceRecall = recallKeywords.any { stripped.contains(it) }
+            val effectiveIntent = if (forceRecall && localIntent.intent != "recall") {
+                panLog("Override: ${localIntent.intent} → recall (keyword match)")
+                localIntent.copy(intent = "recall", local = true)
+            } else localIntent
+
+            if (effectiveIntent.local && effectiveIntent.intent != "unknown") {
+                val elapsed = effectiveIntent.elapsedMs
+                panLog("Local LLM (${elapsed}ms): ${effectiveIntent.intent} | ${effectiveIntent.query}")
+                logToServer(text, "local_llm_${effectiveIntent.intent}", effectiveIntent.query, "local_llm")
+
+                when (effectiveIntent.intent) {
                     "play_music" -> {
                         val result = resistanceClient.tryPlayMusic(
                             this@PanForegroundService,
-                            localIntent.query,
-                            localIntent.service
+                            effectiveIntent.query,
+                            effectiveIntent.service
                         )
                         val msg = result.message ?: result.error ?: "Could not play."
                         addToHistory("PAN", "$msg (${elapsed}ms local)")
@@ -372,8 +384,117 @@ class PanForegroundService : Service() {
                         panLog("Local LLM: ambient (ignored)")
                         return@launch
                     }
-                    // For other intents, fall through to server for now
-                    // TODO: handle send_message, navigate, open_app locally
+                    "query" -> {
+                        val answerSource = kotlinx.coroutines.runBlocking {
+                            dataRepository.getSetting("query_answer_source") ?: "cloud"
+                        }
+                        if (answerSource.equals("local", ignoreCase = true)) {
+                            // Answer with local LLM (swaps to conversation model)
+                            val answer = localLlm.chat(stripped, historyContext)
+                            if (answer.isNotBlank()) {
+                                addToHistory("PAN", "$answer (${elapsed}ms local)")
+                                dataRepository.addPanResponse(answer)
+                                mainHandler.post { panSpeak(answer) }
+                                return@launch
+                            }
+                        }
+                        // "cloud" or "auto" or blank local answer → fall through to server
+                        panLog("Query → cloud (${elapsed}ms classify)")
+                    }
+                    "open_app" -> {
+                        val appName = effectiveIntent.query
+                        val launched = launchPhoneApp(appName)
+                        val msg = if (launched) "Opening $appName." else "Couldn't find $appName."
+                        addToHistory("PAN", "$msg (${elapsed}ms local)")
+                        feedbackSounds.onCommandSent()
+                        mainHandler.post { panSpeak(msg) }
+                        return@launch
+                    }
+                    "navigate" -> {
+                        val destination = effectiveIntent.query
+                        try {
+                            val navIntent = Intent(Intent.ACTION_VIEW).apply {
+                                data = Uri.parse("google.navigation:q=${Uri.encode(destination)}")
+                                setPackage("com.google.android.apps.maps")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(navIntent)
+                            val msg = "Navigating to $destination."
+                            addToHistory("PAN", "$msg (${elapsed}ms local)")
+                            feedbackSounds.onCommandSent()
+                            mainHandler.post { panSpeak(msg) }
+                        } catch (e: Exception) {
+                            mainHandler.post { panSpeak("Couldn't open navigation.") }
+                        }
+                        return@launch
+                    }
+                    "search" -> {
+                        val query = effectiveIntent.query
+                        try {
+                            val searchIntent = Intent(Intent.ACTION_VIEW).apply {
+                                data = Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(searchIntent)
+                            val msg = "Searching for $query."
+                            addToHistory("PAN", "$msg (${elapsed}ms local)")
+                            feedbackSounds.onCommandSent()
+                            mainHandler.post { panSpeak(msg) }
+                        } catch (e: Exception) {
+                            mainHandler.post { panSpeak("Couldn't open the search.") }
+                        }
+                        return@launch
+                    }
+                    "send_message" -> {
+                        // Extract recipient from query if possible
+                        val target = effectiveIntent.query
+                        try {
+                            val smsIntent = Intent(Intent.ACTION_SENDTO).apply {
+                                data = Uri.parse("smsto:${Uri.encode(target)}")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(smsIntent)
+                            val msg = "Opening a message to $target."
+                            addToHistory("PAN", "$msg (${elapsed}ms local)")
+                            feedbackSounds.onCommandSent()
+                            mainHandler.post { panSpeak(msg) }
+                        } catch (e: Exception) {
+                            mainHandler.post { panSpeak("Couldn't open messaging.") }
+                        }
+                        return@launch
+                    }
+                    "recall" -> {
+                        // Server does everything: keyword extraction, DB search, summarization
+                        panLog("Recall → server: '$stripped'")
+                        try {
+                            val result = serverClient.recall(stripped)
+                            val msg = result ?: "Couldn't search conversations."
+                            addToHistory("PAN", msg)
+                            dataRepository.addPanResponse(msg)
+                            mainHandler.post { panSpeak(msg) }
+                        } catch (e: Exception) {
+                            panLog("Recall failed: ${e.message}")
+                            mainHandler.post { panSpeak("Couldn't search conversations.") }
+                        }
+                        return@launch
+                    }
+                    "terminal" -> {
+                        // Send to the active desktop terminal session
+                        try {
+                            val res = serverClient.sendTerminalCommand(stripped)
+                            val msg = if (res) "Sent to terminal." else "No active terminal session."
+                            addToHistory("PAN", "$msg (${elapsed}ms)")
+                            feedbackSounds.onCommandSent()
+                            mainHandler.post { panSpeak(msg) }
+                        } catch (e: Exception) {
+                            mainHandler.post { panSpeak("Couldn't reach the terminal.") }
+                        }
+                        return@launch
+                    }
+                    "system", "calendar", "camera" -> {
+                        // These are already handled by handleLocally regex above
+                        // If we got here, regex didn't catch it — fall through to server
+                    }
                 }
             }
 
@@ -586,6 +707,78 @@ class PanForegroundService : Service() {
         }
     }
 
+    // Only truly instant hardware commands — everything else goes to LLM
+    private fun handleInstantHardware(text: String): String? {
+        var lower = wordsToNumbers(text.lowercase())
+
+        // Context resolution — "turn it off"
+        if (lastActionContext.isNotBlank() &&
+            (lower.contains("turn it") || lower.contains("turn that") ||
+             lower == "turn it off" || lower == "turn it on" ||
+             lower == "off" || lower == "on" ||
+             lower.matches(Regex(".*\\b(it|that|this)\\b.*(on|off).*")))) {
+            lower = lower.replace("it", lastActionContext).replace("that", lastActionContext).replace("this", lastActionContext)
+            if (lower == "off") lower = "turn $lastActionContext off"
+            if (lower == "on") lower = "turn $lastActionContext on"
+        }
+
+        // Camera / vision
+        if (isCameraCommand(lower)) {
+            handleCameraCommand(text)
+            return "CAMERA_ASYNC"
+        }
+
+        // Flashlight
+        if (lower.contains("flashlight") || (lower.contains("flash") && lower.contains("light")) || lower.contains("torch")) {
+            try {
+                val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+                val cameraId = cameraManager.cameraIdList.firstOrNull() ?: return "No camera found."
+                flashlightOn = if (lower.contains("off")) {
+                    cameraManager.setTorchMode(cameraId, false); false
+                } else if (lower.contains("on") || lower.contains("turn on")) {
+                    cameraManager.setTorchMode(cameraId, true); true
+                } else {
+                    flashlightOn = !flashlightOn; cameraManager.setTorchMode(cameraId, flashlightOn); flashlightOn
+                }
+                lastActionContext = "flashlight"
+                return if (flashlightOn) "Flashlight on." else "Flashlight off."
+            } catch (e: Exception) { return "Couldn't control the flashlight." }
+        }
+
+        // Media controls (instant, no LLM needed)
+        if (lower == "play" || lower == "play music" || lower == "resume" || lower == "resume music") {
+            dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY); return "Playing."
+        }
+        if (lower == "pause" || lower == "pause music" || lower == "stop music") {
+            dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE); return "Paused."
+        }
+        if (lower == "next" || lower == "next song" || lower == "skip") {
+            dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT); return "Skipping to next."
+        }
+        if (lower == "previous" || lower == "previous song") {
+            dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS); return "Going to previous."
+        }
+
+        // Time
+        if (lower.contains("what time") || lower.contains("what's the time")) {
+            return "It's ${java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault()).format(java.util.Date())}."
+        }
+
+        // Date
+        if (lower.contains("what day") || lower.contains("what's the date") || lower.contains("what date")) {
+            return "It's ${java.text.SimpleDateFormat("EEEE, MMMM d", java.util.Locale.getDefault()).format(java.util.Date())}."
+        }
+
+        // Battery
+        if (lower.contains("battery") && (lower.contains("how much") || lower.contains("what") || lower.contains("level"))) {
+            val bm = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
+            return "Battery is at ${bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)} percent."
+        }
+
+        return null // Everything else → LLM classification
+    }
+
+    @Deprecated("Replaced by handleInstantHardware + LLM classification")
     private fun handleLocally(text: String, intent: String): String? {
         var lower = wordsToNumbers(text.lowercase())
 

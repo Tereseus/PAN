@@ -51,6 +51,14 @@ fun MainScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Dashboard — primary entry point
+            Button(
+                onClick = onNavigateToDashboard,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("ΠΑΝ Dashboard")
+            }
+
             // Last action
             if (lastAction.isNotEmpty()) {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -158,27 +166,6 @@ fun MainScreen(
             )
 
             Spacer(modifier = Modifier.height(16.dp))
-
-            OutlinedButton(
-                onClick = onNavigateToConversation,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Conversation")
-            }
-
-            OutlinedButton(
-                onClick = onNavigateToDashboard,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("ΠΑΝ Dashboard")
-            }
-
-            OutlinedButton(
-                onClick = onNavigateToCommands,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Commands & Devices")
-            }
         }
     }
 }

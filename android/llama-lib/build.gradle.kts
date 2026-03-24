@@ -6,13 +6,11 @@ plugins {
 android {
     namespace = "com.arm.aichat"
     compileSdk = 36
-
     defaultConfig {
         minSdk = 31
     }
 
-    // Use prebuilt .so files instead of CMake compilation
-    // The .so files were compiled via Docker with Android NDK 26 for ARM64
+    // Use prebuilt .so files — compiled via Docker with Android NDK for ARM64
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("src/main/jniLibs")
@@ -29,6 +27,10 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        // Prevent duplicate libc++_shared.so
+        jniLibs {
+            pickFirsts += listOf("lib/arm64-v8a/libc++_shared.so")
         }
     }
 }

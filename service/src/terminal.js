@@ -62,6 +62,8 @@ function startTerminalServer(httpServer) {
         sessions.set(sessionId, session);
 
         // Stream PTY output to all connected clients
+        // Also detect Claude permission prompts for mobile
+        let permBuffer = '';
         ptyProcess.onData((data) => {
           // Buffer recent output for late-joining clients
           session.buffer += data;
@@ -71,6 +73,32 @@ function startTerminalServer(httpServer) {
           for (const client of session.clients) {
             if (client.readyState === 1) {
               client.send(JSON.stringify({ type: 'output', data }));
+            }
+          }
+
+          // Detect Claude Code permission prompts — very specific pattern matching
+          // Claude Code shows: "Allow [tool]? (Y)es / (N)o" or similar with Y/n
+          const stripped = data.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+          permBuffer += stripped;
+          if (permBuffer.length > 2000) permBuffer = permBuffer.slice(-1000);
+          // Match Claude Code's exact permission format: "Allow [something]?" followed by Y/N options
+          const permMatch = permBuffer.match(/(?:Allow|Do you want to allow)\s+.{5,80}\?\s*(?:\(Y\)|Yes|Y\/n)/i);
+          if (permMatch) {
+            const promptText = permMatch[0].trim().substring(0, 200);
+            permBuffer = ''; // reset so we don't re-fire
+            // Deduplicate — don't fire if same prompt text was detected in last 30 seconds
+            const isDupe = pendingPermissions.some(p =>
+              p.prompt === promptText && (Date.now() - p.id) < 30000
+            );
+            if (!isDupe) {
+              const permData = {
+                session_id: sessionId,
+                project: session.project,
+                prompt: promptText,
+                timestamp: new Date().toISOString(),
+              };
+              addPendingPermission(permData);
+              broadcastNotification('permission_prompt', permData);
             }
           }
         });
@@ -118,6 +146,9 @@ function startTerminalServer(httpServer) {
         switch (parsed.type) {
           case 'input':
             // User typed something
+            if (parsed.data && parsed.data.charCodeAt(0) === 13) {
+              console.log(`[PAN Terminal] xterm Enter key: ${JSON.stringify(parsed.data)} bytes: ${[...parsed.data].map(c => c.charCodeAt(0).toString(16)).join(' ')}`);
+            }
             if (session.pty) session.pty.write(parsed.data);
             break;
 
@@ -181,7 +212,8 @@ function getTerminalProjects() {
 
 // Send text to a terminal session (used by phone voice commands)
 // If no sessionId given, sends to the most recently active session
-function sendToSession(sessionId, text) {
+function sendToSession(sessionId, text, label) {
+  console.log(`[PAN Terminal] sendToSession(${sessionId}, ${JSON.stringify(text)}) bytes: ${[...text].map(c => c.charCodeAt(0).toString(16)).join(' ')}`);
   let session;
   if (sessionId) {
     session = sessions.get(sessionId);
@@ -203,6 +235,26 @@ function sendToSession(sessionId, text) {
   return false;
 }
 
+// Pending permission prompts — for mobile polling
+let pendingPermissions = [];
+
+function addPendingPermission(data) {
+  pendingPermissions.push({ ...data, id: Date.now() });
+  // No auto-expire — stays until user responds or 5 minutes (safety net)
+  const permId = data.id || Date.now();
+  setTimeout(() => {
+    pendingPermissions = pendingPermissions.filter(p => p.id !== permId);
+  }, 300000);
+}
+
+function getPendingPermissions() {
+  return pendingPermissions;
+}
+
+function clearPermission(id) {
+  pendingPermissions = pendingPermissions.filter(p => p.id !== id);
+}
+
 // Broadcast a notification to ALL connected WebSocket clients (across all sessions)
 // Used by hooks to notify dashboard of new events
 function broadcastNotification(type, data) {
@@ -216,4 +268,4 @@ function broadcastNotification(type, data) {
   }
 }
 
-export { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification };
+export { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission };
