@@ -148,3 +148,11 @@ CREATE TABLE IF NOT EXISTS section_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_section_items ON section_items(section_id);
+
+-- Full-text search index for events — enables instant ranked search across all history
+-- content_text stores the clean extracted text, synced on insert via application code
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    content_text,
+    content='',           -- external content mode (we manage the data)
+    tokenize='porter unicode61'  -- stemming + unicode support
+);

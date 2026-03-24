@@ -23,7 +23,8 @@ import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
-import { syncProjects, get, insert, run } from './db.js';
+import { startDream, stopDream } from './dream.js';
+import { syncProjects, get, insert, run, indexEventFTS } from './db.js';
 import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission } from './terminal.js';
 import { hostname } from 'os';
 
@@ -84,9 +85,57 @@ app.post('/api/v1/terminal/send', (req, res) => {
   const toSend = raw ? text : text + '\r';
   const sent = sendToSession(session_id || null, toSend);
   console.log(`[PAN Send] "${text}" → ${session_id || 'auto'} (raw=${!!raw}, sent=${sent})`);
-  // Return debug info
+
+  // Log as event so mobile sends are tracked
+  const dataStr = JSON.stringify({
+    text, session_id: session_id || 'auto', sent, raw: !!raw,
+    source: 'mobile_dashboard', timestamp: Date.now()
+  });
+  const eventId = insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+    ':sid': session_id || 'mobile-send', ':type': 'MobileSend', ':data': dataStr
+  });
+  indexEventFTS(eventId, 'MobileSend', dataStr);
+
   const sessInfo = listSessions();
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
+});
+
+// Permission response via SendInput (pyautogui) — real keyboard input that Claude Code accepts
+app.post('/api/v1/terminal/permissions/respond', async (req, res) => {
+  const { response, perm_id } = req.body;
+  if (!response) return res.status(400).json({ error: 'response required (1, 2, or 3)' });
+
+  try {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const __dir = dirname(fileURLToPath(import.meta.url));
+    const uiScript = join(__dir, 'ui-automation.py');
+
+    // First focus the terminal window, then press the key
+    // Look for Windows Terminal or the dashboard terminal window
+    try {
+      await execFileAsync('python', [uiScript, 'focus', 'Terminal'], { timeout: 3000 });
+    } catch {
+      // Try alternative window titles
+      try { await execFileAsync('python', [uiScript, 'focus', 'MINGW'], { timeout: 3000 }); } catch {}
+    }
+    // Small delay to let focus settle
+    await new Promise(r => setTimeout(r, 300));
+    // Press the key via pyautogui SendInput — real keyboard input
+    const { stdout } = await execFileAsync('python', [uiScript, 'hotkey', response], { timeout: 5000 });
+    console.log(`[PAN Perm] Focus + SendInput key "${response}" → ${stdout.trim()}`);
+
+    // Clear the permission
+    if (perm_id) clearPermission(parseInt(perm_id));
+
+    res.json({ ok: true, method: 'SendInput', key: response });
+  } catch (err) {
+    console.error(`[PAN Perm] SendInput error:`, err.message);
+    res.json({ ok: false, error: err.message });
+  }
 });
 
 // Health check
@@ -130,6 +179,9 @@ function start() {
       // Start tool scout (every 12 hours — discovers new CLIs and tools)
       startScout(12 * 60 * 60 * 1000);
 
+      // Start auto-dream (every 6 hours — consolidates events into structured memory)
+      startDream(6 * 60 * 60 * 1000);
+
       resolve(server);
     });
     server.on('error', (err) => {
@@ -144,6 +196,7 @@ function start() {
 function stop() {
   stopClassifier();
   stopScout();
+  stopDream();
   if (server) server.close();
 }
 

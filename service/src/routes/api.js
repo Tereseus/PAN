@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { insert, all, get, run } from '../db.js';
+import { insert, all, get, run, indexEventFTS } from '../db.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -18,6 +18,16 @@ const UI_SCRIPT = join(__dirname, '..', 'ui-automation.py');
 const pendingActions = [];
 
 const router = Router();
+
+// Insert event + auto-index into FTS
+function insertEvent(sid, eventType, dataStr) {
+  const eventId = insert(`INSERT INTO events (session_id, event_type, data)
+    VALUES (:sid, :type, :data)`, {
+    ':sid': sid, ':type': eventType, ':data': dataStr
+  });
+  indexEventFTS(eventId, eventType, dataStr);
+  return eventId;
+}
 
 // Auto-register phone when it connects
 router.use((req, res, next) => {
@@ -52,18 +62,13 @@ function flushUtterance() {
   const fullText = utteranceBuffer.join(' ');
   const sid = lastAudioSessionId || `phone-${Date.now()}`;
 
-  insert(`INSERT INTO events (session_id, event_type, data)
-    VALUES (:sid, :type, :data)`, {
-    ':sid': sid,
-    ':type': 'PhoneAudio',
-    ':data': JSON.stringify({
-      transcript: fullText,
-      timestamp: Date.now(),
-      duration_ms: 0,
-      source: 'phone_mic',
-      fragment_count: utteranceBuffer.length
-    })
-  });
+  insertEvent(sid, 'PhoneAudio', JSON.stringify({
+    transcript: fullText,
+    timestamp: Date.now(),
+    duration_ms: 0,
+    source: 'phone_mic',
+    fragment_count: utteranceBuffer.length
+  }));
 
   console.log(`[PAN] Utterance (${utteranceBuffer.length} fragments): ${fullText.slice(0, 100)}...`);
   utteranceBuffer = [];
@@ -95,12 +100,7 @@ router.post('/audio', (req, res) => {
 router.post('/photo', (req, res) => {
   const { jpeg_base64, timestamp, source } = req.body;
 
-  insert(`INSERT INTO events (session_id, event_type, data)
-    VALUES (:sid, :type, :data)`, {
-    ':sid': `Pandant-${Date.now()}`,
-    ':type': 'PandantPhoto',
-    ':data': JSON.stringify({ timestamp, source, size: jpeg_base64?.length || 0 })
-  });
+  insertEvent(`Pandant-${Date.now()}`, 'PandantPhoto', JSON.stringify({ timestamp, source, size: jpeg_base64?.length || 0 }));
 
   res.json({ ok: true });
 });
@@ -131,18 +131,13 @@ router.post('/vision', async (req, res) => {
     }
 
     // Log the vision event with photo path
-    insert(`INSERT INTO events (session_id, event_type, data)
-      VALUES (:sid, :type, :data)`, {
-      ':sid': photoId,
-      ':type': 'VisionAnalysis',
-      ':data': JSON.stringify({
+    insertEvent(photoId, 'VisionAnalysis', JSON.stringify({
         question: prompt,
         description: description.slice(0, 500),
         image_file: photoFilename,
         image_size: image_base64.length,
         timestamp: Date.now()
-      })
-    });
+      }));
 
     res.json({ description });
   } catch (err) {
@@ -161,108 +156,116 @@ router.post('/recall', async (req, res) => {
     const { claude } = await import('../claude.js');
     const startTime = Date.now();
 
-    // Step 1: Extract clean content from ALL events into a searchable index
-    // This is fast — just DB read + JSON parse, no AI call
-    const allEvents = all(
+    // Step 1: FTS5 search — instant ranked results from any DB size
+    // Extract search terms (strip common words)
+    const stopWords = new Set(['what','when','where','who','how','did','do','does','is','are','was','were',
+      'the','a','an','in','on','at','to','for','of','and','or','but','with','about','we','i','me','my',
+      'you','your','it','that','this','have','has','had','can','could','would','should','will',
+      'talk','talked','say','said','discuss','discussed','tell','told','remember','recall','find',
+      'search','look','know','think','before','something','anything','stuff','things']);
+    const searchTerms = text.toLowerCase().split(/\s+/)
+      .map(w => w.replace(/[^a-z0-9]/g, ''))
+      .filter(w => w.length > 2 && !stopWords.has(w));
+
+    let ftsResults = [];
+    if (searchTerms.length > 0) {
+      // FTS5 query — use OR so any matching term scores
+      const ftsQuery = searchTerms.join(' OR ');
+      try {
+        ftsResults = all(
+          `SELECT f.rowid as event_id, e.event_type, e.created_at, e.data,
+                  rank as fts_rank
+           FROM events_fts f
+           JOIN events e ON e.id = f.rowid
+           WHERE events_fts MATCH :q
+           ORDER BY rank
+           LIMIT 100`,
+          { ':q': ftsQuery }
+        );
+      } catch (err) {
+        console.error('[PAN Recall] FTS error:', err.message);
+      }
+    }
+
+    // Step 2: Also get recent events as fallback context
+    const recentEvents = all(
       `SELECT id, event_type, data, created_at FROM events
        WHERE event_type NOT IN ('SessionEnd', 'SessionStart')
-       ORDER BY created_at DESC`
+       ORDER BY created_at DESC LIMIT 30`
     );
 
-    const entries = [];
-    for (const e of allEvents) {
+    // Step 3: Build clean snippets from FTS results + recent
+    function extractSnippet(e) {
       let data = {};
-      try { data = JSON.parse(e.data); } catch { continue; }
-
-      let content = null;
+      try { data = JSON.parse(e.data); } catch { return null; }
       if (e.event_type === 'RouterCommand') {
-        const q = data.text || '';
-        const a = data.result || data.response_text || '';
-        if (q || a) content = `Voice: "${q}" → ${a}`;
+        const q = data.text || ''; const a = data.result || data.response_text || '';
+        if (q || a) return `Voice: "${q}" → ${a}`;
       } else if (e.event_type === 'UserPromptSubmit') {
-        const prompt = data.prompt || '';
-        if (prompt.length >= 10 && !prompt.startsWith('{') && !prompt.startsWith('['))
-          content = `Terminal: ${prompt}`;
+        const p = data.prompt || '';
+        if (p.length >= 10 && !p.startsWith('{')) return `Terminal: ${p}`;
       } else if (e.event_type === 'Stop') {
-        const msg = data.last_assistant_message || '';
-        if (msg.length >= 20) content = `Claude: ${msg}`;
+        const m = data.last_assistant_message || '';
+        if (m.length >= 20) return `Claude: ${m}`;
       } else if (e.event_type === 'PhoneAudio') {
-        const transcript = data.transcript || '';
-        const finals = transcript.match(/Final: (.+?)(?:\[|Heard|$)/g)
+        const t = data.transcript || '';
+        const finals = t.match(/Final: (.+?)(?:\[|Heard|$)/g)
           ?.map(m => m.replace(/^Final: /, '').replace(/\[.*$/, '').trim())
           .filter(Boolean).join('; ');
-        if (finals) content = `Heard: ${finals}`;
+        if (finals) return `Heard: ${finals}`;
       } else if (e.event_type === 'VisionAnalysis') {
-        const desc = data.description || data.result || '';
-        if (desc) content = `Saw: ${desc}`;
+        const d = data.description || data.result || '';
+        if (d) return `Saw: ${d}`;
       }
+      return null;
+    }
 
-      if (content) {
-        entries.push({ time: e.created_at, text: content.slice(0, 400) });
-      }
+    // Deduplicate and merge FTS results + recent
+    const seen = new Set();
+    const entries = [];
+    for (const e of ftsResults) {
+      if (seen.has(e.event_id)) continue;
+      seen.add(e.event_id);
+      const snippet = extractSnippet(e);
+      if (snippet) entries.push({ time: e.created_at, text: snippet.slice(0, 500), source: 'search' });
+    }
+    for (const e of recentEvents) {
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      const snippet = extractSnippet(e);
+      if (snippet) entries.push({ time: e.created_at, text: snippet.slice(0, 500), source: 'recent' });
     }
 
     if (entries.length === 0) {
       return res.json({ response_text: "No conversation history to search through." });
     }
 
-    // Step 2: Quick keyword pre-filter from the query itself (no AI call needed)
-    // Pull meaningful words from the user's question
-    const stopWords = new Set(['what','when','where','who','how','did','do','does','is','are','was','were',
-      'the','a','an','in','on','at','to','for','of','and','or','but','with','about','we','i','me','my',
-      'you','your','it','that','this','have','has','had','can','could','would','should','will',
-      'talk','talked','say','said','discuss','discussed','tell','told','remember','recall','find',
-      'search','look','know','think','much','many','some','any','all','our','been','being','just']);
-    const queryWords = text.toLowerCase().split(/\s+/)
-      .map(w => w.replace(/[^a-z0-9]/g, ''))
-      .filter(w => w.length > 2 && !stopWords.has(w));
-
-    // Score entries by keyword matches — more matches = more relevant
-    let scored = entries.map(e => {
-      const lower = e.text.toLowerCase();
-      let score = 0;
-      for (const w of queryWords) {
-        if (lower.includes(w)) score += 1;
-      }
-      return { ...e, score };
-    });
-
-    // Take entries that match at least one keyword, sorted by relevance then recency
-    let relevant = scored.filter(e => e.score > 0)
-      .sort((a, b) => b.score - a.score || b.time.localeCompare(a.time));
-
-    // If keyword filter found too few, fall back to recent entries (let Haiku decide)
-    if (relevant.length < 5) {
-      // Add recent entries that weren't already matched
-      const matchedTimes = new Set(relevant.map(r => r.time));
-      const recent = entries.filter(e => !matchedTimes.has(e.time)).slice(0, 20);
-      relevant = [...relevant, ...recent];
-    }
-
-    // Step 3: Build context for Haiku — stay under ~3000 tokens (~12KB)
-    const TOKEN_BUDGET = 12000; // chars, ~3000 tokens
+    // Step 4: Build context — FTS results first (most relevant), then recent for background
+    const TOKEN_BUDGET = 60000; // ~15K tokens
     let snippetText = '';
     let count = 0;
-    for (const e of relevant) {
+    for (const e of entries) {
       const line = `[${e.time}] ${e.text}\n`;
       if (snippetText.length + line.length > TOKEN_BUDGET) break;
       snippetText += line;
       count++;
     }
 
-    // Step 4: Single Haiku call — search + answer in one shot
+    const totalEvents = get('SELECT COUNT(*) as c FROM events')?.c || 0;
+
+    // Step 5: Single Haiku call
     const summary = await claude(
       `You are PAN, a personal AI memory system. The user asked: "${text}"
 
-Here are ${count} entries from their conversation/activity history (${entries.length} total entries exist):
+Here are ${count} matching entries from their history (${totalEvents} total events in database, ${ftsResults.length} matched the search "${searchTerms.join(' ')}"):
 
 ${snippetText}
-Answer the user's question based on these results. Be specific — mention dates, exact details, and what was said. If the answer isn't in the data, say so. Keep it to 2-4 sentences, conversational tone.`,
-      { maxTokens: 400, timeout: 20000 }
+Answer the user's question based on these results. Be specific — mention dates, exact details, and what was said. If the answer isn't in the data, say so honestly. Keep it to 2-4 sentences, conversational tone.`,
+      { maxTokens: 600, timeout: 30000 }
     );
 
     const elapsed = Date.now() - startTime;
-    console.log(`[PAN Recall] "${text}" → ${count}/${entries.length} entries sent to Haiku, ${elapsed}ms`);
+    console.log(`[PAN Recall] "${text}" → FTS:${ftsResults.length} + recent:${recentEvents.length} = ${count} sent to Haiku, ${elapsed}ms`);
     res.json({ response_text: summary.trim() });
   } catch (err) {
     console.error('[PAN Recall] Error:', err.message);
@@ -297,12 +300,7 @@ router.post('/ui', (req, res) => {
     resolve: (result) => {
       clearTimeout(timeout);
       pendingUiRequests.delete(id);
-      insert(`INSERT INTO events (session_id, event_type, data)
-        VALUES (:sid, :type, :data)`, {
-        ':sid': id,
-        ':type': 'UIAutomation',
-        ':data': JSON.stringify({ command, result: result.ok ? 'success' : result.error, timestamp: Date.now() })
-      });
+      insertEvent(id, 'UIAutomation', JSON.stringify({ command, result: result.ok ? 'success' : result.error, timestamp: Date.now() }));
       res.json(result);
     }
   });
@@ -393,12 +391,7 @@ router.post('/browser', async (req, res) => {
   const result = await browserCommand(action, params);
 
   // Log browser actions
-  insert(`INSERT INTO events (session_id, event_type, data)
-    VALUES (:sid, :type, :data)`, {
-    ':sid': `browser-${Date.now()}`,
-    ':type': 'BrowserAction',
-    ':data': JSON.stringify({ action, params, success: result.ok, timestamp: Date.now() })
-  });
+  insertEvent(`browser-${Date.now()}`, 'BrowserAction', JSON.stringify({ action, params, success: result.ok, timestamp: Date.now() }));
 
   res.json(result);
 });
@@ -450,12 +443,7 @@ router.post('/accessibility', async (req, res) => {
 router.post('/sensor', (req, res) => {
   const { sensor_type, values, timestamp } = req.body;
 
-  insert(`INSERT INTO events (session_id, event_type, data)
-    VALUES (:sid, :type, :data)`, {
-    ':sid': `Pandant-${Date.now()}`,
-    ':type': 'SensorData',
-    ':data': JSON.stringify({ sensor_type, values, timestamp })
-  });
+  insertEvent(`Pandant-${Date.now()}`, 'SensorData', JSON.stringify({ sensor_type, values, timestamp }));
 
   res.json({ ok: true });
 });
@@ -533,12 +521,7 @@ router.post('/sync', (req, res) => {
 
   let count = 0;
   for (const item of uploads) {
-    insert(`INSERT INTO events (session_id, event_type, data)
-      VALUES (:sid, :type, :data)`, {
-      ':sid': `phone-sync-${Date.now()}`,
-      ':type': `PhoneSync_${item.type}`,
-      ':data': item.payload
-    });
+    insertEvent(`phone-sync-${Date.now()}`, `PhoneSync_${item.type}`, item.payload);
     count++;
   }
 
