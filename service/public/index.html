@@ -592,6 +592,7 @@ body {
   <div class="tabs">
     <button class="tab active" data-page="terminal">Terminal</button>
     <button class="tab" data-page="projects">Projects</button>
+    <button class="tab" data-page="automation">Automation</button>
     <button class="tab" data-page="conversations">Conversations</button>
     <button class="tab" data-page="data">Data Management</button>
     <button class="tab" data-page="settings">Settings</button>
@@ -600,6 +601,7 @@ body {
     <select id="mobile-page-select" onchange="switchTab(this.value)">
       <option value="terminal" selected>Terminal</option>
       <option value="projects">Projects</option>
+      <option value="automation">Automation</option>
       <option value="conversations">Conversations</option>
       <option value="data">Data Management</option>
       <option value="settings">Settings</option>
@@ -681,6 +683,52 @@ body {
       <div id="mob-tasks" class="mob-panel">
         <div style="color:var(--text2);text-align:center;padding:20px">Loading tasks...</div>
       </div>
+    </div>
+  </div>
+
+  <!-- AUTOMATION PAGE -->
+  <div id="automation" class="page">
+    <div style="display:grid;gap:16px;max-width:900px">
+
+      <!-- Scheduled Jobs -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0;font-size:16px">Scheduled Jobs</h3>
+        </div>
+        <div id="automation-jobs" style="display:grid;gap:8px">
+          <div style="color:var(--text2)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Scout Findings -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0;font-size:16px">Scout Findings</h3>
+          <button class="btn btn-sm" onclick="runScout()">Scan Now</button>
+        </div>
+        <div id="automation-scout" style="display:grid;gap:6px">
+          <div style="color:var(--text2)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- AutoDev -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0;font-size:16px">AutoDev</h3>
+          <button class="btn btn-sm" onclick="triggerAutoDev()" id="autodev-run-btn" disabled>Run Now</button>
+        </div>
+        <div style="color:var(--danger);font-size:12px;margin-bottom:12px;padding:6px 8px;background:var(--danger)11;border-radius:4px">
+          Use at your own risk — AutoDev modifies code autonomously. Review all changes before committing.
+        </div>
+        <div id="autodev-config" style="margin-bottom:12px">
+          <div style="color:var(--text2)">Loading config...</div>
+        </div>
+        <h4 style="font-size:13px;margin:12px 0 8px;color:var(--text2)">Recent Activity</h4>
+        <div id="autodev-log">
+          <div style="color:var(--text2);font-size:12px">No activity yet</div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -836,6 +884,7 @@ function loadPage(page) {
   switch(page) {
     case 'projects': loadProjects(); break;
     case 'terminal': initTerminal(); break;
+    case 'automation': loadAutomation(); break;
     case 'conversations': loadConversations(); break;
     case 'data': loadStats(); loadEvents(); loadPhotos(); loadJobs(); loadMemory(); break;
     case 'settings': loadSettings(); break;
@@ -2972,6 +3021,154 @@ document.addEventListener('keydown', (e) => {
     }
   }
 });
+
+// ─── Automation Page ───
+
+async function loadAutomation() {
+  loadJobStatus();
+  loadScoutFindings();
+  loadAutoDevConfig();
+  loadAutoDevLog();
+}
+
+function loadJobStatus() {
+  const el = document.getElementById('automation-jobs');
+  const jobs = [
+    { name: 'Classifier', desc: 'Extracts memories from events', interval: 'Every 5 min' },
+    { name: 'Scout', desc: 'Discovers new AI tools & CLIs', interval: 'Every 12 hours' },
+    { name: 'Dream', desc: 'Consolidates memories overnight', interval: 'Every 6 hours' },
+    { name: 'AutoDev', desc: 'Automated development tasks', interval: 'Configurable' },
+  ];
+  el.innerHTML = jobs.map(j => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px;background:var(--bg);border-radius:6px">
+      <span style="width:8px;height:8px;border-radius:50%;background:${j.name === 'AutoDev' ? 'var(--text2)' : 'var(--accent2)'};flex-shrink:0"></span>
+      <div style="flex:1">
+        <div style="font-weight:500;font-size:13px">${j.name}</div>
+        <div style="font-size:11px;color:var(--text2)">${j.desc}</div>
+      </div>
+      <span style="font-size:11px;color:var(--text2)">${j.interval}</span>
+    </div>
+  `).join('');
+}
+
+async function loadScoutFindings() {
+  const el = document.getElementById('automation-scout');
+  try {
+    const data = await api('/api/scout');
+    if (!data || data.length === 0) {
+      el.innerHTML = '<div style="color:var(--text2);font-size:12px">No findings yet. Click "Scan Now" to discover tools.</div>';
+      return;
+    }
+    el.innerHTML = data.slice(0, 15).map(f => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg);border-radius:4px;font-size:12px">
+        <span style="font-weight:500;flex-shrink:0">${escapeHtml(f.tool_name)}</span>
+        <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(f.description || '')}</span>
+        <span style="color:var(--text2);font-size:10px">${f.relevance_score || ''}</span>
+        <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:${f.status === 'new' ? 'var(--accent)' : 'var(--bg3)'};color:${f.status === 'new' ? '#fff' : 'var(--text2)'}">${f.status}</span>
+      </div>
+    `).join('');
+  } catch {
+    el.innerHTML = '<div style="color:var(--text2);font-size:12px">Failed to load findings</div>';
+  }
+}
+
+async function runScout() {
+  try {
+    await fetch('/dashboard/api/scout/run', { method: 'POST' });
+    setTimeout(loadScoutFindings, 5000);
+  } catch {}
+}
+
+async function loadAutoDevConfig() {
+  const el = document.getElementById('autodev-config');
+  try {
+    const config = await fetch('/api/v1/autodev/config').then(r => r.json());
+    const projects = await api('/api/projects');
+
+    el.innerHTML = `
+      <div style="display:grid;gap:8px;font-size:13px">
+        <label style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="autodev-enabled" ${config.enabled ? 'checked' : ''} onchange="updateAutoDevConfig()">
+          <span>Enable AutoDev</span>
+        </label>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label style="font-size:12px;color:var(--text2)">Run at hour:
+            <input type="number" id="autodev-hour" value="${config.run_at_hour ?? 2}" min="0" max="23" style="width:50px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px" onchange="updateAutoDevConfig()">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Max files/run:
+            <input type="number" id="autodev-maxfiles" value="${config.max_files_per_run ?? 5}" min="1" max="20" style="width:50px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px" onchange="updateAutoDevConfig()">
+          </label>
+        </div>
+        <div style="font-size:12px;color:var(--text2)">Projects:</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${projects.map(p => `
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 8px;background:var(--bg);border-radius:4px">
+              <input type="checkbox" class="autodev-project" value="${p.id}" ${config.enabled_projects?.includes(p.id) ? 'checked' : ''} onchange="updateAutoDevConfig()">
+              ${escapeHtml(p.name)}
+            </label>
+          `).join('')}
+        </div>
+        <div style="font-size:12px;color:var(--text2)">Allowed actions:</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <label style="font-size:12px"><input type="checkbox" class="autodev-action" value="new_files" ${config.allowed_actions?.includes('new_files') ? 'checked' : ''} onchange="updateAutoDevConfig()"> Create files</label>
+          <label style="font-size:12px"><input type="checkbox" class="autodev-action" value="edit" ${config.allowed_actions?.includes('edit') ? 'checked' : ''} onchange="updateAutoDevConfig()"> Edit files</label>
+          <label style="font-size:12px"><input type="checkbox" class="autodev-action" value="delete" ${config.allowed_actions?.includes('delete') ? 'checked' : ''} onchange="updateAutoDevConfig()"> Delete files</label>
+        </div>
+      </div>
+    `;
+    document.getElementById('autodev-run-btn').disabled = !config.enabled;
+  } catch {
+    el.innerHTML = '<div style="color:var(--text2);font-size:12px">Failed to load config</div>';
+  }
+}
+
+async function updateAutoDevConfig() {
+  const config = {
+    enabled: document.getElementById('autodev-enabled')?.checked || false,
+    run_at_hour: parseInt(document.getElementById('autodev-hour')?.value) || 2,
+    max_files_per_run: parseInt(document.getElementById('autodev-maxfiles')?.value) || 5,
+    auto_commit: false,
+    enabled_projects: [...document.querySelectorAll('.autodev-project:checked')].map(el => parseInt(el.value)),
+    allowed_actions: [...document.querySelectorAll('.autodev-action:checked')].map(el => el.value),
+  };
+  await fetch('/api/v1/autodev/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  });
+  document.getElementById('autodev-run-btn').disabled = !config.enabled;
+}
+
+async function triggerAutoDev() {
+  await fetch('/api/v1/autodev/run', { method: 'POST' });
+  setTimeout(loadAutoDevLog, 10000);
+}
+
+async function loadAutoDevLog() {
+  const el = document.getElementById('autodev-log');
+  try {
+    const logs = await fetch('/api/v1/autodev/log').then(r => r.json());
+    if (!logs || logs.length === 0) {
+      el.innerHTML = '<div style="color:var(--text2);font-size:12px">No activity yet</div>';
+      return;
+    }
+    el.innerHTML = logs.map(e => {
+      const d = JSON.parse(e.data);
+      return `
+        <div style="padding:8px;background:var(--bg);border-radius:6px;margin-bottom:6px;font-size:12px;border-left:3px solid ${d.success ? 'var(--accent2)' : 'var(--danger)'}">
+          <div style="display:flex;justify-content:space-between">
+            <span style="font-weight:500">${escapeHtml(d.task_title)}</span>
+            <span style="color:var(--text2)">${fmtTime(e.created_at)}</span>
+          </div>
+          <div style="color:var(--text2);margin-top:2px">${escapeHtml(d.project)} — ${d.elapsed_seconds}s — ${d.success ? 'Success' : 'Failed'}</div>
+          ${d.output ? `<pre style="margin:4px 0 0;padding:6px;background:var(--bg2);border-radius:4px;font-size:11px;max-height:100px;overflow:auto;white-space:pre-wrap">${escapeHtml(d.output.slice(-500))}</pre>` : ''}
+        </div>
+      `;
+    }).join('');
+  } catch {
+    el.innerHTML = '<div style="color:var(--text2);font-size:12px">Failed to load log</div>';
+  }
+}
 
 // Tab flashing — flashes browser tab title when attention needed (permission prompts, errors)
 let tabFlashInterval = null;

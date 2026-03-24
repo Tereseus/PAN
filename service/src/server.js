@@ -24,6 +24,7 @@ import dashboardRouter from './routes/dashboard.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
 import { startDream, stopDream } from './dream.js';
+import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { syncProjects, get, insert, run, indexEventFTS } from './db.js';
 import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission } from './terminal.js';
 import { hostname } from 'os';
@@ -138,6 +139,22 @@ app.post('/api/v1/terminal/permissions/respond', async (req, res) => {
   }
 });
 
+// AutoDev API
+app.get('/api/v1/autodev/config', (req, res) => res.json(getAutoDevConfig()));
+app.put('/api/v1/autodev/config', (req, res) => {
+  saveAutoDevConfig(req.body);
+  res.json({ ok: true });
+});
+app.get('/api/v1/autodev/log', (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  res.json(getAutoDevLog(limit));
+});
+app.post('/api/v1/autodev/run', async (req, res) => {
+  const { autodev } = await import('./autodev.js');
+  autodev();
+  res.json({ ok: true, message: 'AutoDev triggered' });
+});
+
 // Dictation — record from PC mic, transcribe via Haiku, return text
 app.post('/api/v1/dictate', async (req, res) => {
   const duration = Math.min(req.body?.duration || 5, 30); // max 30 seconds
@@ -211,6 +228,9 @@ function start() {
       // Start auto-dream (every 6 hours — consolidates events into structured memory)
       startDream(6 * 60 * 60 * 1000);
 
+      // Start AutoDev (checks hourly, runs at configured time — disabled by default)
+      startAutoDev(60 * 60 * 1000);
+
       resolve(server);
     });
     server.on('error', (err) => {
@@ -226,6 +246,7 @@ function stop() {
   stopClassifier();
   stopScout();
   stopDream();
+  stopAutoDev();
   if (server) server.close();
 }
 
