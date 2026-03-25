@@ -170,6 +170,87 @@ app.post('/api/v1/stacks/scan', (req, res) => {
   res.json({ ok: true });
 });
 
+// Context briefing — rich summary for new Claude sessions (replaces --continue)
+app.get('/api/v1/context-briefing', (req, res) => {
+  const projectPath = req.query.project_path || '';
+
+  // 1. Recent conversation for this project
+  let recentChat = [];
+  if (projectPath) {
+    const fwd = projectPath.replace(/\\/g, '/');
+    const bk = fwd.replace(/\//g, '\\\\');
+    recentChat = all(
+      `SELECT event_type, data, created_at FROM events
+       WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
+       AND (data LIKE :pp1 OR data LIKE :pp2)
+       ORDER BY created_at DESC LIMIT 20`,
+      { ':pp1': '%' + bk + '%', ':pp2': '%' + fwd + '%' }
+    );
+  } else {
+    recentChat = all(
+      `SELECT event_type, data, created_at FROM events
+       WHERE event_type IN ('UserPromptSubmit', 'Stop')
+       ORDER BY created_at DESC LIMIT 20`
+    );
+  }
+
+  // 2. Dream memories
+  const memories = all(
+    `SELECT item_type, content FROM memory_items
+     WHERE confidence > 0.5 AND item_type != 'none'
+     ORDER BY created_at DESC LIMIT 20`
+  );
+
+  // 3. Open tasks for this project
+  let tasks = [];
+  if (projectPath) {
+    const fwd = projectPath.replace(/\\/g, '/');
+    const project = get("SELECT id FROM projects WHERE path = :p", { ':p': fwd });
+    if (project) {
+      tasks = all(
+        `SELECT title, status, priority FROM project_tasks
+         WHERE project_id = :pid AND status != 'done'
+         ORDER BY priority DESC LIMIT 15`,
+        { ':pid': project.id }
+      );
+    }
+  }
+
+  // 4. Build briefing
+  let briefing = '=== PAN SESSION CONTEXT BRIEFING ===\n\n';
+
+  if (memories.length > 0) {
+    briefing += '## Key Memories\n';
+    for (const m of memories) briefing += '- [' + m.item_type + '] ' + m.content + '\n';
+    briefing += '\n';
+  }
+
+  if (tasks.length > 0) {
+    briefing += '## Open Tasks\n';
+    for (const t of tasks) briefing += '- [' + t.status + (t.priority > 0 ? ' P' + t.priority : '') + '] ' + t.title + '\n';
+    briefing += '\n';
+  }
+
+  if (recentChat.length > 0) {
+    briefing += '## Recent Conversation\n';
+    const chatItems = [...recentChat].reverse();
+    for (const e of chatItems) {
+      try {
+        const d = JSON.parse(e.data);
+        if (e.event_type === 'UserPromptSubmit' && d.prompt)
+          briefing += 'User (' + e.created_at + '): ' + d.prompt.substring(0, 200) + '\n';
+        else if (e.event_type === 'Stop' && d.last_assistant_message)
+          briefing += 'Claude (' + e.created_at + '): ' + d.last_assistant_message.substring(0, 300) + '\n';
+      } catch {}
+    }
+    briefing += '\n';
+  }
+
+  briefing += '## Instructions\nContinue working on this project. Read CLAUDE.md for full docs. Check tasks for priorities.\n';
+
+  res.json({ briefing, memories: memories.length, tasks: tasks.length, chat: recentChat.length });
+});
+
 // Dictation — record from PC mic, transcribe via Haiku, return text
 app.post('/api/v1/dictate', async (req, res) => {
   const duration = Math.min(req.body?.duration || 5, 30); // max 30 seconds

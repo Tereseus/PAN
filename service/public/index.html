@@ -2744,29 +2744,16 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
         if (ws.readyState === 1 && !tabData.claudeStarted) {
           tabData.claudeStarted = true;
 
-          // First tab for this project uses --continue, additional tabs start fresh
-          const existingTabsForProject = [...termTabs.values()].filter(
-            t => t.id !== tabId && t.project === projectName && t.claudeStarted
-          );
-          const isFirstTab = existingTabsForProject.length === 0;
-          const claudeCmd = isFirstTab ? 'claude --continue --permission-mode auto' : 'claude --permission-mode auto';
+          // Fresh session with context briefing — avoids --continue bloat
+          const claudeCmd = 'claude --permission-mode auto';
 
+          // Fetch context briefing from PAN server
           let contextMsg = null;
           try {
-            const chatData = await api('/api/events?limit=6');
-            if (chatData.events && chatData.events.length > 0) {
-              const recent = [...chatData.events].reverse();
-              let parts = [];
-              for (const e of recent) {
-                let parsed = {};
-                try { parsed = JSON.parse(e.data); } catch {}
-                if (e.event_type === 'UserPromptSubmit' && parsed.prompt)
-                  parts.push('User said: ' + parsed.prompt.substring(0, 150).replace(/\n/g, ' '));
-                else if (e.event_type === 'Stop' && parsed.last_assistant_message)
-                  parts.push('Claude said: ' + parsed.last_assistant_message.substring(0, 200).replace(/\n/g, ' '));
-              }
-              if (parts.length > 0)
-                contextMsg = 'PAN context sync: ' + parts.join(' | ') + (isFirstTab ? ' — Continue where this left off.' : ' — This is an additional session for this project.');
+            const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
+            if (briefingData.briefing) {
+              // Single line to avoid bracketed paste mode issues
+              contextMsg = briefingData.briefing.replace(/\n/g, ' | ').substring(0, 3000);
             }
           } catch {}
 
@@ -2821,6 +2808,13 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
   // Copy/paste
   tabTerm.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
+    // F5 — refresh dashboard, don't send to terminal
+    if (ev.key === 'F5') {
+      ev.preventDefault();
+      const activePage = document.querySelector('.page.active');
+      if (activePage) loadPage(activePage.id);
+      return false;
+    }
     if (ev.ctrlKey && ev.key === 'c') {
       const sel = tabTerm.getSelection();
       if (sel && sel.length > 0) { navigator.clipboard.writeText(sel); tabTerm.clearSelection(); return false; }
@@ -3039,6 +3033,13 @@ window.addEventListener('resize', () => {
 
 // Prevent spacebar from scrolling page when terminal is active
 document.addEventListener('keydown', (e) => {
+  // F5 refreshes dashboard data without full page reload
+  if (e.key === 'F5') {
+    e.preventDefault();
+    const activePage = document.querySelector('.page.active');
+    if (activePage) loadPage(activePage.id);
+    return;
+  }
   if (e.key === ' ' && document.body.classList.contains('page-terminal')) {
     const tag = document.activeElement?.tagName;
     // Only prevent default if not in an input/select/textarea
@@ -3366,6 +3367,16 @@ function stopFlashTab() {
   }
   document.title = TAB_TITLE;
 }
+
+// F5 refresh — capture at window level before anything else
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'F5') {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    refreshDashboard();
+  }
+}, true); // 'true' = capture phase, runs before xterm
 
 // Initial load — restore page from hash if present
 const hashPage = window.location.hash.replace('#', '');
