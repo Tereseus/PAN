@@ -27,7 +27,7 @@ import { startDream, stopDream } from './dream.js';
 import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { startStackScanner, stopStackScanner, getAllStacks, scanStacks } from './stack-scanner.js';
 import { syncProjects, get, insert, run, indexEventFTS } from './db.js';
-import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission } from './terminal.js';
+import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -102,42 +102,21 @@ app.post('/api/v1/terminal/send', (req, res) => {
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
 });
 
-// Permission response via SendInput (pyautogui) — real keyboard input that Claude Code accepts
-app.post('/api/v1/terminal/permissions/respond', async (req, res) => {
+// Permission response — mobile user tapped Allow or Deny
+// Sets the response on the pending permission so the blocking PermissionRequest hook can return
+app.post('/api/v1/terminal/permissions/respond', (req, res) => {
   const { response, perm_id } = req.body;
-  if (!response) return res.status(400).json({ error: 'response required (1, 2, or 3)' });
+  if (!response) return res.status(400).json({ error: 'response required (allow or deny)' });
+  if (!perm_id) return res.status(400).json({ error: 'perm_id required' });
 
-  try {
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-    const { join, dirname } = await import('path');
-    const { fileURLToPath } = await import('url');
-    const __dir = dirname(fileURLToPath(import.meta.url));
-    const uiScript = join(__dir, 'ui-automation.py');
+  // Normalize response: accept various formats from mobile
+  const normalized = (response === '1' || response === 'allow' || response === 'yes' || response === true)
+    ? 'allow' : 'deny';
 
-    // First focus the terminal window, then press the key
-    // Look for Windows Terminal or the dashboard terminal window
-    try {
-      await execFileAsync('python', [uiScript, 'focus', 'Terminal'], { timeout: 3000 });
-    } catch {
-      // Try alternative window titles
-      try { await execFileAsync('python', [uiScript, 'focus', 'MINGW'], { timeout: 3000 }); } catch {}
-    }
-    // Small delay to let focus settle
-    await new Promise(r => setTimeout(r, 300));
-    // Press the key via pyautogui SendInput — real keyboard input
-    const { stdout } = await execFileAsync('python', [uiScript, 'hotkey', response], { timeout: 5000 });
-    console.log(`[PAN Perm] Focus + SendInput key "${response}" → ${stdout.trim()}`);
+  const found = respondToPermission(parseInt(perm_id), normalized);
+  console.log(`[PAN Perm] Response: ${normalized} for perm ${perm_id} (found=${found})`);
 
-    // Clear the permission
-    if (perm_id) clearPermission(parseInt(perm_id));
-
-    res.json({ ok: true, method: 'SendInput', key: response });
-  } catch (err) {
-    console.error(`[PAN Perm] SendInput error:`, err.message);
-    res.json({ ok: false, error: err.message });
-  }
+  res.json({ ok: found, response: normalized, method: 'hook' });
 });
 
 // AutoDev API
