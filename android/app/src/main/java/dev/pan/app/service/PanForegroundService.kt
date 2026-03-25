@@ -396,8 +396,40 @@ class PanForegroundService : Service() {
             .replace(Regex("^(?:can you |could you |please )?"), "")
             .trim()
 
-        // Location queries need sensor data — always route to server
         val lowerStripped = stripped.lowercase()
+
+        // Google/Microsoft app queries → route to terminal (Claude Code has MCP access)
+        val isGoogleQuery = lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
+            lowerStripped.contains("meeting") || lowerStripped.contains("appointment") ||
+            lowerStripped.contains("email") || lowerStripped.contains("gmail") ||
+            lowerStripped.contains("outlook") || lowerStripped.contains("inbox") ||
+            lowerStripped.contains("send email") || lowerStripped.contains("send a message")
+        if (isGoogleQuery) {
+            panLog("Google/Calendar query → terminal (MCP)")
+            serviceScope.launch {
+                try {
+                    // Send to the active terminal where Claude has MCP access
+                    val result = serverClient.sendTerminalCommand(stripped)
+                    if (result) {
+                        mainHandler.post { panSpeak("I'm checking that for you now. Check the terminal for results.") }
+                    } else {
+                        // Fallback to server if terminal isn't available
+                        val response = serverClient.askPanWithContext(stripped, "calendar", getHistoryContext())
+                        if (response != null) {
+                            mainHandler.post { panSpeak(response.response_text) }
+                        } else {
+                            mainHandler.post { panSpeak("I couldn't access your calendar right now.") }
+                        }
+                    }
+                    addToHistory("User", text)
+                } catch (e: Exception) {
+                    mainHandler.post { panSpeak("Calendar lookup failed.") }
+                }
+            }
+            return
+        }
+
+        // Location queries need sensor data — always route to server
         if (lowerStripped.contains("where am i") || lowerStripped.contains("my location") ||
             lowerStripped.contains("my gps") || lowerStripped.contains("my coordinates") ||
             lowerStripped.contains("what city") || lowerStripped.contains("what address")) {
