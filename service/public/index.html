@@ -2827,16 +2827,15 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
       if (sel && sel.length > 0) { navigator.clipboard.writeText(sel); tabTerm.clearSelection(); return false; }
       return true;
     }
-    if (ev.ctrlKey && ev.key === 'v') {
+    if ((ev.ctrlKey && ev.key === 'v') || (ev.ctrlKey && ev.shiftKey && ev.key === 'V')) {
+      // Prevent default browser paste AND xterm's built-in paste — we handle it manually
+      ev.preventDefault();
+      ev.stopPropagation();
       navigator.clipboard.readText().then(text => { if (text && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: text })); });
       return false;
     }
     if (ev.ctrlKey && ev.shiftKey && ev.key === 'C') {
       const sel = tabTerm.getSelection(); if (sel) navigator.clipboard.writeText(sel); return false;
-    }
-    if (ev.ctrlKey && ev.shiftKey && ev.key === 'V') {
-      navigator.clipboard.readText().then(text => { if (text && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: text })); });
-      return false;
     }
     return true;
   });
