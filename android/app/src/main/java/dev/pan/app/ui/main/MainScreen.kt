@@ -124,9 +124,11 @@ fun MainScreen(
                                 text = { Text("This Phone") },
                                 onClick = { viewModel.setDeviceTarget("phone"); targetExpanded = false }
                             )
-                            if (devices.isNotEmpty()) {
+                            // Show only non-phone devices (phone is already "This Phone" above)
+                            val otherDevices = devices.filter { it.device_type != "phone" }
+                            if (otherDevices.isNotEmpty()) {
                                 HorizontalDivider()
-                                devices.forEach { device ->
+                                otherDevices.forEach { device ->
                                     DropdownMenuItem(
                                         text = { Text("${device.name} (${device.device_type})") },
                                         onClick = { viewModel.setDeviceTarget(device.hostname); targetExpanded = false }

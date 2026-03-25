@@ -30,6 +30,9 @@ class SettingsViewModel @Inject constructor(
     private val _triggerWord = MutableStateFlow("hey pan")
     val triggerWord: StateFlow<String> = _triggerWord
 
+    private val _deviceName = MutableStateFlow(android.os.Build.MODEL)
+    val deviceName: StateFlow<String> = _deviceName
+
     private val _beepEnabled = MutableStateFlow(true)
     val beepEnabled: StateFlow<Boolean> = _beepEnabled
 
@@ -91,6 +94,7 @@ class SettingsViewModel @Inject constructor(
             dataRepository.getSetting("vibration_enabled")?.let { _vibrationEnabled.value = it == "true" }
             dataRepository.getSetting("voice_response_enabled")?.let { _voiceResponseEnabled.value = it == "true" }
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
+            dataRepository.getSetting("device_name")?.let { _deviceName.value = it }
             dataRepository.getSetting("preferred_music_app")?.let { _preferredMusicApp.value = it }
             dataRepository.getSetting("preferred_messaging_app")?.let { _preferredMessagingApp.value = it }
             dataRepository.getSetting("query_answer_source")?.let { _queryAnswerSource.value = it }
@@ -171,6 +175,11 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (_: Exception) {}
         }
+    }
+
+    fun setDeviceName(name: String) {
+        _deviceName.value = name
+        viewModelScope.launch { dataRepository.setSetting("device_name", name) }
     }
 
     fun setServerUrl(url: String) {
