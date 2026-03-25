@@ -100,9 +100,10 @@ fun MainScreen(
                     Text("Default Device", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(4.dp))
 
+                    val phoneName = viewModel.deviceName.collectAsState().value
                     val targetLabel = when (deviceTarget) {
-                        "auto" -> if (isServerConnected) "Auto (PC connected)" else "Auto (Phone — offline)"
-                        "phone" -> "This Phone"
+                        "auto" -> if (isServerConnected) "Auto (PC connected)" else "Auto ($phoneName — offline)"
+                        "phone" -> phoneName
                         else -> devices.find { it.hostname == deviceTarget }?.name ?: deviceTarget
                     }
 
@@ -121,7 +122,7 @@ fun MainScreen(
                                 onClick = { viewModel.setDeviceTarget("auto"); targetExpanded = false }
                             )
                             DropdownMenuItem(
-                                text = { Text("This Phone") },
+                                text = { Text(phoneName) },
                                 onClick = { viewModel.setDeviceTarget("phone"); targetExpanded = false }
                             )
                             // Show only non-phone devices (phone is already "This Phone" above)

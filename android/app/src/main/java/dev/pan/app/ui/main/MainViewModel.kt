@@ -30,6 +30,9 @@ class MainViewModel @Inject constructor(
     private val _deviceTarget = MutableStateFlow("auto")
     val deviceTarget: StateFlow<String> = _deviceTarget
 
+    private val _deviceName = MutableStateFlow(android.os.Build.MODEL)
+    val deviceName: StateFlow<String> = _deviceName
+
     private val _devices = MutableStateFlow<List<DeviceItem>>(emptyList())
     val devices: StateFlow<List<DeviceItem>> = _devices
 
@@ -41,6 +44,7 @@ class MainViewModel @Inject constructor(
 
         viewModelScope.launch {
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
+            dataRepository.getSetting("device_name")?.let { _deviceName.value = it }
         }
 
         viewModelScope.launch {
