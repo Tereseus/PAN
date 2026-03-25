@@ -248,13 +248,13 @@ function sendToSession(sessionId, text, label) {
   return false;
 }
 
-// Pending permission prompts — for mobile polling
+// Pending permission prompts — for mobile polling and hook-based permission flow
 let pendingPermissions = [];
 
 function addPendingPermission(data) {
-  pendingPermissions.push({ ...data, id: Date.now() });
-  // No auto-expire — stays until user responds or 5 minutes (safety net)
   const permId = data.id || Date.now();
+  pendingPermissions.push({ ...data, id: permId, response: data.response || null });
+  // Safety net — auto-expire after 5 minutes if nobody responds
   setTimeout(() => {
     pendingPermissions = pendingPermissions.filter(p => p.id !== permId);
   }, 300000);
@@ -266,6 +266,16 @@ function getPendingPermissions() {
 
 function clearPermission(id) {
   pendingPermissions = pendingPermissions.filter(p => p.id !== id);
+}
+
+// Set the response on a pending permission (called when mobile user taps Allow/Deny)
+function respondToPermission(id, response) {
+  const perm = pendingPermissions.find(p => p.id === id);
+  if (perm) {
+    perm.response = response; // 'allow' or 'deny'
+    return true;
+  }
+  return false;
 }
 
 // Broadcast a notification to ALL connected WebSocket clients (across all sessions)
@@ -281,4 +291,4 @@ function broadcastNotification(type, data) {
   }
 }
 
-export { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission };
+export { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission };
