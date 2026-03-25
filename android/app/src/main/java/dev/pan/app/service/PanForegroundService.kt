@@ -398,12 +398,18 @@ class PanForegroundService : Service() {
 
         val lowerStripped = stripped.lowercase()
 
-        // Google/Microsoft app queries → try Google Assistant on phone first, fall back to terminal MCP
-        val isGoogleQuery = lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
+        // Google/Microsoft app queries → try local Android APIs first, fall back to terminal MCP
+        // But NOT "open gmail" / "open calendar" — those are just app launches, handled by LLM classifier
+        val isOpenCommand = lowerStripped.startsWith("open ") || lowerStripped.startsWith("launch ") || lowerStripped.startsWith("go to ")
+        val isGoogleQuery = !isOpenCommand && (
+            lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
             lowerStripped.contains("meeting") || lowerStripped.contains("appointment") ||
             lowerStripped.contains("email") || lowerStripped.contains("gmail") ||
             lowerStripped.contains("outlook") || lowerStripped.contains("inbox") ||
-            lowerStripped.contains("send email") || lowerStripped.contains("send a message")
+            lowerStripped.contains("send email") || lowerStripped.contains("send a message") ||
+            lowerStripped.contains("check my") || lowerStripped.contains("read my") ||
+            lowerStripped.contains("what's on my")
+        )
         if (isGoogleQuery) {
             // Try reading calendar directly from Android CalendarProvider (instant, no network)
             if (lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
