@@ -408,10 +408,25 @@ class PanForegroundService : Service() {
             panLog("Google/Calendar query → terminal (MCP)")
             serviceScope.launch {
                 try {
-                    // Send to the active terminal where Claude has MCP access
-                    val result = serverClient.sendTerminalCommand(stripped)
-                    if (result) {
-                        mainHandler.post { panSpeak("I'm checking that for you now. Check the terminal for results.") }
+                    // Record timestamp before sending so we can find the response
+                    val beforeSend = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+                    val sent = serverClient.sendTerminalCommand(stripped)
+                    if (sent) {
+                        mainHandler.post { panSpeak("Let me check.") }
+                        // Wait for Claude's response (polls events DB for Stop event)
+                        try {
+                            val waitResponse = serverClient.api.waitTerminalResponse(beforeSend, 30000)
+                            val body = waitResponse.body()
+                            if (body?.ok == true && !body.response.isNullOrBlank()) {
+                                val answer = body.response!!
+                                panLog("Terminal MCP response: ${answer.take(100)}")
+                                mainHandler.post { panSpeak(answer) }
+                                addToHistory("User", text)
+                                addToHistory("PAN", answer)
+                            }
+                        } catch (e: Exception) {
+                            panLog("Wait for terminal response failed: ${e.message}")
+                        }
                     } else {
                         // Fallback to server if terminal isn't available
                         val response = serverClient.askPanWithContext(stripped, "calendar", getHistoryContext())
@@ -420,8 +435,8 @@ class PanForegroundService : Service() {
                         } else {
                             mainHandler.post { panSpeak("I couldn't access your calendar right now.") }
                         }
+                        addToHistory("User", text)
                     }
-                    addToHistory("User", text)
                 } catch (e: Exception) {
                     mainHandler.post { panSpeak("Calendar lookup failed.") }
                 }

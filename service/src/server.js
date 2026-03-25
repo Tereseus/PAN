@@ -156,6 +156,32 @@ app.post('/api/v1/autodev/run', async (req, res) => {
   res.json({ ok: true, message: 'AutoDev triggered' });
 });
 
+// Wait for next terminal response — polls events DB for a Stop event after a given timestamp
+app.get('/api/v1/terminal/wait-response', async (req, res) => {
+  const since = req.query.since || new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const maxWait = Math.min(parseInt(req.query.timeout) || 30000, 60000);
+  const startTime = Date.now();
+
+  const poll = setInterval(() => {
+    const event = get(
+      `SELECT data FROM events WHERE event_type = 'Stop' AND created_at > :since ORDER BY created_at DESC LIMIT 1`,
+      { ':since': since }
+    );
+    if (event) {
+      clearInterval(poll);
+      try {
+        const parsed = JSON.parse(event.data);
+        res.json({ ok: true, response: parsed.last_assistant_message || '' });
+      } catch {
+        res.json({ ok: false, error: 'parse error' });
+      }
+    } else if (Date.now() - startTime > maxWait) {
+      clearInterval(poll);
+      res.json({ ok: false, error: 'timeout' });
+    }
+  }, 1000);
+});
+
 // Stack Scanner API
 app.get('/api/v1/stacks', (req, res) => res.json(getAllStacks()));
 app.post('/api/v1/stacks/scan', (req, res) => {
