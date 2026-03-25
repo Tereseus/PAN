@@ -84,29 +84,55 @@ function stripHtml(html) {
 
 // Ask Claude to find relevant tools from page content
 async function analyzeSource(source, content) {
-  const existingTools = all(`SELECT tool_name FROM scout_findings ORDER BY created_at DESC LIMIT 50`);
-  const known = existingTools.map(t => t.tool_name).join(', ');
+  // Get ALL existing findings grouped by category for smart deduplication
+  const existingTools = all(`SELECT tool_name, category FROM scout_findings ORDER BY created_at DESC`);
+  const known = existingTools.map(t => t.tool_name);
+  const knownByCategory = {};
+  for (const t of existingTools) {
+    const cat = t.category || 'other';
+    if (!knownByCategory[cat]) knownByCategory[cat] = [];
+    knownByCategory[cat].push(t.tool_name);
+  }
+  const categoryReport = Object.entries(knownByCategory)
+    .map(([cat, tools]) => `${cat}: ${tools.length} tools (${tools.slice(0, 5).join(', ')}${tools.length > 5 ? '...' : ''})`)
+    .join('\n');
 
-  const prompt = `You are PAN's Tool Scout. PAN is a personal AI assistant that integrates CLIs, browser automation, voice control, and other tools to automate everything on PC and phone.
+  // Get project tech stacks for context
+  const stacks = all("SELECT value FROM settings WHERE key LIKE 'stack_%'");
+  let stackSummary = '';
+  for (const row of stacks) {
+    try {
+      const s = JSON.parse(row.value);
+      stackSummary += `${s.project_name}: ${(s.runtimes || []).join(', ')} + ${(s.frameworks || []).join(', ')}\n`;
+    } catch {}
+  }
 
-PAN currently uses or knows about: NanoClaw, Playwright CLI, GWS CLI (Google Workspace), Piper TTS, Whisper STT, llama.cpp, PersonaPlex/Moshi.
-Already discovered: ${known || 'none yet'}
+  const prompt = `You are PAN's Tool Scout. PAN is a personal AI operating system with: Android app, Node.js server, web dashboard, Whisper STT, Piper TTS, llama.cpp, pyautogui automation, terminal multiplexing, FTS5 search, and an ESP32 hardware pendant (in development).
 
-From this ${source.name} content, find ANY new CLI tools, AI tools, automation frameworks, MCP servers, or integrations that PAN could use. Focus on:
-- CLI tools that let AI agents control services (like Playwright controls browsers)
-- MCP servers for new integrations
-- Voice/audio AI tools
-- Agent frameworks or orchestration tools
-- Automation tools that work on Windows
-- Anything that replaces manual API integration with a simple CLI
+Project tech stacks:
+${stackSummary || 'Not scanned yet'}
 
-Page content from ${source.url}:
+ALREADY DISCOVERED (DO NOT repeat these — find NEW tools in DIFFERENT categories):
+${categoryReport || 'Nothing yet'}
+
+Total known tools: ${known.length}. We have too many in these categories already: ${Object.entries(knownByCategory).filter(([,v]) => v.length > 5).map(([k,v]) => `${k}(${v.length})`).join(', ') || 'none'}.
+
+PRIORITIZE finding tools in categories we're MISSING or UNDERREPRESENTED in:
+- Hardware/IoT/ESP32 tools
+- Database/search tools
+- Security/auth tools
+- Deployment/packaging tools
+- Voice/TTS/STT tools (beyond what we have)
+- Communication tools (Slack, Discord, email CLIs)
+- Calendar/productivity integrations
+
+From this ${source.name} content, find tools PAN doesn't already know about:
 ${content.slice(0, 6000)}
 
-Return a JSON array of findings. Each finding:
-{"name": "tool name", "description": "what it does (1-2 sentences)", "url": "project URL if found", "relevance": "why PAN should care (1 sentence)", "score": 0.0-1.0, "category": "cli|mcp|voice|agent|automation|other"}
+Return a JSON array. Each finding:
+{"name": "tool name", "description": "what it does (1-2 sentences)", "url": "project URL if found", "relevance": "why PAN should care (1 sentence)", "score": 0.0-1.0, "category": "cli|mcp|voice|agent|automation|hardware|security|database|deploy|communication|other"}
 
-Return MAX 5 most relevant findings. If nothing relevant, return []. Only return the JSON array.`;
+Return MAX 5 most relevant NEW findings. Skip anything similar to already-discovered tools. If nothing new, return []. Only return the JSON array.`;
 
   try {
     const raw = await claude(prompt, { model: 'claude-haiku-4-5-20251001', timeout: 30000, maxTokens: 2000 });
@@ -166,71 +192,87 @@ async function scout() {
     }
   }
 
-  // Phase 2: Search a2asearch-mcp for custom topics + stack-based queries
+  // Phase 2: Search a2asearch-mcp per project + custom topics
   try {
-    const { get: getSettings } = await import('./db.js');
-    const configRow = getSettings("SELECT value FROM settings WHERE key = 'autodev_config'");
+    const configRow = get("SELECT value FROM settings WHERE key = 'autodev_config'");
     const config = configRow ? JSON.parse(configRow.value) : {};
-    const topics = config.scout_topics || [];
+    const customTopics = config.scout_topics || [];
 
-    // Also add stack-based search terms
-    const stackRows = all("SELECT value FROM settings WHERE key LIKE 'stack_%'");
+    // Build per-project search queries from tech stacks
+    const stackRows = all("SELECT key, value FROM settings WHERE key LIKE 'stack_%'");
+    const projectSearches = []; // { project, topic }
+
     for (const row of stackRows) {
       try {
         const stack = JSON.parse(row.value);
-        if (stack.runtimes) topics.push(...stack.runtimes.map(r => `${r} MCP`));
-        if (stack.frameworks) topics.push(...stack.frameworks.map(f => `${f} tools`));
+        const proj = stack.project_name || 'Unknown';
+        // Generate search terms from project's tech stack
+        if (stack.runtimes) {
+          for (const r of stack.runtimes) projectSearches.push({ project: proj, topic: `${r} MCP` });
+        }
+        if (stack.frameworks) {
+          for (const f of stack.frameworks) projectSearches.push({ project: proj, topic: `${f} tools` });
+        }
+        // Add language-specific searches for dominant languages
+        const topLangs = Object.entries(stack.languages || {}).sort((a, b) => b[1] - a[1]).slice(0, 2);
+        for (const [lang] of topLangs) {
+          projectSearches.push({ project: proj, topic: `${lang} automation` });
+        }
       } catch {}
     }
 
-    // Deduplicate topics
-    const uniqueTopics = [...new Set(topics)].slice(0, 10);
+    // Add custom topics (global, not project-specific)
+    for (const t of customTopics) {
+      projectSearches.push({ project: 'All', topic: t });
+    }
 
-    if (uniqueTopics.length > 0) {
-      console.log(`[PAN Scout] Searching a2asearch for: ${uniqueTopics.join(', ')}`);
+    // Deduplicate by topic
+    const seen = new Set();
+    const uniqueSearches = projectSearches.filter(s => {
+      if (seen.has(s.topic)) return false;
+      seen.add(s.topic);
+      return true;
+    }).slice(0, 15);
+
+    if (uniqueSearches.length > 0) {
+      console.log(`[PAN Scout] Searching a2asearch for ${uniqueSearches.length} topics across projects`);
       const { execFile } = await import('child_process');
       const { promisify } = await import('util');
       const execAsync = promisify(execFile);
 
-      for (const topic of uniqueTopics) {
+      for (const search of uniqueSearches) {
         try {
-          const { stdout } = await execAsync('npx', ['a2asearch', topic, '--json'], { timeout: 15000, shell: true });
+          const { stdout } = await execAsync('npx', ['a2asearch', search.topic, '--json'], { timeout: 15000, shell: true });
           if (!stdout.trim()) continue;
 
-          // Parse results — a2asearch --json outputs JSON array
           let results = [];
           try { results = JSON.parse(stdout); } catch {
-            // If not JSON, parse the text output
             const lines = stdout.split('\n');
             for (const line of lines) {
               const match = line.match(/^\d+\.\s+(.+)/);
-              if (match) {
-                const name = match[1].trim();
-                results.push({ name, description: '', url: '' });
-              }
+              if (match) results.push({ name: match[1].trim(), description: '', url: '' });
             }
           }
 
-          for (const r of (Array.isArray(results) ? results : []).slice(0, 5)) {
+          for (const r of (Array.isArray(results) ? results : []).slice(0, 3)) {
             const toolName = r.name || r.title || '';
-            if (!toolName) continue;
+            if (!toolName || known.includes(toolName)) continue; // skip already known
             try {
               insert(`INSERT OR IGNORE INTO scout_findings (source, tool_name, description, url, relevance, relevance_score, category)
                 VALUES (:src, :name, :desc, :url, :rel, :score, :cat)`, {
-                ':src': `a2asearch: ${topic}`,
+                ':src': `a2asearch [${search.project}]: ${search.topic}`,
                 ':name': toolName,
                 ':desc': (r.description || '').slice(0, 300),
                 ':url': r.url || r.link || null,
-                ':rel': `Found via a2asearch for "${topic}"`,
+                ':rel': `For ${search.project} — found via "${search.topic}"`,
                 ':score': 0.7,
-                ':cat': r.type?.toLowerCase().includes('mcp') ? 'mcp' : 'cli',
+                ':cat': r.type?.toLowerCase().includes('mcp') ? 'mcp' : r.type?.toLowerCase().includes('agent') ? 'agent' : 'cli',
               });
               totalNew++;
             } catch {}
           }
-        } catch (e) {
-          // a2asearch may not have results for every topic
-        }
+          if (results.length > 0) console.log(`[PAN Scout] a2asearch "${search.topic}" [${search.project}]: ${results.length} results`);
+        } catch {}
       }
     }
   } catch (e) {
