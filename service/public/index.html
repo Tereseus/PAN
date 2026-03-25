@@ -2215,7 +2215,7 @@ async function loadChatHistory() {
   const sidebar = document.getElementById('terminal-sidebar');
 
   // Filter events by active tab's project path
-  let eventsUrl = '/api/events?limit=30';
+  let eventsUrl = '/api/events?limit=100';
   const projectKey = termCurrentProject?.cwd || '';
   if (projectKey) {
     eventsUrl += '&project_path=' + encodeURIComponent(projectKey);
@@ -2274,21 +2274,15 @@ async function loadChatHistory() {
     }
   }
 
-  // Only auto-scroll if new messages were added AND user is near the bottom
-  if (addedNew) {
+  // First load → scroll to bottom so you see latest messages
+  // Subsequent updates → only scroll if near bottom
+  if (!sidebar._initialScrollDone) {
+    sidebar._initialScrollDone = true;
+    sidebar.scrollTop = sidebar.scrollHeight;
+  } else if (addedNew) {
     const nearBottom = (sidebar.scrollHeight - sidebar.scrollTop - sidebar.clientHeight) < 40;
-    if (nearBottom) {
-      sidebar.scrollTop = sidebar.scrollHeight;
-    }
+    if (nearBottom) sidebar.scrollTop = sidebar.scrollHeight;
   }
-
-  // Preserve scroll position — save it so nothing else can reset it
-  sidebar._savedScroll = sidebar.scrollTop;
-  requestAnimationFrame(() => {
-    if (sidebar._savedScroll !== undefined && Math.abs(sidebar.scrollTop - sidebar._savedScroll) > 100) {
-      sidebar.scrollTop = sidebar._savedScroll;
-    }
-  });
 }
 
 async function loadTerminalSidebar(projectId, projectName) {
