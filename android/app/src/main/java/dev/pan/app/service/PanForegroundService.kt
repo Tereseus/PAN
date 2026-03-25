@@ -109,9 +109,24 @@ class PanForegroundService : Service() {
         }
     }
 
+    // Screen off receiver — stops TTS when power button is pressed
+    private val screenOffReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(ctx: android.content.Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                if (tts.isSpeaking) {
+                    tts.stop()
+                    panLog("TTS stopped — screen off (power button)")
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         panLog("PAN service created")
+
+        // Register screen off receiver for power button TTS stop
+        registerReceiver(screenOffReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
 
         // Initialize resistance client for path-of-least-resistance routing
         resistanceClient = ResistanceClient(this)
@@ -1436,6 +1451,7 @@ class PanForegroundService : Service() {
         mainHandler.post { tts.destroy() }
         syncManager.stop()
         sensorContext.stop()
+        try { unregisterReceiver(screenOffReceiver) } catch (_: Exception) {}
         releaseWakeLock()
         super.onDestroy()
     }

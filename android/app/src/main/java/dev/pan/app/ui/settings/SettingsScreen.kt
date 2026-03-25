@@ -119,7 +119,7 @@ fun SettingsScreen(
 
             val deviceOptions = listOf(
                 "auto" to "Auto (Nearest Device)",
-                "phone" to "This Phone"
+                "phone" to deviceName
             ) + devices.filter { it.device_type != "phone" }
                 .map { it.hostname to "${it.name} (${it.device_type.replaceFirstChar { c -> c.uppercase() }})" }
 
