@@ -200,6 +200,22 @@ function injectSessionContext(cwd) {
         } catch {}
       }
       briefing += '\n';
+
+      // Include the last few messages at full length so the fresh session has real context
+      const lastMessages = chatItems.slice(-6); // last 6 messages (3 exchanges)
+      if (lastMessages.length > 0) {
+        briefing += `### Last Messages (Full)\n`;
+        for (const e of lastMessages) {
+          try {
+            const d = JSON.parse(e.data);
+            if (e.event_type === 'UserPromptSubmit' && d.prompt) {
+              briefing += `**User** (${e.created_at}):\n${d.prompt.substring(0, 3000)}\n\n`;
+            } else if (e.event_type === 'Stop' && d.last_assistant_message) {
+              briefing += `**Claude** (${e.created_at}):\n${d.last_assistant_message.substring(0, 3000)}\n\n`;
+            }
+          } catch {}
+        }
+      }
     }
 
     // Write to CLAUDE.md
