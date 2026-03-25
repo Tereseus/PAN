@@ -97,3 +97,9 @@ data class PermissionRespondRequest(
     val response: String,
     val perm_id: Long
 )
+
+data class TerminalWaitResponse(
+    val ok: Boolean,
+    val response: String?,
+    val error: String?
+)

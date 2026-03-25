@@ -48,6 +48,12 @@ interface PanServerApi {
     @POST("/api/v1/recall")
     suspend fun recall(@Body request: QueryRequest): Response<QueryResponse>
 
+    @GET("/api/v1/terminal/wait-response")
+    suspend fun waitTerminalResponse(
+        @retrofit2.http.Query("since") since: String,
+        @retrofit2.http.Query("timeout") timeout: Int = 30000
+    ): Response<TerminalWaitResponse>
+
     @GET("/api/v1/terminal/permissions")
     suspend fun getPermissions(): Response<PermissionsResponse>
 
