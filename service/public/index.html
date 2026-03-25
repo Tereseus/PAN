@@ -2750,7 +2750,7 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
             t => t.id !== tabId && t.project === projectName && t.claudeStarted
           );
           const isFirstTab = existingTabsForProject.length === 0;
-          const claudeCmd = isFirstTab ? 'claude --continue' : 'claude';
+          const claudeCmd = isFirstTab ? 'claude --continue --permission-mode auto' : 'claude --permission-mode auto';
 
           let contextMsg = null;
           try {
