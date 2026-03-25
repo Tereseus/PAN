@@ -113,6 +113,8 @@ app.post('/api/v1/terminal/permissions/respond', (req, res) => {
   const normalized = (response === '1' || response === 'allow' || response === 'yes' || response === true)
     ? 'allow' : 'deny';
 
+  const allPerms = getPendingPermissions();
+  console.log(`[PAN Perm] Trying to respond: perm_id=${perm_id} (type=${typeof perm_id}), pending=${allPerms.length}, ids=${allPerms.map(p=>p.id).join(',')}`);
   const found = respondToPermission(parseInt(perm_id), normalized);
   console.log(`[PAN Perm] Response: ${normalized} for perm ${perm_id} (found=${found})`);
 

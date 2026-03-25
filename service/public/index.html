@@ -1230,8 +1230,7 @@ async function respondPermission(sessionId, permId, response) {
     body: JSON.stringify({ response, perm_id: permId })
   });
 
-  // Clear the permission server-side
-  try { await fetch('/api/v1/terminal/permissions/' + permId, { method: 'DELETE' }); } catch {}
+  // Don't clear here — hook polling loop handles cleanup
 
   // Replace buttons with result text
   const div = document.getElementById('perm-' + permId);
