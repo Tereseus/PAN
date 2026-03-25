@@ -66,6 +66,26 @@ app.use('/api/v1/auth', (req, res, next) => {
   extractUser(req, res, next);
 }, authRouter);
 
+// Clipboard image upload — saves pasted image to temp file, returns path (no auth — local only)
+app.post('/api/v1/clipboard-image', async (req, res) => {
+  try {
+    const { data, mimeType } = req.body;
+    if (!data) return res.status(400).json({ ok: false, error: 'No image data' });
+    const ext = (mimeType || 'image/png').split('/')[1] || 'png';
+    const filename = `clipboard_${Date.now()}.${ext}`;
+    const { join } = await import('path');
+    const { writeFileSync, mkdirSync } = await import('fs');
+    const dir = join(process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan-clipboard');
+    mkdirSync(dir, { recursive: true });
+    const filePath = join(dir, filename);
+    writeFileSync(filePath, Buffer.from(data, 'base64'));
+    res.json({ ok: true, path: filePath });
+  } catch (err) {
+    console.error('[PAN Clipboard] Error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Auth middleware — all other /api routes get req.user
 app.use('/api', extractUser);
 
@@ -126,6 +146,9 @@ app.get('/auth/google/callback', (req, res) => {
 
 // Serve captured photos (stored in src/data/photos by api.js)
 app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
+
+// Serve clipboard images (pasted screenshots from dashboard)
+app.use('/clipboard', express.static(join(process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan-clipboard')));
 
 // Terminal API — list sessions, projects for terminal
 app.get('/api/v1/terminal/sessions', (req, res) => {
@@ -325,6 +348,21 @@ app.get('/api/v1/context-briefing', (req, res) => {
       } catch {}
     }
     briefing += '\n';
+
+    // Last few messages at full length for real context
+    const lastMessages = chatItems.slice(-6);
+    if (lastMessages.length > 0) {
+      briefing += '## Last Messages (Full)\n';
+      for (const e of lastMessages) {
+        try {
+          const d = JSON.parse(e.data);
+          if (e.event_type === 'UserPromptSubmit' && d.prompt)
+            briefing += 'User (' + e.created_at + '):\n' + d.prompt.substring(0, 3000) + '\n\n';
+          else if (e.event_type === 'Stop' && d.last_assistant_message)
+            briefing += 'Claude (' + e.created_at + '):\n' + d.last_assistant_message.substring(0, 3000) + '\n\n';
+        } catch {}
+      }
+    }
   }
 
   briefing += '## Instructions\nThis is a fresh session. Your FIRST message to the user MUST be a brief summary of the Recent Conversation above — start with "Last time we were working on..." and list the key topics/issues. The user should NEVER have to ask what they were working on. You tell them immediately, every single time. Then pick up where they left off.\n';

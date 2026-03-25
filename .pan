@@ -1,6 +1,6 @@
 {
   "project_name": "PAN",
-  "last_session_id": "f2f0c3da-0727-4398-8046-437cbedf25bd",
+  "last_session_id": "c176d449-76ec-4004-aa1d-b4458cbb9729",
   "claude_project_dir": "C:\\Users\\tzuri\\.claude\\projects\\C--Users-tzuri-OneDrive-Desktop-PAN",
   "previous_paths": [
     "C:\\Users\\tzuri\\OneDrive\\Desktop\\PAN\\service"
@@ -9,8 +9,40 @@
     "C--Users-tzuri-OneDrive-Desktop-PAN-service",
     "C--Users-tzuri-OneDrive-Desktop-PAN"
   ],
-  "last_session_time": "2026-03-25T21:17:13.732Z",
+  "last_session_time": "2026-03-25T23:53:39.495Z",
   "session_history": [
+    {
+      "id": "c176d449-76ec-4004-aa1d-b4458cbb9729",
+      "time": "2026-03-25T23:53:39.495Z"
+    },
+    {
+      "id": "e9268936-3905-4083-9a3c-6db876e902a6",
+      "time": "2026-03-25T23:20:39.004Z"
+    },
+    {
+      "id": "e51a055a-0d28-4cb2-85f2-085827276e30",
+      "time": "2026-03-25T22:52:09.767Z"
+    },
+    {
+      "id": "836307ea-2491-46ac-8dd2-7cb0750fef67",
+      "time": "2026-03-25T22:45:58.792Z"
+    },
+    {
+      "id": "4447146b-d10a-44dd-9840-09ab28c236ee",
+      "time": "2026-03-25T22:23:21.426Z"
+    },
+    {
+      "id": "bdb70d02-fa13-495d-b435-c53149550b35",
+      "time": "2026-03-25T22:05:37.374Z"
+    },
+    {
+      "id": "8fa2e434-3ddf-44ca-b7ad-13cf21c8f072",
+      "time": "2026-03-25T22:01:02.223Z"
+    },
+    {
+      "id": "3745fa86-64c3-45e7-9d29-3ead3396a6ee",
+      "time": "2026-03-25T21:41:16.502Z"
+    },
     {
       "id": "f2f0c3da-0727-4398-8046-437cbedf25bd",
       "time": "2026-03-25T21:17:13.733Z"
@@ -18,38 +50,6 @@
     {
       "id": "1cd634cf-83e6-44a4-ab1f-d2e816d0108a",
       "time": "2026-03-25T21:06:32.248Z"
-    },
-    {
-      "id": "73151e79-5b5a-4182-8520-fc58720604bf",
-      "time": "2026-03-25T20:39:18.642Z"
-    },
-    {
-      "id": "eeae81a2-6edb-46e3-92b7-93839420b0ee",
-      "time": "2026-03-25T20:34:18.223Z"
-    },
-    {
-      "id": "cdde9614-df80-4b1f-a6e1-188038b0148a",
-      "time": "2026-03-25T20:29:19.137Z"
-    },
-    {
-      "id": "0d284de9-71e0-4eea-8e78-53726000ec54",
-      "time": "2026-03-25T20:07:34.208Z"
-    },
-    {
-      "id": "6f3abbc0-8e65-47e8-9da5-84414adf95b5",
-      "time": "2026-03-25T19:48:10.935Z"
-    },
-    {
-      "id": "4ade7a1c-d4e6-4f72-ab7e-1f3cf7a3a15b",
-      "time": "2026-03-25T19:46:10.460Z"
-    },
-    {
-      "id": "d230dda5-0bdd-4b7c-aa9b-b8976c932cb2",
-      "time": "2026-03-25T17:44:00.307Z"
-    },
-    {
-      "id": "e7607e2f-ad56-4047-8591-759736624897",
-      "time": "2026-03-25T17:16:42.823Z"
     }
   ]
 }

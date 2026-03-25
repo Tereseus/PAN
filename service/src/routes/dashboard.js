@@ -418,11 +418,40 @@ router.get('/api/transcript', (req, res) => {
         if (typeof content === 'string' && content.trim()) {
           messages.push({ role: 'user', type: 'prompt', text: content, ts: obj.timestamp });
         } else if (Array.isArray(content)) {
-          // Array content — look for text blocks (skip tool_result entries)
+          // Array content — look for text and image blocks (skip tool_result entries)
+          let textParts = [];
+          let images = [];
           for (const block of content) {
             if (block.type === 'text' && block.text?.trim()) {
-              messages.push({ role: 'user', type: 'prompt', text: block.text, ts: obj.timestamp });
+              textParts.push(block.text);
+            } else if (block.type === 'image' && block.source) {
+              // Extract clipboard filename from file path if available
+              if (block.source.type === 'file' && block.source.file_path) {
+                const m = block.source.file_path.match(/pan-clipboard[\/\\](clipboard_\d+\.\w+)/);
+                if (m) images.push({ clipboardFile: m[1] });
+              } else if (block.source.type === 'base64') {
+                // For base64, generate a small data URL for the thumbnail
+                images.push({ dataUrl: `data:${block.source.media_type};base64,${block.source.data.substring(0, 200)}`, isBase64: true, mediaType: block.source.media_type });
+              }
             }
+          }
+          if (textParts.length || images.length) {
+            messages.push({ role: 'user', type: 'prompt', text: textParts.join('\n'), images, ts: obj.timestamp });
+          }
+        }
+        continue;
+      }
+
+      // Meta entry with [Image: source: ...] — attach clipboard reference to previous user message
+      if (obj.isMeta && obj.message?.content) {
+        const metaText = typeof obj.message.content === 'string' ? obj.message.content :
+          Array.isArray(obj.message.content) ? obj.message.content.map(b => b.text || '').join('') : '';
+        const imgMatch = metaText.match(/\[Image:?\s*source:?\s*[^\]]*pan-clipboard[\/\\](clipboard_\d+\.\w+)/i);
+        if (imgMatch && messages.length > 0) {
+          const last = messages[messages.length - 1];
+          if (last.role === 'user') {
+            if (!last.images) last.images = [];
+            last.images.push({ clipboardFile: imgMatch[1] });
           }
         }
         continue;
@@ -480,16 +509,53 @@ router.get('/api/stats', (req, res) => {
   res.json({ ...stats, db_size_bytes: dbSize, event_types: eventTypes });
 });
 
-// GET /dashboard/api/memory
+// GET /dashboard/api/memory — reads actual Claude Code memory files from ~/.claude/projects/*/memory/
 router.get('/api/memory', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
-  const offset = parseInt(req.query.offset) || 0;
-  const total = get(`SELECT COUNT(*) as count FROM memory_items`);
-  const items = all(
-    `SELECT * FROM memory_items ORDER BY created_at DESC LIMIT :limit OFFSET :offset`,
-    { ':limit': limit, ':offset': offset }
-  );
-  res.json({ items, total: total?.count || 0 });
+  const claudeDir = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'projects');
+  const memories = [];
+
+  try {
+    if (!existsSync(claudeDir)) return res.json({ memories: [] });
+    const projectDirs = readdirSync(claudeDir).filter(d => {
+      try { return statSync(join(claudeDir, d)).isDirectory(); } catch { return false; }
+    });
+
+    for (const projDir of projectDirs) {
+      const memDir = join(claudeDir, projDir, 'memory');
+      if (!existsSync(memDir)) continue;
+
+      // Derive a readable project name from the dir name (C--Users-tzuri-OneDrive-Desktop-PAN → PAN)
+      const parts = projDir.replace(/^C--/, '').split('-');
+      const projectName = parts[parts.length - 1] || parts[parts.length - 2] || projDir;
+
+      const files = readdirSync(memDir).filter(f => f.endsWith('.md') && f !== 'MEMORY.md');
+      for (const file of files) {
+        try {
+          const content = readFileSync(join(memDir, file), 'utf8');
+          // Parse frontmatter
+          let name = file.replace('.md', ''), type = 'unknown', description = '';
+          const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+          let body = content;
+          if (fmMatch) {
+            const fm = fmMatch[1];
+            body = fmMatch[2].trim();
+            const nameMatch = fm.match(/name:\s*(.+)/);
+            const typeMatch = fm.match(/type:\s*(.+)/);
+            const descMatch = fm.match(/description:\s*(.+)/);
+            if (nameMatch) name = nameMatch[1].trim();
+            if (typeMatch) type = typeMatch[1].trim();
+            if (descMatch) description = descMatch[1].trim();
+          }
+          const stat = statSync(join(memDir, file));
+          memories.push({ name, type, description, body, project: projectName, file, modified: stat.mtime.toISOString() });
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // Sort by modified date, newest first
+  memories.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+  res.json({ memories });
 });
 
 // GET /dashboard/api/conversations?limit=50&filter=voice&q=searchtext
@@ -742,6 +808,7 @@ router.get('/api/progress', (req, res) => {
       name: p.name,
       path: p.path,
       description: p.description,
+      classification: p.classification,
       total_tasks: total,
       done_tasks: done,
       in_progress_tasks: inProgress,
