@@ -84,10 +84,20 @@ router.post('/PermissionRequest', async (req, res) => {
       }, POLL_INTERVAL);
     });
 
-    res.status(200).json({ behavior: result });
+    res.status(200).json({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: result }
+      }
+    });
   } catch (err) {
     console.error(`[PAN Hook] Error handling PermissionRequest:`, err.message);
-    res.status(200).json({ behavior: 'deny' });
+    res.status(200).json({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny' }
+      }
+    });
   }
 });
 

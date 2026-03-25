@@ -270,11 +270,16 @@ function clearPermission(id) {
 
 // Set the response on a pending permission (called when mobile user taps Allow/Deny)
 function respondToPermission(id, response) {
-  const perm = pendingPermissions.find(p => p.id === id);
+  console.log(`[PAN Perm] respondToPermission called: id=${id} (type=${typeof id}), response=${response}`);
+  console.log(`[PAN Perm] Pending permissions: ${pendingPermissions.map(p => `${p.id}(type=${typeof p.id})`).join(', ')}`);
+  // Match by number or string — mobile might send either
+  const perm = pendingPermissions.find(p => p.id === id || p.id === String(id) || String(p.id) === String(id));
   if (perm) {
     perm.response = response; // 'allow' or 'deny'
+    console.log(`[PAN Perm] Set response=${response} on perm ${perm.id}`);
     return true;
   }
+  console.log(`[PAN Perm] Permission ${id} NOT FOUND in pending list`);
   return false;
 }
 
