@@ -25,8 +25,9 @@ import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
 import { startDream, stopDream } from './dream.js';
 import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
-import { startStackScanner, stopStackScanner, getAllStacks, scanStacks } from './stack-scanner.js';
-import { syncProjects, get, insert, run, indexEventFTS } from './db.js';
+import { startStackScanner, stopStackScanner, getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
+import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
+import { readFileSync, existsSync } from 'fs';
 import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
 
@@ -170,11 +171,18 @@ app.post('/api/v1/stacks/scan', (req, res) => {
   res.json({ ok: true });
 });
 
-// Context briefing — rich summary for new Claude sessions (replaces --continue)
+// Context briefing — living state doc + recent chat for new Claude sessions
 app.get('/api/v1/context-briefing', (req, res) => {
   const projectPath = req.query.project_path || '';
 
-  // 1. Recent conversation for this project
+  // 1. Read the living state document (maintained by dream cycle)
+  const stateFile = join(process.cwd(), '.pan-state.md');
+  let stateDoc = '';
+  try {
+    if (existsSync(stateFile)) stateDoc = readFileSync(stateFile, 'utf8');
+  } catch {}
+
+  // 2. Recent conversation for this project (last 30 exchanges)
   let recentChat = [];
   if (projectPath) {
     const fwd = projectPath.replace(/\\/g, '/');
@@ -183,23 +191,16 @@ app.get('/api/v1/context-briefing', (req, res) => {
       `SELECT event_type, data, created_at FROM events
        WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
        AND (data LIKE :pp1 OR data LIKE :pp2)
-       ORDER BY created_at DESC LIMIT 20`,
+       ORDER BY created_at DESC LIMIT 30`,
       { ':pp1': '%' + bk + '%', ':pp2': '%' + fwd + '%' }
     );
   } else {
     recentChat = all(
       `SELECT event_type, data, created_at FROM events
        WHERE event_type IN ('UserPromptSubmit', 'Stop')
-       ORDER BY created_at DESC LIMIT 20`
+       ORDER BY created_at DESC LIMIT 30`
     );
   }
-
-  // 2. Dream memories
-  const memories = all(
-    `SELECT item_type, content FROM memory_items
-     WHERE confidence > 0.5 AND item_type != 'none'
-     ORDER BY created_at DESC LIMIT 20`
-  );
 
   // 3. Open tasks for this project
   let tasks = [];
@@ -216,13 +217,27 @@ app.get('/api/v1/context-briefing', (req, res) => {
     }
   }
 
-  // 4. Build briefing
+  // 4. Project environment & tech stack (so Claude knows what "terminal", "app", etc. mean)
+  let projectBrief = '';
+  if (projectPath) {
+    const fwd = projectPath.replace(/\\/g, '/');
+    const proj = get("SELECT id FROM projects WHERE path = :p", { ':p': fwd });
+    if (proj) projectBrief = getProjectBriefing(proj.id);
+  }
+  if (!projectBrief) {
+    // No project match — still include environment info
+    projectBrief = '## Development Environment\n' + getEnvironmentBriefing() + '\n';
+  }
+
+  // 5. Build briefing
   let briefing = '=== PAN SESSION CONTEXT BRIEFING ===\n\n';
 
-  if (memories.length > 0) {
-    briefing += '## Key Memories\n';
-    for (const m of memories) briefing += '- [' + m.item_type + '] ' + m.content + '\n';
-    briefing += '\n';
+  // Environment context first — so Claude knows the tools before anything else
+  briefing += projectBrief + '\n';
+
+  // State doc is the primary context source
+  if (stateDoc) {
+    briefing += stateDoc + '\n\n';
   }
 
   if (tasks.length > 0) {
@@ -238,17 +253,17 @@ app.get('/api/v1/context-briefing', (req, res) => {
       try {
         const d = JSON.parse(e.data);
         if (e.event_type === 'UserPromptSubmit' && d.prompt)
-          briefing += 'User (' + e.created_at + '): ' + d.prompt.substring(0, 200) + '\n';
+          briefing += 'User (' + e.created_at + '): ' + d.prompt.substring(0, 300) + '\n';
         else if (e.event_type === 'Stop' && d.last_assistant_message)
-          briefing += 'Claude (' + e.created_at + '): ' + d.last_assistant_message.substring(0, 300) + '\n';
+          briefing += 'Claude (' + e.created_at + '): ' + d.last_assistant_message.substring(0, 500) + '\n';
       } catch {}
     }
     briefing += '\n';
   }
 
-  briefing += '## Instructions\nContinue working on this project. Read CLAUDE.md for full docs. Check tasks for priorities.\n';
+  briefing += '## Instructions\nThis is a fresh session replacing --continue to avoid throttling. Read CLAUDE.md for full project docs. The conversation above is what the user was recently working on — pick up where they left off.\n';
 
-  res.json({ briefing, memories: memories.length, tasks: tasks.length, chat: recentChat.length });
+  res.json({ briefing, state: stateDoc.length > 0, tasks: tasks.length, chat: recentChat.length });
 });
 
 // Dictation — record from PC mic, transcribe via Haiku, return text

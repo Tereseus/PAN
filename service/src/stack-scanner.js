@@ -261,4 +261,80 @@ function stopStackScanner() {
   scanInterval = null;
 }
 
-export { scanStacks, getProjectStack, getAllStacks, startStackScanner, stopStackScanner };
+// Detect the user's development environment (terminal, IDE, OS, shell)
+// Runs once and caches — environment doesn't change often
+let envCache = null;
+
+function detectDevEnvironment() {
+  if (envCache) return envCache;
+
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const env = {
+    os: process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux',
+    shell: process.env.SHELL || (process.platform === 'win32' ? 'bash (Git Bash)' : 'unknown'),
+    terminal: 'unknown',
+    ide: [],
+    tools: [],
+  };
+
+  // Detect terminal
+  if (existsSync(join(home, '.wezterm.lua')) || existsSync(join(home, '.config', 'wezterm'))) {
+    env.terminal = 'WezTerm';
+    env.terminalConfig = join(home, '.wezterm.lua');
+  } else if (process.env.WT_SESSION) {
+    env.terminal = 'Windows Terminal';
+  } else if (process.env.TERM_PROGRAM === 'iTerm.app') {
+    env.terminal = 'iTerm2';
+  } else if (process.env.TERM_PROGRAM) {
+    env.terminal = process.env.TERM_PROGRAM;
+  }
+
+  // Detect IDE
+  if (existsSync(join(home, '.vscode'))) env.ide.push('VS Code');
+  if (existsSync(join(home, '.jetbrains'))) env.ide.push('JetBrains');
+
+  // Detect common tools
+  if (existsSync(join(home, '.claude'))) env.tools.push('Claude Code CLI');
+  if (process.env.ANDROID_HOME || existsSync(join(home, 'AppData', 'Local', 'Android', 'Sdk'))) env.tools.push('Android SDK');
+
+  envCache = env;
+  return env;
+}
+
+// Build a human-readable environment summary for context briefing
+function getEnvironmentBriefing() {
+  const env = detectDevEnvironment();
+  let lines = [];
+  lines.push(`OS: ${env.os}`);
+  lines.push(`Terminal: ${env.terminal}${env.terminalConfig ? ' (config: ' + env.terminalConfig + ')' : ''}`);
+  lines.push(`Shell: ${env.shell}`);
+  if (env.ide.length) lines.push(`IDE: ${env.ide.join(', ')}`);
+  if (env.tools.length) lines.push(`Tools: ${env.tools.join(', ')}`);
+  return lines.join('\n');
+}
+
+// Build a full project context string including stack + environment
+function getProjectBriefing(projectId) {
+  const stack = getProjectStack(projectId);
+  const envBrief = getEnvironmentBriefing();
+
+  let brief = '## Development Environment\n' + envBrief + '\n';
+
+  if (stack) {
+    if (stack.runtimes.length) brief += `\nRuntimes: ${stack.runtimes.join(', ')}`;
+    if (stack.frameworks.length) brief += `\nFrameworks: ${stack.frameworks.join(', ')}`;
+    const langs = Object.entries(stack.languages || {}).sort((a, b) => b[1] - a[1]).map(([l]) => l);
+    if (langs.length) brief += `\nLanguages: ${langs.join(', ')}`;
+    brief += '\n';
+  }
+
+  brief += '\n## Term Mapping\n';
+  brief += `When the user says "terminal" they mean: ${detectDevEnvironment().terminal}\n`;
+  brief += 'When the user says "the app" or "phone" they mean: the Android PAN app\n';
+  brief += 'When the user says "the server" they mean: PAN Node.js server (port 7777)\n';
+  brief += 'When the user says "the dashboard" they mean: the web dashboard served by PAN\n';
+
+  return brief;
+}
+
+export { scanStacks, getProjectStack, getAllStacks, startStackScanner, stopStackScanner, detectDevEnvironment, getEnvironmentBriefing, getProjectBriefing };

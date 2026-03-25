@@ -1,3 +1,7 @@
+# PAN auto-generated files
+.pan-briefing.md
+.pan-state.md
+
 # Build artifacts
 android/.gradle/
 android/.idea/

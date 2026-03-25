@@ -1218,7 +1218,9 @@ async function checkPermissions() {
       </div>
     `;
     msgs.appendChild(div);
-    msgs.scrollTop = msgs.scrollHeight;
+    // Only auto-scroll if user was already near bottom
+    const wasNearBottom = (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight) < 40;
+    if (wasNearBottom) msgs.scrollTop = msgs.scrollHeight;
   } catch {}
 }
 
@@ -1266,6 +1268,7 @@ async function sendMobileCommand() {
     const targetLabel = mobActiveProject?.name || targetSession.replace('dash-', '').replace(/-\d+$/, '');
     bubble.innerHTML = '> ' + escapeHtml(text) + `<div style="font-size:10px;opacity:0.7;margin-top:4px">→ ${escapeHtml(targetLabel)}</div>`;
     msgs.appendChild(bubble);
+    // User just sent a message — scroll to bottom so they see it
     msgs.scrollTop = msgs.scrollHeight;
   }
 
@@ -2745,34 +2748,46 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
           tabData.claudeStarted = true;
 
           // Fresh session with context briefing — avoids --continue bloat
-          const claudeCmd = 'claude --permission-mode auto';
-
-          // Fetch context briefing from PAN server
-          let contextMsg = null;
+          // Step 1: Write briefing to a temp file in the project dir
+          // Step 2: Launch claude with a prompt that reads the briefing file
+          let briefingReady = false;
           try {
             const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
             if (briefingData.briefing) {
-              // Single line to avoid bracketed paste mode issues
-              contextMsg = briefingData.briefing.replace(/\n/g, ' | ').substring(0, 3000);
+              // Write briefing to temp file via shell, then launch claude reading it
+              const escaped = briefingData.briefing.replace(/'/g, "'\\''");
+              ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
+              briefingReady = true;
+              // Small delay to let file write complete
+              await new Promise(r => setTimeout(r, 500));
             }
           } catch {}
 
-          ws.send(JSON.stringify({ type: 'input', data: claudeCmd + '\n' }));
+          // Launch Claude interactive, then send read-briefing prompt
+          ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
 
-          if (contextMsg) {
+          if (briefingReady) {
+            // Poll for Claude's prompt to appear, then send instruction to read briefing
             let sent = false;
+            const readPrompt = 'Read .pan-briefing.md — it has context from the last session. Briefly acknowledge what was being worked on.';
             const poll = setInterval(() => {
               if (sent) { clearInterval(poll); return; }
               try {
-                const y = tabTerm.buffer.active.cursorY;
-                const line = tabTerm.buffer.active.getLine(y)?.translateToString().trim() || '';
-                if (line.endsWith('>') || line === '>') {
-                  sent = true; clearInterval(poll);
-                  setTimeout(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: contextMsg + '\n' })); }, 300);
+                // Check last few lines for Claude's input prompt
+                for (let row = tabTerm.buffer.active.cursorY; row >= Math.max(0, tabTerm.buffer.active.cursorY - 3); row--) {
+                  const line = tabTerm.buffer.active.getLine(row)?.translateToString().trim() || '';
+                  // Claude Code prompt ends with > or ❯
+                  if (line.endsWith('>') || line.endsWith('❯') || line === '>' || line === '❯') {
+                    sent = true; clearInterval(poll);
+                    setTimeout(() => {
+                      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: readPrompt + '\n' }));
+                    }, 500);
+                    return;
+                  }
                 }
               } catch {}
-            }, 1000);
-            setTimeout(() => clearInterval(poll), 30000);
+            }, 1500);
+            setTimeout(() => clearInterval(poll), 60000); // 60s timeout
           }
         }
       }, 1500);
@@ -2783,7 +2798,18 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
     try {
       const msg = JSON.parse(event.data);
       switch (msg.type) {
-        case 'output': tabTerm.write(msg.data); break;
+        case 'output': {
+          // Preserve scroll position if user has scrolled up
+          const vp = tabTerm.element?.querySelector('.xterm-viewport');
+          const wasAtBottom = !vp || (vp.scrollHeight - vp.scrollTop - vp.clientHeight < 30);
+          const savedScroll = vp?.scrollTop;
+          tabTerm.write(msg.data, () => {
+            if (!wasAtBottom && vp) {
+              requestAnimationFrame(() => { vp.scrollTop = savedScroll; });
+            }
+          });
+          break;
+        }
         case 'info':
           tabData.host = msg.host || '';
           renderTabBar(); // update tab label with hostname
