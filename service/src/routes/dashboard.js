@@ -537,6 +537,15 @@ router.delete('/api/events/day/:date', (req, res) => {
   res.json({ ok: true, deleted_count: count?.count || 0, date });
 });
 
+// POST /dashboard/api/memory/cleanup — nuke all old memory_items (state file replaces them)
+router.post('/api/memory/cleanup', (req, res) => {
+  const before = get(`SELECT COUNT(*) as count FROM memory_items`);
+  // Keep only 'processed' markers (used by classifier to track which events were seen)
+  const result = run(`DELETE FROM memory_items WHERE item_type != 'processed'`);
+  const remaining = get(`SELECT COUNT(*) as count FROM memory_items`);
+  res.json({ ok: true, deleted: result?.changes || 0, before: before?.count || 0, remaining: remaining?.count || 0 });
+});
+
 // DELETE /dashboard/api/memory/:id
 router.delete('/api/memory/:id', (req, res) => {
   const id = parseInt(req.params.id);

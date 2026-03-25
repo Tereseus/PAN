@@ -85,6 +85,35 @@ function getSessionHistory(sessionDirs) {
   return entries;
 }
 
+// Detect development environment from config files on disk
+function detectEnvironment() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const env = {};
+
+  // Terminal
+  if (existsSync(join(home, '.wezterm.lua'))) {
+    env.terminal = 'WezTerm';
+    env.terminalConfig = join(home, '.wezterm.lua');
+  } else if (process.env.WT_SESSION) {
+    env.terminal = 'Windows Terminal';
+  } else {
+    env.terminal = process.env.TERM_PROGRAM || 'unknown';
+  }
+
+  // OS
+  env.os = process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux';
+
+  // Shell
+  env.shell = process.env.SHELL || (process.platform === 'win32' ? 'bash (Git Bash)' : 'unknown');
+
+  // Tools
+  env.tools = [];
+  if (existsSync(join(home, '.claude'))) env.tools.push('Claude Code CLI');
+  if (process.env.ANDROID_HOME || existsSync(join(home, 'AppData', 'Local', 'Android', 'Sdk'))) env.tools.push('Android SDK');
+
+  return env;
+}
+
 // Update CLAUDE.md with PAN session context (preserves existing content)
 function updateClaudeMd(projectPath, projectName, entries) {
   const claudeMdPath = join(projectPath.replace(/\//g, '\\'), 'CLAUDE.md');
@@ -101,10 +130,20 @@ function updateClaudeMd(projectPath, projectName, entries) {
     existing = existing.trim();
   }
 
+  const env = detectEnvironment();
+
   let panSection = `${panMarkerStart}\n`;
   panSection += `## PAN Session Context\n\n`;
   panSection += `This terminal was launched by PAN for the "${projectName}" project.\n`;
   panSection += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first to understand what this project is and how it works.\n\n`;
+
+  // Environment context — so Claude knows what "terminal", "app", etc. mean
+  panSection += `### Development Environment\n`;
+  panSection += `- **Terminal:** ${env.terminal}${env.terminalConfig ? ' (config: `' + env.terminalConfig + '`)' : ''}\n`;
+  panSection += `- **OS:** ${env.os} | **Shell:** ${env.shell}\n`;
+  if (env.tools.length) panSection += `- **Tools:** ${env.tools.join(', ')}\n`;
+  panSection += `\n`;
+  panSection += `When user says "terminal" → ${env.terminal}. "the app"/"phone" → Android PAN app. "server" → PAN Node.js (port 7777). "dashboard" → web UI.\n\n`;
 
   if (entries.length > 0) {
     const realSessions = entries.filter(e => e.messages > 0);

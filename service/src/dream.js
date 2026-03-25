@@ -1,15 +1,26 @@
-// PAN Auto-Dream — overnight memory consolidation
+// PAN Auto-Dream — living project state maintenance
 //
-// Runs periodically (default: every 6 hours) to review recent events,
-// extract key decisions/facts/preferences, and consolidate into structured memory.
-// Like sleeping and dreaming — processes the day's experiences into long-term memory.
+// Runs periodically to review recent events and REWRITE a single living
+// state document (.pan-state.md). No more appending rows to a database —
+// one file, always current, always accurate.
 
-import { all, get, insert, run } from './db.js';
+import { all, get, insert } from './db.js';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join } from 'path';
 
 let dreamInterval = null;
 
+const STATE_FILE = join(process.cwd(), '.pan-state.md');
+
+function readCurrentState() {
+  try {
+    if (existsSync(STATE_FILE)) return readFileSync(STATE_FILE, 'utf8');
+  } catch {}
+  return '';
+}
+
 async function dream() {
-  console.log('[PAN Dream] Starting memory consolidation...');
+  console.log('[PAN Dream] Starting state update...');
 
   try {
     const { claude } = await import('./claude.js');
@@ -68,51 +79,51 @@ async function dream() {
       context += entry + '\n\n';
     }
 
-    // Get existing memories to avoid duplicates
-    const existingMemories = all("SELECT content FROM memory_items WHERE item_type IN ('decision', 'preference', 'fact', 'insight') ORDER BY created_at DESC LIMIT 30");
-    const existingContext = existingMemories.map(m => m.content).join('\n');
+    // Read existing state file
+    const currentState = readCurrentState();
 
-    // Ask Haiku to extract structured memories
+    // Ask Haiku to rewrite the state document
     const result = await claude(
-      `You are PAN's memory consolidation system. Review these ${entries.length} recent events and extract important information worth remembering long-term.
+      `You are PAN's memory system. You maintain a LIVING STATE DOCUMENT that tracks what's going on across the project.
 
-${existingContext ? `EXISTING MEMORIES (don't duplicate these):\n${existingContext}\n\n` : ''}RECENT EVENTS:\n${context}
+${currentState ? `CURRENT STATE DOCUMENT:\n${currentState}\n\n` : 'No state document exists yet.\n\n'}RECENT EVENTS:\n${context}
 
-Extract memories as a JSON array. Each memory should be:
-- type: "decision" (choices made), "preference" (user likes/dislikes), "fact" (learned info), "insight" (patterns noticed), "task" (action items), "bug" (issues found)
-- content: concise description (1-2 sentences)
-- confidence: 0.0-1.0 (how certain this is important)
+REWRITE the state document based on what happened. The document should have these sections:
 
-Only extract things worth remembering weeks/months from now. Skip trivial interactions, debugging noise, and things already in existing memories.
+## What Works
+Things that are confirmed working. Remove items from here if events show they broke.
 
-Output ONLY valid JSON array, nothing else. If nothing worth remembering, output [].`,
-      { maxTokens: 2000, timeout: 45000 }
+## Known Issues
+Bugs and problems that are CURRENTLY broken. REMOVE issues that were FIXED in the recent events. Only keep things that are actually still broken.
+
+## Current Priorities
+What the user is actively working on or wants done next. Update based on what they said.
+
+## Key Decisions
+Important architectural or design decisions that affect future work. Keep these stable unless explicitly changed.
+
+## User Preferences
+How the user likes to work, what they've told Claude to do/not do.
+
+CRITICAL RULES:
+- If something was FIXED in recent events, REMOVE it from Known Issues and ADD it to What Works.
+- If the user said something is wrong with this document, fix it.
+- Do NOT keep old bugs that were resolved — this is the #1 problem to avoid.
+- Keep it concise. Each item should be 1 line.
+- This document should be SHORT — under 80 lines total.
+
+Output ONLY the markdown document, nothing else.`,
+      { maxTokens: 3000, timeout: 60000 }
     );
 
-    let memories = [];
-    try {
-      memories = JSON.parse(result);
-    } catch {
-      console.log('[PAN Dream] Failed to parse Haiku response:', result.slice(0, 200));
+    if (!result || result.length < 50) {
+      console.log('[PAN Dream] Haiku response too short, skipping state update');
       return;
     }
 
-    if (!Array.isArray(memories) || memories.length === 0) {
-      console.log('[PAN Dream] No new memories to consolidate');
-    } else {
-      let saved = 0;
-      for (const m of memories) {
-        if (!m.content || !m.type) continue;
-        insert(`INSERT INTO memory_items (item_type, content, confidence, classified_at, created_at)
-          VALUES (:type, :content, :conf, datetime('now','localtime'), datetime('now','localtime'))`, {
-          ':type': m.type,
-          ':content': m.content.slice(0, 500),
-          ':conf': m.confidence || 0.5
-        });
-        saved++;
-      }
-      console.log(`[PAN Dream] Consolidated ${saved} memories from ${entries.length} events`);
-    }
+    // Write the new state file
+    writeFileSync(STATE_FILE, result, 'utf8');
+    console.log(`[PAN Dream] State file updated (${result.length} chars) from ${entries.length} events`);
 
     // Log the dream cycle
     insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
@@ -121,7 +132,7 @@ Output ONLY valid JSON array, nothing else. If nothing worth remembering, output
       ':data': JSON.stringify({
         events_reviewed: events.length,
         entries_processed: entries.length,
-        memories_created: memories.length,
+        state_file_size: result.length,
         since,
         timestamp: Date.now()
       })
