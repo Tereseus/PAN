@@ -18,6 +18,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
+    val deviceName by viewModel.deviceName.collectAsState()
     val serverUrl by viewModel.serverUrl.collectAsState()
     val beepEnabled by viewModel.beepEnabled.collectAsState()
     val vibrationEnabled by viewModel.vibrationEnabled.collectAsState()
@@ -52,6 +53,22 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Device
+            Text("Device", style = MaterialTheme.typography.titleMedium)
+
+            OutlinedTextField(
+                value = deviceName,
+                onValueChange = { viewModel.setDeviceName(it) },
+                label = { Text("Device Name") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Text("How this phone appears in the PAN network",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            HorizontalDivider()
+
             // Connection
             Text("Connection", style = MaterialTheme.typography.titleMedium)
 
@@ -100,8 +117,11 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            val deviceOptions = listOf("auto" to "Auto (Nearest Device)") +
-                devices.map { it.hostname to "${it.name} (${it.device_type.replaceFirstChar { c -> c.uppercase() }})" }
+            val deviceOptions = listOf(
+                "auto" to "Auto (Nearest Device)",
+                "phone" to "This Phone"
+            ) + devices.filter { it.device_type != "phone" }
+                .map { it.hostname to "${it.name} (${it.device_type.replaceFirstChar { c -> c.uppercase() }})" }
 
             deviceOptions.forEach { (value, label) ->
                 Row(
