@@ -93,8 +93,8 @@ Implement the task now.`;
     let output = '';
     let errorOutput = '';
 
-    // Spawn headless Claude
-    const proc = spawn('claude', ['-p', '--model', 'haiku', prompt], {
+    // Spawn headless Claude with auto mode (safe auto-permissions, blocks destructive actions)
+    const proc = spawn('claude', ['-p', '--model', 'haiku', '--permission-mode', 'auto', prompt], {
       cwd: projectPath,
       shell: true,
       timeout: 300000, // 5 minute max
