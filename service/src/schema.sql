@@ -157,6 +157,84 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- Sensor definitions — all 22 PAN sensors (seeded on startup, not user-editable)
+CREATE TABLE IF NOT EXISTS sensor_definitions (
+    id TEXT PRIMARY KEY,              -- e.g. 'camera', 'gps', 'gas'
+    name TEXT NOT NULL,               -- Display name: 'Camera (OV2640)'
+    category TEXT NOT NULL,           -- 'passive' or 'active'
+    description TEXT,                 -- Short description
+    icon TEXT,                        -- Emoji icon for dashboard
+    sort_order INTEGER DEFAULT 0
+);
+
+-- Per-device sensor config — which sensors a device has + master mute
+CREATE TABLE IF NOT EXISTS device_sensors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    sensor_id TEXT NOT NULL REFERENCES sensor_definitions(id),
+    available INTEGER NOT NULL DEFAULT 1,  -- does this device have this sensor?
+    muted INTEGER NOT NULL DEFAULT 0,      -- master mute toggle
+    policy TEXT,                           -- null=user control, 'force_on'=org requires it, 'force_off'=org disables it
+    policy_reason TEXT,                    -- why the org forced this (e.g. "Emergency GPS required by safety policy")
+    UNIQUE(device_id, sensor_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_sensors_device ON device_sensors(device_id);
+
+-- Per-device, per-sensor category attachment toggles
+-- e.g. "when taking a photo on the phone, also attach GPS data"
+CREATE TABLE IF NOT EXISTS sensor_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    sensor_id TEXT NOT NULL REFERENCES sensor_definitions(id),       -- the sensor providing data
+    attach_to TEXT NOT NULL REFERENCES sensor_definitions(id),       -- the category it attaches to
+    enabled INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(device_id, sensor_id, attach_to)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sensor_attachments_device ON sensor_attachments(device_id);
+CREATE INDEX IF NOT EXISTS idx_sensor_attachments_sensor ON sensor_attachments(device_id, sensor_id);
+
+-- === USER IDENTITY & AUTH (Phase 1) ===
+
+-- Users (OAuth — no passwords, sign in with Google/Apple/Microsoft/GitHub)
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    avatar_url TEXT,
+    role TEXT NOT NULL DEFAULT 'user',    -- instance role: 'owner','admin','user','viewer'
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    last_login TEXT
+);
+
+-- OAuth provider links (one user can link multiple providers)
+CREATE TABLE IF NOT EXISTS user_oauth (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,               -- 'google', 'apple', 'microsoft', 'github'
+    provider_id TEXT NOT NULL,            -- provider's unique user ID (sub claim)
+    provider_email TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(provider, provider_id)
+);
+
+-- Auth tokens (revocable, per-device)
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,           -- crypto.randomBytes(32).hex
+    name TEXT DEFAULT 'default',          -- "phone", "dashboard", "cli"
+    scopes TEXT DEFAULT '["*"]',
+    expires_at TEXT,
+    last_used TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_tokens_token ON api_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_user_oauth_provider ON user_oauth(provider, provider_id);
+
 -- Full-text search index for events — enables instant ranked search across all history
 -- content_text stores the clean extracted text, synced on insert via application code
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(

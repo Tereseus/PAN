@@ -58,7 +58,9 @@ class SensorContext @Inject constructor(
     var humidity: Float? = null
     var spectrometerData: FloatArray? = null
 
-    // Toggles — controlled from settings
+    // Toggles — controlled from settings / sensor dashboard
+    // These control what PAN is allowed to use, NOT the device hardware
+    var cameraEnabled = true   // PAN can take photos
     var gpsEnabled = true
     var compassEnabled = true
     var accelerometerEnabled = true
@@ -75,6 +77,32 @@ class SensorContext @Inject constructor(
     var spectrometerEnabled = true
 
     private var started = false
+
+    /**
+     * Generic sensor enable/disable by PAN sensor ID.
+     * Maps dashboard sensor IDs to actual hardware toggle flags.
+     * Returns true if the sensor ID was recognized.
+     */
+    fun setSensorEnabled(sensorId: String, enabled: Boolean): Boolean {
+        return when (sensorId) {
+            "gps" -> { gpsEnabled = enabled; if (!enabled) { try { locationManager.removeUpdates(this) } catch (_: Exception) {} } else if (started) { startGps() }; true }
+            "accel_gyro" -> { accelerometerEnabled = enabled; gyroscopeEnabled = enabled; true }
+            "ambient_light" -> { lightEnabled = enabled; true }
+            "barometer" -> { barometerEnabled = enabled; true }
+            // Pendant sensors (will send BLE command when connected)
+            "gas" -> { gasEnabled = enabled; true }
+            "uv", "thermal", "ir", "spectrometer" -> { spectrometerEnabled = enabled; true }
+            "temperature" -> { temperatureEnabled = enabled; true }
+            "humidity" -> { humidityEnabled = enabled; true }
+            "compass" -> { compassEnabled = enabled; true }
+            "proximity" -> { proximityEnabled = enabled; true }
+            "step_counter" -> { stepCounterEnabled = enabled; true }
+            "camera" -> { cameraEnabled = enabled; true }
+            // microphone is handled separately (STT engine)
+            "microphone" -> true
+            else -> { Log.w(TAG, "Unknown sensor ID: $sensorId"); false }
+        }
+    }
 
     fun start() {
         if (started) return

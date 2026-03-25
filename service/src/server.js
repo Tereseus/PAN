@@ -19,8 +19,11 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import hooksRouter from './routes/hooks.js';
 import apiRouter from './routes/api.js';
+import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
+import sensorsRouter, { seedSensors } from './routes/sensors.js';
+import { extractUser } from './middleware/auth.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
 import { startDream, stopDream } from './dream.js';
@@ -39,6 +42,33 @@ const HOST = '0.0.0.0'; // Listen on all interfaces (phone needs LAN access)
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// Auto-register/update phone device from any route (phone sends X-Device-Name header)
+app.use((req, res, next) => {
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  const deviceName = req.headers['x-device-name'];
+  if (deviceName && ip !== '127.0.0.1' && ip !== '::1' && !ip.endsWith('127.0.0.1')) {
+    const phoneHost = `phone-${ip.replace(/[^0-9.]/g, '')}`;
+    const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': phoneHost });
+    if (existing) {
+      run("UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h",
+        { ':name': deviceName, ':h': phoneHost });
+    }
+  }
+  next();
+});
+
+// Auth routes (some endpoints skip auth — login-related stuff)
+app.use('/api/v1/auth', (req, res, next) => {
+  const publicPaths = ['/oauth', '/google-callback', '/github-callback', '/dev-token'];
+  if (publicPaths.includes(req.path)) return next();
+  // GET /providers is public (login page needs it), POST needs auth
+  if (req.path === '/providers' && req.method === 'GET') return next();
+  extractUser(req, res, next);
+}, authRouter);
+
+// Auth middleware — all other /api routes get req.user
+app.use('/api', extractUser);
+
 // Hook events from Claude Code
 app.use('/hooks', hooksRouter);
 
@@ -47,6 +77,9 @@ app.use('/api/v1', apiRouter);
 
 // Device management
 app.use('/api/v1/devices', devicesRouter);
+
+// Sensor management API
+app.use('/api/sensors', sensorsRouter);
 
 // Dashboard (web UI + API)
 app.use('/dashboard', dashboardRouter);
@@ -57,6 +90,39 @@ app.use('/dashboard', express.static(join(__dirname, '..', 'public'), {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   }
 }));
+
+// GitHub OAuth callback — redirect to dashboard with code param so JS handles it
+app.get('/auth/github/callback', (req, res) => {
+  res.redirect(`/dashboard/?code=${req.query.code}`);
+});
+
+// Google OAuth callback — send code back to opener window, then close popup
+app.get('/auth/google/callback', (req, res) => {
+  const code = req.query.code || '';
+  const error = req.query.error || '';
+  res.send(`<!DOCTYPE html><html><head><style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 40px; text-align: center; max-width: 400px; }
+    h2 { margin-bottom: 12px; font-size: 20px; }
+    p { color: #8b949e; margin-bottom: 24px; font-size: 14px; }
+    .btn { display: inline-block; padding: 10px 24px; background: #58a6ff; color: #0d1117; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; }
+    .btn:hover { background: #79b8ff; }
+  </style></head><body>
+  <div class="card">
+    <h2>${error ? 'Sign-in Failed' : 'Completing sign-in...'}</h2>
+    <p>${error ? 'Google returned an error. This may be a temporary issue — try again in a few minutes.' : 'You should be redirected automatically.'}</p>
+    <a class="btn" href="/dashboard/">Back to Dashboard</a>
+  </div>
+  <script>
+    if ('${code}' && window.opener) {
+      window.opener.postMessage({ type: 'google-oauth', code: '${code}', error: '${error}' }, window.location.origin);
+      window.close();
+    } else if ('${code}' && !window.opener) {
+      window.location.href = '/dashboard/?google_code=${code}';
+    }
+  </script></body></html>`);
+});
 
 // Serve captured photos (stored in src/data/photos by api.js)
 app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
@@ -189,7 +255,7 @@ app.get('/api/v1/context-briefing', (req, res) => {
     const bk = fwd.replace(/\//g, '\\\\');
     recentChat = all(
       `SELECT event_type, data, created_at FROM events
-       WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
+       WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop' OR event_type = 'AssistantMessage')
        AND (data LIKE :pp1 OR data LIKE :pp2)
        ORDER BY created_at DESC LIMIT 30`,
       { ':pp1': '%' + bk + '%', ':pp2': '%' + fwd + '%' }
@@ -197,7 +263,7 @@ app.get('/api/v1/context-briefing', (req, res) => {
   } else {
     recentChat = all(
       `SELECT event_type, data, created_at FROM events
-       WHERE event_type IN ('UserPromptSubmit', 'Stop')
+       WHERE event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage')
        ORDER BY created_at DESC LIMIT 30`
     );
   }
@@ -261,7 +327,7 @@ app.get('/api/v1/context-briefing', (req, res) => {
     briefing += '\n';
   }
 
-  briefing += '## Instructions\nThis is a fresh session replacing --continue to avoid throttling. Read CLAUDE.md for full project docs. The conversation above is what the user was recently working on — pick up where they left off.\n';
+  briefing += '## Instructions\nThis is a fresh session. Your FIRST message to the user MUST be a brief summary of the Recent Conversation above — start with "Last time we were working on..." and list the key topics/issues. The user should NEVER have to ask what they were working on. You tell them immediately, every single time. Then pick up where they left off.\n';
 
   res.json({ briefing, state: stateDoc.length > 0, tasks: tasks.length, chat: recentChat.length });
 });
@@ -313,6 +379,9 @@ function start() {
 
       // Sync projects with disk reality on startup
       syncProjects();
+
+      // Seed sensor definitions (22 sensors)
+      seedSensors();
 
       // Auto-register this PC as a device
       const pcHost = hostname();
