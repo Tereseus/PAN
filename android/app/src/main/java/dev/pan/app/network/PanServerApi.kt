@@ -59,4 +59,23 @@ interface PanServerApi {
 
     @POST("/api/v1/terminal/permissions/respond")
     suspend fun respondPermission(@Body request: PermissionRespondRequest): Response<Unit>
+
+    // Sensor management
+    @GET("/api/sensors/devices/{deviceId}")
+    suspend fun getDeviceSensors(@retrofit2.http.Path("deviceId") deviceId: Int): Response<DeviceSensorsResponse>
+
+    @PUT("/api/sensors/devices/{deviceId}/{sensorId}")
+    suspend fun updateSensor(
+        @retrofit2.http.Path("deviceId") deviceId: Int,
+        @retrofit2.http.Path("sensorId") sensorId: String,
+        @Body request: SensorUpdateRequest
+    ): Response<Unit>
+
+    @PUT("/api/sensors/devices/{deviceId}/{sensorId}/attach/{attachTo}")
+    suspend fun updateSensorAttachment(
+        @retrofit2.http.Path("deviceId") deviceId: Int,
+        @retrofit2.http.Path("sensorId") sensorId: String,
+        @retrofit2.http.Path("attachTo") attachTo: String,
+        @Body request: SensorAttachRequest
+    ): Response<Unit>
 }

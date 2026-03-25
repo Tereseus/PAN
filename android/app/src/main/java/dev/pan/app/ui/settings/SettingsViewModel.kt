@@ -179,6 +179,7 @@ class SettingsViewModel @Inject constructor(
 
     fun setDeviceName(name: String) {
         _deviceName.value = name
+        dev.pan.app.di.DeviceNameHolder.name = name
         viewModelScope.launch { dataRepository.setSetting("device_name", name) }
     }
 

@@ -19,11 +19,11 @@ const pendingActions = [];
 
 const router = Router();
 
-// Insert event + auto-index into FTS
-function insertEvent(sid, eventType, dataStr) {
-  const eventId = insert(`INSERT INTO events (session_id, event_type, data)
-    VALUES (:sid, :type, :data)`, {
-    ':sid': sid, ':type': eventType, ':data': dataStr
+// Insert event + auto-index into FTS (attaches user_id from req.user if available)
+function insertEvent(sid, eventType, dataStr, userId) {
+  const eventId = insert(`INSERT INTO events (session_id, event_type, data, user_id)
+    VALUES (:sid, :type, :data, :uid)`, {
+    ':sid': sid, ':type': eventType, ':data': dataStr, ':uid': userId || null
   });
   indexEventFTS(eventId, eventType, dataStr);
   return eventId;
@@ -35,14 +35,19 @@ router.use((req, res, next) => {
   // Only register non-localhost (phone comes from LAN)
   if (ip !== '127.0.0.1' && ip !== '::1' && !ip.endsWith('127.0.0.1')) {
     const phoneHost = `phone-${ip.replace(/[^0-9.]/g, '')}`;
+    const deviceName = req.headers['x-device-name'];
     const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': phoneHost });
     if (!existing) {
       insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
         VALUES (:h, :name, 'phone', '["voice","camera","sensors"]', datetime('now','localtime'))`, {
-        ':h': phoneHost, ':name': 'Phone'
+        ':h': phoneHost, ':name': deviceName || 'Phone'
       });
+    } else if (deviceName) {
+      // Update name + last_seen only if phone sent its name
+      run("UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h",
+        { ':name': deviceName, ':h': phoneHost });
     } else {
-      // Update last_seen every 5 minutes max (avoid hammering DB)
+      // No name header — just update last_seen
       run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': phoneHost });
     }
   }
@@ -53,6 +58,7 @@ router.use((req, res, next) => {
 const MERGE_WINDOW_MS = 8000;
 let lastAudioTime = 0;
 let lastAudioSessionId = null;
+let lastAudioUserId = null;
 let utteranceBuffer = [];
 let flushTimer = null;
 
@@ -68,7 +74,7 @@ function flushUtterance() {
     duration_ms: 0,
     source: 'phone_mic',
     fragment_count: utteranceBuffer.length
-  }));
+  }), lastAudioUserId);
 
   console.log(`[PAN] Utterance (${utteranceBuffer.length} fragments): ${fullText.slice(0, 100)}...`);
   utteranceBuffer = [];
@@ -88,6 +94,7 @@ router.post('/audio', (req, res) => {
   }
 
   utteranceBuffer.push(transcript);
+  lastAudioUserId = req.user?.id || null;
   lastAudioTime = now;
   if (!lastAudioSessionId) lastAudioSessionId = `phone-${now}`;
 
@@ -100,7 +107,7 @@ router.post('/audio', (req, res) => {
 router.post('/photo', (req, res) => {
   const { jpeg_base64, timestamp, source } = req.body;
 
-  insertEvent(`Pandant-${Date.now()}`, 'PandantPhoto', JSON.stringify({ timestamp, source, size: jpeg_base64?.length || 0 }));
+  insertEvent(`Pandant-${Date.now()}`, 'PandantPhoto', JSON.stringify({ timestamp, source, size: jpeg_base64?.length || 0 }), req.user?.id);
 
   res.json({ ok: true });
 });
@@ -137,7 +144,7 @@ router.post('/vision', async (req, res) => {
         image_file: photoFilename,
         image_size: image_base64.length,
         timestamp: Date.now()
-      }));
+      }), req.user?.id);
 
     res.json({ description });
   } catch (err) {
@@ -300,7 +307,7 @@ router.post('/ui', (req, res) => {
     resolve: (result) => {
       clearTimeout(timeout);
       pendingUiRequests.delete(id);
-      insertEvent(id, 'UIAutomation', JSON.stringify({ command, result: result.ok ? 'success' : result.error, timestamp: Date.now() }));
+      insertEvent(id, 'UIAutomation', JSON.stringify({ command, result: result.ok ? 'success' : result.error, timestamp: Date.now() }), req.user?.id);
       res.json(result);
     }
   });
@@ -391,7 +398,7 @@ router.post('/browser', async (req, res) => {
   const result = await browserCommand(action, params);
 
   // Log browser actions
-  insertEvent(`browser-${Date.now()}`, 'BrowserAction', JSON.stringify({ action, params, success: result.ok, timestamp: Date.now() }));
+  insertEvent(`browser-${Date.now()}`, 'BrowserAction', JSON.stringify({ action, params, success: result.ok, timestamp: Date.now() }), req.user?.id);
 
   res.json(result);
 });
@@ -443,7 +450,7 @@ router.post('/accessibility', async (req, res) => {
 router.post('/sensor', (req, res) => {
   const { sensor_type, values, timestamp } = req.body;
 
-  insertEvent(`Pandant-${Date.now()}`, 'SensorData', JSON.stringify({ sensor_type, values, timestamp }));
+  insertEvent(`Pandant-${Date.now()}`, 'SensorData', JSON.stringify({ sensor_type, values, timestamp }), req.user?.id);
 
   res.json({ ok: true });
 });
@@ -526,7 +533,7 @@ router.post('/sync', (req, res) => {
 
   let count = 0;
   for (const item of uploads) {
-    insertEvent(`phone-sync-${Date.now()}`, `PhoneSync_${item.type}`, item.payload);
+    insertEvent(`phone-sync-${Date.now()}`, `PhoneSync_${item.type}`, item.payload, req.user?.id);
     count++;
   }
 

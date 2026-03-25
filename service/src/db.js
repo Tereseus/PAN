@@ -65,6 +65,38 @@ if (!settingsCols.includes('id')) {
   console.log('[PAN DB] Settings table migrated.');
 }
 
+// Migration: add policy columns to device_sensors if missing
+const dsCols = db.pragma('table_info(device_sensors)').map(c => c.name);
+if (dsCols.length > 0 && !dsCols.includes('policy')) {
+  console.log('[PAN DB] Adding policy columns to device_sensors...');
+  db.exec(`ALTER TABLE device_sensors ADD COLUMN policy TEXT`);
+  db.exec(`ALTER TABLE device_sensors ADD COLUMN policy_reason TEXT`);
+  console.log('[PAN DB] device_sensors policy columns added.');
+}
+
+// Migration: add user_id columns to existing tables for multi-user support
+const tablesToAddUserId = ['devices', 'sessions', 'events', 'command_queue', 'memory_items'];
+for (const table of tablesToAddUserId) {
+  const cols = db.pragma(`table_info(${table})`).map(c => c.name);
+  if (cols.length > 0 && !cols.includes('user_id')) {
+    console.log(`[PAN DB] Adding user_id column to ${table}...`);
+    db.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER REFERENCES users(id)`);
+  }
+}
+
+// Auto-create default user (id=1) for backwards compatibility
+// When auth_mode=none, all requests use this user
+const defaultUser = db.prepare('SELECT * FROM users WHERE id = 1').get();
+if (!defaultUser) {
+  console.log('[PAN DB] Creating default owner user...');
+  db.prepare(`INSERT INTO users (id, email, display_name, role) VALUES (1, 'owner@localhost', 'Owner', 'owner')`).run();
+  // Assign all existing data to the default user
+  for (const table of tablesToAddUserId) {
+    db.prepare(`UPDATE ${table} SET user_id = 1 WHERE user_id IS NULL`).run();
+  }
+  console.log('[PAN DB] Default owner user created, existing data assigned.');
+}
+
 // Convert sql.js style params ({':key': val}) to better-sqlite3 style ({key: val})
 function fixParams(params) {
   if (!params || typeof params !== 'object') return {};

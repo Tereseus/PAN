@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { all, get, run, insert, DB_PATH } from '../db.js';
 import { getFindings, updateFinding, scout } from '../scout.js';
-import { statSync, readdirSync, existsSync, unlinkSync } from 'fs';
+import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
@@ -380,6 +380,83 @@ router.get('/api/events', (req, res) => {
   );
 
   res.json({ events, total: total?.count || 0, limit, offset });
+});
+
+// GET /api/transcript — read full conversation from JSONL transcript file
+// Returns user prompts, full assistant text responses, and tool call summaries
+router.get('/api/transcript', (req, res) => {
+  const sessionId = req.query.session_id;
+  if (!sessionId) return res.json({ error: 'session_id required', messages: [] });
+
+  // Find the transcript path from the most recent event for this session
+  const event = get(
+    "SELECT data FROM events WHERE session_id = :sid AND event_type IN ('Stop', 'UserPromptSubmit') ORDER BY created_at DESC LIMIT 1",
+    { ':sid': sessionId }
+  );
+  if (!event) return res.json({ error: 'session not found', messages: [] });
+
+  let transcriptPath;
+  try {
+    transcriptPath = JSON.parse(event.data).transcript_path;
+  } catch {}
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return res.json({ error: 'transcript not found', messages: [] });
+  }
+
+  try {
+    const raw = readFileSync(transcriptPath, 'utf-8').trim();
+    const lines = raw.split('\n');
+    const messages = [];
+
+    for (const line of lines) {
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+
+      // User prompt — content can be a string (typed message) or array (tool results, skip those)
+      if (obj.type === 'user' && obj.message) {
+        const content = obj.message.content;
+        if (typeof content === 'string' && content.trim()) {
+          messages.push({ role: 'user', type: 'prompt', text: content, ts: obj.timestamp });
+        } else if (Array.isArray(content)) {
+          // Array content — look for text blocks (skip tool_result entries)
+          for (const block of content) {
+            if (block.type === 'text' && block.text?.trim()) {
+              messages.push({ role: 'user', type: 'prompt', text: block.text, ts: obj.timestamp });
+            }
+          }
+        }
+        continue;
+      }
+
+      // Assistant messages
+      if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+        for (const block of obj.message.content) {
+          if (block.type === 'text' && block.text) {
+            messages.push({ role: 'assistant', type: 'text', text: block.text, ts: obj.timestamp });
+          } else if (block.type === 'tool_use') {
+            // Summarize tool calls — just name and key info
+            const name = block.name || 'unknown';
+            let summary = name;
+            const input = block.input || {};
+            if (name === 'Bash' && input.command) summary = `Bash: ${input.command.substring(0, 120)}`;
+            else if (name === 'Edit' && input.file_path) summary = `Edit: ${input.file_path.split(/[/\\]/).pop()}`;
+            else if (name === 'Read' && input.file_path) summary = `Read: ${input.file_path.split(/[/\\]/).pop()}`;
+            else if (name === 'Write' && input.file_path) summary = `Write: ${input.file_path.split(/[/\\]/).pop()}`;
+            else if (name === 'Grep' && input.pattern) summary = `Grep: ${input.pattern.substring(0, 60)}`;
+            else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
+            else if (name === 'Agent') summary = `Agent: ${input.description || 'subagent'}`;
+            messages.push({ role: 'assistant', type: 'tool', text: summary, ts: obj.timestamp });
+          }
+        }
+      }
+    }
+
+    // Only return the last N messages to keep payload reasonable
+    const limit = parseInt(req.query.limit) || 200;
+    res.json({ messages: messages.slice(-limit), total: messages.length });
+  } catch (err) {
+    res.json({ error: err.message, messages: [] });
+  }
 });
 
 // GET /dashboard/api/stats

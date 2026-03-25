@@ -66,7 +66,9 @@ process.stdin.on('end', () => {
     panData.session_history = panData.session_history.slice(0, 10);
 
     fs.writeFileSync(panFile, JSON.stringify(panData, null, 2));
+    process.exit(0);
   } catch (e) {
     // Silently fail — don't block Claude
+    process.exit(0);
   }
 });

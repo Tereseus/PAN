@@ -497,9 +497,9 @@ class PanForegroundService : Service() {
         if (lowerStripped.contains("where am i") || lowerStripped.contains("my location") ||
             lowerStripped.contains("my gps") || lowerStripped.contains("my coordinates") ||
             lowerStripped.contains("what city") || lowerStripped.contains("what address")) {
-            val gps = sensorContext.gps
-            val addr = sensorContext.address
-            panLog("Location query → server (GPS=${gps != null} addr=$addr)")
+            val gps = if (sensorContext.gpsEnabled) sensorContext.gps else null
+            val addr = if (sensorContext.gpsEnabled) sensorContext.address else null
+            panLog("Location query → server (GPS=${gps != null} addr=$addr gpsEnabled=${sensorContext.gpsEnabled})")
             serviceScope.launch {
                 try {
                     // Append sensor data directly to the query text so Claude sees it
@@ -868,6 +868,14 @@ class PanForegroundService : Service() {
     private fun handleCameraCommand(userText: String) {
         val question = userText.ifBlank { "What is this?" }
         panLog("Camera command detected: $question")
+
+        // Check if camera is enabled in PAN sensor settings
+        if (!sensorContext.cameraEnabled) {
+            panLog("Camera is disabled in PAN sensor settings")
+            mainHandler.post { panSpeak("The camera is turned off in sensor settings.") }
+            return
+        }
+
         feedbackSounds.onCommandSent()
         // Just chirp — don't speak, avoids TTS/STT feedback loop while photo processes
 

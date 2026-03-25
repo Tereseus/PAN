@@ -154,6 +154,7 @@ data class CommandItem(
 )
 
 data class DeviceItem(
+    val id: Int = 0,
     val hostname: String,
     val name: String,
     val device_type: String,
