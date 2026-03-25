@@ -103,3 +103,47 @@ data class TerminalWaitResponse(
     val response: String?,
     val error: String?
 )
+
+// Sensor config DTOs
+data class SensorDefinition(
+    val id: String,
+    val name: String,
+    val category: String,
+    val description: String?,
+    val icon: String?,
+    val sort_order: Int = 0
+)
+
+data class DeviceSensorConfig(
+    val id: String,
+    val name: String,
+    val category: String,
+    val description: String?,
+    val icon: String?,
+    val available: Int,
+    val muted: Int,
+    val enabled: Boolean = true,
+    val policy: String? = null,        // null=user control, "force_on", "force_off"
+    val policy_reason: String? = null,
+    val locked: Boolean = false,       // true if org policy overrides user toggle
+    val attachments: Map<String, Boolean> = emptyMap()
+)
+
+data class DeviceSensorsResponse(
+    val device: DeviceSensorDevice,
+    val sensors: List<DeviceSensorConfig>
+)
+
+data class DeviceSensorDevice(
+    val id: Int,
+    val name: String,
+    val device_type: String
+)
+
+data class SensorUpdateRequest(
+    val enabled: Boolean
+)
+
+data class SensorAttachRequest(
+    val enabled: Boolean
+)

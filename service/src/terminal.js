@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import { hostname } from 'os';
 import { existsSync } from 'fs';
 import { all } from './db.js';
+import { injectSessionContext } from './routes/hooks.js';
 
 // Active terminal sessions: Map<sessionId, { pty, clients: Set<ws>, project }>
 const sessions = new Map();
@@ -124,6 +125,17 @@ function startTerminalServer(httpServer) {
           }
           sessions.delete(sessionId);
         });
+
+        // Inject session context into CLAUDE.md BEFORE Claude starts
+        // so the first message already has full context
+        if (cwd) {
+          try {
+            injectSessionContext(cwd);
+            console.log(`[PAN Terminal] Pre-injected session context for ${projectName || sessionId}`);
+          } catch (err) {
+            console.error(`[PAN Terminal] Context injection failed:`, err.message);
+          }
+        }
 
         console.log(`[PAN Terminal] New session: ${sessionId} (${projectName || 'shell'}) in ${cwd}`);
       } catch (err) {

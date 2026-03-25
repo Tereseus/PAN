@@ -582,9 +582,131 @@ body {
   /* Settings */
   .settings-section { padding: 8px; }
 }
+
+/* Login overlay */
+#login-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+#login-overlay.hidden { display: none; }
+.login-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 48px 40px;
+  max-width: 420px;
+  width: 90%;
+  text-align: center;
+}
+.login-card h1 { font-size: 32px; margin-bottom: 8px; }
+.login-card h1 span { color: var(--accent); }
+.login-card .subtitle { color: var(--text2); margin-bottom: 32px; font-size: 14px; }
+.login-card .divider { border-top: 1px solid var(--border); margin: 20px 0; position: relative; }
+.login-card .divider span { background: var(--bg2); color: var(--text2); font-size: 12px; padding: 0 12px; position: absolute; top: -8px; left: 50%; transform: translateX(-50%); }
+.oauth-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 20px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  margin-bottom: 10px;
+  transition: all 0.15s;
+}
+.oauth-btn:hover { border-color: var(--accent); background: #1c2333; }
+.oauth-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.oauth-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
+.login-status { color: var(--text2); font-size: 13px; margin-top: 16px; min-height: 20px; }
+.login-status.error { color: var(--danger); }
+.login-skip { color: var(--text2); font-size: 12px; margin-top: 20px; cursor: pointer; text-decoration: underline; }
+.login-skip:hover { color: var(--text); }
+
+/* User menu in header */
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  position: relative;
+}
+.user-menu .avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  overflow: hidden;
+}
+.user-menu .avatar img { width: 100%; height: 100%; object-fit: cover; }
+.user-dropdown {
+  display: none;
+  position: absolute;
+  top: 36px;
+  right: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 200px;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.user-dropdown.open { display: block; }
+.user-dropdown .ud-header { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.user-dropdown .ud-header .ud-name { font-weight: 600; font-size: 14px; }
+.user-dropdown .ud-header .ud-email { color: var(--text2); font-size: 12px; }
+.user-dropdown .ud-header .ud-role { display: inline-block; margin-top: 4px; font-size: 11px; padding: 2px 8px; border-radius: 12px; background: var(--accent); color: #fff; text-transform: uppercase; }
+.user-dropdown .ud-item { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--text); }
+.user-dropdown .ud-item:hover { background: var(--bg3); }
+.user-dropdown .ud-item.danger { color: var(--danger); }
 </style>
 </head>
 <body>
+
+<!-- Login overlay — shown when auth_mode=token and no valid session -->
+<div id="login-overlay" class="hidden">
+  <div class="login-card">
+    <h1><span>ΠΑΝ</span></h1>
+    <div class="subtitle">Personal AI Network</div>
+    <div id="login-buttons">
+      <button class="oauth-btn" id="btn-google" onclick="loginGoogle()" disabled>
+        <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Sign in with Google
+      </button>
+      <button class="oauth-btn" id="btn-microsoft" onclick="loginMicrosoft()" disabled>
+        <svg viewBox="0 0 24 24"><rect fill="#F25022" x="1" y="1" width="10" height="10"/><rect fill="#7FBA00" x="13" y="1" width="10" height="10"/><rect fill="#00A4EF" x="1" y="13" width="10" height="10"/><rect fill="#FFB900" x="13" y="13" width="10" height="10"/></svg>
+        Sign in with Microsoft
+      </button>
+      <button class="oauth-btn" id="btn-github" onclick="loginGitHub()" disabled>
+        <svg viewBox="0 0 24 24"><path fill="#fff" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        Sign in with GitHub
+      </button>
+      <button class="oauth-btn" id="btn-apple" onclick="loginApple()" disabled>
+        <svg viewBox="0 0 24 24"><path fill="#fff" d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+        Sign in with Apple
+      </button>
+    </div>
+    <div id="login-status" class="login-status"></div>
+    <div id="login-skip" class="login-skip" style="display:none" onclick="skipLogin()">Continue without signing in (local mode)</div>
+    <div id="login-dev" class="login-skip" style="display:none" onclick="devAccess()">Developer access (localhost only)</div>
+  </div>
+</div>
 
 <div class="header">
   <h1><span>ΠΑΝ</span> Dashboard <span style="font-size:11px;color:var(--text2);font-weight:400">v0.3.1</span></h1>
@@ -594,6 +716,7 @@ body {
     <button class="tab" data-page="automation">Automation</button>
     <button class="tab" data-page="projects">Projects</button>
     <button class="tab" data-page="conversations">Conversations</button>
+    <button class="tab" data-page="sensors">Sensors</button>
     <button class="tab" data-page="data">Data Management</button>
     <button class="tab" data-page="settings">Settings</button>
   </div>
@@ -603,9 +726,23 @@ body {
       <option value="automation">Automation</option>
       <option value="projects">Projects</option>
       <option value="conversations">Conversations</option>
+      <option value="sensors">Sensors</option>
       <option value="data">Data Management</option>
       <option value="settings">Settings</option>
     </select>
+  </div>
+  <!-- User menu -->
+  <div class="user-menu" id="user-menu" style="display:none">
+    <div class="avatar" id="user-avatar" onclick="toggleUserDropdown()"></div>
+    <div class="user-dropdown" id="user-dropdown">
+      <div class="ud-header">
+        <div class="ud-name" id="ud-name"></div>
+        <div class="ud-email" id="ud-email"></div>
+        <div class="ud-role" id="ud-role"></div>
+      </div>
+      <div class="ud-item" onclick="switchTab('settings');toggleUserDropdown()">Settings</div>
+      <div class="ud-item danger" onclick="doLogout()">Sign Out</div>
+    </div>
   </div>
 </div>
 
@@ -782,6 +919,18 @@ body {
   </div>
 
   <!-- DATA MANAGEMENT PAGE (merged Activity Log + Data Management) -->
+  <!-- SENSORS PAGE -->
+  <div id="sensors" class="page">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <h3 style="font-size:18px;font-weight:600">Sensors</h3>
+      <select id="sensor-device-select" onchange="loadSensorConfig()" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 12px;font-size:13px">
+        <option value="">Select device...</option>
+      </select>
+    </div>
+
+    <div id="sensor-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+  </div>
+
   <div id="data" class="page">
     <!-- Stats Overview -->
     <div class="stats-grid" id="stats-grid">
@@ -892,11 +1041,382 @@ body {
       </div>
       <div style="font-size:12px;color:var(--text2);margin-top:6px">Change your delete password above.</div>
     </div>
+
+    <!-- Auth & OAuth Settings (owner only) -->
+    <div class="settings-section" id="auth-settings-section" style="display:none">
+      <h3>Authentication</h3>
+      <div style="margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <span style="font-size:14px">Auth Mode:</span>
+          <select id="auth-mode-select" onchange="changeAuthMode(this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:13px">
+            <option value="none">None (single user, no login required)</option>
+            <option value="token">Token (multi-user, login required)</option>
+          </select>
+        </label>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px">In "none" mode, the dashboard works without signing in. Switch to "token" when you're ready for multi-user.</div>
+      </div>
+
+      <h4 style="margin-bottom:12px;font-size:14px">OAuth Providers</h4>
+      <div style="display:grid;gap:12px">
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+          <div style="font-weight:600;margin-bottom:8px">Google</div>
+          <input type="text" id="oauth-google-id" placeholder="Google Client ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+          <input type="password" id="oauth-google-secret" placeholder="Google Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+          <div style="font-size:11px;color:var(--text2)">Get from console.cloud.google.com → APIs → Credentials → OAuth 2.0 Client ID (Web app)</div>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+          <div style="font-weight:600;margin-bottom:8px">Microsoft</div>
+          <input type="text" id="oauth-microsoft-id" placeholder="Microsoft Application (client) ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+          <input type="password" id="oauth-microsoft-secret" placeholder="Microsoft Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+          <div style="font-size:11px;color:var(--text2)">Get from portal.azure.com → App registrations → New registration</div>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+          <div style="font-weight:600;margin-bottom:8px">GitHub</div>
+          <input type="text" id="oauth-github-id" placeholder="GitHub Client ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+          <input type="password" id="oauth-github-secret" placeholder="GitHub Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+          <div style="font-size:11px;color:var(--text2)">Get from github.com → Settings → Developer Settings → OAuth Apps. Callback URL: <code id="github-callback-url" style="color:var(--accent)"></code></div>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+          <div style="font-weight:600;margin-bottom:8px">Apple</div>
+          <input type="text" id="oauth-apple-id" placeholder="Apple Services ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+          <div style="font-size:11px;color:var(--text2)">Requires Apple Developer account ($99/year). developer.apple.com → Certificates → Services IDs</div>
+        </div>
+      </div>
+      <button onclick="saveOAuthProviders()" style="margin-top:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 20px;cursor:pointer;font-size:14px">Save OAuth Settings</button>
+      <span id="oauth-save-status" style="margin-left:12px;font-size:13px;color:var(--accent2)"></span>
+    </div>
+
+    <!-- User Management (admin+ only) -->
+    <div class="settings-section" id="user-mgmt-section" style="display:none">
+      <h3>Users</h3>
+      <div id="user-list" style="display:grid;gap:8px"></div>
+    </div>
   </div>
 
 </div>
 
 <script>
+// ===== AUTH SYSTEM =====
+let panUser = null; // { id, email, display_name, avatar_url, role }
+let panToken = localStorage.getItem('pan_token');
+let panAuthMode = 'none';
+let panProviders = {};
+
+// Fetch wrapper that adds auth token
+const _origFetch = window.fetch;
+window.fetch = function(url, opts = {}) {
+  if (panToken && typeof url === 'string' && !url.includes('googleapis.com') && !url.includes('github.com') && !url.includes('login.microsoftonline.com')) {
+    opts.headers = opts.headers || {};
+    if (typeof opts.headers === 'object' && !Array.isArray(opts.headers) && !(opts.headers instanceof Headers)) {
+      opts.headers['Authorization'] = `Bearer ${panToken}`;
+    }
+  }
+  return _origFetch.call(this, url, opts).then(res => {
+    if (res.status === 401 && panAuthMode === 'token') {
+      // Token expired/invalid — show login
+      panToken = null;
+      localStorage.removeItem('pan_token');
+      showLogin();
+    }
+    return res;
+  });
+};
+
+async function initAuth() {
+  try {
+    // Check server auth config
+    const res = await _origFetch('/api/v1/auth/providers');
+    const data = await res.json();
+    panAuthMode = data.auth_mode;
+    panProviders = data.providers;
+
+    if (panAuthMode === 'token') {
+      // Enable configured provider buttons
+      for (const [p, cfg] of Object.entries(panProviders)) {
+        const btn = document.getElementById(`btn-${p}`);
+        if (btn && cfg.configured) btn.disabled = false;
+      }
+
+      if (panToken) {
+        // Validate existing token
+        const meRes = await _origFetch('/api/v1/auth/me', { headers: { 'Authorization': `Bearer ${panToken}` } });
+        if (meRes.ok) {
+          panUser = await meRes.json();
+          hideLogin();
+          updateUserMenu();
+          return true;
+        } else {
+          panToken = null;
+          localStorage.removeItem('pan_token');
+        }
+      }
+      // No valid token — show login
+      showLogin();
+      return false;
+    } else {
+      // auth_mode=none — load default user, no login needed
+      const meRes = await _origFetch('/api/v1/auth/me');
+      if (meRes.ok) panUser = await meRes.json();
+      hideLogin();
+      updateUserMenu();
+      return true;
+    }
+  } catch (err) {
+    console.log('[Auth] Server not reachable, skipping auth');
+    hideLogin();
+    return true;
+  }
+}
+
+function showLogin() {
+  document.getElementById('login-overlay').classList.remove('hidden');
+  // Show skip button in auth_mode=none
+  document.getElementById('login-skip').style.display = panAuthMode === 'none' ? 'block' : 'none';
+  // Show dev access when in token mode and accessing from localhost
+  const isLocal = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+  document.getElementById('login-dev').style.display = (panAuthMode === 'token' && isLocal) ? 'block' : 'none';
+}
+
+function hideLogin() {
+  document.getElementById('login-overlay').classList.add('hidden');
+}
+
+function skipLogin() {
+  hideLogin();
+  startDashboard();
+}
+
+async function devAccess() {
+  setLoginStatus('Getting dev token...');
+  try {
+    const res = await _origFetch('/api/v1/auth/dev-token', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { setLoginStatus(data.error || 'Dev access failed', true); return; }
+    handleOAuthSuccess(data);
+  } catch (err) {
+    setLoginStatus('Dev access failed: ' + err.message, true);
+  }
+}
+
+function setLoginStatus(msg, isError) {
+  const el = document.getElementById('login-status');
+  el.textContent = msg;
+  el.className = 'login-status' + (isError ? ' error' : '');
+}
+
+async function handleOAuthSuccess(data) {
+  panToken = data.token;
+  panUser = data.user;
+  localStorage.setItem('pan_token', panToken);
+  hideLogin();
+  updateUserMenu();
+  applyRoleRestrictions();
+  startDashboard();
+}
+
+// Google Sign-In
+let googleClientId = null;
+async function loginGoogle() {
+  const clientId = panProviders.google?.client_id;
+  if (!clientId) return setLoginStatus('Google not configured', true);
+  setLoginStatus('Waiting for Google sign-in...');
+
+  // Open in popup so dashboard stays open (no dead-end on Google errors)
+  const redirectUri = encodeURIComponent(window.location.origin + '/auth/google/callback');
+  const scope = encodeURIComponent('openid email profile');
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=code&redirect_uri=${redirectUri}&scope=${scope}&access_type=offline&prompt=select_account`;
+  const w = 500, h = 600;
+  const left = screen.width / 2 - w / 2, top = screen.height / 2 - h / 2;
+  window.open(url, 'google-login', `width=${w},height=${h},left=${left},top=${top}`);
+}
+
+// Handle Google OAuth callback — from popup postMessage or URL fallback
+async function handleGoogleCallback(code) {
+  if (!code) {
+    const params = new URLSearchParams(window.location.search);
+    code = params.get('google_code');
+    if (!code) return;
+    window.history.replaceState({}, '', '/dashboard/');
+  }
+
+  setLoginStatus('Completing Google sign-in...');
+  document.getElementById('login-overlay').classList.remove('hidden');
+
+  try {
+    const res = await _origFetch('/api/v1/auth/google-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, redirect_uri: window.location.origin + '/auth/google/callback' })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      handleOAuthSuccess(data);
+    } else {
+      setLoginStatus(data.error || 'Google login failed', true);
+    }
+  } catch (err) {
+    setLoginStatus('Connection error', true);
+  }
+}
+
+// Listen for OAuth popup messages
+window.addEventListener('message', (e) => {
+  if (e.origin !== window.location.origin) return;
+  if (e.data?.type === 'google-oauth') {
+    if (e.data.code) handleGoogleCallback(e.data.code);
+    else setLoginStatus(e.data.error || 'Google login cancelled', true);
+  }
+});
+
+// Microsoft Sign-In (MSAL popup)
+async function loginMicrosoft() {
+  const clientId = panProviders.microsoft?.client_id;
+  if (!clientId) return setLoginStatus('Microsoft not configured', true);
+  setLoginStatus('Opening Microsoft sign-in...');
+
+  // Redirect to Microsoft OAuth
+  const redirectUri = encodeURIComponent(window.location.origin + '/api/v1/auth/ms-callback');
+  const scope = encodeURIComponent('openid email profile User.Read');
+  window.location.href = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&response_type=token&redirect_uri=${redirectUri}&scope=${scope}&response_mode=fragment`;
+}
+
+// GitHub Sign-In (OAuth app redirect)
+async function loginGitHub() {
+  const clientId = panProviders.github?.client_id;
+  if (!clientId) return setLoginStatus('GitHub not configured', true);
+  setLoginStatus('Redirecting to GitHub...');
+  const redirectUri = encodeURIComponent(window.location.origin + '/auth/github/callback');
+  window.location.href = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=read:user%20user:email&redirect_uri=${redirectUri}`;
+}
+
+// Apple Sign-In
+async function loginApple() {
+  setLoginStatus('Apple Sign-In requires native app integration', true);
+}
+
+// Handle GitHub callback (code in URL)
+async function handleGitHubCallback() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if (!code) return;
+
+  // Clean URL
+  window.history.replaceState({}, '', '/');
+  setLoginStatus('Completing GitHub sign-in...');
+  document.getElementById('login-overlay').classList.remove('hidden');
+
+  try {
+    const res = await _origFetch('/api/v1/auth/github-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      handleOAuthSuccess(data);
+    } else {
+      setLoginStatus(data.error || 'GitHub login failed', true);
+    }
+  } catch (err) {
+    setLoginStatus('Connection error', true);
+  }
+}
+
+function updateUserMenu() {
+  if (!panUser) return;
+  const menu = document.getElementById('user-menu');
+  const avatar = document.getElementById('user-avatar');
+  const udName = document.getElementById('ud-name');
+  const udEmail = document.getElementById('ud-email');
+  const udRole = document.getElementById('ud-role');
+
+  if (panUser.avatar_url) {
+    avatar.innerHTML = `<img src="${panUser.avatar_url}" alt="">`;
+  } else {
+    avatar.textContent = (panUser.display_name || panUser.email || '?')[0].toUpperCase();
+  }
+  udName.textContent = panUser.display_name || 'User';
+  udEmail.textContent = panUser.email || '';
+  udRole.textContent = panUser.role || 'user';
+
+  // Only show menu when auth_mode=token (in none mode, everyone is owner by default)
+  menu.style.display = panAuthMode === 'token' ? 'flex' : 'none';
+}
+
+function toggleUserDropdown() {
+  document.getElementById('user-dropdown').classList.toggle('open');
+}
+
+// Close dropdown on outside click
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.user-menu')) {
+    document.getElementById('user-dropdown')?.classList.remove('open');
+  }
+});
+
+async function doLogout() {
+  try {
+    await fetch('/api/v1/auth/logout', { method: 'POST' });
+  } catch {}
+  panToken = null;
+  panUser = null;
+  localStorage.removeItem('pan_token');
+  showLogin();
+  setLoginStatus('Signed out');
+}
+
+// Role-based UI restrictions
+function applyRoleRestrictions() {
+  if (!panUser || panAuthMode === 'none') return;
+  const role = panUser.role;
+  const tabs = document.querySelectorAll('.tab');
+  const mobileSelect = document.getElementById('mobile-page-select');
+
+  // Define which roles can access which tabs
+  const tabAccess = {
+    terminal: ['owner', 'admin', 'manager'],
+    automation: ['owner', 'admin', 'manager'],
+    projects: ['owner', 'admin', 'manager', 'user'],
+    conversations: ['owner', 'admin', 'manager', 'user'],
+    sensors: ['owner', 'admin', 'manager', 'user'],
+    data: ['owner', 'admin'],
+    settings: ['owner', 'admin']
+  };
+
+  tabs.forEach(tab => {
+    const page = tab.dataset.page;
+    const allowed = tabAccess[page];
+    if (allowed && !allowed.includes(role)) {
+      tab.style.display = 'none';
+    } else {
+      tab.style.display = '';
+    }
+  });
+
+  // Also hide from mobile select
+  if (mobileSelect) {
+    Array.from(mobileSelect.options).forEach(opt => {
+      const allowed = tabAccess[opt.value];
+      if (allowed && !allowed.includes(role)) {
+        opt.disabled = true;
+        opt.style.display = 'none';
+      } else {
+        opt.disabled = false;
+        opt.style.display = '';
+      }
+    });
+  }
+
+  // If current tab is hidden, switch to first available
+  const currentTab = document.querySelector('.tab.active');
+  if (currentTab && currentTab.style.display === 'none') {
+    const firstVisible = document.querySelector('.tab:not([style*="display: none"])');
+    if (firstVisible) switchTab(firstVisible.dataset.page);
+  }
+}
+
+// ===== END AUTH SYSTEM =====
+
 const API = '/dashboard';
 let eventsOffset = 0;
 let convoOffset = 0;
@@ -916,8 +1436,9 @@ function loadPage(page) {
     case 'terminal': initTerminal(); break;
     case 'automation': loadAutomation(); break;
     case 'conversations': loadConversations(); break;
+    case 'sensors': loadSensorDevices(); break;
     case 'data': loadStats(); loadEvents(); loadPhotos(); loadJobs(); loadMemory(); break;
-    case 'settings': loadSettings(); break;
+    case 'settings': loadSettings(); loadAuthSettings(); break;
   }
 }
 
@@ -939,6 +1460,11 @@ function switchTab(pageName) {
   const page = document.getElementById(pageName);
   if (page) page.classList.add('active');
   document.body.classList.toggle('page-terminal', pageName === 'terminal');
+  // Stop sensor polling when leaving sensors tab
+  if (pageName !== 'sensors' && sensorPollInterval) {
+    clearInterval(sensorPollInterval);
+    sensorPollInterval = null;
+  }
   // Sync mobile dropdown
   const mobileSelect = document.getElementById('mobile-page-select');
   if (mobileSelect) mobileSelect.value = pageName;
@@ -984,66 +1510,80 @@ async function loadMobileChat() {
   const el = document.getElementById('mob-chat-messages');
   if (!el) return;
 
-  let mobEventsUrl = '/api/events?limit=50';
-  if (mobActiveProject && mobActiveProject.path) {
-    mobEventsUrl += '&project_path=' + encodeURIComponent(mobActiveProject.path);
-  }
-  const data = await api(mobEventsUrl);
-  if (!data.events || data.events.length === 0) {
-    el.innerHTML = `<div style="color:var(--text2);text-align:center;padding:20px">${mobActiveProject ? 'No conversations for ' + escapeHtml(mobActiveProject.name) : 'Select a project to see conversations'}</div>`;
+  if (!mobActiveProject || !mobActiveProject.path) {
+    el.innerHTML = '<div style="color:var(--text2);text-align:center;padding:20px">Select a project to see conversations</div>';
     return;
   }
 
-  // Look up session→project mapping for labels
-  let sessionProjects = {};
+  // Find the latest real Claude session ID for this project (same approach as desktop)
+  let sessionId = null;
   try {
-    const sess = await fetch('/api/v1/terminal/sessions').then(r => r.json());
-    if (sess.sessions) for (const s of sess.sessions) sessionProjects[s.id] = s.project || 'Shell';
-  } catch {}
-
-  let html = '';
-  const events = [...data.events].reverse();
-  for (const e of events) {
-    let parsed = {};
-    try { parsed = JSON.parse(e.data); } catch {}
-
-    // Figure out a display label for this session
-    const sid = e.session_id || '';
-    let sessionLabel = sessionProjects[sid] || '';
-    if (!sessionLabel && parsed.cwd) {
-      // Derive from cwd path
-      const parts = parsed.cwd.replace(/\\/g, '/').split('/');
-      sessionLabel = parts[parts.length - 1] || '';
-    }
-    if (sid.startsWith('router-') || sid.startsWith('phone-')) sessionLabel = 'Voice';
-    const tagHtml = sessionLabel ? `<span style="font-size:9px;opacity:0.6;margin-right:4px">[${escapeHtml(sessionLabel)}]</span>` : '';
-
-    if (e.event_type === 'UserPromptSubmit' && parsed.prompt) {
-      html += `<div style="background:var(--accent);color:#fff;border-radius:12px 12px 4px 12px;padding:10px 12px;margin-bottom:8px;font-size:14px;word-break:break-word;cursor:pointer">
-        ${tagHtml}${escapeHtml(parsed.prompt)}
-        <div style="font-size:10px;opacity:0.7;margin-top:4px">${fmtTime(e.created_at)}</div>
-      </div>`;
-    } else if (e.event_type === 'Stop' && parsed.last_assistant_message) {
-      html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 4px;padding:10px 12px;margin-bottom:8px;font-size:14px;word-break:break-word;white-space:pre-wrap;cursor:pointer">
-        ${tagHtml}${escapeHtml(parsed.last_assistant_message)}
-        <div style="font-size:10px;color:var(--text2);margin-top:4px">${fmtTime(e.created_at)}</div>
-      </div>`;
-    } else if (e.event_type === 'RouterCommand') {
-      const q = parsed.text || '';
-      const a = parsed.result || parsed.response_text || '';
-      if (q || a) {
-        html += `<div style="margin-bottom:8px">
-          <div style="background:var(--accent);color:#fff;border-radius:12px 12px 4px 12px;padding:10px 12px;font-size:14px;word-break:break-word;margin-bottom:4px">
-            ${tagHtml}${escapeHtml(q)}
-            <div style="font-size:10px;opacity:0.7;margin-top:4px">${fmtTime(e.created_at)}</div>
-          </div>
-          ${a ? `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 4px;padding:10px 12px;font-size:14px;word-break:break-word;white-space:pre-wrap">
-            ${escapeHtml(a)}
-          </div>` : ''}
-        </div>`;
+    const probe = await api('/api/events?limit=10&project_path=' + encodeURIComponent(mobActiveProject.path));
+    if (probe && probe.events) {
+      for (const evt of probe.events) {
+        const sid = evt.session_id || '';
+        if (sid && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+          sessionId = sid;
+          break;
+        }
       }
     }
+  } catch {}
+
+  if (!sessionId) {
+    el.innerHTML = `<div style="color:var(--text2);text-align:center;padding:20px">No conversations for ${escapeHtml(mobActiveProject.name)}</div>`;
+    return;
   }
+
+  // Use transcript API (same as desktop) for complete conversation with tool calls
+  const data = await api('/api/transcript?session_id=' + encodeURIComponent(sessionId) + '&limit=300');
+  if (!data || !data.messages || data.messages.length === 0) {
+    el.innerHTML = `<div style="color:var(--text2);text-align:center;padding:20px">No conversations for ${escapeHtml(mobActiveProject.name)}</div>`;
+    return;
+  }
+
+  let html = '';
+  for (const msg of data.messages) {
+    if (msg.role === 'user') {
+      html += `<div style="background:var(--accent);color:#fff;border-radius:12px 12px 4px 12px;padding:10px 12px;margin-bottom:8px;font-size:14px;word-break:break-word">
+        ${escapeHtml(msg.text)}
+      </div>`;
+    } else if (msg.type === 'text') {
+      html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 4px;padding:10px 12px;margin-bottom:8px;font-size:14px;word-break:break-word;white-space:pre-wrap">
+        ${escapeHtml(msg.text)}
+      </div>`;
+    } else if (msg.type === 'tool') {
+      html += `<div style="background:transparent;border-left:2px solid var(--border);padding:4px 10px;margin-bottom:6px;font-size:12px;color:var(--text2);font-family:monospace;word-break:break-all">
+        ${escapeHtml(msg.text)}
+      </div>`;
+    }
+  }
+
+  // Also show recent voice commands (RouterCommand) below the transcript
+  try {
+    const voiceData = await api('/api/events?limit=20&project_path=' + encodeURIComponent(mobActiveProject.path));
+    if (voiceData && voiceData.events) {
+      for (const e of [...voiceData.events].reverse()) {
+        let parsed = {};
+        try { parsed = JSON.parse(e.data); } catch {}
+        if (e.event_type === 'RouterCommand') {
+          const q = parsed.text || '';
+          const a = parsed.result || parsed.response_text || '';
+          if (q || a) {
+            html += `<div style="margin-bottom:8px">
+              <div style="background:var(--accent);color:#fff;border-radius:12px 12px 4px 12px;padding:10px 12px;font-size:14px;word-break:break-word;margin-bottom:4px">
+                <span style="font-size:9px;opacity:0.6;margin-right:4px">[Voice]</span>${escapeHtml(q)}
+                <div style="font-size:10px;opacity:0.7;margin-top:4px">${fmtTime(e.created_at)}</div>
+              </div>
+              ${a ? `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 4px;padding:10px 12px;font-size:14px;word-break:break-word;white-space:pre-wrap">
+                ${escapeHtml(a)}
+              </div>` : ''}
+            </div>`;
+          }
+        }
+      }
+    }
+  } catch {}
 
   const finalHtml = html || '<div style="color:var(--text2);text-align:center;padding:20px">No chat messages</div>';
   if (el._lastHtml === finalHtml) return;
@@ -2209,81 +2749,106 @@ function renderLeftProject() {
   sidebar.innerHTML = html;
 }
 
-// Track rendered event IDs so we only append new messages, never rewrite
-let chatRenderedIds = new Set();
-let chatCurrentProject = null; // track project switches
+// Chat state
+let chatLastHash = ''; // hash of rendered content to detect changes
+let chatCurrentProject = null;
 
 async function loadChatHistory() {
   const sidebar = document.getElementById('terminal-sidebar');
+  if (!sidebar) return;
 
-  // Filter events by active tab's project path
-  let eventsUrl = '/api/events?limit=100';
-  const projectKey = termCurrentProject?.cwd || '';
-  if (projectKey) {
-    eventsUrl += '&project_path=' + encodeURIComponent(projectKey);
-  }
+  try {
+    const sessionId = termSessionId || '';
+    const isDashboardSession = /^(dash|mob)-/.test(sessionId);
+    const realSessionId = isDashboardSession ? '' : sessionId;
+    const chatKey = realSessionId || termCurrentProject?.cwd || '';
 
-  // If project changed, reset everything
-  if (chatCurrentProject !== projectKey) {
-    chatCurrentProject = projectKey;
-    chatRenderedIds = new Set();
-    sidebar.innerHTML = '<div id="chat-container" style="display:flex;flex-direction:column;gap:8px"></div>';
-  }
+    // Detect project switch — reset scroll state
+    if (chatCurrentProject !== chatKey) {
+      chatCurrentProject = chatKey;
+      sidebar._initialScrollDone = false;
+    }
 
-  const data = await api(eventsUrl);
-  if (!data.events || data.events.length === 0) {
-    if (chatRenderedIds.size === 0) {
+    let bubbles = []; // {html, type} array we'll render
+
+    // For dashboard sessions, find the real Claude session ID for this project
+    let effectiveSessionId = realSessionId;
+    if (!effectiveSessionId) {
+      const projectKey = termCurrentProject?.cwd || '';
+      if (projectKey) {
+        // Ask the events API for the most recent real session for this project
+        const probe = await api('/api/events?limit=5&project_path=' + encodeURIComponent(projectKey));
+        if (probe && probe.events) {
+          for (const evt of probe.events) {
+            const sid = evt.session_id || '';
+            if (sid && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+              effectiveSessionId = sid;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (effectiveSessionId) {
+      // Transcript mode — reads JSONL for complete conversation
+      const data = await api('/api/transcript?session_id=' + encodeURIComponent(effectiveSessionId) + '&limit=300');
+      if (!data || !data.messages || data.messages.length === 0) {
+        if (!sidebar._initialScrollDone) {
+          sidebar.innerHTML = '<div style="color:var(--text2);padding:12px;text-align:center">No conversation yet</div>';
+        }
+        return;
+      }
+
+      for (const msg of data.messages) {
+        if (msg.role === 'user') {
+          bubbles.push({
+            type: 'user',
+            html: `<div style="background:var(--accent);color:#fff;border-radius:8px 8px 2px 8px;padding:8px 10px;font-size:11px;align-self:flex-end;max-width:95%;word-break:break-word">${escapeHtml(msg.text)}</div>`
+          });
+        } else if (msg.type === 'text') {
+          bubbles.push({
+            type: 'assistant',
+            html: `<div style="background:var(--bg3);border-radius:8px 8px 8px 2px;padding:8px 10px;font-size:11px;align-self:flex-start;max-width:95%;word-break:break-word;white-space:pre-wrap">${escapeHtml(msg.text)}</div>`
+          });
+        } else if (msg.type === 'tool') {
+          bubbles.push({
+            type: 'tool',
+            html: `<div style="background:transparent;border-left:2px solid var(--border);padding:2px 8px;font-size:10px;color:var(--text2);align-self:flex-start;max-width:95%;font-family:monospace;word-break:break-all">${escapeHtml(msg.text)}</div>`
+          });
+        }
+      }
+    }
+
+    if (bubbles.length === 0) {
       sidebar.innerHTML = '<div style="color:var(--text2);padding:12px;text-align:center">No conversation history</div>';
-    }
-    return;
-  }
-
-  // Ensure container exists
-  let container = document.getElementById('chat-container');
-  if (!container) {
-    sidebar.innerHTML = '<div id="chat-container" style="display:flex;flex-direction:column;gap:8px"></div>';
-    container = document.getElementById('chat-container');
-    chatRenderedIds = new Set();
-  }
-
-  // Process events in chronological order — only append new ones
-  const events = [...data.events].reverse();
-  let addedNew = false;
-
-  for (const e of events) {
-    if (chatRenderedIds.has(e.id)) continue;
-
-    let parsed = {};
-    try { parsed = JSON.parse(e.data); } catch {}
-
-    let bubble = null;
-
-    if (e.event_type === 'UserPromptSubmit' && parsed.prompt) {
-      bubble = document.createElement('div');
-      bubble.style.cssText = 'background:var(--accent);color:#fff;border-radius:8px 8px 2px 8px;padding:8px 10px;font-size:11px;align-self:flex-end;max-width:95%;word-break:break-word';
-      bubble.innerHTML = `${escapeHtml(parsed.prompt)}<div style="font-size:9px;opacity:0.7;margin-top:3px">${fmtTime(e.created_at)}</div>`;
-    } else if (e.event_type === 'Stop' && parsed.last_assistant_message) {
-      bubble = document.createElement('div');
-      bubble.style.cssText = 'background:var(--bg3);border-radius:8px 8px 8px 2px;padding:8px 10px;font-size:11px;align-self:flex-start;max-width:95%;word-break:break-word;white-space:pre-wrap';
-      bubble.innerHTML = `${escapeHtml(parsed.last_assistant_message)}<div style="font-size:9px;color:var(--text2);margin-top:3px">${fmtTime(e.created_at)}</div>`;
+      return;
     }
 
-    if (bubble) {
-      bubble.dataset.eventId = e.id;
-      container.appendChild(bubble);
-      chatRenderedIds.add(e.id);
-      addedNew = true;
-    }
-  }
+    // Build full HTML and only replace DOM if content actually changed
+    const chatHtml = bubbles.map(b => b.html).join('');
+    const newHash = bubbles.length + ':' + chatHtml.length; // fast comparison
+    if (newHash === chatLastHash) return; // no changes
+    chatLastHash = newHash;
 
-  // First load → scroll to bottom so you see latest messages
-  // Subsequent updates → only scroll if near bottom
-  if (!sidebar._initialScrollDone) {
-    sidebar._initialScrollDone = true;
-    sidebar.scrollTop = sidebar.scrollHeight;
-  } else if (addedNew) {
-    const nearBottom = (sidebar.scrollHeight - sidebar.scrollTop - sidebar.clientHeight) < 40;
-    if (nearBottom) sidebar.scrollTop = sidebar.scrollHeight;
+    // Save scroll position before rebuild
+    const wasNearBottom = (sidebar.scrollHeight - sidebar.scrollTop - sidebar.clientHeight) < 80;
+    const prevScrollTop = sidebar.scrollTop;
+
+    sidebar.innerHTML = '<div id="chat-container" style="display:flex;flex-direction:column;gap:8px">' + chatHtml + '</div>';
+
+    // Scroll handling
+    if (!sidebar._initialScrollDone) {
+      sidebar._initialScrollDone = true;
+      sidebar.scrollTop = sidebar.scrollHeight;
+    } else if (wasNearBottom) {
+      sidebar.scrollTop = sidebar.scrollHeight;
+    } else {
+      sidebar.scrollTop = prevScrollTop; // preserve position
+    }
+  } catch (err) {
+    console.error('[PAN Chat] loadChatHistory error:', err);
+    // Don't wipe the chat on error — just log it
   }
 }
 
@@ -2320,7 +2885,11 @@ async function loadTerminalSidebar(projectId, projectName) {
   select.value = currentRightSection;
 
   if (!proj) {
-    sidebar.innerHTML = `<div style="padding:8px"><strong>${escapeHtml(projectName)}</strong><div style="color:var(--text2);margin-top:8px">No tasks yet</div></div>`;
+    if (currentLeftTab === 'project') {
+      sidebar.innerHTML = `<div style="padding:8px"><strong>${escapeHtml(projectName)}</strong><div style="color:var(--text2);margin-top:8px">No tasks yet</div></div>`;
+    } else {
+      loadChatHistory();
+    }
     right.innerHTML = '';
     return;
   }
@@ -2620,6 +3189,8 @@ function initTerminal() {
   }
 
   termInitialized = true;
+  // Load chat immediately on first terminal page init
+  if (currentLeftTab === 'chat') loadChatHistory();
   if (!chatRefreshInterval) {
     chatRefreshInterval = setInterval(loadChatHistory, 10000);
   }
@@ -2763,31 +3334,13 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
             }
           } catch {}
 
-          // Launch Claude interactive, then send read-briefing prompt
-          ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
-
+          // Launch Claude with the initial prompt as a CLI argument
+          // This makes Claude respond immediately — no waiting for ❯ prompt detection
           if (briefingReady) {
-            // Poll for Claude's prompt to appear, then send instruction to read briefing
-            let sent = false;
-            const readPrompt = 'Read .pan-briefing.md — it has context from the last session. Briefly acknowledge what was being worked on.';
-            const poll = setInterval(() => {
-              if (sent) { clearInterval(poll); return; }
-              try {
-                // Check last few lines for Claude's input prompt
-                for (let row = tabTerm.buffer.active.cursorY; row >= Math.max(0, tabTerm.buffer.active.cursorY - 3); row--) {
-                  const line = tabTerm.buffer.active.getLine(row)?.translateToString().trim() || '';
-                  // Claude Code prompt ends with > or ❯
-                  if (line.endsWith('>') || line.endsWith('❯') || line === '>' || line === '❯') {
-                    sent = true; clearInterval(poll);
-                    setTimeout(() => {
-                      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: readPrompt + '\n' }));
-                    }, 500);
-                    return;
-                  }
-                }
-              } catch {}
-            }, 1500);
-            setTimeout(() => clearInterval(poll), 60000); // 60s timeout
+            const initPrompt = 'This is a fresh session. Read the PAN session context injected into CLAUDE.md. Summarize what we were working on last time — start with Last time we were working on and list the key topics. Then ask what I want to work on next.';
+            ws.send(JSON.stringify({ type: 'input', data: `claude --permission-mode auto "${initPrompt.replace(/"/g, '\\"')}"\n` }));
+          } else {
+            ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
           }
         }
       }, 1500);
@@ -3404,13 +3957,275 @@ window.addEventListener('keydown', (e) => {
   }
 }, true); // 'true' = capture phase, runs before xterm
 
-// Initial load — restore page from hash if present
-const hashPage = window.location.hash.replace('#', '');
-if (hashPage && document.getElementById(hashPage)) {
-  switchTab(hashPage);
-} else {
-  switchTab('terminal');
+// === SENSORS ===
+
+let sensorDefs = [];
+let expandedSensorId = null;
+let sensorPollInterval = null;
+let lastSensorJson = '';
+
+async function loadSensorDevices() {
+  const select = document.getElementById('sensor-device-select');
+  if (!select) return;
+  // Start auto-refresh polling (5s) so phone toggles sync to dashboard
+  if (!sensorPollInterval) {
+    sensorPollInterval = setInterval(loadSensorConfig, 5000);
+  }
+  try {
+    const res = await fetch('/api/v1/devices/list');
+    const data = await res.json();
+    const devices = data.devices || data || [];
+    select.innerHTML = '<option value="">Select device...</option>' +
+      devices.map(d => `<option value="${d.id}">${d.name || d.hostname}</option>`).join('');
+    if (devices.length > 0 && !select.value) {
+      select.value = devices[0].id;
+      loadSensorConfig();
+    }
+  } catch {}
 }
+
+async function loadSensorConfig() {
+  const deviceId = document.getElementById('sensor-device-select')?.value;
+  const grid = document.getElementById('sensor-grid');
+  if (!deviceId) {
+    grid.innerHTML = '<div style="color:var(--text2);padding:16px">Select a device to configure sensors.</div>';
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/sensors/devices/${deviceId}`);
+    const data = await res.json();
+    if (data.error) { grid.innerHTML = `<div style="color:var(--danger)">${data.error}</div>`; return; }
+
+    const { device, sensors } = data;
+    // Skip re-render if nothing changed (prevents flicker during polling)
+    const newJson = JSON.stringify(sensors.map(s => ({ id: s.id, enabled: s.enabled, muted: s.muted, policy: s.policy, attachments: s.attachments })));
+    if (newJson === lastSensorJson) return;
+    lastSensorJson = newJson;
+    sensorDefs = sensors;
+
+    grid.innerHTML = sensors.map(s => {
+      const isOn = s.enabled;
+      const isExpanded = expandedSensorId === s.id;
+      // No category label — toggle switch makes on/off clear
+
+      // Attachment section (only when expanded and ON)
+      let attachHtml = '';
+      if (isExpanded && isOn) {
+        const others = sensors.filter(o => o.id !== s.id && o.enabled);
+        attachHtml = `
+          <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
+            <div style="font-size:11px;color:var(--text2);margin-bottom:6px;font-weight:500">When ${s.name} captures, also attach:</div>
+            ${others.length > 0 ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;max-height:140px;overflow-y:auto">
+              ${others.map(o => {
+                const attached = s.attachments[o.id] || false;
+                return `<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text);cursor:pointer;padding:2px 0">
+                  <input type="checkbox" ${attached ? 'checked' : ''}
+                    onchange="event.stopPropagation();toggleSensorAttach(${deviceId},'${s.id}','${o.id}',this.checked)"
+                    style="cursor:pointer;accent-color:var(--accent)">
+                  ${o.icon} ${o.name}
+                </label>`;
+              }).join('')}
+            </div>` : '<div style="font-size:11px;color:var(--text2)">Turn on other sensors to attach their data.</div>'}
+          </div>`;
+      }
+
+      const isLocked = s.locked;
+      const policyLabel = isLocked ? `<span style="font-size:9px;color:#d29922;margin-left:4px" title="${s.policy_reason || s.policy}">🔒 ${s.policy === 'force_on' ? 'Required' : 'Disabled'} by org</span>` : '';
+
+      return `<div onclick="toggleSensorExpand('${s.id}')" style="background:var(--bg2);border:1px solid ${isOn ? '#3fb95044' : 'var(--border)'};border-radius:var(--radius);padding:12px;opacity:${isOn ? '1' : '0.5'};cursor:pointer;transition:all 0.15s">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:22px">${s.icon}</span>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-weight:600;font-size:14px">${s.name}</span>${policyLabel}
+            </div>
+            <div style="font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.description}</div>
+          </div>
+          ${isLocked
+            ? `<div style="width:40px;height:22px;border-radius:11px;background:${isOn ? '#3fb95066' : '#484f5866'};position:relative;flex-shrink:0;opacity:0.5;cursor:not-allowed" title="${s.policy_reason || 'Locked by organization policy'}">
+                <div style="width:18px;height:18px;border-radius:50%;background:#aaa;position:absolute;top:2px;${isOn ? 'right:2px' : 'left:2px'}"></div>
+              </div>`
+            : `<div onclick="event.stopPropagation();toggleSensor(${deviceId},'${s.id}',${!isOn})"
+                style="width:40px;height:22px;border-radius:11px;background:${isOn ? '#3fb950' : '#484f58'};position:relative;cursor:pointer;transition:background 0.2s;flex-shrink:0">
+                <div style="width:18px;height:18px;border-radius:50%;background:#fff;position:absolute;top:2px;${isOn ? 'right:2px' : 'left:2px'};transition:all 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.3)"></div>
+              </div>`}
+        </div>
+        ${attachHtml}
+      </div>`;
+    }).join('');
+
+  } catch (err) {
+    grid.innerHTML = `<div style="color:var(--danger)">Error loading sensors: ${err.message}</div>`;
+  }
+}
+
+function toggleSensorExpand(sensorId) {
+  expandedSensorId = expandedSensorId === sensorId ? null : sensorId;
+  lastSensorJson = ''; // force re-render for expand/collapse
+  loadSensorConfig();
+}
+
+async function toggleSensor(deviceId, sensorId, enabled) {
+  await fetch(`/api/sensors/devices/${deviceId}/${sensorId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled })
+  });
+  loadSensorConfig();
+}
+
+async function toggleSensorAttach(deviceId, sensorId, attachTo, enabled) {
+  await fetch(`/api/sensors/devices/${deviceId}/${sensorId}/attach/${attachTo}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled })
+  });
+}
+
+// ===== AUTH SETTINGS =====
+async function loadAuthSettings() {
+  if (!panUser || !['owner', 'admin'].includes(panUser.role)) return;
+
+  // Show auth settings section
+  const section = document.getElementById('auth-settings-section');
+  if (section) section.style.display = '';
+
+  // Set GitHub callback URL
+  const ghUrl = document.getElementById('github-callback-url');
+  if (ghUrl) ghUrl.textContent = window.location.origin + '/auth/github/callback';
+
+  // Load current config
+  try {
+    const res = await fetch('/api/v1/auth/providers');
+    const data = await res.json();
+    document.getElementById('auth-mode-select').value = data.auth_mode;
+
+    for (const [p, cfg] of Object.entries(data.providers)) {
+      const el = document.getElementById(`oauth-${p}-id`);
+      if (el && cfg.client_id) el.value = cfg.client_id;
+      const secretEl = document.getElementById(`oauth-${p}-secret`);
+      if (secretEl && cfg.client_secret) secretEl.value = cfg.client_secret;
+    }
+  } catch {}
+
+  // Show user management for admin+
+  if (['owner', 'admin'].includes(panUser.role)) {
+    document.getElementById('user-mgmt-section').style.display = '';
+    loadUserList();
+  }
+}
+
+async function changeAuthMode(mode) {
+  try {
+    await fetch('/api/v1/auth/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode })
+    });
+    panAuthMode = mode;
+    updateUserMenu();
+    applyRoleRestrictions();
+  } catch (err) {
+    alert('Failed to change auth mode');
+  }
+}
+
+async function saveOAuthProviders() {
+  const status = document.getElementById('oauth-save-status');
+  status.textContent = 'Saving...';
+  status.style.color = 'var(--text2)';
+
+  const providers = [
+    { provider: 'google', client_id: document.getElementById('oauth-google-id').value, client_secret: document.getElementById('oauth-google-secret').value },
+    { provider: 'microsoft', client_id: document.getElementById('oauth-microsoft-id').value, client_secret: document.getElementById('oauth-microsoft-secret').value },
+    { provider: 'github', client_id: document.getElementById('oauth-github-id').value, client_secret: document.getElementById('oauth-github-secret').value },
+    { provider: 'apple', client_id: document.getElementById('oauth-apple-id').value }
+  ];
+
+  try {
+    for (const p of providers) {
+      if (p.client_id || p.client_secret) {
+        await fetch('/api/v1/auth/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(p)
+        });
+      }
+    }
+    status.textContent = 'Saved!';
+    status.style.color = 'var(--accent2)';
+    setTimeout(() => status.textContent = '', 3000);
+  } catch {
+    status.textContent = 'Error saving';
+    status.style.color = 'var(--danger)';
+  }
+}
+
+async function loadUserList() {
+  try {
+    const res = await fetch('/api/v1/auth/users');
+    if (!res.ok) return;
+    const users = await res.json();
+    const el = document.getElementById('user-list');
+    if (!el) return;
+
+    el.innerHTML = users.map(u => `
+      <div style="display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
+        <div style="width:32px;height:32px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:600;color:#fff;flex-shrink:0;overflow:hidden">
+          ${u.avatar_url ? `<img src="${u.avatar_url}" style="width:100%;height:100%;object-fit:cover">` : (u.display_name || u.email || '?')[0].toUpperCase()}
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${u.display_name || 'User'}</div>
+          <div style="font-size:11px;color:var(--text2)">${u.email}</div>
+        </div>
+        <span style="font-size:11px;padding:2px 8px;border-radius:12px;background:${u.role === 'owner' ? 'var(--accent)' : u.role === 'admin' ? '#d29922' : 'var(--bg3)'};color:#fff;text-transform:uppercase">${u.role}</span>
+        ${panUser?.role === 'owner' && u.id !== panUser.id ? `
+          <select onchange="changeUserRole(${u.id}, this.value)" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;font-size:11px">
+            ${['viewer','user','manager','admin','owner'].map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
+        ` : ''}
+        <div style="font-size:11px;color:var(--text2)">${u.is_active ? '' : 'Disabled'}</div>
+      </div>
+    `).join('');
+  } catch {}
+}
+
+async function changeUserRole(userId, role) {
+  await fetch(`/api/v1/auth/users/${userId}/role`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role })
+  });
+  loadUserList();
+}
+
+// ===== END AUTH SETTINGS =====
+
+// Dashboard startup — called after auth succeeds
+function startDashboard() {
+  applyRoleRestrictions();
+  const hashPage = window.location.hash.replace('#', '');
+  if (hashPage && document.getElementById(hashPage)) {
+    switchTab(hashPage);
+  } else {
+    switchTab('terminal');
+  }
+}
+
+// Initial load — check auth first, then start dashboard
+(async () => {
+  // Handle OAuth callbacks (code in URL params)
+  if (window.location.search.includes('google_code=')) {
+    await handleGoogleCallback();
+    return;
+  }
+  if (window.location.search.includes('code=')) {
+    await handleGitHubCallback();
+    return;
+  }
+
+  const authed = await initAuth();
+  if (authed) startDashboard();
+})();
 </script>
 </body>
 </html>

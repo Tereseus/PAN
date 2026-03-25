@@ -16,13 +16,6 @@ Other assistants: wake word → 5-10 seconds of attention → done. PAN: continu
 
 ### Multi-Step Automation
 
-**"Deploy my project."**
-1. Opens terminal on PC → navigates to project directory
-2. Runs test suite → waits for results
-3. Tests pass → git commit → git push
-4. Monitors CI pipeline
-5. Reports back: "All tests passed, deployed to production"
-
 **"Show me videogamedunkey's newest video."**
 1. Opens YouTube in browser (via browser extension)
 2. Navigates to the channel

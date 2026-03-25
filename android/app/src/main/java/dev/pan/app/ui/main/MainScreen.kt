@@ -1,5 +1,6 @@
 package dev.pan.app.ui.main
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -12,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import dev.pan.app.network.dto.DeviceSensorConfig
 import dev.pan.app.ui.commands.DeviceItem
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -125,7 +127,6 @@ fun MainScreen(
                                 text = { Text(phoneName) },
                                 onClick = { viewModel.setDeviceTarget("phone"); targetExpanded = false }
                             )
-                            // Show only non-phone devices (phone is already "This Phone" above)
                             val otherDevices = devices.filter { it.device_type != "phone" }
                             if (otherDevices.isNotEmpty()) {
                                 HorizontalDivider()
@@ -141,31 +142,12 @@ fun MainScreen(
                 }
             }
 
-            // Sensor toggles
-            Text("Sensors", style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 8.dp))
-
-            SensorToggleCard(
-                name = "Microphone / STT",
-                description = if (isMicEnabled) "Always on — listening and remembering" else "Paused — PAN is not remembering",
-                isEnabled = isMicEnabled,
-                onToggle = { viewModel.toggleMic() }
-            )
-
-            SensorToggleCard(
-                name = "Camera",
-                description = "Waiting for Pandant",
-                isEnabled = false,
-                onToggle = { },
-                available = false
-            )
-
-            SensorToggleCard(
-                name = "Pandant Sensors",
-                description = "Waiting for BLE connection",
-                isEnabled = false,
-                onToggle = { },
-                available = false
+            // Sensors — dynamic from server
+            SensorSection(
+                devices = devices,
+                isMicEnabled = isMicEnabled,
+                onToggleMic = { viewModel.toggleMic() },
+                viewModel = viewModel
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -174,36 +156,151 @@ fun MainScreen(
 }
 
 @Composable
-fun SensorToggleCard(
-    name: String,
-    description: String,
-    isEnabled: Boolean,
-    onToggle: () -> Unit,
-    available: Boolean = true
+fun SensorSection(
+    devices: List<DeviceItem>,
+    isMicEnabled: Boolean,
+    onToggleMic: () -> Unit,
+    viewModel: MainViewModel
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = if (!available) CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ) else CardDefaults.cardColors()
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            StatusDot(isActive = isEnabled && available)
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(name, style = MaterialTheme.typography.bodyLarge)
-                Text(description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val sensors by viewModel.sensors.collectAsState()
+    val sensorsLoading by viewModel.sensorsLoading.collectAsState()
+    var selectedDeviceId by remember { mutableStateOf<Int?>(null) }
+    var expandedSensor by remember { mutableStateOf<String?>(null) }
+
+    Text("Sensors", style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(top = 8.dp))
+
+    // Device picker
+    if (devices.isNotEmpty()) {
+        var expanded by remember { mutableStateOf(false) }
+
+        LaunchedEffect(devices) {
+            if (selectedDeviceId == null && devices.isNotEmpty()) {
+                val phone = devices.find { it.device_type == "phone" } ?: devices.first()
+                selectedDeviceId = phone.id
+                viewModel.loadSensorsForDevice(phone.id)
             }
-            Switch(
-                checked = isEnabled,
-                onCheckedChange = { onToggle() },
-                enabled = available
-            )
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Device: ", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Box {
+                AssistChip(
+                    onClick = { expanded = true },
+                    label = {
+                        val dev = devices.find { it.id == selectedDeviceId }
+                        Text(dev?.name ?: "Select...")
+                    }
+                )
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    devices.forEach { d ->
+                        DropdownMenuItem(
+                            text = { Text(d.name) },
+                            onClick = {
+                                selectedDeviceId = d.id
+                                viewModel.loadSensorsForDevice(d.id)
+                                expanded = false
+                                expandedSensor = null
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (sensorsLoading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        // All sensors for this device — simple ON/OFF toggle each
+        sensors.forEach { sensor ->
+            val deviceId = selectedDeviceId ?: return@forEach
+            val isOn = sensor.enabled
+            val isLocked = sensor.locked
+            val isExpanded = expandedSensor == sensor.id
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .animateContentSize(),
+                colors = if (!isOn) CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                ) else CardDefaults.cardColors(),
+                onClick = { expandedSensor = if (isExpanded) null else sensor.id }
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(sensor.icon ?: "", modifier = Modifier.width(32.dp),
+                            style = MaterialTheme.typography.titleMedium)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(sensor.name, style = MaterialTheme.typography.bodyLarge)
+                                if (isLocked) {
+                                    Text("🔒",  style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                            if (isLocked && sensor.policy_reason != null) {
+                                Text(sensor.policy_reason!!, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary, maxLines = 1)
+                            } else {
+                                sensor.description?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1)
+                                }
+                            }
+                        }
+                        Switch(
+                            checked = isOn,
+                            enabled = !isLocked,
+                            onCheckedChange = { viewModel.toggleSensorEnabled(deviceId, sensor.id, it) }
+                        )
+                    }
+
+                    // Expanded: attachment checkboxes
+                    if (isExpanded && isOn) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider()
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        val others = sensors.filter { it.id != sensor.id && it.muted != 1 }
+                        if (others.isNotEmpty()) {
+                            Text("When ${sensor.name} captures, also attach:",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            others.forEach { other ->
+                                val attached = sensor.attachments[other.id] ?: false
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.toggleSensorAttachment(deviceId, sensor.id, other.id, !attached)
+                                        }
+                                        .padding(vertical = 1.dp)
+                                ) {
+                                    Checkbox(
+                                        checked = attached,
+                                        onCheckedChange = {
+                                            viewModel.toggleSensorAttachment(deviceId, sensor.id, other.id, it)
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                    Text("${other.icon ?: ""} ${other.name}",
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        } else {
+                            Text("Turn on other sensors to attach their data.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
         }
     }
 }
