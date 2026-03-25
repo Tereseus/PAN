@@ -398,34 +398,62 @@ class PanForegroundService : Service() {
 
         val lowerStripped = stripped.lowercase()
 
-        // Google/Microsoft app queries → route to terminal (Claude Code has MCP access)
+        // Google/Microsoft app queries → try Google Assistant on phone first, fall back to terminal MCP
         val isGoogleQuery = lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
             lowerStripped.contains("meeting") || lowerStripped.contains("appointment") ||
             lowerStripped.contains("email") || lowerStripped.contains("gmail") ||
             lowerStripped.contains("outlook") || lowerStripped.contains("inbox") ||
             lowerStripped.contains("send email") || lowerStripped.contains("send a message")
         if (isGoogleQuery) {
+            // Try reading calendar directly from Android CalendarProvider (instant, no network)
+            if (lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
+                lowerStripped.contains("meeting") || lowerStripped.contains("appointment")) {
+                try {
+                    val calResult = readPhoneCalendar()
+                    if (calResult != null) {
+                        panLog("Calendar → local Android provider")
+                        mainHandler.post { panSpeak(calResult) }
+                        addToHistory("User", text)
+                        addToHistory("PAN", calResult)
+                        logToServer(text, "calendar", calResult, "phone_calendar")
+                        return
+                    }
+                } catch (e: Exception) {
+                    panLog("Local calendar read failed: ${e.message}")
+                }
+            }
             panLog("Google/Calendar query → terminal (MCP)")
             serviceScope.launch {
                 try {
-                    // Record timestamp before sending so we can find the response
-                    val beforeSend = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
                     val sent = serverClient.sendTerminalCommand(stripped)
                     if (sent) {
                         mainHandler.post { panSpeak("Let me check.") }
-                        // Wait for Claude's response (polls events DB for Stop event)
-                        try {
-                            val waitResponse = serverClient.api.waitTerminalResponse(beforeSend, 30000)
-                            val body = waitResponse.body()
-                            if (body?.ok == true && !body.response.isNullOrBlank()) {
-                                val answer = body.response!!
-                                panLog("Terminal MCP response: ${answer.take(100)}")
-                                mainHandler.post { panSpeak(answer) }
-                                addToHistory("User", text)
-                                addToHistory("PAN", answer)
-                            }
-                        } catch (e: Exception) {
-                            panLog("Wait for terminal response failed: ${e.message}")
+                        // Wait for Claude's response — poll manually since Retrofit timeout may be too short
+                        var answer: String? = null
+                        val startWait = System.currentTimeMillis()
+                        while (System.currentTimeMillis() - startWait < 45000) { // 45 second max
+                            delay(2000) // check every 2 seconds
+                            try {
+                                // Get the most recent Stop event from the server
+                                val sinceTime = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).apply {
+                                    timeZone = java.util.TimeZone.getDefault()
+                                }.format(java.util.Date(startWait - 5000)) // 5 seconds before we started
+                                val resp = serverClient.api.waitTerminalResponse(sinceTime, 2000)
+                                val body = resp.body()
+                                if (body?.ok == true && !body.response.isNullOrBlank()) {
+                                    answer = body.response
+                                    break
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        if (!answer.isNullOrBlank()) {
+                            panLog("Terminal MCP response: ${answer!!.take(100)}")
+                            mainHandler.post { panSpeak(answer!!) }
+                            addToHistory("User", text)
+                            addToHistory("PAN", answer!!)
+                        } else {
+                            panLog("Terminal MCP response timeout")
+                            mainHandler.post { panSpeak("I checked but didn't get a response in time. Check the terminal.") }
                         }
                     } else {
                         // Fallback to server if terminal isn't available
@@ -1184,6 +1212,53 @@ class PanForegroundService : Service() {
         }
         Log.w(TAG, "extractAppName: result too short or long: '$name' from '$text'")
         return null
+    }
+
+    private fun readPhoneCalendar(): String? {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR)
+            != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
+        try {
+            val now = System.currentTimeMillis()
+            val weekEnd = now + 7 * 24 * 60 * 60 * 1000L
+            val projection = arrayOf(
+                android.provider.CalendarContract.Events.TITLE,
+                android.provider.CalendarContract.Events.DTSTART,
+                android.provider.CalendarContract.Events.DTEND,
+                android.provider.CalendarContract.Events.ALL_DAY,
+                android.provider.CalendarContract.Events.EVENT_LOCATION
+            )
+            val selection = "${android.provider.CalendarContract.Events.DTSTART} >= ? AND ${android.provider.CalendarContract.Events.DTSTART} <= ?"
+            val selectionArgs = arrayOf(now.toString(), weekEnd.toString())
+            val cursor = contentResolver.query(
+                android.provider.CalendarContract.Events.CONTENT_URI,
+                projection, selection, selectionArgs,
+                "${android.provider.CalendarContract.Events.DTSTART} ASC"
+            ) ?: return null
+
+            val events = mutableListOf<String>()
+            val dateFormat = java.text.SimpleDateFormat("EEEE, MMM d 'at' h:mm a", java.util.Locale.US)
+            cursor.use { c ->
+                while (c.moveToNext()) {
+                    val title = c.getString(0) ?: "Untitled"
+                    val start = c.getLong(1)
+                    val location = c.getString(4)
+                    val dateStr = dateFormat.format(java.util.Date(start))
+                    val locStr = if (!location.isNullOrBlank()) " at $location" else ""
+                    events.add("$title on $dateStr$locStr")
+                }
+            }
+
+            return if (events.isEmpty()) {
+                "Your calendar is clear for the rest of the week. Nothing scheduled."
+            } else {
+                "You have ${events.size} event${if (events.size > 1) "s" else ""} this week: ${events.joinToString(". ")}"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Calendar read failed: ${e.message}")
+            return null
+        }
     }
 
     private fun launchPhoneApp(name: String): Boolean {
