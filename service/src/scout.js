@@ -166,6 +166,77 @@ async function scout() {
     }
   }
 
+  // Phase 2: Search a2asearch-mcp for custom topics + stack-based queries
+  try {
+    const { get: getSettings } = await import('./db.js');
+    const configRow = getSettings("SELECT value FROM settings WHERE key = 'autodev_config'");
+    const config = configRow ? JSON.parse(configRow.value) : {};
+    const topics = config.scout_topics || [];
+
+    // Also add stack-based search terms
+    const stackRows = all("SELECT value FROM settings WHERE key LIKE 'stack_%'");
+    for (const row of stackRows) {
+      try {
+        const stack = JSON.parse(row.value);
+        if (stack.runtimes) topics.push(...stack.runtimes.map(r => `${r} MCP`));
+        if (stack.frameworks) topics.push(...stack.frameworks.map(f => `${f} tools`));
+      } catch {}
+    }
+
+    // Deduplicate topics
+    const uniqueTopics = [...new Set(topics)].slice(0, 10);
+
+    if (uniqueTopics.length > 0) {
+      console.log(`[PAN Scout] Searching a2asearch for: ${uniqueTopics.join(', ')}`);
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(execFile);
+
+      for (const topic of uniqueTopics) {
+        try {
+          const { stdout } = await execAsync('npx', ['a2asearch', topic, '--json'], { timeout: 15000, shell: true });
+          if (!stdout.trim()) continue;
+
+          // Parse results — a2asearch --json outputs JSON array
+          let results = [];
+          try { results = JSON.parse(stdout); } catch {
+            // If not JSON, parse the text output
+            const lines = stdout.split('\n');
+            for (const line of lines) {
+              const match = line.match(/^\d+\.\s+(.+)/);
+              if (match) {
+                const name = match[1].trim();
+                results.push({ name, description: '', url: '' });
+              }
+            }
+          }
+
+          for (const r of (Array.isArray(results) ? results : []).slice(0, 5)) {
+            const toolName = r.name || r.title || '';
+            if (!toolName) continue;
+            try {
+              insert(`INSERT OR IGNORE INTO scout_findings (source, tool_name, description, url, relevance, relevance_score, category)
+                VALUES (:src, :name, :desc, :url, :rel, :score, :cat)`, {
+                ':src': `a2asearch: ${topic}`,
+                ':name': toolName,
+                ':desc': (r.description || '').slice(0, 300),
+                ':url': r.url || r.link || null,
+                ':rel': `Found via a2asearch for "${topic}"`,
+                ':score': 0.7,
+                ':cat': r.type?.toLowerCase().includes('mcp') ? 'mcp' : 'cli',
+              });
+              totalNew++;
+            } catch {}
+          }
+        } catch (e) {
+          // a2asearch may not have results for every topic
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[PAN Scout] a2asearch error:', e.message);
+  }
+
   console.log(`[PAN Scout] Scan complete. ${totalNew} new findings stored.`);
   return totalNew;
 }
