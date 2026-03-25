@@ -28,6 +28,65 @@
 #terminal-container .xterm { height: 100% !important; }
 #terminal-container .xterm-viewport { overflow-y: scroll !important; }
 #terminal-container .xterm-screen { min-height: 100%; }
+
+/* ========== TERMINAL EFFECTS ========== */
+
+/* Slow-moving gradient glow behind terminal */
+#terminal-container {
+  position: relative;
+  overflow: hidden;
+}
+#terminal-container::before {
+  content: '';
+  position: absolute;
+  top: -50%; left: -50%;
+  width: 200%; height: 200%;
+  background: radial-gradient(ellipse at 80% 80%, rgba(21,101,192,0.12) 0%, transparent 50%),
+              radial-gradient(ellipse at 20% 20%, rgba(203,166,247,0.07) 0%, transparent 50%),
+              radial-gradient(ellipse at 50% 50%, rgba(166,227,161,0.04) 0%, transparent 40%);
+  animation: terminalGlow 12s ease-in-out infinite alternate;
+  pointer-events: none;
+  z-index: 0;
+}
+@keyframes terminalGlow {
+  0%   { transform: translate(0, 0) scale(1); }
+  33%  { transform: translate(-3%, 2%) scale(1.02); }
+  66%  { transform: translate(2%, -2%) scale(0.98); }
+  100% { transform: translate(-1%, 1%) scale(1.01); }
+}
+
+/* PAN watermark — subtle Π in bottom-right */
+#terminal-container::after {
+  content: 'Π';
+  position: absolute;
+  bottom: 20px; right: 24px;
+  font-family: serif;
+  font-size: 120px;
+  font-weight: bold;
+  color: rgba(137, 180, 250, 0.04);
+  pointer-events: none;
+  z-index: 0;
+  user-select: none;
+}
+
+/* Make sure terminal canvas sits above the effects */
+#terminal-container .xterm { position: relative; z-index: 1; }
+
+/* Subtle scanline overlay for that retro-future feel */
+#terminal-container .xterm-screen::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 10;
+}
 /* Constrain Windows voice-to-text / IME composition overlay */
 #terminal-container .xterm .composition-view {
   max-width: 80% !important;
@@ -294,6 +353,55 @@ body {
 .memory-meta { font-size: 12px; color: var(--text2); margin-top: 4px; }
 
 /* Settings */
+.settings-layout {
+  display: flex;
+  height: 100%;
+  gap: 0;
+}
+.settings-nav {
+  width: 180px;
+  flex-shrink: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-nav-item {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text2);
+  cursor: pointer;
+  border: none;
+  background: none;
+  text-align: left;
+  font-family: inherit;
+  border-left: 3px solid transparent;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-nav-item:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.settings-nav-item.active {
+  background: var(--bg2);
+  color: var(--accent);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+.settings-panel {
+  flex: 1;
+  padding: 20px 24px;
+  overflow-y: auto;
+  display: none;
+}
+.settings-panel.active {
+  display: block;
+}
 .settings-section {
   margin-bottom: 24px;
 }
@@ -581,6 +689,11 @@ body {
 
   /* Settings */
   .settings-section { padding: 8px; }
+  .settings-layout { flex-direction: column; }
+  .settings-nav { width: 100%; flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); padding: 0; }
+  .settings-nav-item { border-left: none; border-bottom: 3px solid transparent; padding: 8px 12px; white-space: nowrap; font-size: 12px; }
+  .settings-nav-item.active { border-left-color: transparent; border-bottom-color: var(--accent); }
+  .settings-panel { padding: 12px; }
 }
 
 /* Login overlay */
@@ -704,7 +817,7 @@ body {
     </div>
     <div id="login-status" class="login-status"></div>
     <div id="login-skip" class="login-skip" style="display:none" onclick="skipLogin()">Continue without signing in (local mode)</div>
-    <div id="login-dev" class="login-skip" style="display:none" onclick="devAccess()">Developer access (localhost only)</div>
+    <div id="login-dev" class="login-skip" style="display:none" onclick="devAccess()">Developer access (local network)</div>
   </div>
 </div>
 
@@ -825,77 +938,89 @@ body {
 
   <!-- AUTOMATION PAGE -->
   <div id="automation" class="page">
-    <div style="display:grid;gap:16px;max-width:900px">
+    <div class="settings-layout">
+      <nav class="settings-nav">
+        <button class="settings-nav-item active" onclick="switchAutomationTab('jobs')">Jobs</button>
+        <button class="settings-nav-item" onclick="switchAutomationTab('stacks')">Tech Stacks</button>
+        <button class="settings-nav-item" onclick="switchAutomationTab('scout')">Scout</button>
+        <button class="settings-nav-item" onclick="switchAutomationTab('approvals')">Approvals</button>
+        <button class="settings-nav-item" onclick="switchAutomationTab('autodev')">AutoDev</button>
+      </nav>
 
-      <!-- Scheduled Jobs -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="margin:0;font-size:16px">Scheduled Jobs</h3>
-        </div>
-        <div id="automation-jobs" style="display:grid;gap:8px">
-          <div style="color:var(--text2)">Loading...</div>
+      <!-- Jobs -->
+      <div class="settings-panel active" id="automation-panel-jobs">
+        <div class="settings-section">
+          <h3>Scheduled Jobs</h3>
+          <div id="automation-jobs" style="display:grid;gap:8px">
+            <div style="color:var(--text2)">Loading...</div>
+          </div>
         </div>
       </div>
 
       <!-- Tech Stacks -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="margin:0;font-size:16px">Project Tech Stacks</h3>
-          <button class="btn btn-sm" onclick="rescanStacks()">Rescan</button>
-        </div>
-        <div id="automation-stacks" style="display:grid;gap:10px">
-          <div style="color:var(--text2)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Scout Findings -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="margin:0;font-size:16px">Scout Findings</h3>
-          <button class="btn btn-sm" onclick="runScout()">Scan Now</button>
-        </div>
-        <div style="margin-bottom:10px">
-          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Custom search topics (scout will look for these):</div>
-          <div style="display:flex;gap:6px">
-            <input type="text" id="scout-topic-input" placeholder="e.g. ESP32 BLE libraries, voice cloning, ..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">
-            <button class="btn btn-sm" onclick="addScoutTopic()">Add</button>
+      <div class="settings-panel" id="automation-panel-stacks">
+        <div class="settings-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0">Project Tech Stacks</h3>
+            <button class="btn btn-sm" onclick="rescanStacks()">Rescan</button>
           </div>
-          <div id="scout-topics" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px"></div>
-        </div>
-        <div id="automation-scout" style="display:grid;gap:6px">
-          <div style="color:var(--text2)">Loading...</div>
+          <div id="automation-stacks" style="display:grid;gap:10px">
+            <div style="color:var(--text2)">Loading...</div>
+          </div>
         </div>
       </div>
 
-      <!-- Approval Queue -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-        <div style="margin-bottom:12px">
-          <h3 style="margin:0;font-size:16px">Approval Queue</h3>
-          <div style="font-size:11px;color:var(--text2);margin-top:2px">Scout recommendations and AutoDev proposals awaiting your review</div>
+      <!-- Scout -->
+      <div class="settings-panel" id="automation-panel-scout">
+        <div class="settings-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0">Scout Findings</h3>
+            <button class="btn btn-sm" onclick="runScout()">Scan Now</button>
+          </div>
+          <div style="margin-bottom:10px">
+            <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Custom search topics (scout will look for these):</div>
+            <div style="display:flex;gap:6px">
+              <input type="text" id="scout-topic-input" placeholder="e.g. ESP32 BLE libraries, voice cloning, ..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">
+              <button class="btn btn-sm" onclick="addScoutTopic()">Add</button>
+            </div>
+            <div id="scout-topics" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px"></div>
+          </div>
+          <div id="automation-scout" style="display:grid;gap:6px">
+            <div style="color:var(--text2)">Loading...</div>
+          </div>
         </div>
-        <div id="automation-approvals" style="display:grid;gap:8px">
-          <div style="color:var(--text2);font-size:12px">No pending approvals</div>
+      </div>
+
+      <!-- Approvals -->
+      <div class="settings-panel" id="automation-panel-approvals">
+        <div class="settings-section">
+          <h3>Approval Queue</h3>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:12px">Scout recommendations and AutoDev proposals awaiting your review</div>
+          <div id="automation-approvals" style="display:grid;gap:8px">
+            <div style="color:var(--text2);font-size:12px">No pending approvals</div>
+          </div>
         </div>
       </div>
 
       <!-- AutoDev -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <h3 style="margin:0;font-size:16px">AutoDev</h3>
-          <button class="btn btn-sm" onclick="triggerAutoDev()" id="autodev-run-btn" disabled>Run Now</button>
-        </div>
-        <div style="color:var(--danger);font-size:12px;margin-bottom:12px;padding:6px 8px;background:var(--danger)11;border-radius:4px">
-          Use at your own risk — AutoDev modifies code autonomously. Review all changes before committing.
-        </div>
-        <div id="autodev-config" style="margin-bottom:12px">
-          <div style="color:var(--text2)">Loading config...</div>
-        </div>
-        <h4 style="font-size:13px;margin:12px 0 8px;color:var(--text2)">Recent Activity</h4>
-        <div id="autodev-log">
-          <div style="color:var(--text2);font-size:12px">No activity yet</div>
+      <div class="settings-panel" id="automation-panel-autodev">
+        <div class="settings-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h3 style="margin:0">AutoDev</h3>
+            <button class="btn btn-sm" onclick="triggerAutoDev()" id="autodev-run-btn" disabled>Run Now</button>
+          </div>
+          <div style="color:var(--danger);font-size:12px;margin-bottom:12px;padding:6px 8px;background:var(--danger)11;border-radius:4px">
+            Use at your own risk — AutoDev modifies code autonomously. Review all changes before committing.
+          </div>
+          <div id="autodev-config" style="margin-bottom:12px">
+            <div style="color:var(--text2)">Loading config...</div>
+          </div>
+          <h4 style="font-size:13px;margin:12px 0 8px;color:var(--text2)">Recent Activity</h4>
+          <div id="autodev-log">
+            <div style="color:var(--text2);font-size:12px">No activity yet</div>
+          </div>
         </div>
       </div>
-
     </div>
   </div>
 
@@ -932,164 +1057,210 @@ body {
   </div>
 
   <div id="data" class="page">
-    <!-- Stats Overview -->
-    <div class="stats-grid" id="stats-grid">
-      <div class="stat-card"><div class="value">-</div><div class="label">Loading...</div></div>
-    </div>
+    <div class="settings-layout">
+      <nav class="settings-nav">
+        <button class="settings-nav-item active" onclick="switchDataTab('overview')">Overview</button>
+        <button class="settings-nav-item" onclick="switchDataTab('activity')">Activity Log</button>
+        <button class="settings-nav-item" onclick="switchDataTab('photos')">Photos</button>
+        <button class="settings-nav-item" onclick="switchDataTab('memory')">Memory</button>
+        <button class="settings-nav-item" onclick="switchDataTab('jobs')">Jobs</button>
+        <button class="settings-nav-item" onclick="switchDataTab('danger')">Danger Zone</button>
+      </nav>
 
-    <!-- Activity Log -->
-    <div class="delete-section">
-      <h4 style="display:flex;align-items:center;gap:12px">Activity Log
-        <label style="font-size:12px;font-weight:normal;color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:4px">
-          <input type="checkbox" id="privacy-toggle" onchange="togglePrivacy()" style="cursor:pointer"> Hide paths
-        </label>
-      </h4>
-      <div class="toolbar">
-        <select id="event-type-filter" onchange="eventsOffset=0;loadEvents()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
-          <option value="">All Types</option>
-          <option value="PhoneAudio">PhoneAudio</option>
-          <option value="RouterCommand">RouterCommand</option>
-          <option value="SessionStart">SessionStart</option>
-          <option value="SessionEnd">SessionEnd</option>
-          <option value="PhoneSync">PhoneSync</option>
-          <option value="phone_log">phone_log</option>
-          <option value="PandantPhoto">PandantPhoto</option>
-          <option value="SensorData">SensorData</option>
-          <option value="VisionAnalysis">VisionAnalysis</option>
-        </select>
-        <input type="text" id="event-search" placeholder="Search all data..." onkeydown="if(event.key==='Enter'){eventsOffset=0;loadEvents()}" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
-        <input type="date" id="event-date-filter" onchange="eventsOffset=0;loadEvents()">
-        <button class="btn" onclick="eventsOffset=0;loadEvents()">Search</button>
-        <span class="info" id="event-count"></span>
+      <!-- Overview -->
+      <div class="settings-panel active" id="data-panel-overview">
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card"><div class="value">-</div><div class="label">Loading...</div></div>
+        </div>
       </div>
-      <div id="bulk-actions" style="display:none;padding:8px 0">
-        <button class="btn btn-danger" onclick="bulkDeleteSearch()">Delete all matching results</button>
+
+      <!-- Activity Log -->
+      <div class="settings-panel" id="data-panel-activity">
+        <div class="settings-section">
+          <h3 style="display:flex;align-items:center;gap:12px">Activity Log
+            <label style="font-size:12px;font-weight:normal;color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:4px">
+              <input type="checkbox" id="privacy-toggle" onchange="togglePrivacy()" style="cursor:pointer"> Hide paths
+            </label>
+          </h3>
+          <div class="toolbar">
+            <select id="event-type-filter" onchange="eventsOffset=0;loadEvents()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
+              <option value="">All Types</option>
+              <option value="PhoneAudio">PhoneAudio</option>
+              <option value="RouterCommand">RouterCommand</option>
+              <option value="SessionStart">SessionStart</option>
+              <option value="SessionEnd">SessionEnd</option>
+              <option value="PhoneSync">PhoneSync</option>
+              <option value="phone_log">phone_log</option>
+              <option value="PandantPhoto">PandantPhoto</option>
+              <option value="SensorData">SensorData</option>
+              <option value="VisionAnalysis">VisionAnalysis</option>
+            </select>
+            <input type="text" id="event-search" placeholder="Search all data..." onkeydown="if(event.key==='Enter'){eventsOffset=0;loadEvents()}" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
+            <input type="date" id="event-date-filter" onchange="eventsOffset=0;loadEvents()">
+            <button class="btn" onclick="eventsOffset=0;loadEvents()">Search</button>
+            <span class="info" id="event-count"></span>
+          </div>
+          <div id="bulk-actions" style="display:none;padding:8px 0">
+            <button class="btn btn-danger" onclick="bulkDeleteSearch()">Delete all matching results</button>
+          </div>
+          <div id="event-list"></div>
+          <div class="pagination" id="event-pagination"></div>
+        </div>
       </div>
-      <div id="event-list"></div>
-      <div class="pagination" id="event-pagination"></div>
-    </div>
 
-    <!-- Photos -->
-    <div class="delete-section">
-      <h4>Captured Photos</h4>
-      <div id="photos-grid" style="display:flex;flex-wrap:wrap;gap:12px"></div>
-    </div>
-
-    <!-- Memory Items -->
-    <div class="delete-section">
-      <h4>Memory Items</h4>
-      <div id="memory-list"></div>
-      <div class="pagination" id="memory-pagination"></div>
-    </div>
-
-    <!-- Data Actions -->
-    <div class="delete-section">
-      <h4>Data Actions</h4>
-      <div class="toolbar">
-        <input type="date" id="delete-date" />
-        <button class="btn btn-danger" onclick="deleteDay()">Delete Day's Data</button>
+      <!-- Photos -->
+      <div class="settings-panel" id="data-panel-photos">
+        <div class="settings-section">
+          <h3>Captured Photos</h3>
+          <div id="photos-grid" style="display:flex;flex-wrap:wrap;gap:12px"></div>
+        </div>
       </div>
-    </div>
 
-    <!-- Scheduled Jobs -->
-    <div class="delete-section">
-      <h4>Scheduled Jobs & Processes</h4>
-      <div id="jobs-list"></div>
-      <button class="btn" onclick="loadJobs()" style="margin-top:8px">Refresh</button>
-    </div>
+      <!-- Memory -->
+      <div class="settings-panel" id="data-panel-memory">
+        <div class="settings-section">
+          <h3>Memory</h3>
+          <p style="color:var(--text2);font-size:13px;margin-bottom:12px">Claude's memory across all projects — what it knows about you, your work, and your preferences.</p>
+          <div id="memory-filter" style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"></div>
+          <div id="memory-list"></div>
+        </div>
+      </div>
 
-    <!-- Danger Zone -->
-    <div class="delete-section" style="border:1px solid var(--danger);border-radius:var(--radius);padding:16px;margin-top:12px">
-      <h4 style="color:var(--danger)">Danger Zone</h4>
-      <p style="color:var(--text2);font-size:13px;margin-bottom:12px">This permanently deletes ALL data from ΠΑΝ and syncs the deletion to the server. This cannot be undone.</p>
-      <button class="btn btn-danger" onclick="deleteAll()">Delete ALL Data</button>
+      <!-- Jobs -->
+      <div class="settings-panel" id="data-panel-jobs">
+        <div class="settings-section">
+          <h3>Scheduled Jobs & Processes</h3>
+          <div id="jobs-list"></div>
+          <button class="btn" onclick="loadJobs()" style="margin-top:8px">Refresh</button>
+        </div>
+      </div>
+
+      <!-- Danger Zone -->
+      <div class="settings-panel" id="data-panel-danger">
+        <div class="settings-section">
+          <h3 style="color:var(--danger)">Data Actions</h3>
+          <div class="toolbar" style="margin-bottom:16px">
+            <input type="date" id="delete-date" />
+            <button class="btn btn-danger" onclick="deleteDay()">Delete Day's Data</button>
+          </div>
+        </div>
+        <div class="settings-section" style="border:1px solid var(--danger);border-radius:var(--radius);padding:16px">
+          <h3 style="color:var(--danger)">Danger Zone</h3>
+          <p style="color:var(--text2);font-size:13px;margin-bottom:12px">This permanently deletes ALL data from ΠΑΝ and syncs the deletion to the server. This cannot be undone.</p>
+          <button class="btn btn-danger" onclick="deleteAll()">Delete ALL Data</button>
+        </div>
+      </div>
     </div>
   </div>
 
   <!-- SETTINGS PAGE -->
   <div id="settings" class="page">
-    <div class="settings-section">
-      <h3>Server Health</h3>
-      <div id="health-status"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Projects</h3>
-      <div id="projects-list"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Connected Devices</h3>
-      <div id="devices-list"></div>
-      <div style="margin-top:10px">
-        <input type="text" id="rename-device-input" placeholder="Rename this device..." style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:200px;margin-right:8px">
-        <button onclick="renameDevice()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Rename</button>
-      </div>
-    </div>
-    <div class="settings-section">
-      <h3>Recent Sessions</h3>
-      <div id="sessions-list"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Security</h3>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input type="password" id="pw-current" placeholder="Current password" autocomplete="off"
-          style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:150px;outline:none"
-          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-        <input type="password" id="pw-new" placeholder="New password" autocomplete="off"
-          style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:150px;outline:none"
-          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-        <button onclick="changePassword()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Change Delete Password</button>
-      </div>
-      <div style="font-size:12px;color:var(--text2);margin-top:6px">Change your delete password above.</div>
-    </div>
+    <div class="settings-layout">
+      <nav class="settings-nav">
+        <button class="settings-nav-item active" onclick="switchSettingsTab('general')">General</button>
+        <button class="settings-nav-item" onclick="switchSettingsTab('devices')">Devices</button>
+        <button class="settings-nav-item" onclick="switchSettingsTab('security')">Security</button>
+        <button class="settings-nav-item" onclick="switchSettingsTab('auth')" id="settings-nav-auth" style="display:none">Authentication</button>
+        <button class="settings-nav-item" onclick="switchSettingsTab('users')" id="settings-nav-users" style="display:none">Users</button>
+      </nav>
 
-    <!-- Auth & OAuth Settings (owner only) -->
-    <div class="settings-section" id="auth-settings-section" style="display:none">
-      <h3>Authentication</h3>
-      <div style="margin-bottom:16px">
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-          <span style="font-size:14px">Auth Mode:</span>
-          <select id="auth-mode-select" onchange="changeAuthMode(this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:13px">
-            <option value="none">None (single user, no login required)</option>
-            <option value="token">Token (multi-user, login required)</option>
-          </select>
-        </label>
-        <div style="font-size:12px;color:var(--text2);margin-top:4px">In "none" mode, the dashboard works without signing in. Switch to "token" when you're ready for multi-user.</div>
+      <!-- General -->
+      <div class="settings-panel active" id="settings-general">
+        <div class="settings-section">
+          <h3>Server Health</h3>
+          <div id="health-status"></div>
+        </div>
+        <div class="settings-section">
+          <h3>Projects</h3>
+          <div id="projects-list"></div>
+        </div>
+        <div class="settings-section">
+          <h3>Recent Sessions</h3>
+          <div id="sessions-list"></div>
+        </div>
       </div>
 
-      <h4 style="margin-bottom:12px;font-size:14px">OAuth Providers</h4>
-      <div style="display:grid;gap:12px">
-        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-          <div style="font-weight:600;margin-bottom:8px">Google</div>
-          <input type="text" id="oauth-google-id" placeholder="Google Client ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
-          <input type="password" id="oauth-google-secret" placeholder="Google Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
-          <div style="font-size:11px;color:var(--text2)">Get from console.cloud.google.com → APIs → Credentials → OAuth 2.0 Client ID (Web app)</div>
-        </div>
-        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-          <div style="font-weight:600;margin-bottom:8px">Microsoft</div>
-          <input type="text" id="oauth-microsoft-id" placeholder="Microsoft Application (client) ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
-          <input type="password" id="oauth-microsoft-secret" placeholder="Microsoft Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
-          <div style="font-size:11px;color:var(--text2)">Get from portal.azure.com → App registrations → New registration</div>
-        </div>
-        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-          <div style="font-weight:600;margin-bottom:8px">GitHub</div>
-          <input type="text" id="oauth-github-id" placeholder="GitHub Client ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
-          <input type="password" id="oauth-github-secret" placeholder="GitHub Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
-          <div style="font-size:11px;color:var(--text2)">Get from github.com → Settings → Developer Settings → OAuth Apps. Callback URL: <code id="github-callback-url" style="color:var(--accent)"></code></div>
-        </div>
-        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
-          <div style="font-weight:600;margin-bottom:8px">Apple</div>
-          <input type="text" id="oauth-apple-id" placeholder="Apple Services ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
-          <div style="font-size:11px;color:var(--text2)">Requires Apple Developer account ($99/year). developer.apple.com → Certificates → Services IDs</div>
+      <!-- Devices -->
+      <div class="settings-panel" id="settings-devices">
+        <div class="settings-section">
+          <h3>Connected Devices</h3>
+          <div id="devices-list"></div>
+          <div style="margin-top:10px">
+            <input type="text" id="rename-device-input" placeholder="Rename this device..." style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:200px;margin-right:8px">
+            <button onclick="renameDevice()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Rename</button>
+          </div>
         </div>
       </div>
-      <button onclick="saveOAuthProviders()" style="margin-top:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 20px;cursor:pointer;font-size:14px">Save OAuth Settings</button>
-      <span id="oauth-save-status" style="margin-left:12px;font-size:13px;color:var(--accent2)"></span>
-    </div>
 
-    <!-- User Management (admin+ only) -->
-    <div class="settings-section" id="user-mgmt-section" style="display:none">
-      <h3>Users</h3>
-      <div id="user-list" style="display:grid;gap:8px"></div>
+      <!-- Security -->
+      <div class="settings-panel" id="settings-security">
+        <div class="settings-section">
+          <h3>Delete Password</h3>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="password" id="pw-current" placeholder="Current password" autocomplete="off"
+              style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:150px;outline:none"
+              onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+            <input type="password" id="pw-new" placeholder="New password" autocomplete="off"
+              style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;width:150px;outline:none"
+              onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+            <button onclick="changePassword()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;cursor:pointer">Change Password</button>
+          </div>
+          <div style="font-size:12px;color:var(--text2);margin-top:6px">Change your delete password above.</div>
+        </div>
+      </div>
+
+      <!-- Authentication (owner only) -->
+      <div class="settings-panel" id="settings-auth">
+        <div class="settings-section" id="auth-settings-section">
+          <h3>Auth Mode</h3>
+          <div style="margin-bottom:16px">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <select id="auth-mode-select" onchange="changeAuthMode(this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:13px">
+                <option value="none">None (single user, no login required)</option>
+                <option value="token">Token (multi-user, login required)</option>
+              </select>
+            </label>
+            <div style="font-size:12px;color:var(--text2);margin-top:4px">In "none" mode, the dashboard works without signing in. Switch to "token" when you're ready for multi-user.</div>
+          </div>
+
+          <h3>OAuth Providers</h3>
+          <div style="display:grid;gap:12px">
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+              <div style="font-weight:600;margin-bottom:8px">Google</div>
+              <input type="text" id="oauth-google-id" placeholder="Google Client ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+              <input type="password" id="oauth-google-secret" placeholder="Google Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+              <div style="font-size:11px;color:var(--text2)">Get from console.cloud.google.com → APIs → Credentials → OAuth 2.0 Client ID (Web app)</div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+              <div style="font-weight:600;margin-bottom:8px">Microsoft</div>
+              <input type="text" id="oauth-microsoft-id" placeholder="Microsoft Application (client) ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+              <input type="password" id="oauth-microsoft-secret" placeholder="Microsoft Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+              <div style="font-size:11px;color:var(--text2)">Get from portal.azure.com → App registrations → New registration</div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+              <div style="font-weight:600;margin-bottom:8px">GitHub</div>
+              <input type="text" id="oauth-github-id" placeholder="GitHub Client ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+              <input type="password" id="oauth-github-secret" placeholder="GitHub Client Secret" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+              <div style="font-size:11px;color:var(--text2)">Get from github.com → Settings → Developer Settings → OAuth Apps. Callback URL: <code id="github-callback-url" style="color:var(--accent)"></code></div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+              <div style="font-weight:600;margin-bottom:8px">Apple</div>
+              <input type="text" id="oauth-apple-id" placeholder="Apple Services ID" style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:4px;font-size:12px;font-family:monospace">
+              <div style="font-size:11px;color:var(--text2)">Requires Apple Developer account ($99/year). developer.apple.com → Certificates → Services IDs</div>
+            </div>
+          </div>
+          <button onclick="saveOAuthProviders()" style="margin-top:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:8px 20px;cursor:pointer;font-size:14px">Save OAuth Settings</button>
+          <span id="oauth-save-status" style="margin-left:12px;font-size:13px;color:var(--accent2)"></span>
+        </div>
+      </div>
+
+      <!-- Users (admin+ only) -->
+      <div class="settings-panel" id="settings-users">
+        <div class="settings-section" id="user-mgmt-section">
+          <h3>Users</h3>
+          <div id="user-list" style="display:grid;gap:8px"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1172,9 +1343,10 @@ function showLogin() {
   document.getElementById('login-overlay').classList.remove('hidden');
   // Show skip button in auth_mode=none
   document.getElementById('login-skip').style.display = panAuthMode === 'none' ? 'block' : 'none';
-  // Show dev access when in token mode and accessing from localhost
-  const isLocal = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
-  document.getElementById('login-dev').style.display = (panAuthMode === 'token' && isLocal) ? 'block' : 'none';
+  // Show dev access when in token mode and accessing from localhost or LAN
+  const h = window.location.hostname;
+  const isLocalOrLAN = ['localhost', '127.0.0.1', '::1'].includes(h) || /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
+  document.getElementById('login-dev').style.display = (panAuthMode === 'token' && isLocalOrLAN) ? 'block' : 'none';
 }
 
 function hideLogin() {
@@ -1471,6 +1643,36 @@ function switchTab(pageName) {
   loadPage(pageName);
 }
 
+function switchSettingsTab(tab) {
+  const container = document.getElementById('settings');
+  container.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+  container.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+  const navItem = container.querySelector(`.settings-nav-item[onclick*="'${tab}'"]`);
+  if (navItem) navItem.classList.add('active');
+  const panel = document.getElementById('settings-' + tab);
+  if (panel) panel.classList.add('active');
+}
+
+function switchAutomationTab(tab) {
+  const container = document.getElementById('automation');
+  container.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+  container.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+  const navItem = container.querySelector(`.settings-nav-item[onclick*="'${tab}'"]`);
+  if (navItem) navItem.classList.add('active');
+  const panel = document.getElementById('automation-panel-' + tab);
+  if (panel) panel.classList.add('active');
+}
+
+function switchDataTab(tab) {
+  const container = document.getElementById('data');
+  container.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+  container.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+  const navItem = container.querySelector(`.settings-nav-item[onclick*="'${tab}'"]`);
+  if (navItem) navItem.classList.add('active');
+  const panel = document.getElementById('data-panel-' + tab);
+  if (panel) panel.classList.add('active');
+}
+
 // Mobile: switch between terminal panels (Project, Terminal, Chat, Tasks)
 let currentMobilePanel = 'left-chat';
 function isMobile() { return window.innerWidth <= 768; }
@@ -1499,6 +1701,31 @@ function switchMobilePanel(panel) {
   if (panel === 'left-chat') { loadMobileChat(); startPermissionPolling(); }
   if (panel === 'left-project') loadMobileProject();
   if (panel === 'right') loadMobileTasks();
+}
+
+// Global helper — render chat text, converting clipboard image paths to inline images
+function renderChatText(text, escaped) {
+  let safe = escaped || escapeHtml(text || '');
+  // Match [Image: source: .../pan-clipboard/clipboard_xxx.png] wrapper format
+  safe = safe.replace(/\[Image:?\s*source:?\s*[^\]]*pan-clipboard[\/\\](clipboard_\d+\.\w+)[^\]]*\]/gi,
+    (match, filename) => `<div style="margin:4px 0;text-align:center"><img src="/clipboard/${filename}" style="max-width:100%;max-height:180px;border-radius:6px;border:1px solid var(--border);cursor:pointer;display:inline-block" onclick="window.open('/clipboard/${filename}','_blank')"></div>`);
+  // Match bare clipboard paths: /c/Users/.../pan-clipboard/clipboard_xxx.png or C:/Users/...
+  safe = safe.replace(/(?:\/c|C:)\/Users\/[^\s<]*pan-clipboard[\/\\](clipboard_\d+\.\w+)/gi,
+    (match, filename) => `<div style="margin:4px 0;text-align:center"><img src="/clipboard/${filename}" style="max-width:100%;max-height:180px;border-radius:6px;border:1px solid var(--border);cursor:pointer;display:inline-block" onclick="window.open('/clipboard/${filename}','_blank')"></div>`);
+  // Match [Image #N] tags and remove them (the actual image is rendered above)
+  safe = safe.replace(/\[Image #\d+\]/g, '');
+  return safe;
+}
+
+// Render clipboard images from msg.images array
+function renderChatImages(images) {
+  if (!images || !images.length) return '';
+  return images.map(img => {
+    if (img.clipboardFile) {
+      return `<div style="margin:4px 0;text-align:center"><img src="/clipboard/${img.clipboardFile}" style="max-width:100%;max-height:180px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);cursor:pointer;display:inline-block" onclick="window.open('/clipboard/${img.clipboardFile}','_blank')"></div>`;
+    }
+    return '';
+  }).join('');
 }
 
 // Mobile chat — full screen chat bubbles
@@ -1545,12 +1772,14 @@ async function loadMobileChat() {
   let html = '';
   for (const msg of data.messages) {
     if (msg.role === 'user') {
+      const imgHtml = renderChatImages(msg.images);
+      const textHtml = msg.text ? renderChatText(msg.text) : '';
       html += `<div style="background:var(--accent);color:#fff;border-radius:12px 12px 4px 12px;padding:10px 12px;margin-bottom:8px;font-size:14px;word-break:break-word">
-        ${escapeHtml(msg.text)}
+        ${textHtml}${imgHtml}
       </div>`;
     } else if (msg.type === 'text') {
       html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 4px;padding:10px 12px;margin-bottom:8px;font-size:14px;word-break:break-word;white-space:pre-wrap">
-        ${escapeHtml(msg.text)}
+        ${renderChatText(msg.text)}
       </div>`;
     } else if (msg.type === 'tool') {
       html += `<div style="background:transparent;border-left:2px solid var(--border);padding:4px 10px;margin-bottom:6px;font-size:12px;color:var(--text2);font-family:monospace;word-break:break-all">
@@ -1800,6 +2029,9 @@ async function sendMobileCommand() {
   if (!text) return;
   input.value = '';
 
+  // Send to the selected session (or default to dash-pan)
+  const targetSession = mobReplySessionId || 'dash-pan';
+
   // Show sent message immediately in the chat as a "sent" bubble
   const msgs = document.getElementById('mob-chat-messages');
   if (msgs) {
@@ -1811,9 +2043,6 @@ async function sendMobileCommand() {
     // User just sent a message — scroll to bottom so they see it
     msgs.scrollTop = msgs.scrollHeight;
   }
-
-  // Send to the selected session (or default to dash-pan)
-  const targetSession = mobReplySessionId || 'dash-pan';
   try {
     const res = await fetch('/api/v1/terminal/send', {
       method: 'POST',
@@ -2042,7 +2271,7 @@ async function loadStats() {
   const grid = document.getElementById('stats-grid');
 
   grid.innerHTML = `
-    <div class="stat-card" style="cursor:pointer" onclick="switchTab('events')"><div class="value">${data.total_events}</div><div class="label">Events →</div></div>
+    <div class="stat-card" style="cursor:pointer" onclick="switchTab('data');switchDataTab('activity')"><div class="value">${data.total_events}</div><div class="label">Events →</div></div>
     <div class="stat-card" style="cursor:pointer" onclick="loadMemory()"><div class="value">${data.total_memory}</div><div class="label">Memory Items →</div></div>
     <div class="stat-card" style="cursor:pointer" onclick="switchTab('settings')"><div class="value">${data.total_sessions}</div><div class="label">Sessions →</div></div>
     <div class="stat-card" style="cursor:pointer" onclick="switchTab('projects')"><div class="value">${data.total_projects}</div><div class="label">Projects →</div></div>
@@ -2069,29 +2298,64 @@ function filterByEventType(type) {
   }, 100);
 }
 
-async function loadMemory() {
-  const data = await api(`/api/memory?limit=${PAGE_SIZE}&offset=${memoryOffset}`);
-  const el = document.getElementById('memory-list');
+let memoryFilterProject = '';
+let memoryFilterType = '';
 
-  if (!data.items.length) {
-    el.innerHTML = '<div class="loading">No memory items</div>';
+async function loadMemory() {
+  const data = await api('/api/memory');
+  const el = document.getElementById('memory-list');
+  const filterEl = document.getElementById('memory-filter');
+
+  if (!data.memories || !data.memories.length) {
+    el.innerHTML = '<div class="loading">No memory files found</div>';
+    filterEl.innerHTML = '';
     return;
   }
 
-  el.innerHTML = data.items.map(m => `
-    <div class="memory-item" id="mem-${m.id}">
-      <div class="memory-content">
-        <span class="memory-type">${escapeHtml(m.item_type)}</span>
-        ${m.confidence ? `<span style="color:var(--text2);font-size:12px;margin-left:8px">${(m.confidence * 100).toFixed(0)}% confidence</span>` : ''}
-        <div class="memory-text">${escapeHtml(m.content)}</div>
-        ${m.context ? `<div class="memory-meta">Context: ${escapeHtml(m.context)}</div>` : ''}
-        <div class="memory-meta">${fmtTime(m.created_at)}</div>
-      </div>
-      <button class="btn btn-danger btn-sm" onclick="deleteMemory(${m.id})">Delete</button>
-    </div>
-  `).join('');
+  // Build filter buttons
+  const projects = [...new Set(data.memories.map(m => m.project))];
+  const types = [...new Set(data.memories.map(m => m.type))];
+  const typeColors = { user: '#58a6ff', feedback: '#d29922', project: '#3fb950', reference: '#bc8cff' };
 
-  renderPagination('memory-pagination', memoryOffset, data.total, (off) => { memoryOffset = off; loadMemory(); });
+  filterEl.innerHTML = `
+    <button class="btn btn-sm ${!memoryFilterProject ? 'active' : ''}" onclick="memoryFilterProject='';loadMemory()" style="${!memoryFilterProject ? 'background:var(--accent);color:#fff' : ''}">All Projects</button>
+    ${projects.map(p => `<button class="btn btn-sm ${memoryFilterProject === p ? 'active' : ''}" onclick="memoryFilterProject='${escapeHtml(p)}';loadMemory()" style="${memoryFilterProject === p ? 'background:var(--accent);color:#fff' : ''}">${escapeHtml(p)}</button>`).join('')}
+    <span style="width:1px;background:var(--border);margin:0 4px"></span>
+    <button class="btn btn-sm ${!memoryFilterType ? 'active' : ''}" onclick="memoryFilterType='';loadMemory()" style="${!memoryFilterType ? 'background:var(--accent);color:#fff' : ''}">All Types</button>
+    ${types.map(t => { const tc = typeColors[t] || 'var(--bg3)'; return `<button class="btn btn-sm ${memoryFilterType === t ? 'active' : ''}" onclick="memoryFilterType='${escapeHtml(t)}';loadMemory()" style="background:${tc};color:#fff;opacity:${memoryFilterType === t ? '1' : '0.6'}">${escapeHtml(t.charAt(0).toUpperCase() + t.slice(1))}</button>`; }).join('')}
+  `;
+
+  // Filter
+  let filtered = data.memories;
+  if (memoryFilterProject) filtered = filtered.filter(m => m.project === memoryFilterProject);
+  if (memoryFilterType) filtered = filtered.filter(m => m.type === memoryFilterType);
+
+  if (!filtered.length) {
+    el.innerHTML = '<div style="color:var(--text2);padding:16px">No memories match this filter.</div>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(m => {
+    const typeColor = typeColors[m.type] || 'var(--text2)';
+    const typeLabel = (m.type || 'Unknown').charAt(0).toUpperCase() + (m.type || 'unknown').slice(1);
+    // Render body as readable text — convert markdown headers to bold, keep it clean
+    const bodyHtml = escapeHtml(m.body || '').replace(/^## (.+)$/gm, '<strong style="color:var(--text);font-size:13px">$1</strong>')
+      .replace(/^### (.+)$/gm, '<strong style="color:var(--text);font-size:12px">$1</strong>')
+      .replace(/^\*\*(.+?)\*\*/gm, '<strong>$1</strong>')
+      .replace(/^- (.+)$/gm, '&bull; $1')
+      .replace(/\n/g, '<br>');
+
+    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:10px;padding:2px 8px;border-radius:4px;background:${typeColor};color:#fff;font-weight:600;text-transform:uppercase">${escapeHtml(typeLabel)}</span>
+        <span style="font-weight:600;font-size:14px;color:var(--text)">${escapeHtml(m.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()))}</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--text2)">${escapeHtml(m.project)}</span>
+      </div>
+      ${m.description ? `<div style="color:var(--text2);font-size:12px;margin-bottom:8px;font-style:italic">${escapeHtml(m.description)}</div>` : ''}
+      <div style="font-size:13px;color:var(--text);line-height:1.6;max-height:200px;overflow-y:auto">${bodyHtml}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:8px">${fmtTime(m.modified)}</div>
+    </div>`;
+  }).join('');
 }
 
 // SETTINGS
@@ -2198,7 +2462,7 @@ function requirePassword(action) {
     modal.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;width:350px;max-width:90vw';
     modal.innerHTML = `
       <h3 style="margin-bottom:8px;color:var(--danger)">Confirm Delete</h3>
-      <p style="color:var(--text2);margin-bottom:16px;font-size:14px">${action}</p>
+      <p style="color:var(--text2);margin-bottom:16px;font-size:14px;text-transform:capitalize">${action}</p>
       <input type="password" id="delete-pw-input" placeholder="Enter password" autofocus
         style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:12px;font-size:14px">
       <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -2226,9 +2490,13 @@ function requirePassword(action) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: pw })
       }).then(r => r.json()).then(data => {
-        cleanup();
-        if (data.valid) resolve(true);
-        else { alert('Incorrect password.'); resolve(false); }
+        if (data.valid) { cleanup(); resolve(true); }
+        else {
+          input.value = '';
+          input.style.borderColor = 'var(--danger)';
+          input.placeholder = 'Wrong password — try again';
+          input.focus();
+        }
       }).catch(() => { cleanup(); resolve(false); });
     };
 
@@ -2241,13 +2509,13 @@ function requirePassword(action) {
 }
 
 async function deleteEvent(id, btnEl) {
-  if (!await requirePassword('delete this event')) return;
+  if (!await requirePassword('Delete This Event')) return;
   await api(`/api/events/${id}`, { method: 'DELETE' });
   if (btnEl) btnEl.closest('.event-item, .convo-item')?.remove();
 }
 
 async function deleteMemory(id) {
-  if (!await requirePassword('delete this memory')) return;
+  if (!await requirePassword('Delete This Memory')) return;
   await api(`/api/memory/${id}`, { method: 'DELETE' });
   document.getElementById('mem-' + id)?.remove();
 }
@@ -2255,7 +2523,7 @@ async function deleteMemory(id) {
 async function deleteDay() {
   const date = document.getElementById('delete-date').value;
   if (!date) return alert('Select a date first');
-  if (!await requirePassword(`delete ALL events for ${date}`)) return;
+  if (!await requirePassword(`Delete ALL Events For ${date}`)) return;
   const result = await api(`/api/events/day/${date}`, { method: 'DELETE' });
   alert(`Deleted ${result.deleted_count} events for ${date}`);
   loadStats();
@@ -2267,7 +2535,7 @@ async function bulkDeleteSearch() {
   const date = document.getElementById('event-date-filter')?.value || '';
   const search = document.getElementById('event-search')?.value || '';
   const count = document.getElementById('event-count')?.textContent || '0';
-  if (!await requirePassword(`bulk delete ${count}`)) return;
+  if (!await requirePassword(`Bulk Delete ${count}`) ) return;
   let q = '/api/events/bulk?confirm=yes';
   if (type) q += `&type=${encodeURIComponent(type)}`;
   if (date) q += `&date=${encodeURIComponent(date)}`;
@@ -2278,7 +2546,7 @@ async function bulkDeleteSearch() {
 }
 
 async function deleteAll() {
-  if (!await requirePassword('open the nuclear delete zone')) return;
+  if (!await requirePassword('Open The Nuclear Delete Zone')) return;
   if (!await requirePassword('DELETE ALL DATA permanently — second confirmation')) return;
   await api('/api/all?confirm=yes', { method: 'DELETE' });
   alert('All data deleted.');
@@ -2342,7 +2610,7 @@ async function loadPhotos() {
 }
 
 async function deletePhoto(filename, btn) {
-  if (!await requirePassword('delete this photo')) return;
+  if (!await requirePassword('Delete This Photo')) return;
   await api('/api/photos/' + encodeURIComponent(filename), { method: 'DELETE' });
   btn.closest('div').remove();
 }
@@ -2410,7 +2678,7 @@ async function loadJobs() {
         ${j.detail ? `<div style="font-size:11px;color:var(--text2);margin-left:16px">${escapeHtml(j.detail)}</div>` : ''}
         ${j.schedule ? `<div style="font-size:11px;color:var(--text2);margin-left:16px">${escapeHtml(j.schedule)}</div>` : ''}
       </div>
-      <span style="color:${color};font-size:12px;font-weight:500;background:${color}22;padding:2px 8px;border-radius:4px">${escapeHtml(j.status)}</span>
+      <span style="color:${color};font-size:12px;font-weight:500;background:${color}22;padding:2px 8px;border-radius:4px">${escapeHtml((j.status || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()))}</span>
     </div>`;
   }).join('');
 }
@@ -2498,6 +2766,8 @@ async function loadProjects() {
     const clr = pctColor(p.percentage);
     html += `<div class="project-card" onclick="showProjectDetail(${p.id})">
       <h3>${escapeHtml(p.name)}</h3>
+      ${p.classification ? `<div style="font-size:11px;color:var(--accent);margin-bottom:4px">${escapeHtml(p.classification)}</div>` : ''}
+      ${p.description ? `<div style="font-size:12px;color:var(--text2);margin-bottom:8px;line-height:1.4">${escapeHtml(p.description)}</div>` : ''}
       <div class="project-pct" style="color:var(--${clr === 'green' ? 'accent2' : clr === 'blue' ? 'accent' : clr === 'yellow' ? 'warn' : 'text2'})">${p.percentage}%</div>
       <div class="progress-bar">
         <div class="progress-fill ${clr}" style="width:${p.percentage}%"></div>
@@ -2802,14 +3072,16 @@ async function loadChatHistory() {
 
       for (const msg of data.messages) {
         if (msg.role === 'user') {
+          const imgHtml = renderChatImages(msg.images);
+          const textHtml = msg.text ? renderChatText(msg.text) : '';
           bubbles.push({
             type: 'user',
-            html: `<div style="background:var(--accent);color:#fff;border-radius:8px 8px 2px 8px;padding:8px 10px;font-size:11px;align-self:flex-end;max-width:95%;word-break:break-word">${escapeHtml(msg.text)}</div>`
+            html: `<div style="background:var(--accent);color:#fff;border-radius:8px 8px 2px 8px;padding:8px 10px;font-size:11px;align-self:flex-end;max-width:95%;word-break:break-word">${textHtml}${imgHtml}</div>`
           });
         } else if (msg.type === 'text') {
           bubbles.push({
             type: 'assistant',
-            html: `<div style="background:var(--bg3);border-radius:8px 8px 8px 2px;padding:8px 10px;font-size:11px;align-self:flex-start;max-width:95%;word-break:break-word;white-space:pre-wrap">${escapeHtml(msg.text)}</div>`
+            html: `<div style="background:var(--bg3);border-radius:8px 8px 8px 2px;padding:8px 10px;font-size:11px;align-self:flex-start;max-width:95%;word-break:break-word;white-space:pre-wrap">${renderChatText(msg.text)}</div>`
           });
         } else if (msg.type === 'tool') {
           bubbles.push({
@@ -3400,10 +3672,67 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
       return true;
     }
     if ((ev.ctrlKey && ev.key === 'v') || (ev.ctrlKey && ev.shiftKey && ev.key === 'V')) {
-      // Prevent default browser paste AND xterm's built-in paste — we handle it manually
       ev.preventDefault();
       ev.stopPropagation();
-      navigator.clipboard.readText().then(text => { if (text && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: text })); });
+      navigator.clipboard.read().then(async items => {
+        for (const item of items) {
+          const imageType = item.types.find(t => t.startsWith('image/'));
+          if (imageType) {
+            const blob = await item.getType(imageType);
+            const blobUrl = URL.createObjectURL(blob);
+            const reader = new FileReader();
+            reader.onload = async () => {
+              const base64 = reader.result.split(',')[1];
+              try {
+                const resp = await fetch('/api/v1/clipboard-image', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ data: base64, mimeType: imageType })
+                });
+                const result = await resp.json();
+                if (result.ok) {
+                  const unixPath = result.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
+                  // Store pending image path for this tab
+                  if (!window._panPendingImages) window._panPendingImages = {};
+                  if (!window._panPendingImages[tabId]) window._panPendingImages[tabId] = [];
+                  window._panPendingImages[tabId].push(unixPath);
+                  // Type the path into the terminal input so it's part of the message
+                  if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: unixPath + ' ' }));
+                  // Show thumbnail preview overlay
+                  const container = document.getElementById('terminal-container');
+                  let tray = document.getElementById('pan-image-tray');
+                  if (!tray) {
+                    tray = document.createElement('div');
+                    tray.id = 'pan-image-tray';
+                    tray.style.cssText = 'position:absolute;bottom:8px;left:8px;display:flex;gap:6px;z-index:100;align-items:flex-end;pointer-events:auto;';
+                    container.appendChild(tray);
+                  }
+                  const thumb = document.createElement('div');
+                  thumb.style.cssText = 'position:relative;border:1px solid rgba(137,180,250,0.3);border-radius:4px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.2);background:#1e1e2e;cursor:pointer;transition:opacity 0.3s;';
+                  thumb.innerHTML = `<img src="${blobUrl}" style="display:block;max-width:48px;max-height:36px;object-fit:contain;">`;
+                  thumb.onclick = (e) => {
+                    const idx = window._panPendingImages[tabId]?.indexOf(unixPath);
+                    if (idx > -1) window._panPendingImages[tabId].splice(idx, 1);
+                    thumb.remove();
+                    if (!tray.children.length) tray.remove();
+                    URL.revokeObjectURL(blobUrl);
+                  };
+                  tray.appendChild(thumb);
+                }
+              } catch (err) {
+                tabTerm.write('\r\n\x1b[38;5;196m[Image paste failed: ' + err.message + ']\x1b[0m');
+              }
+            };
+            reader.readAsDataURL(blob);
+            return;
+          }
+        }
+        // No image — paste as text
+        const text = await navigator.clipboard.readText();
+        if (text && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: text }));
+      }).catch(() => {
+        navigator.clipboard.readText().then(text => { if (text && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: text })); });
+      });
       return false;
     }
     if (ev.ctrlKey && ev.shiftKey && ev.key === 'C') {
@@ -3412,7 +3741,16 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
     return true;
   });
 
-  tabTerm.onData((data) => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data })); });
+  tabTerm.onData((data) => {
+    if (ws.readyState !== 1) return;
+    // When user hits Enter and there are pending images, clean up the thumbnails
+    if (data === '\r' && window._panPendingImages?.[tabId]?.length) {
+      window._panPendingImages[tabId] = [];
+      const tray = document.getElementById('pan-image-tray');
+      if (tray) tray.remove();
+    }
+    ws.send(JSON.stringify({ type: 'input', data }));
+  });
   tabTerm.onResize(({ cols, rows }) => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
 
   // Render tab bar and activate this tab
@@ -3714,7 +4052,7 @@ async function loadApprovalQueue() {
       html += `
         <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--accent2)11;border:1px solid var(--accent2)33;border-radius:6px;font-size:12px">
           <div style="flex:1">
-            <div style="font-weight:500">${escapeHtml(f.tool_name)} <span style="color:var(--accent2);font-size:10px">approved</span></div>
+            <div style="font-weight:500">${escapeHtml(f.tool_name)} <span style="color:var(--accent2);font-size:10px">Approved</span></div>
             <div style="color:var(--text2)">${escapeHtml(f.description || '')}</div>
           </div>
           <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="installScoutFinding(${f.id}, '${escapeHtml(f.tool_name)}')">Install</button>
@@ -3785,7 +4123,7 @@ async function loadScoutFindings() {
         <span style="font-weight:500;flex-shrink:0">${escapeHtml(f.tool_name)}</span>
         <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(f.description || '')}</span>
         <span style="color:var(--text2);font-size:10px">${f.relevance_score || ''}</span>
-        <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:${f.status === 'new' ? 'var(--accent)' : 'var(--bg3)'};color:${f.status === 'new' ? '#fff' : 'var(--text2)'}">${f.status}</span>
+        <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:${f.status === 'new' ? 'var(--accent)' : 'var(--bg3)'};color:${f.status === 'new' ? '#fff' : 'var(--text2)'};text-transform:uppercase">${f.status}</span>
       </div>
     `).join('');
   } catch {
@@ -4085,9 +4423,9 @@ async function toggleSensorAttach(deviceId, sensorId, attachTo, enabled) {
 async function loadAuthSettings() {
   if (!panUser || !['owner', 'admin'].includes(panUser.role)) return;
 
-  // Show auth settings section
-  const section = document.getElementById('auth-settings-section');
-  if (section) section.style.display = '';
+  // Show auth and users nav tabs
+  document.getElementById('settings-nav-auth').style.display = '';
+  document.getElementById('settings-nav-users').style.display = '';
 
   // Set GitHub callback URL
   const ghUrl = document.getElementById('github-callback-url');
@@ -4107,9 +4445,8 @@ async function loadAuthSettings() {
     }
   } catch {}
 
-  // Show user management for admin+
+  // Load user list
   if (['owner', 'admin'].includes(panUser.role)) {
-    document.getElementById('user-mgmt-section').style.display = '';
     loadUserList();
   }
 }
@@ -4180,7 +4517,7 @@ async function loadUserList() {
         <span style="font-size:11px;padding:2px 8px;border-radius:12px;background:${u.role === 'owner' ? 'var(--accent)' : u.role === 'admin' ? '#d29922' : 'var(--bg3)'};color:#fff;text-transform:uppercase">${u.role}</span>
         ${panUser?.role === 'owner' && u.id !== panUser.id ? `
           <select onchange="changeUserRole(${u.id}, this.value)" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;font-size:11px">
-            ${['viewer','user','manager','admin','owner'].map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+            ${['viewer','user','manager','admin','owner'].map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`).join('')}
           </select>
         ` : ''}
         <div style="font-size:11px;color:var(--text2)">${u.is_active ? '' : 'Disabled'}</div>

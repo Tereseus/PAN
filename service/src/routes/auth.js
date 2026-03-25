@@ -372,12 +372,14 @@ router.post('/google-callback', async (req, res) => {
   }
 });
 
-// POST /api/v1/auth/dev-token — localhost-only emergency access (never get locked out)
+// POST /api/v1/auth/dev-token — local/LAN emergency access (never get locked out)
 router.post('/dev-token', (req, res) => {
   const ip = req.ip || req.connection?.remoteAddress || '';
-  const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip === 'localhost';
-  if (!isLocal) {
-    return res.status(403).json({ error: 'Dev access only available from localhost' });
+  const raw = ip.replace('::ffff:', '');
+  const isLocal = raw === '127.0.0.1' || ip === '::1' || ip === 'localhost';
+  const isLAN = /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(raw);
+  if (!isLocal && !isLAN) {
+    return res.status(403).json({ error: 'Dev access only available from local network' });
   }
 
   // Issue a token for the owner user (id=1)
