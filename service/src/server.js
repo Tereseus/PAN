@@ -86,6 +86,70 @@ app.post('/api/v1/clipboard-image', async (req, res) => {
   }
 });
 
+// Setup status — no auth required (first-run needs this before they have a token)
+app.get('/api/setup-status', async (req, res) => {
+  const result = { configured: false, model: null, provider: null, error: null };
+
+  // Check if a Server API Model is set
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'ai_model'");
+    if (row) {
+      const model = row.value.replace(/^"|"$/g, '');
+      if (model) {
+        result.model = model;
+        result.configured = true;
+      }
+    }
+  } catch {}
+
+  // Also check if a CLI Provider is set (e.g. "claude" uses Claude Code subscription directly)
+  if (!result.configured) {
+    try {
+      const row = get("SELECT value FROM settings WHERE key = 'terminal_ai'");
+      if (row) {
+        const ta = JSON.parse(row.value);
+        const provider = ta.provider || '';
+        if (provider) {
+          result.model = provider + ' (CLI)';
+          result.configured = true;
+        }
+      }
+    } catch {}
+  }
+
+  // Default: PAN always has Claude CLI available via subscription
+  if (!result.configured) {
+    result.model = 'claude (CLI)';
+    result.configured = true;
+  }
+
+  if (result.configured) {
+    // If using CLI provider, just mark as working — no API test needed
+    if (result.model && result.model.endsWith('(CLI)')) {
+      result.provider = 'working';
+    } else {
+      try {
+        const { claude } = await import('./claude.js');
+        const test = await claude('Say "ok" and nothing else.', { timeout: 10000, maxTokens: 10, caller: 'setup-check' });
+        if (test) result.provider = 'working';
+      } catch (e) {
+        result.error = e.message;
+        result.configured = false;
+      }
+    }
+  }
+
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'custom_models'");
+    if (row) {
+      const models = JSON.parse(row.value);
+      if (models.length > 0) result.has_custom_models = true;
+    }
+  } catch {}
+
+  res.json(result);
+});
+
 // Auth middleware — all other /api routes get req.user
 app.use('/api', extractUser);
 
@@ -100,6 +164,132 @@ app.use('/api/v1/devices', devicesRouter);
 
 // Sensor management API
 app.use('/api/sensors', sensorsRouter);
+
+// Feature registry — maps feature names to start/stop functions
+const featureRegistry = {
+  scout: { start: startScout, stop: stopScout, interval: '12h', defaultMs: 12 * 60 * 60 * 1000 },
+  dream: { start: startDream, stop: stopDream, interval: '6h', defaultMs: 6 * 60 * 60 * 1000 },
+  autodev: { start: startAutoDev, stop: stopAutoDev, interval: '1h', defaultMs: 60 * 60 * 1000 },
+};
+
+// GET /api/automation/status — current feature toggle states
+app.get('/api/automation/status', (req, res) => {
+  let toggles = {};
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'feature_toggles'");
+    if (row) toggles = JSON.parse(row.value);
+  } catch {}
+
+  const features = {
+    scout: { enabled: toggles.scout !== false, interval: '12h' },
+    dream: { enabled: toggles.dream !== false, interval: '6h' },
+    autodev: { enabled: toggles.autodev === true, interval: '1h' },
+    classifier: { enabled: true, interval: '5m', required: true },
+    project_sync: { enabled: true, interval: '10m', required: true },
+  };
+  res.json({ features });
+});
+
+// POST /api/automation/toggle — toggle a feature on/off
+app.post('/api/automation/toggle', (req, res) => {
+  const { feature, enabled } = req.body;
+  if (!feature || !featureRegistry[feature]) {
+    return res.status(400).json({ error: 'Invalid feature. Valid: ' + Object.keys(featureRegistry).join(', ') });
+  }
+
+  // Load current toggles
+  let toggles = {};
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'feature_toggles'");
+    if (row) toggles = JSON.parse(row.value);
+  } catch {}
+
+  toggles[feature] = !!enabled;
+  run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('feature_toggles', :val, datetime('now','localtime'))", {
+    ':val': JSON.stringify(toggles)
+  });
+
+  // Actually start/stop the feature
+  const reg = featureRegistry[feature];
+  if (enabled) {
+    console.log(`[PAN] Starting ${feature}...`);
+    reg.start(reg.defaultMs);
+  } else {
+    console.log(`[PAN] Stopping ${feature}...`);
+    reg.stop();
+  }
+
+  res.json({ ok: true, feature, enabled: !!enabled });
+});
+
+// GET /api/automation/usage — AI usage stats
+app.get('/api/automation/usage', (req, res) => {
+  try {
+    // Today
+    const todayStats = get(`SELECT COALESCE(SUM(cost_cents), 0) as total_cost_cents, COUNT(*) as total_calls
+      FROM ai_usage WHERE date(created_at) = date('now','localtime')`);
+    const todayByCaller = all(`SELECT caller, COUNT(*) as calls, COALESCE(SUM(cost_cents), 0) as cost_cents,
+      COALESCE(SUM(input_tokens), 0) as input_tokens, COALESCE(SUM(output_tokens), 0) as output_tokens
+      FROM ai_usage WHERE date(created_at) = date('now','localtime') GROUP BY caller`);
+
+    // This week
+    const weekStats = get(`SELECT COALESCE(SUM(cost_cents), 0) as total_cost_cents, COUNT(*) as total_calls
+      FROM ai_usage WHERE created_at >= datetime('now','localtime', '-7 days')`);
+    const weekByCaller = all(`SELECT caller, COUNT(*) as calls, COALESCE(SUM(cost_cents), 0) as cost_cents
+      FROM ai_usage WHERE created_at >= datetime('now','localtime', '-7 days') GROUP BY caller`);
+
+    // All time
+    const allTimeStats = get(`SELECT COALESCE(SUM(cost_cents), 0) as total_cost_cents, COUNT(*) as total_calls
+      FROM ai_usage`);
+    const allTimeByCaller = all(`SELECT caller, COUNT(*) as calls, COALESCE(SUM(cost_cents), 0) as cost_cents
+      FROM ai_usage GROUP BY caller`);
+
+    const toMap = (rows) => {
+      const m = {};
+      for (const r of rows) m[r.caller] = { calls: r.calls, cost_cents: r.cost_cents, input_tokens: r.input_tokens, output_tokens: r.output_tokens };
+      return m;
+    };
+
+    res.json({
+      today: { ...todayStats, by_caller: toMap(todayByCaller) },
+      week: { ...weekStats, by_caller: toMap(weekByCaller) },
+      all_time: { ...allTimeStats, by_caller: toMap(allTimeByCaller) },
+    });
+  } catch (e) {
+    console.error('[PAN Usage] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/v1/settings — read all PAN settings (for mobile sync + dashboard)
+app.get('/api/v1/settings', (req, res) => {
+  try {
+    const rows = all("SELECT key, value FROM settings");
+    const settings = {};
+    for (const r of rows) {
+      try { settings[r.key] = JSON.parse(r.value); } catch { settings[r.key] = r.value; }
+    }
+    res.json(settings);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/v1/settings — update settings (partial merge — only keys sent are updated)
+app.put('/api/v1/settings', (req, res) => {
+  try {
+    const updates = req.body;
+    for (const [key, value] of Object.entries(updates)) {
+      const valStr = typeof value === 'string' ? value : JSON.stringify(value);
+      run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (:key, :val, datetime('now','localtime'))", {
+        ':key': key, ':val': valStr
+      });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Dashboard (web UI + API)
 app.use('/dashboard', dashboardRouter);
@@ -400,13 +590,106 @@ app.post('/api/v1/dictate', async (req, res) => {
 });
 
 // Health check
+let _serverStartedAt = Date.now();
 app.get('/health', (req, res) => {
-  res.json({ status: 'running', timestamp: new Date().toISOString() });
+  const uptimeMs = Date.now() - _serverStartedAt;
+  const secs = Math.floor(uptimeMs / 1000);
+  const mins = Math.floor(secs / 60);
+  const hrs = Math.floor(mins / 60);
+  const uptime = hrs > 0 ? `${hrs}h ${mins % 60}m` : mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
+  res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime });
 });
+
+// Auto-detect local model providers (Ollama, LM Studio)
+async function autoDetectLocalModels() {
+  const detected = [];
+
+  // Check Ollama (default port 11434)
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('http://localhost:11434/api/tags', { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      const models = data.models || [];
+      console.log(`[PAN Setup] Ollama detected with ${models.length} models`);
+      for (const m of models) {
+        detected.push({
+          id: m.name || m.model,
+          name: (m.name || m.model).split(':')[0] + ' (Ollama)',
+          provider: 'ollama',
+          url: 'http://localhost:11434',
+        });
+      }
+    }
+  } catch {}
+
+  // Check LM Studio (default port 1234)
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('http://localhost:1234/v1/models', { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      const models = data.data || [];
+      console.log(`[PAN Setup] LM Studio detected with ${models.length} models`);
+      for (const m of models) {
+        detected.push({
+          id: m.id,
+          name: m.id + ' (LM Studio)',
+          provider: 'lmstudio',
+          url: 'http://localhost:1234',
+        });
+      }
+    }
+  } catch {}
+
+  if (detected.length === 0) {
+    console.log('[PAN Setup] No local model providers detected');
+    return;
+  }
+
+  // Check if we already have custom models configured
+  let existing = [];
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'custom_models'");
+    if (row) existing = JSON.parse(row.value);
+  } catch {}
+
+  // Add newly detected models that aren't already configured
+  const existingIds = new Set(existing.map(m => m.id));
+  let added = 0;
+  for (const m of detected) {
+    if (!existingIds.has(m.id)) {
+      existing.push(m);
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('custom_models', :val, datetime('now','localtime'))", {
+      ':val': JSON.stringify(existing)
+    });
+    console.log(`[PAN Setup] Auto-added ${added} local model(s) to providers`);
+
+    // If no default model is set, use the first detected one
+    const currentModel = get("SELECT value FROM settings WHERE key = 'ai_model'");
+    if (!currentModel || !currentModel.value || currentModel.value === '""') {
+      const firstModel = detected[0].id;
+      run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('ai_model', :val, datetime('now','localtime'))", {
+        ':val': JSON.stringify(firstModel)
+      });
+      console.log(`[PAN Setup] Auto-set default model to: ${firstModel}`);
+    }
+  }
+}
 
 let server;
 
 function start() {
+  _serverStartedAt = Date.now();
   return new Promise((resolve, reject) => {
     server = app.listen(PORT, HOST, () => {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
@@ -420,6 +703,9 @@ function start() {
 
       // Seed sensor definitions (22 sensors)
       seedSensors();
+
+      // Auto-detect local model providers (Ollama, LM Studio)
+      autoDetectLocalModels();
 
       // Auto-register this PC as a device
       const pcHost = hostname();
@@ -440,17 +726,27 @@ function start() {
       // Start classification engine (every 5 minutes)
       startClassifier(5 * 60 * 1000);
 
+      // Respect feature toggles from settings
+      let toggles = {};
+      try {
+        const toggleRow = get("SELECT value FROM settings WHERE key = 'feature_toggles'");
+        if (toggleRow) toggles = JSON.parse(toggleRow.value);
+      } catch {}
+
       // Start tool scout (every 12 hours — discovers new CLIs and tools)
-      startScout(12 * 60 * 60 * 1000);
+      if (toggles.scout !== false) startScout(12 * 60 * 60 * 1000);
+      else console.log('[PAN] Scout disabled by toggle');
 
       // Start auto-dream (every 6 hours — consolidates events into structured memory)
-      startDream(6 * 60 * 60 * 1000);
+      if (toggles.dream !== false) startDream(6 * 60 * 60 * 1000);
+      else console.log('[PAN] Dream disabled by toggle');
 
       // Start Stack Scanner (every 6 hours — discovers tech stacks per project)
       startStackScanner(6 * 60 * 60 * 1000);
 
       // Start AutoDev (checks hourly, runs at configured time — disabled by default)
-      startAutoDev(60 * 60 * 1000);
+      if (toggles.autodev === true) startAutoDev(60 * 60 * 1000);
+      else console.log('[PAN] AutoDev disabled by toggle');
 
       resolve(server);
     });
@@ -471,5 +767,37 @@ function stop() {
   stopStackScanner();
   if (server) server.close();
 }
+
+// Graceful shutdown — kill all background jobs and close the port
+function gracefulShutdown(signal) {
+  console.log(`\n[PAN] ${signal} received — shutting down...`);
+  stop();
+  process.exit(0);
+}
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+
+// Dashboard restart endpoint — full process restart so code changes from disk are picked up
+app.post('/api/admin/restart', (req, res) => {
+  res.json({ ok: true, message: 'Restarting...' });
+  console.log('[PAN] Restart requested from dashboard');
+  setTimeout(async () => {
+    console.log('[PAN] Stopping all services...');
+    stop();
+    // Wait for port to fully release, then spawn fresh process and exit
+    await new Promise(r => setTimeout(r, 1500));
+    console.log('[PAN] Spawning fresh server process...');
+    const { spawn } = await import('child_process');
+    const child = spawn(process.execPath, ['pan.js', 'start'], {
+      cwd: join(__dirname, '..'),
+      stdio: 'inherit',
+      detached: true
+    });
+    child.unref();
+    console.log('[PAN] New process spawned, exiting old process');
+    process.exit(0);
+  }, 500);
+});
 
 export { start, stop, app };
