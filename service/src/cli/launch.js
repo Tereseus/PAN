@@ -15,9 +15,53 @@ import { spawn } from 'child_process';
 import { writeFileSync, readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { syncProjects } from '../db.js';
+import { syncProjects, get } from '../db.js';
 
 const CLAUDE_CMD = join(process.env.APPDATA || 'C:\\Users\\user\\AppData\\Roaming', 'npm', 'claude.cmd');
+
+// CLI commands for each supported terminal AI provider
+const AI_CLI_PROVIDERS = {
+  claude: { cmd: CLAUDE_CMD, nameFlag: '--name', modelFlag: '--model' },
+  gemini: { cmd: 'gemini', nameFlag: null, modelFlag: '--model' },
+  copilot: { cmd: 'github-copilot-cli', nameFlag: null, modelFlag: null },
+  aider: { cmd: 'aider', nameFlag: null, modelFlag: '--model' },
+};
+
+// Read terminal AI config from settings DB
+function getTerminalAIConfig() {
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'terminal_ai'");
+    if (row) return JSON.parse(row.value);
+  } catch {}
+  return { provider: 'claude', model: '' };
+}
+
+// Build the CLI command string for launching AI in a terminal
+function buildAICommand(projectName) {
+  const config = getTerminalAIConfig();
+  const provider = config.provider || 'claude';
+
+  // If a full custom command is provided, use it directly
+  if (config.custom_cmd) {
+    return config.custom_cmd
+      .replace(/\{project\}/g, projectName)
+      .replace(/\{path\}/g, '.');
+  }
+
+  // Look up known provider, or treat provider name as the command itself
+  const providerConfig = AI_CLI_PROVIDERS[provider];
+  if (providerConfig) {
+    let cmd = `"${providerConfig.cmd}"`;
+    if (providerConfig.nameFlag) cmd += ` ${providerConfig.nameFlag} "${projectName}"`;
+    if (config.model && providerConfig.modelFlag) cmd += ` ${providerConfig.modelFlag} ${config.model}`;
+    return cmd;
+  }
+
+  // Unknown provider — treat the provider name as the CLI command
+  let cmd = `"${provider}"`;
+  if (config.model) cmd += ` --model ${config.model}`;
+  return cmd;
+}
 const CLAUDE_PROJECTS = join(process.env.USERPROFILE || 'C:\\Users\\user', '.claude', 'projects');
 
 function readPanFile(projectPath) {
@@ -255,7 +299,7 @@ export default function cmdLaunch() {
       ...echoLines,
       `echo ============================================`,
       `echo.`,
-      `"${CLAUDE_CMD}" --name "${p.name}"`,
+      buildAICommand(p.name),
     ].join('\r\n');
 
     writeFileSync(batPath, batContent, 'ascii');

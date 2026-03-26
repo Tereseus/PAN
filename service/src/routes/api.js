@@ -124,7 +124,7 @@ router.post('/vision', async (req, res) => {
     const prompt = question || 'What is in this image? Describe it concisely in 1-3 sentences.';
     console.log(`[PAN Vision] Analyzing image (${image_base64.length} chars), question: "${prompt.slice(0, 80)}"`);
 
-    const description = await claudeVision(prompt, image_base64);
+    const description = await claudeVision(prompt, image_base64, { caller: 'vision' });
     console.log(`[PAN Vision] Result: ${description.slice(0, 100)}`);
 
     // Save the image to disk
@@ -268,7 +268,7 @@ Here are ${count} matching entries from their history (${totalEvents} total even
 
 ${snippetText}
 Answer the user's question based on these results. Be specific — mention dates, exact details, and what was said. If the answer isn't in the data, say so honestly. Keep it to 2-4 sentences, conversational tone.`,
-      { maxTokens: 600, timeout: 30000 }
+      { maxTokens: 600, timeout: 30000, caller: 'recall' }
     );
 
     const elapsed = Date.now() - startTime;

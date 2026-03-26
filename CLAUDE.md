@@ -63,6 +63,12 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 ### What You Should Know
 
+Always capitalize titles, labels, and dynamically rendered names in the dashboard UI. Never display raw lowercase keys like `scout`, `dream`, `autodev`, `project_sync` — use proper display names like "Scout", "Dream", "AutoDev", "Project Sync".
+
+**Why:** User was frustrated that the Automation > Jobs list was rendering feature names in lowercase (e.g., "scout" instead of "Scout"). This applies broadly to all UI labels.
+
+**How to apply:** When rendering any key/identifier as a UI label, always map it to a properly capitalized display name. Use a display name map or capitalizer function. This ap...
+
 This terminal exists solely to manage the PAN server process. When user says restart, just run `node pan.js start` again without questions.
 
 **Why:** User corrected Claude for asking unnecessary confirmation instead of just restarting the service.
@@ -175,64 +181,110 @@ Currently it's for an old Alexa app — needs to be updated to describe PAN.
 - [todo P1] Smart scroll — remember exact scroll position, restore on every refresh/update/tool call
 
 ### Recent Conversation
-**User** (2026-03-25 19:32:15): Or do we put anything in there this is a memory whateverIt clearly has text in it doesn't it Would it be way too long someone to open up an actual read actual read That would that would give you a nic
-**User** (2026-03-25 19:34:00): <task-notification>
-<task-id>bs0omh667</task-id>
-<tool-use-id>toolu_017xJNLVvfcBuNkAwoUDG54Y</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-OneDrive-Desktop-PAN\e92
-**Claude** (2026-03-25 19:34:00): The Memory tab now shows **real Claude memory files** — the actual `.md` files from `~/.claude/projects/*/memory/`. Each one reads like a story:
+**User** (2026-03-25 22:02:50): This is a fresh session. Read the PAN session context injected into CLAUDE.md. Summarize what we were working on last time — start with Last time we were working on and list the key topics. Then ask w
+**Claude** (2026-03-25 22:03:00): Last time we were working on:
 
-- **Project Status** — what's working, what's broken, priorities
-- **Feedback** — how you like Claude to work (don't ask to restart, map casual names to t
-**Claude** (2026-03-25 19:34:03): Server's up. Refresh the dashboard and check out the Memory tab.
-**Claude** (2026-03-25 19:45:47): Now the dashboard should work. Refresh the page (`localhost:7777/dashboard`) — the syntax error is fixed. 
+1. **Session context injection** — getting the `.pan-briefing.md` content to inject into CLAUDE.md before Claude reads it on fresh sessions. Fixed a bug where the LIKE query used single backslashes but the DB stores JSON-escaped double backslashes, so Claude responses 
+**User** (2026-03-25 22:04:31): Just keep the setup in the desk in the bugs don't make it ever go away just leave it in there That would be set up when you click it to share some of my green text if it's correct to send it your set 
+**Claude** (2026-03-25 22:18:25): The permission hook keeps denying. Are you seeing the approval prompt on your phone? It might be that the PAN server's PermissionRequest hook is auto-denying or timing out. 
 
-**What was broken:** Line 2325 had a nested template literal where `${typeColors[t] || 'var(--bg3)'}` inside a backtick-delimited string caused `var` to be parsed as a JavaScript keyword. This
-**User** (2026-03-25 19:46:39):  ▐▛███▜▌   Claude Code v2.1.83
+Try approving on your phone, or if you want to bypass it temporarily, you can type:
 
-▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+`! claude config set-hook PermissionRequ
+**User** (2026-03-25 22:28:00): Oh send it to me again
+**Claude** (2026-03-25 22:28:54): Done. Here's what changed:
 
-  ▘▘ ▝▝    ~\Desktop
+**Setup Guide:**
+- Never removed from the dropdown — always stays as an option
+- When validated: shows green "✓ SETUP VALIDATED" with model name and provider displayed
+- Has a "RE-VALIDATE" button so you can re-check anytime
+- Only auto-selects the setup tab on first load
+**User** (2026-03-25 22:29:49): Just restarted from the settings and everything just the uptime it never changes running when you click start I still see the project set up in the in the Test and bugs panel so yeah
+**User** (2026-03-25 22:30:13): This is a fresh session. Read the PAN session context injected into CLAUDE.md. Summarize what we were working on last time — start with Last time we were working on and list the key topics. Then ask w
+**User** (2026-03-25 22:30:28): > ## Last Messages (Full)
 
+> User (2026-03-25 22:29:49):
 
+> Just restarted from the settings and everything just the uptime it never changes running when you click start I still see the project set up
+**Claude** (2026-03-25 22:30:28): Last time we were working on:
 
-❯ Hey can you look at my pan folder I have a project in there it's basically running Claude and t
-**User** (2026-03-25 19:47:22): I don't know if it's like a double tab or something I'm restarting it myself by ending the node pan JS I have so maybe there's two of them
-**Claude** (2026-03-25 19:47:35): Just one instance — PID 5024 is the only one listening. The TIME_WAITs are just old closed connections. You're good, only one server running. Go ahead and restart it yourself and then refresh the dashboard to see the new Memory tab.
-**User** (2026-03-25 19:49:22): Well I restarted it myself At you restart it it still says this[Image #1]
-**Claude** (2026-03-25 19:49:49): The code IS updated on disk. The running server just hasn't loaded it. You need to kill the current node process and start it fresh. The server that's running right now was started before the code change.
+1. **Session context injection** — Getting fresh Claude sessions to auto-load context from `.pan-state.md` + recent chat into CLAUDE.md so we could stop using `--continue` (which caused throttling). The hook was firing but timing was tricky — Claude sometimes read CLAU
+**Claude** (2026-03-25 22:38:46): Here's what I did:
 
-Try killing it and starting again — make sure you kill the old one first so port 7777 is free.
-**User** (2026-03-25 19:51:26): is the server still up
-**User** (2026-03-25 19:51:42): I closed mine
-**Claude** (2026-03-25 19:51:42): Yeah it's still up. And yes — if you're talking to me through PAN, that means the server is running. The problem is it's running the **old** code from before my changes. You need to fully kill it and restart for the new memory API to take effect.
+**Restart fixes (server.js):**
+- Uptime now resets on restart (`const` → `let`, reset in `start()`)
+- Restart button now spawns a **fresh process** and exits the old one — code changes from disk are picked up
 
-Want me to kill it and restart it?
-**Claude** (2026-03-25 19:52:06): PID 5024 is still holding port 7777. That's the stale one running old code. Want me to kill it and restart with the new code?
-**User** (2026-03-25 19:52:10): Yes
+**Launcher (new):**
+- `PAN.bat` — starts server if not running, opens 
+**User** (2026-03-25 22:40:35): This is a fresh session. Read the PAN session context injected into CLAUDE.md. Summarize what we were working on last time — start with Last time we were working on and list the key topics. Then ask w
+**Claude** (2026-03-25 22:40:45): Last time we were working on:
+
+1. **Session context injection** — getting the `.pan-briefing.md` + recent chat to inject into CLAUDE.md on fresh session start. The hook was firing but timing was off (Claude reading before write finished). Eventually got it working.
+2. **Dashboard HTML breakage** — a
+**User** (2026-03-25 22:45:14): Can you get rid of the Gl project
+**Claude** (2026-03-25 22:53:56): Done. Here's what I built:
+
+**API:** `DELETE /dashboard/api/projects/:id` — removes all PAN data (tasks, milestones, sections, tabs, the project record itself) and deletes the `.pan` file so sync doesn't re-add it. Session history is preserved (just unlinked from the project).
+
+**UI:** Small ✕ butto
 
 ### Last Messages (Full)
-**Claude** (2026-03-25 19:49:49):
-The code IS updated on disk. The running server just hasn't loaded it. You need to kill the current node process and start it fresh. The server that's running right now was started before the code change.
+**Claude** (2026-03-25 22:30:28):
+Last time we were working on:
 
-Try killing it and starting again — make sure you kill the old one first so port 7777 is free. You said you're restarting it yourself, so go ahead and do that. Once the new server process starts, it'll read the updated `dashboard.js` and the Memory tab will show the real Claude memory files.
+1. **Session context injection** — Getting fresh Claude sessions to auto-load context from `.pan-state.md` + recent chat into CLAUDE.md so we could stop using `--continue` (which caused throttling). The hook was firing but timing was tricky — Claude sometimes read CLAUDE.md before the write finished. Eventually got it working.
 
-**User** (2026-03-25 19:51:26):
-is the server still up
+2. **Dashboard HTML broken** — Another Claude session reorganized the Data/Settings/Automation pages into sub-tab layouts and broke the entire dashboard (nothing clickable, tabs dead, terminal won't load). There are 1075 lines of uncommitted changes in `index.html`.
 
-**User** (2026-03-25 19:51:42):
-I closed mine
+3. **Chat transcripts** — Built a JSONL transcript parser (`/api/transcript`) and fixed a double-prefix routing bug (`/dashboard/dashboard/...`). Code written but uncommitted.
 
-**Claude** (2026-03-25 19:51:42):
-Yeah it's still up. And yes — if you're talking to me through PAN, that means the server is running. The problem is it's running the **old** code from before my changes. You need to fully kill it and restart for the new memory API to take effect.
+4. **Memory tab** — Working on reading real Claude memory files from `~/.claude/projects/*/memory/` in the dashboard.
 
-Want me to kill it and restart it?
+5. **Ongoing irritants** — Terminal scroll jumping on updates, classifier tagging ambient speech as "query", duplicate server processes.
 
-**Claude** (2026-03-25 19:52:06):
-PID 5024 is still holding port 7777. That's the stale one running old code. Want me to kill it and restart with the new code?
+The dashboard being broken seems like the most critical issue from last session. What do you want to work on?
 
-**User** (2026-03-25 19:52:10):
-Yes
+**Claude** (2026-03-25 22:38:46):
+Here's what I did:
+
+**Restart fixes (server.js):**
+- Uptime now resets on restart (`const` → `let`, reset in `start()`)
+- Restart button now spawns a **fresh process** and exits the old one — code changes from disk are picked up
+
+**Launcher (new):**
+- `PAN.bat` — starts server if not running, opens dashboard in browser
+- `PAN.vbs` — silent wrapper (no cmd window flash)
+- **Start Menu shortcut** — type "PAN" in Windows search, hit Enter, it starts
+- **Startup folder shortcut** — PAN auto-starts on Windows login
+
+Next time you restart your PC, PAN will start automatically. And right now you can press Win, type "PAN", hit Enter.
+
+**User** (2026-03-25 22:40:35):
+This is a fresh session. Read the PAN session context injected into CLAUDE.md. Summarize what we were working on last time — start with Last time we were working on and list the key topics. Then ask what I want to work on next.
+
+**Claude** (2026-03-25 22:40:45):
+Last time we were working on:
+
+1. **Session context injection** — getting the `.pan-briefing.md` + recent chat to inject into CLAUDE.md on fresh session start. The hook was firing but timing was off (Claude reading before write finished). Eventually got it working.
+2. **Dashboard HTML breakage** — another Claude session reorganized the Data, Settings, and Automation pages into sub-tab layouts, breaking clickability/tabs/terminal loading. 1075 lines of uncommitted changes.
+3. **Context briefing SQL fix** — the LIKE query used single backslashes but DB stores JSON-escaped double backslashes, so Claude responses weren't appearing in the briefing.
+4. **Chat transcripts** — built JSONL transcript parser (`/api/transcript`), fixed double-prefix routing bug.
+5. **Known bugs still open** — uptime never resets after restart, setup validation persists after restart, code changes not applying on restart (same-process stop/start doesn't reload from disk), terminal scroll jumps.
+
+What do you want to work on?
+
+**User** (2026-03-25 22:45:14):
+Can you get rid of the Gl project
+
+**Claude** (2026-03-25 22:53:56):
+Done. Here's what I built:
+
+**API:** `DELETE /dashboard/api/projects/:id` — removes all PAN data (tasks, milestones, sections, tabs, the project record itself) and deletes the `.pan` file so sync doesn't re-add it. Session history is preserved (just unlinked from the project).
+
+**UI:** Small ✕ button on each project card. Requires **two confirms** — first explains what it does ("your actual project files are NOT touched"), second is a final "ARE YOU SURE?".
+
+Restart the server to pick up the changes.
 
 <!-- PAN-CONTEXT-END -->
 

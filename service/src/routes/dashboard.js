@@ -1013,6 +1013,33 @@ router.delete('/api/projects/:id/all-tasks', (req, res) => {
   res.json({ ok: true, deleted: taskCount?.c || 0, milestones_deleted: deleteMilestones });
 });
 
+// DELETE /dashboard/api/projects/:id — unlink a project from PAN (removes DB records + .pan file, does NOT delete project files)
+router.delete('/api/projects/:id', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const proj = get("SELECT * FROM projects WHERE id = :pid", { ':pid': pid });
+  if (!proj) return res.status(404).json({ error: 'Project not found' });
+
+  // Remove all PAN data for this project (nullify session links, don't delete history)
+  run("UPDATE sessions SET project_id = NULL WHERE project_id = :pid", { ':pid': pid });
+  run("DELETE FROM section_items WHERE project_id = :pid", { ':pid': pid });
+  run("DELETE FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
+  run("DELETE FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
+  run("DELETE FROM project_sections WHERE project_id = :pid", { ':pid': pid });
+  run("DELETE FROM open_tabs WHERE project_id = :pid", { ':pid': pid });
+  run("DELETE FROM projects WHERE id = :pid", { ':pid': pid });
+
+  // Remove .pan file so sync doesn't re-add it
+  try {
+    const panFile = join(proj.path, '.pan');
+    if (existsSync(panFile)) unlinkSync(panFile);
+  } catch (e) {
+    console.log(`[PAN] Could not remove .pan file: ${e.message}`);
+  }
+
+  console.log(`[PAN] Unlinked project: ${proj.name} (${proj.path})`);
+  res.json({ ok: true, name: proj.name });
+});
+
 // GET /dashboard/api/tasks/search — search tasks across all projects
 router.get('/api/tasks/search', (req, res) => {
   const q = req.query.q || '';
