@@ -140,7 +140,8 @@ If it IS for you, respond with JSON matching one of these:
 Known projects: ${projectList}
 ${memoryContext}
 
-Only return JSON.`
+Only return JSON.`,
+      { caller: 'router' }
     );
 
     logStep(cmdId, 'unified_response', raw.slice(0, 200));
@@ -423,7 +424,7 @@ Categories:
 - system: wants to control PAN itself (stop listening, change settings, status check)
 
 User said: "${text}"`,
-      { model: 'haiku', timeout: 15000 }
+      { model: 'haiku', timeout: 15000, caller: 'router' }
     );
 
     const intent = result.toLowerCase().replace(/[^a-z]/g, '');

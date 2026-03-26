@@ -393,6 +393,12 @@ body {
   border-left-color: var(--accent);
   font-weight: 600;
 }
+.toggle { position:relative;width:36px;height:20px;display:inline-block }
+.toggle input { opacity:0;width:0;height:0 }
+.toggle .slider { position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:10px;transition:.2s }
+.toggle .slider:before { content:"";position:absolute;height:16px;width:16px;left:2px;bottom:2px;background:var(--text2);border-radius:50%;transition:.2s }
+.toggle input:checked+.slider { background:var(--accent2) }
+.toggle input:checked+.slider:before { transform:translateX(16px);background:#fff }
 .settings-panel {
   flex: 1;
   padding: 20px 24px;
@@ -1021,6 +1027,7 @@ body {
           </div>
         </div>
       </div>
+
     </div>
   </div>
 
@@ -1158,6 +1165,7 @@ body {
     <div class="settings-layout">
       <nav class="settings-nav">
         <button class="settings-nav-item active" onclick="switchSettingsTab('general')">General</button>
+        <button class="settings-nav-item" onclick="switchSettingsTab('ai')">AI & Usage</button>
         <button class="settings-nav-item" onclick="switchSettingsTab('devices')">Devices</button>
         <button class="settings-nav-item" onclick="switchSettingsTab('security')">Security</button>
         <button class="settings-nav-item" onclick="switchSettingsTab('auth')" id="settings-nav-auth" style="display:none">Authentication</button>
@@ -1169,6 +1177,10 @@ body {
         <div class="settings-section">
           <h3>Server Health</h3>
           <div id="health-status"></div>
+          <div style="margin-top:10px">
+            <button onclick="restartServer()" style="background:var(--warn);color:#000;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:12px;font-weight:600">RESTART SERVER</button>
+            <span id="restart-status" style="margin-left:12px;font-size:12px;color:var(--text2)"></span>
+          </div>
         </div>
         <div class="settings-section">
           <h3>Projects</h3>
@@ -1177,6 +1189,146 @@ body {
         <div class="settings-section">
           <h3>Recent Sessions</h3>
           <div id="sessions-list"></div>
+        </div>
+      </div>
+
+      <!-- AI & Usage -->
+      <div class="settings-panel" id="settings-ai">
+        <!-- Shared datalist for model suggestions — populated dynamically from added models -->
+        <datalist id="model-suggestions"></datalist>
+        <datalist id="cli-suggestions">
+          <option value="claude">Claude Code</option>
+          <option value="gemini">Gemini CLI</option>
+          <option value="copilot">GitHub Copilot CLI</option>
+          <option value="aider">Aider</option>
+        </datalist>
+
+        <!-- Terminal AI Provider -->
+        <div class="settings-section">
+          <h3>Terminal AI</h3>
+          <div style="font-size:12px;color:var(--text2);margin-bottom:10px">The AI that runs in your terminal sessions. PAN launches this when you open project tabs.</div>
+          <div style="display:grid;gap:8px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg);border:1px solid var(--accent)33;border-radius:6px">
+              <span style="font-size:16px">&#x1f4bb;</span>
+              <div style="flex:1">
+                <div style="font-weight:600;font-size:13px">CLI Provider</div>
+                <div style="font-size:11px;color:var(--text2)">Type a provider name or pick from suggestions</div>
+              </div>
+              <input type="text" list="cli-suggestions" id="terminal-ai-provider" value="claude" onchange="saveTerminalAI()" placeholder="e.g. claude, gemini, aider..." style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;width:160px">
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg);border-radius:6px">
+              <div style="flex:1">
+                <div style="font-weight:500;font-size:12px">Terminal Model</div>
+                <div style="font-size:11px;color:var(--text2)">Model override passed to the CLI via <code>--model</code></div>
+              </div>
+              <input type="text" list="model-suggestions" id="terminal-ai-model" onchange="saveTerminalAI()" placeholder="e.g. sonnet, opus, pro..." style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;width:160px">
+            </div>
+            <div style="padding:10px 12px;background:var(--bg);border-radius:6px">
+              <div style="font-weight:500;font-size:12px;margin-bottom:6px">Full CLI Command <span style="font-size:11px;color:var(--text2);font-weight:400">(optional — overrides provider + model above)</span></div>
+              <input type="text" id="terminal-ai-cmd" onchange="saveTerminalAI()" placeholder='e.g. gemini --model pro, aider --model gpt-4o, or leave empty to use provider + model above' style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px;font-family:monospace">
+              <div style="font-size:11px;color:var(--text2);margin-top:4px">Use <code>{project}</code> for project name, <code>{path}</code> for project path. Leave empty to auto-build from provider + model.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg);border-radius:6px">
+              <span id="active-cli-model" style="font-size:12px;color:var(--text2)">Detecting active sessions...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- PAN Server API Model -->
+        <div class="settings-section">
+          <h3>Server API Model</h3>
+          <div style="font-size:12px;color:var(--text2);margin-bottom:10px">The model PAN uses for its own API calls — voice routing, background jobs, phone queries.</div>
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg);border-radius:6px">
+            <span style="font-size:16px">&#x1f916;</span>
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:13px">Default API Model</div>
+            </div>
+            <input type="text" list="model-suggestions" id="ai-model-select" onchange="saveAIModel(this.value)" placeholder="e.g. claude-haiku-4-5-20251001" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;width:240px">
+            <span id="ai-model-status" style="font-size:11px;color:var(--accent2)"></span>
+          </div>
+        </div>
+
+        <!-- Per-Job Models -->
+        <div class="settings-section">
+          <h3>Job Models</h3>
+          <div style="font-size:12px;color:var(--text2);margin-bottom:10px">Each background job can use a different model. Leave empty to use the default above.</div>
+          <div id="settings-job-models" style="display:grid;gap:6px"></div>
+        </div>
+
+        <!-- Model Providers -->
+        <div class="settings-section">
+          <h3>Model Providers</h3>
+          <div style="font-size:12px;color:var(--text2);margin-bottom:10px">Add models here and they appear as suggestions in all the fields above. For local models, PAN routes API calls to their endpoints.</div>
+          <div id="model-providers-list" style="display:grid;gap:8px;margin-bottom:12px"></div>
+          <details style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:0">
+            <summary style="padding:10px 12px;cursor:pointer;font-weight:500;font-size:13px;list-style:none;display:flex;align-items:center;gap:6px"><span style="font-size:11px">&#x25B6;</span> Add Model</summary>
+            <div style="padding:0 12px 12px;display:grid;gap:6px">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input type="text" id="add-model-name" placeholder="Display name (e.g. Llama 3.2 8B)" style="flex:1;min-width:180px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px">
+                <input type="text" id="add-model-type" list="provider-type-suggestions" placeholder="Provider type (e.g. ollama, lmstudio)" style="flex:0 0 200px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px">
+                <datalist id="provider-type-suggestions">
+                  <option value="ollama">
+                  <option value="lmstudio">
+                  <option value="openai-compat">
+                  <option value="anthropic">
+                  <option value="google">
+                  <option value="openai">
+                </datalist>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input type="text" id="add-model-url" placeholder="Base URL (e.g. http://localhost:11434)" style="flex:1;min-width:200px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px">
+                <input type="text" id="add-model-id" placeholder="Model ID (e.g. llama3.2:8b)" style="flex:1;min-width:150px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px">
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input type="password" id="add-model-key" placeholder="API key (optional for local)" style="flex:1;min-width:200px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px">
+                <button onclick="addModelProvider()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 16px;cursor:pointer;font-size:12px;white-space:nowrap">Add Model</button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <!-- Per-Device / Per-Project Overrides (searchable) -->
+        <div class="settings-section">
+          <h3>Model Overrides</h3>
+          <div style="font-size:12px;color:var(--text2);margin-bottom:10px">Override the default model for specific devices or projects. Changes sync to connected devices.</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <input type="text" id="model-override-search" placeholder="Search devices or projects..." oninput="filterModelOverrides()" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px">
+            <select id="model-override-filter" onchange="filterModelOverrides()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:12px">
+              <option value="all">All</option>
+              <option value="devices">Devices</option>
+              <option value="projects">Projects</option>
+              <option value="overridden">Overridden Only</option>
+            </select>
+          </div>
+          <div id="settings-model-overrides" style="display:grid;gap:6px;max-height:300px;overflow-y:auto">
+            <div style="color:var(--text2);font-size:12px">Loading...</div>
+          </div>
+        </div>
+
+        <!-- Usage -->
+        <div class="settings-section">
+          <h3>Usage</h3>
+          <div id="settings-usage-today" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+            <div style="padding:12px;background:var(--bg);border-radius:8px;text-align:center">
+              <div style="font-size:22px;font-weight:600;color:var(--accent)" id="usage-today-cost">--</div>
+              <div style="font-size:11px;color:var(--text2)">Today</div>
+            </div>
+            <div style="padding:12px;background:var(--bg);border-radius:8px;text-align:center">
+              <div style="font-size:22px;font-weight:600;color:var(--accent)" id="usage-week-cost">--</div>
+              <div style="font-size:11px;color:var(--text2)">This Week</div>
+            </div>
+            <div style="padding:12px;background:var(--bg);border-radius:8px;text-align:center">
+              <div style="font-size:22px;font-weight:600;color:var(--accent)" id="usage-alltime-cost">--</div>
+              <div style="font-size:11px;color:var(--text2)">All Time</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>Cost by Feature (Today)</h3>
+          <div id="settings-usage-breakdown" style="display:grid;gap:4px">
+            <div style="color:var(--text2);font-size:12px">Loading...</div>
+          </div>
         </div>
       </div>
 
@@ -1610,7 +1762,7 @@ function loadPage(page) {
     case 'conversations': loadConversations(); break;
     case 'sensors': loadSensorDevices(); break;
     case 'data': loadStats(); loadEvents(); loadPhotos(); loadJobs(); loadMemory(); break;
-    case 'settings': loadSettings(); loadAuthSettings(); break;
+    case 'settings': loadSettings(); loadAISettings(); loadAuthSettings(); break;
   }
 }
 
@@ -2147,6 +2299,10 @@ function escapeHtml(str) {
   return redactPaths(String(str)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// Capitalize a feature/caller key for display (e.g. "project_sync" → "Project Sync", "autodev" → "AutoDev")
+const _callerNames = { router: 'Router', scout: 'Scout', dream: 'Dream', autodev: 'AutoDev', classifier: 'Classifier', recall: 'Recall', vision: 'Vision', project_sync: 'Project Sync' };
+function capCaller(key) { return _callerNames[key] || key.charAt(0).toUpperCase() + key.slice(1); }
+
 function getTypeClass(type) {
   const known = ['PhoneAudio','RouterCommand','SessionStart','SessionEnd','PhoneSync'];
   for (const k of known) {
@@ -2374,7 +2530,7 @@ async function loadSettings() {
       </div>
       <div class="settings-row">
         <span class="label">Uptime</span>
-        <span class="value">Running</span>
+        <span class="value">${health.uptime || 'Running'}</span>
       </div>
     `;
   } catch (err) {
@@ -2439,6 +2595,362 @@ async function loadSettings() {
         </div>
       </div>
     `).join('');
+  }
+}
+
+// ===== AI & USAGE SETTINGS =====
+
+// Get all models from settings (no hardcoded list — everything comes from user config)
+function getAllModels(settings) {
+  return settings.custom_models || [];
+}
+
+// Populate the shared <datalist> with model suggestions from settings
+function updateModelSuggestions(settings) {
+  const dl = document.getElementById('model-suggestions');
+  if (!dl) return;
+  const models = getAllModels(settings);
+  dl.innerHTML = models.map(m => {
+    const label = m.name + (m.cost ? ' (' + m.cost + ')' : '') + (m.url ? ' — ' + m.url : '');
+    return '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(label) + '</option>';
+  }).join('');
+}
+
+// Cached data for search filtering
+let _aiSettingsCache = { devices: [], projects: [], settings: {}, allModels: [] };
+
+async function loadAISettings() {
+  let settings = {};
+  try { settings = await fetch('/api/v1/settings').then(r => r.json()); } catch {}
+  const allModels = getAllModels(settings);
+  const currentModel = settings.ai_model || '';
+
+  // Update shared datalist with all known models
+  updateModelSuggestions(settings);
+
+  // Cache for search
+  let devices = [], projects = [];
+  try { devices = await api('/api/devices'); } catch {}
+  try { projects = await api('/api/projects'); } catch {}
+  _aiSettingsCache = { devices, projects, settings, allModels };
+
+  // Terminal AI settings
+  loadTerminalAI(settings);
+
+  // PAN server model — text input with datalist suggestions
+  const sel = document.getElementById('ai-model-select');
+  if (sel) sel.value = currentModel;
+
+  // Per-job model overrides — text inputs
+  const jobModels = settings.job_models || {};
+  const jobsEl = document.getElementById('settings-job-models');
+  if (jobsEl) {
+    const jobs = [
+      { key: 'router', name: 'Router', desc: 'Voice command classification + response' },
+      { key: 'scout', name: 'Scout', desc: 'Discovers new tools & CLIs' },
+      { key: 'dream', name: 'Dream', desc: 'Consolidates memories into state file' },
+      { key: 'autodev', name: 'AutoDev', desc: 'Automated development tasks' },
+      { key: 'classifier', name: 'Classifier', desc: 'Extracts memories from events' },
+      { key: 'recall', name: 'Recall', desc: 'On-demand memory search' },
+      { key: 'vision', name: 'Vision', desc: 'Photo/image analysis' },
+    ];
+    jobsEl.innerHTML = jobs.map(j => {
+      const jModel = jobModels[j.key] || '';
+      return `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border-radius:6px;font-size:12px">
+          <div style="flex:1">
+            <div style="font-weight:500">${j.name}</div>
+            <div style="font-size:11px;color:var(--text2)">${j.desc}</div>
+          </div>
+          <input type="text" list="model-suggestions" value="${escapeHtml(jModel)}" onchange="saveJobModel('${j.key}', this.value)" placeholder="Use Default" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;width:180px">
+        </div>`;
+    }).join('');
+  }
+
+  // Custom model providers list
+  const customModels = settings.custom_models || [];
+  const providersEl = document.getElementById('model-providers-list');
+  if (providersEl) {
+    if (customModels.length === 0) {
+      providersEl.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:4px">No custom models added. Built-in Anthropic models are always available.</div>';
+    } else {
+      const providerIcons = { ollama: '&#x1f999;', lmstudio: '&#x1f52c;', 'openai-compat': '&#x1f517;', anthropic: '&#x1f916;' };
+      providersEl.innerHTML = customModels.map((m, i) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border-radius:6px;font-size:12px">
+          <span style="font-size:16px">${providerIcons[m.provider] || '&#x1f916;'}</span>
+          <div style="flex:1">
+            <div style="font-weight:500">${escapeHtml(m.name)}</div>
+            <div style="color:var(--text2);font-size:11px">${escapeHtml(m.provider)} &middot; ${escapeHtml(m.id)}${m.url ? ' &middot; ' + escapeHtml(m.url) : ''}</div>
+          </div>
+          <button onclick="removeModelProvider(${i})" style="background:none;border:1px solid var(--danger);color:var(--danger);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">Remove</button>
+        </div>
+      `).join('');
+    }
+  }
+
+  // Render searchable device/project overrides
+  filterModelOverrides();
+
+  // Usage stats
+  try {
+    const data = await fetch('/api/automation/usage').then(r => r.json());
+    const today = data.today || { total_cost_cents: 0, total_calls: 0, by_caller: {} };
+    const week = data.week || { total_cost_cents: 0, total_calls: 0, by_caller: {} };
+    const allTime = data.all_time || { total_cost_cents: 0, total_calls: 0, by_caller: {} };
+
+    document.getElementById('usage-today-cost').textContent = '$' + (today.total_cost_cents / 100).toFixed(2);
+    document.getElementById('usage-week-cost').textContent = '$' + (week.total_cost_cents / 100).toFixed(2);
+    document.getElementById('usage-alltime-cost').textContent = '$' + (allTime.total_cost_cents / 100).toFixed(2);
+
+    const breakdownEl = document.getElementById('settings-usage-breakdown');
+    const callers = Object.entries(today.by_caller || {}).sort((a,b) => b[1].cost_cents - a[1].cost_cents);
+    if (callers.length === 0) {
+      breakdownEl.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:8px">No API calls today</div>';
+    } else {
+      breakdownEl.innerHTML = callers.map(([caller, stats]) => `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg);border-radius:4px;font-size:12px">
+          <span style="font-weight:500;width:80px">${capCaller(caller)}</span>
+          <div style="flex:1;background:var(--bg3);height:8px;border-radius:4px;overflow:hidden">
+            <div style="height:100%;background:var(--accent);border-radius:4px;width:${today.total_cost_cents ? (stats.cost_cents / today.total_cost_cents * 100) : 0}%"></div>
+          </div>
+          <span style="color:var(--text2);width:60px;text-align:right">$${(stats.cost_cents / 100).toFixed(3)}</span>
+          <span style="color:var(--text2);width:50px;text-align:right">${stats.calls} calls</span>
+        </div>
+      `).join('');
+    }
+  } catch {}
+}
+
+// Searchable device/project model overrides
+function filterModelOverrides() {
+  const el = document.getElementById('settings-model-overrides');
+  if (!el) return;
+  const search = (document.getElementById('model-override-search')?.value || '').toLowerCase();
+  const filter = document.getElementById('model-override-filter')?.value || 'all';
+  const { devices, projects, settings, allModels } = _aiSettingsCache;
+  const deviceModels = settings.device_models || {};
+  const projectModels = settings.project_models || {};
+
+  let items = [];
+
+  // Devices
+  if (filter === 'all' || filter === 'devices') {
+    for (const d of devices) {
+      const devModel = deviceModels[d.hostname] || '';
+      if (filter === 'overridden' && !devModel) continue;
+      if (search && !d.name.toLowerCase().includes(search) && !d.hostname.toLowerCase().includes(search)) continue;
+      const online = isRecent(d.last_seen);
+      items.push(`
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border-radius:6px;font-size:12px" data-type="device">
+          <span class="status-dot ${online ? 'status-green' : 'status-yellow'}" style="flex-shrink:0"></span>
+          <div style="flex:1">
+            <div style="font-weight:500">${escapeHtml(d.name)}</div>
+            <div style="color:var(--text2);font-size:11px">${escapeHtml(d.device_type)} &middot; ${escapeHtml(d.hostname)}</div>
+          </div>
+          <input type="text" list="model-suggestions" value="${escapeHtml(devModel)}" onchange="saveDeviceModel('${escapeHtml(d.hostname)}', this.value)" placeholder="Use Default" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;width:180px">
+        </div>`);
+    }
+  }
+
+  // Projects
+  if (filter === 'all' || filter === 'projects') {
+    for (const p of projects) {
+      const projModel = projectModels[p.name] || '';
+      if (filter === 'overridden' && !projModel) continue;
+      if (search && !p.name.toLowerCase().includes(search)) continue;
+      items.push(`
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border-radius:6px;font-size:12px" data-type="project">
+          <span style="font-size:14px;flex-shrink:0">&#x1f4c1;</span>
+          <div style="flex:1">
+            <div style="font-weight:500">${escapeHtml(p.name)}</div>
+          </div>
+          <input type="text" list="model-suggestions" value="${escapeHtml(projModel)}" onchange="saveProjectModel('${escapeHtml(p.name)}', this.value)" placeholder="Use Default" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;width:180px">
+        </div>`);
+    }
+  }
+
+  if (items.length === 0) {
+    el.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:8px">No matches</div>';
+  } else {
+    el.innerHTML = items.join('');
+  }
+}
+
+// Terminal AI provider save/load
+async function saveTerminalAI() {
+  const provider = document.getElementById('terminal-ai-provider').value.trim();
+  const model = document.getElementById('terminal-ai-model').value.trim();
+  const customCmd = document.getElementById('terminal-ai-cmd')?.value?.trim() || '';
+
+  try {
+    await fetch('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminal_ai: { provider, model, custom_cmd: customCmd } })
+    });
+  } catch (e) {
+    console.error('Failed to save terminal AI:', e);
+  }
+}
+
+async function loadTerminalAI(settings) {
+  const ta = settings.terminal_ai || {};
+  const providerInput = document.getElementById('terminal-ai-provider');
+  const modelInput = document.getElementById('terminal-ai-model');
+  const cmdInput = document.getElementById('terminal-ai-cmd');
+
+  if (providerInput) providerInput.value = ta.provider || 'claude';
+  if (modelInput) modelInput.value = ta.model || '';
+  if (cmdInput) cmdInput.value = ta.custom_cmd || '';
+
+  // Auto-save default provider if nothing stored yet
+  if (!settings.terminal_ai) {
+    saveTerminalAI();
+  }
+
+  // Show active CLI info from recent sessions
+  const cliEl = document.getElementById('active-cli-model');
+  if (cliEl) {
+    try {
+      const sessions = await api('/api/sessions');
+      const active = sessions.filter(s => !s.ended_at);
+      const recent = sessions.find(s => s.model);
+      if (active.length > 0) {
+        cliEl.innerHTML = '<span style="color:var(--accent2)">' + active.length + ' active session' + (active.length > 1 ? 's' : '') + '</span>' +
+          (recent?.model ? ' &middot; Last model: <span style="color:var(--accent)">' + escapeHtml(recent.model) + '</span>' : '');
+      } else if (recent?.model) {
+        cliEl.innerHTML = 'Last used: <span style="color:var(--accent)">' + escapeHtml(recent.model) + '</span>';
+      } else {
+        cliEl.textContent = 'No recent sessions';
+      }
+    } catch { cliEl.textContent = 'Could not detect'; }
+  }
+}
+
+async function saveAIModel(model) {
+  const statusEl = document.getElementById('ai-model-status');
+  try {
+    await fetch('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ai_model: model })
+    });
+    statusEl.textContent = 'Saved';
+    setTimeout(() => statusEl.textContent = '', 2000);
+  } catch {
+    statusEl.textContent = 'Error saving';
+    statusEl.style.color = 'var(--danger)';
+  }
+}
+
+async function saveJobModel(jobKey, model) {
+  try {
+    const data = await fetch('/api/v1/settings').then(r => r.json());
+    const jobModels = data.job_models || {};
+    if (model) {
+      jobModels[jobKey] = model;
+    } else {
+      delete jobModels[jobKey];
+    }
+    await fetch('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_models: jobModels })
+    });
+  } catch (e) {
+    console.error('Failed to save job model:', e);
+  }
+}
+
+async function addModelProvider() {
+  const name = document.getElementById('add-model-name').value.trim();
+  const type = document.getElementById('add-model-type').value.trim() || 'openai-compat';
+  const url = document.getElementById('add-model-url').value.trim();
+  const modelId = document.getElementById('add-model-id').value.trim();
+  const apiKey = document.getElementById('add-model-key').value.trim();
+
+  if (!name || !modelId) {
+    alert('Name and Model ID are required');
+    return;
+  }
+
+  let baseUrl = url;
+  if (!baseUrl) {
+    if (type === 'ollama') baseUrl = 'http://localhost:11434';
+    else if (type === 'lmstudio') baseUrl = 'http://localhost:1234';
+  }
+
+  const settings = await fetch('/api/v1/settings').then(r => r.json());
+  const custom = settings.custom_models || [];
+  custom.push({ id: modelId, name, provider: type, url: baseUrl, api_key: apiKey || undefined });
+
+  await fetch('/api/v1/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ custom_models: custom })
+  });
+
+  document.getElementById('add-model-name').value = '';
+  document.getElementById('add-model-url').value = '';
+  document.getElementById('add-model-id').value = '';
+  document.getElementById('add-model-key').value = '';
+
+  loadAISettings();
+}
+
+async function removeModelProvider(index) {
+  const settings = await fetch('/api/v1/settings').then(r => r.json());
+  const custom = settings.custom_models || [];
+  const removed = custom[index];
+  custom.splice(index, 1);
+
+  const projectModels = settings.project_models || {};
+  const deviceModels = settings.device_models || {};
+  const jobModels = settings.job_models || {};
+  if (removed) {
+    for (const [k, v] of Object.entries(projectModels)) { if (v === removed.id) delete projectModels[k]; }
+    for (const [k, v] of Object.entries(deviceModels)) { if (v === removed.id) delete deviceModels[k]; }
+    for (const [k, v] of Object.entries(jobModels)) { if (v === removed.id) delete jobModels[k]; }
+  }
+
+  await fetch('/api/v1/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ custom_models: custom, project_models: projectModels, device_models: deviceModels, job_models: jobModels })
+  });
+
+  loadAISettings();
+}
+
+async function saveProjectModel(projectName, model) {
+  try {
+    const data = await fetch('/api/v1/settings').then(r => r.json());
+    const projectModels = data.project_models || {};
+    if (model) projectModels[projectName] = model;
+    else delete projectModels[projectName];
+    await fetch('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_models: projectModels })
+    });
+  } catch (e) {
+    console.error('Failed to save project model:', e);
+  }
+}
+
+async function saveDeviceModel(hostname, model) {
+  try {
+    const data = await fetch('/api/v1/settings').then(r => r.json());
+    const deviceModels = data.device_models || {};
+    if (model) deviceModels[hostname] = model;
+    else delete deviceModels[hostname];
+    await fetch('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_models: deviceModels })
+    });
+  } catch (e) {
+    console.error('Failed to save device model:', e);
   }
 }
 
@@ -2765,7 +3277,10 @@ async function loadProjects() {
   for (const p of data.projects) {
     const clr = pctColor(p.percentage);
     html += `<div class="project-card" onclick="showProjectDetail(${p.id})">
-      <h3>${escapeHtml(p.name)}</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3>${escapeHtml(p.name)}</h3>
+        <button class="btn btn-sm" style="font-size:10px;padding:2px 8px;color:var(--text2);opacity:0.5" onclick="event.stopPropagation();unlinkProject(${p.id},'${escapeHtml(p.name)}')" title="UNLINK PROJECT FROM PAN">✕</button>
+      </div>
       ${p.classification ? `<div style="font-size:11px;color:var(--accent);margin-bottom:4px">${escapeHtml(p.classification)}</div>` : ''}
       ${p.description ? `<div style="font-size:12px;color:var(--text2);margin-bottom:8px;line-height:1.4">${escapeHtml(p.description)}</div>` : ''}
       <div class="project-pct" style="color:var(--${clr === 'green' ? 'accent2' : clr === 'blue' ? 'accent' : clr === 'yellow' ? 'warn' : 'text2'})">${p.percentage}%</div>
@@ -2793,6 +3308,14 @@ async function loadProjects() {
   html += '</div>';
 
   el.innerHTML = html;
+}
+
+async function unlinkProject(id, name) {
+  if (!confirm(`UNLINK "${name}" FROM PAN?\n\nThis removes the project from PAN's dashboard and deletes the .pan file. Your actual project files are NOT touched.`)) return;
+  if (!confirm(`ARE YOU SURE? This cannot be undone.`)) return;
+  await api(`/api/projects/${id}`, { method: 'DELETE' });
+  document.getElementById('projects-detail').innerHTML = '';
+  loadProjects();
 }
 
 async function showProjectDetail(projectId) {
@@ -3150,10 +3673,13 @@ async function loadTerminalSidebar(projectId, projectName) {
 
   // Update the section dropdown
   const select = document.getElementById('right-section-select');
-  select.innerHTML = '<option value="tasks">Tasks</option><option value="bugs">Bugs</option>';
+  let selectHtml = '';
+  if (window._panSetupNeeded) selectHtml += '<option value="setup">Setup Guide</option>';
+  selectHtml += '<option value="tasks">Tasks</option><option value="bugs">Bugs</option>';
   for (const s of termSectionsData) {
-    select.innerHTML += `<option value="custom-${s.id}">${escapeHtml(s.name)}</option>`;
+    selectHtml += `<option value="custom-${s.id}">${escapeHtml(s.name)}</option>`;
   }
+  select.innerHTML = selectHtml;
   select.value = currentRightSection;
 
   if (!proj) {
@@ -3222,7 +3748,9 @@ function renderRightPanel() {
     return;
   }
 
-  if (currentRightSection === 'tasks') {
+  if (currentRightSection === 'setup') {
+    renderRightSetup(el);
+  } else if (currentRightSection === 'tasks') {
     renderRightTasks(el, proj, data);
   } else if (currentRightSection === 'bugs') {
     renderRightBugs(el, proj, data);
@@ -4088,25 +4616,53 @@ async function installScoutFinding(id, name) {
   loadApprovalQueue();
 }
 
-function loadJobStatus() {
+async function loadJobStatus() {
   const el = document.getElementById('automation-jobs');
-  const jobs = [
-    { name: 'Classifier', desc: 'Extracts memories from events', interval: 'Every 5 min', mandatory: true },
-    { name: 'Project Sync', desc: 'Scans disk for .pan files', interval: 'Every 10 min', mandatory: true },
-    { name: 'Scout', desc: 'Discovers new AI tools & CLIs', interval: 'Every 12 hours', mandatory: false },
-    { name: 'Dream', desc: 'Consolidates memories overnight', interval: 'Every 6 hours', mandatory: false },
-    { name: 'AutoDev', desc: 'Automated development tasks', interval: 'Configurable', mandatory: false },
-  ];
-  el.innerHTML = jobs.map(j => `
-    <div style="display:flex;align-items:center;gap:10px;padding:8px;background:var(--bg);border-radius:6px">
-      <span style="width:8px;height:8px;border-radius:50%;background:${j.mandatory ? 'var(--accent2)' : 'var(--text2)'};flex-shrink:0"></span>
-      <div style="flex:1">
-        <div style="font-weight:500;font-size:13px">${j.name}${j.mandatory ? ' <span style="font-size:10px;color:var(--text2)">(required)</span>' : ''}</div>
-        <div style="font-size:11px;color:var(--text2)">${j.desc}</div>
+  try {
+    const data = await fetch('/api/automation/status').then(r => r.json());
+    const features = data.features || {};
+    const displayNames = {
+      classifier: 'Classifier',
+      project_sync: 'Project Sync',
+      scout: 'Scout',
+      dream: 'Dream',
+      autodev: 'AutoDev',
+    };
+    const descriptions = {
+      classifier: 'Extracts memories from events',
+      project_sync: 'Scans disk for .pan files',
+      scout: 'Discovers new AI tools & CLIs',
+      dream: 'Consolidates memories into state file',
+      autodev: 'Automated development tasks',
+    };
+    el.innerHTML = Object.entries(features).map(([key, f]) => `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px;background:var(--bg);border-radius:6px">
+        ${f.required
+          ? '<span style="width:8px;height:8px;border-radius:50%;background:var(--accent2);flex-shrink:0"></span>'
+          : `<label class="toggle"><input type="checkbox" ${f.enabled ? 'checked' : ''} onchange="toggleFeature('${key}', this.checked)"><span class="slider"></span></label>`
+        }
+        <div style="flex:1">
+          <div style="font-weight:500;font-size:13px">${displayNames[key] || key}${f.required ? ' <span style="font-size:10px;color:var(--text2)">(required)</span>' : ''}</div>
+          <div style="font-size:11px;color:var(--text2)">${descriptions[key] || ''}</div>
+        </div>
+        <span style="font-size:11px;color:var(--text2)">Every ${f.interval}</span>
       </div>
-      <span style="font-size:11px;color:var(--text2)">${j.interval}</span>
-    </div>
-  `).join('');
+    `).join('');
+  } catch {
+    el.innerHTML = '<div style="color:var(--text2);font-size:12px">Failed to load job status</div>';
+  }
+}
+
+async function toggleFeature(feature, enabled) {
+  try {
+    await fetch('/api/automation/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feature, enabled })
+    });
+  } catch (e) {
+    console.error('Toggle failed:', e);
+  }
 }
 
 async function loadScoutFindings() {
@@ -4538,14 +5094,217 @@ async function changeUserRole(userId, role) {
 // ===== END AUTH SETTINGS =====
 
 // Dashboard startup — called after auth succeeds
-function startDashboard() {
+async function startDashboard() {
   applyRoleRestrictions();
+
+  // Check if AI is set up — if not, force to settings with setup banner
+  await checkFirstRunSetup();
+
   const hashPage = window.location.hash.replace('#', '');
   if (hashPage && document.getElementById(hashPage)) {
     switchTab(hashPage);
   } else {
     switchTab('terminal');
   }
+}
+
+// First-run setup check — adds setup guide to right panel if no working AI model configured
+async function checkFirstRunSetup() {
+  try {
+    const status = await fetch('/api/setup-status').then(r => r.json());
+
+    if (status.configured && status.provider === 'working') {
+      window._panSetupNeeded = false;
+      window._panSetupStatus = status;
+      const sel = document.getElementById('right-section-select');
+      if (sel && !sel.querySelector('option[value="setup"]')) {
+        const o = document.createElement('option');
+        o.value = 'setup';
+        o.textContent = 'Setup Guide';
+        sel.prepend(o);
+      }
+      return;
+    }
+
+    // Not configured — add Setup option to right panel dropdown
+    window._panSetupNeeded = true;
+    window._panSetupStatus = status;
+    const select = document.getElementById('right-section-select');
+    if (select && !select.querySelector('option[value="setup"]')) {
+      const opt = document.createElement('option');
+      opt.value = 'setup';
+      opt.textContent = 'Setup Guide';
+      select.prepend(opt);
+      select.value = 'setup';
+      switchRightSection();
+    }
+  } catch {
+    // Can't reach setup endpoint — server might be starting up, skip check
+  }
+}
+
+function renderRightSetup(el) {
+  const status = window._panSetupStatus || {};
+  let html = '';
+
+  if (!window._panSetupNeeded && status.configured) {
+    // Validated state — green confirmation, always visible
+    html = `
+      <div style="padding:8px 0">
+        <div style="font-weight:700;font-size:14px;color:var(--accent2);margin-bottom:8px">✓ SETUP VALIDATED</div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px">MODEL: <strong style="color:var(--text)">${escapeHtml(status.model || 'CONFIGURED')}</strong></div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:12px">PROVIDER: <strong style="color:var(--text)">${escapeHtml((status.provider || '').toUpperCase())}</strong></div>
+        <div style="margin-top:12px">
+          <button onclick="validateSetup()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px;font-weight:600">RE-VALIDATE</button>
+          <span id="setup-validate-status" style="margin-left:12px;font-size:12px"></span>
+        </div>
+      </div>`;
+  } else if (status.error) {
+    html = `
+      <div style="padding:8px 0">
+        <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:8px">PAN SETUP REQUIRED</div>
+        <div style="color:var(--danger);font-size:13px;margin-bottom:8px">Error: ${escapeHtml(status.error)}</div>
+        <div style="font-size:13px;color:var(--text2)">Check that your model provider is running and the API key is valid.</div>
+        <div style="margin-top:12px">
+          <button onclick="validateSetup()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px;font-weight:600">VALIDATE SETUP</button>
+          <span id="setup-validate-status" style="margin-left:12px;font-size:12px"></span>
+        </div>
+      </div>`;
+  } else {
+    html = `
+      <div style="padding:4px 0">
+        <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:4px">PAN SETUP REQUIRED</div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:12px">Welcome to PAN! You need to set up an AI model before PAN can work.</div>
+        <div style="display:grid;gap:12px;font-size:13px;color:var(--text)">
+          <div style="display:flex;gap:10px;align-items:start">
+            <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">1</span>
+            <div>
+              <div style="font-weight:600">Fastest: Install Ollama (free, local, no account needed)</div>
+              <div style="color:var(--text2);font-size:12px;margin-top:2px">
+                Go to <a href="https://ollama.com" target="_blank" style="color:var(--accent)">ollama.com</a>, install it, then run:
+                <code style="background:var(--bg3);padding:2px 6px;border-radius:3px">ollama pull llama3.2</code>
+                <br>PAN will auto-detect it on next restart.
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:start">
+            <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">2</span>
+            <div>
+              <div style="font-weight:600">Or: Add an API key</div>
+              <div style="color:var(--text2);font-size:12px;margin-top:2px">
+                In <strong>Model Providers</strong> below, add a model with your API key from
+                <a href="https://console.anthropic.com" target="_blank" style="color:var(--accent)">Anthropic</a>,
+                <a href="https://platform.openai.com" target="_blank" style="color:var(--accent)">OpenAI</a>, or
+                <a href="https://ai.google.dev" target="_blank" style="color:var(--accent)">Google</a>.
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:start">
+            <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">3</span>
+            <div>
+              <div style="font-weight:600">Set the Default API Model</div>
+              <div style="color:var(--text2);font-size:12px;margin-top:2px">
+                Type the model ID in the <strong>Server API Model</strong> field below.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <button onclick="validateSetup()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px;font-weight:600">VALIDATE SETUP</button>
+          <span id="setup-validate-status" style="margin-left:12px;font-size:12px"></span>
+        </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--text2)">
+          No model configured yet. Add a model provider and set the Default API Model.
+        </div>
+      </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+async function validateSetup() {
+  const statusEl = document.getElementById('setup-validate-status');
+  if (statusEl) {
+    statusEl.textContent = 'Checking...';
+    statusEl.style.color = 'var(--accent)';
+  }
+
+  try {
+    const status = await fetch('/api/setup-status').then(r => r.json());
+    if (status.configured && status.provider === 'working') {
+      window._panSetupNeeded = false;
+      window._panSetupStatus = status;
+      // Re-render setup panel to show validated state (green text)
+      const setupEl = document.getElementById('right-setup');
+      if (setupEl) renderRightSetup(setupEl);
+      if (statusEl) {
+        statusEl.textContent = '✓ SETUP VALIDATED';
+        statusEl.style.color = 'var(--accent2)';
+      }
+    } else if (status.error) {
+      if (statusEl) {
+        statusEl.textContent = 'Error: ' + status.error;
+        statusEl.style.color = 'var(--danger)';
+      }
+    } else {
+      if (statusEl) {
+        statusEl.textContent = 'No model configured yet. Add a model provider and set the Default API Model.';
+        statusEl.style.color = 'var(--warn)';
+      }
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = 'Could not reach server: ' + e.message;
+      statusEl.style.color = 'var(--danger)';
+    }
+  }
+}
+
+async function restartServer() {
+  const statusEl = document.getElementById('restart-status');
+  const btn = document.querySelector('[onclick="restartServer()"]');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  if (btn) { btn.textContent = 'SHUTTING DOWN...'; }
+  if (statusEl) { statusEl.textContent = ''; statusEl.style.color = 'var(--warn)'; }
+
+  // Record old server time to confirm it actually restarted
+  let oldTime = null;
+  try {
+    const h = await fetch('/health', { signal: AbortSignal.timeout(2000) }).then(r => r.json());
+    oldTime = h.time || h.serverTime || null;
+  } catch {}
+
+  try {
+    await fetch('/api/admin/restart', { method: 'POST' });
+  } catch {}
+
+  // Brief pause — server is stopping
+  if (btn) { btn.textContent = 'STARTING...'; }
+  await new Promise(r => setTimeout(r, 2500));
+
+  let attempts = 0;
+  const check = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await fetch('/health', { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        const h = await r.clone().json().catch(() => null);
+        const newTime = h?.time || h?.serverTime || null;
+        // Make sure the server actually restarted (new time is different)
+        if (!oldTime || !newTime || newTime !== oldTime) {
+          clearInterval(check);
+          if (btn) { btn.textContent = 'RESTART SERVER'; btn.disabled = false; btn.style.opacity = '1'; }
+          if (statusEl) { statusEl.textContent = '✓ SERVER RESTARTED'; statusEl.style.color = 'var(--accent2)'; }
+          setTimeout(() => location.reload(), 1500);
+        }
+      }
+    } catch {}
+    if (attempts > 30) {
+      clearInterval(check);
+      if (btn) { btn.textContent = 'RESTART SERVER'; btn.disabled = false; btn.style.opacity = '1'; }
+      if (statusEl) { statusEl.textContent = 'SERVER DID NOT COME BACK — CHECK TERMINAL'; statusEl.style.color = 'var(--danger)'; }
+    }
+  }, 2000);
 }
 
 // Initial load — check auth first, then start dashboard

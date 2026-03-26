@@ -135,7 +135,7 @@ Return a JSON array. Each finding:
 Return MAX 5 most relevant NEW findings. Skip anything similar to already-discovered tools. If nothing new, return []. Only return the JSON array.`;
 
   try {
-    const raw = await claude(prompt, { model: 'claude-haiku-4-5-20251001', timeout: 30000, maxTokens: 2000 });
+    const raw = await claude(prompt, { model: 'claude-haiku-4-5-20251001', timeout: 30000, maxTokens: 2000, caller: 'scout' });
     // Extract JSON array from response — handle text before/after
     const match = raw.match(/\[[\s\S]*\]/);
     if (!match) return [];

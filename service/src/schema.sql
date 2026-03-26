@@ -235,6 +235,21 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 CREATE INDEX IF NOT EXISTS idx_api_tokens_token ON api_tokens(token);
 CREATE INDEX IF NOT EXISTS idx_user_oauth_provider ON user_oauth(provider, provider_id);
 
+-- AI usage tracking — every API call logged with tokens and cost
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cost_cents REAL DEFAULT 0,
+    prompt_preview TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_caller ON ai_usage(caller);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
+
 -- Full-text search index for events — enables instant ranked search across all history
 -- content_text stores the clean extracted text, synced on insert via application code
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(

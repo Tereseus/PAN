@@ -113,7 +113,7 @@ CRITICAL RULES:
 - This document should be SHORT — under 80 lines total.
 
 Output ONLY the markdown document, nothing else.`,
-      { maxTokens: 3000, timeout: 60000 }
+      { maxTokens: 3000, timeout: 60000, caller: 'dream' }
     );
 
     if (!result || result.length < 50) {
