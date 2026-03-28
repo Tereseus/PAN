@@ -845,12 +845,13 @@
           if (parent) parent.remove();
           else img.remove();
         });
-        // Remove empty table rows and tables
-        document.querySelectorAll('#readme-body tr').forEach(tr => {
-          if (!tr.textContent.trim()) tr.remove();
-        });
+        // Remove empty table rows and tables (leftover headers from image grids)
         document.querySelectorAll('#readme-body table').forEach(table => {
-          if (!table.textContent.trim()) table.remove();
+          // If table has no images left and only has short text (header labels), remove it
+          const hasImages = table.querySelector('img');
+          const cells = table.querySelectorAll('td, th');
+          const isImageGrid = !hasImages && Array.from(cells).every(c => c.textContent.trim().length < 30);
+          if (!hasImages && isImageGrid) table.remove();
         });
         // Remove the "Screenshots" heading and "See interactive demo" blockquote since carousel replaces them
         document.querySelectorAll('#readme-body h2, #readme-body blockquote').forEach(el => {
