@@ -874,6 +874,11 @@
 
     loadRepo();
     loadReadme();
+
+    // Force scroll to top on page load
+    window.addEventListener('load', () => window.scrollTo(0, 0));
+    setTimeout(() => window.scrollTo(0, 0), 500);
+    setTimeout(() => window.scrollTo(0, 0), 1500);
   </script>
 </body>
 </html>
