@@ -224,14 +224,21 @@
     .carousel-slide {
       display: none;
       width: 100%;
+      min-height: 400px;
+      background: #0d1117;
+      align-items: center;
+      justify-content: center;
     }
     .carousel-slide.active {
-      display: block;
+      display: flex;
+      flex-direction: column;
     }
     .carousel-slide img {
+      max-height: 500px;
       width: 100%;
+      object-fit: contain;
       display: block;
-      border-radius: 9px;
+      background: #0d1117;
     }
     .carousel-slide .phone-img {
       width: 280px;
@@ -559,55 +566,6 @@
     </div>
   </div>
 
-  <!-- Screenshot Carousel -->
-  <div class="carousel">
-    <div class="carousel-track" id="carousel">
-      <div class="carousel-slide active">
-        <img src="device/Minicam.jpg" alt="PAN Pendant — ESP32-S3 Camera Module">
-        <div class="carousel-caption"><strong>Wearable Pendant</strong> — ESP32-S3 camera module. Smaller than a car key.</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-terminal.png" alt="PAN Terminal">
-        <div class="carousel-caption"><strong>Terminal</strong> — Claude Code with live chat sidebar and task tracking</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-chat.png" alt="PAN Chat">
-        <div class="carousel-caption"><strong>Chat</strong> — Conversation history across all Claude sessions, per project</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-data.png" alt="PAN Data Overview">
-        <div class="carousel-caption"><strong>Data Overview</strong> — 10,000+ events captured across all devices</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-activity.png" alt="PAN Activity Log">
-        <div class="carousel-caption"><strong>Activity Log</strong> — Every event searchable, with anonymization toggle</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-projects.png" alt="PAN Projects">
-        <div class="carousel-caption"><strong>Projects</strong> — Milestone tracking with progress bars across all workspaces</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-sensors.png" alt="PAN Sensors">
-        <div class="carousel-caption"><strong>Sensors</strong> — Toggle phone sensors from the dashboard</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-settings.png" alt="PAN Settings">
-        <div class="carousel-caption"><strong>Settings</strong> — AI provider config, models, remote access, treasury</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="v2-phone.png" alt="PAN Android App" class="phone-img">
-        <div class="carousel-caption"><strong>Phone App</strong> — Voice commands, remote access, sensor controls</div>
-      </div>
-      <div class="carousel-slide">
-        <img src="device/allCompv1.jpg" alt="PAN Pendant Components">
-        <div class="carousel-caption"><strong>Pendant V1 Components</strong> — Camera, screen, speaker, amplifier, magnets</div>
-      </div>
-      <button class="carousel-btn prev" onclick="carouselPrev()">&#8249;</button>
-      <button class="carousel-btn next" onclick="carouselNext()">&#8250;</button>
-    </div>
-    <div class="carousel-dots" id="carousel-dots"></div>
-  </div>
-
   <!-- Nav tabs -->
   <nav class="repo-nav">
     <ul>
@@ -627,6 +585,55 @@
         <span class="branch">main</span>
       </div>
       <div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading repository...</p></div>
+    </div>
+
+    <!-- Screenshot Carousel -->
+    <div class="carousel" style="padding:24px 0">
+      <div class="carousel-track" id="carousel">
+        <div class="carousel-slide active">
+          <img src="device/Minicam.jpg" alt="PAN Pendant — ESP32-S3 Camera Module" style="object-fit:contain;max-height:500px;width:100%;background:#0d1117">
+          <div class="carousel-caption"><strong>Wearable Pendant</strong> — ESP32-S3 camera module. Smaller than a car key.</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-terminal.png" alt="PAN Terminal" style="object-fit:contain;max-height:500px;width:100%">
+          <div class="carousel-caption"><strong>Terminal</strong> — Claude Code with live chat sidebar and task tracking</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-chat.png" alt="PAN Chat" style="object-fit:contain;max-height:500px;width:100%">
+          <div class="carousel-caption"><strong>Chat</strong> — Conversation history across all Claude sessions, per project</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-data.png" alt="PAN Data Overview" style="object-fit:contain;max-height:500px;width:100%">
+          <div class="carousel-caption"><strong>Data Overview</strong> — 10,000+ events captured across all devices</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-activity.png" alt="PAN Activity Log" style="object-fit:contain;max-height:500px;width:100%">
+          <div class="carousel-caption"><strong>Activity Log</strong> — Every event searchable, with anonymization toggle</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-projects.png" alt="PAN Projects" style="object-fit:contain;max-height:500px;width:100%">
+          <div class="carousel-caption"><strong>Projects</strong> — Milestone tracking with progress bars across all workspaces</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-sensors.png" alt="PAN Sensors" style="object-fit:contain;max-height:500px;width:100%">
+          <div class="carousel-caption"><strong>Sensors</strong> — Toggle phone sensors from the dashboard</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-settings.png" alt="PAN Settings" style="object-fit:contain;max-height:500px;width:100%">
+          <div class="carousel-caption"><strong>Settings</strong> — AI provider config, models, remote access, treasury</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="v2-phone.png" alt="PAN Android App" style="object-fit:contain;max-height:500px;width:auto;margin:0 auto;display:block;background:#0d1117">
+          <div class="carousel-caption"><strong>Phone App</strong> — Voice commands, remote access, sensor controls</div>
+        </div>
+        <div class="carousel-slide">
+          <img src="device/allCompv1.jpg" alt="PAN Pendant Components" style="object-fit:contain;max-height:500px;width:100%;background:#0d1117">
+          <div class="carousel-caption"><strong>Pendant V1 Components</strong> — Camera, screen, speaker, amplifier, magnets</div>
+        </div>
+        <button class="carousel-btn prev" onclick="carouselPrev()">&#8249;</button>
+        <button class="carousel-btn next" onclick="carouselNext()">&#8250;</button>
+      </div>
+      <div class="carousel-dots" id="carousel-dots"></div>
     </div>
 
     <div class="readme-container">
