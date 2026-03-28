@@ -206,6 +206,83 @@
       cursor: pointer;
     }
 
+    /* ── Carousel ── */
+    .carousel {
+      position: relative;
+      z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .carousel-track {
+      position: relative;
+      overflow: hidden;
+      border-radius: 10px;
+      border: 1px solid #21262d;
+      background: #0d1117;
+    }
+    .carousel-slide {
+      display: none;
+      width: 100%;
+    }
+    .carousel-slide.active {
+      display: block;
+    }
+    .carousel-slide img {
+      width: 100%;
+      display: block;
+      border-radius: 9px;
+    }
+    .carousel-slide .phone-img {
+      width: 280px;
+      margin: 20px auto;
+      display: block;
+    }
+    .carousel-caption {
+      padding: 10px 16px;
+      font-size: 13px;
+      color: #8b949e;
+      text-align: center;
+      background: rgba(22, 27, 34, 0.9);
+    }
+    .carousel-caption strong { color: #e6edf3; }
+    .carousel-btn {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(22, 27, 34, 0.8);
+      border: 1px solid #30363d;
+      color: #e6edf3;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+      z-index: 2;
+    }
+    .carousel-btn:hover { background: rgba(88, 166, 255, 0.15); border-color: #58a6ff; }
+    .carousel-btn.prev { left: 12px; }
+    .carousel-btn.next { right: 12px; }
+    .carousel-dots {
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+      padding: 12px 0;
+    }
+    .carousel-dots .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #30363d;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .carousel-dots .dot.active { background: #58a6ff; }
+
     /* ── GitHub-style nav tabs ── */
     .repo-nav {
       position: relative;
@@ -482,6 +559,55 @@
     </div>
   </div>
 
+  <!-- Screenshot Carousel -->
+  <div class="carousel">
+    <div class="carousel-track" id="carousel">
+      <div class="carousel-slide active">
+        <img src="device/Minicam.jpg" alt="PAN Pendant — ESP32-S3 Camera Module">
+        <div class="carousel-caption"><strong>Wearable Pendant</strong> — ESP32-S3 camera module. Smaller than a car key.</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-terminal.png" alt="PAN Terminal">
+        <div class="carousel-caption"><strong>Terminal</strong> — Claude Code with live chat sidebar and task tracking</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-chat.png" alt="PAN Chat">
+        <div class="carousel-caption"><strong>Chat</strong> — Conversation history across all Claude sessions, per project</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-data.png" alt="PAN Data Overview">
+        <div class="carousel-caption"><strong>Data Overview</strong> — 10,000+ events captured across all devices</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-activity.png" alt="PAN Activity Log">
+        <div class="carousel-caption"><strong>Activity Log</strong> — Every event searchable, with anonymization toggle</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-projects.png" alt="PAN Projects">
+        <div class="carousel-caption"><strong>Projects</strong> — Milestone tracking with progress bars across all workspaces</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-sensors.png" alt="PAN Sensors">
+        <div class="carousel-caption"><strong>Sensors</strong> — Toggle phone sensors from the dashboard</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-settings.png" alt="PAN Settings">
+        <div class="carousel-caption"><strong>Settings</strong> — AI provider config, models, remote access, treasury</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="v2-phone.png" alt="PAN Android App" class="phone-img">
+        <div class="carousel-caption"><strong>Phone App</strong> — Voice commands, remote access, sensor controls</div>
+      </div>
+      <div class="carousel-slide">
+        <img src="device/allCompv1.jpg" alt="PAN Pendant Components">
+        <div class="carousel-caption"><strong>Pendant V1 Components</strong> — Camera, screen, speaker, amplifier, magnets</div>
+      </div>
+      <button class="carousel-btn prev" onclick="carouselPrev()">&#8249;</button>
+      <button class="carousel-btn next" onclick="carouselNext()">&#8250;</button>
+    </div>
+    <div class="carousel-dots" id="carousel-dots"></div>
+  </div>
+
   <!-- Nav tabs -->
   <nav class="repo-nav">
     <ul>
@@ -707,6 +833,35 @@
         document.getElementById('readme-body').innerHTML = '<div class="loading">Could not load README. <a href="https://github.com/' + REPO + '#readme" style="color:#58a6ff">View on GitHub</a></div>';
       }
     }
+
+    // ── Carousel ──
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.carousel-slide');
+    const dotsContainer = document.getElementById('carousel-dots');
+
+    // Create dots
+    slides.forEach((_, i) => {
+      const dot = document.createElement('span');
+      dot.className = 'dot' + (i === 0 ? ' active' : '');
+      dot.onclick = () => goToSlide(i);
+      dotsContainer.appendChild(dot);
+    });
+
+    function goToSlide(n) {
+      slides[currentSlide].classList.remove('active');
+      dotsContainer.children[currentSlide].classList.remove('active');
+      currentSlide = (n + slides.length) % slides.length;
+      slides[currentSlide].classList.add('active');
+      dotsContainer.children[currentSlide].classList.add('active');
+    }
+
+    function carouselNext() { goToSlide(currentSlide + 1); }
+    function carouselPrev() { goToSlide(currentSlide - 1); }
+
+    // Auto-rotate every 6 seconds
+    let carouselTimer = setInterval(carouselNext, 6000);
+    document.getElementById('carousel').addEventListener('mouseenter', () => clearInterval(carouselTimer));
+    document.getElementById('carousel').addEventListener('mouseleave', () => { carouselTimer = setInterval(carouselNext, 6000); });
 
     loadRepo();
     loadReadme();
