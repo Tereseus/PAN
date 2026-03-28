@@ -838,12 +838,30 @@
             a.href = `https://github.com/${REPO}/blob/master/${href}`;
           }
         });
-        // Remove all images from README body — carousel handles screenshots
-        document.querySelectorAll('#readme-body img').forEach(img => img.remove());
-        // Also remove empty table cells left behind
-        document.querySelectorAll('#readme-body td').forEach(td => {
-          if (!td.textContent.trim() && !td.querySelector('img')) td.parentElement?.remove();
+        // Remove all images and image tables from README — carousel handles screenshots
+        document.querySelectorAll('#readme-body img').forEach(img => {
+          // Remove the parent paragraph/center/table-cell if it only contained the image
+          const parent = img.closest('p, td, div');
+          if (parent) parent.remove();
+          else img.remove();
         });
+        // Remove empty table rows and tables
+        document.querySelectorAll('#readme-body tr').forEach(tr => {
+          if (!tr.textContent.trim()) tr.remove();
+        });
+        document.querySelectorAll('#readme-body table').forEach(table => {
+          if (!table.textContent.trim()) table.remove();
+        });
+        // Remove the "Screenshots" heading and "See interactive demo" blockquote since carousel replaces them
+        document.querySelectorAll('#readme-body h2, #readme-body blockquote').forEach(el => {
+          if (el.textContent.includes('Screenshots') || el.textContent.includes('interactive demo')) el.remove();
+        });
+        // Move carousel into the readme body after the first heading
+        const firstHr = document.querySelector('#readme-body hr');
+        const carouselEl = document.querySelector('.carousel');
+        if (firstHr && carouselEl) {
+          firstHr.parentNode.insertBefore(carouselEl, firstHr);
+        }
       } catch (e) {
         document.getElementById('readme-body').innerHTML = '<div class="loading">Could not load README. <a href="https://github.com/' + REPO + '#readme" style="color:#58a6ff">View on GitHub</a></div>';
       }
