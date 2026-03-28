@@ -2,7 +2,39 @@
 
 Voice-controlled AI operating system. Phone, computer, browser, wearable pendant — one unified system. Self-hosted, open source, all data on your hardware.
 
-![PAN Dashboard](https://raw.githubusercontent.com/Tereseus/PAN/master/docs/dashboard.jpg)
+## Screenshots
+
+### Dashboard
+
+<p align="center">
+  <img src="docs/v2-terminal.png" width="800" alt="Terminal — Claude Code with chat sidebar and task tracking">
+</p>
+
+| Chat | Data Overview | Activity Log |
+|------|---------------|-------------|
+| ![Chat](docs/v2-chat.png) | ![Data](docs/v2-data.png) | ![Activity Log](docs/v2-activity.png) |
+
+| Projects | Sensors | Settings |
+|----------|---------|----------|
+| ![Projects](docs/v2-projects.png) | ![Sensors](docs/v2-sensors.png) | ![Settings](docs/v2-settings.png) |
+
+### Phone App
+
+<p align="center">
+  <img src="docs/v2-phone.png" width="280" alt="PAN Android App — Server connected, remote access, sensor controls">
+</p>
+
+### Wearable Pendant (V1 Hardware)
+
+<p align="center">
+  <img src="docs/device/Minicam.jpg" width="250" alt="ESP32-S3 Camera Module">
+  <img src="docs/device/MinicamKeyForScale.jpg" width="250" alt="Camera vs Car Key — Size Comparison">
+  <img src="docs/device/ScreenMeasure.jpg" width="250" alt="Display Module">
+</p>
+
+<p align="center">
+  <img src="docs/device/allCompv1.jpg" width="400" alt="All V1 Components — Camera, Screen, Speaker, Amplifier">
+</p>
 
 ---
 
