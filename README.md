@@ -2,273 +2,90 @@
 
 Voice-controlled AI operating system. Phone, computer, browser, wearable pendant — one unified system. Self-hosted, open source, all data on your hardware.
 
-## Screenshots
-
-### Dashboard
+> **[See the interactive demo with screenshots](https://tereseus.github.io/PAN/)**
 
 <p align="center">
   <img src="docs/v2-terminal.png" width="800" alt="Terminal — Claude Code with chat sidebar and task tracking">
 </p>
 
+<p align="center">
+  <img src="docs/device/Minicam.jpg" width="220">
+  <img src="docs/v2-phone.png" width="140">
+  <img src="docs/device/MinicamKeyForScale.jpg" width="220">
+</p>
+
+<p align="center">
+  <em>ESP32-S3 camera module (smaller than a car key) — Android app — Size comparison</em>
+</p>
+
 | Chat | Data Overview | Activity Log |
 |------|---------------|-------------|
-| ![Chat](docs/v2-chat.png) | ![Data](docs/v2-data.png) | ![Activity Log](docs/v2-activity.png) |
+| ![Chat](docs/v2-chat.png) | ![Data](docs/v2-data.png) | ![Activity](docs/v2-activity.png) |
 
 | Projects | Sensors | Settings |
 |----------|---------|----------|
 | ![Projects](docs/v2-projects.png) | ![Sensors](docs/v2-sensors.png) | ![Settings](docs/v2-settings.png) |
 
-### Phone App
-
-<p align="center">
-  <img src="docs/v2-phone.png" width="280" alt="PAN Android App — Server connected, remote access, sensor controls">
-</p>
-
-### Wearable Pendant (V1 Hardware)
-
-<p align="center">
-  <img src="docs/device/Minicam.jpg" width="250" alt="ESP32-S3 Camera Module">
-  <img src="docs/device/MinicamKeyForScale.jpg" width="250" alt="Camera vs Car Key — Size Comparison">
-  <img src="docs/device/ScreenMeasure.jpg" width="250" alt="Display Module">
-</p>
-
-<p align="center">
-  <img src="docs/device/allCompv1.jpg" width="400" alt="All V1 Components — Camera, Screen, Speaker, Amplifier">
-</p>
-
 ---
 
 ## What PAN Does
 
-PAN routes voice commands across all your devices. One sentence triggers multi-step automation across your phone, PC, browser tabs, and pendant sensors. Always-on microphone with continuous context.
+PAN captures, organizes, and protects your personal data across all devices. Voice commands route across phone, PC, browser tabs, and pendant sensors. Always-on microphone with full conversation context.
 
-### Always-On vs Trigger-Based
+### Voice Examples
 
-Other assistants: wake word → 5-10 seconds of attention → done. PAN: continuous listening with full conversation context. You can reference something you said 10 minutes ago. You can interrupt mid-sentence. It's a conversation, not a command prompt.
-
-### Multi-Step Automation
+**"What did we say about genies?"**
+Searches PAN's database across all conversations — voice, text, terminal — finds the matching conversation in under a second.
 
 **"Show me videogamedunkey's newest video."**
-1. Opens YouTube in browser (via browser extension)
-2. Navigates to the channel
-3. Finds most recent upload → plays it
-4. Tells you the title
-
-**"I had a conversation about swords yesterday, what was it about?"**
-1. Searches memory database for "swords" across all conversations — voice, text, phone, every device
-2. Finds the matching conversation
-3. Reads back the full context — who said what, when, what the conclusion was
-
-PAN indexes every conversation across all devices. A separate AI session searched files for 7 minutes and found nothing. PAN found it in 1 second.
+Opens YouTube via browser extension → navigates to channel → plays most recent upload → tells you the title.
 
 **"Is this meat still good?"**
-1. Pendant spectrometer (AS7341) reads the light absorption spectrum of the surface
-2. Detects fat oxidation levels and moisture content — things invisible to a camera
-3. PAN tells you: "Oxidation levels are elevated. This has been sitting out too long."
+Pendant spectrometer reads chemical composition at the surface — fat oxidation, moisture content. Tells you what a camera can't see.
 
-A camera can tell you something looks fresh. The spectrometer tells you if it actually is — by reading the chemical composition, not just the color.
-
-**"Find that article about battery tech I was reading last week and send it to my work email."**
-1. Searches browser history + PAN memory for "battery" articles from last week
-2. Finds the URL → opens email in browser
-3. Composes email with link → sends it
+**"Tell Marcus I'm running late."**
+Picks the right messaging app, types the message, sends it.
 
 ### Proactive Awareness
 
-PAN learns your patterns over time and helps before you ask. You choose what it monitors and how much it tells you.
+PAN learns your patterns and helps before you ask. Every category is independently controllable.
 
-**Face recognition:** Someone walks up to you at a party. PAN recognizes them from the pendant camera: "David. Met at Jake's birthday, February. Works at an architecture firm. You talked about hiking."
-
-**Conversation capture:** Someone says their phone number — PAN saves it. Someone mentions a deadline — PAN adds it to your calendar. You say you'll send someone an article — PAN sends it.
-
-**Context bridging:** You're reading an article — PAN connects it to a conversation you had last week about the same topic. You walk into a meeting — PAN pulls up notes from the last time you met with these people.
-
-**Grocery:** You mention needing milk. PAN adds it to your list. "Order groceries" — PAN places the delivery order.
-
-**Dentist:** "My teeth hurt, I need a dentist." PAN contacts your dentist's office, finds an open slot, shares your symptoms. The dentist's AI responds with a time. PAN books it.
-
-**Real-time triggers:** Discussing a movie — PAN already found showtimes nearby. Traffic is bad and you have a meeting — PAN tells you to leave early.
-
-**Sun exposure:** PAN tracks UV index at your location, knows you've been outside for 3 hours, knows from weeks of observation you don't wear sunscreen. Tells you to put it on.
-
-**Nutrition:** Pendant camera sees your meals, tracks intake. "Third high-sugar meal today — over your daily target."
-
-**Keys:** "Where did I leave my keys?" PAN's camera saw them on the kitchen counter at 11:47 PM. Shows you the photo.
-
-**Messaging:** "Tell Marcus I'm running late." PAN picks the right app, types the message, sends it.
-
-**Translation:** Pendant camera reads signs, menus, labels and transcribes (text) them in your language. Someone speaks another language — PAN transcribes (text) and translates live.
-
-**Safety:** EMF sensor detects a live wire behind the wall before you drill. Thermal camera spots an overheating outlet. Gas sensor picks up a methane leak before you smell it.
-
-**Health patterns:** PAN does not give health advice (advice). But it tracks data. "What is this spot on my arm?" — PAN captures it, compares to previous photos over time, gives you information to bring to your doctor. "Is anything I've been eating making me feel this way?" — PAN reviews your nutrition history and gives you data, not diagnoses.
-
-Every category is independently controllable — PAN only monitors what you tell it to.
+- **Face recognition** — pendant camera identifies people, recalls where you met and what you discussed
+- **Conversation capture** — phone numbers, deadlines, promises are automatically saved
+- **Context bridging** — connects what you're reading to conversations from last week
+- **Safety** — fall detection, emergency contacts, location sharing, duress detection
 
 ### Connected PANs
 
-When two people both use PAN, their devices can coordinate automatically. Everything is opt-in — nothing is shared without both people agreeing.
+When two people both use PAN, their devices coordinate automatically. Everything is opt-in.
 
-**Silent coordination:**
-You're in a meeting. PAN hears the context and knows you're busy. Messages from other people are held and delivered when the meeting ends. PAN figures out when you're occupied and queues non-urgent messages automatically.
-
-**Driving to the same place:**
-You and a friend are both heading to the same restaurant. Both PANs share ETAs automatically — "Sarah is 12 minutes away, you're 8 minutes away."
-
-**"Is this the right one?"**
-You asked your friend to grab something from the store — PAN flagged it as a priority because you discussed it earlier. Your friend holds up the item, asks PAN. Their PAN captures the photo and sends it to yours: "Alex is asking if this is the right one." You reply through PAN: "No, the other brand." They hear your response instantly.
-
-**Emergency contact:**
-Your parent's PAN detects a fall — accelerometer spike followed by no movement for 60 seconds. PAN pulls emergency contacts from the phone and reaches out through every channel available — calls, texts, messages through every app it has access to. Sends GPS location, vitals from the heart rate sensor, and what happened. Contacts are notified within seconds.
-
-**Shared memory:**
-"What did Jake and I decide about the trip?" PAN searches both your conversation histories (with permission) and reconstructs the full decision — even if parts happened over voice on different days across different devices.
-
-### Cross-Device Orchestration
-
-PAN treats phone, PC, browser, and pendant as one system.
-
-- Ask about code from last week → PAN searches terminal history → opens the file in your editor
-- Pendant camera captures a document → Claude Vision extracts text → saves searchable in database
-- Pendant thermal camera spots an overheating outlet → alerts you via phone → logs it on PC
-- You tell PAN to message someone → PAN picks the right app, types the message, sends it
+- Silent message queuing when you're busy
+- Shared ETAs when heading to the same place
+- Emergency detection and automatic contact alerting
+- Cross-device memory search with permission
 
 ---
 
 ## Your Data, Your Control
 
-PAN captures a lot of data. All of it stays on your devices — not in the cloud, not on anyone else's servers.
+All data stays on your devices. Not in the cloud, not on anyone else's servers.
 
-### Where Your Data Lives
+- **SQLite database** on your PC (`%LOCALAPPDATA%/PAN/data/pan.db`) — encrypted at rest
+- **All communication encrypted** via Tailscale (WireGuard tunnel) — even on local WiFi
+- **Data anonymization** — PII stripped before any data leaves your device to cloud AI
+- **Delete anything** — single events, entire days, bulk search results, or everything
+- **Every action logged** — what PAN heard, how it classified it, what API it called, response time
 
-| Data Type | Where It's Stored | Format |
-|-----------|------------------|--------|
-| Voice transcripts | Your PC: `service/data/pan.db` | SQLite database |
-| Photos from vision | Your PC: `service/src/data/photos/` | JPEG files |
-| Voice training audio | Your PC: `service/src/data/voice/` | WAV files |
-| Phone conversations | Your phone's app storage | SQLite database |
-| Browser tab data | Your PC's PAN server | In-memory, flushed to SQLite |
-| Gas / air quality readings | Your PC: `data/sensors/gas/` | Timestamped JSON |
-| Spectral analysis | Your PC: `data/sensors/spectral/` | Timestamped JSON |
-| Thermal captures | Your PC: `data/sensors/thermal/` | Heatmap images + JSON |
-| UV / light / sound levels | Your PC: `data/sensors/uv/`, `light/`, `sound/` | Timestamped JSON |
-| Heart rate / SpO2 | Your PC: `data/sensors/heart/` | Timestamped JSON |
-| GPS / motion data | Your PC: `data/sensors/gps/`, `motion/` | Timestamped JSON |
-| EMF / radiation readings | Your PC: `data/sensors/emf/`, `radiation/` | Timestamped JSON |
+### Data Dividends
 
-No cloud sync by default. Your data physically exists on your hard drive and your phone in standard file formats you can open with any tool.
+PAN captures your data. You own it. You can sell it.
 
-### Transparency
+Three anonymization tiers let you control what you share:
+- **Tier 1 (Full Anonymize)** — topics and sentiment only. AI companies buy conversation patterns.
+- **Tier 2 (Partial)** — city-level GPS, conversations without names. Urban planning, transit analysis.
+- **Tier 3 (Minimal)** — precise GPS, full sensors, conversations with context. Name and personal identifiers always stripped.
 
-Every action PAN takes is logged in the dashboard at `http://localhost:7777/dashboard/`:
-- What PAN heard you say
-- How it classified the request (local, server, ambient)
-- Which API it called and how long it took
-- What response it generated
-- Whether it was handled on your phone or sent to your PC
-
-### What You Can Delete
-
-Everything. At any level of granularity.
-
-- **Delete one message** — tap the delete button next to any conversation entry
-- **Delete all data from a specific day** — pick a date, click delete
-- **Delete everything matching a search** — search for "medical" and delete all results
-- **Delete ALL data** — nuclear option, requires your password twice
-- **Delete a photo** — each captured photo has its own delete button
-
-All deletes are **password-protected**. You set the password. Default is "pan" — change it immediately in Settings.
-
-When you delete something, it's gone. Not "archived." Not "marked as deleted but still on the server." The SQLite row is removed. The JPEG file is deleted from disk. It does not exist anymore.
-
-### What PAN Records
-
-**When the microphone is on:**
-- Text transcription of what you say (not raw audio — unless you're doing voice training)
-- Commands you give and PAN's responses
-- The pendant captures photos every 5 seconds and sensor readings continuously
-
-**When the microphone is off:**
-- Nothing. No recording, no processing, no data.
-
-**What PAN does not record without you knowing:**
-- PAN does not send data to any external server without your API key
-- PAN does not record raw audio continuously (only during deliberate voice training sessions)
-- PAN does not access apps you've blocklisted
-- PAN shows a visible notification when the mic is active
-
-You can turn off any individual sensor from the dashboard. Disable the camera, the microphone, the gas sensor — whatever you want. Every sensor is independently controllable.
-
-### Self-Hosted vs Subscription
-
-| Feature | Self-Hosted (Free Forever) | Subscription (Planned) |
-|---------|--------------------------|----------------------|
-| Where it runs | Your PC + your phone | Our hosted server |
-| AI processing | Your own API key (Anthropic, ~$5/month) | Included in subscription |
-| Data storage | Your hardware, your control | Encrypted on our servers, you own it |
-| Privacy level | Maximum — data never leaves your network | Standard — encrypted, we can't read it |
-| Setup | Install PAN service + phone app | One-click signup |
-| Voice training | Runs on your GPU overnight | Runs on our GPU |
-| Updates | Pull from GitHub | Automatic |
-
-**You can always switch.** Export your data (it's SQLite + files), move to self-hosted, delete your subscription data. No lock-in ever.
-
----
-
-## The Pendant
-
-PAN works great with just a phone and a computer. The pendant makes it extraordinary.
-
-### Why a Pendant?
-
-Your phone is powerful but it's in your pocket. You have to pull it out, unlock it, open an app. The pendant sits on your chest, always on, always seeing what you see, always hearing what you hear.
-
-It's the difference between a security camera that you have to check vs eyes in your head that are always open.
-
-**The pendant gives PAN first-person perspective.** When you ask "what is this?" and you're pointing at something under your car hood, the pendant's camera sees exactly what you're looking at. Your phone in your pocket can't do that.
-
-### What's In It
-
-One case. 22 sensors. Size of a Zippo lighter. €155 total cost.
-
-**Build what you want.** All 22 sensors fit in one case. Use all of them or just the basics — your choice.
-
-| # | Sensor | What It Does |
-|---|--------|-------------|
-| 1 | Camera (OV2640) | "What is this?" — identify anything you point at, read signs, translate text |
-| 2 | Microphone (PDM) | Always-on voice commands, conversation recall, ambient awareness |
-| 3 | Laser pointer | Aim at a specific object — "what is THIS?" with precision |
-| 4 | LED | Status indicator, utility light |
-| 5 | Gas Sensor (BME688) | Detect gas leaks, carbon monoxide, smoke — alerts you before you can smell it |
-| 6 | UV Sensor (LTR390) | Tracks UV exposure over time — warns you based on your habits and location |
-| 7 | Thermal Camera (MLX90640) | See heat through walls, find hot wires, detect body heat in darkness |
-| 8 | Spectrometer (AS7341) | Analyze chemical composition at 1-5 cm — food freshness (fat oxidation, moisture, sugar content), material ID, detect fakes, check ripeness. Reads what things are actually made of, not just what they look like |
-| 9 | Magnetometer (QMC5883L) | Detect hidden magnets, find metal in walls, compass navigation |
-| 10 | Accelerometer + Gyro (BMI270) | Fall detection, step counting, posture alerts |
-| 11 | GPS (L76K) | Every event geotagged — "where was I when I said that?" |
-| 12 | Air Quality (SGP40) | "Is the air safe?" — VOC levels, mold risk, ventilation warnings |
-| 13 | Barometer (in BME688) | Weather prediction, altitude tracking, storm detection |
-| 14 | Temperature + Humidity (in BME688) | Ambient conditions logged — mold risk, comfort monitoring |
-| 15 | Ambient Light (BH1750) | Eye strain alerts, automatic brightness context |
-| 16 | Color Sensor (TCS34725) | Exact color matching — "is this the right paint color?" |
-| 17 | Laser Distance (VL53L0X) | Instant tape measure — point and get distance |
-| 18 | Sound Level (MAX4466) | "Is this too loud?" — hearing damage alerts at concerts, job sites |
-| 19 | Heart Rate + SpO2 (MAX30102) | Continuous pulse and blood oxygen monitoring |
-| 20 | EMF Sensor (AD8317) | Detect live wires behind walls — don't drill into electrical |
-| 21 | Ultrasonic (RCWL-1601) | Distance measurement in total darkness, obstacle detection |
-| 22 | Radiation (RadSens) | Ionizing radiation detection |
-
-All sensor data is timestamped, geotagged, and searchable from the dashboard. Every reading correlates with what you were doing, where you were, and what was happening around you.
-
-Full specifications, sizes, and pin budget: [SENSOR-ARRAY.md](SENSOR-ARRAY.md)
-
-### Build It Yourself or Buy It
-
-**DIY:** Full parts list, 3D printable case files, assembly guide, and firmware — all open source. Buy the components (~€155), print the case, solder it together, flash the firmware. Everything you need is in this repo.
-
-**Pre-built:** We'll sell assembled pendants for people who don't want to build. Same hardware, same firmware, ready to use.
-
-**Battery:** Standard 18350 Li-ion — rechargeable via USB-C, or swap a fresh one in 2 seconds. Common cell, available everywhere for €3-5.
+Your name, home address, and personal identifiers are permanently removed at every tier. Revenue via crypto staking on Cardano — PAN is free forever, you earn by contributing anonymized data.
 
 ---
 
@@ -277,21 +94,55 @@ Full specifications, sizes, and pin budget: [SENSOR-ARRAY.md](SENSOR-ARRAY.md)
 ```
 Phone (Android)                    PC (Windows)
 ├── Google Streaming STT           ├── PAN Service (port 7777)
-├── Voice commands (20+)           ├── Anthropic API (sub-1s responses)
-├── Camera + Claude Vision         ├── Browser Extension (read/write tabs)
-├── App control (Accessibility)    ├── UI Automation (control any app)
-├── Spotify / media deep links     ├── Electron Tray (desktop agent)
-├── Always-on listening            ├── Web Dashboard
-└── BLE ↔ Pendant                  ├── Voice Training (Piper, overnight)
-                                   └── Terminal Project Management
-Pendant (ESP32-S3)
-├── Camera (smart capture)
-├── Microphone (separate from phone)
-├── 22 sensors
-├── Laser pointer (precision targeting)
-├── BLE streaming to phone
-└── 18350 swappable battery
+├── On-device AI (MediaPipe GPU)   ├── Claude Code (via subscription)
+├── Gemma 3n (conversation + classify) ├── SvelteKit Dashboard (v2)
+├── Camera + Vision                ├── Browser Extension (full DOM control)
+├── Tailscale (encrypted tunnel)   ├── Electron Desktop App
+├── Voice commands                 ├── SQLite + FTS5 Search
+└── BLE ↔ Pendant                  ├── Data Anonymization Layer
+                                   ├── Tailscale Auto-Auth
+Pendant (ESP32-S3)                 └── Windows Service (auto-start)
+├── Camera (OV2640)
+├── Microphone
+├── Screen (ST7789V)
+├── Speaker + Amplifier
+└── 22 sensor slots (see below)
 ```
+
+### Security
+
+- **Tailscale required** for all device communication (raw LAN blocked)
+- **Auto-auth** — sign in with Google once, Tailscale connects silently via pre-authorized keys
+- **Database encryption** at rest (SQLCipher)
+- **Anonymization layer** — emails, phones, GPS, addresses, SSN stripped from all cloud AI calls
+- **WireGuard alternative** available for users who prefer self-managed tunnels
+- **Headscale** (self-hosted coordination server) planned for enterprise
+
+---
+
+## The Pendant
+
+PAN works with just a phone and computer. The pendant adds first-person perspective.
+
+Size of a Zippo lighter. €155 total cost. 22 sensor slots — use all or just the basics.
+
+| Sensor | What It Does |
+|--------|-------------|
+| Camera (OV2640) | Identify objects, read signs, translate text |
+| Microphone (PDM) | Voice commands, conversation recall |
+| Spectrometer (AS7341) | Chemical analysis — food freshness, material ID |
+| Thermal Camera (MLX90640) | See heat through walls, detect hot wires |
+| Gas Sensor (BME688) | Detect leaks, carbon monoxide, smoke |
+| GPS (L76K) | Geotag every event |
+| Heart Rate + SpO2 (MAX30102) | Continuous pulse and blood oxygen |
+| Accelerometer + Gyro (BMI270) | Fall detection, step counting |
+| + 14 more | UV, magnetometer, air quality, color, distance, EMF, radiation... |
+
+Full sensor specifications: [SENSOR-ARRAY.md](SENSOR-ARRAY.md)
+
+**Build it yourself** — full parts list, 3D printable case, assembly guide, firmware. All open source.
+
+---
 
 ## Quick Start
 
@@ -300,30 +151,27 @@ Pendant (ESP32-S3)
 git clone https://github.com/Tereseus/PAN.git
 cd PAN/service
 npm install
-cp src/claude.js.template src/claude.js   # Add your Anthropic API key
-node pan.js start                          # Start the service
-node install-service.js                    # Auto-start on boot
+node pan.js start                  # Start the service
+node install-service.js            # Auto-start on boot
 ```
 
+Dashboard opens at `http://localhost:7777/v2/`
+
 ### Phone (Android)
-1. Build the APK from `android/` in Android Studio
-2. Install on your phone
-3. Set server URL in Settings → your PC's IP, port 7777
-4. Grant microphone and camera permissions
-5. Start talking
+1. Build APK from `android/` in Android Studio
+2. Install on phone
+3. Set server URL → your PC's IP, port 7777
+4. Grant microphone + camera permissions
+5. Start talking — on-device AI responds in ~5 seconds, server queries in ~7 seconds
 
 ### Browser Extension
-1. Open `chrome://extensions/`
-2. Enable Developer Mode
-3. Click "Load unpacked" → select `browser-extension/`
-4. PAN can now read and control all your browser tabs
+1. `chrome://extensions/` → Developer Mode → Load unpacked → select `browser-extension/`
+2. PAN can now read and control all browser tabs
 
 ### Desktop App
 ```bash
-cd service
-npx electron electron/main.cjs
+cd service && npx electron electron/main.cjs
 ```
-Or search "PAN" in Windows Start Menu.
 
 ---
 
@@ -331,51 +179,70 @@ Or search "PAN" in Windows Start Menu.
 
 | Layer | Technology |
 |-------|-----------|
-| Phone | Kotlin, Jetpack Compose, CameraX, Google STT, Hilt DI |
-| Server | Node.js, Express, SQLite (sql.js), Anthropic API |
-| Desktop | Electron, Python (pyautogui, uiautomation) |
-| Browser | WebExtension API (Manifest V3) — Chrome, Edge, Brave, Firefox |
-| AI | Claude Haiku (conversation), Claude Vision (photos), Piper (voice clone) |
-| Pendant | ESP32-S3, I2C sensors, BLE 5.0, CameraX |
-| Voice | Google Streaming STT, Android TTS, Piper (custom voice training) |
+| Phone | Kotlin, Jetpack Compose, MediaPipe GPU, Gemma 3n, Google STT, Hilt DI, Tailscale (tsnet) |
+| Server | Node.js, Express, SQLite (better-sqlite3 + SQLCipher), Claude Agent SDK |
+| Dashboard | SvelteKit 2, Svelte 5, xterm.js, WebSocket terminals |
+| Desktop | Electron, system tray, Windows Service |
+| Browser | WebExtension API (Manifest V3) — Chrome, Edge, Brave |
+| AI | Claude Code (terminal), Gemma 3n (phone, on-device), MediaPipe (GPU inference) |
+| Security | Tailscale (WireGuard), auto-auth keys, data anonymization, SQLCipher |
+| Pendant | ESP32-S3, I2C/SPI sensors, BLE 5.0 |
+| Voice | Google Streaming STT, Android TTS, Piper (voice clone, in progress) |
 
-## Project Status
+## System Requirements
 
-### ✅ Working
-- Real-time voice conversation (sub-1-second responses via Claude)
-- Cross-device command routing (phone → PC → browser in one voice command)
-- Camera + Claude Vision analysis (point at anything, get an answer)
-- Browser extension (read/write any tab — not just search, full DOM control)
-- Windows UI automation (control any desktop application by voice)
-- Android Accessibility Service (read/control any phone app — no API needed)
-- Full conversation memory with search (every voice interaction, searchable)
-- Web dashboard with data management, photos, search, granular delete
-- Voice training data collection for custom TTS voice cloning
-- Terminal project management with full context restoration across sessions
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| CPU | Any i5 (2018+) | i5-10th gen+ |
+| RAM | 8 GB | 16 GB |
+| Storage | 128 GB SSD | 256 GB+ SSD |
+| Network | Always-on internet | Ethernet preferred |
+| OS | Windows 10/11 | Windows 11 |
+| Phone | Android 12+, 6GB RAM | Pixel 10 Pro or equivalent |
+| Cost | ~$150 used PC | ~$200-300 |
 
-### 🔨 Building
-- Piper voice cloning (training pipeline ready, runs overnight on GPU)
-- Voice fingerprinting (identify who's speaking)
-- Pendant hardware
-
-### 📋 Planned
-- Linux support
-- One-click installer
-- Voice marketplace (custom AI voices)
-- Subscription service for hosted users
+At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100 MB/day.
 
 ---
 
-## Open Source
+## Status
 
-The self-hosted option is the primary path — for anyone who wants privacy and control over their data. If you don't want to set any of that up and are fine with us handling your data (with the ability to delete it whenever you want), there's a hosted convenience subscription. Use whichever works for you.
+### Working
+- Voice conversation across phone + PC (on-device + server)
+- SvelteKit dashboard with terminal, chat, projects, sensors, data, settings
+- Cross-device command routing (phone → PC → browser)
+- Remote access via Tailscale with auto-authentication
+- On-device AI (Gemma 3n via MediaPipe GPU, ~5s responses)
+- FTS5 full-text search across all events and conversations
+- Data anonymization (PII stripping before cloud AI calls)
+- Project tracking with milestones, tasks, drag-and-drop
+- Phone sensor control from dashboard
+- Claude Code hooks integration (SessionStart, Stop, UserPromptSubmit)
+- Browser extension (read/control tabs, click elements, type text)
+- Windows Service (auto-start, auto-restart)
+- Dream cycle (consolidates events into structured memory)
+- GitHub issue monitoring
 
-## License
+### In Progress
+- Pendant firmware (ESP32-S3 — camera, BLE, screen driver)
+- Voice fingerprinting (Piper training with user audio)
+- Data dividend / treasury system (Cardano staking)
+- Installer (one-click setup)
+- Real-time contextual awareness (proactive conversation jumping)
 
-MIT License. See [LICENSE](LICENSE) for details.
+### Planned
+- Headscale (self-hosted coordination for enterprise)
+- Cross-user messaging relay
+- Duress detection (stress analysis, silent emergency alerts)
+- File access across devices via Tailscale (no USB needed)
+- OpenRouter integration (Cerebras/Groq, sub-1s responses)
 
-## Author
+---
 
-**Tereseus** — [github.com/Tereseus](https://github.com/Tereseus)
+*PAN doesn't require any specific AI provider. Use Claude Code, Gemini CLI, Cursor, or any tool — as long as your project has a `.pan` file, PAN captures everything. The AI is pluggable. Your data is not.*
 
-Built with Claude Code.
+---
+
+**License:** Open Source
+**Created by:** [Tereseus](https://github.com/Tereseus)
+**Concept:** AI Cyclosis — the recursive loop of AI-driven development
