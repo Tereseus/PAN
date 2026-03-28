@@ -838,12 +838,11 @@
             a.href = `https://github.com/${REPO}/blob/master/${href}`;
           }
         });
-        // Rewrite relative image src to point to raw GitHub content
-        document.querySelectorAll('#readme-body img').forEach(img => {
-          const src = img.getAttribute('src');
-          if (src && !src.startsWith('http') && !src.startsWith('data:')) {
-            img.src = `https://raw.githubusercontent.com/${REPO}/master/${src}`;
-          }
+        // Remove all images from README body — carousel handles screenshots
+        document.querySelectorAll('#readme-body img').forEach(img => img.remove());
+        // Also remove empty table cells left behind
+        document.querySelectorAll('#readme-body td').forEach(td => {
+          if (!td.textContent.trim() && !td.querySelector('img')) td.parentElement?.remove();
         });
       } catch (e) {
         document.getElementById('readme-body').innerHTML = '<div class="loading">Could not load README. <a href="https://github.com/' + REPO + '#readme" style="color:#58a6ff">View on GitHub</a></div>';
