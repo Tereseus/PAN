@@ -838,6 +838,13 @@
             a.href = `https://github.com/${REPO}/blob/master/${href}`;
           }
         });
+        // Rewrite relative image src to point to raw GitHub content
+        document.querySelectorAll('#readme-body img').forEach(img => {
+          const src = img.getAttribute('src');
+          if (src && !src.startsWith('http') && !src.startsWith('data:')) {
+            img.src = `https://raw.githubusercontent.com/${REPO}/master/${src}`;
+          }
+        });
       } catch (e) {
         document.getElementById('readme-body').innerHTML = '<div class="loading">Could not load README. <a href="https://github.com/' + REPO + '#readme" style="color:#58a6ff">View on GitHub</a></div>';
       }
