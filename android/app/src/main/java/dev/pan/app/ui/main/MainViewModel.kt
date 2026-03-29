@@ -218,6 +218,45 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun connectTailscale() {
+        viewModelScope.launch {
+            remoteAccessManager.setEnabled(true)
+            remoteAccessManager.setStatus("Connecting...")
+            try {
+                // Try auto-auth from server first
+                try {
+                    val deviceName = android.os.Build.MODEL
+                    val resp = api.getTailscaleAuthKey(mapOf("device_name" to deviceName, "device_id" to deviceName.lowercase().replace(" ", "-")))
+                    if (resp.isSuccessful) {
+                        val key = resp.body()?.get("auth_key")?.toString()
+                        if (!key.isNullOrBlank() && key != "null") {
+                            dev.pan.app.vpn.PanVpn.setAuthKey(application, key)
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
+                if (loginUrl != null) {
+                    dev.pan.app.vpn.PanVpn.openLoginUrl(application, loginUrl)
+                    for (i in 0 until 60) {
+                        kotlinx.coroutines.delay(2000)
+                        remoteAccessManager.refreshFromVpn()
+                        if (remoteAccessManager.status.value == "Connected") break
+                    }
+                } else {
+                    for (i in 0 until 15) {
+                        remoteAccessManager.refreshFromVpn()
+                        if (remoteAccessManager.status.value == "Connected") break
+                        kotlinx.coroutines.delay(1000)
+                    }
+                    remoteAccessManager.refreshFromVpn()
+                }
+            } catch (e: Exception) {
+                remoteAccessManager.setStatus("Failed: ${e.message}")
+            }
+        }
+    }
+
     fun toggleRemoteAccess(context: android.content.Context, enabled: Boolean) {
         viewModelScope.launch {
             if (enabled) {
