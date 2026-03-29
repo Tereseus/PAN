@@ -27,12 +27,11 @@ fun DashboardScreen(
     val serverUrl by settingsViewModel.serverUrl.collectAsState()
     val remoteEnabled by settingsViewModel.remoteAccessEnabled.collectAsState()
 
-    // When Tailscale connected, use direct server URL on LAN
-    // The VPN tunnel handles encryption — WebView just needs to reach the server
-    // On same WiFi: direct LAN IP works. Remote: needs server's Tailscale IP.
-    // For now, always use the server URL (LAN IP) — it works on same WiFi
-    // and Tailscale routes 100.x traffic through the tunnel when remote
-    val dashUrl = serverUrl
+    // Use the Tailscale proxy when available — it tunnels through tsnet to the server
+    // This works from anywhere (same WiFi, different WiFi, cellular)
+    // Falls back to direct server URL on LAN if proxy not running
+    val proxyUrl = settingsViewModel.getRemoteProxyUrl()
+    val dashUrl = proxyUrl ?: serverUrl
 
     Scaffold(
         topBar = {

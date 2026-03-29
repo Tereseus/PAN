@@ -638,7 +638,19 @@ app.get('/health', (req, res) => {
   const mins = Math.floor(secs / 60);
   const hrs = Math.floor(mins / 60);
   const uptime = hrs > 0 ? `${hrs}h ${mins % 60}m` : mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
-  res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime });
+  // Include Tailscale IP so phone can discover the server's remote address
+  let tailscaleIp = null;
+  try {
+    const { execFileSync } = require('child_process');
+    tailscaleIp = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', ['ip', '-4'], { timeout: 3000, encoding: 'utf8' }).trim();
+  } catch {
+    // Try PATH fallback
+    try {
+      const { execFileSync } = require('child_process');
+      tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8' }).trim();
+    } catch {}
+  }
+  res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime, tailscaleIp });
 });
 
 // Auto-detect local model providers (Ollama, LM Studio)
