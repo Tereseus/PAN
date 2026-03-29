@@ -32,6 +32,26 @@ fun MainScreen(
     val pendingCount by viewModel.pendingCount.collectAsState()
     val deviceTarget by viewModel.deviceTarget.collectAsState()
     val devices by viewModel.devices.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Auto-launch VPN consent dialog on first load if not yet consented
+    val vpnLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            viewModel.connectTailscale()
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val vpnIntent = android.net.VpnService.prepare(context)
+        if (vpnIntent != null) {
+            vpnLauncher.launch(vpnIntent)
+        } else {
+            // Already consented — just connect
+            viewModel.connectTailscale()
+        }
+    }
     val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()
     val remoteAccessStatus by viewModel.remoteAccessStatus.collectAsState()
     val remoteAccessIp by viewModel.remoteAccessIp.collectAsState()
