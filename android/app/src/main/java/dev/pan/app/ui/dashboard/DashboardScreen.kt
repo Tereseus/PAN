@@ -27,9 +27,12 @@ fun DashboardScreen(
     val serverUrl by settingsViewModel.serverUrl.collectAsState()
     val remoteEnabled by settingsViewModel.remoteAccessEnabled.collectAsState()
 
-    // Use Tailscale proxy when available, direct server URL as fallback
-    val proxyUrl = settingsViewModel.getRemoteProxyUrl()
-    val dashUrl = if (remoteEnabled && proxyUrl != null) proxyUrl else serverUrl
+    // When Tailscale connected, use server's Tailscale hostname via MagicDNS
+    // WebView routes through the VPN tunnel directly (not OkHttp proxy)
+    val serverHost = dev.pan.app.vpn.PanVpn.getServerHostname(
+        androidx.compose.ui.platform.LocalContext.current
+    )
+    val dashUrl = if (remoteEnabled && serverHost.isNotEmpty()) "http://$serverHost:7777" else serverUrl
 
     Scaffold(
         topBar = {
