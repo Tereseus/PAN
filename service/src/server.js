@@ -151,7 +151,28 @@ app.get('/api/setup-status', async (req, res) => {
 });
 
 // Auth middleware — all other /api routes get req.user
-app.use('/api', extractUser);
+// Tailscale or localhost requests with X-Device-Name header auto-authenticate
+app.use('/api', (req, res, next) => {
+  // Bootstrap endpoints skip auth
+  if (req.path === '/v1/tailscale/auto-auth' || req.path === '/v1/tailscale/status') {
+    req.user = { id: 1, email: 'bootstrap@localhost', display_name: 'Bootstrap', role: 'owner' };
+    return next();
+  }
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  const deviceName = req.headers['x-device-name'];
+  const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip.endsWith('127.0.0.1') || ip === '::ffff:127.0.0.1';
+  const isTailscale = ip.startsWith('100.') || ip.startsWith('::ffff:100.');
+  const isLan = ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.');
+  if (deviceName && (isLocalhost || isTailscale || isLan)) {
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
+    return next();
+  }
+  if (isLocalhost) {
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
+    return next();
+  }
+  extractUser(req, res, next);
+});
 
 // Hook events from Claude Code
 app.use('/hooks', hooksRouter);
