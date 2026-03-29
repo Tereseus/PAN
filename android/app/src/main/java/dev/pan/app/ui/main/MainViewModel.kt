@@ -69,13 +69,8 @@ class MainViewModel @Inject constructor(
     init {
         // Don't reset micEnabled on init — it persists across navigation
 
-        // Auto-connect Tailscale on startup — always on for security
-        viewModelScope.launch {
-            try {
-                dev.pan.app.vpn.PanVpn.autoConnect(application)
-                remoteAccessManager.refreshFromVpn()
-            } catch (_: Exception) {}
-        }
+        // Tailscale auto-connect is triggered by LaunchedEffect in MainScreen
+        // (needs Activity context for VPN consent dialog)
 
         viewModelScope.launch {
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
@@ -246,12 +241,17 @@ class MainViewModel @Inject constructor(
                 } else {
                     for (i in 0 until 15) {
                         remoteAccessManager.refreshFromVpn()
-                        if (remoteAccessManager.status.value == "Connected") break
+                        val port = try { panvpn.Panvpn.getProxyPort().toInt() } catch (_: Exception) { 0 }
+                        android.util.Log.d("PAN-VPN", "Poll $i: status=${remoteAccessManager.status.value} proxy=$port")
+                        if (remoteAccessManager.status.value == "Connected" && port > 0) break
                         kotlinx.coroutines.delay(1000)
                     }
                     remoteAccessManager.refreshFromVpn()
+                    val finalPort = try { panvpn.Panvpn.getProxyPort().toInt() } catch (_: Exception) { 0 }
+                    android.util.Log.d("PAN-VPN", "Final: status=${remoteAccessManager.status.value} proxy=$finalPort shouldUse=${remoteAccessManager.shouldUseTailscale}")
                 }
             } catch (e: Exception) {
+                android.util.Log.e("PAN-VPN", "connectTailscale failed: ${e.message}")
                 remoteAccessManager.setStatus("Failed: ${e.message}")
             }
         }
