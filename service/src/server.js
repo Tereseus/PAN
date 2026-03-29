@@ -314,6 +314,26 @@ app.put('/api/v1/settings', (req, res) => {
 
 // Dashboard (web UI + API)
 app.use('/dashboard', dashboardRouter);
+
+// Redirect /dashboard/ to /v2/ (Svelte dashboard)
+app.get('/dashboard', (req, res) => res.redirect('/v2/'));
+app.get('/dashboard/', (req, res) => res.redirect('/v2/'));
+
+// Svelte v2 dashboard — static files
+app.use('/v2', express.static(join(__dirname, '..', 'public', 'v2'), {
+  etag: false,
+  lastModified: true,
+  index: 'index.html',
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+}));
+// SPA fallback — any /v2/* that isn't a file gets index.html
+app.get('/v2/*path', (req, res) => {
+  res.sendFile(join(__dirname, '..', 'public', 'v2', 'index.html'));
+});
+
+// Old dashboard static files (fallback)
 app.use('/dashboard', express.static(join(__dirname, '..', 'public'), {
   etag: false,
   lastModified: true,
