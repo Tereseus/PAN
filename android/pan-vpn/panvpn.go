@@ -212,6 +212,53 @@ func GetStatus() *Status {
 	return st
 }
 
+// FindServerIP scans the tailnet for a peer matching the given hostname
+// and returns its Tailscale IP. If hostname is empty, returns the first
+// peer that isn't this device. This lets the phone discover the PAN server
+// without any manual IP configuration.
+func FindServerIP(peerHostname string) string {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if server == nil {
+		return ""
+	}
+
+	ctx, c := context.WithTimeout(context.Background(), 10*time.Second)
+	defer c()
+
+	lc, err := server.LocalClient()
+	if err != nil {
+		return ""
+	}
+
+	// Get full status WITH peers
+	status, err := lc.Status(ctx)
+	if err != nil {
+		return ""
+	}
+
+	for _, peer := range status.Peer {
+		name := string(peer.HostName)
+		if peerHostname != "" && name == peerHostname {
+			if len(peer.TailscaleIPs) > 0 {
+				return peer.TailscaleIPs[0].String()
+			}
+		}
+	}
+
+	// If no specific hostname requested, return first online peer
+	if peerHostname == "" {
+		for _, peer := range status.Peer {
+			if peer.Online && len(peer.TailscaleIPs) > 0 {
+				return peer.TailscaleIPs[0].String()
+			}
+		}
+	}
+
+	return ""
+}
+
 // Dial connects to a Tailscale peer by hostname and port.
 // Returns a net.Conn that can be used for communication.
 // Example: conn, err := Dial("pan-desktop", 7777)
