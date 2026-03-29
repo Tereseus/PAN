@@ -85,12 +85,26 @@ class RemoteAccessManager @Inject constructor() {
         Log.d(TAG, "Proxy port: $port")
     }
 
+    /** Discovered PAN server IP on the tailnet */
+    private val _serverIp = MutableStateFlow("")
+    val serverIp: StateFlow<String> = _serverIp
+
     fun refreshFromVpn() {
         val status = PanVpn.getStatus()
         _status.value = if (status.connected) "Connected" else if (_enabled.value) "Connecting..." else "Off"
         _ip.value = status.ip
         _org.value = status.org
-        if (status.connected) _enabled.value = true
+        if (status.connected) {
+            _enabled.value = true
+            // Try to discover server if not already found
+            if (_serverIp.value.isEmpty()) {
+                val discovered = PanVpn.findServerIP()
+                if (discovered.isNotEmpty()) {
+                    _serverIp.value = discovered
+                    Log.i(TAG, "Discovered PAN server: $discovered")
+                }
+            }
+        }
         // Update proxy port from Go — always read fresh, don't cache stale ports
         try {
             val port = Panvpn.getProxyPort().toInt()

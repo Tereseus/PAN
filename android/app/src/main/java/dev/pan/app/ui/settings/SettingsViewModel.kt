@@ -27,7 +27,7 @@ class SettingsViewModel @Inject constructor(
     private val serverClient: PanServerClient,
     private val localLlm: LocalLlm,
     private val application: Application,
-    private val remoteAccessManager: RemoteAccessManager
+    val remoteAccessManager: RemoteAccessManager
 ) : ViewModel() {
 
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)

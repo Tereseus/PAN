@@ -43,6 +43,7 @@
         android:label="PAN"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
+        android:largeHeap="true"
         android:theme="@style/Theme.PAN">
 
         <activity

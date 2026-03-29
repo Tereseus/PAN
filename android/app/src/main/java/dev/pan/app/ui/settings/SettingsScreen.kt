@@ -94,16 +94,23 @@ fun SettingsScreen(
             // Connection
             Text("Connection", style = MaterialTheme.typography.titleMedium)
 
+            val activeUrl = viewModel.getRemoteProxyUrl() ?: serverUrl
             OutlinedTextField(
-                value = serverUrl,
-                onValueChange = { viewModel.setServerUrl(it) },
-                label = { Text("PAN Server URL") },
+                value = activeUrl,
+                onValueChange = { },
+                label = { Text("PAN Server (via Tailscale)") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
+                readOnly = true
             )
-            Text("Your PC's IP with port 7777",
+            val proxyUrl = viewModel.getRemoteProxyUrl()
+            Text(
+                if (proxyUrl != null) "Connected via Tailscale proxy"
+                else "Tailscale proxy not ready — connecting...",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                color = if (proxyUrl != null) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.error
+            )
 
             HorizontalDivider()
 

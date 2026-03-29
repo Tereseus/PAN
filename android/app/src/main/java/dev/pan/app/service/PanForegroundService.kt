@@ -171,17 +171,10 @@ class PanForegroundService : Service() {
                 }
             }
 
-            // Initialize on-device AI (MediaPipe GPU) — wrapped in try-catch so crash doesn't kill service
-            serviceScope.launch {
-                try {
-                    val initStart = System.currentTimeMillis()
-                    val ready = geminiBrain.initialize()
-                    val initElapsed = System.currentTimeMillis() - initStart
-                    panLog("GeminiBrain init: ${initElapsed}ms — ${if (ready) "READY" else "not available, using server"}")
-                } catch (e: Exception) {
-                    panLog("GeminiBrain init CRASHED: ${e.message} — using server fallback")
-                }
-            }
+            // MediaPipe/GeminiBrain DEFERRED — tsnet + WebView + audio already use ~400MB
+            // On-device AI will load on-demand when first needed, not at startup
+            // All AI queries go to server via Tailscale until then
+            panLog("GeminiBrain: deferred (memory reserved for Tailscale + dashboard)")
 
             // Voice collector — DISABLED on phone (Android can't run two AudioRecords)
             // Raw audio for voice training comes from PC mic or pendant
