@@ -282,10 +282,22 @@ class SettingsViewModel @Inject constructor(
                 try {
                     val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
                     if (loginUrl != null) {
-                        // Browser-based login needed
                         dev.pan.app.vpn.PanVpn.openLoginUrl(application, loginUrl)
+                        // Poll until connected after browser login
+                        for (i in 0 until 120) {
+                            kotlinx.coroutines.delay(2000)
+                            remoteAccessManager.refreshFromVpn()
+                            if (remoteAccessManager.status.value == "Connected") break
+                        }
+                    } else {
+                        // Connected silently — poll until proxy ready
+                        for (i in 0 until 15) {
+                            remoteAccessManager.refreshFromVpn()
+                            if (remoteAccessManager.status.value == "Connected") break
+                            kotlinx.coroutines.delay(1000)
+                        }
+                        remoteAccessManager.refreshFromVpn()
                     }
-                    remoteAccessManager.refreshFromVpn()
                 } catch (e: Exception) {
                     Log.e("Settings", "VPN connect failed: ${e.message}")
                     remoteAccessManager.setStatus("Failed: ${e.message}")
