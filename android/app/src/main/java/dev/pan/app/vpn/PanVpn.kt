@@ -194,6 +194,19 @@ object PanVpn {
         }
     }
 
+    /**
+     * Discover the PAN server's Tailscale IP by scanning tailnet peers.
+     * Pass empty string to find the first online peer, or a hostname to find a specific one.
+     */
+    fun findServerIP(peerHostname: String = ""): String {
+        return try {
+            Panvpn.findServerIP(peerHostname)
+        } catch (e: Exception) {
+            Log.w(TAG, "FindServerIP failed: ${e.message}")
+            ""
+        }
+    }
+
     fun openLoginUrl(context: Context, url: String) {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

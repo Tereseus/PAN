@@ -200,7 +200,15 @@ router.delete('/tokens/:id', (req, res) => {
 // This is PUBLIC (no auth needed) so the login page knows which buttons to show
 router.get('/providers', (req, res) => {
   const modeSetting = get("SELECT value FROM settings WHERE key = 'auth_mode'");
-  const authMode = modeSetting?.value || 'none';
+  let authMode = modeSetting?.value || 'none';
+
+  // Auto-auth for localhost/Tailscale — skip login screen entirely
+  const ip = req.ip || req.connection?.remoteAddress || '';
+  const isLocal = ip === '127.0.0.1' || ip === '::1' || ip.endsWith('127.0.0.1') || ip === '::ffff:127.0.0.1';
+  const isTailscale = ip.startsWith('100.') || ip.startsWith('::ffff:100.');
+  if (isLocal || isTailscale) {
+    authMode = 'none';
+  }
 
   const providers = {};
   for (const p of ['google', 'microsoft', 'github', 'apple']) {

@@ -44,12 +44,14 @@ fun MainScreen(
     }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        val vpnIntent = android.net.VpnService.prepare(context)
-        if (vpnIntent != null) {
-            vpnLauncher.launch(vpnIntent)
-        } else {
-            // Already consented — just connect
-            viewModel.connectTailscale()
+        // Only start Tailscale if not already running
+        if (!dev.pan.app.vpn.PanVpn.isRunning()) {
+            val vpnIntent = android.net.VpnService.prepare(context)
+            if (vpnIntent != null) {
+                vpnLauncher.launch(vpnIntent)
+            } else {
+                viewModel.connectTailscale()
+            }
         }
     }
     val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()
