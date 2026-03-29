@@ -43,7 +43,7 @@ fun DashboardScreen(
                     webViewClient = WebViewClient()
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    loadUrl("$serverUrl/dashboard/")
+                    loadUrl("$serverUrl/v2/")
                 }
             }
         )
