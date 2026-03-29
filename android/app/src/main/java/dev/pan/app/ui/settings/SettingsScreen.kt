@@ -1,5 +1,8 @@
 package dev.pan.app.ui.settings
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -9,8 +12,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -32,6 +37,23 @@ fun SettingsScreen(
     val conversationModel by viewModel.conversationModel.collectAsState()
     val llmStatus by viewModel.llmStatus.collectAsState()
     val llmDownloadProgress by viewModel.llmDownloadProgress.collectAsState()
+    val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()
+    val remoteAccessStatus by viewModel.remoteAccessStatus.collectAsState()
+    val remoteAccessIp by viewModel.remoteAccessIp.collectAsState()
+    val isServerConnected by viewModel.isServerConnected.collectAsState()
+    val downloadingId by viewModel.downloadingId.collectAsState()
+    val geminiKey by viewModel.geminiKey.collectAsState()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    // VPN consent launcher
+    val vpnLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            viewModel.enableRemoteAccess(true)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -82,6 +104,30 @@ fun SettingsScreen(
             Text("Your PC's IP with port 7777",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            HorizontalDivider()
+
+            // Remote Access
+            Text("Remote Access", style = MaterialTheme.typography.titleMedium)
+
+            SettingToggle(
+                title = "Tailscale VPN",
+                description = if (remoteAccessEnabled) "$remoteAccessStatus${if (remoteAccessIp.isNotEmpty()) " — $remoteAccessIp" else ""}"
+                              else "Connect to PAN server from anywhere",
+                checked = remoteAccessEnabled,
+                onToggle = { enabled ->
+                    if (enabled) {
+                        val vpnIntent = viewModel.getVpnIntent()
+                        if (vpnIntent != null) {
+                            vpnLauncher.launch(vpnIntent)
+                        } else {
+                            viewModel.enableRemoteAccess(true)
+                        }
+                    } else {
+                        viewModel.enableRemoteAccess(false)
+                    }
+                }
+            )
 
             HorizontalDivider()
 
@@ -358,6 +404,114 @@ fun SettingsScreen(
                 TextButton(onClick = { showCustom = true }) {
                     Text("+ Add Custom Model")
                 }
+            }
+
+            HorizontalDivider()
+
+            // On-Device AI (GPU Accelerated)
+            Text("On-Device AI (GPU Accelerated)", style = MaterialTheme.typography.titleMedium)
+            Text("Gemma 3n via MediaPipe — runs on phone GPU for fast responses",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            val mediaPipeStatus = remember { viewModel.getMediaPipeStatus() }
+            val isMediaPipeDownloading = downloadingId == "mediapipe-gemma3n"
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val mpColor = when (mediaPipeStatus) {
+                    "loaded" -> MaterialTheme.colorScheme.primary
+                    "downloaded" -> MaterialTheme.colorScheme.tertiary
+                    else -> MaterialTheme.colorScheme.outline
+                }
+                val mpText = when (mediaPipeStatus) {
+                    "loaded" -> "Running (GPU)"
+                    "downloaded" -> "Downloaded"
+                    else -> "Not installed"
+                }
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = mpColor.copy(alpha = 0.15f),
+                    modifier = Modifier.padding(end = 8.dp)
+                ) {
+                    Text(mpText, color = mpColor,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                }
+                Text("~3 GB", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            if (isMediaPipeDownloading) {
+                LinearProgressIndicator(
+                    progress = { llmDownloadProgress },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                )
+                Text("Downloading... ${(llmDownloadProgress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            if (mediaPipeStatus == "not_downloaded" || mediaPipeStatus == "incomplete") {
+                Button(
+                    onClick = { viewModel.downloadMediaPipeModel() },
+                    enabled = !isMediaPipeDownloading,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Download Gemma 3n E2B") }
+            }
+
+            HorizontalDivider()
+
+            // Gemini API Key
+            Text("Gemini API Key", style = MaterialTheme.typography.titleMedium)
+            Text("For cloud fallback when on-device AI is unavailable",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            var geminiKeyInput by remember { mutableStateOf(geminiKey) }
+            OutlinedTextField(
+                value = geminiKeyInput,
+                onValueChange = { geminiKeyInput = it },
+                label = { Text("API Key") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            if (geminiKeyInput != geminiKey) {
+                Button(
+                    onClick = { viewModel.setGeminiKey(geminiKeyInput) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Save Key") }
+            }
+
+            HorizontalDivider()
+
+            // Node.js Runtime Test
+            Text("Node.js Runtime", style = MaterialTheme.typography.titleMedium)
+            var nodeTestResult by remember { mutableStateOf("") }
+            var nodeTestRunning by remember { mutableStateOf(false) }
+
+            Button(
+                onClick = {
+                    nodeTestRunning = true
+                    scope.launch {
+                        try {
+                            val result = dev.pan.app.node.NodeRunner.runTest(context)
+                            nodeTestResult = if (result.success) "OK (${result.elapsedMs}ms): ${result.stdout.take(100)}"
+                                           else "FAIL: ${result.stderr.take(100)}"
+                        } catch (e: Exception) {
+                            nodeTestResult = "Error: ${e.message}"
+                        }
+                        nodeTestRunning = false
+                    }
+                },
+                enabled = !nodeTestRunning,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (nodeTestRunning) "Running..." else "Test Node.js Runtime") }
+
+            if (nodeTestResult.isNotEmpty()) {
+                Text(nodeTestResult,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (nodeTestResult.startsWith("OK")) MaterialTheme.colorScheme.primary
+                           else MaterialTheme.colorScheme.error)
             }
         }
     }
