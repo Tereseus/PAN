@@ -88,11 +88,14 @@ dependencies {
     // Google ML Kit GenAI — on-device Gemini Nano (backup)
     implementation("com.google.mlkit:genai-prompt:1.0.0-beta1")
 
-    // Google AI Edge SDK — direct AICore access (backup)
-    implementation("com.google.ai.edge.aicore:aicore:0.0.1-exp01")
+    // MediaPipe LLM Inference — GPU-accelerated on-device AI (Gemma 3n)
+    implementation("com.google.mediapipe:tasks-genai:0.10.33")
 
     // llama.cpp for Android — local LLM inference (native ARM64 build)
     implementation(project(":llama-lib"))
+
+    // PAN Remote Access — embedded Tailscale tsnet (gomobile AAR)
+    implementation(files("libs/panvpn.aar"))
 }
 
 // NDK for llama.cpp native code
