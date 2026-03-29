@@ -21,13 +21,27 @@ class PanServerClient @Inject constructor(
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected
 
+    // Prevent connection flapping — only flip to disconnected after 3 consecutive failures
+    private var consecutiveFailures = 0
+
     suspend fun checkHealth(): Boolean {
         return try {
             val response = api.health()
-            _isConnected.value = response.isSuccessful
+            if (response.isSuccessful) {
+                consecutiveFailures = 0
+                _isConnected.value = true
+            } else {
+                consecutiveFailures++
+                if (consecutiveFailures >= 3) {
+                    _isConnected.value = false
+                }
+            }
             response.isSuccessful
         } catch (e: Exception) {
-            _isConnected.value = false
+            consecutiveFailures++
+            if (consecutiveFailures >= 3) {
+                _isConnected.value = false
+            }
             false
         }
     }

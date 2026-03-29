@@ -32,6 +32,7 @@ object NetworkModule {
             .addInterceptor(Interceptor { chain ->
                 val request = chain.request().newBuilder()
                     .addHeader("X-Device-Name", DeviceNameHolder.name)
+                    .addHeader("X-Device-Id", android.os.Build.MODEL.lowercase().replace(" ", "-"))
                     .build()
                 chain.proceed(request)
             })

@@ -14,6 +14,7 @@ import dev.pan.app.service.PanForegroundService
 import dev.pan.app.stt.GoogleStreamingStt
 import dev.pan.app.di.DeviceNameHolder
 import dev.pan.app.ui.commands.DeviceItem
+import dev.pan.app.vpn.RemoteAccessManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -25,10 +26,17 @@ class MainViewModel @Inject constructor(
     private val dataRepository: DataRepository,
     private val sttEngine: GoogleStreamingStt,
     private val sensorContext: SensorContext,
-    private val api: PanServerApi
+    private val api: PanServerApi,
+    private val remoteAccessManager: RemoteAccessManager
 ) : ViewModel() {
 
     val isServerConnected: StateFlow<Boolean> = serverClient.isConnected
+
+    // Remote access state from RemoteAccessManager
+    val remoteAccessEnabled: StateFlow<Boolean> = remoteAccessManager.enabled
+    val remoteAccessStatus: StateFlow<String> = remoteAccessManager.status
+    val remoteAccessIp: StateFlow<String> = remoteAccessManager.ip
+    val remoteAccessOrg: StateFlow<String> = remoteAccessManager.org
     val lastAction: StateFlow<String> = PanForegroundService.lastAction
 
     val isMicEnabled: StateFlow<Boolean> = PanForegroundService.micEnabled
@@ -54,6 +62,9 @@ class MainViewModel @Inject constructor(
     val pendingCount: StateFlow<Int> = dataRepository.pendingCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), 0)
 
+    // Track connection state for reconnection logic
+    private var wasConnected = false
+
     init {
         PanForegroundService.micEnabled.value = sttEngine.enabled
 
@@ -68,7 +79,16 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) {
                 serverClient.checkHealth()
-                refreshDevices()
+                val nowConnected = serverClient.isConnected.value
+                // Reconnection: when transitioning false -> true, reload everything
+                if (nowConnected && !wasConnected) {
+                    refreshDevices()
+                    val devId = activeSensorDeviceId
+                    if (devId != null) loadSensorsForDevice(devId)
+                } else {
+                    refreshDevices()
+                }
+                wasConnected = nowConnected
                 delay(10000)
             }
         }
@@ -199,5 +219,9 @@ class MainViewModel @Inject constructor(
                 }
             } catch (_: Exception) {}
         }
+    }
+
+    fun toggleRemoteAccess(enabled: Boolean) {
+        remoteAccessManager.setEnabled(enabled)
     }
 }
