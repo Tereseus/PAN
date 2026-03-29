@@ -78,4 +78,10 @@ interface PanServerApi {
         @retrofit2.http.Path("attachTo") attachTo: String,
         @Body request: SensorAttachRequest
     ): Response<Unit>
+
+    @GET("/api/v1/settings")
+    suspend fun getSettings(): Response<Map<String, Any>>
+
+    @POST("/api/v1/tailscale/auto-auth")
+    suspend fun getTailscaleAuthKey(@Body request: Map<String, String>): Response<Map<String, Any>>
 }

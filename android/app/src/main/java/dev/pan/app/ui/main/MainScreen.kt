@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import dev.pan.app.network.dto.DeviceSensorConfig
 import dev.pan.app.ui.commands.DeviceItem
+import dev.pan.app.vpn.RemoteAccessManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -31,6 +32,10 @@ fun MainScreen(
     val pendingCount by viewModel.pendingCount.collectAsState()
     val deviceTarget by viewModel.deviceTarget.collectAsState()
     val devices by viewModel.devices.collectAsState()
+    val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()
+    val remoteAccessStatus by viewModel.remoteAccessStatus.collectAsState()
+    val remoteAccessIp by viewModel.remoteAccessIp.collectAsState()
+    val remoteAccessOrg by viewModel.remoteAccessOrg.collectAsState()
     var targetExpanded by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -59,6 +64,28 @@ fun MainScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("ΠΑΝ Dashboard")
+            }
+
+            // Quick Mute toggle
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Quick Mute", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (isMicEnabled) "Listening" else "Muted",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isMicEnabled) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = isMicEnabled,
+                        onCheckedChange = { viewModel.toggleMic() }
+                    )
+                }
             }
 
             // Last action
@@ -93,6 +120,38 @@ fun MainScreen(
                         }
                     }
                     StatusDot(isActive = isServerConnected)
+                }
+            }
+
+            // Remote Access
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Remote Access", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            remoteAccessStatus,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (remoteAccessStatus == "Connected") MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (remoteAccessIp.isNotEmpty()) {
+                            Text(remoteAccessIp,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (remoteAccessOrg.isNotEmpty()) {
+                            Text(remoteAccessOrg,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Switch(
+                        checked = remoteAccessEnabled,
+                        onCheckedChange = { viewModel.toggleRemoteAccess(it) }
+                    )
                 }
             }
 

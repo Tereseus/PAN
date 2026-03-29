@@ -1,15 +1,20 @@
 package dev.pan.app.ui.settings
 
 import android.app.Application
+import android.content.Intent
+import android.net.VpnService
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.pan.app.ai.LocalLlm
+import dev.pan.app.ai.MediaPipeLlm
 import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerApi
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.ui.commands.DeviceItem
 import dev.pan.app.util.Constants
+import dev.pan.app.vpn.RemoteAccessManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -21,7 +26,8 @@ class SettingsViewModel @Inject constructor(
     private val api: PanServerApi,
     private val serverClient: PanServerClient,
     private val localLlm: LocalLlm,
-    private val application: Application
+    private val application: Application,
+    private val remoteAccessManager: RemoteAccessManager
 ) : ViewModel() {
 
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
@@ -81,10 +87,23 @@ class SettingsViewModel @Inject constructor(
     private val _llmDownloadProgress = MutableStateFlow(0f)
     val llmDownloadProgress: StateFlow<Float> = _llmDownloadProgress
 
-    // Track which model is currently being downloaded
-    private var downloadingModelId: String? = null
+    // Track which model is currently being downloaded — StateFlow so Compose observes it
+    private val _downloadingId = MutableStateFlow<String?>(null)
+    val downloadingId: StateFlow<String?> = _downloadingId
 
     val isServerConnected: StateFlow<Boolean> = serverClient.isConnected
+
+    // Remote access state
+    val remoteAccessEnabled: StateFlow<Boolean> = remoteAccessManager.enabled
+    val remoteAccessStatus: StateFlow<String> = remoteAccessManager.status
+    val remoteAccessIp: StateFlow<String> = remoteAccessManager.ip
+
+    // MediaPipe on-device AI
+    private var mediaPipeLlm: MediaPipeLlm? = null
+
+    // Gemini API key
+    private val _geminiKey = MutableStateFlow("")
+    val geminiKey: StateFlow<String> = _geminiKey
 
     init {
         viewModelScope.launch {
@@ -102,9 +121,11 @@ class SettingsViewModel @Inject constructor(
             dataRepository.getSetting("conversation_model")?.let { _conversationModel.value = it }
             // backward compat
             dataRepository.getSetting("selected_llm_model")?.let { _selectedLlmModel.value = it }
+            dataRepository.getSetting("gemini_key")?.let { _geminiKey.value = it }
         }
         refreshDevices()
         refreshLlmStatus()
+        mediaPipeLlm = MediaPipeLlm(application)
     }
 
     fun refreshLlmStatus() {
@@ -117,18 +138,18 @@ class SettingsViewModel @Inject constructor(
 
     fun downloadModel(modelId: String) {
         val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
-        downloadingModelId = modelId
+        _downloadingId.value = modelId
         _llmDownloadProgress.value = 0f
         viewModelScope.launch {
             localLlm.downloadModel(model) { progress ->
                 _llmDownloadProgress.value = progress
             }
-            downloadingModelId = null
+            _downloadingId.value = null
             refreshLlmStatus()
         }
     }
 
-    fun isDownloading(modelId: String): Boolean = downloadingModelId == modelId
+    fun isDownloading(modelId: String): Boolean = _downloadingId.value == modelId
 
     fun deleteModel(modelId: String) {
         val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
@@ -236,4 +257,83 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun getDownloadProgress(): Float = _llmDownloadProgress.value
+
+    // --- Remote Access ---
+
+    fun enableRemoteAccess(enabled: Boolean) {
+        if (enabled) {
+            remoteAccessManager.setEnabled(true)
+            remoteAccessManager.setStatus("Connecting...")
+            viewModelScope.launch {
+                try {
+                    // Try auto-auth from server first
+                    val resp = api.getTailscaleAuthKey(mapOf("action" to "get_key"))
+                    if (resp.isSuccessful) {
+                        val key = resp.body()?.get("auth_key") as? String
+                        if (!key.isNullOrBlank()) {
+                            Log.d("Settings", "Got auto-auth key from server")
+                            dev.pan.app.vpn.PanVpn.setAuthKey(application, key)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.d("Settings", "Auto-auth failed, falling back to browser: ${e.message}")
+                }
+                // Connect via VpnService — will use auth key if set, otherwise show login URL
+                try {
+                    val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
+                    if (loginUrl != null) {
+                        // Browser-based login needed
+                        dev.pan.app.vpn.PanVpn.openLoginUrl(application, loginUrl)
+                    }
+                    remoteAccessManager.refreshFromVpn()
+                } catch (e: Exception) {
+                    Log.e("Settings", "VPN connect failed: ${e.message}")
+                    remoteAccessManager.setStatus("Failed: ${e.message}")
+                }
+            }
+        } else {
+            viewModelScope.launch {
+                dev.pan.app.vpn.PanVpn.disconnect(application)
+                remoteAccessManager.setEnabled(false)
+            }
+        }
+    }
+
+    fun getRemoteProxyUrl(): String? {
+        return remoteAccessManager.getTailscaleBaseUrl()
+    }
+
+    fun getVpnIntent(): Intent? {
+        return VpnService.prepare(application)
+    }
+
+    // --- MediaPipe On-Device AI ---
+
+    fun getMediaPipeStatus(): String {
+        return mediaPipeLlm?.getStatus() ?: "not_downloaded"
+    }
+
+    fun downloadMediaPipeModel() {
+        _downloadingId.value = "mediapipe-gemma3n"
+        _llmDownloadProgress.value = 0f
+        viewModelScope.launch {
+            val mp = mediaPipeLlm ?: MediaPipeLlm(application).also { mediaPipeLlm = it }
+            val success = mp.downloadModel { progress ->
+                _llmDownloadProgress.value = progress
+            }
+            _downloadingId.value = null
+            if (success) {
+                mp.loadModel()
+            }
+        }
+    }
+
+    // --- Gemini API Key ---
+
+    fun getGeminiKey(): String = _geminiKey.value
+
+    fun setGeminiKey(key: String) {
+        _geminiKey.value = key
+        viewModelScope.launch { dataRepository.setSetting("gemini_key", key) }
+    }
 }

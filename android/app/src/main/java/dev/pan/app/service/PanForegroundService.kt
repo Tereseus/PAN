@@ -195,8 +195,10 @@ class PanForegroundService : Service() {
 
             // Initialize Gemini Nano for on-device AI
             serviceScope.launch {
+                val initStart = System.currentTimeMillis()
                 val ready = geminiBrain.initialize()
-                panLog("Gemini: ${if (ready) "ready" else "not available, using server"}")
+                val initElapsed = System.currentTimeMillis() - initStart
+                panLog("GeminiBrain init: ${initElapsed}ms — ${if (ready) "READY" else "not available, using server"}")
             }
 
             // Voice collector — DISABLED on phone (Android can't run two AudioRecords)
@@ -549,8 +551,9 @@ class PanForegroundService : Service() {
             try {
             val historyContext = getHistoryContext()
 
-            // Try local LLM first for intent classification
-            val localIntent = localLlm.classifyIntent(stripped)
+            // Skip llama.cpp classifier — was adding 9s overhead
+            // Return dummy "unknown" so everything falls through to GeminiBrain/server
+            val localIntent = dev.pan.app.ai.LocalLlm.IntentResult(intent = "unknown", query = stripped, service = null, local = false, elapsedMs = 0)
 
             // Override: force recall if user mentions conversations/history/remember
             val recallKeywords = listOf("conversation", "conversations", "what did we talk", "what did i say",
@@ -558,7 +561,8 @@ class PanForegroundService : Service() {
                 "what we said about", "what i asked", "look in the", "were we talking about",
                 "were we saying about", "what were we saying", "what were we talking",
                 "we talked about", "we discussed", "we were discussing", "did i mention",
-                "did we mention", "did we discuss", "search in the", "find in the")
+                "did we mention", "did we discuss", "search in the", "find in the",
+                "what did we say", "said about", "talk about", "say about")
             val forceRecall = recallKeywords.any { stripped.contains(it) }
             val effectiveIntent = if (forceRecall && localIntent.intent != "recall") {
                 panLog("Override: ${localIntent.intent} → recall (keyword match)")
@@ -703,8 +707,11 @@ class PanForegroundService : Service() {
             }
 
             // Gemini Nano / server fallback
+            panLog("GeminiBrain: isAvailable=${geminiBrain.isAvailable()}, evaluating...")
+            val geminiStartTime = System.currentTimeMillis()
             val decision = geminiBrain.evaluate(text, historyContext)
-            panLog("Decision: ${decision.action} | ${decision.response?.take(80) ?: ""}")
+            val geminiElapsed = System.currentTimeMillis() - geminiStartTime
+            panLog("GeminiBrain: ${geminiElapsed}ms | ${decision.action} | ${decision.response?.take(80) ?: ""}")
             logToServer(text, decision.action.name, decision.response ?: "", "gemini_${decision.action.name.lowercase()}")
 
             when (decision.action) {
