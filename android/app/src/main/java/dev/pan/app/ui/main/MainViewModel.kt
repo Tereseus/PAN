@@ -66,7 +66,8 @@ class MainViewModel @Inject constructor(
     private var wasConnected = false
 
     init {
-        PanForegroundService.micEnabled.value = sttEngine.enabled
+        // Don't reset micEnabled on init — it persists across navigation
+        // PanForegroundService.micEnabled is the source of truth
 
         viewModelScope.launch {
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
