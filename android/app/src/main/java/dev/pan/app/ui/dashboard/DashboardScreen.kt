@@ -27,12 +27,12 @@ fun DashboardScreen(
     val serverUrl by settingsViewModel.serverUrl.collectAsState()
     val remoteEnabled by settingsViewModel.remoteAccessEnabled.collectAsState()
 
-    // When Tailscale connected, use server's Tailscale hostname via MagicDNS
-    // WebView routes through the VPN tunnel directly (not OkHttp proxy)
-    val serverHost = dev.pan.app.vpn.PanVpn.getServerHostname(
-        androidx.compose.ui.platform.LocalContext.current
-    )
-    val dashUrl = if (remoteEnabled && serverHost.isNotEmpty()) "http://$serverHost:7777" else serverUrl
+    // When Tailscale connected, use direct server URL on LAN
+    // The VPN tunnel handles encryption — WebView just needs to reach the server
+    // On same WiFi: direct LAN IP works. Remote: needs server's Tailscale IP.
+    // For now, always use the server URL (LAN IP) — it works on same WiFi
+    // and Tailscale routes 100.x traffic through the tunnel when remote
+    val dashUrl = serverUrl
 
     Scaffold(
         topBar = {
