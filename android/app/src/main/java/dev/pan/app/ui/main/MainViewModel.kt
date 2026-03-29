@@ -221,7 +221,24 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun toggleRemoteAccess(enabled: Boolean) {
-        remoteAccessManager.setEnabled(enabled)
+    fun toggleRemoteAccess(context: android.content.Context, enabled: Boolean) {
+        viewModelScope.launch {
+            if (enabled) {
+                remoteAccessManager.setEnabled(true)
+                remoteAccessManager.setStatus("Connecting...")
+                try {
+                    val loginUrl = dev.pan.app.vpn.PanVpn.connect(context)
+                    if (loginUrl != null) {
+                        dev.pan.app.vpn.PanVpn.openLoginUrl(context, loginUrl)
+                    }
+                    remoteAccessManager.refreshFromVpn()
+                } catch (e: Exception) {
+                    remoteAccessManager.setStatus("Failed: ${e.message}")
+                }
+            } else {
+                dev.pan.app.vpn.PanVpn.disconnect(context)
+                remoteAccessManager.setEnabled(false)
+            }
+        }
     }
 }

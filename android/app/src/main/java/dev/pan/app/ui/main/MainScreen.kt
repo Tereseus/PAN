@@ -148,9 +148,10 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                    val context = androidx.compose.ui.platform.LocalContext.current
                     Switch(
                         checked = remoteAccessEnabled,
-                        onCheckedChange = { viewModel.toggleRemoteAccess(it) }
+                        onCheckedChange = { viewModel.toggleRemoteAccess(context, it) }
                     )
                 }
             }

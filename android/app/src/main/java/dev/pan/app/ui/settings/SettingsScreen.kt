@@ -111,7 +111,7 @@ fun SettingsScreen(
             Text("Remote Access", style = MaterialTheme.typography.titleMedium)
 
             SettingToggle(
-                title = "Tailscale VPN",
+                title = "Remote Access",
                 description = if (remoteAccessEnabled) "$remoteAccessStatus${if (remoteAccessIp.isNotEmpty()) " — $remoteAccessIp" else ""}"
                               else "Connect to PAN server from anywhere",
                 checked = remoteAccessEnabled,
