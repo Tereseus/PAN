@@ -27,7 +27,8 @@ class MainViewModel @Inject constructor(
     private val sttEngine: GoogleStreamingStt,
     private val sensorContext: SensorContext,
     private val api: PanServerApi,
-    private val remoteAccessManager: RemoteAccessManager
+    private val remoteAccessManager: RemoteAccessManager,
+    private val application: android.app.Application
 ) : ViewModel() {
 
     val isServerConnected: StateFlow<Boolean> = serverClient.isConnected
@@ -67,7 +68,14 @@ class MainViewModel @Inject constructor(
 
     init {
         // Don't reset micEnabled on init — it persists across navigation
-        // PanForegroundService.micEnabled is the source of truth
+
+        // Auto-connect Tailscale on startup — always on for security
+        viewModelScope.launch {
+            try {
+                dev.pan.app.vpn.PanVpn.autoConnect(application)
+                remoteAccessManager.refreshFromVpn()
+            } catch (_: Exception) {}
+        }
 
         viewModelScope.launch {
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
