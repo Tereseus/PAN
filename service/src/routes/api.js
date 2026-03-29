@@ -19,6 +19,23 @@ const pendingActions = [];
 
 const router = Router();
 
+// Dashboard chat — routes through AI router with dashboard source tag
+router.post('/chat', async (req, res) => {
+  const { message, project_id, source } = req.body;
+  if (!message) return res.status(400).json({ error: 'message required' });
+  try {
+    const { route } = await import('../router.js');
+    const result = await route(message, { source: source || 'dashboard', project_id });
+    insertEvent('dashboard-chat', 'DashboardChat', JSON.stringify({
+      query: message, response: (result.response || '').slice(0, 2000), project_id, source: 'dashboard'
+    }), req.user?.id);
+    res.json({ response: result.response || 'No response' });
+  } catch (err) {
+    console.error('[PAN Chat]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Insert event + auto-index into FTS (attaches user_id from req.user if available)
 function insertEvent(sid, eventType, dataStr, userId) {
   const eventId = insert(`INSERT INTO events (session_id, event_type, data, user_id)

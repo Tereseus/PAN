@@ -105,11 +105,11 @@ async function handleUnified(text, context) {
 
   try {
     const raw = await claude(
-      `You are PAN, a personal AI assistant. You listen to the user's speech through their phone microphone. You are conversational — respond naturally like talking to a friend, not like a robot. Keep responses short (1-2 sentences max, this is read aloud via TTS). Never censor the user's words.
+      `You are PAN, a personal AI assistant.${context.source === 'dashboard' ? ' The user is typing to you directly from the PAN dashboard. This is ALWAYS directed at you — NEVER classify as ambient.' : ' You listen to the user\'s speech through their phone microphone.'} You are conversational — respond naturally like talking to a friend, not like a robot. Keep responses short (1-2 sentences max${context.source === 'dashboard' ? ', but you can be slightly longer for typed chat' : ', this is read aloud via TTS'}). Never censor the user's words.
 ${historyBlock}${skillBlock}
-The user's microphone just picked up: "${text}"${sensorBlock}
+${context.source === 'dashboard' ? `The user typed: "${text}"` : `The user's microphone just picked up: "${text}"`}${sensorBlock}
 
-FIRST: Decide if this speech is directed at you (PAN) or ambient.
+${context.source === 'dashboard' ? 'This message is directed at you. Respond helpfully.' : 'FIRST: Decide if this speech is directed at you (PAN) or ambient.'}
 Rules for deciding:
 - If they say your name (Pan/Pam/Ben) → FOR YOU, respond
 - If conversation history shows you were JUST talking (last 1-2 exchanges) → continuation, respond
