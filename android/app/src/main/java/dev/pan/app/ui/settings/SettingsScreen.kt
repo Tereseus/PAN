@@ -107,27 +107,22 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Remote Access
-            Text("Remote Access", style = MaterialTheme.typography.titleMedium)
-
-            SettingToggle(
-                title = "Remote Access",
-                description = if (remoteAccessEnabled) "$remoteAccessStatus${if (remoteAccessIp.isNotEmpty()) " — $remoteAccessIp" else ""}"
-                              else "Connect to PAN server from anywhere",
-                checked = remoteAccessEnabled,
-                onToggle = { enabled ->
-                    if (enabled) {
-                        val vpnIntent = viewModel.getVpnIntent()
-                        if (vpnIntent != null) {
-                            vpnLauncher.launch(vpnIntent)
-                        } else {
-                            viewModel.enableRemoteAccess(true)
-                        }
-                    } else {
-                        viewModel.enableRemoteAccess(false)
-                    }
-                }
+            // Secure Connection (always on — Tailscale/WireGuard)
+            Text("Secure Connection", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (remoteAccessEnabled && remoteAccessStatus == "Connected")
+                    "Connected via Tailscale${if (remoteAccessIp.isNotEmpty()) " — $remoteAccessIp" else ""}"
+                else if (remoteAccessEnabled)
+                    remoteAccessStatus
+                else
+                    "Connecting...",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (remoteAccessStatus == "Connected") MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Text("All traffic is encrypted via WireGuard tunnel. This connects automatically on startup.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             HorizontalDivider()
 
