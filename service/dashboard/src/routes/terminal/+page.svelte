@@ -1,0 +1,1699 @@
+<script>
+	import { onMount } from 'svelte';
+	import { api, wsUrl } from '$lib/api.js';
+	import { getActiveProject, setActiveProject, sortProjects } from '$lib/stores.svelte.js';
+
+	// --- State ---
+	let projects = $state([]);
+	let tabs = $state([]);
+	let activeTabId = $state(null);
+	let leftTab = $state('chat'); // 'chat' | 'project'
+	let rightSection = $state('tasks'); // 'tasks' | 'bugs' | 'setup' | 'custom-N'
+	let rightPanelCollapsed = $state(false);
+	let rightMilestoneFilter = $state(null);
+	let hostLabel = $state('');
+	let sessionsCount = $state(0);
+
+	// Project/task data for sidebar
+	let projectData = $state(null);
+	let tasksData = $state(null);
+	let sectionsData = $state([]);
+	let chatBubbles = $state([]);
+	let chatCurrentProject = $state('');
+
+	// Terminal container refs
+	let termContainerEl;
+	let chatSidebarEl;
+
+	// Intervals
+	let chatRefreshInterval = null;
+	let termInitialized = false;
+
+	// Tab counter
+	let tabCounter = 0;
+
+	// ==================== Projects ====================
+
+	async function loadProjects() {
+		try {
+			const data = await api('/dashboard/api/projects');
+			projects = Array.isArray(data) ? data : (data.projects || []);
+		} catch (e) {
+			console.error('Failed to load projects:', e);
+		}
+	}
+
+	async function loadTerminalProjects() {
+		return loadProjects();
+	}
+
+	// ==================== Tab Management ====================
+
+	function getActiveTab() {
+		return tabs.find(t => t.id === activeTabId);
+	}
+
+	async function switchTerminalProject(projectOrValue) {
+		let projectName, projectId, cwd;
+
+		if (typeof projectOrValue === 'object' && projectOrValue) {
+			projectName = projectOrValue.name || 'Shell';
+			projectId = projectOrValue.id || null;
+			cwd = projectOrValue.path || projectOrValue.cwd || 'C:\\Users\\tzuri\\Desktop';
+		} else {
+			return;
+		}
+
+		const sessionId = 'dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
+
+		// Check if tab already exists
+		const existing = tabs.find(t => t.sessionId === sessionId);
+		if (existing) {
+			switchToTab(existing.id);
+			return;
+		}
+
+		await createTab(sessionId, projectName, cwd, projectId, false);
+	}
+
+	function newTerminalTab() {
+		const active = getActiveTab();
+		const projectName = active?.project || 'Shell';
+		const projectId = active?.projectId || null;
+		const cwd = active?.cwd || 'C:\\Users\\tzuri\\Desktop';
+		const sessionId = 'dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+		createTab(sessionId, projectName, cwd, projectId, false);
+	}
+
+	async function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
+		const tabId = 'tab-' + (++tabCounter);
+
+		// Dynamic imports for xterm
+		const { Terminal } = await import('@xterm/xterm');
+		const { FitAddon } = await import('@xterm/addon-fit');
+		const { WebLinksAddon } = await import('@xterm/addon-web-links');
+		await import('@xterm/xterm/css/xterm.css');
+
+		// Create a container div for this tab
+		const tabContainer = document.createElement('div');
+		tabContainer.id = 'term-' + tabId;
+		tabContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;display:none';
+		termContainerEl.appendChild(tabContainer);
+
+		const tabTerm = new Terminal({
+			theme: {
+				background: '#1e1e2e',
+				foreground: '#cdd6f4',
+				cursor: '#f5e0dc',
+				cursorAccent: '#1e1e2e',
+				selectionBackground: '#45475a',
+				black: '#45475a',
+				red: '#f38ba8',
+				green: '#a6e3a1',
+				yellow: '#f9e2af',
+				blue: '#89b4fa',
+				magenta: '#cba6f7',
+				cyan: '#94e2d5',
+				white: '#bac2de',
+				brightBlack: '#585b70',
+				brightRed: '#f38ba8',
+				brightGreen: '#a6e3a1',
+				brightYellow: '#f9e2af',
+				brightBlue: '#89b4fa',
+				brightMagenta: '#cba6f7',
+				brightCyan: '#94e2d5',
+				brightWhite: '#a6adc8',
+			},
+			fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+			fontSize: 14,
+			cursorBlink: true,
+			scrollback: 5000,
+			allowProposedApi: true,
+		});
+
+		const fitAddon = new FitAddon();
+		tabTerm.loadAddon(fitAddon);
+		tabTerm.loadAddon(new WebLinksAddon());
+		tabTerm.open(tabContainer);
+
+		const tabData = {
+			id: tabId,
+			sessionId,
+			term: tabTerm,
+			fitAddon,
+			ws: null,
+			project: projectName,
+			cwd,
+			projectId,
+			claudeStarted: false,
+			container: tabContainer,
+			host: '',
+			_closing: false,
+		};
+
+		// Show only this tab's container
+		tabs.forEach(t => { if (t.container) t.container.style.display = 'none'; });
+		tabContainer.style.display = 'block';
+
+		tabs = [...tabs, tabData];
+		activeTabId = tabId;
+		sessionsCount = tabs.length;
+
+		// Fit helper
+		let lastCols = 0, lastRows = 0;
+		function doFit() {
+			try { fitAddon.fit(); } catch { return; }
+			if (tabTerm.cols !== lastCols || tabTerm.rows !== lastRows) {
+				lastCols = tabTerm.cols;
+				lastRows = tabTerm.rows;
+				if (tabData.ws && tabData.ws.readyState === 1) {
+					tabData.ws.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
+				}
+				try { tabTerm.refresh(0, tabTerm.rows - 1); } catch {}
+			}
+		}
+
+		// ResizeObserver
+		let resizeTimer = null;
+		const resizeObs = new ResizeObserver(() => {
+			if (activeTabId !== tabId) return;
+			if (resizeTimer) clearTimeout(resizeTimer);
+			resizeTimer = setTimeout(doFit, 300);
+		});
+		resizeObs.observe(termContainerEl);
+
+		// Wait for layout to settle before connecting
+		function waitForLayout(cb, attempt = 0) {
+			doFit();
+			if (tabTerm.cols < 20 && attempt < 30) {
+				setTimeout(() => waitForLayout(cb, attempt + 1), 50);
+				return;
+			}
+			cb();
+		}
+
+		waitForLayout(() => {
+			const wsCols = tabTerm.cols > 20 ? tabTerm.cols : 120;
+			const wsRows = tabTerm.rows > 5 ? tabTerm.rows : 30;
+			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${wsCols}&rows=${wsRows}`);
+
+			const ws = new WebSocket(wsUrlStr);
+			tabData.ws = ws;
+
+			let firstOutput = true;
+			let reconnectAttempts = 0;
+			let reconnectTimer = null;
+			let serverRestarting = false;
+			let pingTimer = null;
+
+			function startPing() {
+				if (pingTimer) clearInterval(pingTimer);
+				pingTimer = setInterval(() => {
+					if (tabData.ws && tabData.ws.readyState === 1) {
+						tabData.ws.send(JSON.stringify({ type: 'ping' }));
+					}
+				}, 25000);
+			}
+
+			function stopPing() {
+				if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+			}
+
+			function handleMessage(event) {
+				try {
+					const msg = JSON.parse(event.data);
+					switch (msg.type) {
+						case 'output': {
+							if (firstOutput) {
+								firstOutput = false;
+								tabTerm.clear();
+								doFit();
+							}
+							const vp = tabTerm.element?.querySelector('.xterm-viewport');
+							const wasAtBottom = !vp || (vp.scrollHeight - vp.scrollTop - vp.clientHeight < 30);
+							const savedScroll = vp?.scrollTop;
+							tabTerm.write(msg.data, () => {
+								if (!wasAtBottom && vp) {
+									requestAnimationFrame(() => { vp.scrollTop = savedScroll; });
+								}
+							});
+							break;
+						}
+						case 'info':
+							tabData.host = msg.host || '';
+							if (activeTabId === tabId) {
+								hostLabel = `${msg.host} \u2014 ${msg.project || 'shell'}`;
+							}
+							tabs = [...tabs]; // trigger reactivity
+							break;
+						case 'exit':
+							tabTerm.write('\r\n\x1b[38;5;243m[Session ended]\x1b[0m\r\n');
+							break;
+						case 'error':
+							tabTerm.write('\r\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\r\n');
+							break;
+						case 'chat_update':
+							if (leftTab === 'chat') {
+								setTimeout(loadChatHistory, 500);
+							}
+							break;
+						case 'permission_prompt':
+							break;
+						case 'server_restarting':
+							serverRestarting = true;
+							reconnectAttempts = 0;
+							tabTerm.write('\r\n\x1b[38;5;179m[Server restarting \u2014 will reconnect automatically...]\x1b[0m');
+							break;
+					}
+				} catch {}
+			}
+
+			function reconnect() {
+				if (reconnectTimer) return;
+				reconnectAttempts++;
+				const delay = Math.min(reconnectAttempts * 1000, 5000);
+				const label = serverRestarting ? 'Server restarting' : 'Reconnecting';
+				tabTerm.write(`\r\n\x1b[38;5;179m[${label}... attempt ${reconnectAttempts}]\x1b[0m`);
+
+				reconnectTimer = setTimeout(() => {
+					reconnectTimer = null;
+					if (tabData.ws && tabData.ws.readyState <= 1) return;
+
+					const newWs = new WebSocket(wsUrlStr);
+					newWs.onopen = () => {
+						reconnectAttempts = 0;
+						serverRestarting = false;
+						tabData.ws = newWs;
+						tabTerm.write('\r\n\x1b[38;5;114m[Reconnected]\x1b[0m\r\n');
+						doFit();
+						startPing();
+						newWs.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
+					};
+					newWs.onmessage = handleMessage;
+					newWs.onclose = () => {
+						stopPing();
+						if (tabData._closing) return;
+						if (reconnectAttempts < 30) reconnect();
+						else tabTerm.write('\r\n\x1b[38;5;204m[Connection lost \u2014 refresh page to retry]\x1b[0m\r\n');
+					};
+					newWs.onerror = () => {};
+				}, delay);
+			}
+
+			ws.onopen = () => {
+				doFit();
+				if (tabTerm.cols > 0 && tabTerm.rows > 0) {
+					ws.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
+				}
+				if (activeTabId === tabId) tabTerm.focus();
+				startPing();
+
+				// Auto-launch Claude for project tabs
+				if (projectName && projectName !== 'Shell' && !isReconnect) {
+					setTimeout(async () => {
+						if (ws.readyState === 1 && !tabData.claudeStarted) {
+							tabData.claudeStarted = true;
+							let briefingReady = false;
+							try {
+								const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
+								if (briefingData.briefing) {
+									ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
+									briefingReady = true;
+									await new Promise(r => setTimeout(r, 500));
+								}
+							} catch {}
+
+							if (briefingReady) {
+								ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+							} else {
+								ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
+							}
+						}
+					}, 1500);
+				}
+			};
+
+			ws.onmessage = handleMessage;
+
+			ws.onclose = () => {
+				stopPing();
+				if (!tabData._closing) reconnect();
+			};
+
+			ws.onerror = () => {};
+		});
+
+		// Copy/paste key handler
+		tabTerm.attachCustomKeyEventHandler((ev) => {
+			if (ev.type !== 'keydown') return true;
+			if (ev.ctrlKey && ev.key === 'c') {
+				const sel = tabTerm.getSelection();
+				if (sel && sel.length > 0) {
+					navigator.clipboard.writeText(sel);
+					tabTerm.clearSelection();
+					return false;
+				}
+				return true;
+			}
+			if ((ev.ctrlKey && ev.key === 'v') || (ev.ctrlKey && ev.shiftKey && ev.key === 'V')) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				navigator.clipboard.read().then(async items => {
+					for (const item of items) {
+						const imageType = item.types.find(t => t.startsWith('image/'));
+						if (imageType) {
+							const blob = await item.getType(imageType);
+							const reader = new FileReader();
+							reader.onload = async () => {
+								const base64 = reader.result.split(',')[1];
+								try {
+									const resp = await fetch('/api/v1/clipboard-image', {
+										method: 'POST',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ data: base64, mimeType: imageType })
+									});
+									const result = await resp.json();
+									if (result.ok) {
+										const unixPath = result.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
+										if (tabData.ws && tabData.ws.readyState === 1) {
+											tabData.ws.send(JSON.stringify({ type: 'input', data: unixPath + ' ' }));
+										}
+									}
+								} catch (err) {
+									tabTerm.write('\r\n\x1b[38;5;196m[Image paste failed: ' + err.message + ']\x1b[0m');
+								}
+							};
+							reader.readAsDataURL(blob);
+							return;
+						}
+					}
+					const text = await navigator.clipboard.readText();
+					if (text && tabData.ws && tabData.ws.readyState === 1) {
+						tabData.ws.send(JSON.stringify({ type: 'input', data: text }));
+					}
+				}).catch(() => {
+					navigator.clipboard.readText().then(text => {
+						if (text && tabData.ws && tabData.ws.readyState === 1) {
+							tabData.ws.send(JSON.stringify({ type: 'input', data: text }));
+						}
+					});
+				});
+				return false;
+			}
+			if (ev.ctrlKey && ev.shiftKey && ev.key === 'C') {
+				const sel = tabTerm.getSelection();
+				if (sel) navigator.clipboard.writeText(sel);
+				return false;
+			}
+			return true;
+		});
+
+		// Input handling
+		tabTerm.onData((data) => {
+			const activeWs = tabData.ws;
+			if (!activeWs || activeWs.readyState !== 1) return;
+			activeWs.send(JSON.stringify({ type: 'input', data }));
+		});
+
+		tabTerm.onResize(({ cols, rows }) => {
+			const activeWs = tabData.ws;
+			if (activeWs && activeWs.readyState === 1) {
+				activeWs.send(JSON.stringify({ type: 'resize', cols, rows }));
+			}
+		});
+
+		// Multi-fit passes for layout settling
+		setTimeout(doFit, 50);
+		setTimeout(doFit, 200);
+		setTimeout(doFit, 500);
+
+		// Load sidebar data
+		loadTerminalSidebar(projectId, projectName);
+
+		return tabId;
+	}
+
+	function switchToTab(tabId) {
+		const tab = tabs.find(t => t.id === tabId);
+		if (!tab) return;
+
+		tabs.forEach(t => {
+			if (t.container) t.container.style.display = t.id === tabId ? 'block' : 'none';
+		});
+
+		activeTabId = tabId;
+		hostLabel = tab.host ? `${tab.host} \u2014 ${tab.project || 'shell'}` : '';
+
+		// Re-fit
+		setTimeout(() => {
+			try {
+				tab.fitAddon.fit();
+				tab.term.refresh(0, tab.term.rows - 1);
+				tab.term.focus();
+				if (tab.ws && tab.ws.readyState === 1) {
+					tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
+				}
+			} catch {}
+		}, 100);
+		setTimeout(() => {
+			try {
+				tab.fitAddon.fit();
+				tab.term.refresh(0, tab.term.rows - 1);
+			} catch {}
+		}, 500);
+
+		// Reload sidebar
+		loadTerminalSidebar(tab.projectId, tab.project);
+	}
+
+	function closeTab(tabId) {
+		const tab = tabs.find(t => t.id === tabId);
+		if (!tab) return;
+
+		// Kill server-side PTY
+		try { fetch(`/api/v1/terminal/sessions/${encodeURIComponent(tab.sessionId)}`, { method: 'DELETE' }); } catch {}
+
+		tab._closing = true;
+		if (tab.ws) tab.ws.close();
+		if (tab.term) tab.term.dispose();
+		if (tab.container) tab.container.remove();
+
+		tabs = tabs.filter(t => t.id !== tabId);
+		sessionsCount = tabs.length;
+
+		if (activeTabId === tabId) {
+			if (tabs.length > 0) {
+				switchToTab(tabs[tabs.length - 1].id);
+			} else {
+				activeTabId = null;
+				hostLabel = '';
+			}
+		}
+	}
+
+	// ==================== Left Sidebar ====================
+
+	function switchLeftTab(tab) {
+		leftTab = tab;
+		if (tab === 'chat') {
+			loadChatHistory();
+			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
+			chatRefreshInterval = setInterval(loadChatHistory, 10000);
+		} else {
+			if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
+		}
+	}
+
+	function escapeHtml(str) {
+		if (!str) return '';
+		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+	}
+
+	async function loadChatHistory() {
+		const active = getActiveTab();
+		if (!active) {
+			chatBubbles = [];
+			return;
+		}
+
+		try {
+			const sessionId = active.sessionId || '';
+			const isDashboardSession = /^(dash|mob)-/.test(sessionId);
+			const realSessionId = isDashboardSession ? '' : sessionId;
+			const chatKey = realSessionId || active.cwd || '';
+
+			if (chatCurrentProject !== chatKey) {
+				chatCurrentProject = chatKey;
+			}
+
+			let sessionIds = [];
+			if (realSessionId) {
+				sessionIds = [realSessionId];
+			} else {
+				const projectKey = active.cwd || '';
+				if (projectKey) {
+					try {
+						const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(projectKey));
+						if (probe && probe.events) {
+							const seen = new Set();
+							for (const evt of probe.events) {
+								const sid = evt.session_id || '';
+								if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+									seen.add(sid);
+									sessionIds.push(sid);
+									if (sessionIds.length >= 5) break;
+								}
+							}
+						}
+					} catch {}
+				}
+			}
+
+			if (sessionIds.length === 0) {
+				chatBubbles = [];
+				return;
+			}
+
+			const allMessages = [];
+			await Promise.all(sessionIds.map(async (sid, idx) => {
+				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300');
+				if (data && data.messages) {
+					for (const msg of data.messages) {
+						msg._sessionIdx = idx;
+						allMessages.push(msg);
+					}
+				}
+			}));
+
+			allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+
+			if (allMessages.length === 0) {
+				chatBubbles = [];
+				return;
+			}
+
+			const sessionColors = ['var(--accent)', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7'];
+			const multiSession = sessionIds.length > 1;
+			const newBubbles = [];
+
+			for (const msg of allMessages) {
+				const accentColor = multiSession ? (sessionColors[msg._sessionIdx] || 'var(--accent)') : 'var(--accent)';
+				if (msg.role === 'user') {
+					if (msg.text && /^\u03A0\u0391\u039D remembers/i.test(msg.text.trim())) continue;
+					newBubbles.push({
+						type: 'user',
+						text: msg.text || '',
+						accentColor,
+						multiSession,
+					});
+				} else if (msg.type === 'text') {
+					newBubbles.push({
+						type: 'assistant',
+						text: msg.text || '',
+						accentColor,
+						multiSession,
+					});
+				} else if (msg.type === 'tool') {
+					newBubbles.push({
+						type: 'tool',
+						text: msg.text || '',
+					});
+				}
+			}
+
+			chatBubbles = newBubbles;
+
+			// Auto-scroll to bottom
+			await tick();
+			if (chatSidebarEl) {
+				chatSidebarEl.scrollTop = chatSidebarEl.scrollHeight;
+			}
+		} catch (err) {
+			console.error('[PAN Chat] loadChatHistory error:', err);
+		}
+	}
+
+	// Need tick for scroll
+	function tick() {
+		return new Promise(r => setTimeout(r, 0));
+	}
+
+	// ==================== Right Panel ====================
+
+	async function loadTerminalSidebar(projectId, projectName) {
+		const active = getActiveTab();
+		if (!projectId) {
+			if (leftTab === 'chat') loadChatHistory();
+			return;
+		}
+
+		try {
+			const [progress, tasks, sections] = await Promise.all([
+				api('/dashboard/api/progress'),
+				api(`/dashboard/api/projects/${projectId}/tasks`),
+				api(`/dashboard/api/projects/${projectId}/sections`),
+			]);
+
+			const proj = progress?.projects?.find(p => p.id === projectId);
+			projectData = proj || null;
+			tasksData = tasks || null;
+			sectionsData = sections || [];
+		} catch (e) {
+			console.error('Failed to load sidebar data:', e);
+		}
+
+		if (leftTab === 'chat') loadChatHistory();
+	}
+
+	function pctColor(pct) {
+		if (pct >= 80) return 'green';
+		if (pct >= 40) return 'yellow';
+		return 'red';
+	}
+
+	async function cycleTask(taskId, currentStatus) {
+		const next = currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'todo';
+		try {
+			await fetch('/dashboard/api/tasks/' + taskId, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ status: next })
+			});
+			const active = getActiveTab();
+			if (active?.projectId) await loadTerminalSidebar(active.projectId, active.project);
+		} catch {}
+	}
+
+	async function cycleSectionItem(itemId, currentStatus, sectionId) {
+		const next = currentStatus === 'open' ? 'done' : 'open';
+		try {
+			await fetch('/dashboard/api/section-items/' + itemId, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ status: next })
+			});
+			const active = getActiveTab();
+			if (active?.projectId) await loadTerminalSidebar(active.projectId, active.project);
+		} catch {}
+	}
+
+	async function addSectionItem(sectionId, inputEl) {
+		const content = inputEl?.value?.trim();
+		if (!content) return;
+		try {
+			await fetch(`/dashboard/api/sections/${sectionId}/items`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ content })
+			});
+			inputEl.value = '';
+			const active = getActiveTab();
+			if (active?.projectId) await loadTerminalSidebar(active.projectId, active.project);
+		} catch {}
+	}
+
+	async function deleteSection(sectionId) {
+		if (!confirm('Delete this section and all its items?')) return;
+		try {
+			await fetch('/dashboard/api/sections/' + sectionId, { method: 'DELETE' });
+			rightSection = 'tasks';
+			const active = getActiveTab();
+			if (active?.projectId) await loadTerminalSidebar(active.projectId, active.project);
+		} catch {}
+	}
+
+	async function addTask(inputEl) {
+		const active = getActiveTab();
+		const title = inputEl?.value?.trim();
+		if (!title || !active?.projectId) return;
+		try {
+			await fetch(`/dashboard/api/projects/${active.projectId}/tasks`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ title, milestone_id: rightMilestoneFilter || null })
+			});
+			inputEl.value = '';
+			await loadTerminalSidebar(active.projectId, active.project);
+		} catch {}
+	}
+
+	async function addBug(inputEl) {
+		const active = getActiveTab();
+		const title = inputEl?.value?.trim();
+		if (!title || !active?.projectId) return;
+		try {
+			await fetch(`/dashboard/api/projects/${active.projectId}/tasks`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ title, priority: 1 })
+			});
+			inputEl.value = '';
+			await loadTerminalSidebar(active.projectId, active.project);
+		} catch {}
+	}
+
+	function filterByMilestone(milestoneId) {
+		rightMilestoneFilter = rightMilestoneFilter === milestoneId ? null : milestoneId;
+		rightSection = 'tasks';
+	}
+
+	// ==================== Derived data ====================
+
+	function getFilteredTasks() {
+		if (!tasksData?.tasks) return { byMilestone: {}, noMilestone: [], milestones: [] };
+		const byMilestone = {};
+		const noMilestone = [];
+		for (const t of tasksData.tasks) {
+			if (rightMilestoneFilter && t.milestone_id !== rightMilestoneFilter && t.milestone_id !== null) continue;
+			if (rightMilestoneFilter && t.milestone_id === null) continue;
+			if (t.milestone_id) {
+				if (!byMilestone[t.milestone_id]) byMilestone[t.milestone_id] = [];
+				byMilestone[t.milestone_id].push(t);
+			} else {
+				noMilestone.push(t);
+			}
+		}
+		return { byMilestone, noMilestone, milestones: tasksData.milestones || [] };
+	}
+
+	function getBugs() {
+		if (!tasksData?.tasks) return [];
+		const bugKeywords = /bug|fix|issue|error|broken|crash|fail/i;
+		return tasksData.tasks.filter(t => t.priority > 0 || bugKeywords.test(t.title));
+	}
+
+	function getSectionById(id) {
+		return sectionsData.find(s => s.id === id);
+	}
+
+	// ==================== Init ====================
+
+	onMount(() => {
+		loadTerminalProjects();
+
+		// Start chat refresh
+		chatRefreshInterval = setInterval(() => {
+			if (leftTab === 'chat') loadChatHistory();
+		}, 10000);
+
+		// Auto-connect: wait for projects to load, then start terminal
+		setTimeout(async () => {
+			// Make sure projects are loaded
+			await loadTerminalProjects();
+			if (projects.length === 0) {
+				// Retry once after delay
+				await new Promise(r => setTimeout(r, 1000));
+				await loadTerminalProjects();
+			}
+
+			let reconnected = false;
+			try {
+				const sessData = await api('/api/v1/terminal/sessions').catch(() => ({ sessions: [] }));
+				const sessions = sessData.sessions || [];
+				if (sessions.length > 0) {
+					for (const s of sessions) {
+						if (!s.id.startsWith('dash-') && !s.id.startsWith('mob-')) continue;
+						const matchedProject = projects.find(p => p.name === s.project);
+						const pid = matchedProject ? matchedProject.id : null;
+						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true);
+						reconnected = true;
+					}
+				}
+			} catch (e) {
+				console.error('[Terminal] Session reconnect failed:', e);
+			}
+
+			if (!reconnected && projects.length > 0) {
+				// Auto-start with shared project or PAN
+				const sharedProject = getActiveProject();
+				const target = sharedProject
+					? projects.find(p => p.id === sharedProject.id)
+					: projects.find(p => p.name === 'PAN') || projects[0];
+				if (target) {
+					setActiveProject(target);
+					await switchTerminalProject(target);
+				}
+			}
+		}, 300);
+
+		// Global resize handler
+		let globalResizeTimer = null;
+		const handleResize = () => {
+			if (globalResizeTimer) clearTimeout(globalResizeTimer);
+			globalResizeTimer = setTimeout(() => {
+				const tab = getActiveTab();
+				if (tab && tab.fitAddon) {
+					try {
+						tab.fitAddon.fit();
+						tab.term.refresh(0, tab.term.rows - 1);
+						if (tab.ws && tab.ws.readyState === 1) {
+							tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
+						}
+					} catch {}
+				}
+			}, 300);
+		};
+		window.addEventListener('resize', handleResize);
+
+		return () => {
+			window.removeEventListener('resize', handleResize);
+			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
+			for (const tab of tabs) {
+				tab._closing = true;
+				if (tab.ws) tab.ws.close();
+				if (tab.term) tab.term.dispose();
+			}
+		};
+	});
+</script>
+
+<!-- TOOLBAR -->
+<div class="toolbar">
+	<select class="project-select" onchange={(e) => {
+		const val = e.target.value;
+		if (val === '__shell__') {
+			createTab('dash-shell-' + Date.now(), 'Shell', 'C:\\Users\\tzuri\\Desktop', null, false);
+		} else {
+			const proj = projects.find(p => String(p.id) === val || p.path === val);
+			if (proj) switchTerminalProject(proj);
+		}
+	}}>
+		<option value="">Select Project...</option>
+		{#each projects as p}
+			<option value={p.id || p.path} data-name={p.name}>{p.name}</option>
+		{/each}
+		<option value="__shell__">Shell</option>
+	</select>
+	<span class="host-label">{hostLabel}</span>
+	<div style="flex:1"></div>
+	<span class="sessions-count">
+		{#if sessionsCount > 0}{sessionsCount} tab{sessionsCount > 1 ? 's' : ''}{/if}
+	</span>
+</div>
+
+<!-- TAB BAR -->
+{#if tabs.length > 0}
+	<div class="tab-bar">
+		{#each tabs as tab (tab.id)}
+			<button
+				class="term-tab"
+				class:active={activeTabId === tab.id}
+				onclick={() => switchToTab(tab.id)}
+			>
+				{#if tab.id === tabs.find(t => t.project === tab.project)?.id && tab.project !== 'Shell'}
+					<span class="primary-dot"></span>
+				{/if}
+				{#if tab.host}{tab.host}/{/if}{tab.project || 'Shell'}
+				<span
+					class="tab-close"
+					onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+				>&times;</span>
+			</button>
+		{/each}
+		<button class="add-tab" onclick={newTerminalTab} title="New Tab">+</button>
+	</div>
+{/if}
+
+<!-- MAIN LAYOUT -->
+<div class="terminal-layout">
+	<!-- LEFT PANEL -->
+	<div class="left-panel">
+		<div class="left-tabs">
+			<button
+				class="left-tab"
+				class:active={leftTab === 'project'}
+				onclick={() => switchLeftTab('project')}
+			>Project</button>
+			<button
+				class="left-tab"
+				class:active={leftTab === 'chat'}
+				onclick={() => switchLeftTab('chat')}
+			>Chat</button>
+		</div>
+		<div class="left-content" bind:this={chatSidebarEl}>
+			{#if leftTab === 'chat'}
+				{#if chatBubbles.length === 0}
+					<div class="empty-state">No conversation yet</div>
+				{:else}
+					<div class="chat-container">
+						{#each chatBubbles as bubble}
+							{#if bubble.type === 'user'}
+								<div class="chat-bubble user">
+									{#if bubble.multiSession}
+										<span class="session-dot" style="background:{bubble.accentColor}"></span>
+									{/if}
+									{bubble.text}
+								</div>
+							{:else if bubble.type === 'assistant'}
+								<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
+									{bubble.text}
+								</div>
+							{:else if bubble.type === 'tool'}
+								<div class="chat-bubble tool">{bubble.text}</div>
+							{/if}
+						{/each}
+					</div>
+				{/if}
+			{:else}
+				<!-- Project Tab -->
+				{#if projectData}
+					<div class="project-info">
+						<div class="project-name">{projectData.name}</div>
+						<div class="project-progress-row">
+							<span class="project-pct">{projectData.percentage}%</span>
+							<span class="project-count">{projectData.done_tasks}/{projectData.total_tasks}</span>
+						</div>
+						<div class="progress-bar">
+							<div class="progress-fill {pctColor(projectData.percentage)}" style="width:{projectData.percentage}%"></div>
+						</div>
+						<div class="project-sessions">{projectData.session_count} sessions</div>
+					</div>
+					{#if projectData.milestones}
+						{#each projectData.milestones as m}
+							<div class="milestone" onclick={() => filterByMilestone(m.id)}>
+								<div class="milestone-row">
+									<span class="milestone-name">{m.name}</span>
+									<span class="milestone-pct">{m.percentage}%</span>
+								</div>
+								<div class="progress-bar small">
+									<div class="progress-fill {pctColor(m.percentage)}" style="width:{m.percentage}%"></div>
+								</div>
+							</div>
+						{/each}
+					{/if}
+				{:else}
+					<div class="empty-state">Select a project</div>
+				{/if}
+			{/if}
+		</div>
+	</div>
+
+	<!-- CENTER: Terminal -->
+	<div class="term-container" bind:this={termContainerEl}>
+		{#if tabs.length === 0}
+			<div class="term-empty">
+				<div class="term-empty-icon">&loz;</div>
+				<div class="term-empty-title">PAN Terminal</div>
+				<div class="term-empty-sub">Select a project to start</div>
+			</div>
+		{/if}
+	</div>
+
+	<!-- RIGHT PANEL -->
+	<button class="panel-toggle right-toggle" onclick={() => { rightPanelCollapsed = !rightPanelCollapsed; setTimeout(() => { const tab = getActiveTab(); if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} } }, 200); }} title={rightPanelCollapsed ? 'Show Tasks' : 'Hide Tasks'}>
+		{rightPanelCollapsed ? '◂' : '▸'}
+	</button>
+	<div class="right-panel" class:collapsed={rightPanelCollapsed}>
+		<div class="right-header">
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; }}>
+				<option value="setup">Setup Guide</option>
+				<option value="tasks">Tasks</option>
+				<option value="bugs">Bugs</option>
+				{#each sectionsData as s}
+					<option value="custom-{s.id}">{s.name}</option>
+				{/each}
+			</select>
+		</div>
+		<div class="right-content">
+			{#if rightSection === 'setup'}
+				<div class="setup-guide">
+					<div class="setup-title">How to Use PAN</div>
+					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
+					<div class="setup-items">
+						<div><strong>Create a Project:</strong> "Create a new project called my-app"</div>
+						<div><strong>Add a Task:</strong> "Add a task to set up the database"</div>
+						<div><strong>Change Settings:</strong> "Change the AI model to gpt-4o"</div>
+						<div><strong>Ask Anything:</strong> Just say it or type it</div>
+					</div>
+					<div class="setup-controls">
+						<div class="setup-controls-title">Controls</div>
+						<div><strong>Voice:</strong> Press your voice key to speak (set in Settings &gt; Controls)</div>
+						<div><strong>Screenshot:</strong> Print Screen, then Ctrl+V to paste into chat</div>
+					</div>
+					<div class="setup-hint">Voice is significantly faster than typing. You don't need complete sentences.</div>
+				</div>
+			{:else if rightSection === 'tasks'}
+				{@const taskData = getFilteredTasks()}
+				{#if rightMilestoneFilter}
+					{@const m = taskData.milestones.find(x => x.id === rightMilestoneFilter)}
+					<div class="filter-header">
+						<strong>{m ? m.name : 'Tasks'}</strong>
+						<button class="filter-clear" onclick={() => { rightMilestoneFilter = null; }}>&times; Clear</button>
+					</div>
+				{/if}
+				{#each taskData.milestones as m}
+					{#if taskData.byMilestone[m.id]?.length > 0}
+						{#if !rightMilestoneFilter}
+							<div class="task-group-header">{m.name}</div>
+						{/if}
+						{#each taskData.byMilestone[m.id] as t}
+							<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+								<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
+									{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
+								</span>
+								<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+							</div>
+						{/each}
+					{/if}
+				{/each}
+				{#if taskData.noMilestone.length > 0 && !rightMilestoneFilter}
+					<div class="task-group-header">Other</div>
+					{#each taskData.noMilestone as t}
+						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+							<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
+								{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
+							</span>
+							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+						</div>
+					{/each}
+				{/if}
+				<div class="add-row">
+					<input
+						type="text"
+						class="add-input"
+						placeholder="Add a task..."
+						onkeydown={(e) => { if (e.key === 'Enter') addTask(e.target); }}
+					/>
+				</div>
+				<div class="panel-hint">Use Terminal to Add: Tasks, Milestones, Projects</div>
+			{:else if rightSection === 'bugs'}
+				{@const bugs = getBugs()}
+				{#if bugs.length === 0}
+					<div class="empty-state">No bugs tracked</div>
+					<div class="empty-state small">Add tasks with "bug" or "fix" in the title, or set priority &gt; 0</div>
+				{:else}
+					{#each bugs as t}
+						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+							<span class="task-icon bug" class:done={t.status === 'done'}>
+								{t.status === 'done' ? '\u2713' : '\u26A0'}
+							</span>
+							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+						</div>
+					{/each}
+				{/if}
+				<div class="add-row">
+					<input
+						type="text"
+						class="add-input"
+						placeholder="Report a bug..."
+						onkeydown={(e) => { if (e.key === 'Enter') addBug(e.target); }}
+					/>
+				</div>
+				<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
+			{:else if rightSection.startsWith('custom-')}
+				{@const sectionId = parseInt(rightSection.replace('custom-', ''))}
+				{@const section = getSectionById(sectionId)}
+				{#if section}
+					{#each section.items || [] as item}
+						<div class="task-row" onclick={() => cycleSectionItem(item.id, item.status, sectionId)}>
+							<span class="task-icon" class:done={item.status === 'done'}>
+								{item.status === 'done' ? '\u2713' : '\u25CB'}
+							</span>
+							<span class="task-title" class:done={item.status === 'done'}>{item.content}</span>
+						</div>
+					{/each}
+					{#if !section.items?.length}
+						<div class="empty-state">No items yet</div>
+					{/if}
+					<div class="add-row">
+						<input
+							type="text"
+							class="add-input"
+							placeholder="Add item..."
+							onkeydown={(e) => { if (e.key === 'Enter') addSectionItem(sectionId, e.target); }}
+						/>
+					</div>
+					<button class="delete-section" onclick={() => deleteSection(sectionId)}>Delete This Section</button>
+				{:else}
+					<div class="empty-state">Section not found</div>
+				{/if}
+			{/if}
+		</div>
+	</div>
+</div>
+
+<style>
+	/* ==================== Layout ==================== */
+	.toolbar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 12px;
+		flex-wrap: wrap;
+	}
+
+	.project-select {
+		background: #0a0a0f;
+		color: #cdd6f4;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px;
+		padding: 6px 10px;
+		font-size: 14px;
+		outline: none;
+	}
+	.project-select:focus { border-color: #89b4fa; }
+
+	.host-label {
+		color: #6c7086;
+		font-size: 12px;
+	}
+
+	.sessions-count {
+		color: #6c7086;
+		font-size: 12px;
+	}
+
+	/* ==================== Tab Bar ==================== */
+	.tab-bar {
+		display: flex;
+		align-items: center;
+		gap: 1px;
+		background: #12121a;
+		border-bottom: 1px solid #1e1e2e;
+		padding: 0 8px;
+		overflow-x: auto;
+		scrollbar-width: none;
+		min-height: 28px;
+	}
+	.tab-bar::-webkit-scrollbar { display: none; }
+
+	.term-tab {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 10px;
+		background: transparent;
+		border: none;
+		border-bottom: 2px solid transparent;
+		border-radius: 4px 4px 0 0;
+		color: #6c7086;
+		font-size: 12px;
+		cursor: pointer;
+		white-space: nowrap;
+		user-select: none;
+	}
+	.term-tab:hover { color: #cdd6f4; }
+	.term-tab.active {
+		color: #cdd6f4;
+		border-bottom-color: #89b4fa;
+		background: #12121a;
+	}
+
+	.primary-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: #89b4fa;
+	}
+
+	.tab-close {
+		font-size: 14px;
+		opacity: 0.5;
+		line-height: 1;
+		margin-left: 4px;
+	}
+	.tab-close:hover { opacity: 1; }
+
+	.add-tab {
+		padding: 4px 8px;
+		background: transparent;
+		border: none;
+		color: #6c7086;
+		font-size: 14px;
+		cursor: pointer;
+		opacity: 0.7;
+		white-space: nowrap;
+		user-select: none;
+	}
+	.add-tab:hover { opacity: 1; color: #cdd6f4; }
+
+	/* ==================== Main Three-Column Layout ==================== */
+	.terminal-layout {
+		display: flex;
+		gap: 0;
+		flex: 1;
+		overflow: hidden;
+		max-width: 100%;
+	}
+
+	/* ==================== Left Panel ==================== */
+	.left-panel {
+		width: 260px;
+		min-width: 220px;
+		display: flex;
+		flex-direction: column;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px 0 0 6px;
+		flex-shrink: 0;
+		overflow: hidden;
+	}
+
+	.left-tabs {
+		display: flex;
+		border-bottom: 1px solid #1e1e2e;
+		background: #12121a;
+	}
+
+	.left-tab {
+		flex: 1;
+		padding: 6px;
+		border: none;
+		background: none;
+		color: #6c7086;
+		cursor: pointer;
+		font-size: 11px;
+		border-bottom: 2px solid transparent;
+		transition: all 0.15s;
+	}
+	.left-tab:hover { color: #cdd6f4; }
+	.left-tab.active {
+		color: #cdd6f4;
+		font-weight: 600;
+		border-bottom-color: #89b4fa;
+	}
+
+	.left-content {
+		flex: 1;
+		background: #12121a;
+		overflow-y: auto;
+		padding: 10px;
+		font-size: 12px;
+	}
+
+	/* ==================== Chat ==================== */
+	.chat-container {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.chat-bubble {
+		word-break: break-word;
+		white-space: pre-wrap;
+	}
+
+	.chat-bubble.user {
+		background: rgba(137, 180, 250, 0.15);
+		border: 1px solid rgba(137, 180, 250, 0.2);
+		border-radius: 12px 12px 4px 12px;
+		padding: 8px 10px;
+		font-size: 12px;
+		align-self: flex-end;
+		max-width: 95%;
+	}
+
+	.session-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		margin-right: 4px;
+		vertical-align: middle;
+	}
+
+	.chat-bubble.assistant {
+		background: #1a1a25;
+		border-radius: 8px 8px 8px 2px;
+		padding: 8px 10px;
+		font-size: 11px;
+		align-self: flex-start;
+		max-width: 95%;
+	}
+
+	.chat-bubble.tool {
+		background: transparent;
+		border-left: 2px solid #1e1e2e;
+		padding: 2px 8px;
+		font-size: 10px;
+		color: #6c7086;
+		align-self: flex-start;
+		max-width: 95%;
+		font-family: monospace;
+		word-break: break-all;
+	}
+
+	/* ==================== Project Info ==================== */
+	.project-info {
+		margin-bottom: 10px;
+	}
+	.project-name {
+		font-weight: 600;
+		font-size: 14px;
+		margin-bottom: 4px;
+	}
+	.project-progress-row {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		margin-bottom: 4px;
+	}
+	.project-pct {
+		font-size: 20px;
+		font-weight: 700;
+		color: #89b4fa;
+	}
+	.project-count {
+		color: #6c7086;
+		font-size: 10px;
+	}
+	.project-sessions {
+		font-size: 10px;
+		color: #6c7086;
+		margin-top: 4px;
+	}
+
+	.milestone {
+		margin-bottom: 8px;
+		cursor: pointer;
+	}
+	.milestone:hover { opacity: 0.8; }
+	.milestone-row {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		margin-bottom: 2px;
+	}
+	.milestone-name {
+		flex: 1;
+		font-size: 11px;
+		font-weight: 500;
+	}
+	.milestone-pct {
+		font-size: 10px;
+		color: #6c7086;
+	}
+
+	.progress-bar {
+		height: 5px;
+		background: #1e1e2e;
+		border-radius: 3px;
+		overflow: hidden;
+		margin-bottom: 6px;
+	}
+	.progress-bar.small { height: 3px; margin-bottom: 0; }
+
+	.progress-fill {
+		height: 100%;
+		border-radius: 3px;
+		transition: width 0.3s;
+	}
+	.progress-fill.green { background: #a6e3a1; }
+	.progress-fill.yellow { background: #f9e2af; }
+	.progress-fill.red { background: #f38ba8; }
+
+	/* ==================== Terminal Container ==================== */
+	.term-container {
+		flex: 1;
+		background: #1e1e2e;
+		border: 1px solid #1e1e2e;
+		border-left: none;
+		border-right: none;
+		min-width: 0;
+		position: relative;
+		overflow: hidden;
+	}
+
+	/* Ambient glow */
+	.term-container::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background:
+			radial-gradient(ellipse 80% 60% at 20% 80%, rgba(137,180,250,0.06), transparent 60%),
+			radial-gradient(ellipse 60% 50% at 80% 20%, rgba(180,130,250,0.05), transparent 50%),
+			radial-gradient(ellipse 70% 50% at 50% 50%, rgba(100,220,180,0.03), transparent 60%);
+		pointer-events: none;
+		z-index: 0;
+		animation: terminalGlow 12s ease-in-out infinite alternate;
+	}
+
+	@keyframes terminalGlow {
+		0% { opacity: 0.7; }
+		50% { opacity: 1; }
+		100% { opacity: 0.7; }
+	}
+
+	/* Pi watermark */
+	.term-container::after {
+		content: '\u03A0';
+		position: absolute;
+		bottom: 12px;
+		right: 16px;
+		font-size: 64px;
+		font-weight: 700;
+		color: rgba(137, 180, 250, 0.04);
+		pointer-events: none;
+		z-index: 0;
+		user-select: none;
+		line-height: 1;
+	}
+
+	/* xterm sits above glow */
+	.term-container :global(.xterm) {
+		position: relative;
+		z-index: 1;
+		height: 100% !important;
+	}
+	.term-container :global(.xterm-viewport) {
+		overflow-y: scroll !important;
+	}
+	.term-container :global(.xterm-screen) {
+		min-height: 100%;
+	}
+
+	/* Scanline effect */
+	.term-container :global(.xterm-screen)::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: repeating-linear-gradient(
+			0deg,
+			transparent, transparent 1px,
+			rgba(0,0,0,0.03) 1px, rgba(0,0,0,0.03) 2px
+		);
+		pointer-events: none;
+		z-index: 2;
+	}
+
+	.term-empty {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		color: #45475a;
+		z-index: 2;
+	}
+	.term-empty-icon {
+		font-size: 48px;
+		margin-bottom: 16px;
+	}
+	.term-empty-title {
+		font-size: 16px;
+		margin-bottom: 8px;
+	}
+	.term-empty-sub {
+		font-size: 13px;
+	}
+
+	/* ==================== Panel Toggle ==================== */
+	.panel-toggle {
+		position: relative;
+		z-index: 2;
+		width: 28px;
+		background: #12121a;
+		border: 1px solid #1e1e2e;
+		border-left: none;
+		border-right: none;
+		color: #6c7086;
+		cursor: pointer;
+		font-size: 14px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: all 0.15s;
+		flex-shrink: 0;
+		border-radius: 0;
+	}
+	.panel-toggle:hover {
+		color: #89b4fa;
+		background: #1a1a25;
+	}
+
+	/* ==================== Right Panel ==================== */
+	.right-panel {
+		width: 280px;
+		min-width: 220px;
+		transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease;
+		background: #12121a;
+		border: 1px solid #1e1e2e;
+		border-radius: 0 6px 6px 0;
+		overflow-y: auto;
+		font-size: 12px;
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.right-panel.collapsed {
+		width: 0;
+		min-width: 0;
+		overflow: hidden;
+		border: none;
+		padding: 0;
+	}
+
+	.right-header {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 6px 8px;
+		border-bottom: 1px solid #1e1e2e;
+		position: sticky;
+		top: 0;
+		background: #12121a;
+		z-index: 1;
+	}
+
+	.right-select {
+		flex: 1;
+		background: #0a0a0f;
+		color: #cdd6f4;
+		border: 1px solid #1e1e2e;
+		border-radius: 4px;
+		padding: 5px 8px;
+		font-size: 12px;
+		font-weight: 500;
+		outline: none;
+	}
+	.right-select:focus { border-color: #89b4fa; }
+
+	.right-content {
+		padding: 10px;
+		flex: 1;
+		overflow-y: auto;
+	}
+
+	/* ==================== Tasks ==================== */
+	.task-group-header {
+		font-size: 11px;
+		font-weight: 600;
+		color: #6c7086;
+		padding: 6px 0 3px;
+		border-bottom: 1px solid #1e1e2e;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+
+	.task-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 6px;
+		padding: 3px 0;
+		cursor: pointer;
+	}
+	.task-row:hover { opacity: 0.8; }
+
+	.task-icon {
+		flex-shrink: 0;
+		width: 14px;
+		text-align: center;
+		color: #6c7086;
+	}
+	.task-icon.done { color: #a6e3a1; }
+	.task-icon.in-progress { color: #f9e2af; }
+	.task-icon.bug { color: #f38ba8; }
+	.task-icon.bug.done { color: #a6e3a1; }
+
+	.task-title {
+		flex: 1;
+	}
+	.task-title.done {
+		text-decoration: line-through;
+		color: #6c7086;
+	}
+
+	.filter-header {
+		padding: 4px 0 8px;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12px;
+	}
+
+	.filter-clear {
+		background: none;
+		border: none;
+		color: #6c7086;
+		cursor: pointer;
+		font-size: 11px;
+	}
+	.filter-clear:hover { color: #cdd6f4; }
+
+	.add-row {
+		margin-top: 8px;
+		display: flex;
+		gap: 4px;
+	}
+
+	.add-input {
+		flex: 1;
+		background: #0a0a0f;
+		color: #cdd6f4;
+		border: 1px solid #1e1e2e;
+		border-radius: 4px;
+		padding: 4px 6px;
+		font-size: 11px;
+		outline: none;
+	}
+	.add-input:focus { border-color: #89b4fa; }
+
+	.panel-hint {
+		margin-top: 8px;
+		text-align: center;
+		color: #45475a;
+		font-size: 10px;
+	}
+
+	.delete-section {
+		display: block;
+		margin: 12px auto 0;
+		background: none;
+		border: none;
+		color: #f38ba8;
+		cursor: pointer;
+		font-size: 10px;
+	}
+	.delete-section:hover { text-decoration: underline; }
+
+	/* ==================== Setup Guide ==================== */
+	.setup-guide {
+		padding: 4px;
+		font-size: 13px;
+		color: #6c7086;
+		line-height: 1.6;
+	}
+	.setup-title {
+		font-weight: 700;
+		font-size: 14px;
+		color: #cdd6f4;
+		margin-bottom: 10px;
+	}
+	.setup-desc { margin-bottom: 10px; }
+	.setup-items {
+		display: grid;
+		gap: 8px;
+	}
+	.setup-items strong { color: #cdd6f4; }
+	.setup-controls {
+		margin-top: 14px;
+		padding-top: 12px;
+		border-top: 1px solid #1e1e2e;
+	}
+	.setup-controls-title {
+		font-weight: 600;
+		font-size: 12px;
+		color: #cdd6f4;
+		margin-bottom: 6px;
+	}
+	.setup-controls strong { color: #cdd6f4; }
+	.setup-controls span { color: #6c7086; }
+	.setup-hint {
+		margin-top: 10px;
+		font-size: 12px;
+		color: #6c7086;
+	}
+
+	/* ==================== Empty States ==================== */
+	.empty-state {
+		color: #45475a;
+		padding: 12px;
+		text-align: center;
+	}
+	.empty-state.small {
+		padding: 0 12px;
+		font-size: 11px;
+	}
+</style>

@@ -6,6 +6,8 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import dev.pan.app.network.PanServerApi
 import dev.pan.app.util.Constants
+import dev.pan.app.vpn.RemoteAccessManager
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -25,12 +27,27 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient {
+    fun provideOkHttpClient(ram: RemoteAccessManager): OkHttpClient {
         return OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .addInterceptor(Interceptor { chain ->
-                val request = chain.request().newBuilder()
+                var request = chain.request()
+
+                // Always route through Tailscale proxy when available
+                val tailscaleUrl = ram.getTailscaleBaseUrl()
+                if (tailscaleUrl != null) {
+                    val tsBase = tailscaleUrl.toHttpUrl()
+                    val newUrl = request.url.newBuilder()
+                        .scheme(tsBase.scheme)
+                        .host(tsBase.host)
+                        .port(tsBase.port)
+                        .build()
+                    request = request.newBuilder().url(newUrl).build()
+                }
+
+                request = request.newBuilder()
                     .addHeader("X-Device-Name", DeviceNameHolder.name)
                     .addHeader("X-Device-Id", android.os.Build.MODEL.lowercase().replace(" ", "-"))
                     .build()

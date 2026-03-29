@@ -215,6 +215,9 @@ class MainViewModel @Inject constructor(
 
     fun connectTailscale() {
         viewModelScope.launch {
+            // Delay tsnet startup to let audio/foreground service initialize first
+            // tsnet is memory-heavy and competes with AudioPortEventHandler
+            kotlinx.coroutines.delay(5000)
             remoteAccessManager.setEnabled(true)
             remoteAccessManager.setStatus("Connecting...")
             try {

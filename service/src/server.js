@@ -342,6 +342,20 @@ app.use('/dashboard', express.static(join(__dirname, '..', 'public'), {
   }
 }));
 
+// Auth check — returns current user (used by SvelteKit dashboard layout)
+app.get('/auth/me', (req, res) => {
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip.endsWith('127.0.0.1') || ip === '::ffff:127.0.0.1';
+  const isTailscale = ip.startsWith('100.') || ip.startsWith('::ffff:100.');
+  if (isLocalhost || isTailscale) {
+    res.json({ authenticated: true, user: { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' } });
+  } else if (req.user) {
+    res.json({ authenticated: true, user: req.user });
+  } else {
+    res.json({ authenticated: false });
+  }
+});
+
 // GitHub OAuth callback — redirect to dashboard with code param so JS handles it
 app.get('/auth/github/callback', (req, res) => {
   res.redirect(`/dashboard/?code=${req.query.code}`);

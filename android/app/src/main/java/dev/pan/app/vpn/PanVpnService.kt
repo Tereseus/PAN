@@ -73,6 +73,9 @@ class PanVpnService : VpnService() {
                     // networking and does NOT need TUN routing. The real Tailscale CGNAT
                     // range (100.64.0.0/10) was black-holing tsnet's own Dial() calls.
                     .addRoute("198.51.100.0", 24)
+                    // DNS servers so WebView can resolve external domains (fonts, CDN, etc)
+                    .addDnsServer("8.8.8.8")
+                    .addDnsServer("1.1.1.1")
                     .setMtu(1280)
                     .setBlocking(false)
                     .establish()
@@ -103,11 +106,31 @@ class PanVpnService : VpnService() {
                 updateNotification("Waiting for login...")
             } else {
                 loginUrl = null
+                // Discover PAN server on the tailnet using FindServerIP
+                var serverHost = prefs.getString("server_hostname", "") ?: ""
+                if (serverHost.isEmpty()) {
+                    // Try to find any online peer (the PAN server)
+                    val discoveredIp = Panvpn.findServerIP("")
+                    if (discoveredIp.isNotEmpty()) {
+                        serverHost = discoveredIp
+                        Log.i(TAG, "Discovered server at $serverHost via tailnet scan")
+                    } else {
+                        serverHost = "tedgl" // last resort fallback
+                        Log.w(TAG, "No peers found, falling back to hostname: $serverHost")
+                    }
+                } else {
+                    // Try to resolve the configured hostname to a Tailscale IP
+                    val resolvedIp = Panvpn.findServerIP(serverHost)
+                    if (resolvedIp.isNotEmpty()) {
+                        Log.i(TAG, "Resolved $serverHost → $resolvedIp")
+                        serverHost = resolvedIp
+                    }
+                }
                 // Start local proxy that tunnels through tsnet to the PAN server
-                val serverHost = prefs.getString("server_hostname", "tedgl") ?: "tedgl"
                 try {
                     val proxyPort = Panvpn.startProxy(serverHost, 7777)
                     Log.i(TAG, "Proxy started on localhost:$proxyPort → $serverHost:7777")
+                    prefs.edit().putString("discovered_server_ip", serverHost).apply()
                 } catch (e: Exception) {
                     Log.e(TAG, "Proxy start failed: ${e.message}")
                 }

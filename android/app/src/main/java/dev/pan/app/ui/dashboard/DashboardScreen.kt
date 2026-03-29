@@ -2,9 +2,11 @@ package dev.pan.app.ui.dashboard
 
 import android.annotation.SuppressLint
 import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.*
@@ -24,19 +26,13 @@ fun DashboardScreen(
     onBack: () -> Unit,
     settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val serverUrl by settingsViewModel.serverUrl.collectAsState()
-    val remoteEnabled by settingsViewModel.remoteAccessEnabled.collectAsState()
-
-    // Use the Tailscale proxy when available — it tunnels through tsnet to the server
-    // This works from anywhere (same WiFi, different WiFi, cellular)
-    // Falls back to direct server URL on LAN if proxy not running
-    val proxyUrl = settingsViewModel.getRemoteProxyUrl()
-    val dashUrl = proxyUrl ?: serverUrl
+    val proxyPort by settingsViewModel.remoteAccessManager.proxyPort.collectAsState()
+    val baseUrl = if (proxyPort > 0) "http://127.0.0.1:$proxyPort" else ""
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Π Dashboard") },
+                title = { Text("PAN Dashboard") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -45,30 +41,52 @@ fun DashboardScreen(
             )
         }
     ) { padding ->
-        AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            factory = { context ->
-                WebView(context).apply {
-                    webViewClient = object : WebViewClient() {
-                        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-                            Log.e("PAN-Dashboard", "WebView error: ${error?.description} for ${request?.url}")
+        if (baseUrl.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentAlignment = androidx.compose.ui.Alignment.Center
+            ) {
+                Text("Waiting for Tailscale...", color = MaterialTheme.colorScheme.onSurface)
+            }
+        } else {
+            // key() prevents recomposition from recreating the WebView
+            key(baseUrl) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize().padding(padding),
+                    factory = { ctx ->
+                        // Use v1 dashboard (plain HTML/JS) — SvelteKit ES modules don't work in Android WebView
+                        val url = "$baseUrl/dashboard/index.html"
+                        Log.w("PAN-DASH", "Creating WebView for $url")
+                        WebView.setWebContentsDebuggingEnabled(true)
+                        WebView(ctx).apply {
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    Log.w("PAN-DASH", "Page loaded: $url")
+                                }
+                                override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) {
+                                    Log.e("PAN-DASH", "Error: code=${err?.errorCode} desc=${err?.description} url=${req?.url} isMain=${req?.isForMainFrame}")
+                                }
+                                override fun onReceivedHttpError(view: WebView?, req: WebResourceRequest?, resp: WebResourceResponse?) {
+                                    Log.e("PAN-DASH", "HTTP ${resp?.statusCode} ${resp?.reasonPhrase} for ${req?.url}")
+                                }
+                            }
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
+                                    Log.w("PAN-DASH", "JS [${msg?.messageLevel()}]: ${msg?.message()} at ${msg?.sourceId()}:${msg?.lineNumber()}")
+                                    return true
+                                }
+                            }
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                            settings.allowFileAccess = true
+                            settings.allowContentAccess = true
+                            setBackgroundColor(android.graphics.Color.parseColor("#0a0a0f"))
+                            loadUrl(url)
                         }
                     }
-                    webChromeClient = WebChromeClient()
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.useWideViewPort = true
-                    settings.loadWithOverviewMode = true
-                    settings.setSupportZoom(true)
-                    settings.builtInZoomControls = true
-                    settings.displayZoomControls = false
-                    setBackgroundColor(android.graphics.Color.parseColor("#0a0a0f"))
-                    Log.d("PAN-Dashboard", "Loading: $dashUrl/v2/")
-                    loadUrl("$dashUrl/v2/")
-                }
+                )
             }
-        )
+        }
     }
 }
