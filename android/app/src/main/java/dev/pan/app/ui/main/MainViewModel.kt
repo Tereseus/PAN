@@ -167,32 +167,20 @@ class MainViewModel @Inject constructor(
         } catch (_: Exception) {}
     }
 
-    /** Apply server sensor states to actual phone hardware on load */
+    /** Apply server sensor states to SensorContext (permissions, not hardware control).
+     *  NEVER affects Quick Mute — that's a local phone-only control. */
     private fun syncHardwareToServerState(sensors: List<DeviceSensorConfig>) {
         for (s in sensors) {
-            val enabled = s.enabled
-            when (s.id) {
-                "microphone" -> {
-                    PanForegroundService.micEnabled.value = enabled
-                    sttEngine.enabled = enabled
-                }
-                // All sensors including camera go through SensorContext
-                // These toggles control what PAN is allowed to use, not device hardware
-                else -> sensorContext.setSensorEnabled(s.id, enabled)
-            }
+            // Microphone sensor toggle = PAN permission, NOT Quick Mute
+            // Quick Mute is controlled ONLY by the user tapping the toggle on the phone
+            sensorContext.setSensorEnabled(s.id, s.enabled)
         }
     }
 
     fun toggleSensorEnabled(deviceId: Int, sensorId: String, enabled: Boolean) {
-        // Control what PAN is allowed to use (not the device hardware)
-        when (sensorId) {
-            "microphone" -> {
-                PanForegroundService.micEnabled.value = enabled
-                sttEngine.enabled = enabled
-            }
-            // All other sensors including camera go through SensorContext
-            else -> sensorContext.setSensorEnabled(sensorId, enabled)
-        }
+        // Sensor toggles control what PAN is ALLOWED to use (permissions)
+        // They do NOT control Quick Mute — that's phone-only
+        sensorContext.setSensorEnabled(sensorId, enabled)
 
         // Update local UI state immediately (no flicker)
         _sensors.value = _sensors.value.map { s ->
