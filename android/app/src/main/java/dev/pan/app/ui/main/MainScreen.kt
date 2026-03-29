@@ -99,60 +99,43 @@ fun MainScreen(
                 }
             }
 
-            // Server status
+            // Server + Connection status (merged — no toggle, always on)
             Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Server", style = MaterialTheme.typography.titleMedium)
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Server", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusDot(isActive = isServerConnected)
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             if (isServerConnected) "Connected" else "Disconnected",
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = if (isServerConnected) MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.error
                         )
-                        if (pendingCount > 0) {
-                            Text("$pendingCount items pending",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary)
-                        }
                     }
-                    StatusDot(isActive = isServerConnected)
-                }
-            }
-
-            // Remote Access
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Remote Access", style = MaterialTheme.typography.titleMedium)
+                    if (pendingCount > 0) {
+                        Text("$pendingCount items pending",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // Secure connection status
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusDot(isActive = remoteAccessStatus == "Connected")
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            remoteAccessStatus,
+                            if (remoteAccessStatus == "Connected") "Secure (Tailscale)" else "Secure: $remoteAccessStatus",
                             style = MaterialTheme.typography.bodySmall,
                             color = if (remoteAccessStatus == "Connected") MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (remoteAccessIp.isNotEmpty()) {
-                            Text(remoteAccessIp,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (remoteAccessOrg.isNotEmpty()) {
-                            Text(remoteAccessOrg,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
                     }
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    Switch(
-                        checked = remoteAccessEnabled,
-                        onCheckedChange = { viewModel.toggleRemoteAccess(context, it) }
-                    )
+                    if (remoteAccessIp.isNotEmpty()) {
+                        Text(remoteAccessIp,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
 

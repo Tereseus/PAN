@@ -25,6 +25,11 @@ fun DashboardScreen(
     settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
     val serverUrl by settingsViewModel.serverUrl.collectAsState()
+    val remoteEnabled by settingsViewModel.remoteAccessEnabled.collectAsState()
+
+    // Use Tailscale proxy when available, direct server URL as fallback
+    val proxyUrl = settingsViewModel.getRemoteProxyUrl()
+    val dashUrl = if (remoteEnabled && proxyUrl != null) proxyUrl else serverUrl
 
     Scaffold(
         topBar = {
@@ -58,7 +63,8 @@ fun DashboardScreen(
                     settings.builtInZoomControls = true
                     settings.displayZoomControls = false
                     setBackgroundColor(android.graphics.Color.parseColor("#0a0a0f"))
-                    loadUrl("$serverUrl/v2/")
+                    Log.d("PAN-Dashboard", "Loading: $dashUrl/v2/")
+                    loadUrl("$dashUrl/v2/")
                 }
             }
         )
