@@ -132,30 +132,8 @@ class PanForegroundService : Service() {
         resistanceClient = ResistanceClient(this)
         resistanceClient.syncFromServer()
 
-        // Initialize local LLM — auto-download and load model
-        serviceScope.launch {
-            val model = localLlm.getSelectedModel()
-            if (!localLlm.isModelDownloaded(model)) {
-                Log.d("PAN-LLM", "Downloading ${model.name} (${model.sizeBytes / 1_000_000}MB)...")
-                var lastLoggedPercent = -1
-                val success = localLlm.downloadModel(model) { progress ->
-                    val percent = (progress * 100).toInt()
-                    if (percent / 25 > lastLoggedPercent / 25) {
-                        lastLoggedPercent = percent
-                        Log.d("PAN-LLM", "Download: $percent%")
-                    }
-                }
-                if (success) {
-                    Log.d("PAN-LLM", "${model.name} downloaded, loading...")
-                    localLlm.loadModel()
-                } else {
-                    Log.d("PAN-LLM", "Download failed, will use server for routing")
-                }
-            } else {
-                Log.d("PAN-LLM", "${model.name} found, loading...")
-                localLlm.loadModel()
-            }
-        }
+        // llama.cpp DISABLED — too slow on CPU, causes memory conflicts with MediaPipe
+        // GeminiBrain (MediaPipe GPU) handles on-device AI instead
 
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
@@ -193,12 +171,16 @@ class PanForegroundService : Service() {
                 }
             }
 
-            // Initialize Gemini Nano for on-device AI
+            // Initialize on-device AI (MediaPipe GPU) — wrapped in try-catch so crash doesn't kill service
             serviceScope.launch {
-                val initStart = System.currentTimeMillis()
-                val ready = geminiBrain.initialize()
-                val initElapsed = System.currentTimeMillis() - initStart
-                panLog("GeminiBrain init: ${initElapsed}ms — ${if (ready) "READY" else "not available, using server"}")
+                try {
+                    val initStart = System.currentTimeMillis()
+                    val ready = geminiBrain.initialize()
+                    val initElapsed = System.currentTimeMillis() - initStart
+                    panLog("GeminiBrain init: ${initElapsed}ms — ${if (ready) "READY" else "not available, using server"}")
+                } catch (e: Exception) {
+                    panLog("GeminiBrain init CRASHED: ${e.message} — using server fallback")
+                }
             }
 
             // Voice collector — DISABLED on phone (Android can't run two AudioRecords)
