@@ -256,118 +256,11 @@ fun SettingsScreen(
                 )
             }
 
-            // Role assignments
-            Text("Classifier Model", style = MaterialTheme.typography.bodyLarge)
-            Text("Fast model for routing commands (runs first)",
+            // AI runs on server via Cerebras/Gemini through Tailscale
+            Text("AI Backend: Server (Cerebras)", style = MaterialTheme.typography.bodyMedium)
+            Text("All AI processing via Tailscale — ~580ms responses, free",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-            // Model list
-            dev.pan.app.ai.LocalLlm.AVAILABLE_MODELS.forEach { model ->
-                val modelStatus = viewModel.getModelStatus(model)
-                val sizeLabel = "${model.sizeBytes / 1_000_000}MB"
-                val isClassifier = classifierModel == model.id
-                val isConversation = conversationModel == model.id
-                val isDownloading = viewModel.isDownloading(model.id)
-
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = if (isClassifier || isConversation) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
-                            else MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(model.name, style = MaterialTheme.typography.bodyMedium)
-                                Text("${model.description} ($sizeLabel)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            // Status chip
-                            val chipColor = when (modelStatus) {
-                                "loaded" -> MaterialTheme.colorScheme.primary
-                                "downloaded" -> MaterialTheme.colorScheme.tertiary
-                                else -> MaterialTheme.colorScheme.outline
-                            }
-                            val chipText = when (modelStatus) {
-                                "loaded" -> "Running"
-                                "downloaded" -> "Ready"
-                                "not_downloaded" -> ""
-                                else -> modelStatus
-                            }
-                            if (chipText.isNotEmpty()) {
-                                Surface(
-                                    shape = MaterialTheme.shapes.extraSmall,
-                                    color = chipColor.copy(alpha = 0.15f)
-                                ) {
-                                    Text(chipText, color = chipColor,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-                                }
-                            }
-                        }
-
-                        // Download progress
-                        if (isDownloading) {
-                            LinearProgressIndicator(
-                                progress = { llmDownloadProgress },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                            )
-                            Text("Downloading... ${(llmDownloadProgress * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-
-                        // Role assignment + action buttons
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // Role toggle buttons
-                            if (modelStatus == "downloaded" || modelStatus == "loaded") {
-                                FilterChip(
-                                    selected = isClassifier,
-                                    onClick = { viewModel.setClassifierModel(model.id) },
-                                    label = { Text("Classifier", style = MaterialTheme.typography.labelSmall) }
-                                )
-                                FilterChip(
-                                    selected = isConversation,
-                                    onClick = { viewModel.setConversationModel(model.id) },
-                                    label = { Text("Conversation", style = MaterialTheme.typography.labelSmall) }
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.weight(1f))
-
-                            // Action buttons
-                            if (modelStatus == "not_downloaded" || modelStatus == "incomplete") {
-                                Button(
-                                    onClick = { viewModel.downloadModel(model.id) },
-                                    enabled = !isDownloading,
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                ) { Text("Download", style = MaterialTheme.typography.labelSmall) }
-                            }
-                            if (modelStatus == "downloaded" && modelStatus != "loaded") {
-                                OutlinedButton(
-                                    onClick = { viewModel.loadModel(model.id) },
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                ) { Text("Load", style = MaterialTheme.typography.labelSmall) }
-                            }
-                            if (modelStatus == "downloaded" || modelStatus == "loaded") {
-                                TextButton(
-                                    onClick = { viewModel.deleteModel(model.id) },
-                                    colors = ButtonDefaults.textButtonColors(
-                                        contentColor = MaterialTheme.colorScheme.error
-                                    ),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                                ) { Text("Delete", style = MaterialTheme.typography.labelSmall) }
-                            }
-                        }
-                    }
-                }
-            }
+                color = MaterialTheme.colorScheme.primary)
 
             // Custom model input
             var showCustom by remember { mutableStateOf(false) }
@@ -410,62 +303,11 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // On-Device AI (GPU Accelerated)
-            Text("On-Device AI (GPU Accelerated)", style = MaterialTheme.typography.titleMedium)
-            Text("Gemma 3n via MediaPipe — runs on phone GPU for fast responses",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-            val mediaPipeStatus = remember { viewModel.getMediaPipeStatus() }
-            val isMediaPipeDownloading = downloadingId == "mediapipe-gemma3n"
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val mpColor = when (mediaPipeStatus) {
-                    "loaded" -> MaterialTheme.colorScheme.primary
-                    "downloaded" -> MaterialTheme.colorScheme.tertiary
-                    else -> MaterialTheme.colorScheme.outline
-                }
-                val mpText = when (mediaPipeStatus) {
-                    "loaded" -> "Running (GPU)"
-                    "downloaded" -> "Downloaded"
-                    else -> "Not installed"
-                }
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = mpColor.copy(alpha = 0.15f),
-                    modifier = Modifier.padding(end = 8.dp)
-                ) {
-                    Text(mpText, color = mpColor,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
-                }
-                Text("~3 GB", style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
-            if (isMediaPipeDownloading) {
-                LinearProgressIndicator(
-                    progress = { llmDownloadProgress },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                )
-                Text("Downloading... ${(llmDownloadProgress * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
-            if (mediaPipeStatus == "not_downloaded" || mediaPipeStatus == "incomplete") {
-                Button(
-                    onClick = { viewModel.downloadMediaPipeModel() },
-                    enabled = !isMediaPipeDownloading,
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Download Gemma 3n E2B") }
-            }
-
             HorizontalDivider()
 
             // Gemini API Key
             Text("Gemini API Key", style = MaterialTheme.typography.titleMedium)
-            Text("For cloud fallback when on-device AI is unavailable",
+            Text("Optional — for Google Gemini as AI backend",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
 
@@ -484,37 +326,6 @@ fun SettingsScreen(
                 ) { Text("Save Key") }
             }
 
-            HorizontalDivider()
-
-            // Node.js Runtime Test
-            Text("Node.js Runtime", style = MaterialTheme.typography.titleMedium)
-            var nodeTestResult by remember { mutableStateOf("") }
-            var nodeTestRunning by remember { mutableStateOf(false) }
-
-            Button(
-                onClick = {
-                    nodeTestRunning = true
-                    scope.launch {
-                        try {
-                            val result = dev.pan.app.node.NodeRunner.runTest(context)
-                            nodeTestResult = if (result.success) "OK (${result.elapsedMs}ms): ${result.stdout.take(100)}"
-                                           else "FAIL: ${result.stderr.take(100)}"
-                        } catch (e: Exception) {
-                            nodeTestResult = "Error: ${e.message}"
-                        }
-                        nodeTestRunning = false
-                    }
-                },
-                enabled = !nodeTestRunning,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text(if (nodeTestRunning) "Running..." else "Test Node.js Runtime") }
-
-            if (nodeTestResult.isNotEmpty()) {
-                Text(nodeTestResult,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (nodeTestResult.startsWith("OK")) MaterialTheme.colorScheme.primary
-                           else MaterialTheme.colorScheme.error)
-            }
         }
     }
 }

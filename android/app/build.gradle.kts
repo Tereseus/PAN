@@ -85,14 +85,12 @@ dependencies {
     // Vosk — offline speech recognition (no profanity filter, no audio focus steal)
     implementation("com.alphacephei:vosk-android:0.3.47")
 
-    // Google ML Kit GenAI — on-device Gemini Nano (backup)
-    implementation("com.google.mlkit:genai-prompt:1.0.0-beta1")
-
-    // MediaPipe LLM Inference — GPU-accelerated on-device AI (Gemma 3n)
-    implementation("com.google.mediapipe:tasks-genai:0.10.33")
-
-    // llama.cpp for Android — local LLM inference (native ARM64 build)
-    implementation(project(":llama-lib"))
+    // On-device AI REMOVED — all AI goes through server (Cerebras/Gemini via Tailscale)
+    // MediaPipe tasks-genai (1-2GB model), ML Kit GenAI, and llama.cpp all removed
+    // Offline fallback uses tiny Qwen 0.6B classifier already bundled in assets
+    // implementation("com.google.mlkit:genai-prompt:1.0.0-beta1")
+    // implementation("com.google.mediapipe:tasks-genai:0.10.33")
+    // implementation(project(":llama-lib"))
 
     // PAN Remote Access — embedded Tailscale tsnet (gomobile AAR)
     implementation(files("libs/panvpn.aar"))

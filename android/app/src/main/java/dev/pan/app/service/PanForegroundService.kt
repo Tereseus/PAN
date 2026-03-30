@@ -31,7 +31,7 @@ import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.network.SyncManager
 import dev.pan.app.network.dto.AudioUpload
-import dev.pan.app.ai.GeminiBrain
+// GeminiBrain/MediaPipe REMOVED — all AI via server (Cerebras/Gemini through Tailscale)
 import dev.pan.app.audio.VoiceCollector
 import dev.pan.app.stt.GoogleStreamingStt
 import dev.pan.app.tts.TtsManager
@@ -55,7 +55,7 @@ class PanForegroundService : Service() {
     @Inject lateinit var sttEngine: GoogleStreamingStt
     @Inject lateinit var feedbackSounds: FeedbackSounds
     @Inject lateinit var tts: TtsManager
-    @Inject lateinit var geminiBrain: GeminiBrain
+    // GeminiBrain removed — server handles all AI
     @Inject lateinit var voiceCollector: VoiceCollector
     @Inject lateinit var cameraCapture: CameraCapture
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
@@ -155,7 +155,7 @@ class PanForegroundService : Service() {
 
             // Wire up logging
             sttEngine.onLog = { msg -> panLog(msg) }
-            geminiBrain.onLog = { msg -> panLog(msg) }
+            // All AI via server — no local model init needed
 
             // When TTS finishes speaking, restart STT listening
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
@@ -171,10 +171,7 @@ class PanForegroundService : Service() {
                 }
             }
 
-            // MediaPipe/GeminiBrain DEFERRED — tsnet + WebView + audio already use ~400MB
-            // On-device AI will load on-demand when first needed, not at startup
-            // All AI queries go to server via Tailscale until then
-            panLog("GeminiBrain: deferred (memory reserved for Tailscale + dashboard)")
+            panLog("AI: all queries via server (Cerebras/Gemini through Tailscale)")
 
             // Voice collector — DISABLED on phone (Android can't run two AudioRecords)
             // Raw audio for voice training comes from PC mic or pendant
@@ -681,92 +678,47 @@ class PanForegroundService : Service() {
                 }
             }
 
-            // Gemini Nano / server fallback
-            panLog("GeminiBrain: isAvailable=${geminiBrain.isAvailable()}, evaluating...")
-            val geminiStartTime = System.currentTimeMillis()
-            val decision = geminiBrain.evaluate(text, historyContext)
-            val geminiElapsed = System.currentTimeMillis() - geminiStartTime
-            panLog("GeminiBrain: ${geminiElapsed}ms | ${decision.action} | ${decision.response?.take(80) ?: ""}")
-            logToServer(text, decision.action.name, decision.response ?: "", "gemini_${decision.action.name.lowercase()}")
+            // All AI goes through server (Cerebras/Gemini) via Tailscale
+            val startTime = System.currentTimeMillis()
+            try {
+                val sensorData = sensorContext.getContextEnvelope()
+                val response = serverClient.askPanWithContext(text, null, historyContext, sensorData)
+                val elapsed = System.currentTimeMillis() - startTime
+                if (response != null) {
+                    val responseText = response.response_text
+                    panLog("Server (${elapsed}ms): ${responseText.take(100)}")
 
-            when (decision.action) {
-                GeminiBrain.Action.AMBIENT -> {
-                    panLog("Ambient (ignored): ${text.take(50)}")
-                }
-
-                GeminiBrain.Action.RESPOND -> {
-                    // Gemini answered directly — speak the response
-                    val resp = decision.response ?: return@launch
-                    addToHistory("PAN", resp)
-                    dataRepository.addPanResponse(resp)
-                    mainHandler.post { panSpeak(resp) }
-                }
-
-                GeminiBrain.Action.PHONE_COMMAND -> {
-                    // Phone action — parse and execute
-                    val cmd = decision.response ?: ""
-                    if (cmd.startsWith("open:")) {
-                        val appName = cmd.removePrefix("open:").trim()
-                        val launched = launchPhoneApp(appName)
-                        val resp = if (launched) "Opening $appName." else "Couldn't find $appName."
-                        addToHistory("PAN", resp)
-                        feedbackSounds.onCommandSent()
-                        mainHandler.post { panSpeak(resp) }
-                    } else {
-                        // Unknown phone command — tell user
-                        addToHistory("PAN", "I can't do that on the phone yet.")
-                        mainHandler.post { panSpeak("I can't do that on the phone yet.") }
-                    }
-                }
-
-                GeminiBrain.Action.SERVER -> {
-                    // Send to PAN server — Claude classifies and responds
-                    val startTime = System.currentTimeMillis()
-                    try {
-                        val sensorData = sensorContext.getContextEnvelope()
-                        panLog("Sensors: GPS=${sensorContext.gps != null} addr=${sensorContext.address} compass=${sensorContext.compass != null}")
-                        val response = serverClient.askPanWithContext(text, null, historyContext, sensorData)
-                        val elapsed = System.currentTimeMillis() - startTime
-                        if (response != null) {
-                            val responseText = response.response_text
-                            panLog("Server (${elapsed}ms): ${responseText.take(100)}")
-
-                            // Check if server returned a phone-executable action
-                            val route = response.route ?: ""
-                            if (route == "music" || route == "play_music" || responseText.startsWith("Playing ")) {
-                                // Server classified as music — execute through resistance
-                                val songQuery = response.query ?: responseText.removePrefix("Playing ").removeSuffix(".")
-                                val explicitService = when {
-                                    lower.contains("youtube") -> "youtube"
-                                    lower.contains("spotify") -> "spotify"
-                                    else -> null
-                                }
-                                val result = resistanceClient.tryPlayMusic(this@PanForegroundService, songQuery, explicitService)
-                                val msg = result.message ?: result.error ?: responseText
-                                addToHistory("PAN", "$msg (${elapsed}ms)")
-                                dataRepository.addPanResponse(msg)
-                                feedbackSounds.onCommandSent()
-                                mainHandler.post { panSpeak(msg) }
-                                logToServer(text, "music_resistance", songQuery, "phone_music")
-                                return@launch
-                            }
-
-                            addToHistory("PAN", "$responseText (${elapsed}ms)")
-                            dataRepository.addPanResponse(responseText)
-                            if (responseText != "[AMBIENT]" && responseText.isNotBlank()) {
-                                mainHandler.post { panSpeak(responseText) }
-                            }
-                        } else {
-                            panLog("Server returned null for: $text")
-                            logToServer(text, "error", "server returned null", "phone_error_null_response")
-                            mainHandler.post { panSpeak("Server didn't respond. It might be offline.") }
+                    // Check if server returned a phone-executable action
+                    val route = response.route ?: ""
+                    if (route == "music" || route == "play_music" || responseText.startsWith("Playing ")) {
+                        val songQuery = response.query ?: responseText.removePrefix("Playing ").removeSuffix(".")
+                        val explicitService = when {
+                            lower.contains("youtube") -> "youtube"
+                            lower.contains("spotify") -> "spotify"
+                            else -> null
                         }
-                    } catch (e: Exception) {
-                        panLog("Server failed for '$text': ${e.message}")
-                        logToServer(text, "error", e.message ?: "unknown", "phone_error_server_exception")
-                        mainHandler.post { panSpeak("Couldn't reach the server. ${e.message ?: ""}") }
+                        val result = resistanceClient.tryPlayMusic(this@PanForegroundService, songQuery, explicitService)
+                        val msg = result.message ?: result.error ?: responseText
+                        addToHistory("PAN", "$msg (${elapsed}ms)")
+                        dataRepository.addPanResponse(msg)
+                        feedbackSounds.onCommandSent()
+                        mainHandler.post { panSpeak(msg) }
+                        return@launch
                     }
+
+                    addToHistory("PAN", "$responseText (${elapsed}ms)")
+                    dataRepository.addPanResponse(responseText)
+                    if (responseText != "[AMBIENT]" && responseText.isNotBlank()) {
+                        mainHandler.post { panSpeak(responseText) }
+                    }
+                } else {
+                    panLog("Server returned null")
+                    mainHandler.post { panSpeak("Server didn't respond.") }
                 }
+            } catch (e: Exception) {
+                panLog("Server unreachable: ${e.message}")
+                // Offline fallback — limited local response
+                mainHandler.post { panSpeak("I can't reach the server right now. I'm in limited mode without internet.") }
             }
             } catch (e: Exception) {
                 panLog("FATAL onSpeech error for '$text': ${e::class.simpleName} ${e.message}")

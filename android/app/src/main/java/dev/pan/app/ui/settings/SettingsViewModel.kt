@@ -125,66 +125,18 @@ class SettingsViewModel @Inject constructor(
         }
         refreshDevices()
         refreshLlmStatus()
-        mediaPipeLlm = MediaPipeLlm(application)
+        // All AI via server — no local model init
     }
 
     fun refreshLlmStatus() {
-        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == _classifierModel.value }
-            ?: localLlm.getRecommendedModel()
-        _llmStatus.value = localLlm.getModelStatus(model)
-    }
-
-    fun getModelStatus(model: LocalLlm.ModelInfo): String = localLlm.getModelStatus(model)
-
-    fun downloadModel(modelId: String) {
-        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
-        _downloadingId.value = modelId
-        _llmDownloadProgress.value = 0f
-        viewModelScope.launch {
-            localLlm.downloadModel(model) { progress ->
-                _llmDownloadProgress.value = progress
-            }
-            _downloadingId.value = null
-            refreshLlmStatus()
-        }
-    }
-
-    fun isDownloading(modelId: String): Boolean = _downloadingId.value == modelId
-
-    fun deleteModel(modelId: String) {
-        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
-        localLlm.deleteModel(model)
-        refreshLlmStatus()
-    }
-
-    fun loadModel(modelId: String) {
-        val model = LocalLlm.AVAILABLE_MODELS.find { it.id == modelId } ?: return
-        viewModelScope.launch {
-            localLlm.loadModel(model)
-            refreshLlmStatus()
-        }
-    }
-
-    fun setClassifierModel(modelId: String) {
-        _classifierModel.value = modelId
-        viewModelScope.launch {
-            dataRepository.setSetting("classifier_model", modelId)
-            localLlm.selectClassifierModel(modelId)
-        }
-    }
-
-    fun setConversationModel(modelId: String) {
-        _conversationModel.value = modelId
-        viewModelScope.launch {
-            dataRepository.setSetting("conversation_model", modelId)
-            localLlm.selectConversationModel(modelId)
-        }
+        _llmStatus.value = "server"
     }
 
     fun addCustomModel(name: String, url: String) {
-        val id = "custom-${name.lowercase().replace(" ", "-")}"
-        LocalLlm.addCustomModel(id, name, url, 500_000_000)
-        refreshLlmStatus()
+        // Custom model endpoints (Ollama, LM Studio, etc.) saved to server settings
+        viewModelScope.launch {
+            dataRepository.setSetting("custom_model_${name.lowercase().replace(" ", "-")}", url)
+        }
     }
 
     fun refreshDevices() {
@@ -252,8 +204,6 @@ class SettingsViewModel @Inject constructor(
     fun setSelectedLlmModel(modelId: String) {
         _selectedLlmModel.value = modelId
         viewModelScope.launch { dataRepository.setSetting("selected_llm_model", modelId) }
-        localLlm.selectModel(modelId)
-        refreshLlmStatus()
     }
 
     fun getDownloadProgress(): Float = _llmDownloadProgress.value
@@ -319,26 +269,7 @@ class SettingsViewModel @Inject constructor(
         return VpnService.prepare(application)
     }
 
-    // --- MediaPipe On-Device AI ---
-
-    fun getMediaPipeStatus(): String {
-        return mediaPipeLlm?.getStatus() ?: "not_downloaded"
-    }
-
-    fun downloadMediaPipeModel() {
-        _downloadingId.value = "mediapipe-gemma3n"
-        _llmDownloadProgress.value = 0f
-        viewModelScope.launch {
-            val mp = mediaPipeLlm ?: MediaPipeLlm(application).also { mediaPipeLlm = it }
-            val success = mp.downloadModel { progress ->
-                _llmDownloadProgress.value = progress
-            }
-            _downloadingId.value = null
-            if (success) {
-                mp.loadModel()
-            }
-        }
-    }
+    // MediaPipe REMOVED — all AI via server
 
     // --- Gemini API Key ---
 
