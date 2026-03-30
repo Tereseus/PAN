@@ -104,43 +104,26 @@ async function handleUnified(text, context) {
   logStep(cmdId, 'unified_call', 'single Claude call for classify+handle');
 
   try {
+    const isDash = context.source === 'dashboard';
     const raw = await claude(
-      `You are PAN, a personal AI assistant.${context.source === 'dashboard' ? ' The user is typing to you directly from the PAN dashboard. This is ALWAYS directed at you — NEVER classify as ambient.' : ' You listen to the user\'s speech through their phone microphone.'} You are conversational — respond naturally like talking to a friend, not like a robot. Keep responses short (1-2 sentences max${context.source === 'dashboard' ? ', but you can be slightly longer for typed chat' : ', this is read aloud via TTS'}). Never censor the user's words.
-${historyBlock}${skillBlock}
-${context.source === 'dashboard' ? `The user typed: "${text}"` : `The user's microphone just picked up: "${text}"`}${sensorBlock}
+      `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.
+${historyBlock}${skillBlock}${sensorBlock}
+${isDash ? `User typed: "${text}"` : `Mic heard: "${text}"`}
 
-${context.source === 'dashboard' ? 'This message is directed at you. Respond helpfully.' : 'FIRST: Decide if this speech is directed at you (PAN) or ambient.'}
-Rules for deciding:
-- If they say your name (Pan/Pam/Ben) → FOR YOU, respond
-- If conversation history shows you were JUST talking (last 1-2 exchanges) → continuation, respond
-- If the text contains a direct question ("do you know", "can you", "what is", ends with "?") → probably for you, respond
-- If someone is narrating to ANOTHER person ("this boy was like", "she said", "he told me") with no question to you → AMBIENT
-- If it's clearly a conversation between other people → AMBIENT
-- When in doubt and there's recent conversation history → respond
-- When in doubt and there's NO conversation history → AMBIENT
+${isDash ? 'Always respond.' : 'If ambient speech (not directed at you): {"intent":"ambient","response":"[AMBIENT]"}'}
+${isDash ? '' : 'Directed at you if: says Pan/Pam, asks a question, continues recent convo.'}
 
-If ambient: {"intent": "ambient", "response": "[AMBIENT]"}
+Response formats:
+{"intent":"query","response":"answer"} — questions/conversation
+{"intent":"terminal","action":"open|send-text|get-text|list-panes","project":"path","name":"name","pane_id":0,"text":"cmd","response":"msg"}
+{"intent":"system","command":"PowerShell cmd","response":"msg"}
+{"intent":"browser","action":"list_tabs|read_tab|activate_tab|type_text|click_element|navigate","query":"tab/URL","text":"input","response":"msg"}
+{"intent":"memory","action":"save|recall","item_type":"type","content":"data","response":"msg"}
+{"intent":"music","query":"song","service":"spotify|youtube|any","response":"msg"}
+{"intent":"calendar","response":"msg"}
 
-If it IS for you, respond with JSON matching one of these:
-
-- Terminal/project: {"intent": "terminal", "action": "open", "project": "C:\\\\path", "name": "name", "response": "spoken response"}
-- List terminal panes: {"intent": "terminal", "action": "list-panes", "response": "spoken response"}
-- Send text to pane: {"intent": "terminal", "action": "send-text", "pane_id": 0, "text": "command\\n", "response": "spoken response"}
-- Read pane output: {"intent": "terminal", "action": "get-text", "pane_id": 0, "response": "spoken response"}
-- System command: {"intent": "system", "command": "PowerShell command", "response": "spoken response"}
-  Desktop path is the user's OneDrive\\Desktop (NOT the plain Desktop).
-- Browser action: {"intent": "browser", "action": "list_tabs|read_tab|activate_tab|type_text|click_element|navigate", "query": "tab name or URL", "text": "text to type or click", "response": "spoken response"}
-  Use this for reading web pages, checking messages, typing in browser, switching tabs.
-- Memory: {"intent": "memory", "action": "save|recall", "item_type": "type", "content": "content", "response": "spoken response"}
-- Calendar: {"intent": "calendar", "response": "spoken response"}
-- Music/media: {"intent": "music", "query": "song or artist name", "service": "spotify|youtube|any", "response": "spoken response"}
-  Use this when the user wants to play music, a song, a video, or any media. Extract the song/artist name into "query". If they specify a service (Spotify, YouTube), include it. Otherwise use "any".
-- Conversation/question: {"intent": "query", "response": "your spoken answer"}
-
-Known projects: ${projectList}
-${memoryContext}
-
-Only return JSON.`,
+Projects: ${projectList}
+${memoryContext}`,
       { caller: 'router' }
     );
 
