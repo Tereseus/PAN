@@ -11,12 +11,20 @@ del "%TEMP%\pan-health.txt" 2>NUL
 
 if "%HEALTH%"=="200" (
     echo [PAN] Already running — opening dashboard
+    :: Ensure Steward is running even if server was already up
+    tasklist /FI "IMAGENAME eq AutoHotkey64.exe" 2>NUL | find "AutoHotkey64" >NUL || (
+        echo [PAN] Steward not running — restarting...
+        start /b "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0service\src\watchdog.ps1"
+    )
     start "" "http://127.0.0.1:7777/dashboard/"
     exit /b 0
 )
 
 echo [PAN] Starting server...
 start /b "" node pan.js start
+
+echo [PAN] Starting Steward...
+start /b "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0service\src\watchdog.ps1"
 
 :: Wait for server to come up (max 15 seconds)
 set ATTEMPTS=0

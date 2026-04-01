@@ -590,15 +590,25 @@ router.get('/api/services', (req, res) => {
     detail: 'Dimensional state engine — not yet built',
   });
 
-  // 4. Phone connection
-  const phoneDevice = get("SELECT last_seen FROM devices WHERE device_type = 'phone' ORDER BY last_seen DESC LIMIT 1");
-  const phoneAge = phoneDevice ? (now - new Date(phoneDevice.last_seen + ' GMT-0400').getTime()) / 1000 : null;
-  services.push({
-    category: 'PAN Core',
-    name: 'Phone Link',
-    status: phoneAge !== null && phoneAge < 60 ? 'up' : phoneAge !== null && phoneAge < 300 ? 'degraded' : 'down',
-    detail: phoneAge !== null ? `Last seen ${Math.round(phoneAge)}s ago` : 'No phone connected',
-  });
+  // 4. Connected devices
+  const connectedDevices = all("SELECT name, device_type, last_seen FROM devices ORDER BY last_seen DESC");
+  for (const dev of connectedDevices) {
+    const devAge = (now - new Date(dev.last_seen + ' GMT-0400').getTime()) / 1000;
+    services.push({
+      category: 'Devices',
+      name: dev.name,
+      status: devAge < 60 ? 'up' : devAge < 300 ? 'degraded' : 'down',
+      detail: `${dev.device_type === 'pc' ? 'PC' : dev.device_type ? dev.device_type.charAt(0).toUpperCase() + dev.device_type.slice(1) : 'Unknown'} — last seen ${Math.round(devAge)}s ago`,
+    });
+  }
+  if (connectedDevices.length === 0) {
+    services.push({
+      category: 'Devices',
+      name: 'No Devices',
+      status: 'down',
+      detail: 'No devices connected',
+    });
+  }
 
   // 5. Dream cycle
   const dreamEvent = get("SELECT created_at FROM events WHERE event_type = 'DreamCycle' ORDER BY created_at DESC LIMIT 1");
