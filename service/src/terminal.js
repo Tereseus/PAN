@@ -10,6 +10,7 @@ import { hostname } from 'os';
 import { existsSync } from 'fs';
 import { all } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
+import { buildAICommand, readPanFile, getSessionHistory, updateClaudeMd, CLAUDE_PROJECTS } from './cli/launch.js';
 
 // Active terminal sessions: Map<sessionId, { pty, clients: Set<ws>, project }>
 const sessions = new Map();
@@ -126,18 +127,73 @@ function startTerminalServer(httpServer) {
           sessions.delete(sessionId);
         });
 
-        // Inject session context into CLAUDE.md BEFORE Claude starts
-        // so the first message already has full context
+        // Inject FULL session context into CLAUDE.md BEFORE Claude starts
+        // Uses the same logic as pan.js launch — session history, environment, memory
         if (cwd) {
           try {
+            // First: update CLAUDE.md with session history from Claude's own index
+            // (same as pan.js launch does)
+            const panData = readPanFile(cwd);
+            const sessionDirs = panData?.all_session_dirs || [];
+            const fwd = cwd.replace(/\\/g, '/');
+            const cwdEncoded = 'C--' + fwd.replace(/^[A-Za-z]:\//,'').replace(/\//g, '-');
+            if (!sessionDirs.includes(cwdEncoded)) sessionDirs.push(cwdEncoded);
+            const entries = getSessionHistory(sessionDirs);
+            updateClaudeMd(cwd, projectName || sessionId, entries);
+
+            // Then: inject DB-based context (recent conversation, memory, tasks)
             injectSessionContext(cwd);
-            console.log(`[PAN Terminal] Pre-injected session context for ${projectName || sessionId}`);
+            console.log(`[PAN Terminal] Full context injected for ${projectName || sessionId} (${entries.length} session records)`);
           } catch (err) {
             console.error(`[PAN Terminal] Context injection failed:`, err.message);
           }
         }
 
         console.log(`[PAN Terminal] New session: ${sessionId} (${projectName || 'shell'}) in ${cwd}`);
+
+        // Auto-launch Claude for project sessions (not plain shells)
+        // Uses the same AI command as pan.js launch (respects terminal_ai settings)
+        // THIS is the single source of truth for Claude launch — client-side should NOT launch
+        if (projectName && projectName !== 'Shell') {
+          session.claudeAutoLaunched = true;
+          setTimeout(() => {
+            if (session.pty) {
+              // Print ΠΑΝ remembers.. banner BEFORE launching Claude
+              session.pty.write('printf "\\033[1;96mΠΑΝ remembers..\\033[0m\\n"\r');
+
+              setTimeout(() => {
+                const aiCmd = buildAICommand(projectName);
+                console.log(`[PAN Terminal] Auto-launching: ${aiCmd}`);
+                session.pty.write(aiCmd + '\r');
+
+                // Wait for Claude to be ready, then send initial session prompt
+                let readyDetected = false;
+                const sendStartPrompt = () => {
+                  if (readyDetected || !session.pty) return;
+                  readyDetected = true;
+                  console.log(`[PAN Terminal] Claude ready — sending ΠΑΝ remembers for ${projectName}`);
+                  session.pty.write('ΠΑΝ remembers... Start session. Read CLAUDE.md and give the session continuity summary.\r');
+                };
+
+                // Detect Claude's ❯ prompt in the PTY output stream
+                const readyDisposable = session.pty.onData((data) => {
+                  if (readyDetected) return;
+                  const stripped = data.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+                  if (stripped.includes('❯') || stripped.includes('context')) {
+                    setTimeout(sendStartPrompt, 1000);
+                    if (readyDisposable) readyDisposable.dispose();
+                  }
+                });
+
+                // Fallback: send after 15s if prompt not detected
+                setTimeout(() => {
+                  sendStartPrompt();
+                  if (readyDisposable) readyDisposable.dispose();
+                }, 15000);
+              }, 500);
+            }
+          }, 1500);
+        }
       } catch (err) {
         console.error(`[PAN Terminal] Failed to spawn PTY:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to create terminal: ' + err.message }));
@@ -146,16 +202,21 @@ function startTerminalServer(httpServer) {
       }
     }
 
-    // Add this client to the session
+    // Add this client to the session — cancel cleanup if reconnecting
+    if (session.cleanupTimer) {
+      clearTimeout(session.cleanupTimer);
+      session.cleanupTimer = null;
+    }
     session.clients.add(ws);
 
-    // Send session info
+    // Send session info (including whether Claude was auto-launched)
     ws.send(JSON.stringify({
       type: 'info',
       session: sessionId,
       project: session.project,
       cwd: session.cwd,
       host: hostname(),
+      claudeLaunched: session.claudeAutoLaunched || false,
     }));
 
     // Send buffered output so new clients see recent history
@@ -194,8 +255,19 @@ function startTerminalServer(httpServer) {
     ws.on('close', () => {
       if (session) {
         session.clients.delete(ws);
-        // Don't kill the PTY when last client disconnects — keep it alive
-        // User can reconnect and see the buffer
+        // When last client disconnects, start a cleanup timer
+        // Gives 60s for reconnect, then kills the orphaned PTY
+        if (session.clients.size === 0) {
+          if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
+          session.cleanupTimer = setTimeout(() => {
+            // Re-check — someone may have reconnected
+            if (session.clients.size === 0) {
+              console.log(`[PAN Terminal] Killing orphaned session: ${sessionId} (${session.project || 'shell'}) — no clients for 60s`);
+              try { session.pty.kill(); } catch {}
+              sessions.delete(sessionId);
+            }
+          }, 60000);
+        }
       }
     });
   });

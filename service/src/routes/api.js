@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { insert, all, get, run, indexEventFTS } from '../db.js';
+import { insert, all, get, run, logEvent, anonymize, anonymizeEventData } from '../db.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -36,36 +36,35 @@ router.post('/chat', async (req, res) => {
   }
 });
 
-// Insert event + auto-index into FTS (attaches user_id from req.user if available)
+// Centralized event logging — delegates to logEvent() in db.js (insert + FTS in one call)
 function insertEvent(sid, eventType, dataStr, userId) {
-  const eventId = insert(`INSERT INTO events (session_id, event_type, data, user_id)
-    VALUES (:sid, :type, :data, :uid)`, {
-    ':sid': sid, ':type': eventType, ':data': dataStr, ':uid': userId || null
-  });
-  indexEventFTS(eventId, eventType, dataStr);
-  return eventId;
+  return logEvent(sid, eventType, dataStr, userId);
 }
 
 // Auto-register phone when it connects
+// Uses device name as stable identifier (not IP, which changes with WiFi/Tailscale)
 router.use((req, res, next) => {
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
-  // Only register non-localhost (phone comes from LAN)
+  // Only register non-localhost (phone comes from LAN/Tailscale)
   if (ip !== '127.0.0.1' && ip !== '::1' && !ip.endsWith('127.0.0.1')) {
-    const phoneHost = `phone-${ip.replace(/[^0-9.]/g, '')}`;
-    const deviceName = req.headers['x-device-name'];
+    const deviceName = req.headers['x-device-name'] || 'Phone';
+    const deviceId = req.headers['x-device-id']; // stable Android ID if sent
+    // Use stable key: device-id header > device name > fallback to IP
+    const phoneHost = deviceId ? `phone-${deviceId}` : `phone-${deviceName.replace(/\s+/g, '-').toLowerCase()}`;
+
     const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': phoneHost });
     if (!existing) {
+      // Also check for any old IP-based entries for this device name and remove them
+      run("DELETE FROM devices WHERE device_type = 'phone' AND name = :name AND hostname != :h",
+        { ':name': deviceName, ':h': phoneHost });
       insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
         VALUES (:h, :name, 'phone', '["voice","camera","sensors"]', datetime('now','localtime'))`, {
-        ':h': phoneHost, ':name': deviceName || 'Phone'
+        ':h': phoneHost, ':name': deviceName
       });
-    } else if (deviceName) {
-      // Update name + last_seen only if phone sent its name
+    } else {
+      // Update name + last_seen
       run("UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h",
         { ':name': deviceName, ':h': phoneHost });
-    } else {
-      // No name header — just update last_seen
-      run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': phoneHost });
     }
   }
   next();
@@ -100,6 +99,7 @@ function flushUtterance() {
 
 router.post('/audio', (req, res) => {
   const { transcript, timestamp, duration_ms, source } = req.body;
+  console.log(`[PAN Audio] POST /audio: source=${source} transcript="${(transcript||'').slice(0,80)}" from=${req.ip}`);
   const now = Date.now();
 
   if (!transcript || transcript.startsWith('[raw_audio:')) {
@@ -285,7 +285,7 @@ Here are ${count} matching entries from their history (${totalEvents} total even
 
 ${snippetText}
 Answer the user's question based on these results. Be specific — mention dates, exact details, and what was said. If the answer isn't in the data, say so honestly. Keep it to 2-4 sentences, conversational tone.`,
-      { maxTokens: 600, timeout: 30000, caller: 'recall' }
+      { model: 'claude-haiku-4-5-20251001', maxTokens: 600, timeout: 30000, caller: 'recall' }
     );
 
     const elapsed = Date.now() - startTime;
@@ -632,6 +632,118 @@ router.get('/resistance/preferences', (req, res) => {
 // GET /api/v1/resistance/stats — dashboard stats
 router.get('/resistance/stats', (req, res) => {
   res.json(getResistanceStats());
+});
+
+// ── Screen Recording ──────────────────────────────────────────────
+import { startRecording, stopRecording, extractFrames, getRecordingStatus, listRecordings } from '../screen-recorder.js';
+
+// POST /api/v1/recording/start — start screen recording
+router.post('/recording/start', (req, res) => {
+  const { fps } = req.body || {};
+  const result = startRecording({ fps });
+  if (result.error) return res.status(409).json(result);
+  insertEvent(`recording-${Date.now()}`, 'RecordingStart', JSON.stringify(result));
+  res.json(result);
+});
+
+// POST /api/v1/recording/stop — stop screen recording
+router.post('/recording/stop', (req, res) => {
+  const result = stopRecording();
+  if (result.error) return res.status(409).json(result);
+  insertEvent(`recording-${Date.now()}`, 'RecordingStop', JSON.stringify(result));
+  res.json(result);
+});
+
+// GET /api/v1/recording/status — check if recording
+router.get('/recording/status', (req, res) => {
+  res.json(getRecordingStatus());
+});
+
+// GET /api/v1/recording/list — list all recordings
+router.get('/recording/list', (req, res) => {
+  res.json(listRecordings());
+});
+
+// POST /api/v1/recording/frames — extract frames from a recording
+router.post('/recording/frames', async (req, res) => {
+  const { file, fps } = req.body;
+  if (!file) return res.status(400).json({ error: 'file required' });
+  try {
+    const result = await extractFrames(file, { fps });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Anonymization / Data Export ──────────────────────────────────
+// POST /api/v1/anonymize — test anonymization on arbitrary text
+router.post('/anonymize', (req, res) => {
+  const { text, options } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  const result = anonymize(text, options);
+  res.json(result);
+});
+
+// GET /api/v1/export/anonymized — export anonymized event data for data dividends
+// Query params: limit (default 100), offset (default 0), event_type (optional filter)
+router.get('/export/anonymized', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 100, 1000);
+  const offset = parseInt(req.query.offset) || 0;
+  const eventType = req.query.event_type;
+
+  let query = `SELECT id, session_id, event_type, data, created_at FROM events`;
+  const params = {};
+
+  if (eventType) {
+    query += ` WHERE event_type = :type`;
+    params[':type'] = eventType;
+  }
+  query += ` ORDER BY created_at DESC LIMIT :limit OFFSET :offset`;
+  params[':limit'] = limit;
+  params[':offset'] = offset;
+
+  const events = all(query, params);
+  const total = get(`SELECT COUNT(*) as c FROM events${eventType ? ` WHERE event_type = '${eventType}'` : ''}`)?.c || 0;
+
+  const anonymized = events.map(e => {
+    const { data: anonData, totalReplacements } = anonymizeEventData(e.data);
+    return {
+      id: e.id,
+      event_type: e.event_type,
+      data: JSON.parse(anonData),
+      created_at: e.created_at,
+      pii_stripped: totalReplacements,
+    };
+  });
+
+  res.json({
+    events: anonymized,
+    total,
+    limit,
+    offset,
+    pii_total: anonymized.reduce((sum, e) => sum + e.pii_stripped, 0),
+  });
+});
+
+// GET /api/v1/anonymize/stats — scan DB for PII density (how much PII exists)
+router.get('/anonymize/stats', (req, res) => {
+  const sample = all(`SELECT id, event_type, data FROM events ORDER BY created_at DESC LIMIT 500`);
+  let totalPII = 0;
+  const byType = {};
+  for (const e of sample) {
+    const { totalReplacements } = anonymizeEventData(e.data);
+    totalPII += totalReplacements;
+    if (totalReplacements > 0) {
+      byType[e.event_type] = (byType[e.event_type] || 0) + totalReplacements;
+    }
+  }
+  res.json({
+    sample_size: sample.length,
+    total_pii_instances: totalPII,
+    pii_per_event: sample.length > 0 ? (totalPII / sample.length).toFixed(2) : 0,
+    by_event_type: byType,
+  });
 });
 
 export default router;

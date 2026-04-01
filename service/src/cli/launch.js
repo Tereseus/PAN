@@ -206,6 +206,8 @@ function updateClaudeMd(projectPath, projectName, entries) {
   writeFileSync(claudeMdPath, combined, 'utf-8');
 }
 
+export { buildAICommand, readPanFile, getSessionHistory, updateClaudeMd, CLAUDE_PROJECTS };
+
 export default function cmdLaunch() {
   let projects = syncProjects();
 

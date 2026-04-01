@@ -91,33 +91,29 @@ class RemoteAccessManager @Inject constructor() {
 
     fun refreshFromVpn() {
         val status = PanVpn.getStatus()
-        _status.value = if (status.connected) "Connected" else if (_enabled.value) "Connecting..." else "Off"
         _ip.value = status.ip
         _org.value = status.org
         if (status.connected) {
             _enabled.value = true
-            // Try to discover server if not already found
-            if (_serverIp.value.isEmpty()) {
-                val discovered = PanVpn.findServerIP()
-                if (discovered.isNotEmpty()) {
-                    _serverIp.value = discovered
-                    Log.i(TAG, "Discovered PAN server: $discovered")
-                }
-            }
         }
-        // Update proxy port from Go — always read fresh, don't cache stale ports
+        // Update proxy port — only say "Connected" when proxy is actually working
         try {
             val port = Panvpn.getProxyPort().toInt()
-            _proxyPort.value = port // set to 0 if proxy not running, >0 if running
-            if (port > 0) {
-                Log.i(TAG, "Proxy active on localhost:$port (shouldUseTailscale=$shouldUseTailscale)")
+            _proxyPort.value = port
+            if (status.connected && port > 0) {
+                _status.value = "Connected"
+            } else if (status.connected) {
+                _status.value = "Connecting..."
+            } else if (_enabled.value) {
+                _status.value = "Connecting..."
+            } else {
+                _status.value = "Off"
             }
         } catch (e: Exception) {
-            _proxyPort.value = 0 // reset on error so OkHttp doesn't use dead port
-            Log.w(TAG, "Failed to get proxy port: ${e.message}")
+            _proxyPort.value = 0
+            _status.value = if (_enabled.value) "Connecting..." else "Off"
         }
 
-        // If not connected, reset proxy port to prevent stale routing
         if (!status.connected) {
             _proxyPort.value = 0
         }

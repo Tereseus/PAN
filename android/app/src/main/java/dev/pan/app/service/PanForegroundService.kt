@@ -46,7 +46,8 @@ class PanForegroundService : Service() {
     companion object {
         private const val TAG = "PanService"
         val lastAction = MutableStateFlow("")
-        val micEnabled = MutableStateFlow(true)
+        val micEnabled = MutableStateFlow(false) // Start muted — user unmutes when ready
+        val sttStatus = MutableStateFlow("Muted") // visible on main screen for debugging
     }
 
     @Inject lateinit var serverClient: PanServerClient
@@ -55,7 +56,7 @@ class PanForegroundService : Service() {
     @Inject lateinit var sttEngine: GoogleStreamingStt
     @Inject lateinit var feedbackSounds: FeedbackSounds
     @Inject lateinit var tts: TtsManager
-    // GeminiBrain removed — server handles all AI
+    // On-device AI — dynamically detects what the phone provides
     @Inject lateinit var voiceCollector: VoiceCollector
     @Inject lateinit var cameraCapture: CameraCapture
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
@@ -65,6 +66,8 @@ class PanForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var notificationManager: NotificationManager? = null
     private lateinit var resistanceClient: ResistanceClient
+    private lateinit var onDeviceAi: dev.pan.app.ai.OnDeviceAi
+    @Inject lateinit var geminiBrain: dev.pan.app.ai.GeminiBrain
     @Inject lateinit var localLlm: dev.pan.app.ai.LocalLlm
 
     // Dedup: prevent duplicate commands within 3 seconds
@@ -96,16 +99,19 @@ class PanForegroundService : Service() {
 
     // Persistent log — sends to PAN server so logs are always available
     private fun panLog(msg: String) {
-        Log.i(TAG, msg)
+        Log.w(TAG, msg) // Use warning level — info may be suppressed on Pixel
         serviceScope.launch {
             try {
-                serverClient.sendAudio(AudioUpload(
+                val ok = serverClient.sendAudio(AudioUpload(
                     transcript = msg,
                     timestamp = System.currentTimeMillis(),
                     duration_ms = 0,
-                    source = "phone_log"
+                    source = "phone_mic"
                 ))
-            } catch (_: Exception) {}
+                if (!ok) Log.w(TAG, "panLog send failed for: ${msg.take(50)}")
+            } catch (e: Exception) {
+                Log.w(TAG, "panLog exception: ${e.message} for: ${msg.take(50)}")
+            }
         }
     }
 
@@ -132,8 +138,18 @@ class PanForegroundService : Service() {
         resistanceClient = ResistanceClient(this)
         resistanceClient.syncFromServer()
 
-        // llama.cpp DISABLED — too slow on CPU, causes memory conflicts with MediaPipe
-        // GeminiBrain (MediaPipe GPU) handles on-device AI instead
+        // Dynamic on-device AI detection — probes for Gemini Nano, Samsung AI, MediaPipe, etc.
+        onDeviceAi = dev.pan.app.ai.OnDeviceAi(this)
+        onDeviceAi.onLog = { msg -> panLog("OnDeviceAI: $msg") }
+        onDeviceAi.initialize()
+        panLog("On-device AI: ${onDeviceAi.providerName}")
+
+        // Initialize GeminiBrain (ML Kit GenAI — uses phone's built-in Gemini Nano)
+        geminiBrain.onLog = { msg -> panLog("GeminiBrain: $msg") }
+        serviceScope.launch {
+            val ready = geminiBrain.initialize()
+            panLog("GeminiBrain: ${if (ready) "READY" else "not available (using server fallback)"}")
+        }
 
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
@@ -153,8 +169,11 @@ class PanForegroundService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             )
 
-            // Wire up logging
-            sttEngine.onLog = { msg -> panLog(msg) }
+            // Wire up logging — also update sttStatus for UI visibility
+            sttEngine.onLog = { msg ->
+                panLog(msg)
+                sttStatus.value = msg
+            }
             // All AI via server — no local model init needed
 
             // When TTS finishes speaking, restart STT listening
@@ -178,14 +197,18 @@ class PanForegroundService : Service() {
             // Phone only saves transcripts via STT callback
             voiceCollector.onLog = { msg -> panLog(msg) }
 
-            // Google Streaming STT — real-time transcription, no chunks
-            sttEngine.startListening { text, isFinal ->
-                if (text.isNotBlank() && isFinal) {
-                    voiceCollector.onTranscript(text) // Pair audio with transcript
-                    onSpeech(text)
+            // Start muted — STT only starts when user unmutes
+            if (micEnabled.value) {
+                sttEngine.startListening { text, isFinal ->
+                    if (text.isNotBlank() && isFinal) {
+                        voiceCollector.onTranscript(text)
+                        onSpeech(text)
+                    }
                 }
+                panLog("STT started (mic enabled)")
+            } else {
+                panLog("STT NOT started (muted on startup)")
             }
-            panLog("Google STT + Voice Collector started")
         } else {
             startForeground(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = false))
             panLog("No mic permission — running without audio")
@@ -523,9 +546,19 @@ class PanForegroundService : Service() {
             try {
             val historyContext = getHistoryContext()
 
-            // Skip llama.cpp classifier — was adding 9s overhead
-            // Return dummy "unknown" so everything falls through to GeminiBrain/server
-            val localIntent = dev.pan.app.ai.LocalLlm.IntentResult(intent = "unknown", query = stripped, service = null, local = false, elapsedMs = 0)
+            // On-device AI classification (if available), falling back to regex
+            var localClassification: String? = null
+            if (onDeviceAi.isAvailable()) {
+                localClassification = onDeviceAi.classify(stripped)
+                if (localClassification != null) {
+                    panLog("On-device AI (${onDeviceAi.providerName}): '$stripped' -> $localClassification")
+                }
+            }
+            // Fallback to regex classifier (always available, zero latency)
+            if (localClassification == null) {
+                localClassification = classifyLocally(stripped)
+                panLog("Regex classify: '$stripped' -> $localClassification")
+            }
 
             // Override: force recall if user mentions conversations/history/remember
             val recallKeywords = listOf("conversation", "conversations", "what did we talk", "what did i say",
@@ -536,116 +569,19 @@ class PanForegroundService : Service() {
                 "did we mention", "did we discuss", "search in the", "find in the",
                 "what did we say", "said about", "talk about", "say about")
             val forceRecall = recallKeywords.any { stripped.contains(it) }
-            val effectiveIntent = if (forceRecall && localIntent.intent != "recall") {
-                panLog("Override: ${localIntent.intent} → recall (keyword match)")
-                localIntent.copy(intent = "recall", local = true)
-            } else localIntent
+            val effectiveClassification = if (forceRecall) {
+                panLog("Override: $localClassification -> recall (keyword match)")
+                "recall"
+            } else localClassification
 
-            if (effectiveIntent.local && effectiveIntent.intent != "unknown") {
-                val elapsed = effectiveIntent.elapsedMs
-                panLog("Local LLM (${elapsed}ms): ${effectiveIntent.intent} | ${effectiveIntent.query}")
-                logToServer(text, "local_llm_${effectiveIntent.intent}", effectiveIntent.query, "local_llm")
+            // Handle locally what we can — no server call needed
+            if (effectiveClassification != "passive" && effectiveClassification != "query") {
+                panLog("Local route: $effectiveClassification")
+                logToServer(text, "local_$effectiveClassification", stripped, "local_classify")
 
-                when (effectiveIntent.intent) {
-                    "play_music" -> {
-                        val result = resistanceClient.tryPlayMusic(
-                            this@PanForegroundService,
-                            effectiveIntent.query,
-                            effectiveIntent.service
-                        )
-                        val msg = result.message ?: result.error ?: "Could not play."
-                        addToHistory("PAN", "$msg (${elapsed}ms local)")
-                        dataRepository.addPanResponse(msg)
-                        feedbackSounds.onCommandSent()
-                        mainHandler.post { panSpeak(msg) }
-                        return@launch
-                    }
-                    "ambient" -> {
-                        panLog("Local LLM: ambient (ignored)")
-                        return@launch
-                    }
-                    "query" -> {
-                        val answerSource = kotlinx.coroutines.runBlocking {
-                            dataRepository.getSetting("query_answer_source") ?: "cloud"
-                        }
-                        if (answerSource.equals("local", ignoreCase = true)) {
-                            // Answer with local LLM (swaps to conversation model)
-                            val answer = localLlm.chat(stripped, historyContext)
-                            if (answer.isNotBlank()) {
-                                addToHistory("PAN", "$answer (${elapsed}ms local)")
-                                dataRepository.addPanResponse(answer)
-                                mainHandler.post { panSpeak(answer) }
-                                return@launch
-                            }
-                        }
-                        // "cloud" or "auto" or blank local answer → fall through to server
-                        panLog("Query → cloud (${elapsed}ms classify)")
-                    }
-                    "open_app" -> {
-                        val appName = effectiveIntent.query
-                        val launched = launchPhoneApp(appName)
-                        val msg = if (launched) "Opening $appName." else "Couldn't find $appName."
-                        addToHistory("PAN", "$msg (${elapsed}ms local)")
-                        feedbackSounds.onCommandSent()
-                        mainHandler.post { panSpeak(msg) }
-                        return@launch
-                    }
-                    "navigate" -> {
-                        val destination = effectiveIntent.query
-                        try {
-                            val navIntent = Intent(Intent.ACTION_VIEW).apply {
-                                data = Uri.parse("google.navigation:q=${Uri.encode(destination)}")
-                                setPackage("com.google.android.apps.maps")
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            startActivity(navIntent)
-                            val msg = "Navigating to $destination."
-                            addToHistory("PAN", "$msg (${elapsed}ms local)")
-                            feedbackSounds.onCommandSent()
-                            mainHandler.post { panSpeak(msg) }
-                        } catch (e: Exception) {
-                            mainHandler.post { panSpeak("Couldn't open navigation.") }
-                        }
-                        return@launch
-                    }
-                    "search" -> {
-                        val query = effectiveIntent.query
-                        try {
-                            val searchIntent = Intent(Intent.ACTION_VIEW).apply {
-                                data = Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            startActivity(searchIntent)
-                            val msg = "Searching for $query."
-                            addToHistory("PAN", "$msg (${elapsed}ms local)")
-                            feedbackSounds.onCommandSent()
-                            mainHandler.post { panSpeak(msg) }
-                        } catch (e: Exception) {
-                            mainHandler.post { panSpeak("Couldn't open the search.") }
-                        }
-                        return@launch
-                    }
-                    "send_message" -> {
-                        // Extract recipient from query if possible
-                        val target = effectiveIntent.query
-                        try {
-                            val smsIntent = Intent(Intent.ACTION_SENDTO).apply {
-                                data = Uri.parse("smsto:${Uri.encode(target)}")
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            startActivity(smsIntent)
-                            val msg = "Opening a message to $target."
-                            addToHistory("PAN", "$msg (${elapsed}ms local)")
-                            feedbackSounds.onCommandSent()
-                            mainHandler.post { panSpeak(msg) }
-                        } catch (e: Exception) {
-                            mainHandler.post { panSpeak("Couldn't open messaging.") }
-                        }
-                        return@launch
-                    }
+                when (effectiveClassification) {
                     "recall" -> {
-                        // Server does everything: keyword extraction, DB search, summarization
-                        panLog("Recall → server: '$stripped'")
+                        panLog("Recall -> server: '$stripped'")
                         try {
                             val result = serverClient.recall(stripped)
                             val msg = result ?: "Couldn't search conversations."
@@ -659,11 +595,10 @@ class PanForegroundService : Service() {
                         return@launch
                     }
                     "terminal" -> {
-                        // Send to the active desktop terminal session
                         try {
                             val res = serverClient.sendTerminalCommand(stripped)
                             val msg = if (res) "Sent to terminal." else "No active terminal session."
-                            addToHistory("PAN", "$msg (${elapsed}ms)")
+                            addToHistory("PAN", msg)
                             feedbackSounds.onCommandSent()
                             mainHandler.post { panSpeak(msg) }
                         } catch (e: Exception) {
@@ -671,14 +606,30 @@ class PanForegroundService : Service() {
                         }
                         return@launch
                     }
-                    "system", "calendar", "camera" -> {
-                        // These are already handled by handleLocally regex above
-                        // If we got here, regex didn't catch it — fall through to server
+                    else -> {
+                        // system, memory, calendar, local — try handleLocally for timer/alarm/nav/search/call/text/app
+                        @Suppress("DEPRECATION")
+                        val localResult = handleLocally(stripped, effectiveClassification)
+                        if (localResult != null && localResult != "CAMERA_ASYNC") {
+                            addToHistory("PAN", localResult)
+                            dataRepository.addPanResponse(localResult)
+                            feedbackSounds.onCommandSent()
+                            mainHandler.post { panSpeak(localResult) }
+                            return@launch
+                        }
+                        // handleLocally couldn't do it — fall through to server
+                        panLog("Local handler returned null for $effectiveClassification, sending to server")
                     }
                 }
             }
 
-            // All AI goes through server (Cerebras/Gemini) via Tailscale
+            // Passive = ambient speech, not directed at PAN — skip server
+            if (effectiveClassification == "passive") {
+                panLog("Passive speech (ambient), skipping server: '${stripped.take(50)}'")
+                return@launch
+            }
+
+            // Query or local-fallthrough — send to server (Cerebras/Gemini) via Tailscale
             val startTime = System.currentTimeMillis()
             try {
                 val sensorData = sensorContext.getContextEnvelope()
@@ -1292,24 +1243,84 @@ class PanForegroundService : Service() {
     }
 
     // Fast local classification — no API needed
-    // Returns "passive" for normal conversation that shouldn't be acted on
-    // Must be strict to avoid false positives — only trigger on clear commands
+    // Returns intent string for local handling, "query" for server, "passive" for ambient/ignore
     private fun classifyLocally(text: String): String {
         val lower = text.lowercase()
 
-        // Explicit PAN address — always route
-        if (lower.contains("hey pan") || lower.contains("hey pam")) {
-            // Check if it's a local-answerable question with "hey pan" prefix
-            if (lower.contains("what time") || lower.contains("what's the time")
-                || lower.contains("what day") || lower.contains("what date")
-                || lower.contains("battery")) {
-                return "local"
-            }
-            return "query"
+        // Explicit PAN address — always route (strip prefix handled upstream)
+        val addressedToPan = lower.contains("hey pan") || lower.contains("hey pam")
+                || lower.contains("hi pan") || lower.contains("ok pan")
+
+        // Time/date/battery — always local
+        if (lower.contains("what time") || lower.contains("what's the time")
+            || lower.contains("what day") || lower.contains("what date")
+            || lower.contains("what's the date")
+            || (lower.contains("battery") && (lower.contains("how much") || lower.contains("what") || lower.contains("level")))) {
+            return "local"
         }
 
-        // System commands — require action verb + target object together
-        // "create a folder" yes, "did not create that" no
+        // Flashlight
+        if (lower.contains("flashlight") || lower.contains("torch")
+            || (lower.contains("flash") && lower.contains("light"))) {
+            return "local"
+        }
+
+        // Media controls — exact short phrases
+        if (lower == "play" || lower == "pause" || lower == "next" || lower == "skip"
+            || lower == "previous" || lower == "resume" || lower == "stop music"
+            || lower == "play music" || lower == "pause music" || lower == "resume music"
+            || lower == "next song" || lower == "previous song") {
+            return "local"
+        }
+
+        // Camera
+        if (lower.contains("take a photo") || lower.contains("take a picture")
+            || lower.contains("take a selfie") || lower.contains("take photo")
+            || lower.contains("take picture")) {
+            return "local"
+        }
+
+        // App launches — "open X", "launch X"
+        if (lower.matches(Regex("^(open|launch)\\s+.+"))) {
+            return "system"
+        }
+
+        // Timer — "set a timer for X"
+        if (lower.contains("set") && lower.contains("timer")) {
+            return "system"
+        }
+
+        // Alarm — "set an alarm for X"
+        if (lower.contains("set") && lower.contains("alarm")) {
+            return "system"
+        }
+
+        // Navigation — "navigate to X", "directions to X", "take me to X"
+        if (lower.matches(Regex(".*(navigate|directions?|take me|go)\\s+to\\s+.+"))) {
+            return "system"
+        }
+
+        // Search — "search for X"
+        if (lower.matches(Regex("^search\\s+(?:for\\s+)?.+"))) {
+            return "system"
+        }
+
+        // Call — "call X"
+        if (lower.matches(Regex("^call\\s+.+"))) {
+            return "system"
+        }
+
+        // Text/message — "text X", "message X"
+        if (lower.matches(Regex("^(text|message)\\s+.+"))) {
+            return "system"
+        }
+
+        // Play specific music — "play [song/artist]" (not just "play")
+        if (lower.matches(Regex("^play\\s+.{3,}"))) {
+            return "system"
+        }
+
+        // System commands — file operations
         val systemPatterns = listOf(
             Regex("(create|make)\\s+(a\\s+)?(folder|file|directory|dir)"),
             Regex("(delete|remove)\\s+(the\\s+|a\\s+)?(folder|file|directory)"),
@@ -1320,7 +1331,8 @@ class PanForegroundService : Service() {
         // Terminal — open/launch + a project name
         val terminalPatterns = listOf(
             Regex("(open|launch)\\s+(the\\s+)?(\\w+\\s+)*(project|terminal|dev|code)"),
-            Regex("(open|launch)\\s+(the\\s+)?\\w+\\s+(dev|game|project)")
+            Regex("(open|launch)\\s+(the\\s+)?\\w+\\s+(dev|game|project)"),
+            Regex("^(send|type)\\s+.*(terminal|console)")
         )
         if (terminalPatterns.any { it.containsMatchIn(lower) }) return "terminal"
 
@@ -1339,7 +1351,15 @@ class PanForegroundService : Service() {
         )
         if (calendarPatterns.any { it.containsMatchIn(lower) }) return "calendar"
 
-        // Everything else — passive capture only
+        // If explicitly addressed to PAN but didn't match anything above — send to server as query
+        if (addressedToPan) return "query"
+
+        // Question patterns — likely directed at PAN even without "hey pan"
+        if (lower.matches(Regex("^(what|who|where|when|why|how|is|are|can|do|does|will|would|should|could)\\s+.+"))) {
+            return "query"
+        }
+
+        // Everything else — passive capture only (ambient speech, not directed at PAN)
         return "passive"
     }
 
@@ -1368,12 +1388,17 @@ class PanForegroundService : Service() {
 
         if (intent?.action == "TOGGLE_MIC") {
             val newState = !sttEngine.enabled
-            sttEngine.enabled = newState
+            sttStatus.value = if (newState) "Starting STT..." else "Muted"
+            panLog("TOGGLE_MIC: changing to ${if (newState) "ON" else "OFF"} (was enabled=${sttEngine.enabled})")
             micEnabled.value = newState
             isMuted = !newState
             if (newState) {
+                // Must enable FIRST so startListening doesn't early-return on !_enabled check
+                sttEngine.enabled = true
                 sttEngine.startListening { t, f -> if (t.isNotBlank() && f) { voiceCollector.onTranscript(t); onSpeech(t) } }
+                panLog("STT started via toggle — listening=${sttEngine.isListening}")
             } else {
+                sttEngine.enabled = false
                 voiceCollector.stop()
             }
             notificationManager?.notify(

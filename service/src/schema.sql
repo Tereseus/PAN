@@ -197,6 +197,25 @@ CREATE INDEX IF NOT EXISTS idx_sensor_attachments_sensor ON sensor_attachments(d
 
 -- === USER IDENTITY & AUTH (Phase 1) ===
 
+-- Custom roles — orgs can define as many as they want
+-- level determines hierarchy: higher level = more permissions
+CREATE TABLE IF NOT EXISTS roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    level INTEGER NOT NULL DEFAULT 0,          -- 0=viewer, 25=user, 50=manager, 75=admin, 100=owner
+    description TEXT,
+    permissions TEXT DEFAULT '[]',             -- JSON array of permission strings
+    color TEXT,                                -- hex color for UI badge
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- Seed default roles (idempotent — INSERT OR IGNORE)
+INSERT OR IGNORE INTO roles (name, level, description, color) VALUES ('viewer', 0, 'Read-only access', '#585b70');
+INSERT OR IGNORE INTO roles (name, level, description, color) VALUES ('user', 25, 'Standard user', '#89b4fa');
+INSERT OR IGNORE INTO roles (name, level, description, color) VALUES ('manager', 50, 'Manage users and devices', '#a6e3a1');
+INSERT OR IGNORE INTO roles (name, level, description, color) VALUES ('admin', 75, 'Full admin access', '#f9e2af');
+INSERT OR IGNORE INTO roles (name, level, description, color) VALUES ('owner', 100, 'Instance owner', '#f38ba8');
+
 -- Users (OAuth — no passwords, sign in with Google/Apple/Microsoft/GitHub)
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -257,3 +276,78 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
     content='',           -- external content mode (we manage the data)
     tokenize='porter unicode61'  -- stemming + unicode support
 );
+
+-- === THREE-TIER VECTOR MEMORY (inspired by Phantom) ===
+
+-- Episodic memory — what happened (task summaries, outcomes, lessons learned)
+CREATE TABLE IF NOT EXISTS episodic_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    summary TEXT NOT NULL,
+    detail TEXT,
+    episode_type TEXT NOT NULL DEFAULT 'interaction',  -- interaction, task, error, observation, voice
+    outcome TEXT DEFAULT 'success',                     -- success, failure, partial, abandoned
+    importance REAL DEFAULT 0.5,                        -- 0.0-1.0
+    decay_rate REAL DEFAULT 0.01,                       -- exponential decay factor
+    access_count INTEGER DEFAULT 0,
+    session_id TEXT,
+    project_id INTEGER REFERENCES projects(id),
+    embedding BLOB,                                     -- float32 array as binary
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    last_accessed TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodic_type ON episodic_memories(episode_type);
+CREATE INDEX IF NOT EXISTS idx_episodic_created ON episodic_memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_episodic_importance ON episodic_memories(importance DESC);
+
+-- Semantic memory — knowledge graph (subject-predicate-object facts)
+CREATE TABLE IF NOT EXISTS semantic_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    description TEXT,                                   -- natural language description
+    category TEXT DEFAULT 'domain_knowledge',           -- user_preference, domain_knowledge, codebase, process, tool, team
+    confidence REAL DEFAULT 0.8,
+    version INTEGER DEFAULT 1,
+    previous_version_id INTEGER REFERENCES semantic_facts(id),
+    valid_from TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    valid_until TEXT,                                    -- set when superseded
+    embedding BLOB,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_subject ON semantic_facts(subject);
+CREATE INDEX IF NOT EXISTS idx_semantic_category ON semantic_facts(category);
+CREATE INDEX IF NOT EXISTS idx_semantic_valid ON semantic_facts(valid_until);
+
+-- Procedural memory — learned multi-step procedures
+CREATE TABLE IF NOT EXISTS procedural_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    trigger_pattern TEXT,                                -- when to suggest this procedure
+    steps TEXT NOT NULL DEFAULT '[]',                    -- JSON array of step objects
+    preconditions TEXT DEFAULT '[]',
+    postconditions TEXT DEFAULT '[]',
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    embedding BLOB,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    last_used TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_procedural_name ON procedural_memories(name);
+
+-- Evolution config versions — tracks every change the evolution pipeline makes
+CREATE TABLE IF NOT EXISTS evolution_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_file TEXT NOT NULL,                           -- e.g. 'persona', 'strategies', 'domain-knowledge'
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    diff_from_previous TEXT,
+    validation_result TEXT,                              -- JSON: which gates passed/failed
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evolution_file ON evolution_versions(config_file, version DESC);
