@@ -48,20 +48,47 @@ following additional terms apply to PAN and all derivative works:
    protocol fee away from the designated PAN Project Treasury wallet
    constitutes a violation of this license.
 
-3. USER DATA SOVEREIGNTY
+3. USER DATA SOVEREIGNTY — ZERO DATA EXPORT
 
-   Nothing in this addendum compels any user to participate in data
-   staking or the Data Dividend system. Users must be able to use PAN
-   with data staking disabled, at which point no data leaves their
-   device and no fees are generated. Data staking is opt-in only.
+   User data NEVER leaves the user's device. No raw data — including
+   but not limited to voice transcripts, sensor readings, photographs,
+   conversation history, location data, health metrics, or behavioral
+   patterns — is transmitted, uploaded, exported, or made accessible
+   to any external party, server, marketplace, or service under any
+   circumstances.
 
-4. ANONYMIZATION REQUIREMENT
+   The Data Dividend system operates exclusively by INBOUND ALGORITHM
+   EXECUTION: third-party algorithms are transmitted TO the user's
+   device, executed locally against the user's data, and only
+   anonymized aggregate results are returned. The raw data never
+   leaves the device at any point in this process.
 
-   Any deployment that implements data staking must perform on-device
-   anonymization of user data before transmission. Personally
-   identifiable information (PII) must be stripped locally on the
-   user's device before any data is shared with the PAN Hub or any
-   third-party data marketplace.
+   Users must be able to use PAN with data staking disabled, at which
+   point no algorithms are accepted and no results are returned.
+   Data staking is opt-in only.
+
+4. ANONYMIZATION PROTOCOL
+
+   All outbound results from algorithm execution must be processed
+   through Named Entity Recognition (NER) anonymization before
+   leaving the device. The PAN NER engine strips the following PII
+   categories using pattern matching and entity detection:
+
+   - Personal names
+   - Email addresses
+   - Phone numbers
+   - Social Security Numbers / national IDs
+   - Credit card / financial account numbers
+   - IP addresses
+   - Physical addresses
+   - Dates of birth
+   - Biometric identifiers
+
+   The anonymization engine runs locally on the user's device. No
+   unanonymized data is ever included in algorithm results. The
+   specific implementation is the PAN NER Anonymizer
+   (service/src/anonymizer.js) using regex-based entity detection
+   with configurable sensitivity levels.
 
 5. COMMERCIAL LICENSING
 
