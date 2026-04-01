@@ -472,7 +472,7 @@
 				onkeydown={handleKey}
 				oninput={autoResize}
 				onpaste={handlePaste}
-				placeholder="Message PAN..."
+				placeholder="Message ΠΑΝ..."
 				rows="1"
 			></textarea>
 			<button class="send-btn" onclick={send} disabled={loading || (!input.trim() && !pastedImages.length)} title="Send">

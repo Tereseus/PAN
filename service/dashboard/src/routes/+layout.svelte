@@ -6,7 +6,7 @@
 	let { children } = $props();
 
 	const tabs = [
-		{ label: 'Conversation', href: `${base}`, icon: '💬' },
+		{ label: 'Conversation', href: `${base}`, icon: '💬', hidden: true },
 		{ label: 'Terminal', href: `${base}/terminal`, icon: '⌨' },
 		{ label: 'Automation', href: `${base}/automation`, icon: '⚡' },
 		{ label: 'Projects', href: `${base}/projects`, icon: '📁' },
@@ -81,11 +81,11 @@
 				class:offline={serverStatus === 'offline'}
 				title={serverStatus === 'online' ? 'Server Online' : 'Server Offline'}
 			></span>
-			<button class="logo-refresh" onclick={() => location.reload()} title="Refresh Page">↻</button>
+			<button class="logo-refresh" onclick={() => location.reload(true)} title="Hard Refresh">↻</button>
 		</div>
 
 		<div class="nav-tabs">
-			{#each tabs as tab}
+			{#each tabs.filter(t => !t.hidden) as tab}
 				<a
 					href={tab.href}
 					class="tab"
@@ -126,7 +126,7 @@
 				{/if}
 			{:else if !collapsed}
 				<div class="server-info">
-					<span class="server-label">PAN Server</span>
+					<span class="server-label">ΠΑΝ Server</span>
 					<span class="server-status-text">{serverStatus === 'online' ? 'Connected' : 'Disconnected'}</span>
 				</div>
 			{/if}
@@ -135,7 +135,7 @@
 	<main class="content">
 		<div class="topbar">
 			<button class="hamburger" onclick={() => mobileMenuOpen = !mobileMenuOpen}>☰</button>
-			<span class="topbar-title">{tabs.find(t => isActive(t))?.label || 'PAN'}</span>
+			<span class="topbar-title">{tabs.find(t => isActive(t))?.label || 'ΠΑΝ'}</span>
 			<div class="topbar-spacer"></div>
 		</div>
 		<div class="content-body">

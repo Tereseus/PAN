@@ -14,6 +14,9 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .topbar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--bg); flex-shrink:0; z-index:20; position:sticky; top:0; }
 .topbar h1 { font-size:16px; color:var(--accent); white-space:nowrap; }
 .topbar select { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; font-size:13px; }
+.refresh-btn { background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; padding:4px 6px; border-radius:var(--radius); transition:all 0.15s; }
+.refresh-btn:hover { color:var(--accent); }
+.refresh-btn:active { transform:rotate(90deg); }
 
 /* Tabs — fixed below topbar, never moves */
 .tabs { display:flex; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--bg); flex-shrink:0; z-index:19; position:sticky; top:0; overscroll-behavior:none; }
@@ -95,6 +98,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 <!-- Top bar with project selector -->
 <div class="topbar">
   <h1>Π</h1>
+  <button class="refresh-btn" onclick="location.reload(true)" title="Refresh">↻</button>
   <select id="project-select" onchange="onProjectChange()">
     <option value="">Select project...</option>
   </select>
@@ -291,31 +295,36 @@ async function loadChat() {
   try {
     let newHtml = '';
 
-    // Try to load transcript for active project (same as desktop)
-    if (activeProject) {
-      const probeRes = await fetch(API + '/dashboard/api/events?limit=1&project_path=' + encodeURIComponent(activeProject.path));
+    // Load transcript — always get most recent sessions globally
+    let sessionIds = [];
+    try {
+      const probeRes = await fetch(API + '/dashboard/api/events?limit=30');
       const probeData = await probeRes.json();
-      const latestEvent = (probeData.events || [])[0];
-      if (latestEvent) {
-        const sid = latestEvent.session_id;
-        if (sid) {
-          const tRes = await fetch(API + '/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=100');
-          const tData = await tRes.json();
-          const messages = tData.messages || [];
-          if (messages.length) {
-            for (const msg of messages) {
-              const role = msg.role || msg.type || '';
-              const text = msg.content || msg.text || '';
-              if (!text || text.length < 2) continue;
-              if (role === 'user' || role === 'human') {
-                newHtml += '<div class="msg-u">' + esc(text.slice(0,500)) + '</div>';
-              } else if (role === 'assistant' || role === 'tool_result') {
-                newHtml += '<div class="msg-p">' + esc(text.slice(0,500)) + '</div>';
-              }
-            }
-          }
+      const seen = new Set();
+      for (const evt of (probeData.events || [])) {
+        const sid = evt.session_id || '';
+        if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+          seen.add(sid); sessionIds.push(sid);
+          if (sessionIds.length >= 3) break;
         }
       }
+    } catch {}
+    // Load transcripts for found sessions
+    for (const sid of sessionIds) {
+      try {
+        const tRes = await fetch(API + '/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=100');
+        const tData = await tRes.json();
+        for (const msg of (tData.messages || [])) {
+          const role = msg.role || msg.type || '';
+          const text = msg.content || msg.text || '';
+          if (!text || text.length < 2) continue;
+          if (role === 'user' || role === 'human') {
+            newHtml += '<div class="msg-u">' + esc(text.slice(0,500)) + '</div>';
+          } else if (role === 'assistant' || role === 'tool_result') {
+            newHtml += '<div class="msg-p">' + esc(text.slice(0,500)) + '</div>';
+          }
+        }
+      } catch {}
     }
 
     // Fallback: show events if no transcript

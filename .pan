@@ -1,6 +1,6 @@
 {
   "project_name": "PAN",
-  "last_session_id": "f4f25617-d83c-45d1-9700-7e3b973a56a9",
+  "last_session_id": "259d9425-2d1a-47ee-a024-0621a130c72f",
   "claude_project_dir": "C:\\Users\\tzuri\\.claude\\projects\\C--Users-tzuri-OneDrive-Desktop-PAN",
   "previous_paths": [
     "C:\\Users\\tzuri\\OneDrive\\Desktop\\PAN\\service"
@@ -9,8 +9,16 @@
     "C--Users-tzuri-OneDrive-Desktop-PAN-service",
     "C--Users-tzuri-OneDrive-Desktop-PAN"
   ],
-  "last_session_time": "2026-04-01T01:05:25.188Z",
+  "last_session_time": "2026-04-01T14:24:02.620Z",
   "session_history": [
+    {
+      "id": "259d9425-2d1a-47ee-a024-0621a130c72f",
+      "time": "2026-04-01T14:24:02.622Z"
+    },
+    {
+      "id": "4bb930df-8947-459c-8c0a-d5cbd9df9360",
+      "time": "2026-04-01T14:02:33.230Z"
+    },
     {
       "id": "f4f25617-d83c-45d1-9700-7e3b973a56a9",
       "time": "2026-04-01T01:05:25.189Z"
@@ -42,14 +50,6 @@
     {
       "id": "a039ec9f-257f-4d55-988b-eb3e7795bf0e",
       "time": "2026-03-31T21:00:27.781Z"
-    },
-    {
-      "id": "99bdd527-7967-4a82-8111-27a436ffc62d",
-      "time": "2026-03-31T20:07:58.449Z"
-    },
-    {
-      "id": "cd7316f3-f6fb-471f-9f20-a2b418c7c992",
-      "time": "2026-03-31T18:42:06.062Z"
     }
   ]
 }

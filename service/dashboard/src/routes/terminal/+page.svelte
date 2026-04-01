@@ -9,6 +9,7 @@
 	let activeTabId = $state(null);
 	let leftTab = $state('transcript'); // any widget: 'transcript' | 'project' | 'services' | 'tasks' | 'bugs' | 'setup'
 	let rightSection = $state('tasks'); // any widget: same options as leftTab
+	let viewMode = $state('terminal'); // 'terminal' | 'chat'
 	let rightPanelCollapsed = $state(false);
 	let leftPanelCollapsed = $state(false);
 	let rightMilestoneFilter = $state(null);
@@ -25,9 +26,19 @@
 	// Services state
 	let servicesData = $state({ services: [], issues: [] });
 
+	// Approvals state
+	let pendingApprovals = $state([]);
+	let approvalHistory = $state([]);
+	let tabFlashing = $state(false);
+	let flashInterval = null;
+
+	// Alerts state — system notifications, errors, warnings
+	let alerts = $state([]);
+
 	// Terminal container refs
 	let termContainerEl;
 	let chatSidebarEl;
+	let chatViewEl;
 
 	// Terminal input bar — persisted across tab switches
 	let terminalInputText = $state(getTerminalInput());
@@ -35,6 +46,7 @@
 	let pastedImages = $state([]); // {dataUrl, path} — images waiting to be sent
 	let uploadingImages = $state(0); // count of images still uploading
 	let directMode = $state(false); // true = typing goes directly to terminal
+	let voiceRecording = $state(false); // voice-to-text active
 	let pendingSend = $state(false); // queued send waiting for image upload or text paste
 	let pasteInProgress = $state(false); // clipboard read in progress
 
@@ -95,10 +107,15 @@
 
 	function newTerminalTab() {
 		const active = getActiveTab();
-		const projectName = active?.project || 'Shell';
+		const baseProject = active?.project || 'Shell';
 		const projectId = active?.projectId || null;
 		const cwd = active?.cwd || 'C:\\Users\\tzuri\\Desktop';
-		const sessionId = 'dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+		// Count existing tabs with the same base project name to generate numbered name
+		const baseName = baseProject.replace(/-\d+$/, ''); // strip existing number suffix
+		const sameProjectTabs = tabs.filter(t => t.project === baseName || t.project.match(new RegExp('^' + baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(-\\d+)?$')));
+		const tabNum = sameProjectTabs.length + 1;
+		const projectName = tabNum > 1 ? `${baseName}-${tabNum}` : baseName;
+		const sessionId = 'dash-' + projectName.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
 		createTab(sessionId, projectName, cwd, projectId, false);
 	}
 
@@ -166,6 +183,7 @@
 			container: tabContainer,
 			host: '',
 			_closing: false,
+			claudeSessionIds: [], // tracks which Claude sessions are running in this tab
 		};
 
 		// Show only this tab's container
@@ -188,6 +206,8 @@
 				}
 				try { tabTerm.refresh(0, tabTerm.rows - 1); } catch {}
 			}
+			// Always scroll to bottom after fit
+			tabTerm.scrollToBottom();
 		}
 
 		// ResizeObserver — only re-fit if terminal container size changed enough to matter
@@ -255,13 +275,8 @@
 								tabTerm.clear();
 								doFit();
 							}
-							const vp = tabTerm.element?.querySelector('.xterm-viewport');
-							const wasAtBottom = !vp || (vp.scrollHeight - vp.scrollTop - vp.clientHeight < 30);
-							const savedScroll = vp?.scrollTop;
 							tabTerm.write(msg.data, () => {
-								if (!wasAtBottom && vp) {
-									requestAnimationFrame(() => { vp.scrollTop = savedScroll; });
-								}
+								tabTerm.scrollToBottom();
 							});
 							break;
 						}
@@ -278,13 +293,31 @@
 							break;
 						case 'error':
 							tabTerm.write('\r\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\r\n');
+							addAlert('error', 'Terminal Error', msg.message, tabData.project);
 							break;
-						case 'chat_update':
+						case 'chat_update': {
+							lastChatSessionKey = ''; // invalidate cache so new messages load
+							// Associate this Claude session with the active tab if not already tracked
+							const updateSid = msg.session_id || '';
+							if (updateSid && !updateSid.startsWith('system-') && !updateSid.startsWith('phone-') && !updateSid.startsWith('router-') && !updateSid.startsWith('dash-') && !updateSid.startsWith('mob-')) {
+								// Check if any tab already owns this session
+								const ownerTab = tabs.find(t => t.claudeSessionIds.includes(updateSid));
+								if (!ownerTab) {
+									// Assign to active tab
+									const activeTab = getActiveTab();
+									if (activeTab) {
+										activeTab.claudeSessionIds = [...new Set([...activeTab.claudeSessionIds, updateSid])];
+										tabs = [...tabs]; // trigger reactivity
+									}
+								}
+							}
 							if (leftTab === 'transcript') {
 								setTimeout(loadChatHistory, 500);
 							}
 							break;
+						}
 						case 'permission_prompt':
+							loadApprovals();
 							break;
 						case 'server_restarting':
 							serverRestarting = true;
@@ -418,6 +451,7 @@
 			try {
 				tab.fitAddon.fit();
 				tab.term.refresh(0, tab.term.rows - 1);
+				tab.term.scrollToBottom();
 				if (tab.ws && tab.ws.readyState === 1) {
 					tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
 				}
@@ -428,11 +462,16 @@
 			try {
 				tab.fitAddon.fit();
 				tab.term.refresh(0, tab.term.rows - 1);
+				tab.term.scrollToBottom();
 			} catch {}
 		}, 500);
 
-		// Reload sidebar
+		// Reload sidebar and transcript for the new tab
 		loadTerminalSidebar(tab.projectId, tab.project);
+		lastChatSessionKey = ''; // force transcript refresh for this tab's sessions
+		if (leftTab === 'transcript') {
+			loadChatHistory();
+		}
 	}
 
 	function closeTab(tabId) {
@@ -497,6 +536,99 @@
 		} catch {}
 	}
 
+	async function loadApprovals() {
+		try {
+			const data = await api('/api/v1/terminal/permissions');
+			const perms = data.permissions || [];
+			const hadNone = pendingApprovals.length === 0;
+			pendingApprovals = perms;
+
+			// Start tab flashing if new approvals appeared
+			if (perms.length > 0 && hadNone) {
+				startTabFlash();
+			} else if (perms.length === 0) {
+				stopTabFlash();
+			}
+		} catch {}
+	}
+
+	async function respondApproval(id, response) {
+		try {
+			await api('/api/v1/terminal/permissions/respond', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ perm_id: id, response }),
+			});
+			// Move to history
+			const approved = pendingApprovals.find(p => p.id === id);
+			if (approved) {
+				approvalHistory = [{ ...approved, response, resolved_at: new Date().toISOString() }, ...approvalHistory].slice(0, 50);
+			}
+			pendingApprovals = pendingApprovals.filter(p => p.id !== id);
+			if (pendingApprovals.length === 0) stopTabFlash();
+		} catch (err) {
+			console.error('[PAN] Approval response failed:', err);
+		}
+	}
+
+	// ==================== Voice ====================
+
+	async function toggleVoice() {
+		voiceRecording = !voiceRecording;
+		// Focus the input so voice-to-text goes there
+		if (terminalInputEl) terminalInputEl.focus();
+		// Trigger voice via the server (sends keypress to AHK/pan-voice)
+		try {
+			await api('/api/v1/voice/toggle', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: voiceRecording ? 'start' : 'stop' }),
+			});
+		} catch {
+			// No voice endpoint yet — button just shows visual state
+			// Voice-to-text can be triggered with the physical mouse button (XButton2)
+		}
+	}
+
+	// ==================== Alerts ====================
+
+	function addAlert(type, title, message, source = '') {
+		const alert = {
+			id: Date.now() + Math.random(),
+			type, // 'error' | 'warning' | 'info' | 'success'
+			title,
+			message,
+			source,
+			timestamp: new Date().toISOString(),
+			read: false,
+		};
+		alerts = [alert, ...alerts].slice(0, 100);
+	}
+
+	function dismissAlert(id) {
+		alerts = alerts.filter(a => a.id !== id);
+	}
+
+	function clearAlerts() {
+		alerts = [];
+	}
+
+	function startTabFlash() {
+		if (flashInterval) return;
+		tabFlashing = true;
+		flashInterval = setInterval(() => {
+			tabFlashing = !tabFlashing || true; // keep state true, CSS animation handles the flash
+		}, 800);
+	}
+
+	function stopTabFlash() {
+		if (flashInterval) {
+			clearInterval(flashInterval);
+			flashInterval = null;
+		}
+		tabFlashing = false;
+	}
+
 	async function loadChatHistory() {
 		const active = getActiveTab();
 		if (!active) {
@@ -519,24 +651,25 @@
 			let sessionIds = [];
 			if (realSessionId) {
 				sessionIds = [realSessionId];
+			} else if (active.claudeSessionIds && active.claudeSessionIds.length > 0) {
+				// Use the tab's tracked Claude sessions
+				sessionIds = [...active.claudeSessionIds];
 			} else {
-				const projectKey = active.cwd || '';
-				if (projectKey) {
-					try {
-						const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(projectKey));
-						if (probe && probe.events) {
-							const seen = new Set();
-							for (const evt of probe.events) {
-								const sid = evt.session_id || '';
-								if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
-									seen.add(sid);
-									sessionIds.push(sid);
-									if (sessionIds.length >= 5) break;
-								}
+				// No tracked sessions yet — fall back to most recent global sessions
+				try {
+					const probe = await api('/dashboard/api/events?limit=50');
+					if (probe && probe.events) {
+						const seen = new Set();
+						for (const evt of probe.events) {
+							const sid = evt.session_id || '';
+							if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+								seen.add(sid);
+								sessionIds.push(sid);
+								if (sessionIds.length >= 3) break;
 							}
 						}
-					} catch {}
-				}
+					}
+				} catch {}
 			}
 
 			if (sessionIds.length === 0) {
@@ -617,6 +750,10 @@
 			} else if (chatSidebarEl && savedScroll !== undefined) {
 				// Restore scroll position after DOM re-render
 				chatSidebarEl.scrollTop = savedScroll;
+			}
+			// Always scroll chat view to bottom
+			if (chatViewEl) {
+				chatViewEl.scrollTop = chatViewEl.scrollHeight;
 			}
 		} catch (err) {
 			console.error('[PAN Chat] loadChatHistory error:', err);
@@ -891,14 +1028,21 @@
 	onMount(() => {
 		loadTerminalProjects();
 
-		// Start chat refresh
+		// Start chat refresh — poll every 3 seconds for real-time transcript updates
 		chatRefreshInterval = setInterval(() => {
-			if (leftTab === 'transcript') loadChatHistory();
-		}, 10000);
+			if (leftTab === 'transcript' || rightSection === 'transcript') {
+				lastChatSessionKey = ''; // always invalidate so new messages show
+				loadChatHistory();
+			}
+		}, 3000);
 
 		// Services polling
 		loadServices();
 		const servicesInterval = setInterval(loadServices, 15000);
+
+		// Approvals polling — check every 3 seconds for pending permissions
+		loadApprovals();
+		const approvalsInterval = setInterval(loadApprovals, 3000);
 
 		// Auto-connect: wait for projects to load, then start terminal
 		setTimeout(async () => {
@@ -942,6 +1086,27 @@
 
 		// Alt+V focuses the input bar, Ctrl+V pastes via Clipboard API
 		const handleKeyDown = async (e) => {
+			// Alt+D: toggle between chat input and direct terminal mode
+			if (e.altKey && (e.key === 'd' || e.key === 'D')) {
+				e.preventDefault();
+				directMode = !directMode;
+				if (directMode) {
+					const tab = getActiveTab();
+					if (tab?.term) tab.term.focus();
+				} else {
+					if (terminalInputEl) terminalInputEl.focus();
+				}
+				return;
+			}
+			// Escape in chat mode: send Ctrl+C to terminal (stop running command)
+			if (e.key === 'Escape' && !directMode) {
+				e.preventDefault();
+				const tab = getActiveTab();
+				if (tab?.ws && tab.ws.readyState === 1) {
+					tab.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+				}
+				return;
+			}
 			if (e.altKey && e.key === 'v') {
 				e.preventDefault();
 				terminalInputEl?.focus();
@@ -1062,6 +1227,8 @@
 			window.removeEventListener('resize', handleResize);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			clearInterval(servicesInterval);
+			clearInterval(approvalsInterval);
+			stopTabFlash();
 			for (const tab of tabs) {
 				tab._closing = true;
 				if (tab.ws) tab.ws.close();
@@ -1095,6 +1262,242 @@
 	</span>
 </div>
 
+{#snippet panelContent(currentTab)}
+	{#if currentTab === 'transcript'}
+		{#if tabs.length === 0}
+			<div class="empty-state">
+				<div style="opacity:0.7;margin-bottom:4px">Starting terminal...</div>
+				<div style="font-size:11px;opacity:0.5">Waiting for Claude session</div>
+			</div>
+		{:else if chatBubbles.length === 0}
+			<div class="empty-state">No conversation yet</div>
+		{:else}
+			<div class="chat-container">
+				{#each chatBubbles as bubble}
+					{#if bubble.type === 'user'}
+						<div class="chat-bubble user">
+							{#if bubble.multiSession}
+								<span class="session-dot" style="background:{bubble.accentColor}"></span>
+							{/if}
+							{@html renderChatText(bubble.text)}
+						</div>
+					{:else if bubble.type === 'assistant'}
+						<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
+							{@html renderChatText(bubble.text)}
+						</div>
+					{:else if bubble.type === 'tool'}
+						<div class="chat-bubble tool">{bubble.text}</div>
+					{/if}
+				{/each}
+			</div>
+		{/if}
+	{:else if currentTab === 'project'}
+		{#if projectData}
+			<div class="project-info">
+				<div class="project-name">{projectData.name}</div>
+				<div class="project-progress-row">
+					<span class="project-pct">{projectData.percentage}%</span>
+					<span class="project-count">{projectData.done_tasks}/{projectData.total_tasks}</span>
+				</div>
+				<div class="progress-bar">
+					<div class="progress-fill {pctColor(projectData.percentage)}" style="width:{projectData.percentage}%"></div>
+				</div>
+				<div class="project-sessions">{projectData.session_count} sessions</div>
+			</div>
+			{#if projectData.milestones}
+				{#each projectData.milestones as m}
+					<div class="milestone" onclick={() => filterByMilestone(m.id)}>
+						<div class="milestone-row">
+							<span class="milestone-name">{m.name}</span>
+							<span class="milestone-pct">{m.percentage}%</span>
+						</div>
+						<div class="progress-bar small">
+							<div class="progress-fill {pctColor(m.percentage)}" style="width:{m.percentage}%"></div>
+						</div>
+					</div>
+				{/each}
+			{/if}
+		{:else}
+			<div class="empty-state">Select a project</div>
+		{/if}
+	{:else if currentTab === 'services'}
+		{@const grouped = Object.groupBy(servicesData.services || [], s => s.category || 'Other')}
+		{#each Object.entries(grouped) as [category, categoryServices]}
+			<div class="task-group-header">{category}</div>
+			{#each categoryServices as svc}
+				<div class="service-row">
+					<span class="service-dot" class:up={svc.status === 'up'} class:degraded={svc.status === 'degraded'} class:down={svc.status === 'down'} class:offline={svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
+					<div class="service-info">
+						<span class="service-name">{svc.name}</span>
+						<span class="service-detail">{svc.detail || ''}</span>
+					</div>
+				</div>
+			{/each}
+		{/each}
+		{#if servicesData.issues?.length}
+			<div class="task-group-header">Recent Issues</div>
+			{#each servicesData.issues as issue}
+				<div class="service-issue">
+					<span class="issue-time">{issue.ts?.split(' ')[1] || ''}</span>
+					<span class="issue-msg">{issue.message}</span>
+				</div>
+			{/each}
+		{/if}
+		{#if !servicesData.services?.length}
+			<div class="empty-state">Loading services...</div>
+		{/if}
+	{:else if currentTab === 'approvals'}
+		{#if pendingApprovals.length > 0}
+			<div class="task-group-header">Pending</div>
+			{#each pendingApprovals as perm}
+				<div class="approval-card pending">
+					<div class="approval-prompt">{perm.prompt}</div>
+					<div class="approval-meta">{perm.project ? perm.project.split('/').pop().split('\\').pop() : ''} &middot; {new Date(perm.timestamp).toLocaleTimeString()}</div>
+					<div class="approval-actions">
+						<button class="approval-btn allow" onclick={() => respondApproval(perm.id, 'allow')}>Allow</button>
+						<button class="approval-btn deny" onclick={() => respondApproval(perm.id, 'deny')}>Deny</button>
+					</div>
+				</div>
+			{/each}
+		{/if}
+		{#if approvalHistory.length > 0}
+			<div class="task-group-header">History</div>
+			{#each approvalHistory as perm}
+				<div class="approval-card resolved {perm.response}">
+					<div class="approval-prompt">{perm.prompt}</div>
+					<div class="approval-meta">
+						<span class="approval-badge {perm.response}">{perm.response === 'allow' ? 'Allowed' : 'Denied'}</span>
+						&middot; {new Date(perm.resolved_at).toLocaleTimeString()}
+					</div>
+				</div>
+			{/each}
+		{/if}
+		{#if pendingApprovals.length === 0 && approvalHistory.length === 0}
+			<div class="empty-state">No approvals</div>
+		{/if}
+	{:else if currentTab === 'alerts'}
+		{#if alerts.length > 0}
+			<div class="task-group-header" style="display:flex;justify-content:space-between;align-items:center">
+				<span>Alerts</span>
+				<button class="clear-alerts-btn" onclick={clearAlerts}>Clear All</button>
+			</div>
+			{#each alerts as alert}
+				<div class="alert-card {alert.type}" class:unread={!alert.read}>
+					<div class="alert-header">
+						<span class="alert-type-icon">
+							{alert.type === 'error' ? '!' : alert.type === 'warning' ? '!' : alert.type === 'success' ? '\u2713' : 'i'}
+						</span>
+						<span class="alert-title">{alert.title}</span>
+						<button class="alert-dismiss" onclick={() => dismissAlert(alert.id)}>&times;</button>
+					</div>
+					{#if alert.message}
+						<div class="alert-message">{alert.message}</div>
+					{/if}
+					<div class="alert-meta">
+						{#if alert.source}<span>{alert.source}</span> &middot; {/if}
+						{new Date(alert.timestamp).toLocaleTimeString()}
+					</div>
+				</div>
+			{/each}
+		{:else}
+			<div class="empty-state">No alerts</div>
+		{/if}
+	{:else if currentTab === 'tasks'}
+		{@const taskData = getFilteredTasks()}
+		{#if rightMilestoneFilter}
+			{@const m = taskData.milestones.find(x => x.id === rightMilestoneFilter)}
+			<div class="filter-header">
+				<strong>{m ? m.name : 'Tasks'}</strong>
+				<button class="filter-clear" onclick={() => { rightMilestoneFilter = null; }}>&times; Clear</button>
+			</div>
+		{/if}
+		{#each taskData.milestones as m}
+			{#if taskData.byMilestone[m.id]?.length > 0}
+				{#if !rightMilestoneFilter}
+					<div class="task-group-header">{m.name}</div>
+				{/if}
+				{#each taskData.byMilestone[m.id] as t}
+					<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+						<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
+							{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
+						</span>
+						<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+					</div>
+				{/each}
+			{/if}
+		{/each}
+		{#if taskData.noMilestone.length > 0 && !rightMilestoneFilter}
+			<div class="task-group-header">Other</div>
+			{#each taskData.noMilestone as t}
+				<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+					<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
+						{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
+					</span>
+					<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+				</div>
+			{/each}
+		{/if}
+		<div class="add-row">
+			<input type="text" class="add-input" placeholder="Add a task..." onkeydown={(e) => { if (e.key === 'Enter') addTask(e.target); }} />
+		</div>
+		<div class="panel-hint">Use Terminal to Add: Tasks, Milestones, Projects</div>
+	{:else if currentTab === 'bugs'}
+		{@const bugs = getBugs()}
+		{#if bugs.length === 0}
+			<div class="empty-state">No bugs tracked</div>
+			<div class="empty-state small">Add tasks with "bug" or "fix" in the title, or set priority &gt; 0</div>
+		{:else}
+			{#each bugs as t}
+				<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+					<span class="task-icon bug" class:done={t.status === 'done'}>{t.status === 'done' ? '\u2713' : '\u26A0'}</span>
+					<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+				</div>
+			{/each}
+		{/if}
+		<div class="add-row">
+			<input type="text" class="add-input" placeholder="Report a bug..." onkeydown={(e) => { if (e.key === 'Enter') addBug(e.target); }} />
+		</div>
+		<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
+	{:else if currentTab === 'setup'}
+		<div class="setup-guide">
+			<div class="setup-title">How to Use ΠΑΝ</div>
+			<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
+			<div class="setup-items">
+				<div><strong>Create a Project:</strong> "Create a new project called my-app"</div>
+				<div><strong>Add a Task:</strong> "Add a task to set up the database"</div>
+				<div><strong>Change Settings:</strong> "Change the AI model to gpt-4o"</div>
+				<div><strong>Ask Anything:</strong> Just say it or type it</div>
+			</div>
+			<div class="setup-controls">
+				<div class="setup-controls-title">Controls</div>
+				<div><strong>Voice:</strong> Press your voice key to speak (set in Settings &gt; Controls)</div>
+				<div><strong>Screenshot:</strong> Print Screen, then Ctrl+V to paste into chat</div>
+			</div>
+			<div class="setup-hint">Voice is significantly faster than typing. You don't need complete sentences.</div>
+		</div>
+	{:else if currentTab.startsWith('custom-')}
+		{@const sectionId = parseInt(currentTab.replace('custom-', ''))}
+		{@const section = getSectionById(sectionId)}
+		{#if section}
+			{#each section.items || [] as item}
+				<div class="task-row" onclick={() => cycleSectionItem(item.id, item.status, sectionId)}>
+					<span class="task-icon" class:done={item.status === 'done'}>{item.status === 'done' ? '\u2713' : '\u25CB'}</span>
+					<span class="task-title" class:done={item.status === 'done'}>{item.content}</span>
+				</div>
+			{/each}
+			{#if !section.items?.length}
+				<div class="empty-state">No items yet</div>
+			{/if}
+			<div class="add-row">
+				<input type="text" class="add-input" placeholder="Add item..." onkeydown={(e) => { if (e.key === 'Enter') addSectionItem(sectionId, e.target); }} />
+			</div>
+			<button class="delete-section" onclick={() => deleteSection(sectionId)}>Delete This Section</button>
+		{:else}
+			<div class="empty-state">Section not found</div>
+		{/if}
+	{/if}
+{/snippet}
+
 <!-- TAB BAR -->
 {#if tabs.length > 0}
 	<div class="tab-bar">
@@ -1102,6 +1505,7 @@
 			<button
 				class="term-tab"
 				class:active={activeTabId === tab.id}
+				class:approval-flash={tabFlashing && pendingApprovals.length > 0}
 				onclick={() => switchToTab(tab.id)}
 			>
 				{#if tab.id === tabs.find(t => t.project === tab.project)?.id && tab.project !== 'Shell'}
@@ -1128,6 +1532,8 @@
 				<option value="transcript">Transcript</option>
 				<option value="project">Project</option>
 				<option value="services">Services</option>
+				<option value="approvals">Approvals{pendingApprovals.length > 0 ? ` (${pendingApprovals.length})` : ''}</option>
+				<option value="alerts">Alerts{alerts.length > 0 ? ` (${alerts.length})` : ''}</option>
 				<option value="tasks">Tasks</option>
 				<option value="bugs">Bugs</option>
 				<option value="setup">Setup Guide</option>
@@ -1137,119 +1543,7 @@
 			</select>
 		</div>
 		<div class="left-content" bind:this={chatSidebarEl}>
-			{#if leftTab === 'transcript'}
-				{#if chatBubbles.length === 0}
-					<div class="empty-state">No conversation yet</div>
-				{:else}
-					<div class="chat-container">
-						{#each chatBubbles as bubble}
-							{#if bubble.type === 'user'}
-								<div class="chat-bubble user">
-									{#if bubble.multiSession}
-										<span class="session-dot" style="background:{bubble.accentColor}"></span>
-									{/if}
-									{@html renderChatText(bubble.text)}
-								</div>
-							{:else if bubble.type === 'assistant'}
-								<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
-									{@html renderChatText(bubble.text)}
-								</div>
-							{:else if bubble.type === 'tool'}
-								<div class="chat-bubble tool">{bubble.text}</div>
-							{/if}
-						{/each}
-					</div>
-				{/if}
-			{:else if leftTab === 'project'}
-				{#if projectData}
-					<div class="project-info">
-						<div class="project-name">{projectData.name}</div>
-						<div class="project-progress-row">
-							<span class="project-pct">{projectData.percentage}%</span>
-							<span class="project-count">{projectData.done_tasks}/{projectData.total_tasks}</span>
-						</div>
-						<div class="progress-bar">
-							<div class="progress-fill {pctColor(projectData.percentage)}" style="width:{projectData.percentage}%"></div>
-						</div>
-						<div class="project-sessions">{projectData.session_count} sessions</div>
-					</div>
-					{#if projectData.milestones}
-						{#each projectData.milestones as m}
-							<div class="milestone" onclick={() => filterByMilestone(m.id)}>
-								<div class="milestone-row">
-									<span class="milestone-name">{m.name}</span>
-									<span class="milestone-pct">{m.percentage}%</span>
-								</div>
-								<div class="progress-bar small">
-									<div class="progress-fill {pctColor(m.percentage)}" style="width:{m.percentage}%"></div>
-								</div>
-							</div>
-						{/each}
-					{/if}
-				{:else}
-					<div class="empty-state">Select a project</div>
-				{/if}
-			{:else if leftTab === 'services'}
-				{@const grouped = Object.groupBy(servicesData.services || [], s => s.category || 'Other')}
-				{#each Object.entries(grouped) as [category, categoryServices]}
-					<div class="task-group-header">{category}</div>
-					{#each categoryServices as svc}
-						<div class="service-row">
-							<span class="service-dot" class:up={svc.status === 'up'} class:degraded={svc.status === 'degraded'} class:down={svc.status === 'down'} class:offline={svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="service-info">
-								<span class="service-name">{svc.name}</span>
-								<span class="service-detail">{svc.detail || ''}</span>
-							</div>
-						</div>
-					{/each}
-				{/each}
-				{#if !servicesData.services?.length}
-					<div class="empty-state">Loading services...</div>
-				{/if}
-			{:else if leftTab === 'tasks'}
-				{@const taskData = getFilteredTasks()}
-				{#each taskData.milestones as m}
-					{#if taskData.byMilestone[m.id]?.length > 0}
-						<div class="task-group-header">{m.name}</div>
-						{#each taskData.byMilestone[m.id] as t}
-							<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-								<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
-									{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
-								</span>
-								<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-							</div>
-						{/each}
-					{/if}
-				{/each}
-			{:else if leftTab === 'bugs'}
-				{@const bugs = getBugs()}
-				{#if bugs.length === 0}
-					<div class="empty-state">No bugs tracked</div>
-				{:else}
-					{#each bugs as t}
-						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-							<span class="task-icon bug" class:done={t.status === 'done'}>{t.status === 'done' ? '\u2713' : '\u26A0'}</span>
-							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-						</div>
-					{/each}
-				{/if}
-			{:else if leftTab === 'setup'}
-				<div class="setup-guide">
-					<div class="setup-title">How to Use PAN</div>
-					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
-				</div>
-			{:else if leftTab.startsWith('custom-')}
-				{@const sectionId = parseInt(leftTab.replace('custom-', ''))}
-				{@const section = getSectionById(sectionId)}
-				{#if section}
-					{#each section.items || [] as item}
-						<div class="task-row" onclick={() => cycleSectionItem(item.id, item.status, sectionId)}>
-							<span class="task-icon" class:done={item.status === 'done'}>{item.status === 'done' ? '\u2713' : '\u25CB'}</span>
-							<span class="task-title" class:done={item.status === 'done'}>{item.content}</span>
-						</div>
-					{/each}
-				{/if}
-			{/if}
+			{@render panelContent(leftTab)}
 		</div>
 		{/if}
 	</div>
@@ -1261,6 +1555,12 @@
 
 	<!-- CENTER: Terminal + Input Bar -->
 	<div class="term-wrapper">
+		<!-- View Mode Toggle -->
+		<div class="view-mode-bar">
+			<button class="view-mode-btn" class:active={viewMode === 'terminal'} onclick={() => { viewMode = 'terminal'; setTimeout(() => { const tab = getActiveTab(); if (tab?.fitAddon) { try { tab.fitAddon.fit(); tab.term.scrollToBottom(); } catch {} } }, 100); }}>Terminal</button>
+			<button class="view-mode-btn" class:active={viewMode === 'chat'} onclick={() => { viewMode = 'chat'; lastChatSessionKey = ''; loadChatHistory(); setTimeout(() => { if (chatViewEl) chatViewEl.scrollTop = chatViewEl.scrollHeight; }, 100); }}>Chat</button>
+		</div>
+
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="term-container" bind:this={termContainerEl} onclick={(e) => {
 			// Don't steal focus if user is selecting text
@@ -1277,11 +1577,44 @@
 			{#if tabs.length === 0}
 				<div class="term-empty">
 					<div class="term-empty-icon">&loz;</div>
-					<div class="term-empty-title">PAN Terminal</div>
+					<div class="term-empty-title">ΠΑΝ Terminal</div>
 					<div class="term-empty-sub">Select a project to start</div>
 				</div>
 			{/if}
 		</div>
+
+		<!-- Chat View (overlay when in chat mode) -->
+		{#if viewMode === 'chat'}
+			<div class="chat-view" bind:this={chatViewEl}>
+				{#if chatBubbles.length === 0}
+					<div class="chat-view-empty">
+						<div class="chat-view-icon">&#x25C8;</div>
+						<div class="chat-view-title">ΠΑΝ Chat</div>
+						<div class="chat-view-sub">Send a message to start</div>
+					</div>
+				{:else}
+					<div class="chat-view-messages">
+						{#each chatBubbles as bubble}
+							{#if bubble.type === 'user'}
+								<div class="chat-msg user">
+									<div class="chat-msg-label">You</div>
+									<div class="chat-msg-body">{@html renderChatText(bubble.text)}</div>
+								</div>
+							{:else if bubble.type === 'assistant'}
+								<div class="chat-msg assistant">
+									<div class="chat-msg-label">ΠΑΝ</div>
+									<div class="chat-msg-body">{@html renderChatText(bubble.text)}</div>
+								</div>
+							{:else if bubble.type === 'tool'}
+								<div class="chat-msg tool">
+									<div class="chat-msg-body">{bubble.text}</div>
+								</div>
+							{/if}
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Input bar: overlays bottom of terminal -->
 		<div class="term-input-bar" class:direct-mode={directMode}>
@@ -1299,26 +1632,36 @@
 				</div>
 			{/if}
 			<div class="term-input-row">
+				<button class="voice-toggle-btn" class:recording={voiceRecording} onclick={toggleVoice} title="Voice Input (hold to speak)">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+						<path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+						<line x1="12" y1="19" x2="12" y2="23"></line>
+						<line x1="8" y1="23" x2="16" y2="23"></line>
+					</svg>
+				</button>
 				<textarea
 					bind:this={terminalInputEl}
 					bind:value={terminalInputText}
 					onkeydown={handleTerminalKeydown}
 					oninput={handleTerminalInputEvent}
 					class="term-input-textarea"
-					placeholder="Type or speak here..."
+					placeholder="Speak or type here..."
 					rows="1"
 				></textarea>
-				<button class="term-mode-toggle" onclick={() => {
-					directMode = !directMode;
-					if (directMode) {
-						const tab = getActiveTab();
-						if (tab?.term) tab.term.focus();
-					} else {
-						if (terminalInputEl) terminalInputEl.focus();
-					}
-				}} title={directMode ? 'Switch to Chat' : 'Switch to Terminal'}>
-					{directMode ? '⌨' : '💬'}
-				</button>
+				{#if viewMode === 'terminal'}
+					<button class="term-mode-toggle" onclick={() => {
+						directMode = !directMode;
+						if (directMode) {
+							const tab = getActiveTab();
+							if (tab?.term) tab.term.focus();
+						} else {
+							if (terminalInputEl) terminalInputEl.focus();
+						}
+					}} title={directMode ? 'Switch to Chat (Alt+D)' : 'Switch to Terminal (Alt+D)'}>
+						{directMode ? '⌨' : '💬'}
+					</button>
+				{/if}
 				<button class="term-input-send" onclick={sendTerminalInput} title="Send (Enter)" disabled={uploadingImages > 0}>&#x27A4;</button>
 			</div>
 		</div>
@@ -1330,8 +1673,12 @@
 	</button>
 	<div class="right-panel" class:collapsed={rightPanelCollapsed}>
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'transcript') loadChatHistory(); }}>
+				<option value="transcript">Transcript</option>
+				<option value="project">Project</option>
 				<option value="services">Services</option>
+				<option value="approvals">Approvals{pendingApprovals.length > 0 ? ` (${pendingApprovals.length})` : ''}</option>
+				<option value="alerts">Alerts{alerts.length > 0 ? ` (${alerts.length})` : ''}</option>
 				<option value="tasks">Tasks</option>
 				<option value="bugs">Bugs</option>
 				<option value="setup">Setup Guide</option>
@@ -1341,145 +1688,7 @@
 			</select>
 		</div>
 		<div class="right-content">
-			{#if rightSection === 'services'}
-				{@const grouped = Object.groupBy(servicesData.services || [], s => s.category || 'Other')}
-				{#each Object.entries(grouped) as [category, categoryServices]}
-					<div class="task-group-header">{category}</div>
-					{#each categoryServices as svc}
-						<div class="service-row">
-							<span class="service-dot" class:up={svc.status === 'up'} class:degraded={svc.status === 'degraded'} class:down={svc.status === 'down'} class:offline={svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="service-info">
-								<span class="service-name">{svc.name}</span>
-								<span class="service-detail">{svc.detail || ''}</span>
-							</div>
-						</div>
-					{/each}
-				{/each}
-				{#if servicesData.issues?.length}
-					<div class="task-group-header">Recent Issues</div>
-					{#each servicesData.issues as issue}
-						<div class="service-issue">
-							<span class="issue-time">{issue.ts?.split(' ')[1] || ''}</span>
-							<span class="issue-msg">{issue.message}</span>
-						</div>
-					{/each}
-				{/if}
-				{#if !servicesData.services?.length}
-					<div class="empty-state">Loading services...</div>
-				{/if}
-			{:else if rightSection === 'setup'}
-				<div class="setup-guide">
-					<div class="setup-title">How to Use PAN</div>
-					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
-					<div class="setup-items">
-						<div><strong>Create a Project:</strong> "Create a new project called my-app"</div>
-						<div><strong>Add a Task:</strong> "Add a task to set up the database"</div>
-						<div><strong>Change Settings:</strong> "Change the AI model to gpt-4o"</div>
-						<div><strong>Ask Anything:</strong> Just say it or type it</div>
-					</div>
-					<div class="setup-controls">
-						<div class="setup-controls-title">Controls</div>
-						<div><strong>Voice:</strong> Press your voice key to speak (set in Settings &gt; Controls)</div>
-						<div><strong>Screenshot:</strong> Print Screen, then Ctrl+V to paste into chat</div>
-					</div>
-					<div class="setup-hint">Voice is significantly faster than typing. You don't need complete sentences.</div>
-				</div>
-			{:else if rightSection === 'tasks'}
-				{@const taskData = getFilteredTasks()}
-				{#if rightMilestoneFilter}
-					{@const m = taskData.milestones.find(x => x.id === rightMilestoneFilter)}
-					<div class="filter-header">
-						<strong>{m ? m.name : 'Tasks'}</strong>
-						<button class="filter-clear" onclick={() => { rightMilestoneFilter = null; }}>&times; Clear</button>
-					</div>
-				{/if}
-				{#each taskData.milestones as m}
-					{#if taskData.byMilestone[m.id]?.length > 0}
-						{#if !rightMilestoneFilter}
-							<div class="task-group-header">{m.name}</div>
-						{/if}
-						{#each taskData.byMilestone[m.id] as t}
-							<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-								<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
-									{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
-								</span>
-								<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-							</div>
-						{/each}
-					{/if}
-				{/each}
-				{#if taskData.noMilestone.length > 0 && !rightMilestoneFilter}
-					<div class="task-group-header">Other</div>
-					{#each taskData.noMilestone as t}
-						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-							<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
-								{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
-							</span>
-							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-						</div>
-					{/each}
-				{/if}
-				<div class="add-row">
-					<input
-						type="text"
-						class="add-input"
-						placeholder="Add a task..."
-						onkeydown={(e) => { if (e.key === 'Enter') addTask(e.target); }}
-					/>
-				</div>
-				<div class="panel-hint">Use Terminal to Add: Tasks, Milestones, Projects</div>
-			{:else if rightSection === 'bugs'}
-				{@const bugs = getBugs()}
-				{#if bugs.length === 0}
-					<div class="empty-state">No bugs tracked</div>
-					<div class="empty-state small">Add tasks with "bug" or "fix" in the title, or set priority &gt; 0</div>
-				{:else}
-					{#each bugs as t}
-						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-							<span class="task-icon bug" class:done={t.status === 'done'}>
-								{t.status === 'done' ? '\u2713' : '\u26A0'}
-							</span>
-							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-						</div>
-					{/each}
-				{/if}
-				<div class="add-row">
-					<input
-						type="text"
-						class="add-input"
-						placeholder="Report a bug..."
-						onkeydown={(e) => { if (e.key === 'Enter') addBug(e.target); }}
-					/>
-				</div>
-				<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
-			{:else if rightSection.startsWith('custom-')}
-				{@const sectionId = parseInt(rightSection.replace('custom-', ''))}
-				{@const section = getSectionById(sectionId)}
-				{#if section}
-					{#each section.items || [] as item}
-						<div class="task-row" onclick={() => cycleSectionItem(item.id, item.status, sectionId)}>
-							<span class="task-icon" class:done={item.status === 'done'}>
-								{item.status === 'done' ? '\u2713' : '\u25CB'}
-							</span>
-							<span class="task-title" class:done={item.status === 'done'}>{item.content}</span>
-						</div>
-					{/each}
-					{#if !section.items?.length}
-						<div class="empty-state">No items yet</div>
-					{/if}
-					<div class="add-row">
-						<input
-							type="text"
-							class="add-input"
-							placeholder="Add item..."
-							onkeydown={(e) => { if (e.key === 'Enter') addSectionItem(sectionId, e.target); }}
-						/>
-					</div>
-					<button class="delete-section" onclick={() => deleteSection(sectionId)}>Delete This Section</button>
-				{:else}
-					<div class="empty-state">Section not found</div>
-				{/if}
-			{/if}
+			{@render panelContent(rightSection)}
 		</div>
 	</div>
 </div>
@@ -1555,6 +1764,13 @@
 		color: #cdd6f4;
 		border-bottom-color: #89b4fa;
 		background: #12121a;
+	}
+	.term-tab.approval-flash {
+		animation: tab-approval-flash 0.8s ease-in-out infinite;
+	}
+	@keyframes tab-approval-flash {
+		0%, 100% { background: transparent; border-bottom-color: transparent; }
+		50% { background: rgba(243, 139, 168, 0.25); border-bottom-color: #f38ba8; color: #f38ba8; }
 	}
 
 	.primary-dot {
@@ -1778,6 +1994,148 @@
 		position: relative;
 	}
 
+	/* ==================== View Mode Toggle ==================== */
+	.view-mode-bar {
+		display: flex;
+		gap: 0;
+		background: #11111b;
+		border-bottom: 1px solid #181825;
+		padding: 0;
+		flex-shrink: 0;
+	}
+	.view-mode-btn {
+		flex: 1;
+		padding: 6px 0;
+		background: transparent;
+		border: none;
+		color: #6c7086;
+		font-size: 12px;
+		font-weight: 600;
+		cursor: pointer;
+		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		transition: all 0.15s;
+		border-bottom: 2px solid transparent;
+	}
+	.view-mode-btn:hover { color: #a6adc8; }
+	.view-mode-btn.active {
+		color: #cdd6f4;
+		border-bottom-color: #89b4fa;
+		background: #1e1e2e;
+	}
+
+	/* ==================== Chat View ==================== */
+	.chat-view {
+		position: absolute;
+		top: 30px; /* below view-mode-bar */
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: #1e1e2e;
+		overflow-y: auto;
+		padding: 16px;
+		padding-bottom: 60px;
+		z-index: 10;
+	}
+	.chat-view-empty {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		height: 100%;
+		color: #6c7086;
+		gap: 8px;
+	}
+	.chat-view-icon { font-size: 32px; opacity: 0.5; }
+	.chat-view-title { font-size: 16px; font-weight: 600; }
+	.chat-view-sub { font-size: 12px; opacity: 0.7; }
+	.chat-view-messages {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.chat-msg {
+		max-width: 85%;
+		border-radius: 12px;
+		padding: 10px 14px;
+		font-size: 13px;
+		line-height: 1.5;
+		word-wrap: break-word;
+	}
+	.chat-msg.user {
+		align-self: flex-end;
+		background: #313244;
+		color: #cdd6f4;
+		border-bottom-right-radius: 4px;
+	}
+	.chat-msg.assistant {
+		align-self: flex-start;
+		background: #181825;
+		color: #bac2de;
+		border-bottom-left-radius: 4px;
+		border-left: 2px solid #89b4fa;
+	}
+	.chat-msg.tool {
+		align-self: flex-start;
+		background: #11111b;
+		color: #585b70;
+		font-size: 11px;
+		font-family: 'JetBrains Mono', monospace;
+		padding: 6px 10px;
+		border-radius: 6px;
+		max-width: 95%;
+	}
+	.chat-msg-label {
+		font-size: 10px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		margin-bottom: 2px;
+		opacity: 0.6;
+	}
+	.chat-msg-body { white-space: pre-wrap; }
+	.chat-msg-body :global(code) {
+		background: #11111b;
+		padding: 1px 4px;
+		border-radius: 3px;
+		font-size: 12px;
+	}
+	.chat-msg-body :global(pre) {
+		background: #11111b;
+		padding: 8px;
+		border-radius: 6px;
+		overflow-x: auto;
+		margin: 4px 0;
+	}
+
+	/* ==================== Voice Toggle ==================== */
+	.voice-toggle-btn {
+		background: none;
+		border: 1px solid #313244;
+		color: #6c7086;
+		cursor: pointer;
+		padding: 0;
+		width: 32px;
+		height: 32px;
+		border-radius: 6px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		transition: all 0.15s;
+	}
+	.voice-toggle-btn:hover { color: #cdd6f4; border-color: #45475a; }
+	.voice-toggle-btn.recording {
+		color: #f38ba8;
+		border-color: #f38ba8;
+		background: rgba(243, 139, 168, 0.1);
+		animation: voice-pulse 1.5s ease-in-out infinite;
+	}
+	@keyframes voice-pulse {
+		0%, 100% { box-shadow: 0 0 0 0 rgba(243, 139, 168, 0.3); }
+		50% { box-shadow: 0 0 0 4px rgba(243, 139, 168, 0); }
+	}
+
 	/* ==================== Terminal Container ==================== */
 	.term-container {
 		flex: 1;
@@ -1898,7 +2256,7 @@
 		backdrop-filter: blur(8px);
 		border-top: 1px solid #313244;
 		padding: 6px 10px;
-		z-index: 5;
+		z-index: 15;
 	}
 
 	.term-input-row {
@@ -2023,8 +2381,8 @@
 		color: #89b4fa;
 		border: 1px solid #313244;
 		border-radius: 6px;
-		width: 28px;
-		height: 28px;
+		width: 32px;
+		height: 32px;
 		font-size: 14px;
 		cursor: pointer;
 		flex-shrink: 0;
@@ -2178,6 +2536,95 @@
 	}
 	.issue-time { color: #6c7086; flex-shrink: 0; }
 	.issue-msg { color: #f9e2af; }
+
+	/* Approvals */
+	.approval-card {
+		padding: 8px;
+		margin: 4px 0;
+		border-radius: 6px;
+		background: #1e1e2e;
+		border-left: 3px solid #6c7086;
+	}
+	.approval-card.pending { border-left-color: #f9e2af; background: #1e1e2e; }
+	.approval-card.resolved { opacity: 0.6; }
+	.approval-card.resolved.allow { border-left-color: #a6e3a1; }
+	.approval-card.resolved.deny { border-left-color: #f38ba8; }
+	.approval-prompt { font-size: 12px; color: #cdd6f4; word-break: break-word; margin-bottom: 4px; }
+	.approval-meta { font-size: 10px; color: #6c7086; margin-bottom: 6px; }
+	.approval-actions { display: flex; gap: 6px; }
+	.approval-btn {
+		padding: 3px 12px;
+		border: none;
+		border-radius: 4px;
+		font-size: 11px;
+		cursor: pointer;
+		font-weight: 500;
+	}
+	.approval-btn.allow { background: #a6e3a1; color: #1e1e2e; }
+	.approval-btn.allow:hover { background: #94e2d5; }
+	.approval-btn.deny { background: #f38ba8; color: #1e1e2e; }
+	.approval-btn.deny:hover { background: #eba0ac; }
+	.approval-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+	.approval-badge.allow { background: #a6e3a133; color: #a6e3a1; }
+	.approval-badge.deny { background: #f38ba833; color: #f38ba8; }
+
+	/* Alerts */
+	.alert-card {
+		padding: 8px 10px;
+		margin: 4px 0;
+		border-left: 3px solid #6c7086;
+		background: #181825;
+		border-radius: 4px;
+		font-size: 12px;
+	}
+	.alert-card.error { border-left-color: #f38ba8; }
+	.alert-card.warning { border-left-color: #f9e2af; }
+	.alert-card.info { border-left-color: #89b4fa; }
+	.alert-card.success { border-left-color: #a6e3a1; }
+	.alert-card.unread { background: #1e1e2e; }
+	.alert-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 2px;
+	}
+	.alert-type-icon {
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 10px;
+		font-weight: bold;
+		flex-shrink: 0;
+	}
+	.alert-card.error .alert-type-icon { background: #f38ba833; color: #f38ba8; }
+	.alert-card.warning .alert-type-icon { background: #f9e2af33; color: #f9e2af; }
+	.alert-card.info .alert-type-icon { background: #89b4fa33; color: #89b4fa; }
+	.alert-card.success .alert-type-icon { background: #a6e3a133; color: #a6e3a1; }
+	.alert-title { font-weight: 600; color: #cdd6f4; flex: 1; }
+	.alert-dismiss {
+		background: none;
+		border: none;
+		color: #6c7086;
+		cursor: pointer;
+		font-size: 14px;
+		padding: 0 2px;
+	}
+	.alert-dismiss:hover { color: #f38ba8; }
+	.alert-message { color: #a6adc8; margin: 2px 0 4px 22px; line-height: 1.4; }
+	.alert-meta { color: #585b70; font-size: 10px; margin-left: 22px; }
+	.clear-alerts-btn {
+		background: none;
+		border: 1px solid #45475a;
+		color: #6c7086;
+		font-size: 10px;
+		padding: 2px 8px;
+		border-radius: 3px;
+		cursor: pointer;
+	}
+	.clear-alerts-btn:hover { color: #cdd6f4; border-color: #6c7086; }
 
 	.task-row {
 		display: flex;
