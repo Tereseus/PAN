@@ -14,21 +14,37 @@
 	let chatLastHash = $state('');
 	let pastedImages = $state(getChatImages());
 
+	// Smart Scroll state
+	let ssBookmark = $state(null);
+	let ssNewCount = $state(0);
+	let ssPrevCount = $state(0);
+
+	// Performance guards
+	let loadingHistory = false; // concurrency guard (NOT reactive — no re-renders)
+	let lastSessionKey = ''; // skip re-fetch if sessions unchanged
+
 	// Session color accents for multi-session view
 	const sessionColors = ['#89b4fa', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7'];
 
-	// Restore messages from store when project changes
+	// Restore messages from store when project changes (track last project to avoid loop)
+	let lastRestoredProjectId = null;
 	$effect(() => {
-		if (activeProject?.id) {
-			const stored = getChatMessages(activeProject.id);
+		const pid = activeProject?.id;
+		if (pid && pid !== lastRestoredProjectId) {
+			lastRestoredProjectId = pid;
+			const stored = getChatMessages(pid);
 			if (stored.length) messages = stored;
 		}
 	});
 
-	// Persist messages to store whenever they change
+	// Persist messages to store whenever they change (debounced, no cascade)
+	let persistTimer = null;
 	$effect(() => {
-		if (activeProject?.id && messages.length) {
-			setChatMessages(activeProject.id, messages);
+		const pid = activeProject?.id;
+		const msgs = messages; // subscribe to reactive value
+		if (pid && msgs.length) {
+			clearTimeout(persistTimer);
+			persistTimer = setTimeout(() => setChatMessages(pid, msgs), 200);
 		}
 	});
 
@@ -62,12 +78,20 @@
 			messages = [];
 			return;
 		}
+		// Concurrency guard — skip if previous fetch is still running
+		if (loadingHistory) {
+			console.debug('[PAN Chat] skipping loadChatHistory — previous still running');
+			return;
+		}
+		loadingHistory = true;
+		const t0 = performance.now();
 
 		try {
 			const projectPath = activeProject.path || activeProject.cwd || '';
 			if (!projectPath) { messages = []; return; }
 
 			const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(projectPath));
+			const t1 = performance.now();
 			let sessionIds = [];
 			if (probe && probe.events) {
 				const seen = new Set();
@@ -86,8 +110,16 @@
 				}
 			}
 
+			// Skip transcript re-fetch if same sessions as last time
+			const sessionKey = sessionIds.join(',');
 			if (sessionIds.length === 0 && !getChatMessages(activeProject.id)?.length) {
 				messages = [];
+				return;
+			}
+
+			// If sessions haven't changed and we already have data, skip the expensive transcript reads
+			if (sessionKey === lastSessionKey && chatLastHash && messages.some(m => m.fromHistory)) {
+				console.debug(`[PAN Chat] sessions unchanged, skipping transcript fetch (${(t1 - t0).toFixed(0)}ms for events probe)`);
 				return;
 			}
 
@@ -102,8 +134,11 @@
 							allMessages.push(msg);
 						}
 					}
-				} catch {}
+				} catch (err) {
+					console.warn(`[PAN Chat] transcript fetch failed for ${sid}:`, err.message);
+				}
 			}));
+			const t2 = performance.now();
 
 			allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
 			const multiSession = sessionIds.length > 1;
@@ -124,20 +159,46 @@
 			const newHash = processed.length + ':' + processed.map(m => (m.text || '').length).join(',');
 			if (newHash !== chatLastHash || existingLocal.length) {
 				chatLastHash = newHash;
-				messages = [...processed, ...existingLocal];
-			}
+				lastSessionKey = sessionKey;
 
-			if (chatEl) {
-				const wasNearBottom = (chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight) < 80;
-				requestAnimationFrame(() => {
-					if (!initialScrollDone || wasNearBottom) {
+				// Save scroll state BEFORE re-render
+				const wasNearBottom = chatEl ? (chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight) < 80 : true;
+				const savedScrollTop = chatEl?.scrollTop ?? 0;
+				const savedScrollHeight = chatEl?.scrollHeight ?? 0;
+
+				// Smart Scroll: track new messages when scrolled up
+				const oldCount = ssPrevCount;
+				const newCount = processed.length + existingLocal.length;
+				if (oldCount > 0 && newCount > oldCount && !wasNearBottom) {
+					ssNewCount += (newCount - oldCount);
+				}
+				ssPrevCount = newCount;
+
+				messages = [...processed, ...existingLocal];
+
+				// Restore scroll AFTER Svelte re-renders the DOM (double-rAF ensures post-render)
+				requestAnimationFrame(() => { requestAnimationFrame(() => {
+					if (!chatEl) return;
+					if (!initialScrollDone) {
 						chatEl.scrollTop = chatEl.scrollHeight;
 						initialScrollDone = true;
+					} else if (wasNearBottom) {
+						chatEl.scrollTop = chatEl.scrollHeight;
+					} else {
+						// Keep the user's reading position: adjust for any height change
+						const heightDelta = chatEl.scrollHeight - savedScrollHeight;
+						chatEl.scrollTop = savedScrollTop + heightDelta;
 					}
-				});
+				}); });
+			} else {
+				lastSessionKey = sessionKey; // still cache the key even if hash matches
 			}
+
+			console.debug(`[PAN Chat] loaded ${processed.length} msgs from ${sessionIds.length} sessions — events: ${(t1 - t0).toFixed(0)}ms, transcripts: ${(t2 - t1).toFixed(0)}ms, total: ${(t2 - t0).toFixed(0)}ms`);
 		} catch (err) {
 			console.error('[PAN Chat] loadChatHistory error:', err);
+		} finally {
+			loadingHistory = false;
 		}
 	}
 
@@ -169,6 +230,29 @@
 		requestAnimationFrame(() => {
 			if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
 		});
+	}
+
+	function isNearBottom() {
+		if (!chatEl) return true;
+		return (chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight) < 80;
+	}
+
+	function ssJumpToBottom() {
+		if (!chatEl) return;
+		if (!isNearBottom()) {
+			ssBookmark = chatEl.scrollTop;
+		}
+		chatEl.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
+		ssNewCount = 0;
+	}
+
+	function ssJumpToBookmark() {
+		if (!chatEl || ssBookmark === null) return;
+		chatEl.scrollTo({ top: ssBookmark, behavior: 'smooth' });
+	}
+
+	function ssOnScroll() {
+		if (isNearBottom()) ssNewCount = 0;
 	}
 
 	function selectProject(p) {
@@ -262,11 +346,12 @@
 			.replace(/\[Image #\d+\]/g, '');
 	}
 
+	// One-time setup — load data and start polling (no reactive deps to avoid re-triggering)
 	$effect(() => {
 		loadProjects();
 		loadChatHistory();
-		const iv = setInterval(loadChatHistory, 10000);
-		return () => clearInterval(iv);
+		const iv = setInterval(loadChatHistory, 15000); // 15s instead of 10s to reduce load
+		return () => { clearInterval(iv); clearTimeout(persistTimer); };
 	});
 </script>
 
@@ -313,7 +398,7 @@
 			{/if}
 		</div>
 
-		<div class="chat-messages" bind:this={chatEl}>
+		<div class="chat-messages" bind:this={chatEl} onscroll={ssOnScroll}>
 			{#each messages as msg}
 				{#if msg.role === 'user'}
 					<div class="message user">
@@ -385,8 +470,8 @@
 				bind:this={textareaEl}
 				bind:value={input}
 				onkeydown={handleKey}
-				onpaste={handlePaste}
 				oninput={autoResize}
+				onpaste={handlePaste}
 				placeholder="Message PAN..."
 				rows="1"
 			></textarea>
@@ -397,6 +482,18 @@
 				</svg>
 			</button>
 		</div>
+
+		<!-- Smart Scroll nav -->
+		<div class="ss-nav">
+			<button class="ss-btn" class:has-bookmark={ssBookmark !== null} class:dim={ssBookmark === null} onclick={ssJumpToBookmark} title="Jump to bookmark">↑</button>
+			<button class="ss-btn" onclick={ssJumpToBottom} title="Jump to bottom">↓</button>
+		</div>
+
+		{#if ssNewCount > 0}
+			<button class="ss-pill" onclick={ssJumpToBottom}>
+				{ssNewCount} new message{ssNewCount > 1 ? 's' : ''} ↓
+			</button>
+		{/if}
 	</div>
 </div>
 
@@ -485,6 +582,7 @@
 		flex-direction: column;
 		overflow: hidden;
 		background: #0a0a0f;
+		position: relative;
 	}
 
 	.chat-header {
@@ -682,4 +780,56 @@
 
 	.send-btn:disabled { opacity: 0.25; cursor: not-allowed; }
 	.send-btn:not(:disabled):hover { opacity: 0.85; }
+
+	/* Smart Scroll */
+	.ss-nav {
+		position: absolute;
+		bottom: 80px;
+		right: 24px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		align-items: center;
+		z-index: 10;
+	}
+
+	.ss-btn {
+		width: 36px;
+		height: 36px;
+		border-radius: 50%;
+		border: 1px solid rgba(255, 255, 255, 0.15);
+		background: rgba(30, 30, 46, 0.95);
+		color: #cdd6f4;
+		font-size: 16px;
+		cursor: pointer;
+		transition: all 0.15s;
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.ss-btn:hover { background: #89b4fa; color: #000; transform: scale(1.1); }
+	.ss-btn.has-bookmark { border-color: #89b4fa; box-shadow: 0 0 8px rgba(137, 180, 250, 0.4); }
+	.ss-btn.dim { opacity: 0.3; pointer-events: none; }
+
+	.ss-pill {
+		position: absolute;
+		bottom: 72px;
+		left: 50%;
+		transform: translateX(-50%);
+		background: #89b4fa;
+		color: #000;
+		padding: 6px 16px;
+		border-radius: 20px;
+		border: none;
+		font-size: 13px;
+		font-weight: 600;
+		cursor: pointer;
+		box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+		transition: opacity 0.2s;
+		z-index: 10;
+	}
+
+	.ss-pill:hover { opacity: 0.9; }
 </style>

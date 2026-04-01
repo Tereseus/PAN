@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PAN</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+:root { --bg:#0a0a0f; --bg2:#1e1e2e; --bg3:#313244; --text:#cdd6f4; --text2:#6c7086; --accent:#89b4fa; --green:#a6e3a1; --red:#f38ba8; --border:#313244; --radius:8px; }
+html { overflow:hidden; height:100%; }
+body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sans-serif; font-size:14px; overflow:hidden; position:fixed; top:0; left:0; right:0; bottom:0; display:flex; flex-direction:column; overscroll-behavior:none; touch-action:manipulation; }
+
+/* Top bar — fixed at top, never moves */
+.topbar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--bg); flex-shrink:0; z-index:20; position:sticky; top:0; }
+.topbar h1 { font-size:16px; color:var(--accent); white-space:nowrap; }
+.topbar select { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; font-size:13px; }
+
+/* Tabs — fixed below topbar, never moves */
+.tabs { display:flex; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--bg); flex-shrink:0; z-index:19; position:sticky; top:0; overscroll-behavior:none; }
+.tabs::-webkit-scrollbar { display:none; }
+.tab { padding:10px 14px; color:var(--text2); cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; font-size:13px; font-weight:500; }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+/* Pages — fill remaining space, scroll internally */
+.page { display:none; flex:1; overflow-y:auto; min-height:0; }
+.page.active { display:flex; flex-direction:column; }
+
+/* Chat — flex layout: messages scroll, input stays at bottom */
+#chat.page.active { display:flex; flex-direction:column; }
+.messages { display:flex; flex-direction:column; gap:6px; padding:12px; flex:1; overflow-y:auto; min-height:0; }
+.msg-u { background:#89b4fa; color:#000; border-radius:16px 16px 4px 16px; padding:8px 14px; align-self:flex-end; max-width:80%; word-break:break-word; font-size:14px; }
+.msg-p { background:#313244; color:#cdd6f4; border-radius:16px 16px 16px 4px; padding:8px 14px; align-self:flex-start; max-width:80%; word-break:break-word; font-size:14px; }
+.msg-time { font-size:10px; color:var(--text2); margin-top:2px; }
+.input-bar { display:flex; gap:8px; padding:8px 12px; border-top:1px solid var(--border); background:var(--bg); flex-shrink:0; z-index:5; align-items:flex-end; }
+.input-bar textarea { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; font-size:14px; outline:none; resize:none; overflow-y:auto; min-height:40px; max-height:120px; line-height:1.4; font-family:inherit; }
+.input-bar button { background:var(--accent); color:#000; border:none; border-radius:var(--radius); padding:10px 16px; font-weight:600; font-size:14px; height:40px; }
+
+/* Cards */
+.card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:12px; margin:6px 12px; }
+.card h3 { font-size:14px; margin-bottom:6px; }
+.stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:12px; }
+.stat-card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:12px; text-align:center; }
+.stat-val { font-size:22px; font-weight:700; color:var(--accent); }
+.stat-label { font-size:11px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px; }
+
+/* Progress */
+.progress-bg { background:var(--bg3); border-radius:4px; height:6px; overflow:hidden; margin:4px 0; }
+.progress-fill { background:var(--accent); height:100%; border-radius:4px; transition:width 0.3s; }
+
+/* Milestone */
+.milestone { margin:6px 12px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+.milestone-header { padding:10px 12px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; }
+.milestone-header:active { background:var(--bg3); }
+.milestone-name { font-size:13px; font-weight:600; }
+.milestone-pct { font-size:12px; color:var(--accent); font-weight:600; }
+.milestone-tasks { display:none; padding:0 12px 10px; }
+.milestone-tasks.open { display:block; }
+.task-row { display:flex; align-items:center; gap:8px; padding:4px 0; font-size:13px; border-bottom:1px solid var(--bg3); }
+.task-row:last-child { border:none; }
+.task-check { color:var(--green); }
+.task-open { color:var(--text2); }
+
+/* Events */
+.event-row { display:flex; justify-content:space-between; padding:8px 12px; border-bottom:1px solid var(--bg3); font-size:13px; }
+.event-type { color:var(--accent); font-weight:500; }
+.event-time { color:var(--text2); font-size:11px; }
+.event-text { color:var(--text); font-size:12px; margin-top:2px; }
+
+/* Sensors */
+.sensor-device { margin:6px 12px; }
+.sensor-device h3 { padding:8px 0; font-size:14px; }
+.sensor-row { display:flex; justify-content:space-between; align-items:center; padding:6px 12px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); margin-bottom:4px; }
+.sensor-name { font-size:13px; }
+.sensor-val { font-size:13px; color:var(--accent); }
+
+/* Settings */
+.setting-row { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border-bottom:1px solid var(--bg3); }
+.setting-label { font-size:13px; }
+.setting-val { font-size:13px; color:var(--accent); max-width:60%; text-align:right; word-break:break-all; }
+
+.muted { color:var(--text2); text-align:center; padding:30px 20px; font-size:14px; }
+
+/* Smart scroll — new messages pill + scroll-to-bottom */
+.new-msg-pill { display:none; position:absolute; bottom:60px; left:50%; transform:translateX(-50%); background:var(--accent); color:#000; padding:6px 16px; border-radius:20px; font-size:12px; font-weight:600; z-index:10; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.4); white-space:nowrap; }
+.scroll-bottom-btn { display:none; position:absolute; bottom:60px; right:12px; width:36px; height:36px; border-radius:50%; background:var(--bg2); border:1px solid var(--border); color:var(--accent); font-size:18px; z-index:10; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 8px rgba(0,0,0,0.3); }
+.scroll-bottom-btn.hidden { display:none !important; }
+
+/* Non-chat pages: just scroll their content */
+#projects.page.active, #sensors.page.active, #data.page.active, #settings.page.active { display:block; overflow-y:auto; }
+.section-title { font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; padding:12px 12px 4px; }
+</style>
+</head>
+<body>
+
+<!-- Top bar with project selector -->
+<div class="topbar">
+  <h1>Π</h1>
+  <select id="project-select" onchange="onProjectChange()">
+    <option value="">Select project...</option>
+  </select>
+</div>
+
+<!-- Tabs -->
+<div class="tabs" id="tab-bar">
+  <div class="tab active" data-tab="chat">Chat</div>
+  <div class="tab" data-tab="projects">Projects</div>
+  <div class="tab" data-tab="sensors">Sensors</div>
+  <div class="tab" data-tab="data">Data</div>
+  <div class="tab" data-tab="settings">Settings</div>
+</div>
+
+<!-- CHAT — conversation history + input -->
+<div id="chat" class="page active" style="position:relative">
+  <div class="messages" id="chat-msgs"><div class="muted">Loading conversations...</div></div>
+  <div class="new-msg-pill" id="new-msg-pill" onclick="smartScroll.jumpToBottom()">New messages ↓</div>
+  <button class="scroll-bottom-btn hidden" id="scroll-bottom-btn" onclick="smartScroll.jumpToBottom()">↓</button>
+  <div class="input-bar">
+    <textarea id="chat-input" placeholder="Message PAN..." rows="1" oninput="autoGrow(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
+    <button onclick="sendChat()">Send</button>
+  </div>
+</div>
+
+
+<!-- PROJECTS -->
+<div id="projects" class="page"></div>
+
+<!-- SENSORS -->
+<div id="sensors" class="page"></div>
+
+<!-- DATA -->
+<div id="data" class="page"></div>
+
+<!-- SETTINGS -->
+<div id="settings" class="page"></div>
+
+<script>
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+const API = window.location.origin;
+let projects = [];
+let activeProject = null;
+let chatPollTimer = null;
+let lastSentTime = 0; // prevent auto-refresh from wiping sent messages
+let lastChatHash = ''; // detect actual content changes
+let firstChatLoad = true; // scroll to bottom on first load
+
+// ========== SMART SCROLL ==========
+const smartScroll = {
+  prevMsgCount: 0,
+
+  get container() { return document.getElementById('chat-msgs'); },
+
+  isNearBottom() {
+    const c = this.container;
+    if (!c) return true;
+    return (c.scrollHeight - c.scrollTop - c.clientHeight) < 80;
+  },
+
+  jumpToBottom() {
+    const c = this.container;
+    if (!c) return;
+    c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' });
+    this.hidePill();
+    this.hideScrollBtn();
+  },
+
+  showPill(count) {
+    const pill = document.getElementById('new-msg-pill');
+    if (pill) {
+      pill.textContent = count + ' new message' + (count > 1 ? 's' : '') + ' ↓';
+      pill.style.display = 'block';
+    }
+  },
+
+  hidePill() {
+    const pill = document.getElementById('new-msg-pill');
+    if (pill) pill.style.display = 'none';
+  },
+
+  showScrollBtn() {
+    const btn = document.getElementById('scroll-bottom-btn');
+    if (btn) btn.classList.remove('hidden');
+  },
+
+  hideScrollBtn() {
+    const btn = document.getElementById('scroll-bottom-btn');
+    if (btn) btn.classList.add('hidden');
+  },
+
+  onContentUpdate() {
+    const c = this.container;
+    if (!c) return;
+    const msgCount = c.querySelectorAll('.msg-u,.msg-p').length;
+    // New messages arrived while scrolled up
+    if (msgCount > this.prevMsgCount && this.prevMsgCount > 0 && !this.isNearBottom()) {
+      this.showPill(msgCount - this.prevMsgCount);
+    }
+    this.prevMsgCount = msgCount;
+  },
+
+  init() {
+    const c = this.container;
+    if (!c) return;
+    c.addEventListener('scroll', () => {
+      if (this.isNearBottom()) {
+        this.hidePill();
+        this.hideScrollBtn();
+      } else {
+        this.showScrollBtn();
+      }
+    });
+  }
+};
+
+// Override fetch to always include auth headers
+const _rawFetch = window.fetch;
+window.fetch = function(url, opts = {}) {
+  opts.headers = opts.headers || {};
+  if (typeof opts.headers === 'object' && !Array.isArray(opts.headers)) {
+    opts.headers['X-Device-Name'] = 'PAN-Mobile';
+    opts.headers['X-Device-Id'] = 'pan-mobile-webview';
+  }
+  return _rawFetch(url, opts);
+};
+
+// Tab switching
+document.getElementById('tab-bar').addEventListener('click', e => {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  const name = tab.dataset.tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  tab.classList.add('active');
+  document.getElementById(name).classList.add('active');
+  loadTab(name);
+});
+
+function loadTab(name) {
+  switch(name) {
+    case 'chat': loadChat(); break;
+    case 'projects': loadProjects(); break;
+    case 'sensors': loadSensors(); break;
+    case 'data': loadData(); break;
+    case 'settings': loadSettings(); break;
+  }
+}
+
+// Project change
+function onProjectChange() {
+  const sel = document.getElementById('project-select');
+  const path = sel.value;
+  activeProject = projects.find(p => p.path === path) || null;
+  const active = document.querySelector('.page.active');
+  if (active) loadTab(active.id);
+}
+
+// INIT
+async function init() {
+  console.log('init: fetching projects from ' + API);
+  try {
+    const res = await fetch(API + '/dashboard/api/projects');
+    projects = await res.json();
+    console.log('init: got ' + projects.length + ' projects');
+    const sel = document.getElementById('project-select');
+    projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.path;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    });
+    const pan = projects.find(p => p.name === 'PAN');
+    if (pan) { sel.value = pan.path; activeProject = pan; }
+  } catch(e) { console.error('init error:', e); document.body.innerHTML += '<div style="color:red;padding:20px">INIT ERROR: '+e.message+'</div>'; }
+  loadChat();
+  // Auto-refresh active tab every 3 seconds
+  setInterval(() => {
+    const active = document.querySelector('.page.active');
+    if (active) loadTab(active.id);
+  }, 3000);
+}
+
+// ========== CHAT ==========
+async function loadChat() {
+  const el = document.getElementById('chat-msgs');
+  // Don't refresh if user sent a message in the last 10 seconds
+  if (Date.now() - lastSentTime < 10000) return;
+
+  try {
+    let newHtml = '';
+
+    // Try to load transcript for active project (same as desktop)
+    if (activeProject) {
+      const probeRes = await fetch(API + '/dashboard/api/events?limit=1&project_path=' + encodeURIComponent(activeProject.path));
+      const probeData = await probeRes.json();
+      const latestEvent = (probeData.events || [])[0];
+      if (latestEvent) {
+        const sid = latestEvent.session_id;
+        if (sid) {
+          const tRes = await fetch(API + '/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=100');
+          const tData = await tRes.json();
+          const messages = tData.messages || [];
+          if (messages.length) {
+            for (const msg of messages) {
+              const role = msg.role || msg.type || '';
+              const text = msg.content || msg.text || '';
+              if (!text || text.length < 2) continue;
+              if (role === 'user' || role === 'human') {
+                newHtml += '<div class="msg-u">' + esc(text.slice(0,500)) + '</div>';
+              } else if (role === 'assistant' || role === 'tool_result') {
+                newHtml += '<div class="msg-p">' + esc(text.slice(0,500)) + '</div>';
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Fallback: show events if no transcript
+    if (!newHtml) {
+      const res = await fetch(API + '/dashboard/api/events?limit=30&type=RouterCommand');
+      const data = await res.json();
+      const events = (data.events || []).reverse();
+      if (!events.length) { newHtml = '<div class="muted">No conversations yet</div>'; }
+      for (const e of events) {
+        try {
+          const d = JSON.parse(e.data);
+          const text = d.text || d.query || '';
+          const resp = d.result || d.response || '';
+          const time = e.created_at?.slice(11,16) || '';
+          if (text) newHtml += '<div class="msg-u">' + esc(text.slice(0,200)) + '<div class="msg-time">' + time + '</div></div>';
+          if (resp && resp !== '[AMBIENT]') newHtml += '<div class="msg-p">' + esc(resp.slice(0,300)) + '<div class="msg-time">' + time + '</div></div>';
+        } catch {}
+      }
+    }
+
+    // Only re-render if content actually changed — preserves scroll position
+    const newHash = newHtml.length + ':' + newHtml.slice(0, 200) + newHtml.slice(-200);
+    if (newHash === lastChatHash) return; // no change, don't touch DOM
+    lastChatHash = newHash;
+
+    const wasNearBottom = smartScroll.isNearBottom();
+    const savedScroll = el.scrollTop;
+
+    el.innerHTML = newHtml || '<div class="muted">No conversations yet</div>';
+
+    if (firstChatLoad || wasNearBottom) {
+      // First load or was at bottom — scroll to bottom
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+      firstChatLoad = false;
+    } else {
+      // User was scrolled up — preserve their position
+      requestAnimationFrame(() => { el.scrollTop = savedScroll; });
+    }
+
+    smartScroll.onContentUpdate();
+  } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  input.style.height = 'auto';
+  lastSentTime = Date.now();
+  const el = document.getElementById('chat-msgs');
+  el.innerHTML += '<div class="msg-u">' + esc(text) + '</div>';
+  el.innerHTML += '<div class="msg-p" id="chat-typing" style="opacity:0.5">Thinking...</div>';
+  el.scrollTop = el.scrollHeight;
+
+  const sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
+  try {
+    const res = await fetch(API + '/api/v1/terminal/send', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text: text, session_id: sessionId })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      const t = document.getElementById('chat-typing');
+      if (t) { t.textContent = 'Send failed: ' + (data.error||''); t.style.color='var(--red)'; t.removeAttribute('id'); }
+      return;
+    }
+    // Poll transcript every 2 seconds for up to 60 seconds to get Claude's response
+    let prevCount = el.children.length;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      // Reload chat to see if Claude responded
+      const beforeCount = el.children.length;
+      lastSentTime = Date.now(); // keep blocking auto-refresh
+      await loadChat();
+      // If new messages appeared, Claude responded
+      if (el.children.length > prevCount + 1) {
+        const t = document.getElementById('chat-typing');
+        if (t) t.remove();
+        break;
+      }
+    }
+    const t = document.getElementById('chat-typing');
+    if (t) { t.textContent = 'Claude may still be processing...'; t.style.opacity = '0.5'; t.removeAttribute('id'); }
+  } catch(e) {
+    const t = document.getElementById('chat-typing');
+    if (t) { t.textContent = 'Error: ' + e.message; t.style.color='var(--red)'; t.removeAttribute('id'); }
+  }
+  lastSentTime = 0; // resume auto-refresh
+  el.scrollTop = el.scrollHeight;
+}
+
+// Direct DB queries — don't waste Cerebras tokens on simple lookups
+function tryDirectQuery(text) {
+  const lower = text.toLowerCase();
+  if (lower.match(/how many (events|sessions|projects|devices|memories)/)) {
+    return fetch(API + '/dashboard/api/stats').then(r=>r.json()).then(s => {
+      return 'Stats: ' + s.total_events + ' events, ' + s.total_sessions + ' sessions, ' + s.total_projects + ' projects, ' + s.total_devices + ' devices, ' + s.total_memory + ' memories. DB: ' + (s.db_size_bytes/1048576).toFixed(1) + ' MB';
+    });
+  }
+  if (lower.match(/show.*events|recent events|latest events|what happened/)) {
+    return fetch(API + '/dashboard/api/events?limit=5').then(r=>r.json()).then(d => {
+      return (d.events||[]).map(e => {
+        const dd = JSON.parse(e.data);
+        return e.event_type + ': ' + (dd.text||dd.response||'').slice(0,60);
+      }).join('\n') || 'No events';
+    });
+  }
+  if (lower.match(/show.*projects|list projects|my projects/)) {
+    return fetch(API + '/dashboard/api/projects').then(r=>r.json()).then(ps => {
+      return ps.map(p => p.name + ' — ' + (p.description||p.path)).join('\n');
+    });
+  }
+  if (lower.match(/show.*tasks|how many tasks|task progress|project progress/)) {
+    const pid = activeProject?.id || 2;
+    return fetch(API + '/dashboard/api/projects/' + pid + '/tasks').then(r=>r.json()).then(d => {
+      const ms = d.milestones || [];
+      let total=0, done=0;
+      ms.forEach(m => { const t=m.tasks||[]; total+=t.length; done+=t.filter(x=>x.status==='done').length; });
+      const pct = total ? Math.round(done/total*100) : 0;
+      return (activeProject?.name||'PAN') + ': ' + done + '/' + total + ' tasks done (' + pct + '%)\n' +
+        ms.map(m => { const t=m.tasks||[]; const d=t.filter(x=>x.status==='done').length; return '  ' + m.name + ': ' + d + '/' + t.length; }).join('\n');
+    });
+  }
+  if (lower.match(/show.*devices|list devices|my devices/)) {
+    return fetch(API + '/api/v1/devices/list').then(r=>r.json()).then(ds => {
+      return ds.map(d => (d.name||d.device_id) + ' (ID:' + d.id + ')').join('\n') || 'No devices';
+    });
+  }
+  if (lower.match(/status|health|uptime/)) {
+    return fetch(API + '/health').then(r=>r.json()).then(h => {
+      return 'PAN Hub: ' + h.status + ', uptime: ' + (h.uptime||'?');
+    });
+  }
+  return null;
+}
+
+
+
+// ========== PROJECTS ==========
+async function loadProjects() {
+  const el = document.getElementById('projects');
+  try {
+    const pid = activeProject?.id || 2;
+    const [projRes, tasksRes] = await Promise.all([
+      fetch(API + '/dashboard/api/projects'),
+      fetch(API + '/dashboard/api/projects/' + pid + '/tasks')
+    ]);
+    const projs = await projRes.json();
+    const tasksData = await tasksRes.json();
+    const milestones = tasksData.milestones || [];
+    const uncategorized = tasksData.uncategorized || [];
+
+    // Overall progress
+    let totalDone = 0, totalAll = 0;
+    for (const m of milestones) {
+      const tasks = m.tasks || [];
+      totalAll += tasks.length;
+      totalDone += tasks.filter(t => t.status === 'done').length;
+    }
+    totalAll += uncategorized.length;
+    totalDone += uncategorized.filter(t => t.status === 'done').length;
+    const overallPct = totalAll > 0 ? Math.round(totalDone / totalAll * 100) : 0;
+
+    let html = '';
+
+    // Overall progress for active project
+    html += '<div class="card" style="margin-top:8px"><h3>' + esc(activeProject?.name || 'PAN') + '</h3>';
+    html += '<div style="display:flex;justify-content:space-between;margin:4px 0"><span style="font-size:13px">' + totalDone + '/' + totalAll + ' tasks done</span><span style="font-size:13px;color:var(--accent)">' + overallPct + '%</span></div>';
+    html += '<div class="progress-bg"><div class="progress-fill" style="width:' + overallPct + '%"></div></div></div>';
+
+    // Milestones
+    for (const m of milestones) {
+      const tasks = m.tasks || [];
+      const done = tasks.filter(t => t.status === 'done').length;
+      const total = tasks.length;
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      html += '<div class="milestone">';
+      html += '<div class="milestone-header" onclick="this.parentElement.querySelector(\'.milestone-tasks\').classList.toggle(\'open\')">';
+      html += '<span class="milestone-name">' + esc(m.name) + '</span>';
+      html += '<span class="milestone-pct">' + done + '/' + total + ' (' + pct + '%)</span>';
+      html += '</div>';
+      html += '<div class="progress-bg" style="margin:0 12px"><div class="progress-fill" style="width:' + pct + '%"></div></div>';
+      html += '<div class="milestone-tasks">';
+      for (const t of tasks) {
+        const icon = t.status === 'done' ? '<span class="task-check">✓</span>' : '<span class="task-open">○</span>';
+        html += '<div class="task-row">' + icon + ' ' + esc(t.title) + '</div>';
+      }
+      html += '</div></div>';
+    }
+
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+// ========== SENSORS ==========
+async function loadSensors() {
+  const el = document.getElementById('sensors');
+  try {
+    const res = await fetch(API + '/api/v1/devices/list');
+    const devices = await res.json();
+    let html = '';
+    for (const dev of devices) {
+      const devName = dev.name || dev.device_name || dev.device_id || 'Device ' + dev.id;
+      html += '<div class="sensor-device"><h3>' + esc(devName) + '</h3>';
+      try {
+        const sRes = await fetch(API + '/api/sensors/devices/' + dev.id);
+        const sData = await sRes.json();
+        const assignments = sData.assignments || sData || [];
+        const arr = Array.isArray(assignments) ? assignments : (assignments.sensors || []);
+        if (arr.length) {
+          for (const s of arr) {
+            const key = s.sensor_key || s.key || s.name || 'unknown';
+            const sid = s.id || 0;
+            const enabled = s.enabled ? true : false;
+            const val = s.latest_value != null ? s.latest_value : '';
+            html += '<div class="sensor-row"><span class="sensor-name">' + esc(key);
+            if (val) html += ' <span style="font-size:11px;color:var(--text2)">' + esc(String(val)) + '</span>';
+            html += '</span>';
+            html += '<label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">';
+            html += '<input type="checkbox" ' + (enabled ? 'checked' : '') + ' onchange="toggleSensor(' + dev.id + ',\'' + esc(key) + '\',this.checked,' + sid + ')" style="opacity:0;width:0;height:0">';
+            html += '<span style="position:absolute;inset:0;background:' + (enabled ? 'var(--accent)' : 'var(--bg3)') + ';border-radius:12px;transition:0.2s"></span>';
+            html += '<span style="position:absolute;top:2px;left:' + (enabled ? '22px' : '2px') + ';width:20px;height:20px;background:#fff;border-radius:50%;transition:0.2s"></span>';
+            html += '</label></div>';
+          }
+        } else {
+          html += '<div class="muted" style="padding:8px">No sensors assigned</div>';
+        }
+      } catch(e) { html += '<div class="muted" style="padding:8px">Sensors: ' + e.message + '</div>'; }
+      html += '</div>';
+    }
+    el.innerHTML = html || '<div class="muted">No devices found</div>';
+  } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+// ========== DATA ==========
+async function loadData() {
+  const el = document.getElementById('data');
+  try {
+    const [statsRes, eventsRes] = await Promise.all([
+      fetch(API + '/dashboard/api/stats'),
+      fetch(API + '/dashboard/api/events?limit=20')
+    ]);
+    const stats = await statsRes.json();
+    const events = await eventsRes.json();
+
+    let html = '<div class="stat-grid">';
+    html += '<div class="stat-card"><div class="stat-val">' + (stats.total_events||0).toLocaleString() + '</div><div class="stat-label">Events</div></div>';
+    html += '<div class="stat-card"><div class="stat-val">' + (stats.total_sessions||0) + '</div><div class="stat-label">Sessions</div></div>';
+    html += '<div class="stat-card"><div class="stat-val">' + (stats.total_projects||0) + '</div><div class="stat-label">Projects</div></div>';
+    html += '<div class="stat-card"><div class="stat-val">' + (stats.total_devices||0) + '</div><div class="stat-label">Devices</div></div>';
+    html += '<div class="stat-card"><div class="stat-val">' + (stats.total_memory||0).toLocaleString() + '</div><div class="stat-label">Memories</div></div>';
+    const dbMb = stats.db_size_bytes ? (stats.db_size_bytes / 1048576).toFixed(1) + ' MB' : '—';
+    html += '<div class="stat-card"><div class="stat-val">' + dbMb + '</div><div class="stat-label">DB Size</div></div>';
+    html += '</div>';
+
+    // Event type breakdown
+    if (stats.event_types) {
+      html += '<div class="section-title">Event Types</div>';
+      for (const et of stats.event_types.slice(0, 10)) {
+        html += '<div class="event-row"><span class="event-type">' + esc(et.event_type) + '</span><span>' + et.count + '</span></div>';
+      }
+    }
+
+    // Recent events
+    html += '<div class="section-title">Recent Events</div>';
+    for (const e of (events.events || [])) {
+      let preview = '';
+      try { const d = JSON.parse(e.data); preview = (d.text || d.response || d.transcript || '').slice(0, 80); } catch {}
+      html += '<div class="event-row"><div><span class="event-type">' + esc(e.event_type) + '</span>';
+      if (preview) html += '<div class="event-text">' + esc(preview) + '</div>';
+      html += '</div><span class="event-time">' + (e.created_at?.slice(11,16)||'') + '</span></div>';
+    }
+
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+async function toggleSensor(deviceId, sensorKey, enabled, assignmentId) {
+  try {
+    await fetch(API + '/api/sensors/devices/' + deviceId + '/' + sensorKey, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ enabled: enabled })
+    });
+    setTimeout(loadSensors, 500);
+  } catch(e) { console.error('Toggle failed:', e); }
+}
+
+
+// ========== SETTINGS ==========
+async function loadSettings() {
+  const el = document.getElementById('settings');
+  let html = '';
+
+  // Connection
+  html += '<div class="section-title">Connection</div><div class="card">';
+  try {
+    const res = await fetch(API + '/health');
+    const h = await res.json();
+    html += '<div class="setting-row"><span class="setting-label">PAN Hub</span><span class="setting-val" style="color:var(--green)">' + h.status + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Uptime</span><span class="setting-val">' + (h.uptime||'—') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Proxy</span><span class="setting-val">' + API + '</span></div>';
+    if (h.tailscaleIp) html += '<div class="setting-row"><span class="setting-label">Tailscale IP</span><span class="setting-val">' + h.tailscaleIp + '</span></div>';
+  } catch(e) {
+    html += '<div class="setting-row"><span class="setting-label">Status</span><span class="setting-val" style="color:var(--red)">Disconnected</span></div>';
+  }
+  html += '</div>';
+
+  // AI
+  html += '<div class="section-title">AI</div><div class="card">';
+  try {
+    const res = await fetch(API + '/api/v1/auth/providers');
+    const auth = await res.json();
+    html += '<div class="setting-row"><span class="setting-label">Auth Mode</span><span class="setting-val">' + (auth.auth_mode||'none') + '</span></div>';
+  } catch {}
+  html += '<div class="setting-row"><span class="setting-label">Backend</span><span class="setting-val">Cerebras</span></div>';
+  html += '<div class="setting-row"><span class="setting-label">Model</span><span class="setting-val">Qwen 3 235B</span></div>';
+  html += '<div class="setting-row"><span class="setting-label">Speed</span><span class="setting-val">~580ms</span></div>';
+  html += '<div class="setting-row"><span class="setting-label">Free Tier</span><span class="setting-val">1M tokens/day</span></div>';
+  html += '</div>';
+
+  // Devices
+  html += '<div class="section-title">Devices</div><div class="card">';
+  try {
+    const res = await fetch(API + '/api/v1/devices/list');
+    const devs = await res.json();
+    for (const d of devs) {
+      const name = d.name || d.device_name || d.device_id || 'Device';
+      html += '<div class="setting-row"><span class="setting-label">' + esc(name) + '</span><span class="setting-val">' + (d.last_seen ? 'Online' : '—') + '</span></div>';
+    }
+  } catch {}
+  html += '</div>';
+
+  // Phone
+  html += '<div class="section-title">This Device</div><div class="card">';
+  html += '<div class="setting-row"><span class="setting-label">Platform</span><span class="setting-val">' + (navigator.userAgent.match(/Android[^;]*/)?.[0] || 'Android') + '</span></div>';
+  html += '<div class="setting-row"><span class="setting-label">Screen</span><span class="setting-val">' + screen.width + 'x' + screen.height + '</span></div>';
+  html += '<div class="setting-row"><span class="setting-label">WebView</span><span class="setting-val">' + (navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || '?') + '</span></div>';
+  html += '</div>';
+
+  el.innerHTML = html;
+}
+
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+init();
+smartScroll.init();
+document.title = 'PAN v3.' + Date.now();
+console.log('PAN Mobile v3 loaded at ' + new Date().toISOString());
+</script>
+</body>
+</html>

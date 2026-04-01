@@ -27,9 +27,10 @@ import { extractUser } from './middleware/auth.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
 import { startDream, stopDream } from './dream.js';
+import { ensureOllama } from './memory/ollama-boot.js';
 import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { startStackScanner, stopStackScanner, getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
-import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
+import { syncProjects, get, all, insert, run, logEvent } from './db.js';
 import { readFileSync, existsSync } from 'fs';
 import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
@@ -130,7 +131,7 @@ app.get('/api/setup-status', async (req, res) => {
     } else {
       try {
         const { claude } = await import('./claude.js');
-        const test = await claude('Say "ok" and nothing else.', { timeout: 10000, maxTokens: 10, caller: 'setup-check' });
+        const test = await claude('Say "ok" and nothing else.', { model: 'claude-haiku-4-5-20251001', timeout: 10000, maxTokens: 10, caller: 'setup-check' });
         if (test) result.provider = 'working';
       } catch (e) {
         result.error = e.message;
@@ -189,7 +190,7 @@ app.use('/api/sensors', sensorsRouter);
 // Feature registry — maps feature names to start/stop functions
 const featureRegistry = {
   scout: { start: startScout, stop: stopScout, interval: '12h', defaultMs: 12 * 60 * 60 * 1000 },
-  dream: { start: startDream, stop: stopDream, interval: '6h', defaultMs: 6 * 60 * 60 * 1000 },
+  dream: { start: startDream, stop: stopDream, interval: '12h', defaultMs: 12 * 60 * 60 * 1000 },
   autodev: { start: startAutoDev, stop: stopAutoDev, interval: '1h', defaultMs: 60 * 60 * 1000 },
 };
 
@@ -203,7 +204,7 @@ app.get('/api/automation/status', (req, res) => {
 
   const features = {
     scout: { enabled: toggles.scout !== false, interval: '12h' },
-    dream: { enabled: toggles.dream !== false, interval: '6h' },
+    dream: { enabled: toggles.dream !== false, interval: '12h' },
     autodev: { enabled: toggles.autodev === true, interval: '1h' },
     classifier: { enabled: true, interval: '5m', required: true },
     project_sync: { enabled: true, interval: '10m', required: true },
@@ -326,11 +327,241 @@ app.use('/v2', express.static(join(__dirname, '..', 'public', 'v2'), {
   index: 'index.html',
   setHeaders: (res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
   }
 }));
 // SPA fallback — any /v2/* that isn't a file gets index.html
 app.get('/v2/*path', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(join(__dirname, '..', 'public', 'v2', 'index.html'));
+});
+
+// Mobile dashboard — static files, no ES modules, no caching
+app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
+  etag: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+}));
+
+// Legacy inline mobile route (removed — now static)
+app.get('/mobile-old/', (req, res) => { res.redirect('/mobile/'); });
+/*
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>PAN Mobile</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sans-serif; font-size:14px; }
+  .tabs { display:flex; border-bottom:1px solid #313244; overflow-x:auto; position:sticky; top:0; background:#0a0a0f; z-index:10; }
+  .tab { padding:10px 14px; color:#6c7086; cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; font-size:13px; }
+  .tab.active { color:#89b4fa; border-bottom-color:#89b4fa; }
+  .page { display:none; padding:12px; }
+  .page.active { display:flex; flex-direction:column; gap:8px; }
+  select { width:100%; background:#1e1e2e; color:#cdd6f4; border:1px solid #313244; border-radius:8px; padding:10px 12px; font-size:14px; margin-bottom:8px; }
+  .chat-area { flex:1; display:flex; flex-direction:column; min-height:60vh; }
+  .messages { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:8px 0; }
+  .msg-user { background:#89b4fa; color:#000; border-radius:14px 14px 4px 14px; padding:8px 12px; align-self:flex-end; max-width:80%; }
+  .msg-pan { background:#1e1e2e; border-radius:14px 14px 14px 4px; padding:8px 12px; align-self:flex-start; max-width:80%; }
+  .input-bar { display:flex; gap:8px; padding:8px 0; position:sticky; bottom:0; background:#0a0a0f; }
+  .input-bar input { flex:1; background:#1e1e2e; color:#cdd6f4; border:1px solid #313244; border-radius:8px; padding:10px 12px; font-size:14px; outline:none; }
+  .input-bar button { background:#89b4fa; color:#000; border:none; border-radius:8px; padding:10px 16px; font-weight:600; }
+  .card { background:#1e1e2e; border:1px solid #313244; border-radius:8px; padding:12px; }
+  .stat { font-size:20px; font-weight:600; color:#89b4fa; }
+  .label { font-size:11px; color:#6c7086; text-transform:uppercase; letter-spacing:0.5px; }
+  .sensor-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #181825; }
+  h3 { font-size:15px; color:#cdd6f4; margin-bottom:8px; }
+  .muted { color:#6c7086; text-align:center; padding:20px; }
+</style>
+</head>
+<body>
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('chat')">Chat</div>
+  <div class="tab" onclick="switchTab('terminal')">Terminal</div>
+  <div class="tab" onclick="switchTab('projects')">Projects</div>
+  <div class="tab" onclick="switchTab('sensors')">Sensors</div>
+  <div class="tab" onclick="switchTab('data')">Data</div>
+  <div class="tab" onclick="switchTab('settings')">Settings</div>
+</div>
+
+<div id="chat" class="page active">
+  <select id="project-select" onchange="loadChat()">
+    <option value="">Select project...</option>
+  </select>
+  <div class="chat-area">
+    <div class="messages" id="chat-messages"><div class="muted">Select a project</div></div>
+    <div class="input-bar">
+      <input id="chat-input" placeholder="Message PAN..." onkeydown="if(event.key==='Enter')sendMsg()">
+      <button onclick="sendMsg()">Send</button>
+    </div>
+  </div>
+</div>
+
+<div id="terminal" class="page">
+  <select id="term-project-select" onchange="loadTerminal()">
+    <option value="">Select project...</option>
+  </select>
+  <div class="card"><div class="muted">Terminal view — select a project</div></div>
+</div>
+
+<div id="projects" class="page">
+  <div id="projects-list"><div class="muted">Loading...</div></div>
+</div>
+
+<div id="sensors" class="page">
+  <div id="sensors-list"><div class="muted">Loading...</div></div>
+</div>
+
+<div id="data" class="page">
+  <div id="stats-cards" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+  <div id="recent-events" style="margin-top:12px"><div class="muted">Loading...</div></div>
+</div>
+
+<div id="settings" class="page">
+  <div class="card"><div class="muted">Settings available on desktop dashboard</div></div>
+</div>
+
+<script>
+const API = window.location.origin;
+let projects = [];
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelector('.tab[onclick*="'+name+'"]').classList.add('active');
+  document.getElementById(name).classList.add('active');
+  if (name === 'projects') loadProjects();
+  if (name === 'sensors') loadSensors();
+  if (name === 'data') loadData();
+}
+
+async function loadProjectSelects() {
+  try {
+    const res = await fetch(API + '/dashboard/api/projects');
+    projects = await res.json();
+    ['project-select','term-project-select'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (!sel) return;
+      sel.innerHTML = '<option value="">Select project...</option>';
+      projects.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.path;
+        opt.textContent = p.name;
+        sel.appendChild(opt);
+      });
+      // Auto-select PAN
+      const pan = projects.find(p => p.name === 'PAN');
+      if (pan) { sel.value = pan.path; }
+    });
+    loadChat();
+  } catch(e) { console.error('Projects:', e); }
+}
+
+async function loadChat() {
+  const msgs = document.getElementById('chat-messages');
+  try {
+    const res = await fetch(API + '/dashboard/api/events?limit=30&event_type=RouterCommand');
+    const data = await res.json();
+    const events = (data.events || []).reverse();
+    if (!events.length) { msgs.innerHTML = '<div class="muted">No conversations yet</div>'; return; }
+    msgs.innerHTML = '';
+    events.forEach(e => {
+      try {
+        const d = JSON.parse(e.data);
+        const text = d.text || d.query || '';
+        const resp = d.result || d.response || '';
+        if (text) { const div = document.createElement('div'); div.className='msg-user'; div.textContent=text; msgs.appendChild(div); }
+        if (resp && resp !== '[AMBIENT]') { const div = document.createElement('div'); div.className='msg-pan'; div.textContent=resp; msgs.appendChild(div); }
+      } catch {}
+    });
+    msgs.scrollTop = msgs.scrollHeight;
+  } catch(e) { msgs.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+async function sendMsg() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  const msgs = document.getElementById('chat-messages');
+  const div = document.createElement('div'); div.className='msg-user'; div.textContent=text; msgs.appendChild(div);
+  const typing = document.createElement('div'); typing.className='msg-pan'; typing.textContent='...'; msgs.appendChild(typing);
+  msgs.scrollTop = msgs.scrollHeight;
+  try {
+    const res = await fetch(API + '/api/v1/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:text,source:'dashboard'}) });
+    const data = await res.json();
+    typing.textContent = data.response || data.result || 'No response';
+  } catch(e) { typing.textContent = 'Error: ' + e.message; }
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function loadProjects() {
+  const el = document.getElementById('projects-list');
+  try {
+    const res = await fetch(API + '/dashboard/api/projects');
+    const data = await res.json();
+    el.innerHTML = data.map(p => '<div class="card" style="margin-bottom:8px"><h3>'+p.name+'</h3><div style="font-size:12px;color:#6c7086">'+p.path+'</div><div style="font-size:12px;color:#a6adc8;margin-top:4px">'+(p.description||'')+'</div></div>').join('');
+  } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+async function loadSensors() {
+  const el = document.getElementById('sensors-list');
+  try {
+    const res = await fetch(API + '/api/sensors/devices/latest');
+    const data = await res.json();
+    if (!data || !Object.keys(data).length) { el.innerHTML = '<div class="muted">No sensor data</div>'; return; }
+    el.innerHTML = Object.entries(data).map(([k,v]) => '<div class="sensor-row"><span>'+k+'</span><span style="color:#89b4fa">'+JSON.stringify(v)+'</span></div>').join('');
+  } catch(e) {
+    // Fallback to device sensors
+    try {
+      const res2 = await fetch(API + '/api/sensors/devices/9');
+      const d2 = await res2.json();
+      el.innerHTML = (d2.assignments||[]).map(s => '<div class="sensor-row"><span>'+s.sensor_key+'</span><span style="color:#89b4fa">'+(s.enabled?'ON':'OFF')+'</span></div>').join('') || '<div class="muted">No sensors configured</div>';
+    } catch { el.innerHTML = '<div class="muted">Sensors unavailable</div>'; }
+  }
+}
+
+async function loadData() {
+  try {
+    const res = await fetch(API + '/dashboard/api/stats');
+    const s = await res.json();
+    document.getElementById('stats-cards').innerHTML =
+      '<div class="card"><div class="stat">'+s.total_events+'</div><div class="label">Events</div></div>'+
+      '<div class="card"><div class="stat">'+s.total_sessions+'</div><div class="label">Sessions</div></div>'+
+      '<div class="card"><div class="stat">'+s.total_projects+'</div><div class="label">Projects</div></div>'+
+      '<div class="card"><div class="stat">'+s.total_devices+'</div><div class="label">Devices</div></div>';
+  } catch {}
+  try {
+    const res = await fetch(API + '/dashboard/api/events?limit=10');
+    const data = await res.json();
+    document.getElementById('recent-events').innerHTML = '<h3>Recent Events</h3>' +
+      (data.events||[]).map(e => '<div class="sensor-row"><span style="font-size:11px">'+e.event_type+'</span><span style="font-size:11px;color:#6c7086">'+e.created_at.slice(11,19)+'</span></div>').join('');
+  } catch {}
+}
+
+// Auto-refresh chat every 5 seconds
+setInterval(loadChat, 5000);
+
+// Init
+loadProjectSelects();
+</script>
+</body>
+</html>`);
+});
+
+*/
+
+// Serve report.html at root level
+app.get('/report.html', (req, res) => {
+  res.sendFile(join(__dirname, '..', 'public', 'report.html'));
+});
+app.get('/report', (req, res) => {
+  res.sendFile(join(__dirname, '..', 'public', 'report.html'));
 });
 
 // Old dashboard static files (fallback)
@@ -424,14 +655,10 @@ app.post('/api/v1/terminal/send', (req, res) => {
   console.log(`[PAN Send] "${text}" → ${session_id || 'auto'} (raw=${!!raw}, sent=${sent})`);
 
   // Log as event so mobile sends are tracked
-  const dataStr = JSON.stringify({
+  logEvent(session_id || 'mobile-send', 'MobileSend', {
     text, session_id: session_id || 'auto', sent, raw: !!raw,
     source: 'mobile_dashboard', timestamp: Date.now()
   });
-  const eventId = insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-    ':sid': session_id || 'mobile-send', ':type': 'MobileSend', ':data': dataStr
-  });
-  indexEventFTS(eventId, 'MobileSend', dataStr);
 
   const sessInfo = listSessions();
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
@@ -510,28 +737,34 @@ app.get('/api/v1/context-briefing', (req, res) => {
   const projectPath = req.query.project_path || '';
 
   // 1. Read the living state document (maintained by dream cycle)
-  const stateFile = join(process.cwd(), '.pan-state.md');
+  const stateFile = join(__dirname, '..', '.pan-state.md');
   let stateDoc = '';
   try {
     if (existsSync(stateFile)) stateDoc = readFileSync(stateFile, 'utf8');
   } catch {}
 
   // 2. Recent conversation for this project (last 30 exchanges)
+  // Use project→sessions join for reliable matching (LIKE on data had backslash escaping bugs)
   let recentChat = [];
   if (projectPath) {
     const fwd = projectPath.replace(/\\/g, '/');
-    const bk = fwd.replace(/\//g, '\\\\');
-    recentChat = all(
-      `SELECT event_type, data, created_at FROM events
-       WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop' OR event_type = 'AssistantMessage')
-       AND (data LIKE :pp1 OR data LIKE :pp2)
-       ORDER BY created_at DESC LIMIT 30`,
-      { ':pp1': '%' + bk + '%', ':pp2': '%' + fwd + '%' }
-    );
+    const proj = get("SELECT id FROM projects WHERE path = :p", { ':p': fwd });
+    if (proj) {
+      recentChat = all(
+        `SELECT e.event_type, e.data, e.created_at FROM events e
+         JOIN sessions s ON e.session_id = s.id
+         WHERE s.project_id = :pid
+         AND (e.event_type = 'UserPromptSubmit' OR e.event_type = 'Stop' OR e.event_type = 'AssistantMessage')
+         AND e.created_at > datetime('now', '-48 hours', 'localtime')
+         ORDER BY e.created_at DESC LIMIT 30`,
+        { ':pid': proj.id }
+      );
+    }
   } else {
     recentChat = all(
       `SELECT event_type, data, created_at FROM events
        WHERE event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage')
+       AND created_at > datetime('now', '-48 hours', 'localtime')
        ORDER BY created_at DESC LIMIT 30`
     );
   }
@@ -594,8 +827,8 @@ app.get('/api/v1/context-briefing', (req, res) => {
     }
     briefing += '\n';
 
-    // Last few messages at full length for real context
-    const lastMessages = chatItems.slice(-6);
+    // Last few messages at full length for real context (trimmed to reduce bloat)
+    const lastMessages = chatItems.slice(-4);
     if (lastMessages.length > 0) {
       briefing += '## Last Messages (Full)\n';
       for (const e of lastMessages) {
@@ -774,6 +1007,9 @@ function start() {
       // Auto-detect local model providers (Ollama, LM Studio)
       autoDetectLocalModels();
 
+      // Ensure Ollama is running with embedding model (for vector memory)
+      ensureOllama();
+
       // Auto-register this PC as a device
       const pcHost = hostname();
       const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
@@ -804,8 +1040,8 @@ function start() {
       if (toggles.scout !== false) startScout(12 * 60 * 60 * 1000);
       else console.log('[PAN] Scout disabled by toggle');
 
-      // Start auto-dream (every 6 hours — consolidates events into structured memory)
-      if (toggles.dream !== false) startDream(6 * 60 * 60 * 1000);
+      // Start auto-dream (every 12 hours — consolidates events into structured memory)
+      if (toggles.dream !== false) startDream(12 * 60 * 60 * 1000);
       else console.log('[PAN] Dream disabled by toggle');
 
       // Start Stack Scanner (every 6 hours — discovers tech stacks per project)

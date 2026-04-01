@@ -6,11 +6,10 @@
 	let { children } = $props();
 
 	const tabs = [
-		{ label: 'Chat', href: `${base}`, icon: '💬' },
+		{ label: 'Conversation', href: `${base}`, icon: '💬' },
 		{ label: 'Terminal', href: `${base}/terminal`, icon: '⌨' },
 		{ label: 'Automation', href: `${base}/automation`, icon: '⚡' },
 		{ label: 'Projects', href: `${base}/projects`, icon: '📁' },
-		{ label: 'Conversations', href: `${base}/conversations`, icon: '🗨' },
 		{ label: 'Sensors', href: `${base}/sensors`, icon: '📡' },
 		{ label: 'Data', href: `${base}/data`, icon: '🗄' },
 		{ label: 'Settings', href: `${base}/settings`, icon: '⚙' },
@@ -85,10 +84,6 @@
 			<button class="logo-refresh" onclick={() => location.reload()} title="Refresh Page">↻</button>
 		</div>
 
-		<button class="collapse-btn" onclick={toggleSidebar} title={collapsed ? 'Expand' : 'Collapse'}>
-			{collapsed ? '▸' : '◂'}
-		</button>
-
 		<div class="nav-tabs">
 			{#each tabs as tab}
 				<a
@@ -107,6 +102,10 @@
 		</div>
 
 		<div class="sidebar-spacer"></div>
+
+		<button class="collapse-btn" onclick={toggleSidebar} title={collapsed ? 'Expand' : 'Collapse'}>
+			{collapsed ? '▸' : '◂'}
+		</button>
 
 		<div class="sidebar-bottom">
 			{#if userName}
@@ -252,7 +251,7 @@
 		padding: 8px 0;
 		background: none;
 		border: none;
-		border-bottom: 1px solid #1e1e2e;
+		border-top: 1px solid #1e1e2e;
 		color: #6c7086;
 		cursor: pointer;
 		font-size: 14px;

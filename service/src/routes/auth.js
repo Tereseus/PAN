@@ -6,7 +6,7 @@
 import { Router } from 'express';
 import { get, all, insert, run } from '../db.js';
 import { randomBytes } from 'crypto';
-import { requireRole } from '../middleware/auth.js';
+import { requireRole, getRoleLevels } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -414,14 +414,84 @@ router.get('/users', requireRole('admin'), (req, res) => {
 // PUT /api/v1/auth/users/:id/role — change user role (owner only)
 router.put('/users/:id/role', requireRole('owner'), (req, res) => {
   const { role } = req.body;
-  if (!['viewer', 'user', 'manager', 'admin', 'owner'].includes(role)) {
-    return res.status(400).json({ error: 'Invalid role' });
+  const validRoles = getRoleLevels();
+  if (!validRoles[role]) {
+    return res.status(400).json({ error: 'Invalid role', valid: Object.keys(validRoles) });
   }
   const userId = parseInt(req.params.id);
   if (userId === req.user.id && role !== 'owner') {
     return res.status(400).json({ error: 'Cannot demote yourself' });
   }
   run("UPDATE users SET role = :role WHERE id = :id", { ':role': role, ':id': userId });
+  res.json({ ok: true });
+});
+
+// === ROLE MANAGEMENT (owner only) ===
+
+// GET /api/v1/auth/roles — list all roles
+router.get('/roles', requireRole('admin'), (req, res) => {
+  const roles = all("SELECT * FROM roles ORDER BY level ASC");
+  res.json(roles || []);
+});
+
+// POST /api/v1/auth/roles — create a custom role
+router.post('/roles', requireRole('owner'), (req, res) => {
+  const { name, level, description, permissions, color } = req.body;
+  if (!name || typeof level !== 'number') {
+    return res.status(400).json({ error: 'name (string) and level (number 0-100) required' });
+  }
+  if (level < 0 || level > 100) {
+    return res.status(400).json({ error: 'level must be 0-100' });
+  }
+  try {
+    const id = insert(
+      "INSERT INTO roles (name, level, description, permissions, color) VALUES (:name, :level, :desc, :perms, :color)",
+      { ':name': name.toLowerCase(), ':level': level, ':desc': description || null, ':perms': JSON.stringify(permissions || []), ':color': color || null }
+    );
+    res.json({ ok: true, id, name: name.toLowerCase(), level });
+  } catch (err) {
+    if (err.message.includes('UNIQUE')) return res.status(409).json({ error: 'Role already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/v1/auth/roles/:id — update a role
+router.put('/roles/:id', requireRole('owner'), (req, res) => {
+  const { name, level, description, permissions, color } = req.body;
+  const roleId = parseInt(req.params.id);
+  const existing = get("SELECT * FROM roles WHERE id = :id", { ':id': roleId });
+  if (!existing) return res.status(404).json({ error: 'Role not found' });
+
+  // Prevent modifying owner role's level
+  if (existing.name === 'owner' && level !== undefined && level !== 100) {
+    return res.status(400).json({ error: 'Cannot change owner role level' });
+  }
+
+  run("UPDATE roles SET name = COALESCE(:name, name), level = COALESCE(:level, level), description = COALESCE(:desc, description), permissions = COALESCE(:perms, permissions), color = COALESCE(:color, color) WHERE id = :id", {
+    ':name': name?.toLowerCase() || null, ':level': level ?? null, ':desc': description || null,
+    ':perms': permissions ? JSON.stringify(permissions) : null, ':color': color || null, ':id': roleId
+  });
+  res.json({ ok: true });
+});
+
+// DELETE /api/v1/auth/roles/:id — delete a custom role (can't delete defaults)
+router.delete('/roles/:id', requireRole('owner'), (req, res) => {
+  const roleId = parseInt(req.params.id);
+  const existing = get("SELECT * FROM roles WHERE id = :id", { ':id': roleId });
+  if (!existing) return res.status(404).json({ error: 'Role not found' });
+
+  const defaults = ['viewer', 'user', 'manager', 'admin', 'owner'];
+  if (defaults.includes(existing.name)) {
+    return res.status(400).json({ error: 'Cannot delete default roles' });
+  }
+
+  // Check if any users have this role
+  const usersWithRole = get("SELECT COUNT(*) as c FROM users WHERE role = :role", { ':role': existing.name });
+  if (usersWithRole?.c > 0) {
+    return res.status(400).json({ error: `${usersWithRole.c} users have this role. Reassign them first.` });
+  }
+
+  run("DELETE FROM roles WHERE id = :id", { ':id': roleId });
   res.json({ ok: true });
 });
 
