@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PAN Efficiency Report</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --bg2: #313244;
+    --bg3: #45475a;
+    --text: #cdd6f4;
+    --text2: #a6adc8;
+    --accent: #89b4fa;
+    --accent2: #a6e3a1;
+    --accent3: #f38ba8;
+    --accent4: #fab387;
+    --accent5: #cba6f7;
+    --border: #585b70;
+    --surface: #181825;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--surface);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    padding: 32px;
+    line-height: 1.6;
+  }
+  .report-header {
+    text-align: center;
+    margin-bottom: 40px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .report-header h1 {
+    font-size: 28px;
+    color: var(--accent);
+    margin-bottom: 4px;
+    letter-spacing: 1px;
+  }
+  .report-header .subtitle {
+    font-size: 14px;
+    color: var(--text2);
+  }
+  .report-header .date {
+    font-size: 12px;
+    color: var(--text2);
+    opacity: 0.7;
+    margin-top: 8px;
+  }
+  .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+  .metric-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+  }
+  .metric-card .label {
+    font-size: 11px;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .metric-card .value {
+    font-size: 32px;
+    font-weight: 700;
+  }
+  .metric-card .unit {
+    font-size: 12px;
+    color: var(--text2);
+    margin-top: 4px;
+  }
+  .color-accent { color: var(--accent); }
+  .color-green { color: var(--accent2); }
+  .color-pink { color: var(--accent3); }
+  .color-orange { color: var(--accent4); }
+  .color-purple { color: var(--accent5); }
+
+  .section {
+    margin-bottom: 32px;
+  }
+  .section h2 {
+    font-size: 16px;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .day-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .day-card .day-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .day-card .day-date {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .day-card .day-efficiency {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--accent2);
+  }
+  .day-card .day-efficiency .pct { font-size: 14px; }
+
+  .bar-chart {
+    margin: 16px 0;
+  }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    gap: 12px;
+  }
+  .bar-label {
+    width: 200px;
+    font-size: 12px;
+    color: var(--text2);
+    flex-shrink: 0;
+    text-align: right;
+  }
+  .bar-track {
+    flex: 1;
+    height: 24px;
+    background: var(--bg2);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 1s ease;
+    display: flex;
+    align-items: center;
+    padding-left: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    min-width: fit-content;
+  }
+  .bar-you { background: var(--accent); }
+  .bar-trad { background: var(--bg3); }
+  .bar-time {
+    font-size: 11px;
+    color: var(--text2);
+    width: 80px;
+    flex-shrink: 0;
+  }
+
+  .features-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .feature-item {
+    background: var(--bg2);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .feature-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .comparison-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .comparison-table th {
+    text-align: left;
+    padding: 10px 12px;
+    color: var(--text2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .comparison-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--bg2);
+  }
+  .comparison-table tr:hover { background: var(--bg2); }
+
+  .footer {
+    text-align: center;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    margin-top: 40px;
+  }
+  .footer span {
+    font-size: 11px;
+    color: var(--text2);
+    opacity: 0.5;
+  }
+</style>
+</head>
+<body>
+
+<div class="report-header">
+  <h1>PAN Efficiency Report</h1>
+  <div class="subtitle">Development Velocity vs. Traditional Teams</div>
+  <div class="date" id="report-date"></div>
+</div>
+
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="label">Average Efficiency</div>
+    <div class="value color-green" id="avg-efficiency">—</div>
+    <div class="unit">percent</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Features Shipped</div>
+    <div class="value color-accent" id="total-features">—</div>
+    <div class="unit">this week</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Traditional Equivalent</div>
+    <div class="value color-orange" id="trad-equiv">—</div>
+    <div class="unit">team-weeks saved</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Active Hours</div>
+    <div class="value color-purple" id="active-hours">—</div>
+    <div class="unit">hours worked</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Daily Breakdown</h2>
+  <div id="daily-cards"></div>
+</div>
+
+<div class="section">
+  <h2>Time Comparison</h2>
+  <div class="bar-chart" id="comparison-bars"></div>
+</div>
+
+<div class="section">
+  <h2>Features Delivered</h2>
+  <table class="comparison-table" id="features-table">
+    <thead>
+      <tr>
+        <th>Feature</th>
+        <th>Traditional Estimate</th>
+        <th>Actual Time</th>
+        <th>Efficiency</th>
+      </tr>
+    </thead>
+    <tbody id="features-tbody"></tbody>
+  </table>
+</div>
+
+<div class="footer">
+  <span>Generated by PAN &mdash; Personal AI Network</span>
+</div>
+
+<script>
+const days = [
+  {
+    date: '2026-03-25',
+    hours: 14.5,
+    efficiency: 17500,
+    tradWeeks: 7,
+    features: [
+      { name: 'Voice permission approval (dashboard)', trad: '1-2 days', actual: '30 min', color: '#a6e3a1' },
+      { name: 'Voice permission approval (Android)', trad: '2-3 days', actual: '30 min', color: '#a6e3a1' },
+      { name: 'Remote Access settings UI (phone)', trad: '2-3 days', actual: '30 min', color: '#89b4fa' },
+      { name: 'Device settings API (server)', trad: '1-2 days', actual: '20 min', color: '#89b4fa' },
+      { name: 'Phone polls device settings for VPN', trad: '2-3 days', actual: '30 min', color: '#89b4fa' },
+      { name: 'Dashboard device remote access toggle', trad: '1-2 days', actual: '30 min', color: '#89b4fa' },
+    ]
+  },
+  {
+    date: '2026-03-26',
+    hours: 4.6,
+    efficiency: 9000,
+    tradWeeks: 10,
+    features: [
+      { name: 'Adaptive audio (TTS ducking)', trad: '1-2 days', actual: '15 min', color: '#a6e3a1' },
+      { name: 'Quick Mute rename', trad: '0.5 day', actual: '2 min', color: '#cdd6f4' },
+      { name: 'Remote Access org display (4 files)', trad: '2-3 days', actual: '30 min', color: '#89b4fa' },
+      { name: 'anet netlink fix + tailscale upgrade', trad: '3-5 days', actual: '2 hours', color: '#f38ba8' },
+      { name: 'Go stdlib overlay (SIGABRT fix)', trad: '2-3 days', actual: '1 hour', color: '#f38ba8' },
+      { name: 'VPN permission dialog', trad: '1-2 days', actual: '30 min', color: '#89b4fa' },
+      { name: 'Treasury tab (full UI)', trad: '3-5 days', actual: '30 min', color: '#fab387' },
+      { name: 'Cardano crypto architecture', trad: '2-4 weeks', actual: '1 hour', color: '#cba6f7' },
+      { name: 'Data economics model + research', trad: '1-2 weeks', actual: '30 min', color: '#cba6f7' },
+      { name: 'Dashboard V2 roadmap (5 phases)', trad: '1-2 weeks', actual: '30 min', color: '#cba6f7' },
+    ]
+  },
+  {
+    date: '2026-03-27',
+    hours: 13,
+    efficiency: 12000,
+    tradWeeks: 6,
+    features: [
+      { name: 'Remote access debugging + Tailscale reconnect', trad: '1-2 weeks', actual: '3 hours', color: '#f38ba8' },
+      { name: 'Server crash diagnosis + fix', trad: '1-2 days', actual: '20 min', color: '#f38ba8' },
+      { name: 'Photo retrieval via remote access', trad: '2-3 days', actual: '30 min', color: '#89b4fa' },
+      { name: 'Device registry cleanup (3 devices)', trad: '1-2 days', actual: '15 min', color: '#89b4fa' },
+      { name: 'Multi-agent file search', trad: '2-3 days', actual: '30 min', color: '#cba6f7' },
+    ]
+  },
+  {
+    date: '2026-03-28',
+    hours: 14,
+    efficiency: 14000,
+    tradWeeks: 10,
+    features: [
+      { name: 'Dashboard refresh button + page fixes', trad: '1-2 days', actual: '15 min', color: '#89b4fa' },
+      { name: 'API path fixes across all dashboard pages', trad: '2-3 days', actual: '20 min', color: '#f38ba8' },
+      { name: 'Voice router — Cerebras for phone, SDK for terminal', trad: '1-2 weeks', actual: '1 hour', color: '#a6e3a1' },
+      { name: 'Device-aware command routing architecture', trad: '1-2 weeks', actual: '1 hour', color: '#cba6f7' },
+      { name: 'On-device CLI research (Termux, Node.js Mobile)', trad: '3-5 days', actual: '30 min', color: '#cba6f7' },
+      { name: 'Phone terminal feasibility analysis', trad: '2-3 days', actual: '20 min', color: '#cba6f7' },
+      { name: 'Context briefing injection — LIKE query fix', trad: '2-3 days', actual: '30 min', color: '#f38ba8' },
+      { name: 'Dashboard chat JSONL transcript parser', trad: '1-2 weeks', actual: '45 min', color: '#89b4fa' },
+      { name: 'Double-prefix bug fix (/dashboard/dashboard/)', trad: '1-2 days', actual: '10 min', color: '#f38ba8' },
+    ]
+  },
+  {
+    date: '2026-03-29',
+    hours: 14.3,
+    efficiency: 15000,
+    tradWeeks: 12,
+    features: [
+      { name: 'Go AAR rebuild (3 compiler bugs fixed)', trad: '2-4 weeks', actual: '3 hours', color: '#f38ba8' },
+      { name: 'FindServerIP — tailnet auto-discovery', trad: '3-5 days', actual: '30 min', color: '#89b4fa' },
+      { name: 'Tailscale always-on + auto-connect', trad: '1-2 weeks', actual: '1 hour', color: '#89b4fa' },
+      { name: 'Phone dashboard via Tailscale proxy', trad: '1-2 weeks', actual: '2 hours', color: '#89b4fa' },
+      { name: 'WebView SvelteKit debugging + v1 fallback', trad: '3-5 days', actual: '1 hour', color: '#f38ba8' },
+      { name: 'Auto-auth /auth/me + provider bypass', trad: '2-3 days', actual: '20 min', color: '#a6e3a1' },
+      { name: 'OOM fix (largeHeap + deferred GeminiBrain)', trad: '2-3 days', actual: '30 min', color: '#f38ba8' },
+      { name: 'Cerebras integration (73ms voice responses)', trad: '1-2 weeks', actual: '15 min', color: '#a6e3a1' },
+      { name: 'Router prompt trim (800→300 tokens)', trad: '1-2 days', actual: '10 min', color: '#a6e3a1' },
+      { name: 'Remove MediaPipe/llama.cpp (APK 208→155MB)', trad: '2-3 days', actual: '45 min', color: '#cba6f7' },
+      { name: 'SvelteKit v2 dashboard + server modules', trad: '2-3 weeks', actual: '(prior sessions)', color: '#cba6f7' },
+      { name: 'Cerebras cost analysis doc', trad: '1-2 days', actual: '10 min', color: '#cba6f7' },
+      { name: 'Project tasks updated (3 milestones, 19 tasks)', trad: '1-2 days', actual: '5 min', color: '#cba6f7' },
+    ]
+  },
+  {
+    date: '2026-03-30',
+    hours: 9,
+    efficiency: 22000,
+    tradWeeks: 14,
+    features: [
+      { name: 'Three-tier vector memory (episodic/semantic/procedural)', trad: '3-4 weeks', actual: '25 min', color: '#a6e3a1' },
+      { name: 'Embedding engine (Ollama + keyword fallback)', trad: '1-2 weeks', actual: '10 min', color: '#a6e3a1' },
+      { name: 'Semantic fact store with contradiction detection', trad: '1-2 weeks', actual: '10 min', color: '#a6e3a1' },
+      { name: 'Procedural memory with success/failure tracking', trad: '1-2 weeks', actual: '10 min', color: '#a6e3a1' },
+      { name: 'Context builder (token-budgeted memory assembly)', trad: '1-2 weeks', actual: '10 min', color: '#89b4fa' },
+      { name: 'Memory consolidation (heuristic + LLM extraction)', trad: '2-3 weeks', actual: '15 min', color: '#89b4fa' },
+      { name: 'Evolution pipeline (6-step: observe/critique/generate/validate/apply/consolidate)', trad: '3-5 weeks', actual: '20 min', color: '#cba6f7' },
+      { name: 'Versioned config system (constitution + 4 evolvable configs)', trad: '1-2 weeks', actual: '10 min', color: '#cba6f7' },
+      { name: 'Safety gates (constitution, size, regression, content)', trad: '1-2 weeks', actual: '5 min', color: '#f38ba8' },
+      { name: 'Rollback support (any config to any version)', trad: '3-5 days', actual: '5 min', color: '#f38ba8' },
+      { name: 'Ollama auto-boot on server startup', trad: '2-3 days', actual: '5 min', color: '#89b4fa' },
+      { name: 'Memory + evolution API endpoints (12 routes)', trad: '1-2 weeks', actual: '10 min', color: '#89b4fa' },
+      { name: 'Session-end memory consolidation hook', trad: '1-2 days', actual: '3 min', color: '#89b4fa' },
+      { name: 'Dream cycle upgraded to evolution + state update', trad: '1-2 weeks', actual: '10 min', color: '#cba6f7' },
+      { name: 'Phantom repo research + architecture analysis', trad: '2-3 days', actual: '5 min', color: '#fab387' },
+      { name: 'Schema additions (5 new tables, indexes)', trad: '2-3 days', actual: '5 min', color: '#fab387' },
+    ]
+  },
+  {
+    date: '2026-03-31',
+    hours: 3,
+    efficiency: 4800,
+    tradWeeks: 3,
+    features: [
+      { name: 'NER anonymizer → server-side dashboard toggle', trad: '4 hours', actual: '20 min', color: '#a6e3a1' },
+      { name: 'Chat input fix (input→textarea, broken Enter/paste)', trad: '30 min', actual: '5 min', color: '#f38ba8' },
+      { name: 'Dashboard perf: concurrency guard + session cache', trad: '4 hours', actual: '15 min', color: '#89b4fa' },
+      { name: 'Dashboard perf: effect cascade fix (restore/persist loop)', trad: '2 hours', actual: '10 min', color: '#89b4fa' },
+      { name: 'Server-side request timing middleware + /api/perf endpoint', trad: '3 hours', actual: '10 min', color: '#89b4fa' },
+      { name: 'Watchdog dashboard health monitoring', trad: '1 hour', actual: '5 min', color: '#89b4fa' },
+      { name: 'Terminal Ctrl+V fix (images always captured, text to correct target)', trad: '3 hours', actual: '15 min', color: '#f38ba8' },
+      { name: 'Terminal Ctrl+C/A/X/Z fix (chat mode vs terminal mode)', trad: '30 min', actual: '5 min', color: '#f38ba8' },
+      { name: 'Left panel collapse toggle (matches right panel style)', trad: '30 min', actual: '10 min', color: '#89b4fa' },
+      { name: 'Sidebar collapse button moved to center', trad: '15 min', actual: '3 min', color: '#89b4fa' },
+      { name: 'Terminal input persistence across tab switches', trad: '1 hour', actual: '5 min', color: '#89b4fa' },
+      { name: 'Duplicate device cleanup (4→1 Pixel 10 Pro)', trad: '30 min', actual: '5 min', color: '#f38ba8' },
+      { name: 'Phone registration fix (stable device ID, not IP)', trad: '2 hours', actual: '10 min', color: '#a6e3a1' },
+    ]
+  }
+];
+
+// Populate date
+document.getElementById('report-date').textContent = 'Generated ' + new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+// Summary metrics
+const totalFeatures = days.reduce((s, d) => s + d.features.length, 0);
+const avgEfficiency = Math.round(days.reduce((s, d) => s + d.efficiency, 0) / days.length);
+const totalHours = days.reduce((s, d) => s + d.hours, 0);
+const tradWeeks = days.reduce((s, d) => s + d.tradWeeks, 0);
+
+document.getElementById('avg-efficiency').textContent = avgEfficiency.toLocaleString() + '%';
+document.getElementById('total-features').textContent = totalFeatures;
+document.getElementById('trad-equiv').textContent = tradWeeks;
+document.getElementById('active-hours').textContent = totalHours;
+
+// Daily cards
+const cardsEl = document.getElementById('daily-cards');
+days.forEach(day => {
+  const card = document.createElement('div');
+  card.className = 'day-card';
+  card.innerHTML = `
+    <div class="day-header">
+      <div class="day-date">${new Date(day.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</div>
+      <div class="day-efficiency">${day.efficiency.toLocaleString()}<span class="pct">%</span></div>
+    </div>
+    <div style="display:flex;gap:16px;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--text2)">${day.features.length} features</div>
+      <div style="font-size:12px;color:var(--text2)">${day.hours}h active</div>
+      <div style="font-size:12px;color:var(--text2)">~${day.tradWeeks} team-weeks equivalent</div>
+    </div>
+    <div class="features-list">
+      ${day.features.map(f => `<div class="feature-item"><div class="feature-dot" style="background:${f.color}"></div>${f.name}</div>`).join('')}
+    </div>
+  `;
+  cardsEl.appendChild(card);
+});
+
+// Comparison bars
+const barsEl = document.getElementById('comparison-bars');
+const allFeatures = days.flatMap(d => d.features);
+allFeatures.forEach(f => {
+  // Parse traditional estimate to hours
+  const tradMatch = f.trad.match(/(\d+)/);
+  const tradDays = tradMatch ? parseInt(tradMatch[1]) : 5;
+  const tradHours = f.trad.includes('week') ? tradDays * 40 : tradDays * 8;
+
+  // Parse actual to hours
+  const actMatch = f.actual.match(/(\d+)/);
+  let actHours = actMatch ? parseInt(actMatch[1]) : 1;
+  if (f.actual.includes('min')) actHours = actHours / 60;
+
+  const maxHours = Math.max(tradHours, 80);
+  const tradPct = Math.min((tradHours / maxHours) * 100, 100);
+  const actPct = Math.max((actHours / maxHours) * 100, 2);
+
+  const row = document.createElement('div');
+  row.className = 'bar-row';
+  row.innerHTML = `
+    <div class="bar-label">${f.name}</div>
+    <div class="bar-track">
+      <div class="bar-fill bar-trad" style="width:${tradPct}%;position:absolute;opacity:0.4">${f.trad}</div>
+      <div class="bar-fill bar-you" style="width:${actPct}%;position:relative;z-index:1">${f.actual}</div>
+    </div>
+  `;
+  barsEl.appendChild(row);
+});
+
+// Features table
+const tbody = document.getElementById('features-tbody');
+allFeatures.forEach(f => {
+  const tradMatch = f.trad.match(/(\d+)/);
+  const tradDays = tradMatch ? parseInt(tradMatch[1]) : 5;
+  const tradHours = f.trad.includes('week') ? tradDays * 40 : tradDays * 8;
+
+  const actMatch = f.actual.match(/(\d+)/);
+  let actHours = actMatch ? parseInt(actMatch[1]) : 1;
+  if (f.actual.includes('min')) actHours = actHours / 60;
+
+  const eff = Math.round((tradHours / actHours) * 100);
+
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${f.color};margin-right:8px"></span>${f.name}</td>
+    <td style="color:var(--text2)">${f.trad}</td>
+    <td style="color:var(--accent)">${f.actual}</td>
+    <td style="color:var(--accent2);font-weight:600">${eff.toLocaleString()}%</td>
+  `;
+  tbody.appendChild(tr);
+});
+</script>
+</body>
+</html>

@@ -12,13 +12,6 @@ import dev.pan.app.R
 import kotlinx.coroutines.*
 import panvpn.Panvpn
 
-/**
- * Android VpnService that establishes a TUN interface, granting the process
- * elevated network permissions (netlink access) required by tsnet/Tailscale.
- *
- * Without VpnService, SELinux blocks netlink_route_socket on Android,
- * causing tsnet to SIGABRT.
- */
 class PanVpnService : VpnService() {
 
     companion object {
@@ -32,9 +25,7 @@ class PanVpnService : VpnService() {
         var instance: PanVpnService? = null
             private set
 
-        /** Returns null if already authorized, or an Intent for the VPN consent dialog. */
         fun prepare(context: Context): Intent? = VpnService.prepare(context)
-
         fun isEstablished(): Boolean = instance?.vpnInterface != null
     }
 
@@ -64,16 +55,11 @@ class PanVpnService : VpnService() {
 
     private suspend fun connect() {
         try {
-            // Establish TUN interface — this grants the process VPN-level permissions
             if (vpnInterface == null) {
                 vpnInterface = Builder()
                     .setSession("PAN Remote Access")
                     .addAddress("100.100.100.1", 32)
-                    // Use a dummy route (RFC 5737 TEST-NET-2) — tsnet uses userspace
-                    // networking and does NOT need TUN routing. The real Tailscale CGNAT
-                    // range (100.64.0.0/10) was black-holing tsnet's own Dial() calls.
                     .addRoute("198.51.100.0", 24)
-                    // DNS servers so WebView can resolve external domains (fonts, CDN, etc)
                     .addDnsServer("8.8.8.8")
                     .addDnsServer("1.1.1.1")
                     .setMtu(1280)
@@ -81,77 +67,150 @@ class PanVpnService : VpnService() {
                     .establish()
 
                 if (vpnInterface == null) {
-                    Log.e(TAG, "VPN establish() returned null — user may not have granted permission")
+                    Log.e(TAG, "VPN permission denied")
                     updateNotification("VPN permission denied")
                     stopSelf()
                     return
                 }
-                Log.i(TAG, "VPN interface established — netlink now available")
+                Log.i(TAG, "VPN interface established")
             }
 
-            // Now start tsnet with the elevated permissions
             val prefs = getSharedPreferences("pan_vpn", Context.MODE_PRIVATE)
-            val hostname = prefs.getString("hostname", "pan-phone") ?: "pan-phone"
+            // Stable hostname based on device — prevents duplicate tailnet entries on reinstall
+            val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+            val hostname = prefs.getString("hostname", null) ?: "pan-${deviceId.take(6)}"
+            prefs.edit().putString("hostname", hostname).apply()
             val authKey = prefs.getString("auth_key", "") ?: ""
+
             val dataDir = filesDir.absolutePath
+
+            os.Setenv("TMPDIR", dataDir)
+            os.Setenv("HOME", dataDir)
 
             Log.i(TAG, "Starting tsnet as '$hostname'...")
             val result = Panvpn.start(dataDir, hostname, authKey)
-
             prefs.edit().putBoolean("enabled", true).apply()
 
             if (result.isNotEmpty()) {
                 loginUrl = result
                 Log.i(TAG, "Login required: $result")
-                updateNotification("Waiting for login...")
-            } else {
-                loginUrl = null
-                // Discover PAN server on the tailnet using FindServerIP
-                var serverHost = prefs.getString("server_hostname", "") ?: ""
-                if (serverHost.isEmpty()) {
-                    // Try to find any online peer (the PAN server)
-                    val discoveredIp = Panvpn.findServerIP("")
-                    if (discoveredIp.isNotEmpty()) {
-                        serverHost = discoveredIp
-                        Log.i(TAG, "Discovered server at $serverHost via tailnet scan")
-                    } else {
-                        serverHost = "tedgl" // last resort fallback
-                        Log.w(TAG, "No peers found, falling back to hostname: $serverHost")
-                    }
-                } else {
-                    // Try to resolve the configured hostname to a Tailscale IP
-                    val resolvedIp = Panvpn.findServerIP(serverHost)
-                    if (resolvedIp.isNotEmpty()) {
-                        Log.i(TAG, "Resolved $serverHost → $resolvedIp")
-                        serverHost = resolvedIp
-                    }
-                }
-                // Start local proxy that tunnels through tsnet to the PAN server
+                updateNotification("Login required - opening browser...")
+
+                // Open login URL in browser
                 try {
-                    val proxyPort = Panvpn.startProxy(serverHost, 7777)
-                    Log.i(TAG, "Proxy started on localhost:$proxyPort → $serverHost:7777")
-                    prefs.edit().putString("discovered_server_ip", serverHost).apply()
+                    val loginIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(result))
+                    loginIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(loginIntent)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Proxy start failed: ${e.message}")
+                    Log.e(TAG, "Couldn't open login URL: ${e.message}")
                 }
-                Log.i(TAG, "Connected to tailnet")
-                updateNotification("Connected")
+
+                // Poll for login completion — check every 3 seconds for up to 2 minutes
+                Log.i(TAG, "Waiting for login to complete...")
+                updateNotification("Waiting for login...")
+                var loggedIn = false
+                for (attempt in 1..40) {
+                    delay(3000)
+                    try {
+                        val status = Panvpn.getStatus()
+                        if (status.connected && status.ip.isNotEmpty()) {
+                            loggedIn = true
+                            Log.i(TAG, "Login succeeded after ${attempt * 3}s, IP=${status.ip}")
+                            loginUrl = null
+                            break
+                        }
+                    } catch (_: Exception) {}
+                }
+                if (!loggedIn) {
+                    Log.e(TAG, "Login timed out after 120s")
+                    updateNotification("Login timed out")
+                    return
+                }
             }
+
+            // Now connected (either no login needed, or login completed) — find the PAN server
+            loginUrl = null
+            val myIp = Panvpn.getStatus().ip
+            val srvPort = getServerPort()
+            Log.i(TAG, "Connected. Self=$myIp port=$srvPort")
+
+            var serverHost = ""
+
+            // 1. Try saved verified IP first (instant)
+            val savedIp = prefs.getString("verified_server_ip", "") ?: ""
+            if (savedIp.isNotEmpty() && savedIp != myIp) {
+                Log.i(TAG, "Trying saved server $savedIp...")
+                try {
+                    val health = Panvpn.dialHTTP(savedIp, srvPort.toLong(), "/health")
+                    if (health.isNotEmpty()) {
+                        serverHost = savedIp
+                        Log.i(TAG, "Saved server OK: $savedIp")
+                    }
+                } catch (_: Exception) {
+                    Log.i(TAG, "Saved server $savedIp failed")
+                }
+            }
+
+            // 2. Try pan-hub hostname
+            if (serverHost.isEmpty()) {
+                val hubIp = Panvpn.findServerIP("pan-hub")
+                Log.i(TAG, "FindServerIP(pan-hub) = '$hubIp'")
+                if (hubIp.isNotEmpty() && hubIp != myIp) {
+                    try {
+                        val health = Panvpn.dialHTTP(hubIp, srvPort.toLong(), "/health")
+                        if (health.isNotEmpty()) {
+                            serverHost = hubIp
+                            Log.i(TAG, "pan-hub OK: $hubIp")
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // 3. Scan all online peers
+            if (serverHost.isEmpty()) {
+                Log.i(TAG, "Scanning all peers...")
+                val peers = Panvpn.listPeers()
+                for (entry in peers.split("|")) {
+                    val m = Regex("""(.+?)=(.+?)\((.+?)\)""").find(entry) ?: continue
+                    val (name, ip, st) = m.destructured
+                    if (st != "online" || ip == myIp || ip.isEmpty()) continue
+                    try {
+                        val h = Panvpn.dialHTTP(ip, srvPort.toLong(), "/health")
+                        if (h.isNotEmpty()) {
+                            serverHost = ip
+                            Log.i(TAG, "Found: $name at $ip")
+                            break
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            if (serverHost.isEmpty()) {
+                Log.e(TAG, "No PAN server found")
+                updateNotification("No server found")
+                return
+            }
+
+            val proxyPort = Panvpn.startProxy(serverHost, srvPort.toLong())
+            Log.i(TAG, "Proxy: localhost:$proxyPort -> $serverHost:$srvPort")
+            prefs.edit().putString("verified_server_ip", serverHost).apply()
+            updateNotification("Connected")
         } catch (e: Exception) {
             Log.e(TAG, "Connection failed", e)
             updateNotification("Error: ${e.message}")
-            // Don't stop the service — let the user see the error and retry
         }
+    }
+
+    private fun getServerPort(): Int {
+        return try {
+            getSharedPreferences("pan_vpn", Context.MODE_PRIVATE).getInt("server_port", 7777)
+        } catch (_: Exception) { 7777 }
     }
 
     private fun disconnect() {
         serviceScope.launch {
             try { Panvpn.stopProxy() } catch (_: Exception) {}
-            try {
-                Panvpn.stop()
-            } catch (e: Exception) {
-                Log.e(TAG, "Stop failed", e)
-            }
+            try { Panvpn.stop() } catch (e: Exception) { Log.e(TAG, "Stop failed", e) }
             getSharedPreferences("pan_vpn", Context.MODE_PRIVATE)
                 .edit().putBoolean("enabled", false).apply()
         }
@@ -174,17 +233,14 @@ class PanVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        Log.w(TAG, "VPN revoked by system")
+        Log.w(TAG, "VPN revoked")
         disconnect()
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID, "PAN VPN",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "PAN remote access VPN status" }
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .createNotificationChannel(channel)
+        val channel = NotificationChannel(CHANNEL_ID, "PAN VPN", NotificationManager.IMPORTANCE_LOW)
+            .apply { description = "PAN remote access status" }
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
     }
 
     private fun buildNotification(status: String) =
@@ -198,5 +254,9 @@ class PanVpnService : VpnService() {
     private fun updateNotification(status: String) {
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
             .notify(NOTIFICATION_ID, buildNotification(status))
+    }
+
+    private object os {
+        fun Setenv(key: String, value: String) = System.setProperty(key, value)
     }
 }

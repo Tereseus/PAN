@@ -5,10 +5,8 @@
 // new meaningful events have accumulated.
 
 import { all, get, insert } from './db.js';
-import { dream } from './dream.js';
 
 let timer = null;
-let eventsSinceLastUpdate = 0;
 
 async function classify() {
   // Find unprocessed events (ones not yet marked in memory_items)
@@ -35,19 +33,7 @@ async function classify() {
     });
   }
 
-  eventsSinceLastUpdate += events.length;
-  console.log(`[PAN] Marked ${events.length} events as processed (${eventsSinceLastUpdate} since last state update)`);
-
-  // Trigger a state file update if enough events accumulated
-  if (eventsSinceLastUpdate >= 10) {
-    console.log('[PAN] Triggering state file update...');
-    eventsSinceLastUpdate = 0;
-    try {
-      await dream();
-    } catch (err) {
-      console.error('[PAN] State update error:', err.message);
-    }
-  }
+  console.log(`[PAN] Marked ${events.length} events as processed`);
 }
 
 function startClassifier(intervalMs) {

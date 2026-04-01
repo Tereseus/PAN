@@ -1,6 +1,6 @@
 {
   "project_name": "PAN",
-  "last_session_id": "31a355b0-d279-4489-a4ac-4f7ca24c35ad",
+  "last_session_id": "f323ed4e-c451-412d-b2b5-e9b2ca8a4259",
   "claude_project_dir": "C:\\Users\\tzuri\\.claude\\projects\\C--Users-tzuri-OneDrive-Desktop-PAN",
   "previous_paths": [
     "C:\\Users\\tzuri\\OneDrive\\Desktop\\PAN\\service"
@@ -9,47 +9,47 @@
     "C--Users-tzuri-OneDrive-Desktop-PAN-service",
     "C--Users-tzuri-OneDrive-Desktop-PAN"
   ],
-  "last_session_time": "2026-03-29T00:37:40.711Z",
+  "last_session_time": "2026-03-31T23:50:27.033Z",
   "session_history": [
     {
-      "id": "31a355b0-d279-4489-a4ac-4f7ca24c35ad",
-      "time": "2026-03-29T00:37:40.712Z"
+      "id": "f323ed4e-c451-412d-b2b5-e9b2ca8a4259",
+      "time": "2026-03-31T23:50:27.034Z"
     },
     {
-      "id": "20c02f70-ab50-444a-944f-edc53c804bd7",
-      "time": "2026-03-26T02:55:57.555Z"
+      "id": "4fdf920e-58b8-407b-8862-9e05484d194b",
+      "time": "2026-03-31T21:55:48.953Z"
     },
     {
-      "id": "e1c79863-a778-49ff-8250-b747ed6af232",
-      "time": "2026-03-26T02:40:35.432Z"
+      "id": "844d845f-c6b9-48d9-9242-11d32b3433d1",
+      "time": "2026-03-31T21:43:27.918Z"
     },
     {
-      "id": "0e1ec173-b7fa-4471-87a8-ca6ed2ccb743",
-      "time": "2026-03-26T02:30:13.574Z"
+      "id": "fa040950-07ee-4167-a667-9661580ed5d8",
+      "time": "2026-03-31T21:31:06.469Z"
     },
     {
-      "id": "a56fcaf5-6b68-48ac-8db6-25c4909349fc",
-      "time": "2026-03-26T02:02:50.164Z"
+      "id": "7bba9270-6b9a-4b92-835c-404bdf07dc24",
+      "time": "2026-03-31T21:25:07.313Z"
     },
     {
-      "id": "b108c468-bafc-4595-ac81-df0870da717f",
-      "time": "2026-03-26T02:01:51.931Z"
+      "id": "a039ec9f-257f-4d55-988b-eb3e7795bf0e",
+      "time": "2026-03-31T21:00:27.781Z"
     },
     {
-      "id": "13a1cd21-62d0-42bb-8488-a37d9f59d93e",
-      "time": "2026-03-26T01:52:01.359Z"
+      "id": "99bdd527-7967-4a82-8111-27a436ffc62d",
+      "time": "2026-03-31T20:07:58.449Z"
     },
     {
-      "id": "55d85576-db0d-456a-9d11-1a2df2f614ad",
-      "time": "2026-03-26T01:44:47.149Z"
+      "id": "cd7316f3-f6fb-471f-9f20-a2b418c7c992",
+      "time": "2026-03-31T18:42:06.062Z"
     },
     {
-      "id": "e285772a-89d2-4715-bfea-3164e9082c82",
-      "time": "2026-03-26T01:26:02.809Z"
+      "id": "4a49d7f5-add8-4e58-a73b-c43efa62991d",
+      "time": "2026-03-31T16:45:25.805Z"
     },
     {
-      "id": "b76200d5-7856-46f5-970a-1b574730557b",
-      "time": "2026-03-26T00:23:19.566Z"
+      "id": "e7d79a4e-dec4-4530-ac49-1935dd2dab5a",
+      "time": "2026-03-31T16:41:54.970Z"
     }
   ]
 }

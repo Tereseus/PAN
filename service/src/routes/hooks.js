@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
+import { run, get, all, insert, detectProject, logEvent } from '../db.js';
 import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission } from '../terminal.js';
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { consolidate as consolidateMemory } from '../memory/consolidation.js';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
 const router = Router();
@@ -46,14 +47,7 @@ router.post('/PermissionRequest', async (req, res) => {
     console.log(`[PAN Hook] PermissionRequest: ${description.substring(0, 100)} — waiting for mobile response...`);
 
     // Store the event
-    const dataStr = JSON.stringify(payload);
-    const eventId = insert(`INSERT INTO events (session_id, event_type, data, user_id) VALUES (:sid, :type, :data, :uid)`, {
-      ':sid': sessionId,
-      ':type': 'PermissionRequest',
-      ':data': dataStr,
-      ':uid': req.user?.id || null
-    });
-    indexEventFTS(eventId, 'PermissionRequest', dataStr);
+    logEvent(sessionId, 'PermissionRequest', payload, req.user?.id || null);
 
     // Poll for mobile user's response — check every 1 second for up to 115 seconds
     const MAX_WAIT = 115000;
@@ -119,37 +113,34 @@ function injectSessionContext(cwd) {
 
     // Build readable context from multiple sources
 
-    // 1. Recent conversation — last 15 exchanges for this project
-    // JSON.stringify escapes backslashes, so the DB stores C:\\Users\\ not C:\Users\
-    // We need to match the JSON-escaped version (double backslashes) in the LIKE pattern
-    const fwd = cwd.replace(/\\/g, '/');
-    const jsonEscaped = cwd.replace(/\\/g, '\\\\');
-    const recentEvents = all(
-      `SELECT event_type, data, created_at FROM events
-       WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
-       AND (data LIKE :pp1 OR data LIKE :pp2)
-       ORDER BY created_at DESC LIMIT 15`,
-      { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%' }
-    );
-
-    // 2. Read Claude's auto-memory files for this project
-    const memoryDir = join(process.env.USERPROFILE || 'C:\\Users\\tzuri', '.claude', 'projects',
-      'C--Users-tzuri-OneDrive-Desktop-' + fwd.split('/').pop(), 'memory');
-    let memoryContent = [];
-    if (existsSync(memoryDir)) {
-      const files = readdirSync(memoryDir).filter(f => f.endsWith('.md') && f !== 'MEMORY.md');
-      for (const f of files) {
-        try {
-          const raw = readFileSync(join(memoryDir, f), 'utf8');
-          // Strip frontmatter, keep the useful content
-          const body = raw.replace(/^---[\s\S]*?---\s*/, '').trim();
-          if (body.length > 20) memoryContent.push(body);
-        } catch {}
-      }
+    // 0. Feature registry — so every Claude session knows all PAN capabilities
+    const featuresPath = join(cwd, 'FEATURES.md');
+    let featuresContent = '';
+    if (existsSync(featuresPath)) {
+      featuresContent = readFileSync(featuresPath, 'utf8');
     }
 
-    // 3. Open tasks for this project
+    // 1. Recent conversation — last 15 exchanges for this project, within 48h
+    // Use project→sessions join instead of fragile LIKE on data (backslash escaping broke matching)
+    const fwd = cwd.replace(/\\/g, '/');
     const project = get("SELECT id, name FROM projects WHERE path = :p", { ':p': fwd });
+    let recentEvents = [];
+    if (project) {
+      recentEvents = all(
+        `SELECT e.event_type, e.data, e.created_at FROM events e
+         JOIN sessions s ON e.session_id = s.id
+         WHERE s.project_id = :pid
+         AND (e.event_type = 'UserPromptSubmit' OR e.event_type = 'Stop')
+         AND e.created_at > datetime('now', '-48 hours', 'localtime')
+         ORDER BY e.created_at DESC LIMIT 15`,
+        { ':pid': project.id }
+      );
+    }
+
+    // NOTE: Claude Code already reads .claude/projects/.../memory/ natively.
+    // No need to inject them here — that was causing everything to appear twice.
+
+    // 3. Open tasks for this project (project already fetched above for events query)
     let tasks = [];
     if (project) {
       tasks = all(
@@ -166,14 +157,11 @@ function injectSessionContext(cwd) {
     briefing += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
     briefing += `**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with something like "Last time we were working on..." and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.\n\n`;
 
-    // Memory summaries — the key context
-    if (memoryContent.length > 0) {
-      briefing += `### What You Should Know\n\n`;
-      for (const m of memoryContent) {
-        // Trim each memory to keep it readable
-        const trimmed = m.length > 600 ? m.substring(0, 600) + '...' : m;
-        briefing += trimmed + '\n\n';
-      }
+    // Feature registry — canonical list of PAN capabilities
+    if (featuresContent) {
+      briefing += `### PAN Features (Auto-Injected)\n\n`;
+      briefing += `The complete feature registry is in FEATURES.md. Reference it when the user mentions any PAN feature.\n`;
+      briefing += `Key: You ARE PAN. These are YOUR features. When the user says "remember your features" or "you can do X" — this is what they mean.\n\n`;
     }
 
     // Open tasks
@@ -201,8 +189,8 @@ function injectSessionContext(cwd) {
       }
       briefing += '\n';
 
-      // Include the last few messages at full length so the fresh session has real context
-      const lastMessages = chatItems.slice(-6); // last 6 messages (3 exchanges)
+      // Include last few messages at full length for context (trimmed to reduce CLAUDE.md bloat)
+      const lastMessages = chatItems.slice(-4); // last 4 messages (2 exchanges)
       if (lastMessages.length > 0) {
         briefing += `### Last Messages (Full)\n`;
         for (const e of lastMessages) {
@@ -296,19 +284,15 @@ router.post('/:eventType', (req, res) => {
         ':id': sessionId,
         ':tp': payload.transcript_path || null
       });
+
+      // Trigger memory consolidation in background (don't block the response)
+      consolidateMemory({ useLLM: false }).catch(err =>
+        console.error('[PAN Hook] Memory consolidation error:', err.message)
+      );
     }
 
-    // Store every event
-    const dataStr = JSON.stringify(payload);
-    const eventId = insert(`INSERT INTO events (session_id, event_type, data, user_id) VALUES (:sid, :type, :data, :uid)`, {
-      ':sid': sessionId,
-      ':type': eventType,
-      ':data': dataStr,
-      ':uid': req.user?.id || null
-    });
-
-    // Index into FTS for instant search
-    indexEventFTS(eventId, eventType, dataStr);
+    // Store every event (logEvent handles insert + FTS indexing)
+    logEvent(sessionId, eventType, payload, req.user?.id || null);
 
     // On Stop: extract ALL assistant text messages from the transcript for this turn
     // so the chat shows every "white dot" response, not just the last one
@@ -339,13 +323,7 @@ router.post('/:eventType', (req, res) => {
         // (the last one is already in the Stop event as last_assistant_message)
         if (assistantTexts.length > 1) {
           for (let i = 0; i < assistantTexts.length - 1; i++) {
-            const msgData = JSON.stringify({ text: assistantTexts[i], cwd: cwd });
-            const msgId = insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, 'AssistantMessage', :data)`, {
-              ':sid': sessionId,
-              ':data': msgData,
-              ':uid': req.user?.id || null
-            });
-            indexEventFTS(msgId, 'AssistantMessage', msgData);
+            logEvent(sessionId, 'AssistantMessage', { text: assistantTexts[i], cwd: cwd }, req.user?.id || null);
           }
         }
       } catch (err) {

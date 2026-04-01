@@ -24,10 +24,12 @@
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* xterm.js terminal fill container */
-#terminal-container .xterm { height: 100% !important; }
-#terminal-container .xterm-viewport { overflow-y: scroll !important; }
-#terminal-container .xterm-screen { min-height: 100%; }
+/* xterm.js terminal fill container — lock width, prevent voice-to-text overflow */
+#terminal-container { overflow: hidden; }
+#terminal-container .xterm { height: 100% !important; width: 100% !important; max-width: 100% !important; overflow: hidden !important; }
+#terminal-container .xterm-viewport { overflow-y: scroll !important; overflow-x: hidden !important; max-width: 100% !important; }
+#terminal-container .xterm-screen { min-height: 100%; width: 100% !important; max-width: 100% !important; overflow: hidden !important; }
+#terminal-container .xterm-helper-textarea { position: absolute !important; max-width: 100% !important; overflow: hidden !important; white-space: pre-wrap !important; word-break: break-all !important; resize: none !important; contain: strict !important; }
 
 /* ========== TERMINAL EFFECTS ========== */
 
@@ -89,10 +91,18 @@
 }
 /* Constrain Windows voice-to-text / IME composition overlay */
 #terminal-container .xterm .composition-view {
-  max-width: 80% !important;
+  position: absolute !important;
+  max-width: 60% !important;
   overflow: hidden !important;
   word-break: break-all !important;
+  white-space: pre-wrap !important;
+  contain: content !important;
 }
+/* Lock terminal layout — never allow horizontal growth from voice-to-text or long output */
+.terminal-layout { max-width: 100vw !important; overflow: hidden !important; }
+#terminal-container { overflow: hidden !important; }
+/* Clip any overflow from IME/voice-to-text elements */
+#terminal-container textarea, #terminal-container input { max-width: 100% !important; overflow: hidden !important; }
 
 /* Thin minimal scrollbars everywhere */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -102,12 +112,14 @@
 ::-webkit-scrollbar-corner { background: transparent; }
 /* Firefox */
 * { scrollbar-width: thin; scrollbar-color: #6c708644 transparent; }
+html { overflow-x: hidden !important; max-width: 100vw !important; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
-  overflow-x: hidden;
+  overflow-x: hidden !important;
+  max-width: 100vw !important;
 }
 
 /* Header */
@@ -156,6 +168,7 @@ body {
 
 .page { display: none; }
 .page.active { display: block; }
+#chat.page.active { display: flex; }
 
 /* Cards */
 .card {
@@ -666,6 +679,37 @@ body {
     flex-direction: column;
   }
   /* Chat panel: messages scroll, input stays at bottom */
+  /* === Smart Chat Scroll === */
+  .smart-scroll-wrap { position: relative; }
+  .smart-scroll-wrap .scroll-bookmark {
+    position: absolute; right: 4px; width: 8px; height: 8px;
+    background: var(--accent); border-radius: 50%; z-index: 10;
+    cursor: pointer; opacity: 0.8; transition: opacity 0.2s;
+    box-shadow: 0 0 4px var(--accent);
+  }
+  .smart-scroll-wrap .scroll-bookmark:hover { opacity: 1; transform: scale(1.3); }
+  .smart-scroll-nav {
+    position: absolute; bottom: 12px; right: 16px; z-index: 20;
+    display: flex; flex-direction: column; gap: 4px; align-items: center;
+  }
+  .smart-scroll-nav button {
+    width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--bg2); color: var(--text); font-size: 14px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, transform 0.15s;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+  .smart-scroll-nav button:hover { background: var(--accent); color: #000; transform: scale(1.1); }
+  .smart-scroll-nav button.has-bookmark { border-color: var(--accent); }
+  .new-messages-pill {
+    position: absolute; bottom: 56px; left: 50%; transform: translateX(-50%);
+    z-index: 20; background: var(--accent); color: #000; padding: 4px 14px;
+    border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4); display: none;
+    animation: pillPulse 2s ease-in-out infinite;
+  }
+  @keyframes pillPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.7; } }
+
   #mob-chat-messages {
     flex: 1;
     overflow-y: auto;
@@ -831,7 +875,8 @@ body {
   <h1><span>ΠΑΝ</span> Dashboard <span style="font-size:11px;color:var(--text2);font-weight:400">v0.3.1</span></h1>
   <button onclick="refreshDashboard()" title="Refresh" style="background:none;border:1px solid var(--border);color:var(--text2);cursor:pointer;border-radius:var(--radius);padding:2px 6px;font-size:11px;margin-left:4px">↻</button>
   <div class="tabs">
-    <button class="tab active" data-page="terminal">Terminal</button>
+    <button class="tab active" data-page="chat">Chat</button>
+    <button class="tab" data-page="terminal">Terminal</button>
     <button class="tab" data-page="automation">Automation</button>
     <button class="tab" data-page="projects">Projects</button>
     <button class="tab" data-page="conversations">Conversations</button>
@@ -841,7 +886,8 @@ body {
   </div>
   <div class="mobile-nav">
     <select id="mobile-page-select" onchange="switchTab(this.value)">
-      <option value="terminal" selected>Terminal</option>
+      <option value="chat" selected>Chat</option>
+      <option value="terminal">Terminal</option>
       <option value="automation">Automation</option>
       <option value="projects">Projects</option>
       <option value="conversations">Conversations</option>
@@ -867,12 +913,41 @@ body {
 
 <div class="content">
 
+
   <!-- PROJECTS PAGE -->
   <div id="projects" class="page">
     <div id="projects-overview" style="margin-bottom:24px">
       <div class="loading">Loading projects...</div>
     </div>
     <div id="projects-detail"></div>
+  </div>
+
+  <!-- CHAT PAGE -->
+  <div id="chat" class="page active" style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+    <div style="padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0">
+      <select id="global-project-select" onchange="onGlobalProjectChange()"
+        style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:15px;font-weight:500;outline:none">
+        <option value="">Select project...</option>
+      </select>
+    </div>
+    <div class="smart-scroll-wrap" style="flex:1;position:relative;overflow:hidden">
+      <div id="chat-page-messages" style="height:100%;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="color:var(--text2);text-align:center;padding:40px 20px;font-size:14px">
+          Select a project above
+        </div>
+      </div>
+      <div class="new-messages-pill" id="chat-new-pill" onclick="smartScroll.jumpToBottom()">New messages</div>
+      <div class="smart-scroll-nav" id="chat-scroll-nav">
+        <button id="scroll-up-btn" title="Jump to bookmark (Up Arrow)" onclick="smartScroll.jumpToBookmark()">&#8593;</button>
+        <button id="scroll-down-btn" title="Jump to bottom (Down Arrow)" onclick="smartScroll.jumpToBottom()">&#8595;</button>
+      </div>
+    </div>
+    <div style="padding:8px 12px;border-top:1px solid var(--border);display:flex;gap:8px;background:var(--bg);flex-shrink:0">
+      <input type="text" id="chat-page-input" placeholder="Message PAN..."
+        style="flex:1;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:14px;outline:none"
+        onkeydown="if(event.key==='Enter')sendChatMessage()">
+      <button class="btn btn-primary" style="padding:10px 20px;white-space:nowrap" onclick="sendChatMessage()">Send</button>
+    </div>
   </div>
 
   <!-- TERMINAL PAGE -->
@@ -1032,7 +1107,7 @@ body {
   </div>
 
   <!-- CONVERSATIONS PAGE -->
-  <div id="conversations" class="page active">
+  <div id="conversations" class="page">
     <div class="toolbar">
       <select id="convo-filter" onchange="convoOffset=0;loadConversations()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
         <option value="all">All</option>
@@ -1756,6 +1831,11 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 function loadPage(page) {
   switch(page) {
+    case 'chat':
+      loadChatPageHistory();
+      if (chatPageRefreshInterval) clearInterval(chatPageRefreshInterval);
+      chatPageRefreshInterval = setInterval(loadChatPageHistory, 5000);
+      break;
     case 'projects': loadProjects(); break;
     case 'terminal': initTerminal(); break;
     case 'automation': loadAutomation(); break;
@@ -1788,6 +1868,11 @@ function switchTab(pageName) {
   if (pageName !== 'sensors' && sensorPollInterval) {
     clearInterval(sensorPollInterval);
     sensorPollInterval = null;
+  }
+  // Stop chat page refresh when leaving chat tab
+  if (pageName !== 'chat' && chatPageRefreshInterval) {
+    clearInterval(chatPageRefreshInterval);
+    chatPageRefreshInterval = null;
   }
   // Sync mobile dropdown
   const mobileSelect = document.getElementById('mobile-page-select');
@@ -1850,7 +1935,16 @@ function switchMobilePanel(panel) {
   if (btns[btnIdx[panel]]) btns[btnIdx[panel]].classList.add('active');
 
   // Load data
-  if (panel === 'left-chat') { loadMobileChat(); startPermissionPolling(); }
+  if (panel === 'left-chat') {
+    loadMobileChat();
+    startPermissionPolling();
+    // Start auto-refresh for mobile chat (5s, same as desktop)
+    if (window._mobChatInterval) clearInterval(window._mobChatInterval);
+    window._mobChatInterval = setInterval(loadMobileChat, 5000);
+  } else {
+    // Stop chat refresh when not on chat tab
+    if (window._mobChatInterval) { clearInterval(window._mobChatInterval); window._mobChatInterval = null; }
+  }
   if (panel === 'left-project') loadMobileProject();
   if (panel === 'right') loadMobileTasks();
 }
@@ -2175,6 +2269,333 @@ async function toggleMobileTask(taskId, currentStatus) {
   loadMobileTasks();
 }
 
+// ========== SMART SCROLL ==========
+const smartScroll = {
+  bookmark: null,       // saved scrollTop position
+  prevMsgCount: 0,      // for new message detection
+  container: null,
+
+  init() {
+    this.container = document.getElementById('chat-page-messages');
+    if (!this.container) return;
+
+    // Arrow key handler — only when chat page is active and input not focused
+    document.addEventListener('keydown', (e) => {
+      const chatPage = document.getElementById('chat');
+      if (!chatPage || !chatPage.classList.contains('active')) return;
+      if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.jumpToBottom();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this.jumpToBookmark();
+      }
+    });
+
+    // Track scroll to update nav button states and detect "scrolled up"
+    this.container.addEventListener('scroll', () => {
+      this.updateNavState();
+    });
+  },
+
+  jumpToBottom() {
+    if (!this.container) return;
+    // Save current position as bookmark before jumping
+    if (!this.isNearBottom()) {
+      this.bookmark = this.container.scrollTop;
+      this.updateBookmarkDot();
+    }
+    this.container.scrollTo({ top: this.container.scrollHeight, behavior: 'smooth' });
+    this.hideNewPill();
+    this.updateNavState();
+  },
+
+  jumpToBookmark() {
+    if (!this.container || this.bookmark === null) return;
+    this.container.scrollTo({ top: this.bookmark, behavior: 'smooth' });
+    this.updateNavState();
+  },
+
+  isNearBottom() {
+    if (!this.container) return true;
+    return (this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight) < 80;
+  },
+
+  // Called after chat content updates
+  onContentUpdate() {
+    if (!this.container) return;
+    const msgCount = this.container.children.length;
+    // If new messages arrived while scrolled up, show pill
+    if (msgCount > this.prevMsgCount && this.prevMsgCount > 0 && !this.isNearBottom()) {
+      const diff = msgCount - this.prevMsgCount;
+      this.showNewPill(diff);
+    }
+    this.prevMsgCount = msgCount;
+    this.updateNavState();
+  },
+
+  showNewPill(count) {
+    const pill = document.getElementById('chat-new-pill');
+    if (pill) {
+      pill.textContent = count + ' new message' + (count > 1 ? 's' : '') + ' \u2193';
+      pill.style.display = 'block';
+    }
+  },
+
+  hideNewPill() {
+    const pill = document.getElementById('chat-new-pill');
+    if (pill) pill.style.display = 'none';
+  },
+
+  updateNavState() {
+    const upBtn = document.getElementById('scroll-up-btn');
+    const downBtn = document.getElementById('scroll-down-btn');
+    if (upBtn) {
+      if (this.bookmark !== null) {
+        upBtn.classList.add('has-bookmark');
+        upBtn.title = 'Jump to bookmark (Up Arrow)';
+      } else {
+        upBtn.classList.remove('has-bookmark');
+        upBtn.title = 'No bookmark set';
+      }
+    }
+    if (downBtn) {
+      if (this.isNearBottom()) {
+        downBtn.style.opacity = '0.4';
+      } else {
+        downBtn.style.opacity = '1';
+      }
+    }
+    // Hide pill if at bottom
+    if (this.isNearBottom()) this.hideNewPill();
+  },
+
+  updateBookmarkDot() {
+    // Remove old dot
+    const old = document.querySelector('.scroll-bookmark');
+    if (old) old.remove();
+
+    if (this.bookmark === null || !this.container) return;
+
+    // Calculate dot position relative to scrollbar
+    const pct = this.bookmark / this.container.scrollHeight;
+    const wrap = this.container.closest('.smart-scroll-wrap');
+    if (!wrap) return;
+    const dot = document.createElement('div');
+    dot.className = 'scroll-bookmark';
+    dot.style.top = (pct * wrap.clientHeight) + 'px';
+    dot.title = 'Bookmark — click or press Up Arrow';
+    dot.onclick = () => this.jumpToBookmark();
+    wrap.appendChild(dot);
+  },
+
+  clearBookmark() {
+    this.bookmark = null;
+    const dot = document.querySelector('.scroll-bookmark');
+    if (dot) dot.remove();
+    this.updateNavState();
+  }
+};
+
+// Init smart scroll after DOM ready
+document.addEventListener('DOMContentLoaded', () => smartScroll.init());
+// Also init on page switch (in case chat page loads later)
+setTimeout(() => smartScroll.init(), 1000);
+
+// ========== CHAT PAGE ==========
+let chatProjects = [];
+let globalActiveProjectPath = '';
+let globalProjectsLoaded = false;
+
+async function loadGlobalProjects() {
+  if (globalProjectsLoaded) return;
+  const select = document.getElementById('global-project-select');
+  if (!select) return;
+  try {
+    const res = await fetch('/dashboard/api/projects');
+    chatProjects = await res.json();
+    chatProjects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.path;
+      opt.textContent = p.name;
+      select.appendChild(opt);
+    });
+    // Auto-select PAN project
+    const pan = chatProjects.find(p => p.name === 'PAN');
+    if (pan) {
+      select.value = pan.path;
+      globalActiveProjectPath = pan.path;
+    }
+    globalProjectsLoaded = true;
+  } catch {}
+}
+
+function onGlobalProjectChange() {
+  const select = document.getElementById('global-project-select');
+  globalActiveProjectPath = select.value;
+  // Reload current page with new project context
+  const activePage = document.querySelector('.page.active');
+  if (activePage) loadPage(activePage.id);
+}
+
+let chatLastSentTime = 0;
+let chatPageSessionId = '';
+let chatPageLastHash = '';
+let chatPageRefreshInterval = null;
+
+// Chat page load — renamed to avoid collision with Terminal sidebar's loadChatHistory
+async function loadChatPageHistory() {
+  await loadGlobalProjects();
+  if (globalActiveProjectPath) {
+    loadChatForProject(globalActiveProjectPath);
+  } else {
+    const msgs = document.getElementById('chat-page-messages');
+    if (msgs) msgs.innerHTML = '<div style="color:var(--text2);text-align:center;padding:40px 20px">Select a project above to see conversations</div>';
+  }
+}
+
+async function loadChatForProject(projectPath) {
+  const msgs = document.getElementById('chat-page-messages');
+  if (!msgs) return;
+  // Don't refresh while waiting for Claude's response
+  if (Date.now() - chatLastSentTime < 5000 && document.getElementById('chat-typing')) return;
+
+  try {
+    // Find the latest real Claude session for this project
+    let sessionId = '';
+    const probe = await fetch('/dashboard/api/events?limit=5&project_path=' + encodeURIComponent(projectPath));
+    const probeData = await probe.json();
+    for (const evt of (probeData.events || [])) {
+      const sid = evt.session_id || '';
+      if (sid && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+        sessionId = sid;
+        break;
+      }
+    }
+
+    if (!sessionId) {
+      if (!msgs.children.length || chatPageLastHash === 'empty') return;
+      chatPageLastHash = 'empty';
+      msgs.innerHTML = '<div style="color:var(--text2);text-align:center;padding:40px 20px">No Claude session found for this project</div>';
+      return;
+    }
+
+    // Load the actual transcript (same data the Terminal sidebar shows)
+    const tRes = await fetch('/dashboard/api/transcript?session_id=' + encodeURIComponent(sessionId) + '&limit=200');
+    const tData = await tRes.json();
+    const messages = tData.messages || [];
+
+    if (!messages.length) {
+      if (chatPageLastHash === 'no-msgs') return;
+      chatPageLastHash = 'no-msgs';
+      msgs.innerHTML = '<div style="color:var(--text2);text-align:center;padding:40px 20px">No conversation yet</div>';
+      return;
+    }
+
+    // Build bubble HTML
+    let html = '';
+    for (const msg of messages) {
+      if (msg.role === 'user') {
+        const text = msg.text ? escapeHtml(msg.text) : '';
+        if (!text) continue;
+        html += '<div style="background:var(--accent);color:#000;border-radius:16px 16px 4px 16px;padding:10px 14px;font-size:14px;align-self:flex-end;max-width:80%;word-break:break-word">' + text + '</div>';
+      } else if (msg.type === 'text') {
+        const text = msg.text ? escapeHtml(msg.text) : '';
+        if (!text) continue;
+        html += '<div style="background:var(--bg2);color:var(--text);border-radius:16px 16px 16px 4px;padding:10px 14px;font-size:14px;align-self:flex-start;max-width:80%;word-break:break-word;white-space:pre-wrap">' + text + '</div>';
+      } else if (msg.type === 'tool') {
+        html += '<div style="background:transparent;border-left:2px solid var(--border);padding:2px 8px;font-size:11px;color:var(--text2);align-self:flex-start;max-width:80%;font-family:monospace;word-break:break-all">' + escapeHtml(msg.text || '') + '</div>';
+      }
+    }
+
+    // Only update DOM if content changed
+    const newHash = messages.length + ':' + html.length;
+    if (newHash === chatPageLastHash) return;
+    chatPageLastHash = newHash;
+
+    const wasNearBottom = (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight) < 80;
+    const prevScroll = msgs.scrollTop;
+    msgs.innerHTML = html;
+
+    if (wasNearBottom || !msgs._initialDone) {
+      msgs._initialDone = true;
+      msgs.scrollTop = msgs.scrollHeight;
+    } else {
+      msgs.scrollTop = prevScroll;
+    }
+    smartScroll.onContentUpdate();
+  } catch (err) {
+    console.error('[Chat Page] load error:', err);
+  }
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById('chat-page-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  const msgs = document.getElementById('chat-page-messages');
+  // Show user message immediately
+  const userBubble = document.createElement('div');
+  userBubble.style.cssText = 'background:var(--accent);color:#000;border-radius:16px 16px 4px 16px;padding:10px 14px;font-size:14px;align-self:flex-end;max-width:80%;word-break:break-word';
+  userBubble.textContent = text;
+  msgs.appendChild(userBubble);
+
+  // Show typing indicator
+  const typing = document.createElement('div');
+  typing.id = 'chat-typing';
+  typing.style.cssText = 'background:var(--bg2);color:var(--text2);border-radius:16px 16px 16px 4px;padding:10px 14px;font-size:14px;align-self:flex-start';
+  typing.textContent = 'Thinking...';
+  msgs.appendChild(typing);
+  msgs.scrollTop = msgs.scrollHeight;
+
+  // Find the terminal session for this project
+  const selectedProject = chatProjects.find(p => p.path === globalActiveProjectPath);
+  const projectName = selectedProject ? selectedProject.name : 'PAN';
+  const sessionId = 'dash-' + projectName.toLowerCase().replace(/\s+/g, '-');
+
+  try {
+    const res = await fetch('/api/v1/terminal/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, session_id: sessionId })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      typing.textContent = 'No active terminal session for ' + projectName;
+      typing.style.color = 'var(--accent3)';
+      typing.removeAttribute('id');
+      return;
+    }
+
+    // Poll transcript every 2s for up to 60s waiting for Claude's response
+    chatLastSentTime = Date.now();
+    const prevHash = chatPageLastHash;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      chatLastSentTime = Date.now();
+      await loadChatForProject(globalActiveProjectPath);
+      // If transcript changed, Claude responded
+      if (chatPageLastHash !== prevHash) {
+        const t = document.getElementById('chat-typing');
+        if (t) t.remove();
+        break;
+      }
+    }
+    chatLastSentTime = 0;
+    const t = document.getElementById('chat-typing');
+    if (t) { t.textContent = 'Claude may still be processing...'; t.style.opacity = '0.5'; t.removeAttribute('id'); }
+  } catch (err) {
+    typing.textContent = 'Error: ' + err.message;
+    typing.style.color = 'var(--accent3)';
+    typing.removeAttribute('id');
+    chatLastSentTime = 0;
+  }
+}
+
 async function sendMobileCommand() {
   const input = document.getElementById('mob-terminal-input');
   const text = input.value.trim();
@@ -2195,6 +2616,13 @@ async function sendMobileCommand() {
     // User just sent a message — scroll to bottom so they see it
     msgs.scrollTop = msgs.scrollHeight;
   }
+  // Show typing indicator
+  const typing = document.createElement('div');
+  typing.id = 'mob-chat-typing';
+  typing.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 4px;padding:10px 12px;margin-bottom:8px;font-size:14px;color:var(--text2)';
+  typing.textContent = 'Thinking...';
+  if (msgs) { msgs.appendChild(typing); msgs.scrollTop = msgs.scrollHeight; }
+
   try {
     const res = await fetch('/api/v1/terminal/send', {
       method: 'POST',
@@ -2203,17 +2631,31 @@ async function sendMobileCommand() {
     });
     const result = await res.json();
     if (!result.ok && msgs) {
-      const err = document.createElement('div');
-      err.style.cssText = 'color:var(--danger);font-size:12px;text-align:center;padding:4px';
-      err.textContent = 'Failed — no active desktop terminal';
-      msgs.appendChild(err);
+      typing.textContent = 'Failed — no active desktop terminal for ' + (mobActiveProject?.name || targetSession);
+      typing.style.color = 'var(--danger)';
+      typing.removeAttribute('id');
+      return;
     }
+
+    // Poll transcript every 2s for up to 60s waiting for Claude's response
+    const prevHtml = msgs ? msgs._lastHtml : '';
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      await loadMobileChat();
+      // If transcript changed, Claude responded
+      if (msgs && msgs._lastHtml !== prevHtml) {
+        const t = document.getElementById('mob-chat-typing');
+        if (t) t.remove();
+        break;
+      }
+    }
+    const t = document.getElementById('mob-chat-typing');
+    if (t) { t.textContent = 'Claude may still be processing...'; t.style.opacity = '0.5'; t.removeAttribute('id'); }
   } catch (e) {
     if (msgs) {
-      const err = document.createElement('div');
-      err.style.cssText = 'color:var(--danger);font-size:12px;text-align:center;padding:4px';
-      err.textContent = 'Network error: ' + e.message;
-      msgs.appendChild(err);
+      typing.textContent = 'Network error: ' + e.message;
+      typing.style.color = 'var(--danger)';
+      typing.removeAttribute('id');
     }
   }
 }
@@ -3445,6 +3887,7 @@ const termTabs = new Map();
 let activeTabId = null;
 let tabCounter = 0;
 let termInitialized = false;
+const reconnectingSessionIds = new Set(); // Prevent multiple reconnects for same session
 
 // Legacy aliases for code that reads these
 let term = null;
@@ -3960,17 +4403,13 @@ async function addRightBug() {
   await loadTerminalSidebar(termCurrentProject.id, termCurrentProject.name);
 }
 
-function initTerminal() {
-  loadTerminalProjects();
+async function initTerminal() {
+  // Await project loading so dropdown is populated before we try to auto-select
+  await loadTerminalProjects();
 
   // On mobile, skip xterm.js entirely — show simple data panels
   if (isMobile()) {
     switchMobilePanel(currentMobilePanel || 'left-chat');
-    if (!chatRefreshInterval) {
-      chatRefreshInterval = setInterval(() => {
-        if (currentMobilePanel === 'left-chat') loadMobileChat();
-      }, 10000);
-    }
     return;
   }
 
@@ -3996,48 +4435,43 @@ function initTerminal() {
   }
 
   // Auto-connect: check for existing server sessions, reconnect them as tabs
-  setTimeout(async () => {
-    let reconnected = false;
-    try {
-      const [sessData, projectsData] = await Promise.all([
-        fetch('/api/v1/terminal/sessions').then(r => r.json()),
-        api('/api/projects')
-      ]);
-      if (sessData.sessions && sessData.sessions.length > 0) {
-        for (const s of sessData.sessions) {
-          if (!s.id.startsWith('dash-') && !s.id.startsWith('mob-')) continue;
-          // Only auto-reconnect primary sessions (no timestamp suffix)
-          // e.g. "dash-pan" reconnects, "dash-pan-1742761234567" doesn't
-          const basePart = s.id.replace(/^(dash|mob)-/, '');
-          if (/\d{10,}$/.test(basePart)) continue; // has timestamp = secondary tab, skip
+  let reconnected = false;
+  try {
+    const sessData = await fetch('/api/v1/terminal/sessions').then(r => r.json());
+    if (sessData.sessions && sessData.sessions.length > 0) {
+      const projectsData = await api('/api/projects');
+      for (const s of sessData.sessions) {
+        if (!s.id.startsWith('dash-') && !s.id.startsWith('mob-')) continue;
+        // Only auto-reconnect primary sessions (no timestamp suffix)
+        const basePart = s.id.replace(/^(dash|mob)-/, '');
+        if (/\d{10,}$/.test(basePart)) continue;
 
-          const matchedProject = projectsData.find(p => p.name === s.project);
-          const pid = matchedProject ? matchedProject.id : null;
-          createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true);
-          reconnected = true;
-        }
+        const matchedProject = projectsData.find(p => p.name === s.project);
+        const pid = matchedProject ? matchedProject.id : null;
+        createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true);
+        reconnected = true;
       }
-    } catch {}
-
-    if (!reconnected) {
-      // No existing sessions — auto-select PAN project
-      const select = document.getElementById('terminal-project');
-      for (const opt of select.options) {
-        if (opt.dataset && opt.dataset.name === 'PAN') {
-          select.value = opt.value;
-          switchTerminalProject();
-          return;
-        }
-      }
-      // Show placeholder if no projects
-      const container = document.getElementById('terminal-container');
-      container.innerHTML = `<div style="color:var(--text2);padding:40px;text-align:center">
-        <div style="font-size:48px;margin-bottom:16px">◈</div>
-        <div style="font-size:16px;margin-bottom:8px">PAN Terminal</div>
-        <div style="font-size:13px">Select a project to start</div>
-      </div>`;
     }
-  }, 500);
+  } catch {}
+
+  if (!reconnected) {
+    // No existing sessions — auto-select PAN project and launch Claude
+    const select = document.getElementById('terminal-project');
+    for (const opt of select.options) {
+      if (opt.dataset && opt.dataset.name === 'PAN') {
+        select.value = opt.value;
+        switchTerminalProject();
+        return;
+      }
+    }
+    // Show placeholder if no projects
+    const container = document.getElementById('terminal-container');
+    container.innerHTML = `<div style="color:var(--text2);padding:40px;text-align:center">
+      <div style="font-size:48px;margin-bottom:16px">◈</div>
+      <div style="font-size:16px;margin-bottom:8px">PAN Terminal</div>
+      <div style="font-size:13px">Select a project to start</div>
+    </div>`;
+  }
 }
 
 // ─── Multi-tab terminal management ───
@@ -4097,8 +4531,8 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
   });
   resizeObs.observe(parentContainer);
 
-  // WebSocket connection
-  doFit();
+  // WebSocket connection — delay fit until flex layout settles
+  requestAnimationFrame(() => { doFit(); requestAnimationFrame(doFit); });
   const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
   const wsUrl = `${wsProto}://${location.hostname}:${location.port || 7777}/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${tabTerm.cols}&rows=${tabTerm.rows}`;
 
@@ -4112,39 +4546,9 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
     if (activeTabId === tabId) tabTerm.focus();
     document.getElementById('terminal-host').textContent = '';
 
-    // Auto-launch Claude for project tabs (not Shell, not reconnects)
-    if (projectName && projectName !== 'Shell' && !isReconnect) {
-      setTimeout(async () => {
-        if (ws.readyState === 1 && !tabData.claudeStarted) {
-          tabData.claudeStarted = true;
-
-          // Fresh session with context briefing — avoids --continue bloat
-          // Step 1: Write briefing to a temp file in the project dir
-          // Step 2: Launch claude with a prompt that reads the briefing file
-          let briefingReady = false;
-          try {
-            const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
-            if (briefingData.briefing) {
-              // Write briefing to temp file via shell, then launch claude reading it
-              const escaped = briefingData.briefing.replace(/'/g, "'\\''");
-              ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
-              briefingReady = true;
-              // Small delay to let file write complete
-              await new Promise(r => setTimeout(r, 500));
-            }
-          } catch {}
-
-          // Launch Claude with the initial prompt as a CLI argument
-          // This makes Claude respond immediately — no waiting for ❯ prompt detection
-          if (briefingReady) {
-            const initPrompt = 'This is a fresh session. Read the PAN session context injected into CLAUDE.md. Summarize what we were working on last time — start with Last time we were working on and list the key topics. Then ask what I want to work on next.';
-            ws.send(JSON.stringify({ type: 'input', data: `claude --permission-mode auto "${initPrompt.replace(/"/g, '\\"')}"\n` }));
-          } else {
-            ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
-          }
-        }
-      }, 1500);
-    }
+    // Claude auto-launch is handled SERVER-SIDE in terminal.js
+    // The server prints "ΠΑΝ remembers.." and launches Claude with full context
+    // Client only needs to connect and display output
   };
 
   ws.onmessage = (event) => {
@@ -4182,7 +4586,41 @@ function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
     } catch {}
   };
 
-  ws.onclose = () => { tabTerm.write('\r\n\x1b[38;5;243m[Disconnected]\x1b[0m\r\n'); };
+  ws.onclose = () => {
+    tabTerm.write('\r\n\x1b[38;5;243m[Disconnected]\x1b[0m\r\n');
+    // Auto-reconnect after server restart — but only ONE reconnect per sessionId
+    if (!reconnectingSessionIds.has(sessionId)) {
+      reconnectingSessionIds.add(sessionId);
+      tabData.claudeStarted = false;
+      let attempts = 0;
+      const tryReconnect = () => {
+        attempts++;
+        if (attempts > 30) {
+          tabTerm.write('\x1b[38;5;204m[Gave up reconnecting after 30 attempts]\x1b[0m\r\n');
+          reconnectingSessionIds.delete(sessionId);
+          return;
+        }
+        tabTerm.write(`\x1b[38;5;243m[Reconnecting... attempt ${attempts}]\x1b[0m\r\n`);
+        fetch('/health').then(r => {
+          if (r.ok) {
+            reconnectingSessionIds.delete(sessionId);
+            // Remove ALL old tabs for this session (prevents duplicates)
+            for (const [tid, td] of termTabs) {
+              if (td.sessionId === sessionId) {
+                td.container.remove();
+                termTabs.delete(tid);
+              }
+            }
+            // Create fresh tab — isReconnect=false so Claude auto-launches
+            createTab(sessionId, projectName, cwd, projectId, false);
+          } else {
+            setTimeout(tryReconnect, 3000);
+          }
+        }).catch(() => setTimeout(tryReconnect, 3000));
+      };
+      setTimeout(tryReconnect, 2000);
+    }
+  };
 
   // Copy/paste
   tabTerm.attachCustomKeyEventHandler((ev) => {
@@ -5104,7 +5542,7 @@ async function startDashboard() {
   if (hashPage && document.getElementById(hashPage)) {
     switchTab(hashPage);
   } else {
-    switchTab('terminal');
+    switchTab('chat');
   }
 }
 

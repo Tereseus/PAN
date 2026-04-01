@@ -15,7 +15,7 @@
 //   - Phone notifications (via /api/v1/actions queue)
 //   - Console log for terminal users
 
-import { all, get, insert, run } from './db.js';
+import { all, get, run, logEvent } from './db.js';
 import { claude } from './claude.js';
 
 let timer = null;
@@ -213,14 +213,10 @@ async function orchestrate() {
          WHERE status = 'pending' ORDER BY priority DESC LIMIT 5`
       );
 
-      insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-        ':sid': 'orchestrator-' + Date.now(),
-        ':type': 'OrchestratorSummary',
-        ':data': JSON.stringify({
-          pending_count: count,
-          top_actions: actions.map(a => ({ id: a.id, type: a.action_type, title: a.title, priority: a.priority })),
-          timestamp: Date.now(),
-        }),
+      logEvent('orchestrator-' + Date.now(), 'OrchestratorSummary', {
+        pending_count: count,
+        top_actions: actions.map(a => ({ id: a.id, type: a.action_type, title: a.title, priority: a.priority })),
+        timestamp: Date.now(),
       });
     }
   } catch (err) {

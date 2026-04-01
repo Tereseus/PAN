@@ -1,6 +1,8 @@
 import { Router } from 'express';
-import { all, get, run, insert, DB_PATH } from '../db.js';
+import { all, get, run, insert, DB_PATH, syncProjects, anonymizeEventData } from '../db.js';
 import { getFindings, updateFinding, scout } from '../scout.js';
+import { memory } from '../memory/index.js';
+import { evolve, getHistory as getEvolutionHistory, rollback, getEvolvableConfigs, readConfig } from '../evolution/engine.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,6 +12,42 @@ const __dirname2 = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = join(__dirname2, '..', 'data', 'photos');
 
 const router = Router();
+
+// === Performance tracking ===
+const perfLog = []; // ring buffer of last 100 requests
+const PERF_MAX = 100;
+const SLOW_MS = 2000; // log warning if a request takes longer than this
+
+function perfMiddleware(req, res, next) {
+  const start = Date.now();
+  const route = req.path;
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    const entry = { route, ms, status: res.statusCode, ts: new Date().toISOString() };
+    perfLog.push(entry);
+    if (perfLog.length > PERF_MAX) perfLog.shift();
+    if (ms > SLOW_MS) {
+      console.warn(`[PAN Dashboard] SLOW ${route} — ${ms}ms (status ${res.statusCode})`);
+    }
+  });
+  next();
+}
+router.use(perfMiddleware);
+
+// GET /dashboard/api/perf — recent request performance
+router.get('/api/perf', (_req, res) => {
+  const sorted = [...perfLog].sort((a, b) => b.ms - a.ms);
+  const slowest = sorted.slice(0, 10);
+  const avg = perfLog.length ? Math.round(perfLog.reduce((s, e) => s + e.ms, 0) / perfLog.length) : 0;
+  const slow = perfLog.filter(e => e.ms > SLOW_MS).length;
+  res.json({
+    total_requests: perfLog.length,
+    avg_ms: avg,
+    slow_requests: slow,
+    slowest,
+    recent: perfLog.slice(-20)
+  });
+});
 
 // Password verification for delete operations
 // Password is stored as SHA-256 hash in the settings table
@@ -334,6 +372,7 @@ router.get('/api/search', (req, res) => {
 
 // GET /dashboard/api/events?type=X&limit=50&offset=0&date=2026-03-20&q=search
 router.get('/api/events', (req, res) => {
+  const _t0 = Date.now();
   const limit = Math.min(parseInt(req.query.limit) || 50, 500);
   const offset = parseInt(req.query.offset) || 0;
   const type = req.query.type || null;
@@ -362,13 +401,13 @@ router.get('/api/events', (req, res) => {
   }
   const projectPath = req.query.project_path || null;
   if (projectPath) {
-    // Match events whose cwd contains this project path
-    // Events store cwd with JSON-escaped backslashes (\\\\) — normalize and match both forms
-    const fwd = projectPath.replace(/\\/g, '/');                    // C:/Users/tzuri/.../PAN
-    const bk = fwd.replace(/\//g, '\\\\');                          // C:\\Users\\tzuri\\...\\PAN (as in JSON)
-    where.push("(data LIKE :pp1 OR data LIKE :pp2)");
-    params[':pp1'] = `%${bk}%`;
-    params[':pp2'] = `%${fwd}%`;
+    // Use project→sessions join for reliable matching (LIKE on data had backslash escaping bugs)
+    const fwd = projectPath.replace(/\\/g, '/');
+    const proj = get("SELECT id FROM projects WHERE path = :p", { ':p': fwd });
+    if (proj) {
+      where.push("session_id IN (SELECT id FROM sessions WHERE project_id = :proj_id)");
+      params[':proj_id'] = proj.id;
+    }
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
@@ -378,6 +417,15 @@ router.get('/api/events', (req, res) => {
     `SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT :limit OFFSET :offset`,
     { ...params, ':limit': limit, ':offset': offset }
   );
+
+  // Server-side NER anonymization when requested
+  if (req.query.anonymize === 'true') {
+    const anonymized = events.map(e => {
+      const { data: anonData, totalReplacements } = anonymizeEventData(e.data);
+      return { ...e, data: anonData, pii_stripped: totalReplacements };
+    });
+    return res.json({ events: anonymized, total: total?.count || 0, limit, offset });
+  }
 
   res.json({ events, total: total?.count || 0, limit, offset });
 });
@@ -621,6 +669,8 @@ router.get('/api/conversations', (req, res) => {
 
 // GET /dashboard/api/projects
 router.get('/api/projects', (req, res) => {
+  // Always rescan disk for .pan files so new projects appear on refresh
+  syncProjects();
   const projects = all(`SELECT * FROM projects ORDER BY name`);
   res.json(projects);
 });
@@ -1144,6 +1194,113 @@ router.get('/api/open-tabs', (req, res) => {
     ORDER BY ot.tab_index
   `);
   res.json(tabs);
+});
+
+// === VECTOR MEMORY API ===
+
+// GET /dashboard/api/memory/stats — memory system overview
+router.get('/api/memory/stats', (req, res) => {
+  const stats = memory.getStats();
+  res.json(stats);
+});
+
+// GET /dashboard/api/memory/recall — semantic search across all memory tiers
+router.get('/api/memory/recall', async (req, res) => {
+  const { q, limit = 10, budget = 50000 } = req.query;
+  if (!q) return res.status(400).json({ error: 'q parameter required' });
+  try {
+    const result = await memory.buildContext(q, { tokenBudget: parseInt(budget) });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /dashboard/api/memory/consolidate — trigger memory consolidation
+router.post('/api/memory/consolidate', async (req, res) => {
+  try {
+    const result = await memory.consolidate({ useLLM: true });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /dashboard/api/memory/episodes — list episodic memories
+router.get('/api/memory/episodes', async (req, res) => {
+  const { q, limit = 20 } = req.query;
+  if (q) {
+    const results = await memory.episodic.recall(q, { limit: parseInt(limit) });
+    return res.json(results);
+  }
+  res.json(memory.episodic.getRecent(parseInt(limit)));
+});
+
+// GET /dashboard/api/memory/facts — list semantic facts
+router.get('/api/memory/facts', async (req, res) => {
+  const { q, category, limit = 20 } = req.query;
+  if (q) {
+    const results = await memory.semantic.recall(q, { limit: parseInt(limit), category });
+    return res.json(results);
+  }
+  res.json(memory.semantic.getActive(category));
+});
+
+// POST /dashboard/api/memory/facts — store a new fact
+router.post('/api/memory/facts', async (req, res) => {
+  const { subject, predicate, object, description, category, confidence } = req.body;
+  if (!subject || !predicate || !object) {
+    return res.status(400).json({ error: 'subject, predicate, and object required' });
+  }
+  try {
+    const id = await memory.semantic.store({ subject, predicate, object, description, category, confidence });
+    res.json({ ok: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /dashboard/api/memory/procedures — list procedural memories
+router.get('/api/memory/procedures', async (req, res) => {
+  const { q, limit = 10 } = req.query;
+  if (q) {
+    const results = await memory.procedural.recall(q, { limit: parseInt(limit) });
+    return res.json(results);
+  }
+  res.json(all('SELECT * FROM procedural_memories ORDER BY success_count DESC LIMIT 50'));
+});
+
+// === EVOLUTION API ===
+
+// POST /dashboard/api/evolution/run — trigger evolution cycle manually
+router.post('/api/evolution/run', async (req, res) => {
+  try {
+    const result = await evolve();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /dashboard/api/evolution/history — version history
+router.get('/api/evolution/history', (req, res) => {
+  const { limit = 20 } = req.query;
+  res.json(getEvolutionHistory(parseInt(limit)));
+});
+
+// GET /dashboard/api/evolution/config — current evolved config
+router.get('/api/evolution/config', (req, res) => {
+  const configs = getEvolvableConfigs();
+  const constitution = readConfig('constitution');
+  res.json({ constitution, ...configs });
+});
+
+// POST /dashboard/api/evolution/rollback — rollback a config file
+router.post('/api/evolution/rollback', (req, res) => {
+  const { file, version } = req.body;
+  if (!file || !version) return res.status(400).json({ error: 'file and version required' });
+  const success = rollback(file, parseInt(version));
+  res.json({ ok: success });
 });
 
 export default router;

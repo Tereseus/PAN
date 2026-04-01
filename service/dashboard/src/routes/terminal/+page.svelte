@@ -1,15 +1,16 @@
 <script>
 	import { onMount } from 'svelte';
 	import { api, wsUrl } from '$lib/api.js';
-	import { getActiveProject, setActiveProject, sortProjects } from '$lib/stores.svelte.js';
+	import { getActiveProject, setActiveProject, sortProjects, getTerminalInput, setTerminalInput } from '$lib/stores.svelte.js';
 
 	// --- State ---
 	let projects = $state([]);
 	let tabs = $state([]);
 	let activeTabId = $state(null);
-	let leftTab = $state('chat'); // 'chat' | 'project'
+	let leftTab = $state('transcript'); // 'transcript' | 'project'
 	let rightSection = $state('tasks'); // 'tasks' | 'bugs' | 'setup' | 'custom-N'
 	let rightPanelCollapsed = $state(false);
+	let leftPanelCollapsed = $state(false);
 	let rightMilestoneFilter = $state(null);
 	let hostLabel = $state('');
 	let sessionsCount = $state(0);
@@ -25,9 +26,22 @@
 	let termContainerEl;
 	let chatSidebarEl;
 
+	// Terminal input bar — persisted across tab switches
+	let terminalInputText = $state(getTerminalInput());
+	let terminalInputEl;
+	let pastedImages = $state([]); // {dataUrl, path} — images waiting to be sent
+	let uploadingImages = $state(0); // count of images still uploading
+	let directMode = $state(false); // true = typing goes directly to terminal
+	let pendingSend = $state(false); // queued send waiting for image upload or text paste
+	let pasteInProgress = $state(false); // clipboard read in progress
+
 	// Intervals
 	let chatRefreshInterval = null;
 	let termInitialized = false;
+
+	// Performance guards
+	let loadingChatHistory = false;
+	let lastChatSessionKey = '';
 
 	// Tab counter
 	let tabCounter = 0;
@@ -173,10 +187,19 @@
 			}
 		}
 
-		// ResizeObserver
+		// ResizeObserver — only re-fit if terminal container size changed enough to matter
 		let resizeTimer = null;
-		const resizeObs = new ResizeObserver(() => {
+		let lastObsWidth = 0, lastObsHeight = 0;
+		const resizeObs = new ResizeObserver((entries) => {
 			if (activeTabId !== tabId) return;
+			const entry = entries[0];
+			if (!entry) return;
+			const w = Math.round(entry.contentRect.width);
+			const h = Math.round(entry.contentRect.height);
+			// Skip if height changed by less than one row (~20px) — avoids flash from input bar resize
+			if (Math.abs(w - lastObsWidth) < 10 && Math.abs(h - lastObsHeight) < 20) return;
+			lastObsWidth = w;
+			lastObsHeight = h;
 			if (resizeTimer) clearTimeout(resizeTimer);
 			resizeTimer = setTimeout(doFit, 300);
 		});
@@ -241,6 +264,7 @@
 						}
 						case 'info':
 							tabData.host = msg.host || '';
+							if (msg.claudeLaunched) tabData.claudeStarted = true; // server already launched Claude — don't duplicate
 							if (activeTabId === tabId) {
 								hostLabel = `${msg.host} \u2014 ${msg.project || 'shell'}`;
 							}
@@ -253,7 +277,7 @@
 							tabTerm.write('\r\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\r\n');
 							break;
 						case 'chat_update':
-							if (leftTab === 'chat') {
+							if (leftTab === 'transcript') {
 								setTimeout(loadChatHistory, 500);
 							}
 							break;
@@ -288,6 +312,9 @@
 						doFit();
 						startPing();
 						newWs.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
+
+						// Claude auto-launch is handled server-side (terminal.js)
+						// Do NOT launch from client — causes duplicate "ΠΑΝ remembers.."
 					};
 					newWs.onmessage = handleMessage;
 					newWs.onclose = () => {
@@ -305,32 +332,11 @@
 				if (tabTerm.cols > 0 && tabTerm.rows > 0) {
 					ws.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
 				}
-				if (activeTabId === tabId) tabTerm.focus();
+				if (activeTabId === tabId && terminalInputEl) terminalInputEl.focus();
 				startPing();
 
-				// Auto-launch Claude for project tabs
-				if (projectName && projectName !== 'Shell' && !isReconnect) {
-					setTimeout(async () => {
-						if (ws.readyState === 1 && !tabData.claudeStarted) {
-							tabData.claudeStarted = true;
-							let briefingReady = false;
-							try {
-								const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
-								if (briefingData.briefing) {
-									ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
-									briefingReady = true;
-									await new Promise(r => setTimeout(r, 500));
-								}
-							} catch {}
-
-							if (briefingReady) {
-								ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
-							} else {
-								ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
-							}
-						}
-					}, 1500);
-				}
+				// Claude auto-launch is handled server-side (terminal.js)
+				// Do NOT launch from client — causes duplicate "ΠΑΝ remembers.."
 			};
 
 			ws.onmessage = handleMessage;
@@ -343,9 +349,10 @@
 			ws.onerror = () => {};
 		});
 
-		// Copy/paste key handler
+		// Key handler: block xterm from processing paste/copy, let browser handle natively
 		tabTerm.attachCustomKeyEventHandler((ev) => {
 			if (ev.type !== 'keydown') return true;
+			// Ctrl+C: copy selection
 			if (ev.ctrlKey && ev.key === 'c') {
 				const sel = tabTerm.getSelection();
 				if (sel && sel.length > 0) {
@@ -355,54 +362,13 @@
 				}
 				return true;
 			}
-			if ((ev.ctrlKey && ev.key === 'v') || (ev.ctrlKey && ev.shiftKey && ev.key === 'V')) {
-				ev.preventDefault();
-				ev.stopPropagation();
-				navigator.clipboard.read().then(async items => {
-					for (const item of items) {
-						const imageType = item.types.find(t => t.startsWith('image/'));
-						if (imageType) {
-							const blob = await item.getType(imageType);
-							const reader = new FileReader();
-							reader.onload = async () => {
-								const base64 = reader.result.split(',')[1];
-								try {
-									const resp = await fetch('/api/v1/clipboard-image', {
-										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ data: base64, mimeType: imageType })
-									});
-									const result = await resp.json();
-									if (result.ok) {
-										const unixPath = result.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
-										if (tabData.ws && tabData.ws.readyState === 1) {
-											tabData.ws.send(JSON.stringify({ type: 'input', data: unixPath + ' ' }));
-										}
-									}
-								} catch (err) {
-									tabTerm.write('\r\n\x1b[38;5;196m[Image paste failed: ' + err.message + ']\x1b[0m');
-								}
-							};
-							reader.readAsDataURL(blob);
-							return;
-						}
-					}
-					const text = await navigator.clipboard.readText();
-					if (text && tabData.ws && tabData.ws.readyState === 1) {
-						tabData.ws.send(JSON.stringify({ type: 'input', data: text }));
-					}
-				}).catch(() => {
-					navigator.clipboard.readText().then(text => {
-						if (text && tabData.ws && tabData.ws.readyState === 1) {
-							tabData.ws.send(JSON.stringify({ type: 'input', data: text }));
-						}
-					});
-				});
-				return false;
-			}
 			if (ev.ctrlKey && ev.shiftKey && ev.key === 'C') {
 				const sel = tabTerm.getSelection();
 				if (sel) navigator.clipboard.writeText(sel);
+				return false;
+			}
+			// Block xterm from handling Ctrl+V — let browser fire paste event on our textarea
+			if ((ev.ctrlKey && ev.key === 'v') || (ev.ctrlKey && ev.shiftKey && ev.key === 'V')) {
 				return false;
 			}
 			return true;
@@ -449,11 +415,11 @@
 			try {
 				tab.fitAddon.fit();
 				tab.term.refresh(0, tab.term.rows - 1);
-				tab.term.focus();
 				if (tab.ws && tab.ws.readyState === 1) {
 					tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
 				}
 			} catch {}
+			if (terminalInputEl) terminalInputEl.focus();
 		}, 100);
 		setTimeout(() => {
 			try {
@@ -509,12 +475,26 @@
 		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 	}
 
+	function renderChatText(text) {
+		let html = escapeHtml(text);
+		const imgStyle = 'max-width:100%;max-height:150px;border-radius:4px;margin:4px 0;display:block;cursor:pointer';
+		// Render clipboard image references as inline images (click to open full size)
+		html = html.replace(/\[Image:?\s*source:?\s*[^\]]*pan-clipboard[/\\](clipboard_\d+\.\w+)[^\]]*\]/gi,
+			(_, filename) => `<img src="/clipboard/${filename}" style="${imgStyle}" onclick="window.open('/clipboard/${filename}','_blank')" />`);
+		// Also match raw paths like C:/WINDOWS/TEMP/pan-clipboard/clipboard_123.png
+		html = html.replace(/(C:[/\\](?:WINDOWS[/\\]TEMP|Users[^\s]*)[/\\]pan-clipboard[/\\](clipboard_\d+\.\w+))/gi,
+			(_, _full, filename) => `<img src="/clipboard/${filename}" style="${imgStyle}" onclick="window.open('/clipboard/${filename}','_blank')" />`);
+		return html;
+	}
+
 	async function loadChatHistory() {
 		const active = getActiveTab();
 		if (!active) {
 			chatBubbles = [];
 			return;
 		}
+		if (loadingChatHistory) return; // concurrency guard
+		loadingChatHistory = true;
 
 		try {
 			const sessionId = active.sessionId || '';
@@ -554,15 +534,23 @@
 				return;
 			}
 
+			// Skip expensive transcript re-fetch if sessions haven't changed
+			const sessionKey = sessionIds.join(',');
+			if (sessionKey === lastChatSessionKey && chatBubbles.length > 0) {
+				return;
+			}
+
 			const allMessages = [];
 			await Promise.all(sessionIds.map(async (sid, idx) => {
-				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300');
-				if (data && data.messages) {
-					for (const msg of data.messages) {
-						msg._sessionIdx = idx;
-						allMessages.push(msg);
+				try {
+					const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300');
+					if (data && data.messages) {
+						for (const msg of data.messages) {
+							msg._sessionIdx = idx;
+							allMessages.push(msg);
+						}
 					}
-				}
+				} catch {}
 			}));
 
 			allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
@@ -601,15 +589,29 @@
 				}
 			}
 
-			chatBubbles = newBubbles;
+			// Only update if content actually changed (prevents scroll reset on every refresh)
+			const newKey = newBubbles.map(b => b.type + ':' + (b.text || '').slice(0, 80)).join('|');
+			const oldKey = chatBubbles.map(b => b.type + ':' + (b.text || '').slice(0, 80)).join('|');
+			if (newKey === oldKey) return; // no change — don't touch DOM or scroll
 
-			// Auto-scroll to bottom
+			// Only auto-scroll if user was already at bottom (don't yank while reading)
+			const wasAtBottom = !chatSidebarEl || (chatSidebarEl.scrollHeight - chatSidebarEl.scrollTop - chatSidebarEl.clientHeight < 40);
+			const savedScroll = chatSidebarEl?.scrollTop;
+
+			chatBubbles = newBubbles;
+			lastChatSessionKey = sessionKey;
+
 			await tick();
-			if (chatSidebarEl) {
+			if (wasAtBottom && chatSidebarEl) {
 				chatSidebarEl.scrollTop = chatSidebarEl.scrollHeight;
+			} else if (chatSidebarEl && savedScroll !== undefined) {
+				// Restore scroll position after DOM re-render
+				chatSidebarEl.scrollTop = savedScroll;
 			}
 		} catch (err) {
 			console.error('[PAN Chat] loadChatHistory error:', err);
+		} finally {
+			loadingChatHistory = false;
 		}
 	}
 
@@ -623,7 +625,7 @@
 	async function loadTerminalSidebar(projectId, projectName) {
 		const active = getActiveTab();
 		if (!projectId) {
-			if (leftTab === 'chat') loadChatHistory();
+			if (leftTab === 'transcript') loadChatHistory();
 			return;
 		}
 
@@ -642,7 +644,7 @@
 			console.error('Failed to load sidebar data:', e);
 		}
 
-		if (leftTab === 'chat') loadChatHistory();
+		if (leftTab === 'transcript') loadChatHistory();
 	}
 
 	function pctColor(pct) {
@@ -766,6 +768,114 @@
 		return sectionsData.find(s => s.id === id);
 	}
 
+	// ==================== Terminal Input Bar ====================
+
+	function sendTerminalInput() {
+		const tab = getActiveTab();
+		if (!tab?.ws || tab.ws.readyState !== 1) return;
+		if (uploadingImages > 0 || pasteInProgress) { pendingSend = true; return; } // queue
+
+		// Build full input: typed text + image paths already in terminal, just \r to confirm
+		const typed = terminalInputText.trim();
+		if (typed) {
+			tab.ws.send(JSON.stringify({ type: 'input', data: typed + '\r' }));
+		} else {
+			tab.ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+		}
+
+		// Clean up
+		terminalInputText = '';
+		setTerminalInput('');
+		pastedImages = [];
+		if (terminalInputEl) {
+			terminalInputEl.value = '';
+			terminalInputEl.style.height = 'auto';
+		}
+	}
+
+	function handleTerminalKeydown(e) {
+		const tab = getActiveTab();
+		if (!tab?.ws || tab.ws.readyState !== 1) return;
+
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			e.stopPropagation();
+			sendTerminalInput();
+		} else if (e.key === 'Backspace' && !terminalInputText) {
+			// Empty textarea — forward backspace to terminal
+			e.preventDefault();
+			tab.ws.send(JSON.stringify({ type: 'input', data: '\x7f' }));
+		} else if (e.key === 'Tab') {
+			e.preventDefault();
+			tab.ws.send(JSON.stringify({ type: 'input', data: '\t' }));
+		} else if (e.key === 'ArrowUp' && !terminalInputText) {
+			e.preventDefault();
+			tab.ws.send(JSON.stringify({ type: 'input', data: '\x1b[A' }));
+		} else if (e.key === 'ArrowDown' && !terminalInputText) {
+			e.preventDefault();
+			tab.ws.send(JSON.stringify({ type: 'input', data: '\x1b[B' }));
+		} else if (e.ctrlKey && e.key.length === 1) {
+			// In chat mode, let browser handle Ctrl+C/V/A/X/Z natively
+			if (!directMode && 'cvaxz'.includes(e.key.toLowerCase())) return;
+			e.preventDefault();
+			const code = e.key.charCodeAt(0) - 96;
+			if (code > 0 && code < 27) {
+				tab.ws.send(JSON.stringify({ type: 'input', data: String.fromCharCode(code) }));
+			}
+		}
+	}
+
+	function handleTerminalInputEvent(e) {
+		// Auto-resize textarea
+		if (terminalInputEl) {
+			terminalInputEl.style.height = 'auto';
+			terminalInputEl.style.height = Math.min(terminalInputEl.scrollHeight, 118) + 'px';
+		}
+		// Persist input across tab switches
+		setTerminalInput(terminalInputText);
+	}
+
+	// Handle paste in the input bar (text and images)
+	function handleTerminalPaste(e) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		const tab = getActiveTab();
+
+		for (const item of items) {
+			if (item.type.startsWith('image/')) {
+				e.preventDefault();
+				const file = item.getAsFile();
+				if (!file) continue;
+				const reader = new FileReader();
+				reader.onload = async () => {
+					const base64 = reader.result.split(',')[1];
+					try {
+						const resp = await fetch('/api/v1/clipboard-image', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ data: base64, mimeType: item.type })
+						});
+						const result = await resp.json();
+						if (result.ok && tab?.ws && tab.ws.readyState === 1) {
+							const unixPath = result.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
+							tab.ws.send(JSON.stringify({ type: 'input', data: unixPath + ' ' }));
+						}
+					} catch (err) {
+						console.error('[PAN] Image paste failed:', err);
+					}
+				};
+				reader.readAsDataURL(file);
+				return;
+			}
+		}
+		// Text paste — send directly to terminal
+		const text = e.clipboardData?.getData('text');
+		if (text && tab?.ws && tab.ws.readyState === 1) {
+			e.preventDefault();
+			tab.ws.send(JSON.stringify({ type: 'input', data: text }));
+		}
+	}
+
 	// ==================== Init ====================
 
 	onMount(() => {
@@ -773,7 +883,7 @@
 
 		// Start chat refresh
 		chatRefreshInterval = setInterval(() => {
-			if (leftTab === 'chat') loadChatHistory();
+			if (leftTab === 'transcript') loadChatHistory();
 		}, 10000);
 
 		// Auto-connect: wait for projects to load, then start terminal
@@ -816,6 +926,104 @@
 			}
 		}, 300);
 
+		// Alt+V focuses the input bar, Ctrl+V pastes via Clipboard API
+		const handleKeyDown = async (e) => {
+			if (e.altKey && e.key === 'v') {
+				e.preventDefault();
+				terminalInputEl?.focus();
+				return;
+			}
+			// Intercept Ctrl+V globally — handle images always, text only when not in textarea
+			if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
+				const inTextarea = document.activeElement === terminalInputEl;
+				e.preventDefault();
+				e.stopPropagation();
+				try {
+					const items = await navigator.clipboard.read();
+					let foundImage = false;
+					for (const item of items) {
+						const imageType = item.types.find(t => t.startsWith('image/'));
+						if (imageType) {
+							foundImage = true;
+							const blob = await item.getType(imageType);
+							const dataUrl = URL.createObjectURL(blob);
+							// Upload image, send path to terminal immediately, show preview
+							uploadingImages++;
+							pastedImages = [...pastedImages, { dataUrl, path: null }]; // preview while uploading
+							const previewIdx = pastedImages.length - 1;
+							const reader = new FileReader();
+							reader.onload = async () => {
+								const base64 = reader.result.split(',')[1];
+								try {
+									const resp = await fetch('/api/v1/clipboard-image', {
+										method: 'POST',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ data: base64, mimeType: imageType })
+									});
+									const result = await resp.json();
+									if (result.ok) {
+										const unixPath = result.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
+										// Send path to terminal immediately (no \r — user confirms with Enter)
+										const t = getActiveTab();
+										if (t?.ws && t.ws.readyState === 1) {
+											t.ws.send(JSON.stringify({ type: 'input', data: unixPath + ' ' }));
+										}
+										// Update preview with path
+										pastedImages = pastedImages.map((img, i) => i === previewIdx ? { ...img, path: unixPath } : img);
+									}
+								} catch (err) {
+									console.error('[PAN] Image paste failed:', err);
+								} finally {
+									uploadingImages = Math.max(0, uploadingImages - 1);
+									if (uploadingImages === 0 && pendingSend) { pendingSend = false; sendTerminalInput(); }
+								}
+							};
+							reader.readAsDataURL(blob);
+							if (terminalInputEl) terminalInputEl.focus();
+							return;
+						}
+					}
+					// No image — paste text into textarea (chat mode) or terminal (direct mode)
+					if (!foundImage) {
+						const text = await navigator.clipboard.readText();
+						if (text) {
+							if (inTextarea && !directMode) {
+								// Insert text at cursor in textarea
+								const start = terminalInputEl.selectionStart;
+								const end = terminalInputEl.selectionEnd;
+								terminalInputText = terminalInputText.substring(0, start) + text + terminalInputText.substring(end);
+								await tick();
+								terminalInputEl.selectionStart = terminalInputEl.selectionEnd = start + text.length;
+							} else {
+								const t = getActiveTab();
+								if (t?.ws && t.ws.readyState === 1) {
+									t.ws.send(JSON.stringify({ type: 'input', data: text }));
+								}
+							}
+						}
+					}
+				} catch (err) {
+					// Fallback: try text only
+					try {
+						const text = await navigator.clipboard.readText();
+						if (text) {
+							if (inTextarea && !directMode) {
+								terminalInputText += text;
+							} else {
+								const t = getActiveTab();
+								if (t?.ws && t.ws.readyState === 1) {
+									t.ws.send(JSON.stringify({ type: 'input', data: text }));
+								}
+							}
+						}
+					} catch {}
+				}
+			}
+		};
+		window.addEventListener('keydown', handleKeyDown, true); // capture phase
+
+		// Global paste handler — catches image paste regardless of focus
+
 		// Global resize handler
 		let globalResizeTimer = null;
 		const handleResize = () => {
@@ -836,6 +1044,7 @@
 		window.addEventListener('resize', handleResize);
 
 		return () => {
+			window.removeEventListener('keydown', handleKeyDown, true);
 			window.removeEventListener('resize', handleResize);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			for (const tab of tabs) {
@@ -897,7 +1106,8 @@
 <!-- MAIN LAYOUT -->
 <div class="terminal-layout">
 	<!-- LEFT PANEL -->
-	<div class="left-panel">
+	<div class="left-panel" class:collapsed={leftPanelCollapsed}>
+		{#if !leftPanelCollapsed}
 		<div class="left-tabs">
 			<button
 				class="left-tab"
@@ -906,12 +1116,12 @@
 			>Project</button>
 			<button
 				class="left-tab"
-				class:active={leftTab === 'chat'}
-				onclick={() => switchLeftTab('chat')}
-			>Chat</button>
+				class:active={leftTab === 'transcript'}
+				onclick={() => switchLeftTab('transcript')}
+			>Transcript</button>
 		</div>
 		<div class="left-content" bind:this={chatSidebarEl}>
-			{#if leftTab === 'chat'}
+			{#if leftTab === 'transcript'}
 				{#if chatBubbles.length === 0}
 					<div class="empty-state">No conversation yet</div>
 				{:else}
@@ -922,11 +1132,11 @@
 									{#if bubble.multiSession}
 										<span class="session-dot" style="background:{bubble.accentColor}"></span>
 									{/if}
-									{bubble.text}
+									{@html renderChatText(bubble.text)}
 								</div>
 							{:else if bubble.type === 'assistant'}
 								<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
-									{bubble.text}
+									{@html renderChatText(bubble.text)}
 								</div>
 							{:else if bubble.type === 'tool'}
 								<div class="chat-bubble tool">{bubble.text}</div>
@@ -966,17 +1176,77 @@
 				{/if}
 			{/if}
 		</div>
+		{/if}
 	</div>
 
-	<!-- CENTER: Terminal -->
-	<div class="term-container" bind:this={termContainerEl}>
-		{#if tabs.length === 0}
-			<div class="term-empty">
-				<div class="term-empty-icon">&loz;</div>
-				<div class="term-empty-title">PAN Terminal</div>
-				<div class="term-empty-sub">Select a project to start</div>
+	<!-- LEFT PANEL TOGGLE -->
+	<button class="panel-toggle left-toggle" onclick={() => { leftPanelCollapsed = !leftPanelCollapsed; setTimeout(() => { const tab = getActiveTab(); if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} } }, 200); }} title={leftPanelCollapsed ? 'Show Panel' : 'Hide Panel'}>
+		{leftPanelCollapsed ? '▸' : '◂'}
+	</button>
+
+	<!-- CENTER: Terminal + Input Bar -->
+	<div class="term-wrapper">
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="term-container" bind:this={termContainerEl} onclick={(e) => {
+			// Don't steal focus if user is selecting text
+			const sel = window.getSelection();
+			if (sel && sel.toString().length > 0) return;
+			if (directMode) {
+				// Focus the xterm terminal directly
+				const tab = getActiveTab();
+				if (tab?.term) tab.term.focus();
+			} else {
+				if (terminalInputEl) terminalInputEl.focus();
+			}
+		}}>
+			{#if tabs.length === 0}
+				<div class="term-empty">
+					<div class="term-empty-icon">&loz;</div>
+					<div class="term-empty-title">PAN Terminal</div>
+					<div class="term-empty-sub">Select a project to start</div>
+				</div>
+			{/if}
+		</div>
+
+		<!-- Input bar: overlays bottom of terminal -->
+		<div class="term-input-bar" class:direct-mode={directMode}>
+			{#if pastedImages.length || uploadingImages > 0}
+				<div class="term-image-previews">
+					{#each pastedImages as img, i}
+						<div class="term-image-preview">
+							<img src={img.dataUrl} alt="pasted" />
+							<button class="term-image-remove" onclick={() => { pastedImages = pastedImages.filter((_, j) => j !== i); }}>&times;</button>
+						</div>
+					{/each}
+					{#if uploadingImages > 0}
+						<div class="term-image-uploading">Uploading...</div>
+					{/if}
+				</div>
+			{/if}
+			<div class="term-input-row">
+				<textarea
+					bind:this={terminalInputEl}
+					bind:value={terminalInputText}
+					onkeydown={handleTerminalKeydown}
+					oninput={handleTerminalInputEvent}
+					class="term-input-textarea"
+					placeholder="Type or speak here..."
+					rows="1"
+				></textarea>
+				<button class="term-mode-toggle" onclick={() => {
+					directMode = !directMode;
+					if (directMode) {
+						const tab = getActiveTab();
+						if (tab?.term) tab.term.focus();
+					} else {
+						if (terminalInputEl) terminalInputEl.focus();
+					}
+				}} title={directMode ? 'Switch to Chat' : 'Switch to Terminal'}>
+					{directMode ? '⌨' : '💬'}
+				</button>
+				<button class="term-input-send" onclick={sendTerminalInput} title="Send (Enter)" disabled={uploadingImages > 0}>&#x27A4;</button>
 			</div>
-		{/if}
+		</div>
 	</div>
 
 	<!-- RIGHT PANEL -->
@@ -1113,6 +1383,12 @@
 </div>
 
 <style>
+	/* Lock page — never allow horizontal scroll from voice-to-text */
+	:global(html), :global(body) {
+		overflow-x: hidden !important;
+		max-width: 100vw !important;
+	}
+
 	/* ==================== Layout ==================== */
 	.toolbar {
 		display: flex;
@@ -1226,6 +1502,14 @@
 		border: 1px solid #1e1e2e;
 		border-radius: 6px 0 0 6px;
 		flex-shrink: 0;
+		overflow: hidden;
+		transition: width 0.2s ease, min-width 0.2s ease;
+	}
+
+	.left-panel.collapsed {
+		width: 0;
+		min-width: 0;
+		border: none;
 		overflow: hidden;
 	}
 
@@ -1382,6 +1666,16 @@
 	.progress-fill.yellow { background: #f9e2af; }
 	.progress-fill.red { background: #f38ba8; }
 
+	/* ==================== Terminal Wrapper (terminal + input bar) ==================== */
+	.term-wrapper {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		overflow: hidden;
+		position: relative;
+	}
+
 	/* ==================== Terminal Container ==================== */
 	.term-container {
 		flex: 1;
@@ -1392,6 +1686,7 @@
 		min-width: 0;
 		position: relative;
 		overflow: hidden;
+		padding-bottom: 44px; /* space for overlaying input bar */
 	}
 
 	/* Ambient glow */
@@ -1429,17 +1724,49 @@
 		line-height: 1;
 	}
 
-	/* xterm sits above glow */
+	/* xterm sits above glow — lock width, prevent voice-to-text overflow */
 	.term-container :global(.xterm) {
 		position: relative;
 		z-index: 1;
 		height: 100% !important;
+		width: 100% !important;
+		max-width: 100% !important;
+		overflow: hidden !important;
 	}
 	.term-container :global(.xterm-viewport) {
 		overflow-y: scroll !important;
+		overflow-x: hidden !important;
+		max-width: 100% !important;
 	}
 	.term-container :global(.xterm-screen) {
 		min-height: 100%;
+		width: 100% !important;
+		max-width: 100% !important;
+		overflow: hidden !important;
+	}
+	/* Constrain Windows voice-to-text / IME composition overlay */
+	.term-container :global(.xterm .composition-view) {
+		position: absolute !important;
+		max-width: 60% !important;
+		overflow: hidden !important;
+		word-break: break-all !important;
+		white-space: pre-wrap !important;
+		contain: content !important;
+	}
+	/* Disable xterm's native textarea — our input bar handles all input */
+	.term-container :global(.xterm-helper-textarea) {
+		position: absolute !important;
+		width: 1px !important;
+		height: 1px !important;
+		opacity: 0 !important;
+		pointer-events: none !important;
+		overflow: hidden !important;
+	}
+	/* Clip any overflow from IME/voice-to-text elements */
+	.term-container :global(textarea),
+	.term-container :global(input) {
+		max-width: 100% !important;
+		overflow: hidden !important;
 	}
 
 	/* Scanline effect */
@@ -1455,6 +1782,156 @@
 		pointer-events: none;
 		z-index: 2;
 	}
+
+	/* ==================== Terminal Input Bar (overlays bottom of terminal) ==================== */
+	.term-input-bar {
+		position: absolute;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		background: rgba(18, 18, 26, 0.95);
+		backdrop-filter: blur(8px);
+		border-top: 1px solid #313244;
+		padding: 6px 10px;
+		z-index: 5;
+	}
+
+	.term-input-row {
+		display: flex;
+		align-items: flex-end;
+		gap: 6px;
+	}
+
+	.term-image-previews {
+		display: flex;
+		gap: 6px;
+		flex-wrap: wrap;
+		padding: 2px 0;
+	}
+
+	.term-image-preview {
+		position: relative;
+		width: 56px;
+		height: 56px;
+		border-radius: 6px;
+		overflow: hidden;
+		border: 1px solid #313244;
+		flex-shrink: 0;
+	}
+
+	.term-image-preview img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+
+	.term-image-remove {
+		position: absolute;
+		top: 1px;
+		right: 1px;
+		width: 16px;
+		height: 16px;
+		background: rgba(0, 0, 0, 0.7);
+		color: #fff;
+		border: none;
+		border-radius: 50%;
+		font-size: 11px;
+		line-height: 1;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.term-input-textarea {
+		flex: 1;
+		background: #1a1a28;
+		border: 1px solid #313244;
+		border-radius: 8px;
+		outline: none;
+		color: #cdd6f4;
+		font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+		font-size: 14px;
+		line-height: 1.4;
+		padding: 6px 10px;
+		resize: none;
+		min-height: 28px;
+		max-height: 118px; /* ~6 lines at 14px * 1.4 line-height */
+		overflow-y: auto;
+		word-wrap: break-word;
+		overflow-wrap: break-word;
+		white-space: pre-wrap;
+	}
+	.term-input-textarea:focus {
+		border-color: #89b4fa;
+	}
+
+	.term-input-textarea::placeholder {
+		color: #585b70;
+	}
+
+	.term-input-send {
+		background: #89b4fa;
+		color: #1e1e2e;
+		border: none;
+		border-radius: 6px;
+		width: 32px;
+		height: 32px;
+		font-size: 16px;
+		cursor: pointer;
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.term-input-send:hover { background: #b4d0fb; }
+	.term-input-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+	.hidden-bar {
+		display: none !important;
+	}
+	.direct-mode .term-input-textarea,
+	.direct-mode .term-input-send,
+	.direct-mode .term-image-previews {
+		display: none !important;
+	}
+	.direct-mode {
+		padding: 4px 10px;
+		border-top: none;
+		background: transparent;
+		backdrop-filter: none;
+	}
+	.direct-mode .term-input-row {
+		justify-content: flex-end;
+	}
+
+	.term-image-uploading {
+		color: #f9e2af;
+		font-size: 11px;
+		display: flex;
+		align-items: center;
+		padding: 4px 8px;
+	}
+
+	.term-mode-toggle {
+		background: transparent;
+		color: #89b4fa;
+		border: 1px solid #313244;
+		border-radius: 6px;
+		width: 28px;
+		height: 28px;
+		font-size: 14px;
+		cursor: pointer;
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+	}
+	.term-mode-toggle:hover { background: #313244; }
 
 	.term-empty {
 		position: absolute;
@@ -1482,14 +1959,15 @@
 	.panel-toggle {
 		position: relative;
 		z-index: 2;
-		width: 28px;
+		width: 20px;
+		min-width: 20px;
 		background: #12121a;
 		border: 1px solid #1e1e2e;
 		border-left: none;
 		border-right: none;
 		color: #6c7086;
 		cursor: pointer;
-		font-size: 14px;
+		font-size: 12px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
