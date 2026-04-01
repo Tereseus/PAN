@@ -557,6 +557,85 @@ router.get('/api/stats', (req, res) => {
   res.json({ ...stats, db_size_bytes: dbSize, event_types: eventTypes });
 });
 
+// GET /dashboard/api/services — live service status
+router.get('/api/services', (req, res) => {
+  const services = [];
+  const now = Date.now();
+
+  // PAN Core services
+  // 1. PAN Server (always up if we're responding)
+  services.push({
+    category: 'PAN Core',
+    name: 'PAN Server',
+    status: 'up',
+    uptime: process.uptime(),
+    detail: `Port 7777, PID ${process.pid}`,
+  });
+
+  // 2. Steward (check last steward event)
+  const stewardEvent = get("SELECT created_at FROM events WHERE event_type = 'StewardEvent' ORDER BY created_at DESC LIMIT 1");
+  const stewardAge = stewardEvent ? (now - new Date(stewardEvent.created_at + ' GMT-0400').getTime()) / 1000 : null;
+  services.push({
+    category: 'PAN Core',
+    name: 'Steward',
+    status: stewardAge !== null && stewardAge < 120 ? 'up' : stewardAge !== null ? 'degraded' : 'unknown',
+    detail: stewardAge !== null ? `Last check ${Math.round(stewardAge)}s ago` : 'No events recorded',
+  });
+
+  // 3. Intuition (state engine — not built yet)
+  services.push({
+    category: 'PAN Core',
+    name: 'Intuition',
+    status: 'offline',
+    detail: 'Dimensional state engine — not yet built',
+  });
+
+  // 4. Phone connection
+  const phoneDevice = get("SELECT last_seen FROM devices WHERE device_type = 'phone' ORDER BY last_seen DESC LIMIT 1");
+  const phoneAge = phoneDevice ? (now - new Date(phoneDevice.last_seen + ' GMT-0400').getTime()) / 1000 : null;
+  services.push({
+    category: 'PAN Core',
+    name: 'Phone Link',
+    status: phoneAge !== null && phoneAge < 60 ? 'up' : phoneAge !== null && phoneAge < 300 ? 'degraded' : 'down',
+    detail: phoneAge !== null ? `Last seen ${Math.round(phoneAge)}s ago` : 'No phone connected',
+  });
+
+  // 5. Dream cycle
+  const dreamEvent = get("SELECT created_at FROM events WHERE event_type = 'DreamCycle' ORDER BY created_at DESC LIMIT 1");
+  services.push({
+    category: 'PAN Core',
+    name: 'Dream',
+    status: dreamEvent ? 'up' : 'unknown',
+    detail: dreamEvent ? `Last run: ${dreamEvent.created_at}` : 'No cycles recorded',
+  });
+
+  // 6. Scout
+  const scoutEvent = get("SELECT created_at FROM events WHERE event_type = 'ScoutRun' ORDER BY created_at DESC LIMIT 1");
+  services.push({
+    category: 'PAN Core',
+    name: 'Scout',
+    status: scoutEvent ? 'up' : 'unknown',
+    detail: scoutEvent ? `Last run: ${scoutEvent.created_at}` : 'No runs recorded',
+  });
+
+  // Project-specific services (from settings or future config)
+  try {
+    const projectServices = get("SELECT value FROM settings WHERE key = 'project_services'");
+    if (projectServices) {
+      const ps = JSON.parse(projectServices.value);
+      for (const s of ps) services.push(s);
+    }
+  } catch {}
+
+  // Recent issues from Steward
+  const recentIssues = all("SELECT created_at, data FROM events WHERE event_type = 'StewardEvent' AND data LIKE '%restart%' ORDER BY created_at DESC LIMIT 5");
+  const issues = recentIssues.map(e => {
+    try { const d = JSON.parse(e.data); return { ts: e.created_at, message: d.content || d.subtype || '' }; } catch { return null; }
+  }).filter(Boolean);
+
+  res.json({ services, issues });
+});
+
 // GET /dashboard/api/memory — reads actual Claude Code memory files from ~/.claude/projects/*/memory/
 router.get('/api/memory', (req, res) => {
   const claudeDir = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'projects');

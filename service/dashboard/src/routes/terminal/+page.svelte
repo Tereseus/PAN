@@ -7,8 +7,8 @@
 	let projects = $state([]);
 	let tabs = $state([]);
 	let activeTabId = $state(null);
-	let leftTab = $state('transcript'); // 'transcript' | 'project'
-	let rightSection = $state('tasks'); // 'tasks' | 'bugs' | 'setup' | 'custom-N'
+	let leftTab = $state('transcript'); // any widget: 'transcript' | 'project' | 'services' | 'tasks' | 'bugs' | 'setup'
+	let rightSection = $state('tasks'); // any widget: same options as leftTab
 	let rightPanelCollapsed = $state(false);
 	let leftPanelCollapsed = $state(false);
 	let rightMilestoneFilter = $state(null);
@@ -21,6 +21,9 @@
 	let sectionsData = $state([]);
 	let chatBubbles = $state([]);
 	let chatCurrentProject = $state('');
+
+	// Services state
+	let servicesData = $state({ services: [], issues: [] });
 
 	// Terminal container refs
 	let termContainerEl;
@@ -487,6 +490,13 @@
 		return html;
 	}
 
+	async function loadServices() {
+		try {
+			const data = await api('/dashboard/api/services');
+			servicesData = data;
+		} catch {}
+	}
+
 	async function loadChatHistory() {
 		const active = getActiveTab();
 		if (!active) {
@@ -886,6 +896,10 @@
 			if (leftTab === 'transcript') loadChatHistory();
 		}, 10000);
 
+		// Services polling
+		loadServices();
+		const servicesInterval = setInterval(loadServices, 15000);
+
 		// Auto-connect: wait for projects to load, then start terminal
 		setTimeout(async () => {
 			// Make sure projects are loaded
@@ -1047,6 +1061,7 @@
 			window.removeEventListener('keydown', handleKeyDown, true);
 			window.removeEventListener('resize', handleResize);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
+			clearInterval(servicesInterval);
 			for (const tab of tabs) {
 				tab._closing = true;
 				if (tab.ws) tab.ws.close();
@@ -1108,17 +1123,18 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:collapsed={leftPanelCollapsed}>
 		{#if !leftPanelCollapsed}
-		<div class="left-tabs">
-			<button
-				class="left-tab"
-				class:active={leftTab === 'project'}
-				onclick={() => switchLeftTab('project')}
-			>Project</button>
-			<button
-				class="left-tab"
-				class:active={leftTab === 'transcript'}
-				onclick={() => switchLeftTab('transcript')}
-			>Transcript</button>
+		<div class="right-header">
+			<select class="right-select" bind:value={leftTab} onchange={() => { if (leftTab === 'transcript') { loadChatHistory(); } }}>
+				<option value="transcript">Transcript</option>
+				<option value="project">Project</option>
+				<option value="services">Services</option>
+				<option value="tasks">Tasks</option>
+				<option value="bugs">Bugs</option>
+				<option value="setup">Setup Guide</option>
+				{#each sectionsData as s}
+					<option value="custom-{s.id}">{s.name}</option>
+				{/each}
+			</select>
 		</div>
 		<div class="left-content" bind:this={chatSidebarEl}>
 			{#if leftTab === 'transcript'}
@@ -1144,8 +1160,7 @@
 						{/each}
 					</div>
 				{/if}
-			{:else}
-				<!-- Project Tab -->
+			{:else if leftTab === 'project'}
 				{#if projectData}
 					<div class="project-info">
 						<div class="project-name">{projectData.name}</div>
@@ -1173,6 +1188,66 @@
 					{/if}
 				{:else}
 					<div class="empty-state">Select a project</div>
+				{/if}
+			{:else if leftTab === 'services'}
+				{@const grouped = Object.groupBy(servicesData.services || [], s => s.category || 'Other')}
+				{#each Object.entries(grouped) as [category, categoryServices]}
+					<div class="task-group-header">{category}</div>
+					{#each categoryServices as svc}
+						<div class="service-row">
+							<span class="service-dot" class:up={svc.status === 'up'} class:degraded={svc.status === 'degraded'} class:down={svc.status === 'down'} class:offline={svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="service-info">
+								<span class="service-name">{svc.name}</span>
+								<span class="service-detail">{svc.detail || ''}</span>
+							</div>
+						</div>
+					{/each}
+				{/each}
+				{#if !servicesData.services?.length}
+					<div class="empty-state">Loading services...</div>
+				{/if}
+			{:else if leftTab === 'tasks'}
+				{@const taskData = getFilteredTasks()}
+				{#each taskData.milestones as m}
+					{#if taskData.byMilestone[m.id]?.length > 0}
+						<div class="task-group-header">{m.name}</div>
+						{#each taskData.byMilestone[m.id] as t}
+							<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+								<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
+									{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
+								</span>
+								<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+							</div>
+						{/each}
+					{/if}
+				{/each}
+			{:else if leftTab === 'bugs'}
+				{@const bugs = getBugs()}
+				{#if bugs.length === 0}
+					<div class="empty-state">No bugs tracked</div>
+				{:else}
+					{#each bugs as t}
+						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+							<span class="task-icon bug" class:done={t.status === 'done'}>{t.status === 'done' ? '\u2713' : '\u26A0'}</span>
+							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+						</div>
+					{/each}
+				{/if}
+			{:else if leftTab === 'setup'}
+				<div class="setup-guide">
+					<div class="setup-title">How to Use PAN</div>
+					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
+				</div>
+			{:else if leftTab.startsWith('custom-')}
+				{@const sectionId = parseInt(leftTab.replace('custom-', ''))}
+				{@const section = getSectionById(sectionId)}
+				{#if section}
+					{#each section.items || [] as item}
+						<div class="task-row" onclick={() => cycleSectionItem(item.id, item.status, sectionId)}>
+							<span class="task-icon" class:done={item.status === 'done'}>{item.status === 'done' ? '\u2713' : '\u25CB'}</span>
+							<span class="task-title" class:done={item.status === 'done'}>{item.content}</span>
+						</div>
+					{/each}
 				{/if}
 			{/if}
 		</div>
@@ -1256,16 +1331,43 @@
 	<div class="right-panel" class:collapsed={rightPanelCollapsed}>
 		<div class="right-header">
 			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; }}>
-				<option value="setup">Setup Guide</option>
+				<option value="services">Services</option>
 				<option value="tasks">Tasks</option>
 				<option value="bugs">Bugs</option>
+				<option value="setup">Setup Guide</option>
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
 			</select>
 		</div>
 		<div class="right-content">
-			{#if rightSection === 'setup'}
+			{#if rightSection === 'services'}
+				{@const grouped = Object.groupBy(servicesData.services || [], s => s.category || 'Other')}
+				{#each Object.entries(grouped) as [category, categoryServices]}
+					<div class="task-group-header">{category}</div>
+					{#each categoryServices as svc}
+						<div class="service-row">
+							<span class="service-dot" class:up={svc.status === 'up'} class:degraded={svc.status === 'degraded'} class:down={svc.status === 'down'} class:offline={svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="service-info">
+								<span class="service-name">{svc.name}</span>
+								<span class="service-detail">{svc.detail || ''}</span>
+							</div>
+						</div>
+					{/each}
+				{/each}
+				{#if servicesData.issues?.length}
+					<div class="task-group-header">Recent Issues</div>
+					{#each servicesData.issues as issue}
+						<div class="service-issue">
+							<span class="issue-time">{issue.ts?.split(' ')[1] || ''}</span>
+							<span class="issue-msg">{issue.message}</span>
+						</div>
+					{/each}
+				{/if}
+				{#if !servicesData.services?.length}
+					<div class="empty-state">Loading services...</div>
+				{/if}
+			{:else if rightSection === 'setup'}
 				<div class="setup-guide">
 					<div class="setup-title">How to Use PAN</div>
 					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
@@ -2044,6 +2146,38 @@
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 	}
+
+	/* Services */
+	.service-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 5px 0;
+	}
+	.service-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		background: #6c7086;
+	}
+	.service-dot.up { background: #a6e3a1; box-shadow: 0 0 4px #a6e3a1; }
+	.service-dot.degraded { background: #f9e2af; box-shadow: 0 0 4px #f9e2af; }
+	.service-dot.down { background: #f38ba8; box-shadow: 0 0 4px #f38ba8; }
+	.service-dot.offline { background: #45475a; }
+	.service-dot.unknown { background: #6c7086; }
+	.service-info { display: flex; flex-direction: column; min-width: 0; }
+	.service-name { font-size: 12px; color: #cdd6f4; }
+	.service-detail { font-size: 10px; color: #6c7086; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.service-issue {
+		display: flex;
+		gap: 6px;
+		padding: 2px 0;
+		font-size: 10px;
+		color: #f9e2af;
+	}
+	.issue-time { color: #6c7086; flex-shrink: 0; }
+	.issue-msg { color: #f9e2af; }
 
 	.task-row {
 		display: flex;

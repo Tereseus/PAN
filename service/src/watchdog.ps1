@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    PAN Startup Manager & Watchdog
-    Single script that runs on boot. Handles everything:
+    PAN Steward — Service Health Manager
+    Steward — single script that runs on boot. Handles everything:
     1. PAN Server (Windows Service, port 7777)
     2. Whisper STT Server (Python, port 7778)
     3. Voice hotkeys (mouse side buttons - no AutoHotkey needed)
@@ -14,7 +14,7 @@ $ErrorActionPreference = "Continue"
 # === CONFIG ===
 $PanDir = "C:\Users\tzuri\OneDrive\Desktop\PAN"
 $ServiceDir = "$PanDir\service"
-$LogFile = "$env:LOCALAPPDATA\PAN\data\watchdog.log"
+$LogFile = "$env:LOCALAPPDATA\PAN\data\steward.log"
 $CheckInterval = 30
 $WhisperScript = "$ServiceDir\src\whisper-server.py"
 $DictateScript = "$ServiceDir\src\dictate-vad.py"
@@ -50,10 +50,10 @@ function Test-ProcessRunning {
     return @(Get-Process -Name $Name -ErrorAction SilentlyContinue).Count -gt 0
 }
 
-function Send-ToPanDb {
+function Send-ToStewardDb {
     param([string]$EventType, [string]$Detail)
     try {
-        $body = @{ type = "WatchdogEvent"; subtype = $EventType; content = $Detail; source = "watchdog" } | ConvertTo-Json
+        $body = @{ type = "StewardEvent"; subtype = $EventType; content = $Detail; source = "steward" } | ConvertTo-Json
         Invoke-RestMethod -Uri "http://127.0.0.1:7777/api/v1/events" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 3 | Out-Null
     } catch {}
 }
@@ -115,7 +115,7 @@ function Clean-TailscaleGhosts {
 
         if ($removed -gt 0) {
             Write-Log "Removed $removed ghost devices from tailnet" "OK"
-            Send-ToPanDb "tailscale_cleanup" "Removed $removed offline ghost devices"
+            Send-ToStewardDb "tailscale_cleanup" "Removed $removed offline ghost devices"
         } else {
             Write-Log "No ghost devices to clean" "INFO"
         }
@@ -151,7 +151,7 @@ function Test-VoiceHotkeys {
 }
 
 # === STARTUP SEQUENCE ===
-Write-Log "=== PAN Startup Manager ===" "INFO"
+Write-Log "=== PAN Steward ===" "INFO"
 Write-Log "Services: PAN Server, Whisper STT, Voice Hotkeys, Tailscale" "INFO"
 
 # One-time startup tasks
@@ -167,7 +167,7 @@ while ($true) {
         $issues += "PAN Server"
         $result = Restart-PanServer
         $s = if ($result) { "succeeded" } else { "failed" }
-        Send-ToPanDb "restart" "PAN Server was down, restart $s"
+        Send-ToStewardDb "restart" "PAN Server was down, restart $s"
     }
 
     # Check 1b: Dashboard performance (via perf endpoint)
@@ -179,7 +179,7 @@ while ($true) {
                 $worst = $perf.slowest[0]
                 Write-Log "  Slowest: $($worst.route) — $($worst.ms)ms at $($worst.ts)" "WARN"
             }
-            Send-ToPanDb "dashboard_slow" "Dashboard slow: $($perf.slow_requests) requests over 2s, avg $($perf.avg_ms)ms"
+            Send-ToStewardDb "dashboard_slow" "Dashboard slow: $($perf.slow_requests) requests over 2s, avg $($perf.avg_ms)ms"
         }
     } catch {
         # Perf endpoint not available — server might be starting up
@@ -190,14 +190,14 @@ while ($true) {
         $issues += "Whisper"
         $result = Restart-WhisperServer
         $s = if ($result) { "succeeded" } else { "failed" }
-        Send-ToPanDb "restart" "Whisper was down, restart $s"
+        Send-ToStewardDb "restart" "Whisper was down, restart $s"
     }
 
     # Check 3: Voice hotkey job (PowerShell-based, no AHK dependency)
     if (-not (Test-VoiceHotkeys)) {
         $issues += "Voice Hotkeys"
         Start-VoiceHotkeys
-        Send-ToPanDb "restart" "Voice hotkey listener restarted"
+        Send-ToStewardDb "restart" "Voice hotkey listener restarted"
     }
 
 

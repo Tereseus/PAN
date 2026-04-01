@@ -110,96 +110,102 @@ The complete feature registry is in FEATURES.md. Reference it when the user ment
 Key: You ARE PAN. These are YOUR features. When the user says "remember your features" or "you can do X" — this is what they mean.
 
 ### Open Tasks
+- [todo P1] Intuition service — dimensional state engine (Qwen phone + Cerebras 120B + Claude background state writer)
+- [todo P1] Bring back Qwen 0.6B on phone — re-enable llama.cpp, download GGUF, wire into dimension classifier
+- [todo P1] Cerebras switch to 120B — faster (220ms vs 500ms) and cheaper than 235B
+- [todo P1] Sticky state — skip Qwen on continuation turns, use cached dimensional state
+- [todo P1] Tab flash on pending approvals — terminal tab should visually flash
+- [todo P1] Phone approval staleness fix — accepted/denied approvals re-appearing
+- [todo P1] Services panel — restart server to activate /dashboard/api/services endpoint
 - [todo P1] Smart device routing — default device (auto/nearest) determines where actions execute
-- [todo P1] Chat shows only bookend events — need intermediate responses visible
-- [todo P1] Terminal scroll still janky — jumps on tool calls
 - [todo P1] mDNS auto-discovery on local network (zero-config device finding)
-- [todo P1] PAN Hub relay server for remote access (HTTPS message broker)
-- [todo P1] Multi-user accounts — user registration, login, session ownership
-- [todo P1] Multi-database — per-team databases with isolated data
-- [todo P1] PAN Hub — central server aggregating multiple PAN instances
-- [todo P1] Smart scroll — remember exact scroll position, restore on every refresh/update/tool call
+- [todo P1] PAN Hub — multi-user, RBAC, geofencing, tailnet switching
 - [todo P1] NER anonymization (Presidio/spaCy)
+- [todo P2] Terminal center swappable — video, maps, web content not just terminal
+- [todo P2] Project-specific widgets — custom panels per-project (e.g. Aircraft for ATC)
+- [todo P2] Tailnet handoff — geofenced zone transfer between PAN instances
 
 ### Recent Conversation
-**Claude** (2026-03-31 18:55:08): Building with `gradlew.bat`. This will take a few minutes — I'll deploy to the phone once it's done.
-**User** (2026-03-31 19:11:15): I tried to say like 100 things like I said Are you are you just ignoring what I Say I've I said so many things and you never replied to anything that I say stated about how you did something with medi
-**User** (2026-03-31 19:14:00): How about no how about you don't restart the server how about you put the last action area back in there first how about you do that so that I can fucking see if it actually picks something up on my o
-**Claude** (2026-03-31 19:16:46): Done. The phone app now has:
+**User** (2026-03-31 20:35:43): No get you why do you keep asking me for so many permissions just send me one fucking permission to push you've asked me like 35 times for permissions I go and I do something else so send me the fucki
+**Claude** (2026-03-31 20:39:00): OK here's everything measured, all real data:
 
-1. **"STT: ..." status always visible** on the main screen — shows exactly what the STT engine is doing (Muted, Starting STT..., Listening..., Error: NETWORK, etc.)
-2. **Last Action still shows** when you say something that gets recognized
+**Cerebras actual benchmarks (just measured right now):**
 
-Open the app, go to the main 
-**User** (2026-03-31 19:16:55): So even when I push the live button it still says STT muted that's why it still thinks I'm muted even though I pushed live live doesn't unmute STT
-**Claude** (2026-03-31 19:18:39): Installed. Here's what was wrong:
+| Model | 100 tokens | 500 tokens | 2K tokens | 5K tokens | 10K tokens |
+|---|---|---|---|---|---|
+| **8B** | 336ms | 342ms | 470ms | 772ms | ~400ms* |
+| **120B** | 329ms | 214ms | 220ms | 280ms
+**Claude** (2026-03-31 20:40:55): Push permission sent. Accept it when it pops up — that's the only one you need.
+**User** (2026-03-31 20:47:22): Well if it got when we get on device AI for the phone Gemini Nano whatever that's equal to device right so we would win a lot of speed there or would it be like the same really I guess we won't know u
+**Claude** (2026-03-31 20:48:04): Sticky state absolutely works. Here's why:
 
-**The Live switch in the UI was calling `sttEngine.enabled = true` directly on the singleton, but the STT callback was never set up from the ViewModel — only the ForegroundService's `onStartCommand` sets it.** So enabling STT did nothing because there was no callba
-**User** (2026-03-31 19:19:18): OK now look in the logs it it did actually pick up my last action it did it the main conversation about Genies was back on March 23rd around 3:52 PM you asked why did jeannie's only give three wishes 
-**User** (2026-03-31 19:21:43): Why are you looking for March 29th we literally were testing it right here on March 31st
-**Claude** (2026-03-31 19:21:43): The genie query was classified as "recall" and sent to the server, but there's no RouterCommand event logged for it today. The response must have come back through a different path. The 10-second delay + errors you saw on the phone screen were the STT `ERROR: UNKNOWN(11)` retries before it finally c
-**Claude** (2026-03-31 19:23:13): OK so the "recall" route goes through the router which uses `claude -p` to classify, then searches `memory_items` in the DB. The response goes back via HTTP but doesn't get logged as a `RouterCommand` event. That's why we can't see the response time.
+**Human conversation doesn't change state every sentence.** If you're stressed, you're stressed for minutes, not milliseconds. If you're talking to PAN, the next sentence is probably also to PAN. The state drifts slowly. Claude updating every 10 seconds is
+**User** (2026-03-31 20:50:43): Yeah awareness awareness makes sense Sensorium that's a cool that's a funny word Sentient you know that's you kind of going in a awareness kind of seems like your presence See awareness kind of seems 
+**User** (2026-03-31 20:51:25): ΠΑΝ remembers... Start session. Read CLAUDE.md and give the session continuity summary.
+**Claude** (2026-03-31 20:51:41): Last time we were working on:
 
-Here's the summary of what we know from today's 
-**User** (2026-03-31 19:23:40): How are they normal pixel retries why would it take so long to fit for it to figure that out it took 8 seconds to get a reply that's not correct so that means the router command that's supposed to be 
-**Claude** (2026-03-31 19:27:02): Right — the stack is supposed to be:
+- **Cerebras speed benchmarks** — measured real latency for 8B, 120B, and 235B models. The 120B sweet spot: ~250-380ms total round-trip, ~$2/month at 200 calls/day. You called it "stupidly fast."
 
-1. **Phone local model** classifies first (instant)
-2. Simple queries → **Cerebras** (fast, ~500ms)
-3. Complex/recall queries → **Claude** (slow, ~8s)
-4. Conversational awareness, context, etc.
+- **Sticky state architecture** — designed the flow where Claude runs as
+**Claude** (2026-03-31 20:52:19): Saved. Pick your names when you're ready — we can always change them later. The architecture is locked in. What do you want to tackle next?
+**User** (2026-03-31 20:52:59): Yeah make make the watcher be steward I actually don't even see that as a scheduled job in the automation or what I think it would be in the automation right intuition Yeah I guess we can do into intu
+**Claude** (2026-03-31 20:55:14): Done. Names are set:
 
-But the local model on the phone says **"No on-device AI found. Usi
-**User** (2026-03-31 19:29:15): Yeah there's no undevised bound because like I said 300,000 times that we disabled the media pipeline layer whatever bullshit because it was conflicting with the tail scale when they were both low so 
-**Claude** (2026-03-31 19:43:47): Now we can see exactly what's happening:
+- **Steward** — process health monitor (renamed from Watcher, `watchdog.ps1` updated)
+- **Intuition** — the consciousness/state engine (to be built)
+- **Guardian** — security service (future, when we build auth)
 
-1. **Feature status = 1** (DOWNLOADABLE — model exists but needs download)
-2. **Model download started: 18MB** — it tried
-3. **Download FAILED**: `AICore failed with error type 1-DOWNLOAD_ERROR` — "Failed to download file group feature_622"
+The automation page needs a **Services** tab added to show these 
+**User** (2026-03-31 20:58:04): Should it be shown there or should it be shown in the right pan Similar to all how Tasks and Bugs and Setup guide are and it just has a services tab there What do you think And I guess we can make it 
+**Claude** (2026-03-31 20:58:17): Right panel makes way more sense. The automation page is for configuring scheduled jobs. Services are live status — you want to glance at them while working in the terminal, not navigate to a separate page.
 
-The Gemini Nano 
-**User** (2026-03-31 19:46:33): OK so well that's why we had that's why we had Quinn at 300 the 300 megabyte model that was enough to do the but also look at the other conversation that we had about classification for distress for w
+So the right panel tabs become: **Tasks | Bugs | Services | Setup Guide**
+
+Services tab show
+**User** (2026-03-31 20:59:01): And right so like different different applications can list different services there as well so you'll always have guardian and intuition and Stewart and all that stuff that are pan central right and 
+**Claude** (2026-03-31 21:04:00): Built. Now the right panel has a **Services** tab (default) showing:
+
+- **PAN Core** section:
+  - PAN Server — green dot, uptime, PID
+  - Steward — green/yellow based on last heartbeat
+  - Intuition — grey (offline, not yet built)
+  - Phone Link — green if phone connected in last 60s
+  - Dream — las
 
 ### Last Messages (Full)
-**Claude** (2026-03-31 19:27:02):
-Right — the stack is supposed to be:
+**User** (2026-03-31 20:58:04):
+Should it be shown there or should it be shown in the right pan Similar to all how Tasks and Bugs and Setup guide are and it just has a services tab there What do you think And I guess we can make it you know have real time updates of of lights and stuff when things go down or up or whatever And then I guess if like the you know the steward finds a problem they can list the problem there so you have a faster access to see that stuff What do you think
 
-1. **Phone local model** classifies first (instant)
-2. Simple queries → **Cerebras** (fast, ~500ms)
-3. Complex/recall queries → **Claude** (slow, ~8s)
-4. Conversational awareness, context, etc.
+**Claude** (2026-03-31 20:58:17):
+Right panel makes way more sense. The automation page is for configuring scheduled jobs. Services are live status — you want to glance at them while working in the terminal, not navigate to a separate page.
 
-But the local model on the phone says **"No on-device AI found. Using regex classifier."** — so there's no local classification happening. The regex classifier catches "genies" as "passive" (ambient speech), then a keyword override catches "recall". Then it sends to the server which uses `claude -p` for recall queries, not Cerebras.
+So the right panel tabs become: **Tasks | Bugs | Services | Setup Guide**
 
-The on-device model (Gemini Nano via Google AICore) isn't working on the Pixel 10 Pro because `Google GenAI API available=false` — the SDK class isn't found at runtime even though AICore is installed. That's why everything falls back to regex → server.
+Services tab shows:
+- Green/red dots for up/down
+- Service name + uptime
+- If Steward detects a problem, it shows inline — "PAN Server restarted 2m ago" or "Whisper STT down — retrying"
 
-The fix is either:
-1. Get Gemini Nano actually working on the phone (needs the right SDK dependency)
-2. Or make the server-side recall path use Cerebras instead of Claude CLI
+Quick, always visible, no page navigation needed. Want me to build it?
 
-Which do you want me to tackle first?
+**User** (2026-03-31 20:59:01):
+And right so like different different applications can list different services there as well so you'll always have guardian and intuition and Stewart and all that stuff that are pan central right and then you can have project specific ones so like air traffic controller could have like radar or whatever so you can have like sections of categories in there that's easily done right so yeah we just need that stuff uptime and then you know yeah exactly I think that's perfect
 
-**User** (2026-03-31 19:29:15):
-Yeah there's no undevised bound because like I said 300,000 times that we disabled the media pipeline layer whatever bullshit because it was conflicting with the tail scale when they were both low so they were just trying to use what Google has whether it's Google Assistant or whatever the fuck that shit is Google Gemini on the phone that's what you're trying to figure it out I mean my phone already has a model so why would we have to get Gemini Namo why do we have to get Nana we already tried that look in the database for what we tried look there you need a fucking look stop starting over from the beginning
+**Claude** (2026-03-31 21:04:00):
+Built. Now the right panel has a **Services** tab (default) showing:
 
-**Claude** (2026-03-31 19:43:47):
-Now we can see exactly what's happening:
+- **PAN Core** section:
+  - PAN Server — green dot, uptime, PID
+  - Steward — green/yellow based on last heartbeat
+  - Intuition — grey (offline, not yet built)
+  - Phone Link — green if phone connected in last 60s
+  - Dream — last run time
+  - Scout — last run time
 
-1. **Feature status = 1** (DOWNLOADABLE — model exists but needs download)
-2. **Model download started: 18MB** — it tried
-3. **Download FAILED**: `AICore failed with error type 1-DOWNLOAD_ERROR` — "Failed to download file group feature_622"
+- **Recent Issues** section (if Steward logged any restarts)
 
-The Gemini Nano model can't be downloaded. This is a known issue on Pixel phones — AICore needs Google Play Services to download the model, and it can fail due to:
-- VPN interfering with Google's download servers
-- The model not being available yet for this specific Pixel 10 Pro / Android version
-- AICore needing to be updated through Play Store
+- Project-specific services will show up when configured via `project_services` setting
 
-The phone's built-in AI (AICore) is installed but the actual model isn't downloaded. This is Google's problem — we need the model file but Google's download service is failing.
-
-For now, the fallback works: regex classification on-device + Cerebras on the server (500ms). The 8-second delay you saw was likely the first call warming up the connection through Tailscale, or the router falling through to `claude -p` instead of Cerebras for recall queries. Want me to make sure recall queries go through Cerebras instead of Claude CLI?
-
-**User** (2026-03-31 19:46:33):
-OK so well that's why we had that's why we had Quinn at 300 the 300 megabyte model that was enough to do the but also look at the other conversation that we had about classification for distress for we had a whole bunch of stuff distress you know should it be ambient should it should it take a role in the conversation show me all that stuff do you think the small 300 megabyte Quen model will be able to do that and show me all the classifications that we described And the the the recalls will be going to Cerberus in some way but what about shouldn't the the data be anonymized in some way it is it is already right from the because it it makes it makes a request to the server here the command hub to get that data from the database and then it goes to Cerebrosrit and that data is anonymized when it goes there
-
+Refresh the dashboard and check the Services tab on the right panel. It defaults to Services now instead of Tasks.
 
 <!-- PAN-CONTEXT-END -->
