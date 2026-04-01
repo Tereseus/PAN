@@ -32,7 +32,7 @@ import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as
 import { startStackScanner, stopStackScanner, getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { syncProjects, get, all, insert, run, logEvent } from './db.js';
 import { readFileSync, existsSync } from 'fs';
-import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
+import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -654,11 +654,20 @@ app.post('/api/v1/terminal/send', (req, res) => {
   const sent = sendToSession(session_id || null, toSend);
   console.log(`[PAN Send] "${text}" → ${session_id || 'auto'} (raw=${!!raw}, sent=${sent})`);
 
-  // Log as event so mobile sends are tracked
+  // Log as MobileSend for tracking
   logEvent(session_id || 'mobile-send', 'MobileSend', {
     text, session_id: session_id || 'auto', sent, raw: !!raw,
     source: 'mobile_dashboard', timestamp: Date.now()
   });
+
+  // Also broadcast chat_update so transcript refreshes with the new message
+  try {
+    broadcastNotification('chat_update', {
+      event_type: 'MobileSend',
+      session_id: session_id || 'mobile-send',
+      timestamp: new Date().toISOString(),
+    });
+  } catch {}
 
   const sessInfo = listSessions();
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
@@ -846,6 +855,17 @@ app.get('/api/v1/context-briefing', (req, res) => {
   briefing += '## Instructions\nThis is a fresh session. Your FIRST message to the user MUST be a brief summary of the Recent Conversation above — start with "Last time we were working on..." and list the key topics/issues. The user should NEVER have to ask what they were working on. You tell them immediately, every single time. Then pick up where they left off.\n';
 
   res.json({ briefing, state: stateDoc.length > 0, tasks: tasks.length, chat: recentChat.length });
+});
+
+// Voice toggle — simulate Win+H to trigger Windows voice-to-text
+app.post('/api/v1/voice/toggle', (req, res) => {
+  import('child_process').then(({ exec }) => {
+    const ps = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class KeySim { [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo); public static void WinH() { keybd_event(0x5B,0,0,UIntPtr.Zero); keybd_event(0x48,0,0,UIntPtr.Zero); keybd_event(0x48,0,2,UIntPtr.Zero); keybd_event(0x5B,0,2,UIntPtr.Zero); } }'; [KeySim]::WinH()`;
+    exec(`powershell -Command "${ps.replace(/"/g, '\\"')}"`, (err) => {
+      if (err) return res.json({ ok: false, error: err.message });
+      res.json({ ok: true });
+    });
+  });
 });
 
 // Dictation — record from PC mic, transcribe via Haiku, return text

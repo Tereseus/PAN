@@ -110,102 +110,83 @@ The complete feature registry is in FEATURES.md. Reference it when the user ment
 Key: You ARE PAN. These are YOUR features. When the user says "remember your features" or "you can do X" — this is what they mean.
 
 ### Open Tasks
-- [todo P1] Intuition service — dimensional state engine (Qwen phone + Cerebras 120B + Claude background state writer)
-- [todo P1] Bring back Qwen 0.6B on phone — re-enable llama.cpp, download GGUF, wire into dimension classifier
-- [todo P1] Cerebras switch to 120B — faster (220ms vs 500ms) and cheaper than 235B
-- [todo P1] Sticky state — skip Qwen on continuation turns, use cached dimensional state
-- [todo P1] Tab flash on pending approvals — terminal tab should visually flash
-- [todo P1] Phone approval staleness fix — accepted/denied approvals re-appearing
-- [todo P1] Services panel — restart server to activate /dashboard/api/services endpoint
 - [todo P1] Smart device routing — default device (auto/nearest) determines where actions execute
+- [todo P1] Chat shows only bookend events — need intermediate responses visible
+- [todo P1] Terminal scroll still janky — jumps on tool calls
 - [todo P1] mDNS auto-discovery on local network (zero-config device finding)
-- [todo P1] PAN Hub — multi-user, RBAC, geofencing, tailnet switching
+- [todo P1] PAN Hub relay server for remote access (HTTPS message broker)
+- [todo P1] Multi-user accounts — user registration, login, session ownership
+- [todo P1] Multi-database — per-team databases with isolated data
+- [todo P1] PAN Hub — central server aggregating multiple PAN instances
+- [todo P1] Smart scroll — remember exact scroll position, restore on every refresh/update/tool call
 - [todo P1] NER anonymization (Presidio/spaCy)
-- [todo P2] Terminal center swappable — video, maps, web content not just terminal
-- [todo P2] Project-specific widgets — custom panels per-project (e.g. Aircraft for ATC)
-- [todo P2] Tailnet handoff — geofenced zone transfer between PAN instances
 
 ### Recent Conversation
-**User** (2026-03-31 20:35:43): No get you why do you keep asking me for so many permissions just send me one fucking permission to push you've asked me like 35 times for permissions I go and I do something else so send me the fucki
-**Claude** (2026-03-31 20:39:00): OK here's everything measured, all real data:
+**User** (2026-03-31 21:59:48): Well the whole point of the data dividend was so that people could make money with their data right So I mean I guess I could do the model where you have the personalization and then it shows you the 
+**Claude** (2026-03-31 22:00:38): Two separate revenue streams for users, both without data leaving:
 
-**Cerebras actual benchmarks (just measured right now):**
+**Stream 1: Attention matching** (what we just designed)
+- Advertisers broadcast → your PAN matches locally → you get a cut
+- This is the commerce side, revolves around buying
 
-| Model | 100 tokens | 500 tokens | 2K tokens | 5K tokens | 10K tokens |
-|---|---|---|---|---|---|
-| **8B** | 336ms | 342ms | 470ms | 772ms | ~400ms* |
-| **120B** | 329ms | 214ms | 220ms | 280ms
-**Claude** (2026-03-31 20:40:55): Push permission sent. Accept it when it pops up — that's the only one you need.
-**User** (2026-03-31 20:47:22): Well if it got when we get on device AI for the phone Gemini Nano whatever that's equal to device right so we would win a lot of speed there or would it be like the same really I guess we won't know u
-**Claude** (2026-03-31 20:48:04): Sticky state absolutely works. Here's why:
+**Stream 2: Data contribution** (the real data dividend
+**User** (2026-03-31 22:05:51): Yeah so it's it's not just local model update on your device it's everything all the data so that as so many other companies will be looking for this data to make stuff better right so like attention 
+**Claude** (2026-03-31 22:06:42): Here's the truth: the 1% fee isn't your moat. The **network effect** is.
 
-**Human conversation doesn't change state every sentence.** If you're stressed, you're stressed for minutes, not milliseconds. If you're talking to PAN, the next sentence is probably also to PAN. The state drifts slowly. Claude updating every 10 seconds is
-**User** (2026-03-31 20:50:43): Yeah awareness awareness makes sense Sensorium that's a cool that's a funny word Sentient you know that's you kind of going in a awareness kind of seems like your presence See awareness kind of seems 
-**User** (2026-03-31 20:51:25): ΠΑΝ remembers... Start session. Read CLAUDE.md and give the session continuity summary.
-**Claude** (2026-03-31 20:51:41): Last time we were working on:
+A fork at 0.5% with 100 users is worthless. No advertiser is going to broadcast to 100 people. They'll pay PAN's 1% to reach 10 million people. That's why Google wins — not because they're cheaper, but because everyone's alrea
+**User** (2026-03-31 22:09:12): Attention matching literally has to do with users buying something though so they're not actually making money there Training contributions again sensor data did like like all of these values that you
+**Claude** (2026-03-31 22:09:44): Yeah. You're talking about the real problem — AI replaces jobs, people need income, data dividends was supposed to be that income source. And $20/month is insulting. That's not a solution.
 
-- **Cerebras speed benchmarks** — measured real latency for 8B, 120B, and 235B models. The 120B sweet spot: ~250-380ms total round-trip, ~$2/month at 200 calls/day. You called it "stupidly fast."
+The honest answer: passive data collection alone won't replace a salary. The numbers don't work because data i
+**User** (2026-03-31 22:13:40): Yeah I guess Pan basically becomes your own robot worker right and everybody's assigned one and that's basically how they survive I guess when you think about it when AI takes over what the fuck this 
+**Claude** (2026-03-31 22:14:09): Yeah. You just worked through the whole economic reality in real time. The conclusion is honest:
 
-- **Sticky state architecture** — designed the flow where Claude runs as
-**Claude** (2026-03-31 20:52:19): Saved. Pick your names when you're ready — we can always change them later. The architecture is locked in. What do you want to tackle next?
-**User** (2026-03-31 20:52:59): Yeah make make the watcher be steward I actually don't even see that as a scheduled job in the automation or what I think it would be in the automation right intuition Yeah I guess we can do into intu
-**Claude** (2026-03-31 20:55:14): Done. Names are set:
+- Data dividends as passive income = gimmick, pennies
+- AI replaces all the micro-tasks that could earn money
+- PAN-to-PAN communication eliminates customer service, scheduling, negotiation
+- Real money
+**User** (2026-04-01 10:02:34): ΠΑΝ remembers... Start session. Read CLAUDE.md and give the session continuity summary.
+**Claude** (2026-04-01 10:02:45): Last time we were working on:
 
-- **Steward** — process health monitor (renamed from Watcher, `watchdog.ps1` updated)
-- **Intuition** — the consciousness/state engine (to be built)
-- **Guardian** — security service (future, when we build auth)
+- **Git push fix** — OneDrive symlink paths were causing issues, got it resolved so all 151 commits show on GitHub
+- **Data dividends deep dive** — worked through the full economic model: attention matching (advertisers broadcast, PAN matches locally), training contrib
+**User** (2026-04-01 10:05:31): I see a couple of issues for one via auto hotkey stuff that we have on restart I restarted my computer it didn't it didn't actually activate the auto hot key so put that as a bug the other thing that 
+**User** (2026-04-01 10:09:06): Number three is caused by Windows voice to text randomly inserting stuff and you know that you stated previously I think this only happens when you're in the terminal though the input box doesn't real
+**Claude** (2026-04-01 10:09:29): All 7 tasks captured. My take on priority:
 
-The automation page needs a **Services** tab added to show these 
-**User** (2026-03-31 20:58:04): Should it be shown there or should it be shown in the right pan Similar to all how Tasks and Bugs and Setup guide are and it just has a services tab there What do you think And I guess we can make it 
-**Claude** (2026-03-31 20:58:17): Right panel makes way more sense. The automation page is for configuring scheduled jobs. Services are live status — you want to glance at them while working in the terminal, not navigate to a separate page.
+1. **#5 Approvals tab + tab flashing** — you said this is really important
+2. **#1 AHK not starting on reboot** — quick fix, foundational
+3. **#2 Conversation loads before terminal ready** — blocks first-use experience
+4. **#3 Steward not running** — relat
+**User** (2026-04-01 10:10:23): Yeah exactly no so not when you're stuck in terminal mode it's when you're in chat mode there's no way to send escape now that when you when you're in terminal you can push escape that's that's what t
+**Claude** (2026-04-01 10:25:12): Server's back up. Running on port 7777, uptime 10s. No Tailscale IP detected but local access is working.
 
-So the right panel tabs become: **Tasks | Bugs | Services | Setup Guide**
-
-Services tab show
-**User** (2026-03-31 20:59:01): And right so like different different applications can list different services there as well so you'll always have guardian and intuition and Stewart and all that stuff that are pan central right and 
-**Claude** (2026-03-31 21:04:00): Built. Now the right panel has a **Services** tab (default) showing:
-
-- **PAN Core** section:
-  - PAN Server — green dot, uptime, PID
-  - Steward — green/yellow based on last heartbeat
-  - Intuition — grey (offline, not yet built)
-  - Phone Link — green if phone connected in last 60s
-  - Dream — las
+Last session you were deep in the economic model conversation — data dividends, PAN-to-PAN communication eliminating jobs, UBI as the real answer. On the dev side, dashboard naming cleanup was 
 
 ### Last Messages (Full)
-**User** (2026-03-31 20:58:04):
-Should it be shown there or should it be shown in the right pan Similar to all how Tasks and Bugs and Setup guide are and it just has a services tab there What do you think And I guess we can make it you know have real time updates of of lights and stuff when things go down or up or whatever And then I guess if like the you know the steward finds a problem they can list the problem there so you have a faster access to see that stuff What do you think
+**User** (2026-04-01 10:09:06):
+Number three is caused by Windows voice to text randomly inserting stuff and you know that you stated previously I think this only happens when you're in the terminal though the input box doesn't really 'cause this problem as much but it's not really like a traditional bug it's a Windows voice to text weird copy paste retard retardation shit We need a hotkey to switch between the terminal chat and the chat right so like the little bullying we have at the bottom and the terminal and the terminal tab So there should be like a little hot key to switch between those and then there's certain things like if you're stuck in the terminal chad you can't push escape to make you stop you have to switch right so then you have to push 2 keys to make you stop Maybe there could be like a stop button too or something I guess just that would send the you know the information to the terminals to to push escape to stop the terminal from doing whatever it's doing Even though I don't know that's really worth it but anyway some of the terminal commands don't work when you're in the chat instead of being in the terminal right In the chat in this case I mean the remember I'm always talking about the bullying here i'm not talking about the conversation tab Oh yeah approval staff is really important Yeah so you got it you got everything else yeah that's all good yeah
 
-**Claude** (2026-03-31 20:58:17):
-Right panel makes way more sense. The automation page is for configuring scheduled jobs. Services are live status — you want to glance at them while working in the terminal, not navigate to a separate page.
 
-So the right panel tabs become: **Tasks | Bugs | Services | Setup Guide**
+**Claude** (2026-04-01 10:09:29):
+All 7 tasks captured. My take on priority:
 
-Services tab shows:
-- Green/red dots for up/down
-- Service name + uptime
-- If Steward detects a problem, it shows inline — "PAN Server restarted 2m ago" or "Whisper STT down — retrying"
+1. **#5 Approvals tab + tab flashing** — you said this is really important
+2. **#1 AHK not starting on reboot** — quick fix, foundational
+3. **#2 Conversation loads before terminal ready** — blocks first-use experience
+4. **#3 Steward not running** — related to #2, steward should manage this
+5. **#4 Device naming + sections** — UI polish
+6. **#7 Hotkey toggle** — quality of life
+7. **#6 Classifier → Intuition architecture** — bigger design work
 
-Quick, always visible, no page navigation needed. Want me to build it?
+Want me to start with approvals, or you want to reorder?
 
-**User** (2026-03-31 20:59:01):
-And right so like different different applications can list different services there as well so you'll always have guardian and intuition and Stewart and all that stuff that are pan central right and then you can have project specific ones so like air traffic controller could have like radar or whatever so you can have like sections of categories in there that's easily done right so yeah we just need that stuff uptime and then you know yeah exactly I think that's perfect
+**User** (2026-04-01 10:10:23):
+Yeah exactly no so not when you're stuck in terminal mode it's when you're in chat mode there's no way to send escape now that when you when you're in terminal you can push escape that's that's what that's what that meant OK let's do those well approvals tab and approvals flashing it's important I wouldn't say maybe you know that all of these are important they're all basically you know just as important they're all just do it by easy easiest verse to hardest I'd say
 
-**Claude** (2026-03-31 21:04:00):
-Built. Now the right panel has a **Services** tab (default) showing:
+**Claude** (2026-04-01 10:25:12):
+Server's back up. Running on port 7777, uptime 10s. No Tailscale IP detected but local access is working.
 
-- **PAN Core** section:
-  - PAN Server — green dot, uptime, PID
-  - Steward — green/yellow based on last heartbeat
-  - Intuition — grey (offline, not yet built)
-  - Phone Link — green if phone connected in last 60s
-  - Dream — last run time
-  - Scout — last run time
-
-- **Recent Issues** section (if Steward logged any restarts)
-
-- Project-specific services will show up when configured via `project_services` setting
-
-Refresh the dashboard and check the Services tab on the right panel. It defaults to Services now instead of Tasks.
+Last session you were deep in the economic model conversation — data dividends, PAN-to-PAN communication eliminating jobs, UBI as the real answer. On the dev side, dashboard naming cleanup was done, input paste fix was in testing, dream cycle set to 12h, and double memory injection was fixed.
 
 <!-- PAN-CONTEXT-END -->
