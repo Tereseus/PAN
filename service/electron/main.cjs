@@ -4,6 +4,8 @@ const fs = require('fs');
 const { exec, spawn } = require('child_process');
 const os = require('os');
 
+app.setAppUserModelId('dev.pan.app');
+
 const PAN_URL = 'http://127.0.0.1:7777';
 const CONFIG_PATH = path.join(app.getPath('userData'), 'pan-config.json');
 const CLAUDE_PATH = path.join(process.env.APPDATA || '', 'npm', 'claude.cmd');
@@ -192,7 +194,7 @@ function createTray() {
     { type: 'separator' },
     { label: 'Dashboard', click: () => showDashboard() },
     { label: 'Open ΠΑΝ Folder', click: () => {
-      exec('explorer "' + path.join(os.homedir(), 'OneDrive', 'Desktop', 'PAN') + '"');
+      exec('explorer "' + path.resolve(path.join(__dirname, '..', '..')) + '"');
     }},
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
@@ -238,8 +240,10 @@ function showDashboard() {
     return;
   }
 
-  const iconPath = path.join(__dirname, 'pan-icon.png');
-  const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
+  const icoPath = path.join(__dirname, 'pan-icon.ico');
+  const pngPath = path.join(__dirname, 'pan-icon.png');
+  const iconFile = fs.existsSync(icoPath) ? icoPath : pngPath;
+  const icon = fs.existsSync(iconFile) ? nativeImage.createFromPath(iconFile) : undefined;
   dashboardWindow = new BrowserWindow({
     width: 1000,
     height: 700,
@@ -262,8 +266,47 @@ function showDashboard() {
   ]);
   dashboardWindow.setMenu(dashMenu);
 
-  dashboardWindow.loadURL(`${PAN_URL}/dashboard/`);
+  dashboardWindow.loadURL(`${PAN_URL}/dashboard/`).catch(err => {
+    console.error('[PAN Electron] loadURL failed:', err.message);
+  });
+  dashboardWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('[PAN Electron] did-fail-load:', errorCode, errorDescription, validatedURL);
+  });
   dashboardWindow.on('closed', () => { dashboardWindow = null; });
+}
+
+// Dev dashboard window — loads from Vite dev server for testing UI changes
+let devWindow = null;
+function showDevDashboard(port) {
+  port = port || 5173;
+  if (devWindow) {
+    devWindow.focus();
+    return;
+  }
+
+  const iconPath = path.join(__dirname, 'pan-icon.png');
+  const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
+  devWindow = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    title: 'ΠΑΝ Dashboard [DEV]',
+    icon: icon,
+    webPreferences: { nodeIntegration: false, contextIsolation: true }
+  });
+
+  const { Menu: AppMenu } = require('electron');
+  devWindow.setMenu(AppMenu.buildFromTemplate([
+    {
+      label: 'Dev',
+      submenu: [
+        { label: 'Open DevTools', click: () => { devWindow?.webContents.openDevTools(); } },
+        { label: 'Reload', click: () => { devWindow?.webContents.reload(); } }
+      ]
+    }
+  ]));
+
+  devWindow.loadURL(`http://localhost:${port}/v2/terminal`);
+  devWindow.on('closed', () => { devWindow = null; });
 }
 
 // Commands window
@@ -304,7 +347,7 @@ ipcMain.on('save-device-name', (event, name) => {
       { type: 'separator' },
       { label: 'Dashboard', click: () => showDashboard() },
       { label: 'Open ΠΑΝ Folder', click: () => {
-        exec('explorer "' + path.join(os.homedir(), 'OneDrive', 'Desktop', 'PAN') + '"');
+        exec('explorer "' + path.resolve(path.join(__dirname, '..', '..')) + '"');
       }},
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() }

@@ -149,11 +149,11 @@
 
 	async function loadUsage() {
 		try {
-			const u = await api('/api/v1/usage');
-			usageToday = u.today_cost || '--';
-			usageWeek = u.week_cost || '--';
-			usageAllTime = u.alltime_cost || '--';
-			usageBreakdown = u.breakdown || [];
+			const u = await api('/api/automation/usage');
+			usageToday = u.today?.total_cost_cents != null ? `$${(u.today.total_cost_cents / 100).toFixed(2)}` : '--';
+			usageWeek = u.week?.total_cost_cents != null ? `$${(u.week.total_cost_cents / 100).toFixed(2)}` : '--';
+			usageAllTime = u.all_time?.total_cost_cents != null ? `$${(u.all_time.total_cost_cents / 100).toFixed(2)}` : '--';
+			usageBreakdown = [];
 		} catch { /* empty */ }
 	}
 

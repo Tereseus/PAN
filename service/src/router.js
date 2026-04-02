@@ -129,10 +129,16 @@ ${memoryContext}`,
 
     logStep(cmdId, 'unified_response', raw.slice(0, 200));
 
-    const action = JSON.parse(raw);
+    // Strip thinking tags (Qwen 235B sometimes wraps in <think>...</think>)
+    let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    // Extract JSON if wrapped in other text
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) cleaned = jsonMatch[0];
+
+    const action = JSON.parse(cleaned);
     return processUnifiedResult(action, text, context);
   } catch (e) {
-    console.error('[PAN Router] Unified call error:', e.message);
+    console.error('[PAN Router] Unified call error:', e.message, '| raw:', typeof raw === 'string' ? raw.slice(0, 300) : raw);
     return { intent: 'query', response: 'PAN is having trouble thinking right now.' };
   }
 }

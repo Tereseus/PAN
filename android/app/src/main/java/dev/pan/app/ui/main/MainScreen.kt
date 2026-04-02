@@ -44,14 +44,11 @@ fun MainScreen(
     }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        // Only start Tailscale if not already running
-        if (!dev.pan.app.vpn.PanVpn.isRunning()) {
-            val vpnIntent = android.net.VpnService.prepare(context)
-            if (vpnIntent != null) {
-                vpnLauncher.launch(vpnIntent)
-            } else {
-                viewModel.connectTailscale()
-            }
+        val vpnIntent = android.net.VpnService.prepare(context)
+        if (vpnIntent != null) {
+            vpnLauncher.launch(vpnIntent)
+        } else {
+            viewModel.connectTailscale()
         }
     }
     val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()
@@ -82,30 +79,48 @@ fun MainScreen(
         ) {
             // Dashboard — primary entry point
             Button(
-                onClick = onNavigateToDashboard,
+                onClick = {
+                    android.util.Log.w("PAN-DASH", "Dashboard button tapped!")
+                    onNavigateToDashboard()
+                },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("ΠΑΝ Dashboard")
+                Text("PAN Dashboard")
             }
 
-            // Quick Mute toggle
-            Card(modifier = Modifier.fillMaxWidth()) {
+            // Microphone toggle — LIVE (red) or Muted
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isMicEnabled) MaterialTheme.colorScheme.errorContainer
+                                    else MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Quick Mute", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            if (isMicEnabled) "Listening" else "Muted",
+                            if (isMicEnabled) "LIVE" else "Muted",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (isMicEnabled) MaterialTheme.colorScheme.error
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            if (isMicEnabled) "PAN is listening" else "Tap to enable microphone",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (isMicEnabled) MaterialTheme.colorScheme.primary
+                            color = if (isMicEnabled) MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
                         checked = isMicEnabled,
-                        onCheckedChange = { viewModel.toggleMic() }
+                        onCheckedChange = { viewModel.toggleMic() },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = MaterialTheme.colorScheme.error,
+                            checkedTrackColor = MaterialTheme.colorScheme.errorContainer
+                        )
                     )
                 }
             }
@@ -121,40 +136,49 @@ fun MainScreen(
                 }
             }
 
-            // Server + Connection status (merged — no toggle, always on)
+            // Connection Status
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Server", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(4.dp))
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Connection", style = MaterialTheme.typography.titleMedium)
+                    // Server / PAN Hub
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusDot(isActive = isServerConnected)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            if (isServerConnected) "Connected" else "Disconnected",
+                            if (isServerConnected) "Connected - PAN Hub" else "Disconnected - PAN Hub",
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (isServerConnected) MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.error
                         )
                     }
-                    if (pendingCount > 0) {
-                        Text("$pendingCount items pending",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary)
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    // Secure connection status
+                    // Secure tunnel
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusDot(isActive = remoteAccessStatus == "Connected")
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            if (remoteAccessStatus == "Connected") "Secure (Tailscale)" else "Secure: $remoteAccessStatus",
-                            style = MaterialTheme.typography.bodySmall,
+                            when (remoteAccessStatus) {
+                                "Connected" -> "Secure - Tailscale Encrypted"
+                                "Connecting..." -> "Secure - Connecting..."
+                                else -> "Secure - $remoteAccessStatus"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
                             color = if (remoteAccessStatus == "Connected") MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    // AI backend
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusDot(isActive = isServerConnected)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            if (isServerConnected) "AI - Cerebras (Active)" else "AI - Offline",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isServerConnected) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     if (remoteAccessIp.isNotEmpty()) {
-                        Text(remoteAccessIp,
+                        Text("Tailscale IP: $remoteAccessIp",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
