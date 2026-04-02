@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -212,10 +213,46 @@ func GetStatus() *Status {
 	return st
 }
 
+// ListPeers returns a string with all tailnet peers (hostname:ip:online) for debugging.
+func ListPeers() string {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if server == nil {
+		return "server not running"
+	}
+
+	ctx, c := context.WithTimeout(context.Background(), 10*time.Second)
+	defer c()
+
+	lc, err := server.LocalClient()
+	if err != nil {
+		return "localclient error: " + err.Error()
+	}
+
+	status, err := lc.Status(ctx)
+	if err != nil {
+		return "status error: " + err.Error()
+	}
+
+	var result []string
+	for _, peer := range status.Peer {
+		ip := ""
+		if len(peer.TailscaleIPs) > 0 {
+			ip = peer.TailscaleIPs[0].String()
+		}
+		online := "offline"
+		if peer.Online {
+			online = "online"
+		}
+		result = append(result, fmt.Sprintf("%s=%s(%s)", peer.HostName, ip, online))
+	}
+	return strings.Join(result, "|")
+}
+
 // FindServerIP scans the tailnet for a peer matching the given hostname
 // and returns its Tailscale IP. If hostname is empty, returns the first
-// peer that isn't this device. This lets the phone discover the PAN server
-// without any manual IP configuration.
+// peer that isn't this device.
 func FindServerIP(peerHostname string) string {
 	mu.Lock()
 	defer mu.Unlock()
@@ -232,17 +269,26 @@ func FindServerIP(peerHostname string) string {
 		return ""
 	}
 
-	// Get full status WITH peers
 	status, err := lc.Status(ctx)
 	if err != nil {
 		return ""
 	}
 
+	// Log all peers for debugging
 	for _, peer := range status.Peer {
-		name := string(peer.HostName)
-		if peerHostname != "" && name == peerHostname {
-			if len(peer.TailscaleIPs) > 0 {
-				return peer.TailscaleIPs[0].String()
+		log.Printf("panvpn: peer: %s ip=%v online=%v", peer.HostName, peer.TailscaleIPs, peer.Online)
+	}
+
+	for _, peer := range status.Peer {
+		name := strings.ToLower(string(peer.HostName))
+		if peerHostname != "" {
+			search := strings.ToLower(peerHostname)
+			if name == search || strings.Contains(name, search) {
+				if peer.Online && len(peer.TailscaleIPs) > 0 {
+					log.Printf("panvpn: FindServerIP(%s) matched %s = %s", peerHostname, peer.HostName, peer.TailscaleIPs[0])
+					return peer.TailscaleIPs[0].String()
+				}
+				log.Printf("panvpn: FindServerIP(%s) matched %s but offline/no-ip", peerHostname, peer.HostName)
 			}
 		}
 	}
@@ -256,6 +302,7 @@ func FindServerIP(peerHostname string) string {
 		}
 	}
 
+	log.Printf("panvpn: FindServerIP(%s) found nothing", peerHostname)
 	return ""
 }
 

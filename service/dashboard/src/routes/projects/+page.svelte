@@ -65,7 +65,7 @@
 	}
 
 	async function cycleTask(taskId, currentStatus) {
-		const next = currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'todo';
+		const next = currentStatus === 'backlog' ? 'todo' : currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'backlog';
 		try {
 			await api(`/dashboard/api/projects/${selectedProject.id}/tasks`, {
 				method: 'POST',
@@ -178,8 +178,8 @@
 							</div>
 							{#each mTasks as t}
 								<div class="task-item" onclick={() => cycleTask(t.id, t.status)}>
-									<div class="task-check" class:done={t.status === 'done'} class:in_progress={t.status === 'in_progress'}>
-										{#if t.status === 'done'}&#10003;{:else if t.status === 'in_progress'}~{/if}
+									<div class="task-check" class:done={t.status === 'done'} class:in_progress={t.status === 'in_progress'} class:backlog={t.status === 'backlog'}>
+										{#if t.status === 'done'}&#10003;{:else if t.status === 'in_progress'}~{:else if t.status === 'backlog'}&#8943;{/if}
 									</div>
 									<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
 								</div>
@@ -197,8 +197,8 @@
 							</div>
 							{#each uncategorized as t}
 								<div class="task-item" onclick={() => cycleTask(t.id, t.status)}>
-									<div class="task-check" class:done={t.status === 'done'} class:in_progress={t.status === 'in_progress'}>
-										{#if t.status === 'done'}&#10003;{:else if t.status === 'in_progress'}~{/if}
+									<div class="task-check" class:done={t.status === 'done'} class:in_progress={t.status === 'in_progress'} class:backlog={t.status === 'backlog'}>
+										{#if t.status === 'done'}&#10003;{:else if t.status === 'in_progress'}~{:else if t.status === 'backlog'}&#8943;{/if}
 									</div>
 									<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
 								</div>
@@ -414,6 +414,12 @@
 		background: #f9e2af;
 		border-color: #f9e2af;
 		color: #0a0a0f;
+	}
+
+	.task-check.backlog {
+		background: #585b70;
+		border-color: #585b70;
+		color: #cdd6f4;
 	}
 
 	.task-title { font-size: 13px; color: #cdd6f4; }

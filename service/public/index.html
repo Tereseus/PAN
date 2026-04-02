@@ -156,6 +156,7 @@ body {
 
 .page { display: none; }
 .page.active { display: block; }
+#chat.page.active { display: flex; }
 
 /* Cards */
 .card {
@@ -831,7 +832,8 @@ body {
   <h1><span>ΠΑΝ</span> Dashboard <span style="font-size:11px;color:var(--text2);font-weight:400">v0.3.1</span></h1>
   <button onclick="refreshDashboard()" title="Refresh" style="background:none;border:1px solid var(--border);color:var(--text2);cursor:pointer;border-radius:var(--radius);padding:2px 6px;font-size:11px;margin-left:4px">↻</button>
   <div class="tabs">
-    <button class="tab active" data-page="terminal">Terminal</button>
+    <button class="tab active" data-page="chat">Chat</button>
+    <button class="tab" data-page="terminal">Terminal</button>
     <button class="tab" data-page="automation">Automation</button>
     <button class="tab" data-page="projects">Projects</button>
     <button class="tab" data-page="conversations">Conversations</button>
@@ -841,7 +843,8 @@ body {
   </div>
   <div class="mobile-nav">
     <select id="mobile-page-select" onchange="switchTab(this.value)">
-      <option value="terminal" selected>Terminal</option>
+      <option value="chat" selected>Chat</option>
+      <option value="terminal">Terminal</option>
       <option value="automation">Automation</option>
       <option value="projects">Projects</option>
       <option value="conversations">Conversations</option>
@@ -867,12 +870,34 @@ body {
 
 <div class="content">
 
+
   <!-- PROJECTS PAGE -->
   <div id="projects" class="page">
     <div id="projects-overview" style="margin-bottom:24px">
       <div class="loading">Loading projects...</div>
     </div>
     <div id="projects-detail"></div>
+  </div>
+
+  <!-- CHAT PAGE -->
+  <div id="chat" class="page active" style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+    <div style="padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0">
+      <select id="global-project-select" onchange="onGlobalProjectChange()"
+        style="width:100%;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:15px;font-weight:500;outline:none">
+        <option value="">Select project...</option>
+      </select>
+    </div>
+    <div id="chat-page-messages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px">
+      <div style="color:var(--text2);text-align:center;padding:40px 20px;font-size:14px">
+        Select a project above
+      </div>
+    </div>
+    <div style="padding:8px 12px;border-top:1px solid var(--border);display:flex;gap:8px;background:var(--bg);flex-shrink:0">
+      <input type="text" id="chat-page-input" placeholder="Message PAN..."
+        style="flex:1;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:14px;outline:none"
+        onkeydown="if(event.key==='Enter')sendChatMessage()">
+      <button class="btn btn-primary" style="padding:10px 20px;white-space:nowrap" onclick="sendChatMessage()">Send</button>
+    </div>
   </div>
 
   <!-- TERMINAL PAGE -->
@@ -1032,7 +1057,7 @@ body {
   </div>
 
   <!-- CONVERSATIONS PAGE -->
-  <div id="conversations" class="page active">
+  <div id="conversations" class="page">
     <div class="toolbar">
       <select id="convo-filter" onchange="convoOffset=0;loadConversations()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px">
         <option value="all">All</option>
@@ -1756,6 +1781,11 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 function loadPage(page) {
   switch(page) {
+    case 'chat':
+      loadChatPageHistory();
+      if (chatPageRefreshInterval) clearInterval(chatPageRefreshInterval);
+      chatPageRefreshInterval = setInterval(loadChatPageHistory, 5000);
+      break;
     case 'projects': loadProjects(); break;
     case 'terminal': initTerminal(); break;
     case 'automation': loadAutomation(); break;
@@ -1788,6 +1818,11 @@ function switchTab(pageName) {
   if (pageName !== 'sensors' && sensorPollInterval) {
     clearInterval(sensorPollInterval);
     sensorPollInterval = null;
+  }
+  // Stop chat page refresh when leaving chat tab
+  if (pageName !== 'chat' && chatPageRefreshInterval) {
+    clearInterval(chatPageRefreshInterval);
+    chatPageRefreshInterval = null;
   }
   // Sync mobile dropdown
   const mobileSelect = document.getElementById('mobile-page-select');
@@ -2173,6 +2208,197 @@ async function toggleMobileTask(taskId, currentStatus) {
     body: JSON.stringify({ status: newStatus })
   });
   loadMobileTasks();
+}
+
+// ========== CHAT PAGE ==========
+let chatProjects = [];
+let globalActiveProjectPath = '';
+let globalProjectsLoaded = false;
+
+async function loadGlobalProjects() {
+  if (globalProjectsLoaded) return;
+  const select = document.getElementById('global-project-select');
+  if (!select) return;
+  try {
+    const res = await fetch('/dashboard/api/projects');
+    chatProjects = await res.json();
+    chatProjects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.path;
+      opt.textContent = p.name;
+      select.appendChild(opt);
+    });
+    // Auto-select PAN project
+    const pan = chatProjects.find(p => p.name === 'PAN');
+    if (pan) {
+      select.value = pan.path;
+      globalActiveProjectPath = pan.path;
+    }
+    globalProjectsLoaded = true;
+  } catch {}
+}
+
+function onGlobalProjectChange() {
+  const select = document.getElementById('global-project-select');
+  globalActiveProjectPath = select.value;
+  // Reload current page with new project context
+  const activePage = document.querySelector('.page.active');
+  if (activePage) loadPage(activePage.id);
+}
+
+let chatLastSentTime = 0;
+let chatPageSessionId = '';
+let chatPageLastHash = '';
+let chatPageRefreshInterval = null;
+
+// Chat page load — renamed to avoid collision with Terminal sidebar's loadChatHistory
+async function loadChatPageHistory() {
+  await loadGlobalProjects();
+  if (globalActiveProjectPath) {
+    loadChatForProject(globalActiveProjectPath);
+  } else {
+    const msgs = document.getElementById('chat-page-messages');
+    if (msgs) msgs.innerHTML = '<div style="color:var(--text2);text-align:center;padding:40px 20px">Select a project above to see conversations</div>';
+  }
+}
+
+async function loadChatForProject(projectPath) {
+  const msgs = document.getElementById('chat-page-messages');
+  if (!msgs) return;
+  // Don't refresh while waiting for Claude's response
+  if (Date.now() - chatLastSentTime < 5000 && document.getElementById('chat-typing')) return;
+
+  try {
+    // Find the latest real Claude session for this project
+    let sessionId = '';
+    const probe = await fetch('/dashboard/api/events?limit=5&project_path=' + encodeURIComponent(projectPath));
+    const probeData = await probe.json();
+    for (const evt of (probeData.events || [])) {
+      const sid = evt.session_id || '';
+      if (sid && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+        sessionId = sid;
+        break;
+      }
+    }
+
+    if (!sessionId) {
+      if (!msgs.children.length || chatPageLastHash === 'empty') return;
+      chatPageLastHash = 'empty';
+      msgs.innerHTML = '<div style="color:var(--text2);text-align:center;padding:40px 20px">No Claude session found for this project</div>';
+      return;
+    }
+
+    // Load the actual transcript (same data the Terminal sidebar shows)
+    const tRes = await fetch('/dashboard/api/transcript?session_id=' + encodeURIComponent(sessionId) + '&limit=200');
+    const tData = await tRes.json();
+    const messages = tData.messages || [];
+
+    if (!messages.length) {
+      if (chatPageLastHash === 'no-msgs') return;
+      chatPageLastHash = 'no-msgs';
+      msgs.innerHTML = '<div style="color:var(--text2);text-align:center;padding:40px 20px">No conversation yet</div>';
+      return;
+    }
+
+    // Build bubble HTML
+    let html = '';
+    for (const msg of messages) {
+      if (msg.role === 'user') {
+        const text = msg.text ? escapeHtml(msg.text) : '';
+        if (!text) continue;
+        html += '<div style="background:var(--accent);color:#000;border-radius:16px 16px 4px 16px;padding:10px 14px;font-size:14px;align-self:flex-end;max-width:80%;word-break:break-word">' + text + '</div>';
+      } else if (msg.type === 'text') {
+        const text = msg.text ? escapeHtml(msg.text) : '';
+        if (!text) continue;
+        html += '<div style="background:var(--bg2);color:var(--text);border-radius:16px 16px 16px 4px;padding:10px 14px;font-size:14px;align-self:flex-start;max-width:80%;word-break:break-word;white-space:pre-wrap">' + text + '</div>';
+      } else if (msg.type === 'tool') {
+        html += '<div style="background:transparent;border-left:2px solid var(--border);padding:2px 8px;font-size:11px;color:var(--text2);align-self:flex-start;max-width:80%;font-family:monospace;word-break:break-all">' + escapeHtml(msg.text || '') + '</div>';
+      }
+    }
+
+    // Only update DOM if content changed
+    const newHash = messages.length + ':' + html.length;
+    if (newHash === chatPageLastHash) return;
+    chatPageLastHash = newHash;
+
+    const wasNearBottom = (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight) < 80;
+    const prevScroll = msgs.scrollTop;
+    msgs.innerHTML = html;
+
+    if (wasNearBottom || !msgs._initialDone) {
+      msgs._initialDone = true;
+      msgs.scrollTop = msgs.scrollHeight;
+    } else {
+      msgs.scrollTop = prevScroll;
+    }
+  } catch (err) {
+    console.error('[Chat Page] load error:', err);
+  }
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById('chat-page-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  const msgs = document.getElementById('chat-page-messages');
+  // Show user message immediately
+  const userBubble = document.createElement('div');
+  userBubble.style.cssText = 'background:var(--accent);color:#000;border-radius:16px 16px 4px 16px;padding:10px 14px;font-size:14px;align-self:flex-end;max-width:80%;word-break:break-word';
+  userBubble.textContent = text;
+  msgs.appendChild(userBubble);
+
+  // Show typing indicator
+  const typing = document.createElement('div');
+  typing.id = 'chat-typing';
+  typing.style.cssText = 'background:var(--bg2);color:var(--text2);border-radius:16px 16px 16px 4px;padding:10px 14px;font-size:14px;align-self:flex-start';
+  typing.textContent = 'Thinking...';
+  msgs.appendChild(typing);
+  msgs.scrollTop = msgs.scrollHeight;
+
+  // Find the terminal session for this project
+  const selectedProject = chatProjects.find(p => p.path === globalActiveProjectPath);
+  const projectName = selectedProject ? selectedProject.name : 'PAN';
+  const sessionId = 'dash-' + projectName.toLowerCase().replace(/\s+/g, '-');
+
+  try {
+    const res = await fetch('/api/v1/terminal/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, session_id: sessionId })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      typing.textContent = 'No active terminal session for ' + projectName;
+      typing.style.color = 'var(--accent3)';
+      typing.removeAttribute('id');
+      return;
+    }
+
+    // Poll transcript every 2s for up to 60s waiting for Claude's response
+    chatLastSentTime = Date.now();
+    const prevHash = chatPageLastHash;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      chatLastSentTime = Date.now();
+      await loadChatForProject(globalActiveProjectPath);
+      // If transcript changed, Claude responded
+      if (chatPageLastHash !== prevHash) {
+        const t = document.getElementById('chat-typing');
+        if (t) t.remove();
+        break;
+      }
+    }
+    chatLastSentTime = 0;
+    const t = document.getElementById('chat-typing');
+    if (t) { t.textContent = 'Claude may still be processing...'; t.style.opacity = '0.5'; t.removeAttribute('id'); }
+  } catch (err) {
+    typing.textContent = 'Error: ' + err.message;
+    typing.style.color = 'var(--accent3)';
+    typing.removeAttribute('id');
+    chatLastSentTime = 0;
+  }
 }
 
 async function sendMobileCommand() {
@@ -5104,7 +5330,7 @@ async function startDashboard() {
   if (hashPage && document.getElementById(hashPage)) {
     switchTab(hashPage);
   } else {
-    switchTab('terminal');
+    switchTab('chat');
   }
 }
 

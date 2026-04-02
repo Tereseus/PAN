@@ -11,7 +11,7 @@ del "%TEMP%\pan-health.txt" 2>NUL
 
 if "%HEALTH%"=="200" (
     echo [PAN] Already running — opening dashboard
-    start "" "http://127.0.0.1:7777/dashboard/"
+    start "" "%~dp0service\node_modules\electron\dist\electron.exe" "%~dp0service\electron\main.cjs"
     exit /b 0
 )
 
@@ -33,4 +33,4 @@ goto WAIT
 
 :READY
 echo [PAN] Server running — opening dashboard
-start "" "http://127.0.0.1:7777/dashboard/"
+start "" "%~dp0service\node_modules\electron\dist\electron.exe" "%~dp0service\electron\main.cjs"

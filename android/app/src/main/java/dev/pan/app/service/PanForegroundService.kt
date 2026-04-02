@@ -46,7 +46,7 @@ class PanForegroundService : Service() {
     companion object {
         private const val TAG = "PanService"
         val lastAction = MutableStateFlow("")
-        val micEnabled = MutableStateFlow(true)
+        val micEnabled = MutableStateFlow(false) // Start muted — user unmutes when ready
     }
 
     @Inject lateinit var serverClient: PanServerClient
@@ -178,14 +178,18 @@ class PanForegroundService : Service() {
             // Phone only saves transcripts via STT callback
             voiceCollector.onLog = { msg -> panLog(msg) }
 
-            // Google Streaming STT — real-time transcription, no chunks
-            sttEngine.startListening { text, isFinal ->
-                if (text.isNotBlank() && isFinal) {
-                    voiceCollector.onTranscript(text) // Pair audio with transcript
-                    onSpeech(text)
+            // Start muted — STT only starts when user unmutes
+            if (micEnabled.value) {
+                sttEngine.startListening { text, isFinal ->
+                    if (text.isNotBlank() && isFinal) {
+                        voiceCollector.onTranscript(text)
+                        onSpeech(text)
+                    }
                 }
+                panLog("STT started (mic enabled)")
+            } else {
+                panLog("STT NOT started (muted on startup)")
             }
-            panLog("Google STT + Voice Collector started")
         } else {
             startForeground(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = false))
             panLog("No mic permission — running without audio")

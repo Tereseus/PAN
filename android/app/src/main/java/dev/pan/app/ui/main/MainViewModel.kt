@@ -215,9 +215,21 @@ class MainViewModel @Inject constructor(
 
     fun connectTailscale() {
         viewModelScope.launch {
-            // Delay tsnet startup to let audio/foreground service initialize first
-            // tsnet is memory-heavy and competes with AudioPortEventHandler
-            kotlinx.coroutines.delay(5000)
+            // If already connected with working proxy that can reach server, skip
+            if (dev.pan.app.vpn.PanVpn.isRunning() && remoteAccessManager.proxyPort.value > 0) {
+                // Verify proxy actually works by checking if API calls succeed
+                remoteAccessManager.refreshFromVpn()
+                if (remoteAccessManager.status.value == "Connected") {
+                    android.util.Log.d("PAN-VPN", "Already connected, proxy=${remoteAccessManager.proxyPort.value}")
+                    return@launch
+                }
+                // Proxy exists but not working — stop and restart
+                android.util.Log.d("PAN-VPN", "Proxy exists but not connected, restarting...")
+                try { dev.pan.app.vpn.PanVpn.disconnect(application) } catch (_: Exception) {}
+                kotlinx.coroutines.delay(1000)
+            }
+            // Delay to let audio/foreground service initialize first
+            kotlinx.coroutines.delay(3000)
             remoteAccessManager.setEnabled(true)
             remoteAccessManager.setStatus("Connecting...")
             try {

@@ -5,6 +5,7 @@ import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs'
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
+import { hostname } from 'os';
 
 const __dirname2 = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = join(__dirname2, '..', 'data', 'photos');
@@ -629,6 +630,65 @@ router.get('/api/projects', (req, res) => {
 router.get('/api/devices', (req, res) => {
   const devices = all(`SELECT * FROM devices ORDER BY last_seen DESC`);
   res.json(devices);
+});
+
+// GET /dashboard/api/services — unified services + devices status
+router.get('/api/services', (req, res) => {
+  const services = [];
+  const issues = [];
+  const pcHost = hostname();
+
+  // PAN Server — always up if this code is running
+  const uptime = process.uptime();
+  services.push({
+    category: 'PAN Core', name: 'PAN Server', status: 'up',
+    uptime, detail: `Port 7777, PID ${process.pid}`
+  });
+
+  // Steward
+  const stewardEvent = get(`SELECT created_at FROM events WHERE event_type IN ('StewardHeartbeat','SessionStart') ORDER BY created_at DESC LIMIT 1`);
+  if (stewardEvent) {
+    const age = (Date.now() - new Date(stewardEvent.created_at).getTime()) / 1000;
+    services.push({ category: 'PAN Core', name: 'Steward', status: age < 600 ? 'up' : 'unknown', detail: age < 600 ? 'Running' : 'No recent events' });
+  } else {
+    services.push({ category: 'PAN Core', name: 'Steward', status: 'unknown', detail: 'No events recorded' });
+  }
+
+  // Intuition
+  services.push({ category: 'PAN Core', name: 'Intuition', status: 'offline', detail: 'Dimensional state engine — not yet built' });
+
+  // Dream
+  const dreamRow = get(`SELECT value FROM settings WHERE key = 'last_dream_run'`);
+  if (dreamRow) {
+    services.push({ category: 'PAN Core', name: 'Dream', status: 'up', detail: `Last run: ${dreamRow.value}` });
+  } else {
+    services.push({ category: 'PAN Core', name: 'Dream', status: 'unknown', detail: 'No runs recorded' });
+  }
+
+  // Scout
+  const scoutRow = get(`SELECT value FROM settings WHERE key = 'last_scout_run'`);
+  if (scoutRow) {
+    services.push({ category: 'PAN Core', name: 'Scout', status: 'up', detail: `Last run: ${scoutRow.value}` });
+  } else {
+    services.push({ category: 'PAN Core', name: 'Scout', status: 'unknown', detail: 'No runs recorded' });
+  }
+
+  // Devices
+  const devices = all(`SELECT * FROM devices ORDER BY last_seen DESC`);
+  for (const d of devices) {
+    const ageSec = d.last_seen ? (Date.now() - new Date(d.last_seen).getTime()) / 1000 : Infinity;
+    // PC running this server is ALWAYS online
+    const isThisPC = d.hostname === pcHost || d.device_type === 'pc' && ageSec < 10;
+    const isOnline = isThisPC || ageSec < 120;
+    const ageStr = ageSec < 60 ? `${Math.round(ageSec)}s ago` : ageSec < 3600 ? `${Math.round(ageSec / 60)}m ago` : `${Math.round(ageSec / 3600)}h ago`;
+    services.push({
+      category: 'Devices', name: d.name || d.hostname,
+      status: isOnline ? 'up' : 'down',
+      detail: `${d.device_type === 'phone' ? 'Phone' : 'PC'} — last seen ${isThisPC ? '0s ago' : ageStr}`
+    });
+  }
+
+  res.json({ services, issues });
 });
 
 // GET /dashboard/api/sessions
