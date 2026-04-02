@@ -95,3 +95,14 @@ export function sortProjects(projects) {
 export function saveProjectOrder(projectIds) {
 	localStorage.setItem('pan_project_order', JSON.stringify(projectIds));
 }
+
+// Terminal input state (survives tab switches)
+const terminalState = $state({ input: '' });
+
+export function getTerminalInput() {
+	return terminalState.input;
+}
+
+export function setTerminalInput(v) {
+	terminalState.input = v;
+}

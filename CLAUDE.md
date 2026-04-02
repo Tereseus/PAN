@@ -71,6 +71,18 @@ When user says "the settings page" they mean the Android app's Settings screen.
 
 **How to apply:** Use these terms when discussing the Android app UI. Don't confuse "main page" with the dashboard web page.
 
+When creating or updating an HTML report (like report.html), auto-open it in the browser so the user sees it immediately.
+
+**Why:** User shouldn't have to manually navigate to see something that was just built. "I talk, it appears."
+
+**How to apply:** After writing/updating any HTML file served by PAN, run `start http://127.0.0.1:7777/<path>` to open it in the default browser.
+
+The session continuity system (CLAUDE.md recent conversation + memory files + context briefing injection) works well. User was very happy when Claude immediately knew what was worked on previously.
+
+**Why:** User has been frustrated by sessions that don't remember context. When it works, it's the difference between "PAN is back" and "who are you?"
+
+**How to apply:** Always follow the session continuity rule. The briefing system is the core mechanism — protect it, don't break it, and keep CLAUDE.md's recent conversation section accurate.
+
 All user-facing text in the dashboard must use correct capitalization:
 
 1. **Labels, headings, button text:** Title Case (e.g., "Restart Server", "Setup Guide", "Add a Task")
@@ -78,6 +90,12 @@ All user-facing text in the dashboard must use correct capitalization:
 3. **Text after colons:** First letter capitalized (e.g., "Voice: Press your voice key..." not "Voice: press your voice key...")
 4. **NEVER use ALL CAPS** for user-facing text. Not for buttons, not for headings, not for status messages, not for setup guides.
 5. **NEVER start a sentence or value with a lo...
+
+When creating reports, HTML pages, or any resource with a URL, send the link to the dashboard chat as well (not just terminal output). The phone dashboard needs clickable hyperlinks.
+
+**Why:** The user works voice-first from their phone. Terminal output isn't visible on mobile. Links need to appear in the chat interface so they can tap to open.
+
+**How to apply:** After generating any report or URL, POST it to the PAN chat endpoint or broadcast it via the dashboard WebSocket so it appears in the mobile chat view as a clickable link.
 
 When user says "check the memory", "look at what we did", "find that thing", search ALL of these in order:
 
@@ -122,6 +140,18 @@ When a restart happens (server crash, session restart, app crash), save what cau
 
 **How to apply:** Before restarting, note what was being worked on and what caused the restart. After restart, the session summary should reference what went wrong and what was being done. Check git log and recent DB events if needed to reconstruct context.
 
+Service names should feel warm and intelligent, not creepy or surveillance-like.
+
+**Why:** These show up as running services in the dashboard. Users (especially future PAN Hub users) shouldn't feel watched.
+
+**Decided names (2026-03-31):**
+- Process health monitor: **Steward** (was "Watcher") — keeps services alive, `watchdog.ps1` renamed
+- State/consciousness service: **Intuition** — understands your state, dimensional awareness
+- Security service (future): **Guardian** — facial recognition, voice auth, attack protection
+
+**How to apply:**
+- Use these names in dashboard, logs, API endpoints, ...
+
 When giving the session summary at start of conversation:
 
 1. **Don't repeat "ΠΑΝ remembers.."** — the launch command already prints it. Just go straight into the summary.
@@ -136,7 +166,7 @@ When giving the session summary at start of conversation:
 
 ## Overview
 
-PAN Token on Cardano blockchain. Users stake anonymized data → AI companies buy aggregated data → users earn PAN tokens → 0.1% protocol fee to PAN treasury on every transaction.
+PAN Token on Cardano blockchain. Users stake anonymized data → AI companies buy aggregated data → users earn PAN tokens → 1% protocol fee to PAN treasury on every transaction.
 
 ## Chain: Cardano
 
@@ -148,23 +178,23 @@ PAN Token on Cardano blockchain. Users stake anonymized data → AI companies bu
 - Proof of Stake, energy efficient
 - Academic rigor, peer-reviewed protocols
 
-**Why Cardano over Solana/Ethereum (FINAL DECI...
+**Why Cardano over Solana/Ethereum (FINAL DECISI...
 
 # PAN Data Economics — PRIVATE
 
 ## Revenue Model
 
-Users run PAN → data flows through it → they choose to stake anonymized data → AI companies buy aggregated training data → crypto transaction occurs → PAN creator takes 0.1% of each transaction.
+Users run PAN → data flows through it → they choose to stake anonymized data → AI companies buy aggregated training data → crypto transaction occurs → PAN creator takes 1% of each transaction.
 
 - User controls everything: toggle data sharing on/off
 - Anonymization happens locally before data leaves the device (PII stripped on-device)
 - Hub aggregates anonymized data across all PAN instances
 - Users get staking rewards (crypto) for contributing data
-- PAN creator gets a micro-fee (0.1%) per transaction
+- PAN creator gets a micro-fee (1%) per transaction
 
 ## Fee Structure (FINAL DECISION)
 
-**The...
+**The 1% ...
 
 PAN's AutoDev/Scout system should be an autonomous agent loop, not just reactive.
 
@@ -174,6 +204,46 @@ PAN's AutoDev/Scout system should be an autonomous agent loop, not just reactive
 1. **Scheduled scouting missions** run automatically when server is up (GitHub monitor is the first example)
 2. **Classifier processes findings** — decides what's actionable vs informational, creates memories/tasks/design decisions
 3. **Surfaces to user** via dashboard, phone noti...
+
+# PAN as Internal Biosensor Integration Platform
+
+## Core Framing
+PAN does not build internal biosensors. PAN is the OS they plug into. Every internal sensor device is a data silo with no cross-correlation, no longitudinal intelligence, no user ownership. PAN solves all of that.
+
+## Target Devices for Integration
+- **PillCam / capsule endoscopy** (Medtronic) — gut imaging, 8-12hr battery, RF transmission, ~2-6fps. Data currently goes to clinician, discarded.
+- **Atmo Biosciences capsule** — gut gas composition (H2, CO2, O2), 24-48hr transit, wireless transmission. No personal longitudinal stor...
+
+# Project: AI Blood Sampling Analysis
+
+## Concept
+Daily fingerprick blood draw (same as diabetic glucose test). Blood on microscope slide, imaged at high magnification via cheap USB/smartphone microscope ($30-80). PAN captures image, runs CV analysis, logs to health timeline. Longitudinal daily data builds personal blood health record.
+
+## Hardware
+- Fingerprick lancet device (commodity, diabetic supply)
+- Portable USB/smartphone digital microscope (~$30-80, 1000x)
+- Microscope slides + cover slips (consumable)
+- PAN Android app as capture interface → analysis pipeline
+- Optional: clip-on smar...
+
+# PAN Consciousness Architecture (designed 2026-03-31)
+
+## Three-Tier Triangle
+
+```
+        Claude (PAN Server - live service)
+       /  writes state.json continuously  \
+      /   full context: photos, audio,      \
+     /    sensors, conversation history       \
+Phone ←——— shared state on server ———→ Cerebras 120B
+ Qwen 0.6B    (awareness.json)              fast response
+ sensors       dimensions                    reads state
+ new events    ~1K tokens                    ~250ms
+```
+
+## How It Works
+1. Claude runs as a LIVE SERVICE (like Guardian/Watcher), continuously processing all inputs
+2...
 
 # PAN Core Vision
 
@@ -191,6 +261,20 @@ After "I talk, it appears" comes "I think, it appears." That's brain-computer in
 - The UI exists for LOOKING, not for DOING — you look at what you want to see, you talk to make things happen
 - T...
 
+## PAN Dashboard Terminology (agreed 2026-04-01)
+
+**Instance** — A full environment (Prod, Dev, Test). Only admins can see/switch instances. Dev and Test show a label in the Topbar; Prod does NOT. Admin-only, hidden from regular users behind RBAC.
+
+**Sidebar** — The left vertical navigation strip. Contains Tabs.
+
+**Tab** — Each nav item in the Sidebar. Switches the active App.
+
+**App** — What fills the Main View (Terminal, Chat, ATC map, etc.). Can also open in a new window. Tabs switch between Apps.
+
+**Main View** — The large center content area. Displays the active App. One App at a time.
+
+*...
+
 PAN dashboard is ALREADY an Electron app. V2 direction:
 
 1. **Chat** = default view, replaces terminal as primary interface
@@ -200,15 +284,27 @@ PAN dashboard is ALREADY an Electron app. V2 direction:
 
 **Core thesis:** PAN is a personal data sovereignty platform. All data flows through it, user owns it all, can stake anonymized data via crypto for revenue. This gives ...
 
-PAN Hub (cloud relay) doubles as a data marketplace for enterprise.
+Data dividends use a **federated model** — raw data NEVER leaves the user's machine.
 
-**Why:** Users generate valuable behavioral/sensor data running PAN locally. AI companies want training data. PAN can broker this.
+**How it works:**
+1. Raw data stays encrypted locally (SQLCipher DB)
+2. Buyers/AI companies send queries/algorithms TO your PAN instance (via Hub)
+3. PAN runs the algorithm locally against raw data
+4. Only anonymized results go back through the NER anonymizer (outbound filter)
+5. User earns PAN tokens for matched/contributed data
 
-**How to apply:** When designing the Hub and org system, keep data flow architecture compatible with:
-- Local PII stripping before any data leaves the user's machine
-- Anonymized data aggregation at the hub level
-- "Staking" mechanism where users opt-in their data for AI training revenue
-- This is beyond the core org system — separate future phase after Hub is working
+**Why:** Privacy-preserving computation. No bulk data export. The anonymizer (`anonymizer.js`) is the gatekeeper — nothing exits without NER stripping.
+
+**How to apply:**
+- DB store...
+
+PAN will ship installers for both Windows and Linux. Development is currently on Windows but Linux deployment is a priority for easier DB tooling, terminal control, and cloud integration.
+
+Phone app targets both standard Android AND GrapheneOS (hardened AOSP). GrapheneOS considerations:
+- No Google Play Services — no Firebase/GMS dependencies allowed
+- Stricter background process killing — foreground service with persistent notification required (already done)
+- More aggressive permission revocation — handle denial gracefully
+- BLE, sensors, USB serial all use standard Android APIs, no changes...
 
 SOLVED (2026-03-25): Context reload is now handled by:
 1. `.pan-state.md` — living state file maintained by dream cycle (rewrites, never appends)
@@ -218,6 +314,20 @@ SOLVED (2026-03-25): Context reload is now handled by:
 **Why:** --continue caused throttling from massive context. JSONL grep was too slow and inaccurate. Individual memory_items rows in DB created unbounded garbage.
 
 **How to apply:** This is done. If issues arise with session continuity, check the state file quality and dream cycle, not th...
+
+PAN needs a structured feature registry that gets injected into every new Claude session's context.
+
+**Why:** Each new Claude session is "the first Claude" — it has no weight-level memory of PAN. The only way to give it full knowledge is context injection. Features are currently scattered across CLAUDE.md, memory files, and code comments. A single structured registry would let any Claude instantly know everything PAN can do.
+
+**How to apply:**
+1. Create a feature registry (FEATURES.md or JSON) listing every PAN feature with: name, status, components, how it works
+2. Include it in the context b...
+
+License: AGPL-3.0 with a custom addendum that forks cannot remove or reassign the default PAN treasury wallet address without explicit permission from the project owner.
+
+**Why:** Monetization is protocol-level through Cardano blockchain data staking fees (1% per transaction), not license fees. Anyone who stakes data through any PAN deployment (including commercial forks) pays 1% to the PAN treasury via smart contract. Users/companies who don't stake pay nothing.
+
+**How to apply:** When drafting LICENSE, use standard AGPL-3.0 text + addendum about treasury wallet. Don't add license-fee clauses...
 
 ## LM Studio
 - Proprietary freeware (NOT open source), free to use
@@ -231,6 +341,55 @@ SOLVED (2026-03-25): Context reload is now handled by:
 - Terminal-based AI coding agent written in Go — open-source Claude Code clone
 - Has bash execution, file read/write/edit, grep, glob (same tools as Claude Code)
 - Supports 75+ LLM providers: Anthropic, OpenAI, Ge...
+
+# PAN as MCP Memory Server
+
+PAN exposes its database as an MCP server so any Claude interface (app, Code, API) can read/write PAN memory.
+
+## Architecture
+- PAN Node.js server hosts MCP endpoint alongside existing REST API
+- Claude app connects via MCP → queries PAN DB for context, writes memories back
+- Claude Code already writes to PAN DB via hooks — MCP formalizes this
+- Any future interface (Discord bot, phone app, web) uses the same MCP endpoint
+
+## Tiered Access
+- **Command hub** (Claude Code terminal) — full access, unrestricted
+- **Claude app / external** — sandboxed read/write with ra...
+
+Built on 2026-03-30 but NOT YET TESTED in production:
+- Three-tier vector memory (episodic, semantic, procedural) — service/src/memory/
+- Evolution pipeline (6-step) — service/src/evolution/engine.js
+- Upgraded dream cycle — now runs evolution + state update
+- Ollama auto-boot — service/src/memory/ollama-boot.js
+- Memory consolidation on SessionEnd hook
+
+**Why:** All modules load clean and basic store/recall tested in isolation, but we haven't verified: dream cycle still works end-to-end, evolution pipeline produces sane config changes, consolidation extracts useful memories from real events, ...
+
+Phone AI routing: Cerebras online, OS-provided local model offline, regex fallback.
+
+**Why:** Local models add latency vs just calling Cerebras. Regex covers 80% of offline cases. Bundling a model (Qwen) is unnecessary — use whatever the phone OS already provides.
+
+**How to apply:**
+1. Online → Cerebras (fast, free tier)
+2. Offline → OS on-device model for classification (not bundled model)
+3. Fallback → regex classifier in `classifyLocally()` (PanForegroundService.kt:1301)
+
+On-device model abstraction — detect and use whatever's available:
+- Google AICore (Gemini Nano) — Pixel 8 Pro+
+- Samsun...
+
+PAN Hub is the organizational layer on top of personal PAN instances.
+
+**Architecture:**
+- PAN = personal (your phone, PC, sensors, data)
+- PAN Hub = organizational server(s) managing all employees' PAN instances
+- Tailnet switching = device moves between personal and work tailnets based on geofencing/email/enrollment
+
+**Core features:**
+- RBAC — roles define what each user can see/do/configure
+- Geofencing — auto-enrolls devices, auto-enables required sensors when entering a zone
+- Sensor policy enforcement — org defines mandatory sensors per role/location, PAN enforces
+- Full audit trail — e...
 
 PAN pendant (ESP32-S3 wearable) mounts to clothing via two-piece magnetic sandwich — same mechanism as magnetic scarf brooches/lapel mic mounts.
 
@@ -262,25 +421,56 @@ Sensor data should be organized into categories (camera, GPS, gas, mic, etc.) wi
 
 **Master mute/unmute:** Each sensor has a global toggle. Muting GPS means nothing gets GPS across all categories. Turning it back on restores all previous per-category settings (settings are preserved, not erased)...
 
-## Current Status (2026-03-27)
+# Spatial Mapping Vision for PAN
 
-**Memory system overhaul completed:** Living state file (.pan-state.md) replaces old dream cycle DB pollution.
-**Context briefing:** 48h time filter added to prevent stale data bleeding into fresh sessions.
+Three-layer spatial architecture:
+- **MICRO** — indoor rooms via COLMAP photogrammetry (pendant camera)
+- **MESO** — personal routes, frequent locations (GPS, BMI270, Pixel)
+- **MACRO** — world layer, bridges to Google Earth / OpenStreetMap
 
-### Recently Resolved
-- Remote access full stack working (Tailscale tunnel, device settings API, dashboard toggle, phone polling)
-- App crash after loading — resolved
-- GitHub issue monitor built (checks every 2h, stores in DB)
-- Device name display fixed
-- Phone sensors reconnect after WiFi drop
-- Dashboard HTML structure repaired
-- Context briefing injecti...
+## COLMAP as PAN Module
+- Video walkthrough captured via Pixel 10 Pro or pendant camera
+- COLMAP runs on ASUS G16 (GPU-accelerated), produces point cloud + mesh
+- Post-processed into room JSON schema (id, area, sensors, adjacency)
+- Stored in PAN `spatial/` module as persistent versioned home map
+- Camera pose data = free ...
+
+## Current Status (2026-04-01)
+
+### Working / Solved
+- **SQLCipher encryption — DONE** (migrated 2026-03-31, AES-256-CBC, better-sqlite3-multiple-ciphers, key in pan.key)
+- PAN service restart — WORKING
+- Dashboard naming: Chat→Conversation, sidebar Chat→Transcript
+- Terminal input rename: voiceInput*→terminalInput*, directTerminal→directMode
+- Image/text paste single-Enter — SOLVED
+- Terminal scrollbar jump on tool calls — SOLVED
+- Chat/transcript scrollbar jump — SOLVED
+- Smart scroll (position restore on refresh) — SOLVED
+- Context briefing injection — SOLVED
+- Dashboard chat full transcrip...
 
 PAN Hub remote access will use Tailscale instead of custom WireGuard or relay server.
 
 **Why:** Tailscale is already trusted by the user, handles NAT traversal, gives stable hostnames per device. Also solves Google OAuth redirect URI issue since devices get consistent hostnames instead of changing LAN IPs.
 
 **How to apply:** When building remote access features, assume Tailscale is the connectivity layer. Don't build custom VPN/relay infrastructure. Make Tailscale optional but recommended — enterprise users may have their own solution.
+
+# Universal Panel System (designed 2026-03-31)
+
+Both left and right panels in the terminal page are identical containers with a `<select>` dropdown. Any widget can go in any panel.
+
+**Core widgets (always available):**
+- Transcript (conversation history)
+- Project (progress, milestones)
+- Services (live service status with dots)
+- Tasks (project tasks with milestones)
+- Bugs (issue tracking)
+- Devices (connected devices — phones, pendants, vehicles)
+- Setup Guide
+
+**Project-specific widgets (added per-project):**
+- Air traffic: Aircraft, Ground Units, Zones
+- Any project can register custom wi...
 
 # PAN Development Velocity Tracker
 
@@ -295,6 +485,16 @@ PAN Hub remote access will use Tailscale instead of custom WireGuard or relay se
 - **Actual time:** Full day (~8 hours)
 - **Efficiency: ~15,000-20,000%**
 - **Notes:** Heavy parallel agent usag...
+
+Voice hotkeys (mouse side buttons for whisper dictation + Win+H) require AutoHotkey v2 runtime.
+
+**Why:** Windows 11 silently blocks low-level mouse hooks from .NET/managed processes. A C# exe with SetWindowsHookEx(WH_MOUSE_LL) installs the hook successfully but the callback never fires. AHK uses native C hooks that Windows trusts.
+
+**How to apply:**
+- Voice.ahk is at `C:\Users\tzuri\OneDrive\Desktop\Voice.ahk`
+- AHK v2 runtime at `C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe`
+- Watchdog starts it as admin and monitors/restarts
+- For PAN installer: bundle AutoHotkey64.exe + Voice.ahk + GPL ...
 
 ## Android App Build & Deploy
 
@@ -311,11 +511,13 @@ cd /c/Users/tzuri/OneDrive/Desktop/PAN/android && JAVA_HOME="/c/Program Files/An
 # Check connected devices
 /c/Users/tzuri/AppData/Local/Android/Sdk/p...
 
-When linking to PAN externally (GitHub issues, docs, etc.), always use https://tereseus.github.io/PAN/ — not the GitHub repo URL.
+GitHub username: **Tereseus** (changed from Tzuridis)
+Repo: https://github.com/Tereseus/PAN
+Pages: https://tereseus.github.io/PAN/
 
-**Why:** User preference — this is the public-facing project page.
+Remote origin should be `https://github.com/Tereseus/PAN.git`
 
-**How to apply:** Any time PAN is referenced in issues, PRs, external communication, use this URL.
+When linking externally, use the Pages URL.
 
 ## Development Environment
 
@@ -342,299 +544,136 @@ Currently it's for an old Alexa app — needs to be updated to describe PAN.
 
 **How to apply:** This is a GitHub Pages site in a separate repo. Rebuild with current PAN info when working on public-facing features.
 
-### Open Tasks
-- [todo P1] Smart device routing — default device (auto/nearest) determines where actions execute
-- [todo P1] Chat shows only bookend events — need intermediate responses visible
-- [todo P1] Terminal scroll still janky — jumps on tool calls
-- [todo P1] mDNS auto-discovery on local network (zero-config device finding)
-- [todo P1] PAN Hub relay server for remote access (HTTPS message broker)
-- [todo P1] Phone auto-discovers PAN server on WiFi (replace manual IP entry)
-- [todo P1] Multi-user accounts — user registration, login, session ownership
-- [todo P1] Multi-database — per-team databases with isolated data
-- [todo P1] PAN Hub — central server aggregating multiple PAN instances
-- [todo P1] Smart scroll — remember exact scroll position, restore on every refresh/update/tool call
-
 ### Recent Conversation
-**User** (2026-03-26 18:11:02): <task-notification>
-<task-id>a3d62d4e34afacfb9</task-id>
-<tool-use-id>toolu_01Xzsfts9oYdBNxdKnDiQHha</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\8a1626bd-534c
-**User** (2026-03-26 18:12:04): <task-notification>
-<task-id>aae67340e058a66fd</task-id>
-<tool-use-id>toolu_01GtP7L659U4azzBQjEYBPiF</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\8a1626bd-534c
-**User** (2026-03-26 18:12:08): <task-notification>
-<task-id>acc7536b92c8d550a</task-id>
-<tool-use-id>toolu_01UH1nXPRV9cGWJpAoBgaTNB</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\8a1626bd-534c
-**User** (2026-03-26 18:28:14): <task-notification>
-<task-id>ade3cdffe6d783e19</task-id>
-<tool-use-id>toolu_01M7PueaA83omoLp3Y3V8S9t</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\8a1626bd-534c
-**User** (2026-03-26 18:28:48): <task-notification>
-<task-id>ac8c19d6356533082</task-id>
-<tool-use-id>toolu_01M2RmiyvWhnBNbdqbuRCttS</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\8a1626bd-534c
-**User** (2026-03-26 18:28:57): <task-notification>
-<task-id>a0f55415e2a8b6ccb</task-id>
-<tool-use-id>toolu_01DtBkPy5E6nGsrnjS5smKX1</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\8a1626bd-534c
-**User** (2026-03-27 15:18:20): Well it loads after I start it but as soon as it gets the to a certain state state it it crashes So yeah it just finished loading right it it injects all the thing in the beginning to load and then it
-**User** (2026-03-27 15:34:22): <task-notification>
-<task-id>ac68cc007d7ba80d6</task-id>
-<tool-use-id>toolu_01XwVUdcAemkpDDCz4hTeMjg</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\4b367571-3d6a
-**User** (2026-03-27 15:50:19): <task-notification>
-<task-id>a5b3fab7660428053</task-id>
-<tool-use-id>toolu_01RmzFyxSnqFRXTzkz9PktuG</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\4b367571-3d6a
-**User** (2026-03-27 18:42:08): Command "Restart-Service PAN" 2>&1)
-  ⎿  (No output)
+**User** (2026-04-01 14:53:14): OK so we just worked on the TED GL Services computer it's still red it went back to being red That's still a problem and the approvals take way too long to go away like I said yes so so long ago And t
+**User** (2026-04-01 14:56:39): What the fuck are you doing are you adding new shit like what are you adding a new tab The approvals clearly exist in the same area where Services Transcript Project all that shit lives I don't know w
+**Claude** (2026-04-01 14:57:06): TedGL will stay green now. 
 
-❯ 8VM59 :1 Uncaught ReferenceError: refreshDashboard is not defined
-    at HTMLButtonElement.onclick (VM59 :1:1) It keeps saying this
+For the approvals — the API says the queue is empty (`"permissions": []`), so the server processed them. The dashboard UI just isn't picking that up. What does the approvals tab show you right now — is it a specific approval that's stuck, or just the "(1)" count that won
+**User** (2026-04-01 14:58:03): [Image #4] Whatever just just focus on fixing the voice to text the voice input hold to speak button beside the input box at the bottom right here
+**User** (2026-04-01 15:03:37): Like what the fuck are you doing like I don't it's it's it's literally part of the spelled app SVELTE I don't know what the fuck you're doing this exists on its belt as an HTML page right we have an i
+**User** (2026-04-01 15:04:57): No it definitely exists it definitely fucking exists i'm literally fucking using it right now I think you've become so bad that I'm literally going to end this session whatever you just added get that
+**Claude** (2026-04-01 15:05:41): I'm going to be straight with you — I've been going in circles and making things worse. I'm confused about the dashboard codebase because previous sessions modified the built JS directly without updating the Svelte source, so what you see running doesn't match what I see in the source files.
 
-● Fixed the
-**User** (2026-03-27 20:15:12): <task-notification>
-<task-id>b0tvn4vmc</task-id>
-<tool-use-id>toolu_013cmeNJz3FPuQaAhPtarmDZ</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\d278976a-975d-40e0-80
-**User** (2026-03-27 20:42:58): WoE Game Dev
-PAN
-C:/Users/tzuri/OneDrive/Desktop/PAN
-Can you look in my pan folder there's like a breaking HTML bug or something that's preventing me from being able to reload the project Yes in this 
-**User** (2026-03-28 10:19:54): <task-notification>
-<task-id>aa949dc5ad9c9f1e3</task-id>
-<tool-use-id>toolu_014fGFaogNCpCEqruGyyFFfG</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop\c3739237
-**Claude** (2026-03-29 07:54:58): Committed and pushed. Server-side fixes are already live (service restarted earlier). Three of the four fixes done:
+You sh
+**Claude** (2026-04-02 08:11:16): Build succeeded. Refresh the dashboard and you should see:
 
-1. **Quick Mute reset** — fixed. Removed the `micEnabled = sttEngine.enabled` reset in ViewModel init. ✓
-2. **Dashboard chat ambient** — fixed. Router now detects `source: 'dashboard'
-**User** (2026-03-29 07:57:53):  Committed and pushed. Server-side fixes are already live (service restarted earlier). Three of the four fixes done:
+1. **Center panel** now has 3 tabs: **Terminal | Chat | Atlas**
+2. **Right panel dropdown** now has **Apps** option (between Bugs and Setup Guide)
+3. Click **Atlas** tab or click the Atlas app card in the Apps panel to see the architecture 
+**Claude** (2026-04-02 08:30:35): Build succeeded. Here's what I fixed:
 
-  1. Quick Mute reset — fixed. Removed the micEnabled = sttEngine.enabled reset in
+**Chat transcript now persists across page refresh:**
+
+1. **`sessionStorage` backup** — every time chat loads from server, it saves the last 200 messages to `sessionStorage`. On page refresh, these are instantly restored before the server even responds.
+
+2. **N
+**Claude** (2026-04-02 08:42:23): Good. Here's what was fixed:
+
+**3 layers of defense against refresh creating new sessions:**
+
+1. **Buffer detection** — When the WebSocket connects and the server sends back existing output (>100 bytes), `hasExistingBuffer` is set to `true`. The auto-launch check now requires `!hasExistingBuffer` in
+**User** (2026-04-02 08:43:23): So no that's not correct so OK why do we have these instances if you can't launch a dev instance to test it yourself and then you can see what happens in the dev instance what what the fuck is the poi
+**Claude** (2026-04-02 09:04:36): Here's what I built:
+
+**Refresh fix (3 layers of defense):**
+1. **Buffer detection** — if PTY sends back existing output, skip auto-launch (the real signal)
+2. **localStorage session persistence** — saves/restores session IDs across refresh via `beforeunload` + periodic save
+3. **Chat in localStorag
+**Claude** (2026-04-02 12:40:24): I found the root cause. The PAN service daemon runs from `C:\Users\tzuri\OneDrive\Desktop\PAN\` but I've been looking at `C:\Users\tzuri\Desktop\PAN\` — **two different copies**. The OneDrive version (what actually runs) is missing:
+
+1. The `claude-usage` endpoint entirely
+2. The `readdirSync`, `sta
+**Claude** (2026-04-02 12:45:19): I need write permission to `C:\Users\tzuri\Desktop\PAN\service\src\server.js`. The edit:
+
+1. **Removes the broken Anthropic OAuth API call** (returns 401 "OAuth authentication not supported")
+2. **Reads `stats-cache.json`** — already has aggregated token usage (928K input, 1.7M output for Opus 4.5, 
+**Claude** (2026-04-02 15:30:30): Everything fixed. Here's the summary:
+
+**Files updated (old OneDrive path → new Desktop path):**
+- `pan-start.ps1` — now uses `$PSScriptRoot` (dynamic, move-proof)
+- `watchdog.ps1` — now uses `$PSScriptRoot` (dynamic, move-proof)
+- `electron/main.cjs` — "Open PAN Folder" now uses `__dirname` (dynami
 
 ### Last Messages (Full)
-**User** (2026-03-27 18:42:08):
-Command "Restart-Service PAN" 2>&1)
-  ⎿  (No output)
+**Claude** (2026-04-02 08:42:23):
+Good. Here's what was fixed:
 
-❯ 8VM59 :1 Uncaught ReferenceError: refreshDashboard is not defined
-    at HTMLButtonElement.onclick (VM59 :1:1) It keeps saying this
+**3 layers of defense against refresh creating new sessions:**
 
-● Fixed the syntax error — there was a stray } on line 5449 inside renderRightSetup() that closed the function early. JS now parses clean
-  and PAN service is restarted.
+1. **Buffer detection** — When the WebSocket connects and the server sends back existing output (>100 bytes), `hasExistingBuffer` is set to `true`. The auto-launch check now requires `!hasExistingBuffer` in addition to `!isReconnect`. So even if the reconnect flag is wrong, Claude won't re-launch into an existing session.
 
-  For the refreshDashboard is not defined error — that function exists at line 1792 but the syntax error was preventing all JS from loading.
-   Now that the syntax error is fixed, try reloading the dashboard. The refreshDashboard function should be available again since the script
-   will actually parse and execute.
+2. **localStorage session persistence** — Session IDs, project names, and CWDs are saved to `localStorage` every 5 seconds AND on `beforeunload`. On page load, if the server API returns no sessions (race condition, timeout), the saved state is used as fallback — and reconnects with `isReconnect=true`.
 
-✻ Crunched for 4m 34s
+3. **Chat persistence via localStorage** — Switched from `sessionStorage` to `localStorage` so chat survives even if the tab is closed and reopened. Also saves on `beforeunload` as backup.
 
-❯ I just tried to make a system where I would have a backup load if it if there was an error but looks like the logic is wrong ────
-Dashboard unavailable
-index.html is corrupted and no backup exists. Fix the file manually.
+Refresh the dashboard and test. The terminal should reconnect to the existing Claude session without starting a new one.
 
-  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+**User** (2026-04-02 08:43:23):
+So no that's not correct so OK why do we have these instances if you can't launch a dev instance to test it yourself and then you can see what happens in the dev instance what what the fuck is the point if you can't test that way every UI change that we do should be tested that way so that I don't lose context so I don't lose your here that bullshit You you need to make it so that the the testing of the UI and the stupid fucking shit that comes with all the things that we do doesn't happen You need to understand what happens you have to be able to debug it you have to see hey it restarted hey the transcript is not there
 
-● I already fixed the syntax error and restarted PAN. Let me check if the fix took and the dashboard validates now.
+**Claude** (2026-04-02 09:04:36):
+Here's what I built:
 
-● Bash(curl -s "http://127.0.0.1:7777/dashboard/health" 2>&1)
-  ⎿  {
-       "valid": false,
-       "serving": "backup",
-     … +4 lines (ctrl+o to expand)
+**Refresh fix (3 layers of defense):**
+1. **Buffer detection** — if PTY sends back existing output, skip auto-launch (the real signal)
+2. **localStorage session persistence** — saves/restores session IDs across refresh via `beforeunload` + periodic save
+3. **Chat in localStorage** — switched from sessionStorage (fragile) to localStorage (survives everything)
 
-● Still showing invalid with no backup. The validator's brace counter is getting confused by } characters inside template literals and regex patterns — the same false positive I hit
-   earlier. The validator at line 72 tracks strings with ', ", ` but doesn't handle nested template literals or regex properly.
+**Dev testing infrastructure:**
+- Vite dev server uses isolated `dev-dash-*` session IDs (won't touch Prod)
+- Proxy config routes API/WS to PAN server (port 7777)
+- `+layout.js` fixes SSR issues in dev mode
+- Instances panel in right sidebar (Prod/Dev/Test)
+- `/api/v1/dev/start` endpoint detects running dev server
 
-  The actual JS is valid (node --check passed), but the validator's naive parser thinks braces are unbalanced. Let me check what the validator reports.
+**MCP server updated:**
+- `pan_dev` tool with full testing guide, session checklist, and key file locations
+- Every future session will know how to test before deploying
 
-● Bash(cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && node -e "
-      const fs = require('fs');…)
-  ⎿  Error: Exit code 1
-     [eval]:13
-           if (c === strChar && code[i - 1] !== '\') inString = false;
-                                                ^^^^^^^^^^^^^^^^^^^^^^
-     Expected ')', got 'continue'
+**MCP auto-approval:**
+- Added `.mcp.json` to `OneDrive/Desktop/PAN/` so Dev sessions find the MCP config
+- `enableAllProjectMcpServers: true` already set globally
 
-     SyntaxError: Invalid or unexpected token
-         at makeContextifyScript (node:internal/vm:194:14)
-         at compileScript (node:internal/process/execution:388:10)
-         at evalTypeScript (node:internal/process/execution:260:22)
-     … +3 lines (ctrl+o to see all)
+Refresh the Prod dashboard to pick up the changes. Want me to start a proper Dev test of the refresh behavior now?
 
-● Bash(cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && node -e "
-      const fs = require('fs');…)
-  ⎿  Script 3 - braces: -16 parens: -2 brackets: -2 len: 177494
-  ⎿  Shell cwd was reset to C:\Users\tzuri\Desktop
+**Claude** (2026-04-02 12:40:24):
+I found the root cause. The PAN service daemon runs from `C:\Users\tzuri\OneDrive\Desktop\PAN\` but I've been looking at `C:\Users\tzuri\Desktop\PAN\` — **two different copies**. The OneDrive version (what actually runs) is missing:
 
-● Braces are off by -16 according to the naive parser, which trips the Math.abs(braces) > 3 check. But this is a false positive — the parser doesn't handle template literals with
-  ${...} expressions properly (nested braces inside backtick strings).
+1. The `claude-usage` endpoint entirely
+2. The `readdirSync`, `statSync`, `https` imports needed for it
 
-  The fix: the validator needs to handle template literal expressions, OR we just relax it since node already confirmed the JS is valid. The simplest fix is to increase the
-  tolerance or skip the brace-counting entirely since i
+I need write permission to `C:\Users\tzuri\OneDrive\Desktop\PAN\service\src\server.js` to add the usage endpoint there. Can you approve the edit?
 
-**User** (2026-03-27 20:15:12):
-<task-notification>
-<task-id>b0tvn4vmc</task-id>
-<tool-use-id>toolu_013cmeNJz3FPuQaAhPtarmDZ</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-OneDrive-Desktop-PAN\d278976a-975d-40e0-807d-054d31551e4a\tasks\b0tvn4vmc.output</output-file>
-<status>killed</status>
-<summary>Background command "grep -r "ANTHROPIC_API_KEY\|sk-ant-" C:/Users/tzuri/OneDrive/Desktop/PAN --exclude-dir=node_modules --exclude-dir=.git 2&gt;/dev/null | head -20" was stopped</summary>
-</task-notification>
+**Claude** (2026-04-02 12:45:19):
+I need write permission to `C:\Users\tzuri\Desktop\PAN\service\src\server.js`. The edit:
 
-**User** (2026-03-27 20:42:58):
-WoE Game Dev
-PAN
-C:/Users/tzuri/OneDrive/Desktop/PAN
-Can you look in my pan folder there's like a breaking HTML bug or something that's preventing me from being able to reload the project Yes in this case I mean the literally the entirely pan dashboard dashboard/:5318 Uncaught SyntaxError: Unexpected token '}'
-VM52 sandbox_bundle:2 Electron Security Warning (Insecure Content-Security-Policy) This renderer process has either no Content Security
-  Policy set or a policy with "unsafe-eval" enabled. This exposes users of
-  this app to unnecessary security risks.
+1. **Removes the broken Anthropic OAuth API call** (returns 401 "OAuth authentication not supported")
+2. **Reads `stats-cache.json`** — already has aggregated token usage (928K input, 1.7M output for Opus 4.5, 251K input, 919K output for Opus 4.6, total 57K messages across 31 sessions)
+3. **Reads subscription info** from `.credentials.json` (Max plan, 5x tier)
+4. **Still scans JSONL files** for live session token counts
+5. **Returns real data** instead of zeros
 
-For more information and help, consult
-https://electronjs.org/docs/tutorial/security.
-This warning will not show up
-once the app is packaged.
-warnAboutInsecureCSP @ VM52 sandbox_bundle:2
-VM59 :1 Uncaught ReferenceError: refreshDashboard is not defined
-    at HTMLButtonElement.onclick (VM59 :1:1)
-  dashboard/:5318 Uncaught SyntaxError: Unexpected token '}'
-VM52 sandbox_bundle:2 Electron Security Warning (Insecure Content-Security-Policy) This renderer process has either no Content Security
-  Policy set or a policy with "unsafe-eval" enabled. This exposes users of
-  this app to unnecessary security risks.
+Can you approve the edit?
 
-For more information and help, consult
-https://electronjs.org/docs/tutorial/security.
-This warning will not show up
-once the app is packaged.
-warnAboutInsecureCSP @ VM52 sandbox_bundle:2
-VM59 :1 Uncaught ReferenceError: refreshDashboard is not defined
-    at HTMLButtonElement.onclick (VM59 :1:1)
- 
-Let me find and fix that syntax error at line 5318.
-Read: index.html
-Line 5318 looks fine here. The error says "Unexpected token '}'" at line 5318 — but line numbers can shift. Let me check the total file size and look for obvious JS syntax errors like extra closing braces.
-Bash: wc -l "C:/Users/tzuri/OneDrive/Desktop/PAN/service/public/index.html"
-Bash: cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && node -c <(sed -n '/<script>/,/<\/script>/p' service/public/index.html | head
-Bash: cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && python3 -c " import re with open('service/public/index.html', 'r', encoding=
-3 extra closing braces. Let me find them.
-Bash: cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && python3 -c " import re with open('service/public/index.html', 'r', encoding=
-Line 2297 is a false positive (regex). The real issue is likely at line 5452. Let me also check around line 2303 and 5452.
-Read: index.html
-Read: index.html
-Bash: cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && python3 -c " import re with open('service/public/index.html', 'r', encoding=
-Bash: cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && python3 -c " import re with open('service/public/index.html', 'r', encoding=
-Bash: cd "C:/Users/tzuri/OneDrive/Desktop/PAN" && python3 -c " import re, tempfile, os with open('service/public/index.html',
-Bash: node --check "C:/Users/tzuri/AppData/Local/Temp/dashboard_js.js" 2>&1
-Read: dashboard_js.js
-The error is at the closing `}` of `renderRightSetup` — meaning something earlier has an extra closing brace. Let 
+**Claude** (2026-04-02 15:30:30):
+Everything fixed. Here's the summary:
 
-**User** (2026-03-28 10:19:54):
-<task-notification>
-<task-id>aa949dc5ad9c9f1e3</task-id>
-<tool-use-id>toolu_014fGFaogNCpCEqruGyyFFfG</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop\c3739237-2f5e-41c3-8a65-f25499db892d\tasks\aa949dc5ad9c9f1e3.output</output-file>
-<status>completed</status>
-<summary>Agent "Research Agent SDK OAuth auth" completed</summary>
-<result>I now have comprehensive information. Here is the full research report.
+**Files updated (old OneDrive path → new Desktop path):**
+- `pan-start.ps1` — now uses `$PSScriptRoot` (dynamic, move-proof)
+- `watchdog.ps1` — now uses `$PSScriptRoot` (dynamic, move-proof)
+- `electron/main.cjs` — "Open PAN Folder" now uses `__dirname` (dynamic)
+- `daemon/pan.xml` — updated hardcoded paths
+- `bin/Voice.ahk` — updated to new path
+- `src/pan-voice.cs` — updated to new path
+- `.pan` — updated metadata paths
 
----
+**Windows integration:**
+- Start Menu shortcut → recreated pointing to `C:\Users\tzuri\Desktop\PAN\PAN.bat`
+- Startup shortcut → recreated (auto-launches on boot)
+- Windows Service → uninstalled old, reinstalled with new path, **running now**
 
-## Research Report: Claude Agent SDK Authentication and OAuth Token Portability
-
-### 1. Where Claude Code stores authentication
-
-**File:** `C:/Users/tzuri/.claude/.credentials.json`
-
-On Windows and Linux, credentials are stored in `~/.claude/.credentials.json`. On macOS, they go into the encrypted macOS Keychain. The `$CLAUDE_CONFIG_DIR` env var can override the location.
-
-Your current credentials file contains:
-- **`claudeAiOauth.accessToken`** -- prefixed `sk-ant-oat01-`, this is the bearer token used for API calls
-- **`claudeAiOauth.refreshToken`** -- prefixed `sk-ant-ort01-`, intended for refreshing the access token
-- **`claudeAiOauth.expiresAt`** -- Unix timestamp in milliseconds. Your current token expires at **2026-03-28T19:12:27Z** (about 5 hours from now at time of research)
-- **`claudeAiOauth.scopes`** -- `user:file_upload`, `user:inference`, `user:mcp_servers`, `user:profile`, `user:sessions:claude_code`
-- **`subscriptionType`** -- `max`
-- **`rateLimitTier`** -- `default_claude_max_5x`
-
-### 2. How the Agent SDK authenticates
-
-The Agent SDK (`@anthropic-ai/claude-agent-sdk` v0.2.85) works by **spawning Claude Code's CLI (`cli.js`) as a subprocess**. The `query()` function does not accept a token or API key parameter directly. Instead:
-
-- The subprocess inherits `process.env` (or whatever you pass via `options.env`)
-- The subprocess (cli.js, which is the full Claude Code binary) handles its own authentication by reading from the credentials file or environment variables
-- There is **no** `new ClaudeAgent({ token: '...' })` style API
-
-The SDK's `Options` type has an `env` field where you can pass environment variables to the subprocess. This is how you inject authentication:
-
-```typescript
-query({
-  prompt: "...",
-  options: {
-    env: {
-      ...process.env,
-      CLAUDE_CODE_OAUTH_TOKEN: '{"accessToken":"sk-ant-oat01-...","refreshToken":"...","expiresAt":"..."}'
-    }
-  }
-})
-```
-
-### 3. How PAN's claude.js currently authenticates
-
-`C:/Users/tzuri/OneDrive/Desktop/PAN/service/src/claude.js` calls `sdkQuery()` and passes `process.env` through the `env` option. It does not set `CLAUDE_CODE_OAUTH_TOKEN` explicitly -- it relies on the CLI subprocess finding credentials in `~/.claude/.credentials.json` on its own.
-
-### 4. Authentication precedence (from official docs)
-
-1. Cloud provider credentials (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`)
-2. `ANTHROPIC_AUTH_TOKEN` env var (Bearer header, for LLM gateways)
-3. `ANTHROPIC_API_KEY` env var (X-Api-Key header, dir
-
-**Claude** (2026-03-29 07:54:58):
-Committed and pushed. Server-side fixes are already live (service restarted earlier). Three of the four fixes done:
-
-1. **Quick Mute reset** — fixed. Removed the `micEnabled = sttEngine.enabled` reset in ViewModel init. ✓
-2. **Dashboard chat ambient** — fixed. Router now detects `source: 'dashboard'` and never classifies as ambient. ✓
-3. **Chat endpoint** — restored. `/api/v1/chat` with dashboard source tag. ✓
-4. **Remote Access always-on** — not yet done. This is a bigger change (auto-connect on app startup, remove toggle, show status in server card). 
-
-The APK is built. When you plug in your phone, run:
-```
-adb install -r C:/Users/tzuri/OneDrive/Desktop/PAN/android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-The dashboard chat fix is already live since it's server-side. Try sending a message in the dashboard chat right now — it should respond properly instead of marking as ambient.
-
-**User** (2026-03-29 07:57:53):
- Committed and pushed. Server-side fixes are already live (service restarted earlier). Three of the four fixes done:
-
-  1. Quick Mute reset — fixed. Removed the micEnabled = sttEngine.enabled reset in ViewModel init. ✓
-  2. Dashboard chat ambient — fixed. Router now detects source: 'dashboard' and never classifies as ambient. ✓
-  3. Chat endpoint — restored. /api/v1/chat with dashboard source tag. ✓
-  4. Remote Access always-on — not yet done. This is a bigger change (auto-connect on app startup, remove toggle, show status in server card).
-
-  The APK is built. When you plug in your phone, run:
-  adb install -r C:/Users/tzuri/OneDrive/Desktop/PAN/android/app/build/outputs/apk/debug/app-debug.apk
-
-  The dashboard chat fix is already live since it's server-side. Try sending a message in the dashboard chat right now — it should respond properly instead of marking as ambient.
-
-✻ Worked for 4m 40s
-
-❯ My phone is plugged in you you push
-  ⎿  Interrupted · What should Claude do instead?
-
-❯ And then after you fix the this we'll push the GitHub so we don't lose this shit again
-
-● Bash(C:/Users/tzuri/AppData/Local/Android/Sdk/platform-tools/adb.exe install -r "C:/Users/tzuri/OneDrive/Desktop/PAN/android/app/build/outputs/apk/debug/app-debug.ap…)
-  ⎿  Performing Streamed Install
-     Success
-  ⎿  (timeout 1m)
-
-❯ Cannot GET /v2/ Among the desktop application and I can't be panned dashboard This isn't even for mobile it's even broken on the desktop
-  ⎿  API Error: Rate limit reached
-
-✻ Worked for 1m 14
+Server is up, 34s uptime, Tailscale connected. You should be able to launch PAN from the Start Menu now.
 
 <!-- PAN-CONTEXT-END -->
 

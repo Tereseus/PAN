@@ -6,11 +6,10 @@
 	let { children } = $props();
 
 	const tabs = [
-		{ label: 'Chat', href: `${base}`, icon: '💬' },
 		{ label: 'Terminal', href: `${base}/terminal`, icon: '⌨' },
 		{ label: 'Automation', href: `${base}/automation`, icon: '⚡' },
 		{ label: 'Projects', href: `${base}/projects`, icon: '📁' },
-		{ label: 'Conversations', href: `${base}/conversations`, icon: '🗨' },
+		{ label: 'Conversations', href: `${base}/conversations`, icon: '💬' },
 		{ label: 'Sensors', href: `${base}/sensors`, icon: '📡' },
 		{ label: 'Data', href: `${base}/data`, icon: '🗄' },
 		{ label: 'Settings', href: `${base}/settings`, icon: '⚙' },
@@ -152,12 +151,17 @@
 		box-sizing: border-box;
 	}
 
+	:global(html) {
+		height: 100%;
+		overflow: hidden;
+	}
+
 	:global(body) {
 		font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 		background: #0a0a0f;
 		color: #cdd6f4;
 		overflow: hidden;
-		height: 100vh;
+		height: 100%;
 	}
 
 	:global(::-webkit-scrollbar) { width: 6px; height: 6px; }
@@ -167,8 +171,9 @@
 
 	.shell {
 		display: flex;
-		height: 100vh;
-		width: 100vw;
+		height: 100%;
+		width: 100%;
+		overflow: hidden;
 	}
 
 	.sidebar {
@@ -446,6 +451,7 @@
 
 	.content {
 		flex: 1;
+		min-height: 0;
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
@@ -493,6 +499,7 @@
 
 	.content-body {
 		flex: 1;
+		min-height: 0;
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;

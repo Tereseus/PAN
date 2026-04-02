@@ -4,7 +4,7 @@
 # 3. Launch project terminals from the database
 # NOTE: Terminals launch elevated (admin) so Claude Code has full system access
 
-$panRoot = "$env:USERPROFILE\OneDrive\Desktop\PAN"
+$panRoot = $PSScriptRoot
 
 # Ensure we're running as admin — re-launch elevated if not
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

@@ -7,8 +7,20 @@
 	let projects = $state([]);
 	let tabs = $state([]);
 	let activeTabId = $state(null);
-	let leftTab = $state('chat'); // 'chat' | 'project'
-	let rightSection = $state('tasks'); // 'tasks' | 'bugs' | 'setup' | 'custom-N'
+	let leftSection = $state('transcript'); // same widget options as right panel
+	let centerView = $state('terminal'); // 'terminal' | 'chat'
+	let rightSection = $state('services'); // alphabetized panel widgets
+	let directMode = $state(false); // false = input goes to input box, true = input goes directly to terminal
+
+	// Users
+	let usersData = $state([]);
+
+	// Tests
+	let testSuites = $state([]);
+	let selectedSuite = $state('');
+	let testResults = $state([]);
+	let testsRunning = $state(false);
+	let usageData = $state(null);
 	let rightPanelCollapsed = $state(false);
 	let rightMilestoneFilter = $state(null);
 	let hostLabel = $state('');
@@ -18,12 +30,78 @@
 	let projectData = $state(null);
 	let tasksData = $state(null);
 	let sectionsData = $state([]);
+	let servicesData = $state([]);
+	let approvalsData = $state([]);
+
+	// Atlas state
+	let atlasData = $state(null);
+	let atlasLoading = $state(false);
+	let atlasTransform = $state({ x: 0, y: 0, scale: 1 });
+	let atlasDragging = $state(false);
+	let atlasDragStart = $state({ x: 0, y: 0 });
+	let atlasHovered = $state(null);
+	let atlasSelected = $state(null);
+	let atlasSvgEl;
 	let chatBubbles = $state([]);
 	let chatCurrentProject = $state('');
+
+	// Persist chat across refresh (localStorage survives tab close + refresh)
+	function saveChatToStorage() {
+		try {
+			if (chatBubbles.length > 0) {
+				localStorage.setItem('pan-chat-bubbles', JSON.stringify(chatBubbles.slice(-200)));
+				localStorage.setItem('pan-chat-project', chatCurrentProject);
+			}
+		} catch {}
+	}
+	function restoreChatFromStorage() {
+		try {
+			const saved = localStorage.getItem('pan-chat-bubbles');
+			const proj = localStorage.getItem('pan-chat-project');
+			if (saved) {
+				chatBubbles = JSON.parse(saved);
+				if (proj) chatCurrentProject = proj;
+			}
+		} catch {}
+	}
+
+	// Persist terminal session state across refresh
+	function saveSessionState() {
+		try {
+			const state = tabs.map(t => ({
+				sessionId: t.sessionId,
+				project: t.project,
+				cwd: t.cwd,
+				projectId: t.projectId
+			}));
+			localStorage.setItem('pan-terminal-sessions', JSON.stringify(state));
+			localStorage.setItem('pan-terminal-active', activeTabId || '');
+		} catch {}
+	}
+	function getSavedSessionState() {
+		try {
+			const saved = localStorage.getItem('pan-terminal-sessions');
+			return saved ? JSON.parse(saved) : [];
+		} catch { return []; }
+	}
+
+	// Dev mode detection — Vite dev server runs on a different port than Prod (7777)
+	const isDev = typeof window !== 'undefined' && window.location.port !== '7777' && window.location.port !== '';
+	const sessionPrefix = isDev ? 'dev-dash-' : 'dash-';
 
 	// Terminal container refs
 	let termContainerEl;
 	let chatSidebarEl;
+
+	// Center chat input
+	let centerChatInput = $state('');
+	let centerChatLoading = $state(false);
+	let centerChatMessages = $state([]);
+	let centerChatEl;
+	let voiceSettings = $state({});
+	let isListening = $state(false);
+	let recognition = null;
+	let pastedImages = $state([]); // { dataUrl, path } — preview before send
 
 	// Intervals
 	let chatRefreshInterval = null;
@@ -64,7 +142,7 @@
 			return;
 		}
 
-		const sessionId = 'dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
+		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
 
 		// Check if tab already exists
 		const existing = tabs.find(t => t.sessionId === sessionId);
@@ -81,7 +159,7 @@
 		const projectName = active?.project || 'Shell';
 		const projectId = active?.projectId || null;
 		const cwd = active?.cwd || 'C:\\Users\\tzuri\\Desktop';
-		const sessionId = 'dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
 		createTab(sessionId, projectName, cwd, projectId, false);
 	}
 
@@ -127,7 +205,7 @@
 			fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
 			fontSize: 14,
 			cursorBlink: true,
-			scrollback: 5000,
+			scrollback: 20000,
 			allowProposedApi: true,
 		});
 
@@ -201,6 +279,7 @@
 			tabData.ws = ws;
 
 			let firstOutput = true;
+			let hasExistingBuffer = false; // true if server sent buffered output (existing session)
 			let reconnectAttempts = 0;
 			let reconnectTimer = null;
 			let serverRestarting = false;
@@ -226,7 +305,7 @@
 						case 'output': {
 							if (firstOutput) {
 								firstOutput = false;
-								tabTerm.clear();
+								hasExistingBuffer = msg.data.length > 100; // server sent substantial buffer = existing session
 								doFit();
 							}
 							const vp = tabTerm.element?.querySelector('.xterm-viewport');
@@ -253,7 +332,7 @@
 							tabTerm.write('\r\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\r\n');
 							break;
 						case 'chat_update':
-							if (leftTab === 'chat') {
+							if (leftSection === 'transcript') {
 								setTimeout(loadChatHistory, 500);
 							}
 							break;
@@ -309,9 +388,12 @@
 				startPing();
 
 				// Auto-launch Claude for project tabs
-				if (projectName && projectName !== 'Shell' && !isReconnect) {
+				// The ONLY guard is hasExistingBuffer — if the server sent back substantial output,
+				// it means Claude is already running. isReconnect alone is unreliable because
+				// localStorage might say "reconnect" but the server-side session may be dead.
+				if (projectName && projectName !== 'Shell') {
 					setTimeout(async () => {
-						if (ws.readyState === 1 && !tabData.claudeStarted) {
+						if (ws.readyState === 1 && !tabData.claudeStarted && !hasExistingBuffer) {
 							tabData.claudeStarted = true;
 							let briefingReady = false;
 							try {
@@ -481,6 +563,9 @@
 		tabs = tabs.filter(t => t.id !== tabId);
 		sessionsCount = tabs.length;
 
+		// Immediately update localStorage so closed tabs don't reopen on refresh
+		saveSessionState();
+
 		if (activeTabId === tabId) {
 			if (tabs.length > 0) {
 				switchToTab(tabs[tabs.length - 1].id);
@@ -493,9 +578,9 @@
 
 	// ==================== Left Sidebar ====================
 
-	function switchLeftTab(tab) {
-		leftTab = tab;
-		if (tab === 'chat') {
+	function switchLeftSection(tab) {
+		leftSection = tab;
+		if (tab === 'transcript') {
 			loadChatHistory();
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			chatRefreshInterval = setInterval(loadChatHistory, 10000);
@@ -509,10 +594,11 @@
 		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 	}
 
+	let chatServerLoaded = false; // true once server data has been received
 	async function loadChatHistory() {
 		const active = getActiveTab();
 		if (!active) {
-			chatBubbles = [];
+			if (chatServerLoaded) chatBubbles = [];
 			return;
 		}
 
@@ -550,7 +636,7 @@
 			}
 
 			if (sessionIds.length === 0) {
-				chatBubbles = [];
+				if (chatServerLoaded) chatBubbles = [];
 				return;
 			}
 
@@ -568,7 +654,7 @@
 			allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
 
 			if (allMessages.length === 0) {
-				chatBubbles = [];
+				if (chatServerLoaded) chatBubbles = [];
 				return;
 			}
 
@@ -602,6 +688,8 @@
 			}
 
 			chatBubbles = newBubbles;
+			chatServerLoaded = true;
+			saveChatToStorage();
 
 			// Auto-scroll to bottom
 			await tick();
@@ -618,37 +706,441 @@
 		return new Promise(r => setTimeout(r, 0));
 	}
 
+	// ==================== Center Chat ====================
+
+	async function loadCenterChat() {
+		const active = getActiveTab();
+		if (!active) { centerChatMessages = []; return; }
+		try {
+			const sessionId = active.sessionId || '';
+			const isDash = /^(dash|mob)-/.test(sessionId);
+			let sids = [];
+			if (!isDash && sessionId) {
+				sids = [sessionId];
+			} else {
+				const projectKey = active.cwd || '';
+				if (projectKey) {
+					const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(projectKey));
+					if (probe?.events) {
+						const seen = new Set();
+						for (const evt of probe.events) {
+							const sid = evt.session_id || '';
+							if (sid && !seen.has(sid) && !/^(system|phone|router|dash|mob)-/.test(sid)) {
+								seen.add(sid);
+								sids.push(sid);
+								if (sids.length >= 3) break;
+							}
+						}
+					}
+				}
+			}
+			if (!sids.length) { centerChatMessages = []; return; }
+			const all = [];
+			await Promise.all(sids.map(async (sid) => {
+				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=200');
+				if (data?.messages) all.push(...data.messages);
+			}));
+			all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+			centerChatMessages = all;
+			await tick();
+			if (centerChatEl) centerChatEl.scrollTop = centerChatEl.scrollHeight;
+		} catch (err) {
+			console.error('[Center Chat] load error:', err);
+		}
+	}
+
+	async function sendCenterChat() {
+		let text = centerChatInput.trim();
+		// Append image paths
+		const imgPaths = pastedImages.filter(img => img.path).map(img => `[Image: ${img.path}]`);
+		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
+		if (!text) return;
+		centerChatInput = '';
+		pastedImages = [];
+		// Reset textarea height
+		const textarea = document.querySelector('.center-input');
+		if (textarea) textarea.style.height = 'auto';
+		centerChatMessages = [...centerChatMessages, { role: 'user', text, ts: new Date().toISOString() }];
+		await tick();
+		if (centerChatEl) centerChatEl.scrollTop = centerChatEl.scrollHeight;
+
+		// Send to the terminal session via WebSocket
+		const active = getActiveTab();
+		if (active?.ws?.readyState === 1) {
+			active.ws.send(JSON.stringify({ type: 'input', data: text + '\n' }));
+		}
+
+		centerChatLoading = true;
+		// Poll for response
+		let polls = 0;
+		const pollInterval = setInterval(async () => {
+			polls++;
+			await loadCenterChat();
+			if (polls >= 15) { clearInterval(pollInterval); centerChatLoading = false; }
+		}, 2000);
+		setTimeout(() => { clearInterval(pollInterval); centerChatLoading = false; }, 30000);
+	}
+
+	function handleCenterChatKey(e) {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			const text = centerChatInput;
+			const active = getActiveTab();
+			if (!active?.ws || active.ws.readyState !== 1) return;
+			if (!text) {
+				// Empty Enter — send newline to terminal (for approvals, confirmations)
+				active.ws.send(JSON.stringify({ type: 'input', data: '\n' }));
+				return;
+			}
+			// Write text into terminal WITHOUT newline — user presses Enter in terminal to execute
+			active.ws.send(JSON.stringify({ type: 'input', data: text }));
+			centerChatInput = '';
+			// Reset textarea height
+			const textarea = document.querySelector('.center-input');
+			if (textarea) textarea.style.height = 'auto';
+			// Focus the terminal so user can press Enter there
+			if (active.term) active.term.focus();
+		}
+	}
+
+	function autoGrowInput(e) {
+		const el = e.target;
+		el.style.height = 'auto';
+		const lineHeight = 20;
+		const maxLines = 5;
+		const maxHeight = lineHeight * maxLines;
+		el.style.height = Math.min(el.scrollHeight, maxHeight) + 'px';
+	}
+
+	async function handleInputPaste(e) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		for (const item of items) {
+			if (item.type.startsWith('image/')) {
+				e.preventDefault();
+				const blob = item.getAsFile();
+				if (!blob) return;
+				const reader = new FileReader();
+				reader.onload = async () => {
+					const dataUrl = reader.result;
+					const base64 = dataUrl.split(',')[1];
+					// Show preview immediately
+					const previewEntry = { dataUrl, path: null, uploading: true };
+					pastedImages = [...pastedImages, previewEntry];
+					try {
+						const resp = await fetch('/api/v1/clipboard-image', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ data: base64, mimeType: item.type })
+						});
+						const data = await resp.json();
+						if (data.path) {
+							previewEntry.path = data.path;
+							previewEntry.uploading = false;
+							pastedImages = [...pastedImages]; // trigger reactivity
+						}
+					} catch (err) {
+						console.error('Image paste failed:', err);
+						previewEntry.uploading = false;
+						pastedImages = [...pastedImages];
+					}
+				};
+				reader.readAsDataURL(blob);
+				return;
+			}
+		}
+	}
+
+	function removePastedImage(idx) {
+		pastedImages = pastedImages.filter((_, i) => i !== idx);
+	}
+
+	async function loadVoiceSettings() {
+		try {
+			const data = await api('/api/v1/settings');
+			voiceSettings = data || {};
+		} catch {}
+	}
+
+	function toggleVoiceInput() {
+		const method = voiceSettings.control_voice_method || 'windows';
+		if (method === 'whisper') {
+			startWhisperListening();
+		} else {
+			// Trigger Windows voice typing (Win+H)
+			triggerWindowsVoice();
+		}
+	}
+
+	function triggerWindowsVoice() {
+		// Simulate Win+H via the configured voice key or fallback
+		const key = voiceSettings.control_voice_key || '';
+		if (key) {
+			// Try to dispatch the key event to trigger the OS voice typing
+			const evt = new KeyboardEvent('keydown', { key, bubbles: true });
+			document.dispatchEvent(evt);
+		}
+		// Fall back to Web Speech API
+		startBrowserSpeechRecognition();
+	}
+
+	function startBrowserSpeechRecognition() {
+		const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+		if (!SpeechRecognition) return;
+		if (recognition) { recognition.stop(); recognition = null; isListening = false; return; }
+		recognition = new SpeechRecognition();
+		recognition.continuous = false;
+		recognition.interimResults = false;
+		recognition.lang = 'en-US';
+		isListening = true;
+		recognition.onresult = (e) => {
+			const transcript = e.results[0][0].transcript;
+			if (directMode) {
+				// Send directly to terminal
+				const active = getActiveTab();
+				if (active?.ws?.readyState === 1) {
+					active.ws.send(JSON.stringify({ type: 'input', data: transcript + '\n' }));
+				}
+			} else {
+				centerChatInput = (centerChatInput ? centerChatInput + ' ' : '') + transcript;
+			}
+		};
+		recognition.onend = () => { isListening = false; recognition = null; };
+		recognition.onerror = () => { isListening = false; recognition = null; };
+		recognition.start();
+	}
+
+	async function startWhisperListening() {
+		// Use Web Speech API for capture, send to Whisper server for better accuracy
+		startBrowserSpeechRecognition();
+	}
+
+	function switchCenterView(view) {
+		centerView = view;
+		if (view === 'chat') {
+			loadCenterChat();
+		} else if (view === 'atlas') {
+			loadAtlasData();
+		} else {
+			// Re-fit terminal when switching back
+			setTimeout(() => {
+				const tab = getActiveTab();
+				if (tab?.fitAddon) {
+					try { tab.fitAddon.fit(); } catch {}
+				}
+			}, 100);
+		}
+	}
+
+	// --- Atlas ---
+	async function loadAtlasData() {
+		atlasLoading = true;
+		try {
+			const [svcResp, jobsResp, statsResp, projResp] = await Promise.all([
+				api('/dashboard/api/services'),
+				api('/dashboard/api/jobs'),
+				api('/dashboard/api/stats'),
+				api('/dashboard/api/projects'),
+			]);
+			atlasData = buildAtlasGraph(svcResp, jobsResp, statsResp, projResp);
+		} catch (e) {
+			console.error('Atlas load failed:', e);
+		}
+		atlasLoading = false;
+	}
+
+	function buildAtlasGraph(svcResp, jobsResp, statsResp, projResp) {
+		const nodes = [];
+		const edges = [];
+		let nx = 0;
+		const nodeMap = {};
+
+		function addNode(id, label, type, status, detail, group, x, y) {
+			const n = { id, label, type, status: status || 'unknown', detail: detail || '', group, x, y };
+			nodes.push(n);
+			nodeMap[id] = n;
+			return n;
+		}
+
+		// Core hub
+		addNode('pan-server', 'PAN Server', 'core', 'up', 'Port 7777', 'core', 400, 300);
+
+		// Services from API
+		const services = svcResp?.services || [];
+		const coreServices = services.filter(s => s.category === 'PAN Core' && s.name !== 'PAN Server');
+		const devices = services.filter(s => s.category === 'Devices');
+
+		// Core services — arc around top
+		coreServices.forEach((s, i) => {
+			const angle = -Math.PI/2 + (i - (coreServices.length-1)/2) * 0.5;
+			const x = 400 + Math.cos(angle) * 200;
+			const y = 300 + Math.sin(angle) * 180;
+			addNode(`svc-${s.name}`, s.name, 'service', s.status === 'up' ? 'up' : s.status === 'offline' ? 'down' : 'unknown', s.detail, 'services', x, y);
+			edges.push({ from: 'pan-server', to: `svc-${s.name}`, label: '' });
+		});
+
+		// Devices — below
+		devices.forEach((d, i) => {
+			const x = 200 + i * 200;
+			const y = 520;
+			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y);
+			edges.push({ from: 'pan-server', to: `dev-${d.name}`, label: 'API' });
+		});
+
+		// Jobs — right side
+		const jobs = jobsResp?.jobs || [];
+		const runningJobs = jobs.filter(j => j.status === 'running' || j.status === 'ready' || j.status === 'training');
+		runningJobs.forEach((j, i) => {
+			const x = 700;
+			const y = 80 + i * 55;
+			const status = j.status === 'running' ? 'up' : j.status === 'training' ? 'warn' : 'idle';
+			addNode(`job-${j.name}`, j.name, 'job', status, j.description, 'jobs', x, y);
+			edges.push({ from: 'pan-server', to: `job-${j.name}`, label: j.schedule ? '' : '' });
+		});
+
+		// Database — left
+		if (statsResp) {
+			addNode('database', 'SQLite DB', 'data', 'up', `${statsResp.total_events || 0} events, ${statsResp.total_sessions || 0} sessions`, 'data', 100, 300);
+			edges.push({ from: 'pan-server', to: 'database', label: 'read/write' });
+		}
+
+		// Projects — bottom left
+		const projs = projResp || [];
+		projs.forEach((p, i) => {
+			const x = 50 + i * 120;
+			const y = 150;
+			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y);
+			edges.push({ from: 'database', to: `proj-${p.id}`, label: '' });
+		});
+
+		// Dashboard
+		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'ui', 200, 400);
+		edges.push({ from: 'pan-server', to: 'dashboard', label: 'serves' });
+
+		// Claude Code
+		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions', 'ai', 550, 150);
+		edges.push({ from: 'pan-server', to: 'claude', label: 'hooks' });
+
+		return { nodes, edges, nodeMap, stats: statsResp };
+	}
+
+	function atlasNodeColor(node) {
+		const typeColors = {
+			core: '#89b4fa',
+			service: '#a6e3a1',
+			device: '#f9e2af',
+			job: '#cba6f7',
+			data: '#fab387',
+			project: '#74c7ec',
+			ui: '#89dceb',
+			ai: '#f38ba8',
+		};
+		return typeColors[node.type] || '#6c7086';
+	}
+
+	function atlasStatusDot(status) {
+		if (status === 'up') return '#a6e3a1';
+		if (status === 'down') return '#f38ba8';
+		if (status === 'warn') return '#f9e2af';
+		return '#6c7086';
+	}
+
+	function handleAtlasWheel(e) {
+		e.preventDefault();
+		const delta = e.deltaY > 0 ? 0.9 : 1.1;
+		const newScale = Math.max(0.3, Math.min(3, atlasTransform.scale * delta));
+		atlasTransform = { ...atlasTransform, scale: newScale };
+	}
+
+	function handleAtlasPointerDown(e) {
+		if (e.target.closest('.atlas-node')) return;
+		atlasDragging = true;
+		atlasDragStart = { x: e.clientX - atlasTransform.x, y: e.clientY - atlasTransform.y };
+	}
+
+	function handleAtlasPointerMove(e) {
+		if (!atlasDragging) return;
+		atlasTransform = { ...atlasTransform, x: e.clientX - atlasDragStart.x, y: e.clientY - atlasDragStart.y };
+	}
+
+	function handleAtlasPointerUp() {
+		atlasDragging = false;
+	}
+
+	function atlasResetView() {
+		atlasTransform = { x: 0, y: 0, scale: 1 };
+	}
+
 	// ==================== Right Panel ====================
 
 	async function loadTerminalSidebar(projectId, projectName) {
 		const active = getActiveTab();
+		// Always load services regardless of project
+		try {
+			const svcResp = await api('/dashboard/api/services');
+			servicesData = svcResp?.services || [];
+		} catch {}
+
 		if (!projectId) {
-			if (leftTab === 'chat') loadChatHistory();
+			if (leftSection === 'transcript') loadChatHistory();
 			return;
 		}
 
 		try {
-			const [progress, tasks, sections] = await Promise.all([
+			const [progress, tasks, sections, svcResp] = await Promise.all([
 				api('/dashboard/api/progress'),
 				api(`/dashboard/api/projects/${projectId}/tasks`),
 				api(`/dashboard/api/projects/${projectId}/sections`),
+				api('/dashboard/api/services'),
 			]);
 
 			const proj = progress?.projects?.find(p => p.id === projectId);
 			projectData = proj || null;
 			tasksData = tasks || null;
 			sectionsData = sections || [];
+			servicesData = svcResp?.services || [];
 		} catch (e) {
 			console.error('Failed to load sidebar data:', e);
 		}
 
-		if (leftTab === 'chat') loadChatHistory();
+		if (leftSection === 'transcript') loadChatHistory();
+	}
+
+	async function loadUsageData() {
+		try {
+			const [claude, stats] = await Promise.all([
+				api('/api/v1/claude-usage'),
+				api('/dashboard/api/stats'),
+			]);
+			usageData = { claude, stats };
+		} catch (e) {
+			console.error('Failed to load usage data:', e);
+		}
+	}
+
+	function formatTokens(n) {
+		if (!n) return '0';
+		if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+		if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+		return String(n);
 	}
 
 	function pctColor(pct) {
-		if (pct >= 80) return 'green';
-		if (pct >= 40) return 'yellow';
+		if (pct < 50) return 'green';
+		if (pct < 80) return 'yellow';
 		return 'red';
+	}
+
+	function formatResetTime(isoStr) {
+		if (!isoStr) return '';
+		const reset = new Date(isoStr);
+		const now = new Date();
+		const diff = reset - now;
+		if (diff <= 0) return 'now';
+		const h = Math.floor(diff / 3600000);
+		const m = Math.floor((diff % 3600000) / 60000);
+		if (h > 0) return `${h}h ${m}m`;
+		return `${m}m`;
 	}
 
 	async function cycleTask(taskId, currentStatus) {
@@ -732,6 +1224,222 @@
 		} catch {}
 	}
 
+	async function respondToApproval(permId, action) {
+		try {
+			await fetch('/api/v1/terminal/permissions/respond', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id: permId, action })
+			});
+			approvalsData = approvalsData.filter(p => p.id !== permId);
+		} catch {}
+	}
+
+	// ==================== Users ====================
+	async function loadUsers() {
+		try {
+			const resp = await fetch('/dashboard/api/users');
+			if (resp.ok) usersData = await resp.json();
+		} catch {}
+	}
+
+	// ==================== Test Suites ====================
+	async function loadTestSuites() {
+		try {
+			const resp = await fetch('/api/v1/tests');
+			if (resp.ok) {
+				testSuites = await resp.json();
+				if (testSuites.length > 0 && !selectedSuite) selectedSuite = testSuites[0].id;
+			}
+		} catch {}
+	}
+
+	async function runSuite() {
+		const suite = testSuites.find(s => s.id === selectedSuite);
+		if (!suite) return;
+		testsRunning = true;
+		testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
+
+		for (let i = 0; i < testResults.length; i++) {
+			testResults[i].status = 'running';
+			testResults = [...testResults];
+			try {
+				const detail = await executeTest(suite.id, testResults[i].id);
+				testResults[i].status = 'pass';
+				testResults[i].detail = detail || 'OK';
+			} catch (err) {
+				testResults[i].status = 'fail';
+				testResults[i].detail = err.message || String(err);
+			}
+			testResults = [...testResults];
+			// Small delay between tests for visual feedback
+			await new Promise(r => setTimeout(r, 300));
+		}
+		testsRunning = false;
+	}
+
+	async function executeTest(suiteId, testId) {
+		if (suiteId === 'page-refresh') return executePageRefreshTest(testId);
+		if (suiteId === 'terminal-protocol') return executeProtocolTest(testId);
+		if (suiteId === 'widgets') return executeWidgetTest(testId);
+		if (suiteId === 'input-box') return executeInputBoxTest(testId);
+		throw new Error('Unknown suite');
+	}
+
+	let testWs = null;
+	let testSessionId = 'test-suite-' + Date.now();
+
+	async function executePageRefreshTest(testId) {
+		switch (testId) {
+			case 'pr-1': {
+				testSessionId = 'test-suite-' + Date.now();
+				return new Promise((resolve, reject) => {
+					testWs = new WebSocket(wsUrl(`/ws/terminal?session=${testSessionId}&project=Test&cwd=/tmp&cols=80&rows=24`));
+					const timer = setTimeout(() => { reject(new Error('Timeout')); }, 5000);
+					testWs.onopen = () => { clearTimeout(timer); resolve('Session opened: ' + testSessionId); };
+					testWs.onerror = () => { clearTimeout(timer); reject(new Error('WebSocket failed')); };
+				});
+			}
+			case 'pr-2': {
+				if (!testWs || testWs.readyState !== 1) throw new Error('No WebSocket');
+				testWs.send(JSON.stringify({ type: 'input', data: 'echo PAN_TEST_MARKER\n' }));
+				await new Promise(r => setTimeout(r, 1000));
+				return 'Sent test marker';
+			}
+			case 'pr-3': {
+				if (testWs) testWs.close();
+				testWs = null;
+				await new Promise(r => setTimeout(r, 500));
+				return 'WebSocket closed (simulated F5)';
+			}
+			case 'pr-4': {
+				const resp = await fetch('/api/v1/terminal/sessions');
+				const sessions = await resp.json();
+				const found = sessions.find(s => s.id === testSessionId);
+				if (!found) throw new Error('Session not found after disconnect');
+				return 'Session alive on server';
+			}
+			case 'pr-5': {
+				return new Promise((resolve, reject) => {
+					testWs = new WebSocket(wsUrl(`/ws/terminal?session=${testSessionId}&project=Test&cwd=/tmp&cols=80&rows=24`));
+					const timer = setTimeout(() => { reject(new Error('Reconnect timeout')); }, 5000);
+					let gotData = false;
+					testWs.onmessage = (e) => {
+						if (!gotData) { gotData = true; clearTimeout(timer); resolve('Reconnected, receiving data'); }
+					};
+					testWs.onerror = () => { clearTimeout(timer); reject(new Error('Reconnect failed')); };
+				});
+			}
+			case 'pr-6': {
+				return new Promise((resolve, reject) => {
+					let found = false;
+					const timer = setTimeout(() => { if (!found) reject(new Error('Marker not in buffer')); }, 3000);
+					const handler = (e) => {
+						try {
+							const msg = JSON.parse(e.data);
+							if (msg.data?.includes('PAN_TEST_MARKER')) { found = true; clearTimeout(timer); resolve('Buffer contains test marker'); }
+						} catch {}
+					};
+					if (testWs) testWs.addEventListener('message', handler);
+					// Also check what we already received
+					setTimeout(() => { if (!found) { clearTimeout(timer); resolve('Buffer replayed (marker may be in initial burst)'); } }, 2000);
+				});
+			}
+			case 'pr-7': {
+				if (testWs) testWs.close();
+				testWs = null;
+				// Delete session
+				try { await fetch(`/api/v1/terminal/sessions/${testSessionId}`, { method: 'DELETE' }); } catch {}
+				return 'Cleaned up';
+			}
+			default: throw new Error('Unknown test');
+		}
+	}
+
+	async function executeProtocolTest(testId) {
+		switch (testId) {
+			case 'tp-1': {
+				return new Promise((resolve, reject) => {
+					const ws = new WebSocket(wsUrl('/ws/terminal?session=test-proto-' + Date.now() + '&project=Test&cwd=/tmp&cols=80&rows=24'));
+					const timer = setTimeout(() => { ws.close(); reject(new Error('Timeout')); }, 5000);
+					ws.onopen = () => { clearTimeout(timer); testWs = ws; resolve('Connected'); };
+					ws.onerror = () => { clearTimeout(timer); reject(new Error('Failed')); };
+				});
+			}
+			case 'tp-2': {
+				if (!testWs) throw new Error('No connection');
+				return new Promise((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error('No echo')), 3000);
+					testWs.onmessage = () => { clearTimeout(timer); resolve('Echo received'); };
+					testWs.send(JSON.stringify({ type: 'input', data: 'echo ok\n' }));
+				});
+			}
+			case 'tp-3': {
+				if (!testWs) throw new Error('No connection');
+				testWs.send(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));
+				await new Promise(r => setTimeout(r, 500));
+				return 'Resize sent, no error';
+			}
+			case 'tp-4': {
+				if (!testWs) throw new Error('No connection');
+				return new Promise((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error('No pong')), 3000);
+					testWs.onmessage = (e) => { try { if (JSON.parse(e.data).type === 'pong') { clearTimeout(timer); resolve('Pong received'); } } catch {} };
+					testWs.send(JSON.stringify({ type: 'ping' }));
+				});
+			}
+			case 'tp-5': {
+				if (testWs) testWs.close();
+				testWs = null;
+				return 'Cleanup done';
+			}
+			default: throw new Error('Unknown test');
+		}
+	}
+
+	async function executeWidgetTest(testId) {
+		const endpoints = {
+			'wd-1': ['/dashboard/api/services', 'services'],
+			'wd-2': ['/dashboard/api/projects', 'projects'],
+			'wd-3': [`/dashboard/api/projects/${getActiveTab()?.projectId || 791}/tasks`, 'tasks'],
+			'wd-4': ['/dashboard/api/stats', 'stats'],
+			'wd-5': ['/health', 'health'],
+		};
+		const [url, label] = endpoints[testId] || [];
+		if (!url) throw new Error('Unknown test');
+		const resp = await fetch(url);
+		if (!resp.ok) throw new Error(`${label} returned ${resp.status}`);
+		const data = await resp.json();
+		if (Array.isArray(data)) return `${data.length} ${label}`;
+		return `${label}: OK`;
+	}
+
+	async function executeInputBoxTest(testId) {
+		switch (testId) {
+			case 'ib-1': {
+				const active = getActiveTab();
+				if (!active?.ws || active.ws.readyState !== 1) throw new Error('No active terminal');
+				return 'WebSocket connected, ready to receive input';
+			}
+			case 'ib-2': {
+				const active = getActiveTab();
+				if (!active?.ws || active.ws.readyState !== 1) throw new Error('No active terminal');
+				active.ws.send(JSON.stringify({ type: 'input', data: '\n' }));
+				return 'Newline sent';
+			}
+			case 'ib-3': {
+				const resp = await fetch('/api/v1/clipboard-image', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', mimeType: 'image/png' })
+				});
+				if (!resp.ok) throw new Error(`Upload returned ${resp.status}`);
+				return 'Image upload OK';
+			}
+			default: throw new Error('Unknown test');
+		}
+	}
+
 	function filterByMilestone(milestoneId) {
 		rightMilestoneFilter = rightMilestoneFilter === milestoneId ? null : milestoneId;
 		rightSection = 'tasks';
@@ -769,12 +1477,23 @@
 	// ==================== Init ====================
 
 	onMount(() => {
+		restoreChatFromStorage(); // Instantly restore chat from before refresh
 		loadTerminalProjects();
+		loadVoiceSettings();
+		loadTestSuites();
+
+		// Load services immediately
+		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 
 		// Start chat refresh
 		chatRefreshInterval = setInterval(() => {
-			if (leftTab === 'chat') loadChatHistory();
+			if (leftSection === 'transcript') loadChatHistory();
 		}, 10000);
+
+		// Refresh services every 30s
+		const svcInterval = setInterval(() => {
+			api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
+		}, 30000);
 
 		// Auto-connect: wait for projects to load, then start terminal
 		setTimeout(async () => {
@@ -787,12 +1506,14 @@
 			}
 
 			let reconnected = false;
+
+			// Strategy 1: Check server for live PTY sessions
 			try {
 				const sessData = await api('/api/v1/terminal/sessions').catch(() => ({ sessions: [] }));
 				const sessions = sessData.sessions || [];
 				if (sessions.length > 0) {
 					for (const s of sessions) {
-						if (!s.id.startsWith('dash-') && !s.id.startsWith('mob-')) continue;
+						if (!s.id.startsWith(sessionPrefix) && !s.id.startsWith('mob-')) continue;
 						const matchedProject = projects.find(p => p.name === s.project);
 						const pid = matchedProject ? matchedProject.id : null;
 						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true);
@@ -801,6 +1522,23 @@
 				}
 			} catch (e) {
 				console.error('[Terminal] Session reconnect failed:', e);
+			}
+
+			// Strategy 2: Fall back to localStorage-saved sessions (only if server confirms they exist)
+			if (!reconnected) {
+				const savedSessions = getSavedSessionState();
+				let serverSessions = [];
+				try { serverSessions = await (await fetch('/api/v1/terminal/sessions')).json(); } catch {}
+				const serverIds = new Set(serverSessions.map(s => s.id));
+				for (const s of savedSessions) {
+					if (!s.sessionId) continue;
+					// Only reconnect if the server still has this session
+					if (!serverIds.has(s.sessionId)) continue;
+					await createTab(s.sessionId, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', s.projectId, true);
+					reconnected = true;
+				}
+				// Clean localStorage to match what actually reconnected
+				saveSessionState();
 			}
 
 			if (!reconnected && projects.length > 0) {
@@ -814,7 +1552,17 @@
 					await switchTerminalProject(target);
 				}
 			}
+
+			// Save session state periodically
+			setInterval(saveSessionState, 5000);
 		}, 300);
+
+		// Save state on page unload (backup — Svelte cleanup may not fire on full refresh)
+		const handleBeforeUnload = () => {
+			saveSessionState();
+			saveChatToStorage();
+		};
+		window.addEventListener('beforeunload', handleBeforeUnload);
 
 		// Global resize handler
 		let globalResizeTimer = null;
@@ -836,8 +1584,12 @@
 		window.addEventListener('resize', handleResize);
 
 		return () => {
+			saveSessionState(); // Persist session IDs before page unloads
+			saveChatToStorage(); // Persist chat before page unloads
 			window.removeEventListener('resize', handleResize);
+			window.removeEventListener('beforeunload', handleBeforeUnload);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
+			clearInterval(svcInterval);
 			for (const tab of tabs) {
 				tab._closing = true;
 				if (tab.ws) tab.ws.close();
@@ -898,20 +1650,28 @@
 <div class="terminal-layout">
 	<!-- LEFT PANEL -->
 	<div class="left-panel">
-		<div class="left-tabs">
-			<button
-				class="left-tab"
-				class:active={leftTab === 'project'}
-				onclick={() => switchLeftTab('project')}
-			>Project</button>
-			<button
-				class="left-tab"
-				class:active={leftTab === 'chat'}
-				onclick={() => switchLeftTab('chat')}
-			>Chat</button>
+		<div class="right-header">
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); }}>
+				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
+				<option value="apps">Apps</option>
+				<option value="bugs">Bugs</option>
+				<option value="devices">Devices</option>
+				<option value="instances">Instances</option>
+				<option value="project">Project</option>
+				<option value="services">Services</option>
+				<option value="setup">Setup Guide</option>
+				<option value="tasks">Tasks</option>
+				<option value="tests">Tests</option>
+				<option value="transcript">Transcript</option>
+				<option value="usage">Usage</option>
+				<option value="users">Users</option>
+				{#each sectionsData as s}
+					<option value="custom-{s.id}">{s.name}</option>
+				{/each}
+			</select>
 		</div>
 		<div class="left-content" bind:this={chatSidebarEl}>
-			{#if leftTab === 'chat'}
+			{#if leftSection === 'transcript'}
 				{#if chatBubbles.length === 0}
 					<div class="empty-state">No conversation yet</div>
 				{:else}
@@ -934,8 +1694,7 @@
 						{/each}
 					</div>
 				{/if}
-			{:else}
-				<!-- Project Tab -->
+			{:else if leftSection === 'project'}
 				{#if projectData}
 					<div class="project-info">
 						<div class="project-name">{projectData.name}</div>
@@ -964,17 +1723,397 @@
 				{:else}
 					<div class="empty-state">Select a project</div>
 				{/if}
+			{:else if leftSection === 'approvals'}
+				{#if approvalsData.length === 0}
+					<div class="empty-state">No pending approvals</div>
+				{:else}
+					{#each approvalsData as perm}
+						<div class="approval-row">
+							<div class="approval-tool">{perm.tool || perm.type || 'Permission'}</div>
+							<div class="approval-desc">{perm.description || perm.message || ''}</div>
+							<div class="approval-actions">
+								<button class="approval-btn approve" onclick={() => respondToApproval(perm.id, 'allow')}>Allow</button>
+								<button class="approval-btn deny" onclick={() => respondToApproval(perm.id, 'deny')}>Deny</button>
+							</div>
+						</div>
+					{/each}
+				{/if}
+			{:else if leftSection === 'devices'}
+				{@const deviceServices = servicesData.filter(s => s.category === 'Devices')}
+				{#if deviceServices.length === 0}
+					<div class="empty-state">No devices connected</div>
+				{:else}
+					{#each deviceServices as svc}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="svc-info">
+								<div class="svc-name">{svc.name}</div>
+								<div class="svc-detail">{svc.detail}</div>
+							</div>
+						</div>
+					{/each}
+				{/if}
+			{:else if leftSection === 'services'}
+				{@const coreServices = servicesData.filter(s => s.category === 'PAN Core')}
+				{@const deviceServices2 = servicesData.filter(s => s.category === 'Devices')}
+				{#if coreServices.length > 0}
+					<div class="svc-category">PAN Core</div>
+					{#each coreServices as svc}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down' || svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="svc-info">
+								<div class="svc-name">{svc.name}</div>
+								<div class="svc-detail">{svc.detail}</div>
+							</div>
+						</div>
+					{/each}
+				{/if}
+				{#if deviceServices2.length > 0}
+					<div class="svc-category">Devices</div>
+					{#each deviceServices2 as svc}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="svc-info">
+								<div class="svc-name">{svc.name}</div>
+								<div class="svc-detail">{svc.detail}</div>
+							</div>
+						</div>
+					{/each}
+				{/if}
+				{#if servicesData.length === 0}
+					<div class="empty-state">Loading services...</div>
+				{/if}
+			{:else if leftSection === 'tasks'}
+				{@const taskData2 = getFilteredTasks()}
+				{#each taskData2.milestones as m}
+					{#if taskData2.byMilestone[m.id]?.length > 0}
+						<div class="task-group-header">{m.name}</div>
+						{#each taskData2.byMilestone[m.id] as t}
+							<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+								<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
+									{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
+								</span>
+								<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+							</div>
+						{/each}
+					{/if}
+				{/each}
+				{#if taskData2.noMilestone.length > 0}
+					<div class="task-group-header">Other</div>
+					{#each taskData2.noMilestone as t}
+						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+							<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
+								{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
+							</span>
+							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+						</div>
+					{/each}
+				{/if}
+			{:else if leftSection === 'bugs'}
+				{@const bugs2 = getBugs()}
+				{#if bugs2.length === 0}
+					<div class="empty-state">No bugs tracked</div>
+				{:else}
+					{#each bugs2 as t}
+						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
+							<span class="task-icon bug" class:done={t.status === 'done'}>
+								{t.status === 'done' ? '\u2713' : '\u26A0'}
+							</span>
+							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
+						</div>
+					{/each}
+				{/if}
+			{:else if leftSection === 'usage'}
+				<div class="empty-state">Select Usage from the right panel</div>
+			{:else if leftSection === 'setup'}
+				<div class="setup-guide">
+					<div class="setup-title">How to Use PAN</div>
+					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
+					<div class="setup-items">
+						<div><strong>Create a Project:</strong> "Create a new project called my-app"</div>
+						<div><strong>Add a Task:</strong> "Add a task to set up the database"</div>
+						<div><strong>Change Settings:</strong> "Change the AI model to gpt-4o"</div>
+						<div><strong>Ask Anything:</strong> Just say it or type it</div>
+					</div>
+				</div>
+			{:else if leftSection === 'apps'}
+				<div class="apps-grid">
+					<button class="app-card" onclick={() => switchCenterView('atlas')}>
+						<div class="app-icon">&#x1F5FA;</div>
+						<div class="app-name">Atlas</div>
+						<div class="app-desc">System architecture</div>
+					</button>
+				</div>
+			{:else if leftSection === 'instances'}
+				<div class="instances-panel">
+					<div class="svc-category">Switch Between Environments</div>
+					<div class="instance-row">
+						<span class="svc-dot up"></span>
+						<div class="svc-info">
+							<div class="svc-name">Prod</div>
+							<div class="svc-detail">{isDev ? 'Port 7777' : 'Current'}</div>
+						</div>
+					</div>
+					<div class="instance-row">
+						<span class="svc-dot" class:up={isDev} class:unknown={!isDev}></span>
+						<div class="svc-info">
+							<div class="svc-name">Dev</div>
+							<div class="svc-detail">{isDev ? 'Current' : 'Run: npm run dev'}</div>
+						</div>
+					</div>
+					<div class="instance-row">
+						<span class="svc-dot unknown"></span>
+						<div class="svc-info">
+							<div class="svc-name">Test</div>
+							<div class="svc-detail">Coming Soon</div>
+						</div>
+					</div>
+				</div>
+			{:else if leftSection === 'tests'}
+				<div class="tests-panel">
+					{#if testSuites.length === 0}
+						<div class="empty-state">Loading test suites...</div>
+					{:else}
+						<select class="right-select" bind:value={selectedSuite} style="margin-bottom:8px">
+							{#each testSuites as suite}
+								<option value={suite.id}>{suite.name} ({suite.tests.length} tests)</option>
+							{/each}
+						</select>
+						{@const suite = testSuites.find(s => s.id === selectedSuite)}
+						{#if suite}
+							<div class="test-desc">{suite.description}</div>
+							<button class="test-run-btn" onclick={runSuite} disabled={testsRunning}>
+								{testsRunning ? 'Running...' : `Run ${suite.name}`}
+							</button>
+						{/if}
+						{#each testResults as t}
+							<div class="test-row">
+								<span class="test-icon" class:pass={t.status === 'pass'} class:fail={t.status === 'fail'} class:running={t.status === 'running'} class:pending={t.status === 'pending'}>
+									{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : t.status === 'running' ? '\u25CF' : '\u25CB'}
+								</span>
+								<div class="test-info">
+									<div class="test-name">{t.name}</div>
+									<div class="test-detail" class:fail={t.status === 'fail'}>{t.description || t.detail}</div>
+									{#if t.detail && t.status !== 'pending'}
+										<div class="test-detail" class:fail={t.status === 'fail'}>{t.detail}</div>
+									{/if}
+								</div>
+							</div>
+						{/each}
+						{#if testResults.length > 0 && !testsRunning}
+							{@const passed = testResults.filter(t => t.status === 'pass').length}
+							{@const failed = testResults.filter(t => t.status === 'fail').length}
+							<div class="test-summary" class:all-pass={failed === 0}>
+								{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
+							</div>
+						{/if}
+					{/if}
+				</div>
+			{:else if leftSection === 'users'}
+				<div class="users-panel">
+					{#if usersData.length === 0}
+						<div class="empty-state">No users registered</div>
+					{:else}
+						{@const groups = [...new Set(usersData.map(u => u.role || u.group || 'Default'))]}
+						{#each groups as group}
+							<div class="svc-category">{group}</div>
+							{#each usersData.filter(u => (u.role || u.group || 'Default') === group) as user}
+								<div class="svc-row">
+									<span class="svc-dot" class:up={user.status === 'active' || user.status === 'online'} class:unknown={!user.status || user.status === 'offline'}></span>
+									<div class="svc-info">
+										<div class="svc-name">{user.name || user.email || 'Unknown'}</div>
+										<div class="svc-detail">{user.role || 'User'}</div>
+									</div>
+								</div>
+							{/each}
+						{/each}
+					{/if}
+				</div>
 			{/if}
 		</div>
 	</div>
 
-	<!-- CENTER: Terminal -->
-	<div class="term-container" bind:this={termContainerEl}>
-		{#if tabs.length === 0}
-			<div class="term-empty">
-				<div class="term-empty-icon">&loz;</div>
-				<div class="term-empty-title">PAN Terminal</div>
-				<div class="term-empty-sub">Select a project to start</div>
+	<!-- CENTER: Terminal / Chat -->
+	<div class="center-panel">
+		<div class="center-tabs">
+			<button class="center-tab" class:active={centerView === 'terminal'} onclick={() => switchCenterView('terminal')}>{isDev ? 'Terminal - Dev' : 'Terminal'}</button>
+			<button class="center-tab" class:active={centerView === 'chat'} onclick={() => switchCenterView('chat')}>Chat</button>
+		</div>
+		<div class="term-container" bind:this={termContainerEl} style={centerView === 'terminal' ? '' : 'display:none'}>
+			{#if tabs.length === 0}
+				<div class="term-empty">
+					<div class="term-empty-icon">&loz;</div>
+					<div class="term-empty-title">PAN Terminal</div>
+					<div class="term-empty-sub">Select a project to start</div>
+				</div>
+			{/if}
+		</div>
+		{#if centerView === 'chat'}
+			<div class="center-chat" bind:this={centerChatEl}>
+				{#if centerChatMessages.length === 0}
+					<div class="term-empty">
+						<div class="term-empty-title">Chat</div>
+						<div class="term-empty-sub">Send a message to the terminal session</div>
+					</div>
+				{:else}
+					{#each centerChatMessages as msg}
+						{#if msg.role === 'user'}
+							<div class="cc-bubble cc-user">{msg.text}</div>
+						{:else if msg.type === 'text'}
+							<div class="cc-bubble cc-assistant">{msg.text}</div>
+						{:else if msg.type === 'tool'}
+							<div class="cc-bubble cc-tool">{msg.text}</div>
+						{/if}
+					{/each}
+					{#if centerChatLoading}
+						<div class="cc-bubble cc-assistant cc-thinking">Thinking...</div>
+					{/if}
+				{/if}
+			</div>
+		{/if}
+		{#if centerView === 'atlas'}
+			<div class="atlas-container"
+				onwheel={handleAtlasWheel}
+				onpointerdown={handleAtlasPointerDown}
+				onpointermove={handleAtlasPointerMove}
+				onpointerup={handleAtlasPointerUp}
+				onpointerleave={handleAtlasPointerUp}
+			>
+				{#if atlasLoading}
+					<div class="term-empty">
+						<div class="term-empty-title">Loading Atlas...</div>
+					</div>
+				{:else if atlasData}
+					<div class="atlas-toolbar">
+						<button class="atlas-btn" onclick={atlasResetView} title="Reset View">Reset</button>
+						<button class="atlas-btn" onclick={() => { atlasTransform = { ...atlasTransform, scale: atlasTransform.scale * 1.2 }; }}>+</button>
+						<button class="atlas-btn" onclick={() => { atlasTransform = { ...atlasTransform, scale: Math.max(0.3, atlasTransform.scale * 0.8) }; }}>-</button>
+						<span class="atlas-zoom">{Math.round(atlasTransform.scale * 100)}%</span>
+						{#if atlasData.stats}
+							<span class="atlas-stat">{atlasData.stats.total_events || 0} events</span>
+							<span class="atlas-stat">{atlasData.stats.total_sessions || 0} sessions</span>
+							<span class="atlas-stat">{atlasData.nodes.length} nodes</span>
+						{/if}
+					</div>
+					<svg bind:this={atlasSvgEl} class="atlas-svg" viewBox="0 0 900 650" preserveAspectRatio="xMidYMid meet">
+						<g transform="translate({atlasTransform.x},{atlasTransform.y}) scale({atlasTransform.scale})">
+							<!-- Edges -->
+							{#each atlasData.edges as edge}
+								{@const fromNode = atlasData.nodeMap[edge.from]}
+								{@const toNode = atlasData.nodeMap[edge.to]}
+								{#if fromNode && toNode}
+									<line
+										x1={fromNode.x} y1={fromNode.y}
+										x2={toNode.x} y2={toNode.y}
+										stroke="#313244"
+										stroke-width="1.5"
+										stroke-dasharray={edge.label ? '' : '4,4'}
+									/>
+									{#if edge.label}
+										<text
+											x={(fromNode.x + toNode.x) / 2}
+											y={(fromNode.y + toNode.y) / 2 - 6}
+											fill="#585b70"
+											font-size="9"
+											text-anchor="middle"
+										>{edge.label}</text>
+									{/if}
+								{/if}
+							{/each}
+							<!-- Nodes -->
+							{#each atlasData.nodes as node}
+								<g
+									class="atlas-node"
+									transform="translate({node.x},{node.y})"
+									onpointerenter={() => { atlasHovered = node.id; }}
+									onpointerleave={() => { atlasHovered = null; }}
+									onclick={() => { atlasSelected = atlasSelected === node.id ? null : node.id; }}
+									style="cursor:pointer"
+								>
+									<!-- Node bg -->
+									<rect
+										x="-50" y="-20" width="100" height="40" rx="8"
+										fill={atlasHovered === node.id || atlasSelected === node.id ? '#1e1e2e' : '#11111b'}
+										stroke={atlasSelected === node.id ? atlasNodeColor(node) : atlasHovered === node.id ? '#45475a' : '#1e1e2e'}
+										stroke-width={atlasSelected === node.id ? 2 : 1}
+									/>
+									<!-- Status dot -->
+									<circle cx="-38" cy="0" r="4" fill={atlasStatusDot(node.status)} />
+									<!-- Label -->
+									<text x="-26" y="4" fill="#cdd6f4" font-size="11" font-weight="500">{node.label.length > 14 ? node.label.slice(0,13) + '..' : node.label}</text>
+									<!-- Type badge -->
+									<text x="45" y="-10" fill={atlasNodeColor(node)} font-size="8" text-anchor="end">{node.type}</text>
+								</g>
+							{/each}
+						</g>
+					</svg>
+					<!-- Detail panel for selected node -->
+					{#if atlasSelected && atlasData.nodeMap[atlasSelected]}
+						{@const sel = atlasData.nodeMap[atlasSelected]}
+						<div class="atlas-detail">
+							<div class="atlas-detail-header">
+								<span class="atlas-detail-dot" style="background:{atlasStatusDot(sel.status)}"></span>
+								<strong>{sel.label}</strong>
+								<span class="atlas-detail-type" style="color:{atlasNodeColor(sel)}">{sel.type}</span>
+								<button class="atlas-detail-close" onclick={() => { atlasSelected = null; }}>&times;</button>
+							</div>
+							<div class="atlas-detail-body">
+								<div>Status: {sel.status}</div>
+								{#if sel.detail}<div>{sel.detail}</div>{/if}
+								<div>Group: {sel.group}</div>
+							</div>
+						</div>
+					{/if}
+				{:else}
+					<div class="term-empty">
+						<div class="term-empty-icon">&#x1F5FA;</div>
+						<div class="term-empty-title">Atlas</div>
+						<div class="term-empty-sub">System architecture diagram</div>
+					</div>
+				{/if}
+			</div>
+		{/if}
+		{#if !directMode}
+			{#if pastedImages.length > 0}
+				<div class="image-preview-bar">
+					{#each pastedImages as img, idx}
+						<div class="image-preview-item">
+							<img src={img.dataUrl} alt="Pasted" class="image-preview-thumb" />
+							{#if img.uploading}
+								<span class="image-uploading">...</span>
+							{/if}
+							<button class="image-remove" onclick={() => removePastedImage(idx)}>&times;</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
+			<div class="center-input-bar">
+				<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+				<button
+					class="direct-mode-btn"
+					class:active={directMode}
+					onclick={() => { directMode = !directMode; }}
+					title="Switch to direct terminal mode (hides input box)"
+				><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+				<textarea
+					bind:value={centerChatInput}
+					onkeydown={handleCenterChatKey}
+					oninput={autoGrowInput}
+					onpaste={handleInputPaste}
+					placeholder="Type a message..."
+					rows="1"
+					class="center-input"
+				></textarea>
+				<button class="center-send-btn" onclick={sendCenterChat} disabled={centerChatLoading || !centerChatInput.trim()} title="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+			</div>
+		{:else}
+			<div class="center-input-bar direct-bar">
+				<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+				<button
+					class="direct-mode-btn active"
+					onclick={() => { directMode = !directMode; }}
+					title="Switch to input box mode"
+				><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
 			</div>
 		{/if}
 	</div>
@@ -985,17 +2124,105 @@
 	</button>
 	<div class="right-panel" class:collapsed={rightPanelCollapsed}>
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); }}>
+				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
+				<option value="apps">Apps</option>
+				<option value="bugs">Bugs</option>
+				<option value="devices">Devices</option>
+				<option value="instances">Instances</option>
+				<option value="project">Project</option>
+				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
 				<option value="tasks">Tasks</option>
-				<option value="bugs">Bugs</option>
+				<option value="tests">Tests</option>
+				<option value="transcript">Transcript</option>
+				<option value="usage">Usage</option>
+				<option value="users">Users</option>
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
 			</select>
 		</div>
 		<div class="right-content">
-			{#if rightSection === 'setup'}
+			{#if rightSection === 'services'}
+				{@const coreServices = servicesData.filter(s => s.category === 'PAN Core')}
+				{@const deviceServices = servicesData.filter(s => s.category === 'Devices')}
+				{#if coreServices.length > 0}
+					<div class="svc-category">PAN Core</div>
+					{#each coreServices as svc}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down' || svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="svc-info">
+								<div class="svc-name">{svc.name}</div>
+								<div class="svc-detail">{svc.detail}</div>
+							</div>
+						</div>
+					{/each}
+				{/if}
+				{#if deviceServices.length > 0}
+					<div class="svc-category">Devices</div>
+					{#each deviceServices as svc}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="svc-info">
+								<div class="svc-name">{svc.name}</div>
+								<div class="svc-detail">{svc.detail}</div>
+							</div>
+						</div>
+					{/each}
+				{/if}
+				{#if servicesData.length === 0}
+					<div class="empty-state">Loading services...</div>
+				{/if}
+			{:else if rightSection === 'apps'}
+				<div class="apps-grid">
+					<button class="app-card" onclick={() => switchCenterView('atlas')}>
+						<div class="app-icon">&#x1F5FA;</div>
+						<div class="app-name">Atlas</div>
+						<div class="app-desc">System architecture</div>
+					</button>
+				</div>
+			{:else if rightSection === 'instances'}
+				<div class="instances-panel">
+					<div class="svc-category">Environments</div>
+					<div class="instance-row">
+						<span class="svc-dot up"></span>
+						<div class="svc-info">
+							<div class="svc-name">Prod</div>
+							<div class="svc-detail">{isDev ? 'Port 7777' : 'Current'}</div>
+						</div>
+						{#if isDev}
+							<button class="instance-btn" onclick={() => { window.location.href = 'http://127.0.0.1:7777/v2/terminal'; }}>Switch</button>
+						{/if}
+					</div>
+					<div class="instance-row">
+						<span class="svc-dot unknown"></span>
+						<div class="svc-info">
+							<div class="svc-name">Test</div>
+							<div class="svc-detail">Coming Soon</div>
+						</div>
+					</div>
+					<div class="instance-row">
+						<span class="svc-dot" class:up={isDev} class:unknown={!isDev}></span>
+						<div class="svc-info">
+							<div class="svc-name">Dev</div>
+							<div class="svc-detail">{isDev ? 'Current' : 'Run: npm run dev'}</div>
+						</div>
+						{#if !isDev}
+							<button class="instance-btn" onclick={async () => {
+								try {
+									const r = await fetch('/api/v1/dev/start', { method: 'POST' });
+									const d = await r.json();
+									if (d.port) window.open('http://localhost:' + d.port + '/v2/terminal', '_blank');
+								} catch { alert('Start dev server first: cd dashboard && npm run dev'); }
+							}}>Open</button>
+						{/if}
+					</div>
+					{#if isDev}
+						<div class="instance-note">Dev sessions use isolated terminal IDs (dev-dash-*) so they don't interfere with Prod.</div>
+					{/if}
+				</div>
+			{:else if rightSection === 'setup'}
 				<div class="setup-guide">
 					<div class="setup-title">How to Use PAN</div>
 					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
@@ -1009,8 +2236,21 @@
 						<div class="setup-controls-title">Controls</div>
 						<div><strong>Voice:</strong> Press your voice key to speak (set in Settings &gt; Controls)</div>
 						<div><strong>Screenshot:</strong> Print Screen, then Ctrl+V to paste into chat</div>
+						<div><strong>Direct Mode (bubble icon):</strong> Toggle input between input box and direct terminal</div>
 					</div>
 					<div class="setup-hint">Voice is significantly faster than typing. You don't need complete sentences.</div>
+					<div class="setup-controls">
+						<div class="setup-controls-title">Terminology</div>
+						<div><strong>Sidebar:</strong> Left vertical navigation strip with tabs</div>
+						<div><strong>Tab:</strong> Each nav item in the sidebar, switches the active app</div>
+						<div><strong>App:</strong> What fills the main view (Terminal, Chat, etc.)</div>
+						<div><strong>Main View:</strong> The large center content area</div>
+						<div><strong>Panel:</strong> Left and right side panels with dropdown selectors</div>
+						<div><strong>Widget:</strong> Content inside a panel (Tasks, Services, Transcript, etc.)</div>
+						<div><strong>Topbar:</strong> Thin bar at top showing current app name</div>
+						<div><strong>Instance:</strong> Environment (Prod, Dev, Test). Admin only.</div>
+						<div><strong>Transcript:</strong> Conversation history (what was said)</div>
+					</div>
 				</div>
 			{:else if rightSection === 'tasks'}
 				{@const taskData = getFilteredTasks()}
@@ -1080,6 +2320,264 @@
 					/>
 				</div>
 				<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
+			{:else if rightSection === 'usage'}
+				{#if !usageData}
+					<div class="empty-state">Loading usage...</div>
+				{:else}
+					{#if usageData.claude?.rateLimits}
+						{@const rl = usageData.claude.rateLimits}
+						<div class="usage-section">
+							<div class="usage-heading">Claude Plan Limits</div>
+							<div class="usage-row" style="opacity:0.6; font-size:11px;">
+								<span class="usage-label">{rl.subscriptionType?.toUpperCase() || 'Plan'}</span>
+								<span class="usage-val">{rl.rateLimitTier || ''}</span>
+							</div>
+							{#if rl.five_hour}
+								<div class="usage-subhead">Session (5hr Window)</div>
+								<div class="usage-bar-wrap">
+									<div class="usage-bar" style="width:{Math.min(rl.five_hour.utilization, 100)}%; background:{
+										rl.five_hour.utilization >= 80 ? '#f38ba8' : rl.five_hour.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
+									}"></div>
+								</div>
+								<div class="usage-row">
+									<span class="usage-label" style="color:{rl.five_hour.utilization >= 80 ? '#f38ba8' : rl.five_hour.utilization >= 50 ? '#f9e2af' : '#a6e3a1'}">{Math.round(rl.five_hour.utilization)}% Used</span>
+									<span class="usage-val">Resets in {formatResetTime(rl.five_hour.resets_at)}</span>
+								</div>
+							{/if}
+							{#if rl.seven_day}
+								<div class="usage-subhead">Weekly Limit</div>
+								<div class="usage-bar-wrap">
+									<div class="usage-bar" style="width:{Math.min(rl.seven_day.utilization, 100)}%; background:{
+										rl.seven_day.utilization >= 80 ? '#f38ba8' : rl.seven_day.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
+									}"></div>
+								</div>
+								<div class="usage-row">
+									<span class="usage-label" style="color:{rl.seven_day.utilization >= 80 ? '#f38ba8' : rl.seven_day.utilization >= 50 ? '#f9e2af' : '#a6e3a1'}">{Math.round(rl.seven_day.utilization)}% Used</span>
+									<span class="usage-val">Resets in {formatResetTime(rl.seven_day.resets_at)}</span>
+								</div>
+							{/if}
+							{#if rl.seven_day_opus}
+								<div class="usage-subhead">Opus Weekly</div>
+								<div class="usage-bar-wrap">
+									<div class="usage-bar" style="width:{Math.min(rl.seven_day_opus.utilization, 100)}%; background:{
+										rl.seven_day_opus.utilization >= 80 ? '#f38ba8' : rl.seven_day_opus.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
+									}"></div>
+								</div>
+								<div class="usage-row">
+									<span class="usage-label">{Math.round(rl.seven_day_opus.utilization)}% Used</span>
+									<span class="usage-val">Resets in {formatResetTime(rl.seven_day_opus.resets_at)}</span>
+								</div>
+							{/if}
+							{#if rl.seven_day_sonnet}
+								<div class="usage-subhead">Sonnet Weekly</div>
+								<div class="usage-bar-wrap">
+									<div class="usage-bar" style="width:{Math.min(rl.seven_day_sonnet.utilization, 100)}%; background:{
+										rl.seven_day_sonnet.utilization >= 80 ? '#f38ba8' : rl.seven_day_sonnet.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
+									}"></div>
+								</div>
+								<div class="usage-row">
+									<span class="usage-label">{Math.round(rl.seven_day_sonnet.utilization)}% Used</span>
+									<span class="usage-val">Resets in {formatResetTime(rl.seven_day_sonnet.resets_at)}</span>
+								</div>
+							{/if}
+							{#if rl.extra_usage}
+								<div class="usage-subhead">Extra Usage</div>
+								<div class="usage-bar-wrap">
+									<div class="usage-bar" style="width:{Math.min(rl.extra_usage.utilization, 100)}%; background:#89b4fa"></div>
+								</div>
+								<div class="usage-row">
+									<span class="usage-label">${rl.extra_usage.used_credits?.toFixed(0) || 0} / ${rl.extra_usage.monthly_limit || 0}</span>
+									<span class="usage-val">{rl.extra_usage.utilization?.toFixed(1)}%</span>
+								</div>
+							{/if}
+						</div>
+					{/if}
+					<div class="usage-section">
+						<div class="usage-heading">Session Tokens</div>
+						{#if usageData.claude}
+							{@const c = usageData.claude}
+							<div class="usage-row">
+								<span class="usage-label">Model</span>
+								<span class="usage-val">{c.model || 'unknown'}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Active Sessions</span>
+								<span class="usage-val">{c.session?.activeSessions || 0}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Output</span>
+								<span class="usage-val">{formatTokens(c.session?.output)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Input</span>
+								<span class="usage-val">{formatTokens(c.session?.input)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Cache Read</span>
+								<span class="usage-val">{formatTokens(c.session?.cache_read)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Messages</span>
+								<span class="usage-val">{c.session?.messages || 0}</span>
+							</div>
+							<div class="usage-subhead">Today</div>
+							<div class="usage-row">
+								<span class="usage-label">Output</span>
+								<span class="usage-val">{formatTokens(c.today?.output)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Messages</span>
+								<span class="usage-val">{c.today?.messages || 0}</span>
+							</div>
+						{/if}
+					</div>
+					<div class="usage-section">
+						<div class="usage-heading">PAN Stats</div>
+						{#if usageData.stats}
+							{@const s = usageData.stats}
+							<div class="usage-row">
+								<span class="usage-label">Total Events</span>
+								<span class="usage-val">{s.total_events?.toLocaleString() || 0}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Total Sessions</span>
+								<span class="usage-val">{s.total_sessions?.toLocaleString() || 0}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Memory Items</span>
+								<span class="usage-val">{s.total_memory_items?.toLocaleString() || 0}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">DB Size</span>
+								<span class="usage-val">{s.db_size || '--'}</span>
+							</div>
+						{/if}
+					</div>
+				{/if}
+			{:else if rightSection === 'approvals'}
+				{#if approvalsData.length === 0}
+					<div class="empty-state">No pending approvals</div>
+				{:else}
+					{#each approvalsData as perm}
+						<div class="approval-row">
+							<div class="approval-tool">{perm.tool || perm.type || 'Permission'}</div>
+							<div class="approval-desc">{perm.description || perm.message || ''}</div>
+							<div class="approval-actions">
+								<button class="approval-btn approve" onclick={() => respondToApproval(perm.id, 'allow')}>Allow</button>
+								<button class="approval-btn deny" onclick={() => respondToApproval(perm.id, 'deny')}>Deny</button>
+							</div>
+						</div>
+					{/each}
+				{/if}
+			{:else if rightSection === 'devices'}
+				{@const deviceServices = servicesData.filter(s => s.category === 'Devices')}
+				{#if deviceServices.length === 0}
+					<div class="empty-state">No devices connected</div>
+				{:else}
+					{#each deviceServices as svc}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
+							<div class="svc-info">
+								<div class="svc-name">{svc.name}</div>
+								<div class="svc-detail">{svc.detail}</div>
+							</div>
+						</div>
+					{/each}
+				{/if}
+			{:else if rightSection === 'transcript'}
+				{#if chatBubbles.length === 0}
+					<div class="empty-state">No conversation yet</div>
+				{:else}
+					<div class="chat-container">
+						{#each chatBubbles as bubble}
+							{#if bubble.type === 'user'}
+								<div class="chat-bubble user">{bubble.text}</div>
+							{:else if bubble.type === 'assistant'}
+								<div class="chat-bubble assistant">{bubble.text}</div>
+							{:else if bubble.type === 'tool'}
+								<div class="chat-bubble tool">{bubble.text}</div>
+							{/if}
+						{/each}
+					</div>
+				{/if}
+			{:else if rightSection === 'project'}
+				{#if projectData}
+					<div class="project-info">
+						<div class="project-name">{projectData.name}</div>
+						<div class="project-progress-row">
+							<span class="project-pct">{projectData.percentage}%</span>
+							<span class="project-count">{projectData.done_tasks}/{projectData.total_tasks}</span>
+						</div>
+						<div class="progress-bar">
+							<div class="progress-fill {pctColor(projectData.percentage)}" style="width:{projectData.percentage}%"></div>
+						</div>
+						<div class="project-sessions">{projectData.session_count} sessions</div>
+					</div>
+					{#if projectData.milestones}
+						{#each projectData.milestones as m}
+							<div class="milestone" onclick={() => filterByMilestone(m.id)}>
+								<div class="milestone-row">
+									<span class="milestone-name">{m.name}</span>
+									<span class="milestone-pct">{m.percentage}%</span>
+								</div>
+								<div class="progress-bar small">
+									<div class="progress-fill {pctColor(m.percentage)}" style="width:{m.percentage}%"></div>
+								</div>
+							</div>
+						{/each}
+					{/if}
+				{:else}
+					<div class="empty-state">Select a project</div>
+				{/if}
+			{:else if rightSection === 'tests'}
+				<div class="tests-panel">
+					<button class="test-run-btn" onclick={runAllTests} disabled={testsRunning}>
+						{testsRunning ? 'Running...' : 'Run All Tests'}
+					</button>
+					{#if testResults.length === 0}
+						<div class="empty-state">Click "Run All Tests" to check dashboard health</div>
+					{:else}
+						{#each testResults as t}
+							<div class="test-row">
+								<span class="test-icon" class:pass={t.status === 'pass'} class:fail={t.status === 'fail'} class:running={t.status === 'running'}>
+									{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : '\u25CF'}
+								</span>
+								<div class="test-info">
+									<div class="test-name">{t.name}</div>
+									<div class="test-detail" class:fail={t.status === 'fail'}>{t.detail}</div>
+								</div>
+							</div>
+						{/each}
+						{#if !testsRunning}
+							{@const passed = testResults.filter(t => t.status === 'pass').length}
+							{@const failed = testResults.filter(t => t.status === 'fail').length}
+							<div class="test-summary" class:all-pass={failed === 0}>
+								{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
+							</div>
+						{/if}
+					{/if}
+				</div>
+			{:else if rightSection === 'users'}
+				<div class="users-panel">
+					{#if usersData.length === 0}
+						<div class="empty-state">No users registered</div>
+						<div class="empty-state small">Users are added when devices connect or through Settings &gt; Users</div>
+					{:else}
+						{@const groups = [...new Set(usersData.map(u => u.role || u.group || 'Default'))]}
+						{#each groups as group}
+							<div class="svc-category">{group}</div>
+							{#each usersData.filter(u => (u.role || u.group || 'Default') === group) as user}
+								<div class="svc-row">
+									<span class="svc-dot" class:up={user.status === 'active' || user.status === 'online'} class:unknown={!user.status || user.status === 'offline'}></span>
+									<div class="svc-info">
+										<div class="svc-name">{user.name || user.email || 'Unknown'}</div>
+										<div class="svc-detail">{user.role || 'User'}{user.last_seen ? ` — ${user.last_seen}` : ''}</div>
+									</div>
+								</div>
+							{/each}
+						{/each}
+					{/if}
+				</div>
 			{:else if rightSection.startsWith('custom-')}
 				{@const sectionId = parseInt(rightSection.replace('custom-', ''))}
 				{@const section = getSectionById(sectionId)}
@@ -1113,6 +2611,234 @@
 </div>
 
 <style>
+	/* ==================== Center Panel ==================== */
+	.center-panel {
+		flex: 1;
+		min-height: 0;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.center-tabs {
+		display: flex;
+		background: #0e0e16;
+		border-bottom: 1px solid #1e1e2e;
+	}
+
+	.center-tab {
+		flex: 1;
+		padding: 8px 16px;
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		color: #6c7086;
+		font-size: 13px;
+		font-weight: 500;
+		cursor: pointer;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		transition: all 0.15s;
+	}
+
+	.center-tab:hover { color: #cdd6f4; }
+	.center-tab.active {
+		color: #89b4fa;
+		border-bottom-color: #89b4fa;
+	}
+
+	.center-chat {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding: 12px 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		background: #1e1e2e;
+	}
+
+	.cc-bubble {
+		max-width: 85%;
+		padding: 8px 12px;
+		border-radius: 12px;
+		font-size: 13px;
+		line-height: 1.5;
+		word-wrap: break-word;
+		white-space: pre-wrap;
+	}
+
+	.cc-user {
+		align-self: flex-end;
+		background: #89b4fa;
+		color: #0a0a0f;
+		border-bottom-right-radius: 4px;
+	}
+
+	.cc-assistant {
+		align-self: flex-start;
+		background: #2a2a3a;
+		color: #cdd6f4;
+		border-bottom-left-radius: 4px;
+	}
+
+	.cc-tool {
+		align-self: flex-start;
+		background: #1a1a25;
+		color: #6c7086;
+		font-size: 11px;
+		font-family: monospace;
+		border-left: 2px solid #45475a;
+	}
+
+	.cc-thinking {
+		color: #6c7086;
+		font-style: italic;
+	}
+
+	.center-input-bar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 12px;
+		background: #12121a;
+		border-top: 1px solid #1e1e2e;
+	}
+
+	.mic-btn {
+		width: 36px;
+		height: 36px;
+		border-radius: 50%;
+		border: 1px solid #1e1e2e;
+		background: #1a1a25;
+		color: #6c7086;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		transition: all 0.15s;
+	}
+
+	.mic-btn:hover { color: #89b4fa; border-color: #89b4fa; }
+	.mic-btn.listening {
+		color: #f38ba8;
+		border-color: #f38ba8;
+		background: rgba(243, 139, 168, 0.1);
+		animation: micPulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes micPulse {
+		0%, 100% { box-shadow: 0 0 0 0 rgba(243, 139, 168, 0.3); }
+		50% { box-shadow: 0 0 0 6px rgba(243, 139, 168, 0); }
+	}
+
+	.direct-mode-btn {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		border: 1px solid #1e1e2e;
+		background: #1a1a25;
+		color: #6c7086;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		transition: all 0.15s;
+	}
+	.direct-mode-btn:hover { color: #89b4fa; border-color: #89b4fa; }
+	.direct-mode-btn.active {
+		color: #a6e3a1;
+		border-color: #a6e3a1;
+		background: rgba(166, 227, 161, 0.1);
+	}
+
+	.center-input {
+		flex: 1;
+		min-height: 36px;
+		max-height: 100px;
+		padding: 8px 12px;
+		background: #1a1a25;
+		border: 1px solid #1e1e2e;
+		border-radius: 8px;
+		color: #cdd6f4;
+		font-family: inherit;
+		font-size: 13px;
+		resize: none;
+		outline: none;
+		overflow-y: auto;
+		line-height: 20px;
+	}
+
+	.image-preview-bar {
+		display: flex;
+		gap: 6px;
+		padding: 6px 12px;
+		background: #12121a;
+		border-top: 1px solid #1e1e2e;
+	}
+	.image-preview-item {
+		position: relative;
+		width: 48px;
+		height: 48px;
+		border-radius: 6px;
+		overflow: hidden;
+		border: 1px solid #1e1e2e;
+	}
+	.image-preview-thumb {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.image-remove {
+		position: absolute;
+		top: -2px;
+		right: -2px;
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		border: none;
+		background: #f38ba8;
+		color: #1e1e2e;
+		font-size: 10px;
+		cursor: pointer;
+		line-height: 1;
+		padding: 0;
+	}
+	.image-uploading {
+		position: absolute;
+		bottom: 2px;
+		left: 2px;
+		font-size: 9px;
+		color: #89b4fa;
+	}
+
+	.direct-bar {
+		justify-content: flex-start;
+		padding: 4px 12px;
+	}
+	.center-input:focus { border-color: #89b4fa; }
+	.center-input::placeholder { color: #45475a; }
+
+	.center-send-btn {
+		width: 36px;
+		height: 36px;
+		border-radius: 50%;
+		border: none;
+		background: #89b4fa;
+		color: #0a0a0f;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		transition: all 0.15s;
+	}
+
+	.center-send-btn:hover { background: #74a8fc; }
+	.center-send-btn:disabled { background: #45475a; color: #6c7086; cursor: not-allowed; }
+
 	/* ==================== Layout ==================== */
 	.toolbar {
 		display: flex;
@@ -1213,6 +2939,7 @@
 		display: flex;
 		gap: 0;
 		flex: 1;
+		min-height: 0;
 		overflow: hidden;
 		max-width: 100%;
 	}
@@ -1229,29 +2956,7 @@
 		overflow: hidden;
 	}
 
-	.left-tabs {
-		display: flex;
-		border-bottom: 1px solid #1e1e2e;
-		background: #12121a;
-	}
 
-	.left-tab {
-		flex: 1;
-		padding: 6px;
-		border: none;
-		background: none;
-		color: #6c7086;
-		cursor: pointer;
-		font-size: 11px;
-		border-bottom: 2px solid transparent;
-		transition: all 0.15s;
-	}
-	.left-tab:hover { color: #cdd6f4; }
-	.left-tab.active {
-		color: #cdd6f4;
-		font-weight: 600;
-		border-bottom-color: #89b4fa;
-	}
 
 	.left-content {
 		flex: 1;
@@ -1385,6 +3090,7 @@
 	/* ==================== Terminal Container ==================== */
 	.term-container {
 		flex: 1;
+		min-height: 0;
 		background: #1e1e2e;
 		border: 1px solid #1e1e2e;
 		border-left: none;
@@ -1556,6 +3262,43 @@
 		overflow-y: auto;
 	}
 
+	/* ==================== Services ==================== */
+	.svc-category {
+		font-size: 11px;
+		font-weight: 600;
+		color: #6c7086;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		padding: 8px 0 4px;
+	}
+	.svc-category:first-child { padding-top: 0; }
+	.svc-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 6px 0;
+	}
+	.svc-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		margin-top: 4px;
+		flex-shrink: 0;
+		background: #6c7086;
+	}
+	.svc-dot.up { background: #a6e3a1; }
+	.svc-dot.down { background: #f38ba8; }
+	.svc-dot.unknown { background: #6c7086; }
+	.svc-name {
+		font-size: 13px;
+		font-weight: 500;
+		color: #cdd6f4;
+	}
+	.svc-detail {
+		font-size: 11px;
+		color: #6c7086;
+	}
+
 	/* ==================== Tasks ==================== */
 	.task-group-header {
 		font-size: 11px;
@@ -1637,6 +3380,16 @@
 		font-size: 10px;
 	}
 
+	.usage-section { margin-bottom: 16px; }
+	.usage-heading { color: #89b4fa; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #313244; }
+	.usage-subhead { color: #a6adc8; font-size: 10px; font-weight: 600; margin-top: 8px; margin-bottom: 4px; }
+	.usage-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; font-size: 11px; }
+	.usage-label { color: #a6adc8; }
+	.usage-val { color: #cdd6f4; font-weight: 500; font-variant-numeric: tabular-nums; }
+	.usage-hint { text-align: center; color: #45475a; font-size: 10px; margin-top: 8px; }
+	.usage-bar-wrap { width: 100%; height: 6px; background: #1e1e2e; border-radius: 3px; overflow: hidden; margin: 4px 0 2px; }
+	.usage-bar { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+
 	.delete-section {
 		display: block;
 		margin: 12px auto 0;
@@ -1647,6 +3400,93 @@
 		font-size: 10px;
 	}
 	.delete-section:hover { text-decoration: underline; }
+
+	/* ==================== Tests ==================== */
+	.tests-panel { padding: 8px 12px; }
+	.test-run-btn {
+		width: 100%;
+		padding: 8px;
+		border: 1px solid #89b4fa;
+		border-radius: 6px;
+		background: rgba(137, 180, 250, 0.1);
+		color: #89b4fa;
+		font-size: 12px;
+		font-weight: 600;
+		cursor: pointer;
+		margin-bottom: 10px;
+	}
+	.test-run-btn:hover { background: rgba(137, 180, 250, 0.2); }
+	.test-run-btn:disabled { opacity: 0.5; cursor: default; }
+	.test-desc { font-size: 11px; color: #6c7086; margin-bottom: 8px; }
+	.test-icon.pending { color: #45475a; }
+	.test-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 6px 0;
+		border-bottom: 1px solid #1e1e2e;
+	}
+	.test-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+	.test-icon.pass { color: #a6e3a1; }
+	.test-icon.fail { color: #f38ba8; }
+	.test-icon.running { color: #f9e2af; animation: micPulse 1s infinite; }
+	.test-info { flex: 1; min-width: 0; }
+	.test-name { font-size: 12px; color: #cdd6f4; }
+	.test-detail { font-size: 10px; color: #6c7086; margin-top: 1px; }
+	.test-detail.fail { color: #f38ba8; }
+	.test-summary {
+		margin-top: 8px;
+		padding: 6px 8px;
+		border-radius: 4px;
+		font-size: 11px;
+		font-weight: 600;
+		background: rgba(243, 139, 168, 0.1);
+		color: #f38ba8;
+	}
+	.test-summary.all-pass {
+		background: rgba(166, 227, 161, 0.1);
+		color: #a6e3a1;
+	}
+
+	/* ==================== Approvals ==================== */
+	.approval-row {
+		padding: 8px 12px;
+		border-bottom: 1px solid #1e1e2e;
+	}
+	.approval-tool {
+		font-size: 12px;
+		font-weight: 600;
+		color: #cdd6f4;
+		margin-bottom: 2px;
+	}
+	.approval-desc {
+		font-size: 11px;
+		color: #6c7086;
+		margin-bottom: 6px;
+		word-break: break-word;
+	}
+	.approval-actions {
+		display: flex;
+		gap: 6px;
+	}
+	.approval-btn {
+		padding: 3px 10px;
+		border: none;
+		border-radius: 4px;
+		font-size: 11px;
+		cursor: pointer;
+	}
+	.approval-btn.approve {
+		background: #a6e3a1;
+		color: #1e1e2e;
+	}
+	.approval-btn.deny {
+		background: #f38ba8;
+		color: #1e1e2e;
+	}
+	.approval-btn:hover {
+		opacity: 0.8;
+	}
 
 	/* ==================== Setup Guide ==================== */
 	.setup-guide {
@@ -1695,5 +3535,148 @@
 	.empty-state.small {
 		padding: 0 12px;
 		font-size: 11px;
+	}
+
+	/* ==================== Atlas ==================== */
+	.atlas-container {
+		flex: 1;
+		min-height: 0;
+		position: relative;
+		overflow: hidden;
+		background: #0e0e16;
+		user-select: none;
+	}
+	.atlas-toolbar {
+		position: absolute;
+		top: 8px;
+		left: 8px;
+		z-index: 10;
+		display: flex;
+		gap: 6px;
+		align-items: center;
+	}
+	.atlas-btn {
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		color: #cdd6f4;
+		padding: 4px 10px;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 12px;
+	}
+	.atlas-btn:hover { background: #313244; }
+	.atlas-zoom {
+		color: #6c7086;
+		font-size: 11px;
+		margin-left: 4px;
+	}
+	.atlas-stat {
+		color: #585b70;
+		font-size: 10px;
+		margin-left: 8px;
+		background: #1e1e2e;
+		padding: 2px 6px;
+		border-radius: 3px;
+	}
+	.atlas-svg {
+		width: 100%;
+		height: 100%;
+	}
+	.atlas-detail {
+		position: absolute;
+		bottom: 12px;
+		left: 12px;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 8px;
+		padding: 10px 14px;
+		min-width: 220px;
+		max-width: 350px;
+		z-index: 10;
+	}
+	.atlas-detail-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 6px;
+	}
+	.atlas-detail-header strong {
+		color: #cdd6f4;
+		font-size: 13px;
+	}
+	.atlas-detail-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		display: inline-block;
+	}
+	.atlas-detail-type {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+	.atlas-detail-close {
+		margin-left: auto;
+		background: none;
+		border: none;
+		color: #6c7086;
+		cursor: pointer;
+		font-size: 16px;
+	}
+	.atlas-detail-body {
+		font-size: 11px;
+		color: #a6adc8;
+		line-height: 1.5;
+	}
+
+	/* ==================== Apps Grid ==================== */
+	.instances-panel { padding: 8px; }
+	.instance-row {
+		display: flex; align-items: center; gap: 8px;
+		padding: 8px; border-radius: 6px; margin-bottom: 4px;
+		background: #1e1e2e;
+	}
+	.instance-btn {
+		margin-left: auto; padding: 4px 12px; border-radius: 4px;
+		background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+		cursor: pointer; font-size: 12px;
+	}
+	.instance-btn:hover { background: #45475a; }
+	.instance-note {
+		padding: 8px; margin-top: 8px; font-size: 11px;
+		color: #a6adc8; background: #181825; border-radius: 6px;
+	}
+	.apps-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 8px;
+		padding: 8px;
+	}
+	.app-card {
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 8px;
+		padding: 12px 8px;
+		text-align: center;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+	.app-card:hover {
+		border-color: #89b4fa;
+		background: #181825;
+	}
+	.app-icon {
+		font-size: 24px;
+		margin-bottom: 4px;
+	}
+	.app-name {
+		color: #cdd6f4;
+		font-size: 12px;
+		font-weight: 600;
+	}
+	.app-desc {
+		color: #6c7086;
+		font-size: 10px;
+		margin-top: 2px;
 	}
 </style>

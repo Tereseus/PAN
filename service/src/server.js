@@ -30,7 +30,9 @@ import { startDream, stopDream } from './dream.js';
 import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { startStackScanner, stopStackScanner, getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import https from 'https';
+import { execFileSync } from 'child_process';
 import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
 
@@ -282,6 +284,232 @@ app.get('/api/automation/usage', (req, res) => {
   }
 });
 
+// GET /api/v1/claude-usage — Claude Code session token usage from JSONL files
+app.get('/api/v1/claude-usage', async (req, res) => {
+  try {
+    const homeDir = process.env.HOME || process.env.USERPROFILE;
+    const sessDir = join(homeDir, '.claude', 'sessions');
+    const projBase = join(homeDir, '.claude', 'projects');
+
+    // Read active sessions
+    const sessionFiles = existsSync(sessDir) ? readdirSync(sessDir).filter(f => f.endsWith('.json')) : [];
+    const sessions = sessionFiles.map(f => {
+      try { return JSON.parse(readFileSync(join(sessDir, f), 'utf8')); } catch { return null; }
+    }).filter(Boolean);
+
+    // Find JSONL files for sessions and sum tokens
+    function sumJsonlTokens(filePath) {
+      const result = { input: 0, output: 0, cache_read: 0, cache_create: 0, messages: 0, model: '' };
+      try {
+        const data = readFileSync(filePath, 'utf8');
+        for (const line of data.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.message?.usage) {
+              const u = msg.message.usage;
+              result.input += u.input_tokens || 0;
+              result.output += u.output_tokens || 0;
+              result.cache_read += u.cache_read_input_tokens || 0;
+              result.cache_create += u.cache_creation_input_tokens || 0;
+              result.messages++;
+            }
+            if (msg.message?.model && !result.model) result.model = msg.message.model;
+          } catch {}
+        }
+      } catch {}
+      return result;
+    }
+
+    // Search project dirs for each session's JSONL
+    const projectDirs = existsSync(projBase) ? readdirSync(projBase).filter(f => {
+      try { return statSync(join(projBase, f)).isDirectory(); } catch { return false; }
+    }) : [];
+
+    const now = Date.now();
+    const twoHours = 2 * 60 * 60 * 1000;
+    const oneDay = 24 * 60 * 60 * 1000;
+    const oneWeek = 7 * oneDay;
+
+    let sessionTokens = { input: 0, output: 0, cache_read: 0, cache_create: 0, messages: 0 };
+    let todayTokens = { input: 0, output: 0, cache_read: 0, cache_create: 0, messages: 0 };
+    let weekTokens = { input: 0, output: 0, cache_read: 0, cache_create: 0, messages: 0 };
+    let model = '';
+    let activeSessions = 0;
+    let currentSessionStart = null;
+
+    // Process all JSONL files from all projects
+    for (const pd of projectDirs) {
+      const pdPath = join(projBase, pd);
+      const jsonlFiles = readdirSync(pdPath).filter(f => f.endsWith('.jsonl'));
+
+      for (const jf of jsonlFiles) {
+        const sessionId = jf.replace('.jsonl', '');
+        const session = sessions.find(s => s.sessionId === sessionId);
+        const filePath = join(pdPath, jf);
+        const stat = statSync(filePath);
+        const fileAge = now - stat.mtimeMs;
+
+        // Current session (matches active session files)
+        if (session) {
+          activeSessions++;
+          const tokens = sumJsonlTokens(filePath);
+          if (tokens.model) model = tokens.model;
+
+          // This is an active session — count its tokens
+          sessionTokens.input += tokens.input;
+          sessionTokens.output += tokens.output;
+          sessionTokens.cache_read += tokens.cache_read;
+          sessionTokens.cache_create += tokens.cache_create;
+          sessionTokens.messages += tokens.messages;
+          if (!currentSessionStart || (session.startedAt && session.startedAt < currentSessionStart)) {
+            currentSessionStart = session.startedAt;
+          }
+        }
+
+        // Today's tokens (modified today)
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        if (stat.mtimeMs >= todayStart.getTime()) {
+          const tokens = session ? { ...sessionTokens } : sumJsonlTokens(filePath);
+          if (!session) {
+            todayTokens.input += tokens.input;
+            todayTokens.output += tokens.output;
+            todayTokens.cache_read += tokens.cache_read;
+            todayTokens.cache_create += tokens.cache_create;
+            todayTokens.messages += tokens.messages;
+          }
+        }
+
+        // Week tokens
+        if (fileAge < oneWeek) {
+          if (!session) {
+            const tokens = sumJsonlTokens(filePath);
+            weekTokens.input += tokens.input;
+            weekTokens.output += tokens.output;
+            weekTokens.cache_read += tokens.cache_read;
+            weekTokens.cache_create += tokens.cache_create;
+            weekTokens.messages += tokens.messages;
+          }
+        }
+      }
+    }
+
+    // Add session tokens to today and week
+    todayTokens.input += sessionTokens.input;
+    todayTokens.output += sessionTokens.output;
+    todayTokens.cache_read += sessionTokens.cache_read;
+    todayTokens.cache_create += sessionTokens.cache_create;
+    todayTokens.messages += sessionTokens.messages;
+    weekTokens.input += todayTokens.input;
+    weekTokens.output += todayTokens.output;
+    weekTokens.cache_read += todayTokens.cache_read;
+    weekTokens.cache_create += todayTokens.cache_create;
+    weekTokens.messages += todayTokens.messages;
+
+    // Fetch real rate limit data by making a tiny Haiku call and reading response headers
+    // The /api/oauth/usage endpoint rate-limits aggressively, but every Anthropic API
+    // response includes rate limit headers (anthropic-ratelimit-unified-*)
+    let rateLimits = null;
+    try {
+      const credsPath = join(homeDir, '.claude', '.credentials.json');
+      if (existsSync(credsPath)) {
+        const creds = JSON.parse(readFileSync(credsPath, 'utf8'));
+        const token = creds.claudeAiOauth?.accessToken;
+        const subType = creds.claudeAiOauth?.subscriptionType || 'unknown';
+        const tier = creds.claudeAiOauth?.rateLimitTier || 'unknown';
+        if (token) {
+          const body = JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'hi' }],
+          });
+          const rlData = await new Promise((resolve) => {
+            const req = https.request('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'x-api-key': token,
+                'Content-Type': 'application/json',
+                'anthropic-version': '2023-06-01',
+                'Content-Length': Buffer.byteLength(body),
+              },
+              timeout: 15000,
+            }, (resp) => {
+              const headers = {};
+              for (const [k, v] of Object.entries(resp.headers)) {
+                if (k.toLowerCase().includes('ratelimit')) headers[k] = v;
+              }
+              // Drain the response body
+              resp.on('data', () => {});
+              resp.on('end', () => resolve(headers));
+            });
+            req.on('error', () => resolve(null));
+            req.on('timeout', () => { req.destroy(); resolve(null); });
+            req.write(body);
+            req.end();
+          });
+          if (rlData) {
+            const h = rlData;
+            rateLimits = {
+              subscriptionType: subType,
+              rateLimitTier: tier,
+              status: h['anthropic-ratelimit-unified-status'] || 'unknown',
+            };
+            // 5-hour session window
+            if (h['anthropic-ratelimit-unified-5h-utilization']) {
+              rateLimits.five_hour = {
+                utilization: parseFloat(h['anthropic-ratelimit-unified-5h-utilization']) * 100,
+                resets_at: h['anthropic-ratelimit-unified-5h-reset'] ? parseInt(h['anthropic-ratelimit-unified-5h-reset']) * 1000 : null,
+                status: h['anthropic-ratelimit-unified-5h-status'] || 'unknown',
+              };
+            }
+            // 7-day weekly
+            if (h['anthropic-ratelimit-unified-7d-utilization']) {
+              rateLimits.seven_day = {
+                utilization: parseFloat(h['anthropic-ratelimit-unified-7d-utilization']) * 100,
+                resets_at: h['anthropic-ratelimit-unified-7d-reset'] ? parseInt(h['anthropic-ratelimit-unified-7d-reset']) * 1000 : null,
+                status: h['anthropic-ratelimit-unified-7d-status'] || 'unknown',
+              };
+            }
+            // Overage / extra usage
+            if (h['anthropic-ratelimit-unified-overage-utilization']) {
+              rateLimits.extra_usage = {
+                utilization: parseFloat(h['anthropic-ratelimit-unified-overage-utilization']) * 100,
+                resets_at: h['anthropic-ratelimit-unified-overage-reset'] ? parseInt(h['anthropic-ratelimit-unified-overage-reset']) * 1000 : null,
+                status: h['anthropic-ratelimit-unified-overage-status'] || 'unknown',
+              };
+            }
+          }
+        }
+      }
+    } catch (rlErr) {
+      console.error('[Claude Usage] Rate limit fetch error:', rlErr.message);
+    }
+
+    res.json({
+      session: {
+        ...sessionTokens,
+        total: sessionTokens.input + sessionTokens.output + sessionTokens.cache_read + sessionTokens.cache_create,
+        startedAt: currentSessionStart,
+        activeSessions,
+      },
+      today: {
+        ...todayTokens,
+        total: todayTokens.input + todayTokens.output + todayTokens.cache_read + todayTokens.cache_create,
+      },
+      week: {
+        ...weekTokens,
+        total: weekTokens.input + weekTokens.output + weekTokens.cache_read + weekTokens.cache_create,
+      },
+      model: model || 'unknown',
+      rateLimits,
+    });
+  } catch (e) {
+    console.error('[Claude Usage] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/v1/settings — read all PAN settings (for mobile sync + dashboard)
 app.get('/api/v1/settings', (req, res) => {
   try {
@@ -326,12 +554,234 @@ app.use('/v2', express.static(join(__dirname, '..', 'public', 'v2'), {
   index: 'index.html',
   setHeaders: (res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
   }
 }));
 // SPA fallback — any /v2/* that isn't a file gets index.html
 app.get('/v2/*path', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(join(__dirname, '..', 'public', 'v2', 'index.html'));
 });
+
+// Mobile dashboard — static files, no ES modules, no caching
+app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
+  etag: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+}));
+
+// Legacy inline mobile route (removed — now static)
+app.get('/mobile-old/', (req, res) => { res.redirect('/mobile/'); });
+/*
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>PAN Mobile</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sans-serif; font-size:14px; }
+  .tabs { display:flex; border-bottom:1px solid #313244; overflow-x:auto; position:sticky; top:0; background:#0a0a0f; z-index:10; }
+  .tab { padding:10px 14px; color:#6c7086; cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; font-size:13px; }
+  .tab.active { color:#89b4fa; border-bottom-color:#89b4fa; }
+  .page { display:none; padding:12px; }
+  .page.active { display:flex; flex-direction:column; gap:8px; }
+  select { width:100%; background:#1e1e2e; color:#cdd6f4; border:1px solid #313244; border-radius:8px; padding:10px 12px; font-size:14px; margin-bottom:8px; }
+  .chat-area { flex:1; display:flex; flex-direction:column; min-height:60vh; }
+  .messages { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:8px 0; }
+  .msg-user { background:#89b4fa; color:#000; border-radius:14px 14px 4px 14px; padding:8px 12px; align-self:flex-end; max-width:80%; }
+  .msg-pan { background:#1e1e2e; border-radius:14px 14px 14px 4px; padding:8px 12px; align-self:flex-start; max-width:80%; }
+  .input-bar { display:flex; gap:8px; padding:8px 0; position:sticky; bottom:0; background:#0a0a0f; }
+  .input-bar input { flex:1; background:#1e1e2e; color:#cdd6f4; border:1px solid #313244; border-radius:8px; padding:10px 12px; font-size:14px; outline:none; }
+  .input-bar button { background:#89b4fa; color:#000; border:none; border-radius:8px; padding:10px 16px; font-weight:600; }
+  .card { background:#1e1e2e; border:1px solid #313244; border-radius:8px; padding:12px; }
+  .stat { font-size:20px; font-weight:600; color:#89b4fa; }
+  .label { font-size:11px; color:#6c7086; text-transform:uppercase; letter-spacing:0.5px; }
+  .sensor-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #181825; }
+  h3 { font-size:15px; color:#cdd6f4; margin-bottom:8px; }
+  .muted { color:#6c7086; text-align:center; padding:20px; }
+</style>
+</head>
+<body>
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('chat')">Chat</div>
+  <div class="tab" onclick="switchTab('terminal')">Terminal</div>
+  <div class="tab" onclick="switchTab('projects')">Projects</div>
+  <div class="tab" onclick="switchTab('sensors')">Sensors</div>
+  <div class="tab" onclick="switchTab('data')">Data</div>
+  <div class="tab" onclick="switchTab('settings')">Settings</div>
+</div>
+
+<div id="chat" class="page active">
+  <select id="project-select" onchange="loadChat()">
+    <option value="">Select project...</option>
+  </select>
+  <div class="chat-area">
+    <div class="messages" id="chat-messages"><div class="muted">Select a project</div></div>
+    <div class="input-bar">
+      <input id="chat-input" placeholder="Message PAN..." onkeydown="if(event.key==='Enter')sendMsg()">
+      <button onclick="sendMsg()">Send</button>
+    </div>
+  </div>
+</div>
+
+<div id="terminal" class="page">
+  <select id="term-project-select" onchange="loadTerminal()">
+    <option value="">Select project...</option>
+  </select>
+  <div class="card"><div class="muted">Terminal view — select a project</div></div>
+</div>
+
+<div id="projects" class="page">
+  <div id="projects-list"><div class="muted">Loading...</div></div>
+</div>
+
+<div id="sensors" class="page">
+  <div id="sensors-list"><div class="muted">Loading...</div></div>
+</div>
+
+<div id="data" class="page">
+  <div id="stats-cards" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+  <div id="recent-events" style="margin-top:12px"><div class="muted">Loading...</div></div>
+</div>
+
+<div id="settings" class="page">
+  <div class="card"><div class="muted">Settings available on desktop dashboard</div></div>
+</div>
+
+<script>
+const API = window.location.origin;
+let projects = [];
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelector('.tab[onclick*="'+name+'"]').classList.add('active');
+  document.getElementById(name).classList.add('active');
+  if (name === 'projects') loadProjects();
+  if (name === 'sensors') loadSensors();
+  if (name === 'data') loadData();
+}
+
+async function loadProjectSelects() {
+  try {
+    const res = await fetch(API + '/dashboard/api/projects');
+    projects = await res.json();
+    ['project-select','term-project-select'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (!sel) return;
+      sel.innerHTML = '<option value="">Select project...</option>';
+      projects.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.path;
+        opt.textContent = p.name;
+        sel.appendChild(opt);
+      });
+      // Auto-select PAN
+      const pan = projects.find(p => p.name === 'PAN');
+      if (pan) { sel.value = pan.path; }
+    });
+    loadChat();
+  } catch(e) { console.error('Projects:', e); }
+}
+
+async function loadChat() {
+  const msgs = document.getElementById('chat-messages');
+  try {
+    const res = await fetch(API + '/dashboard/api/events?limit=30&event_type=RouterCommand');
+    const data = await res.json();
+    const events = (data.events || []).reverse();
+    if (!events.length) { msgs.innerHTML = '<div class="muted">No conversations yet</div>'; return; }
+    msgs.innerHTML = '';
+    events.forEach(e => {
+      try {
+        const d = JSON.parse(e.data);
+        const text = d.text || d.query || '';
+        const resp = d.result || d.response || '';
+        if (text) { const div = document.createElement('div'); div.className='msg-user'; div.textContent=text; msgs.appendChild(div); }
+        if (resp && resp !== '[AMBIENT]') { const div = document.createElement('div'); div.className='msg-pan'; div.textContent=resp; msgs.appendChild(div); }
+      } catch {}
+    });
+    msgs.scrollTop = msgs.scrollHeight;
+  } catch(e) { msgs.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+async function sendMsg() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  const msgs = document.getElementById('chat-messages');
+  const div = document.createElement('div'); div.className='msg-user'; div.textContent=text; msgs.appendChild(div);
+  const typing = document.createElement('div'); typing.className='msg-pan'; typing.textContent='...'; msgs.appendChild(typing);
+  msgs.scrollTop = msgs.scrollHeight;
+  try {
+    const res = await fetch(API + '/api/v1/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:text,source:'dashboard'}) });
+    const data = await res.json();
+    typing.textContent = data.response || data.result || 'No response';
+  } catch(e) { typing.textContent = 'Error: ' + e.message; }
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function loadProjects() {
+  const el = document.getElementById('projects-list');
+  try {
+    const res = await fetch(API + '/dashboard/api/projects');
+    const data = await res.json();
+    el.innerHTML = data.map(p => '<div class="card" style="margin-bottom:8px"><h3>'+p.name+'</h3><div style="font-size:12px;color:#6c7086">'+p.path+'</div><div style="font-size:12px;color:#a6adc8;margin-top:4px">'+(p.description||'')+'</div></div>').join('');
+  } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+async function loadSensors() {
+  const el = document.getElementById('sensors-list');
+  try {
+    const res = await fetch(API + '/api/sensors/devices/latest');
+    const data = await res.json();
+    if (!data || !Object.keys(data).length) { el.innerHTML = '<div class="muted">No sensor data</div>'; return; }
+    el.innerHTML = Object.entries(data).map(([k,v]) => '<div class="sensor-row"><span>'+k+'</span><span style="color:#89b4fa">'+JSON.stringify(v)+'</span></div>').join('');
+  } catch(e) {
+    // Fallback to device sensors
+    try {
+      const res2 = await fetch(API + '/api/sensors/devices/9');
+      const d2 = await res2.json();
+      el.innerHTML = (d2.assignments||[]).map(s => '<div class="sensor-row"><span>'+s.sensor_key+'</span><span style="color:#89b4fa">'+(s.enabled?'ON':'OFF')+'</span></div>').join('') || '<div class="muted">No sensors configured</div>';
+    } catch { el.innerHTML = '<div class="muted">Sensors unavailable</div>'; }
+  }
+}
+
+async function loadData() {
+  try {
+    const res = await fetch(API + '/dashboard/api/stats');
+    const s = await res.json();
+    document.getElementById('stats-cards').innerHTML =
+      '<div class="card"><div class="stat">'+s.total_events+'</div><div class="label">Events</div></div>'+
+      '<div class="card"><div class="stat">'+s.total_sessions+'</div><div class="label">Sessions</div></div>'+
+      '<div class="card"><div class="stat">'+s.total_projects+'</div><div class="label">Projects</div></div>'+
+      '<div class="card"><div class="stat">'+s.total_devices+'</div><div class="label">Devices</div></div>';
+  } catch {}
+  try {
+    const res = await fetch(API + '/dashboard/api/events?limit=10');
+    const data = await res.json();
+    document.getElementById('recent-events').innerHTML = '<h3>Recent Events</h3>' +
+      (data.events||[]).map(e => '<div class="sensor-row"><span style="font-size:11px">'+e.event_type+'</span><span style="font-size:11px;color:#6c7086">'+e.created_at.slice(11,19)+'</span></div>').join('');
+  } catch {}
+}
+
+// Auto-refresh chat every 5 seconds
+setInterval(loadChat, 5000);
+
+// Init
+loadProjectSelects();
+</script>
+</body>
+</html>`);
+});
+
+*/
 
 // Old dashboard static files (fallback)
 app.use('/dashboard', express.static(join(__dirname, '..', 'public'), {
@@ -395,6 +845,20 @@ app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
 // Serve clipboard images (pasted screenshots from dashboard)
 app.use('/clipboard', express.static(join(process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan-clipboard')));
 
+// Dev instance — detect running Vite dev server
+app.post('/api/v1/dev/start', async (req, res) => {
+  // Check common Vite ports
+  for (const port of [5173, 5174, 5175, 5180, 5181, 5190]) {
+    try {
+      const r = await fetch(`http://localhost:${port}/v2/`, { signal: AbortSignal.timeout(500) });
+      if (r.ok || r.status === 200) {
+        return res.json({ ok: true, port, running: true });
+      }
+    } catch {}
+  }
+  res.json({ ok: false, error: 'No Vite dev server found. Run: cd dashboard && npm run dev' });
+});
+
 // Terminal API — list sessions, projects for terminal
 app.get('/api/v1/terminal/sessions', (req, res) => {
   res.json({ sessions: listSessions() });
@@ -454,6 +918,68 @@ app.post('/api/v1/terminal/permissions/respond', (req, res) => {
   console.log(`[PAN Perm] Response: ${normalized} for perm ${perm_id} (found=${found})`);
 
   res.json({ ok: found, response: normalized, method: 'hook' });
+});
+
+// ==================== Test Suites API ====================
+const testSuites = [
+  {
+    id: 'page-refresh',
+    name: 'Page Refresh',
+    description: 'Tests that refreshing the dashboard preserves the terminal session',
+    tests: [
+      { id: 'pr-1', name: 'Open terminal session', description: 'Creates a new terminal session via WebSocket' },
+      { id: 'pr-2', name: 'Send test message', description: 'Sends a test string to the PTY and waits for echo' },
+      { id: 'pr-3', name: 'Simulate F5 (disconnect)', description: 'Closes the WebSocket to simulate page refresh' },
+      { id: 'pr-4', name: 'Verify session alive on server', description: 'Checks /api/v1/terminal/sessions returns the session' },
+      { id: 'pr-5', name: 'Reconnect with same session ID', description: 'Opens new WebSocket with same session ID and isReconnect=true' },
+      { id: 'pr-6', name: 'Verify buffer replayed', description: 'Checks that the pre-refresh output is replayed on reconnect' },
+      { id: 'pr-7', name: 'Cleanup', description: 'Closes session and verifies cleanup' },
+    ]
+  },
+  {
+    id: 'terminal-protocol',
+    name: 'Terminal Protocol',
+    description: 'Tests WebSocket terminal protocol: input, output, resize, ping/pong',
+    tests: [
+      { id: 'tp-1', name: 'WebSocket connects', description: 'Opens a WebSocket to /ws/terminal and gets output' },
+      { id: 'tp-2', name: 'Input sends to PTY', description: 'Sends type:input message and receives echo' },
+      { id: 'tp-3', name: 'Resize works', description: 'Sends type:resize and verifies no error' },
+      { id: 'tp-4', name: 'Ping/pong', description: 'Sends type:ping and receives type:pong' },
+      { id: 'tp-5', name: 'Multiple clients share session', description: 'Two WebSockets to same session both receive output' },
+    ]
+  },
+  {
+    id: 'widgets',
+    name: 'Widget Data',
+    description: 'Tests that all panel widgets load data correctly',
+    tests: [
+      { id: 'wd-1', name: 'Services API', description: 'GET /dashboard/api/services returns array' },
+      { id: 'wd-2', name: 'Projects API', description: 'GET /dashboard/api/projects returns array' },
+      { id: 'wd-3', name: 'Tasks API', description: 'GET /dashboard/api/projects/:id/tasks returns tasks+milestones' },
+      { id: 'wd-4', name: 'Stats API', description: 'GET /dashboard/api/stats returns counts' },
+      { id: 'wd-5', name: 'Health check', description: 'GET /health returns ok' },
+    ]
+  },
+  {
+    id: 'input-box',
+    name: 'Input Box',
+    description: 'Tests that the input box correctly sends text to the terminal',
+    tests: [
+      { id: 'ib-1', name: 'Text typed into terminal', description: 'Input box Enter writes text to PTY without newline' },
+      { id: 'ib-2', name: 'Empty Enter sends newline', description: 'Empty input box Enter sends \\n for approvals' },
+      { id: 'ib-3', name: 'Image paste uploads', description: 'POST /api/v1/clipboard-image accepts base64 image' },
+    ]
+  }
+];
+
+app.get('/api/v1/tests', (req, res) => {
+  res.json(testSuites);
+});
+
+app.get('/api/v1/tests/:suiteId', (req, res) => {
+  const suite = testSuites.find(s => s.id === req.params.suiteId);
+  if (!suite) return res.status(404).json({ error: 'Suite not found' });
+  res.json(suite);
 });
 
 // AutoDev API
@@ -655,12 +1181,10 @@ app.get('/health', (req, res) => {
   // Include Tailscale IP so phone can discover the server's remote address
   let tailscaleIp = null;
   try {
-    const { execFileSync } = require('child_process');
     tailscaleIp = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', ['ip', '-4'], { timeout: 3000, encoding: 'utf8' }).trim();
   } catch {
     // Try PATH fallback
     try {
-      const { execFileSync } = require('child_process');
       tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8' }).trim();
     } catch {}
   }
@@ -786,6 +1310,13 @@ function start() {
       } else {
         run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
       }
+
+      // Keep PC device heartbeat alive (every 60 seconds)
+      setInterval(() => {
+        try {
+          run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
+        } catch {}
+      }, 60 * 1000);
 
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       setInterval(syncProjects, 10 * 60 * 1000);

@@ -66,10 +66,10 @@ function startTerminalServer(httpServer) {
         // Also detect Claude permission prompts for mobile
         let permBuffer = '';
         ptyProcess.onData((data) => {
-          // Buffer recent output for late-joining clients
+          // Buffer recent output for late-joining clients (200KB, trim to 100KB)
           session.buffer += data;
-          if (session.buffer.length > 50000) {
-            session.buffer = session.buffer.slice(-25000);
+          if (session.buffer.length > 200000) {
+            session.buffer = session.buffer.slice(-100000);
           }
           for (const client of session.clients) {
             if (client.readyState === 1) {
