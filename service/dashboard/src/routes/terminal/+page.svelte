@@ -21,8 +21,14 @@
 	let testResults = $state([]);
 	let testsRunning = $state(false);
 	let usageData = $state(null);
-	let rightPanelCollapsed = $state(false);
 	let rightMilestoneFilter = $state(null);
+
+	// Panel resize state
+	let leftPanelWidth = $state(260);
+	let rightPanelWidth = $state(280);
+	let resizingPanel = $state(null); // 'left' | 'right' | null
+	let resizeStartX = $state(0);
+	let resizeStartWidth = $state(0);
 	let hostLabel = $state('');
 	let sessionsCount = $state(0);
 
@@ -44,6 +50,38 @@
 	let atlasSvgEl;
 	let chatBubbles = $state([]);
 	let chatCurrentProject = $state('');
+
+	// --- Panel Resize Handlers ---
+	function onResizeStart(panel, e) {
+		e.preventDefault();
+		resizingPanel = panel;
+		resizeStartX = e.clientX;
+		resizeStartWidth = panel === 'left' ? leftPanelWidth : rightPanelWidth;
+		document.addEventListener('mousemove', onResizeMove);
+		document.addEventListener('mouseup', onResizeEnd);
+		document.body.style.cursor = 'col-resize';
+		document.body.style.userSelect = 'none';
+	}
+	function onResizeMove(e) {
+		if (!resizingPanel) return;
+		const delta = e.clientX - resizeStartX;
+		if (resizingPanel === 'left') {
+			leftPanelWidth = Math.min(500, Math.max(180, resizeStartWidth + delta));
+		} else {
+			// Right panel: dragging left = bigger, dragging right = smaller
+			rightPanelWidth = Math.min(500, Math.max(180, resizeStartWidth - delta));
+		}
+	}
+	function onResizeEnd() {
+		resizingPanel = null;
+		document.removeEventListener('mousemove', onResizeMove);
+		document.removeEventListener('mouseup', onResizeEnd);
+		document.body.style.cursor = '';
+		document.body.style.userSelect = '';
+		// Trigger xterm fit after resize
+		const tab = getActiveTab();
+		if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} }
+	}
 
 	// Persist chat across refresh (localStorage survives tab close + refresh)
 	function saveChatToStorage() {
@@ -333,7 +371,7 @@
 							break;
 						case 'chat_update':
 							if (leftSection === 'transcript') {
-								setTimeout(loadChatHistory, 500);
+								debouncedLoadChatHistory();
 							}
 							break;
 						case 'permission_prompt':
@@ -583,7 +621,7 @@
 		if (tab === 'transcript') {
 			loadChatHistory();
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
-			chatRefreshInterval = setInterval(loadChatHistory, 10000);
+			chatRefreshInterval = setInterval(loadChatHistory, 30000);
 		} else {
 			if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
 		}
@@ -595,10 +633,24 @@
 	}
 
 	let chatServerLoaded = false; // true once server data has been received
+	let chatLoadInProgress = false;
+	let chatLoadDebounceTimer = null;
+
+	function debouncedLoadChatHistory() {
+		if (chatLoadDebounceTimer) clearTimeout(chatLoadDebounceTimer);
+		chatLoadDebounceTimer = setTimeout(() => {
+			chatLoadDebounceTimer = null;
+			loadChatHistory();
+		}, 3000);
+	}
+
 	async function loadChatHistory() {
+		if (chatLoadInProgress) return; // prevent concurrent loads
+		chatLoadInProgress = true;
 		const active = getActiveTab();
 		if (!active) {
 			if (chatServerLoaded) chatBubbles = [];
+			chatLoadInProgress = false;
 			return;
 		}
 
@@ -687,17 +739,26 @@
 				}
 			}
 
+			// Smart scroll — only auto-scroll if user is already at the bottom
+			const wasAtBottom = chatSidebarEl ? (chatSidebarEl.scrollHeight - chatSidebarEl.scrollTop - chatSidebarEl.clientHeight < 30) : true;
+			const savedPos = chatSidebarEl?.scrollTop;
+
 			chatBubbles = newBubbles;
 			chatServerLoaded = true;
 			saveChatToStorage();
 
-			// Auto-scroll to bottom
 			await tick();
 			if (chatSidebarEl) {
-				chatSidebarEl.scrollTop = chatSidebarEl.scrollHeight;
+				if (wasAtBottom) {
+					chatSidebarEl.scrollTop = chatSidebarEl.scrollHeight;
+				} else {
+					chatSidebarEl.scrollTop = savedPos;
+				}
 			}
 		} catch (err) {
 			console.error('[PAN Chat] loadChatHistory error:', err);
+		} finally {
+			chatLoadInProgress = false;
 		}
 	}
 
@@ -771,35 +832,25 @@
 		}
 
 		centerChatLoading = true;
-		// Poll for response
-		let polls = 0;
-		const pollInterval = setInterval(async () => {
-			polls++;
+		// Single delayed check instead of polling storm — WebSocket chat_update handles the rest
+		setTimeout(async () => {
 			await loadCenterChat();
-			if (polls >= 15) { clearInterval(pollInterval); centerChatLoading = false; }
-		}, 2000);
-		setTimeout(() => { clearInterval(pollInterval); centerChatLoading = false; }, 30000);
+			centerChatLoading = false;
+		}, 3000);
 	}
 
 	function handleCenterChatKey(e) {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			const text = centerChatInput;
 			const active = getActiveTab();
 			if (!active?.ws || active.ws.readyState !== 1) return;
-			if (!text) {
+			if (!centerChatInput && pastedImages.length === 0) {
 				// Empty Enter — send newline to terminal (for approvals, confirmations)
 				active.ws.send(JSON.stringify({ type: 'input', data: '\n' }));
 				return;
 			}
-			// Write text into terminal WITHOUT newline — user presses Enter in terminal to execute
-			active.ws.send(JSON.stringify({ type: 'input', data: text }));
-			centerChatInput = '';
-			// Reset textarea height
-			const textarea = document.querySelector('.center-input');
-			if (textarea) textarea.style.height = 'auto';
-			// Focus the terminal so user can press Enter there
-			if (active.term) active.term.focus();
+			// Use sendCenterChat for consistent behavior (adds to chat, sends with newline)
+			sendCenterChat();
 		}
 	}
 
@@ -955,15 +1006,15 @@
 		let nx = 0;
 		const nodeMap = {};
 
-		function addNode(id, label, type, status, detail, group, x, y) {
-			const n = { id, label, type, status: status || 'unknown', detail: detail || '', group, x, y };
+		function addNode(id, label, type, status, detail, group, x, y, description) {
+			const n = { id, label, type, status: status || 'unknown', detail: detail || '', group, x, y, description: description || '' };
 			nodes.push(n);
 			nodeMap[id] = n;
 			return n;
 		}
 
 		// Core hub
-		addNode('pan-server', 'PAN Server', 'core', 'up', 'Port 7777', 'core', 400, 300);
+		addNode('pan-server', 'PAN Server', 'core', 'up', 'Port 7777', 'core', 400, 300, 'The central PAN server (Node.js/Express). Runs on port 7777 as a Windows service. Handles all API requests, serves the dashboard, manages WebSocket connections for terminals, and coordinates all background services. File: service/src/server.js');
 
 		// Services from API
 		const services = svcResp?.services || [];
@@ -975,7 +1026,8 @@
 			const angle = -Math.PI/2 + (i - (coreServices.length-1)/2) * 0.5;
 			const x = 400 + Math.cos(angle) * 200;
 			const y = 300 + Math.sin(angle) * 180;
-			addNode(`svc-${s.name}`, s.name, 'service', s.status === 'up' ? 'up' : s.status === 'offline' ? 'down' : 'unknown', s.detail, 'services', x, y);
+			const svcDesc = s.name === 'Steward' ? 'Health monitor (watchdog.ps1). Checks every 30s: PAN server, Whisper, AHK Voice. Restarts services if down. Cleans Tailscale ghost devices. File: service/src/watchdog.ps1' : (s.detail || s.name);
+			addNode(`svc-${s.name}`, s.name, 'service', s.status === 'up' ? 'up' : s.status === 'offline' ? 'down' : 'unknown', s.detail, 'services', x, y, svcDesc);
 			edges.push({ from: 'pan-server', to: `svc-${s.name}`, label: '' });
 		});
 
@@ -983,7 +1035,7 @@
 		devices.forEach((d, i) => {
 			const x = 200 + i * 200;
 			const y = 520;
-			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y);
+			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y, d.detail || d.name);
 			edges.push({ from: 'pan-server', to: `dev-${d.name}`, label: 'API' });
 		});
 
@@ -994,13 +1046,13 @@
 			const x = 700;
 			const y = 80 + i * 55;
 			const status = j.status === 'running' ? 'up' : j.status === 'training' ? 'warn' : 'idle';
-			addNode(`job-${j.name}`, j.name, 'job', status, j.description, 'jobs', x, y);
+			addNode(`job-${j.name}`, j.name, 'job', status, j.description, 'jobs', x, y, j.description || j.name);
 			edges.push({ from: 'pan-server', to: `job-${j.name}`, label: j.schedule ? '' : '' });
 		});
 
 		// Database — left
 		if (statsResp) {
-			addNode('database', 'SQLite DB', 'data', 'up', `${statsResp.total_events || 0} events, ${statsResp.total_sessions || 0} sessions`, 'data', 100, 300);
+			addNode('database', 'SQLite DB', 'data', 'up', `${statsResp.total_events || 0} events, ${statsResp.total_sessions || 0} sessions`, 'data', 100, 300, 'SQLite database encrypted with SQLCipher (AES-256-CBC). Tables: events, sessions, projects, memory_items, episodic_memories, semantic_facts, procedural_memories, devices, settings. FTS5 search index on events. File: service/src/db.js, service/src/schema.sql');
 			edges.push({ from: 'pan-server', to: 'database', label: 'read/write' });
 		}
 
@@ -1009,17 +1061,69 @@
 		projs.forEach((p, i) => {
 			const x = 50 + i * 120;
 			const y = 150;
-			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y);
+			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y, `Project: ${p.name}. Path: ${p.path || 'unknown'}`);
 			edges.push({ from: 'database', to: `proj-${p.id}`, label: '' });
 		});
 
 		// Dashboard
-		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'ui', 200, 400);
+		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'ui', 200, 400, 'Svelte v2 dashboard served at /v2/. The Electron app loads this. Contains Terminal, Chat, Atlas, and all panel widgets (Tasks, Services, Tests, etc.). Source: service/dashboard/src/routes/');
 		edges.push({ from: 'pan-server', to: 'dashboard', label: 'serves' });
 
 		// Claude Code
-		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions', 'ai', 550, 150);
+		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions', 'ai', 550, 150, 'Claude Code CLI sessions. PAN communicates via hooks (SessionStart, SessionEnd, UserPromptSubmit). inject-context.cjs runs as a command hook to inject memory into CLAUDE.md before each session. File: service/inject-context.cjs, service/src/routes/hooks.js');
 		edges.push({ from: 'pan-server', to: 'claude', label: 'hooks' });
+
+		// ==================== Memory System ====================
+		// Derive statuses from services data
+		const svcByName = Object.fromEntries(services.map(s => [s.name, s]));
+		const dreamUp = svcByName['Dream']?.status === 'up';
+		const stewardUp = svcByName['Steward']?.status === 'up';
+		const ollamaUp = false; // TODO: check Ollama status from API
+
+		// Memory Hub
+		addNode('memory-hub', 'Memory System', 'memory', 'up', 'Vector memory + context injection', 'memory', 400, 550, 'Unified memory system with three vector stores (episodic, semantic, procedural). Context builder assembles memories for injection into Claude sessions with a token budget. File: service/src/memory/index.js, service/src/memory/context-builder.js');
+		edges.push({ from: 'pan-server', to: 'memory-hub', label: 'manages' });
+
+		// Three Memory Stores
+		addNode('mem-episodic', 'Episodic', 'memory', 'up', 'What happened — events, outcomes, importance', 'memory', 250, 650, 'Stores what happened — events, outcomes, importance scores (0-1). Hybrid recall scoring: vector similarity + recency + importance. Updated by consolidation after dream cycles. File: service/src/memory/episodic.js');
+		addNode('mem-semantic', 'Semantic', 'memory', 'up', 'Knowledge graph — subject/predicate/object', 'memory', 400, 650, 'Knowledge graph of subject/predicate/object triples. Auto-detects contradictions — when a new fact conflicts with an existing one (>0.85 cosine similarity), the old fact is superseded with version tracking. File: service/src/memory/semantic.js');
+		addNode('mem-procedural', 'Procedural', 'memory', 'up', 'Workflows — steps, success/failure rates', 'memory', 550, 650, 'Learned multi-step workflows with success/failure tracking. Recall weighted 60% vector similarity + 40% success rate. Steps stored as JSON arrays. File: service/src/memory/procedural.js');
+		edges.push({ from: 'memory-hub', to: 'mem-episodic', label: 'store' });
+		edges.push({ from: 'memory-hub', to: 'mem-semantic', label: 'store' });
+		edges.push({ from: 'memory-hub', to: 'mem-procedural', label: 'store' });
+
+		// Embeddings
+		addNode('embeddings', 'Embeddings', 'memory', ollamaUp ? 'up' : 'warn', ollamaUp ? 'Ollama llama3.2 (3072D)' : 'Keyword fallback (no Ollama)', 'memory', 700, 650, 'Vector embedding layer. Uses Ollama (llama3.2, 3072 dimensions) for semantic search. Falls back to deterministic keyword hash vectors when Ollama is not running — low quality but functional. File: service/src/memory/embeddings.js');
+		edges.push({ from: 'mem-episodic', to: 'embeddings', label: 'vector' });
+		edges.push({ from: 'mem-semantic', to: 'embeddings', label: 'vector' });
+		edges.push({ from: 'mem-procedural', to: 'embeddings', label: 'vector' });
+
+		// Processing Pipeline
+		addNode('dream-cycle', 'Dream Cycle', 'process', dreamUp ? 'up' : 'idle', 'Every 6h: rewrite .pan-state.md via Haiku', 'memory', 150, 550, 'Runs every 6 hours (first run 2min after startup). Reads all events since last dream, sends to Claude Haiku to rewrite .pan-state.md — the living state document. Also triggers heuristic consolidation. File: service/src/dream.js');
+		addNode('consolidation', 'Consolidation', 'process', 'idle', 'Extract memories from raw events', 'memory', 150, 650, 'Extracts memories from raw events. Two modes: (1) Heuristic — regex patterns for corrections, preferences, errors. (2) LLM — sends events to Haiku for structured extraction. Feeds all three memory stores. File: service/src/memory/consolidation.js');
+		addNode('classifier', 'Classifier', 'process', 'up', 'Every 5min: mark events, trigger dream', 'memory', 100, 450, 'Runs every 5 minutes. Marks events as processed. When 10+ events accumulate since last dream, triggers an early dream cycle. Acts as the event counter/trigger. File: service/src/classifier.js');
+		addNode('evolution', 'Evolution', 'process', 'down', 'NOT WIRED — 6-step config optimization', 'memory', 700, 550, 'NOT WIRED — 6-step config optimization pipeline: Observe, Critique, Generate Deltas, Validate, Apply, Consolidate. Built but never connected to server.js. The pan-config/ directory does not exist. File: service/src/evolution/engine.js');
+
+		edges.push({ from: 'classifier', to: 'dream-cycle', label: '10+ events' });
+		edges.push({ from: 'dream-cycle', to: 'consolidation', label: 'triggers' });
+		edges.push({ from: 'consolidation', to: 'mem-episodic', label: 'writes' });
+		edges.push({ from: 'consolidation', to: 'mem-semantic', label: 'writes' });
+		edges.push({ from: 'consolidation', to: 'mem-procedural', label: 'writes' });
+		edges.push({ from: 'dream-cycle', to: 'evolution', label: 'should trigger' });
+		edges.push({ from: 'database', to: 'classifier', label: 'events' });
+		edges.push({ from: 'database', to: 'dream-cycle', label: 'events' });
+
+		// Context Injection Paths
+		addNode('inject-local', 'inject-context.cjs', 'process', 'up', 'Path A: command hook → CLAUDE.md (before session)', 'injection', 550, 450, 'Path A — command hook that runs BEFORE Claude reads CLAUDE.md. Reads .pan-state.md + Claude auto-memory files (~46 files). Injects between PAN-CONTEXT markers in CLAUDE.md. This is the one that actually works for the current session. File: service/inject-context.cjs');
+		addNode('inject-server', 'hooks.js inject', 'process', 'up', 'Path B: HTTP hook → CLAUDE.md (after session reads)', 'injection', 700, 450, 'Path B — HTTP hook that runs AFTER Claude reads CLAUDE.md (invisible to current session, only affects NEXT session). Richer data: vector memory + tasks + conversation history from DB. Overwrites Path A content. File: service/src/routes/hooks.js');
+		edges.push({ from: 'memory-hub', to: 'inject-local', label: 'context' });
+		edges.push({ from: 'memory-hub', to: 'inject-server', label: 'context' });
+		edges.push({ from: 'inject-local', to: 'claude', label: 'writes CLAUDE.md' });
+		edges.push({ from: 'inject-server', to: 'claude', label: 'overwrites CLAUDE.md' });
+
+		// Steward
+		addNode('steward', 'Steward', 'service', stewardUp ? 'up' : 'down', 'watchdog.ps1 — health monitor every 30s', 'services', 100, 350, 'Health monitor (watchdog.ps1). Checks every 30s: PAN server, Whisper, AHK Voice. Restarts services if down. Cleans Tailscale ghost devices. File: service/src/watchdog.ps1');
+		edges.push({ from: 'steward', to: 'pan-server', label: 'restarts if down' });
 
 		return { nodes, edges, nodeMap, stats: statsResp };
 	}
@@ -1034,6 +1138,9 @@
 			project: '#74c7ec',
 			ui: '#89dceb',
 			ai: '#f38ba8',
+			memory: '#f5c2e7',
+			process: '#cba6f7',
+			injection: '#94e2d5',
 		};
 		return typeColors[node.type] || '#6c7086';
 	}
@@ -1224,12 +1331,23 @@
 		} catch {}
 	}
 
+	async function loadApprovals() {
+		try {
+			const resp = await fetch('/api/v1/terminal/permissions');
+			if (resp.ok) {
+				const data = await resp.json();
+				approvalsData = data.permissions || [];
+			}
+		} catch {}
+	}
+
 	async function respondToApproval(permId, action) {
 		try {
+			const response = action === 'allow' ? 'allow' : 'deny';
 			await fetch('/api/v1/terminal/permissions/respond', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ id: permId, action })
+				body: JSON.stringify({ perm_id: permId, response })
 			});
 			approvalsData = approvalsData.filter(p => p.id !== permId);
 		} catch {}
@@ -1244,22 +1362,161 @@
 	}
 
 	// ==================== Test Suites ====================
+	// Client-side suite IDs that run in the browser
+	const CLIENT_SUITES = new Set(['page-refresh', 'terminal-protocol', 'widgets', 'input-box']);
+
 	async function loadTestSuites() {
 		try {
 			const resp = await fetch('/api/v1/tests');
 			if (resp.ok) {
-				testSuites = await resp.json();
+				const data = await resp.json();
+				// Server returns {status, suites: [...], tests: [...], ...}
+				// suites have: id, name, description, testCount, dependsOn
+				// Convert server suites to the format the UI expects: {id, name, description, tests: [...]}
+				const serverSuites = (data.suites || []).map(s => {
+					// Find tests for this suite from the full test list
+					const suiteTests = (data.tests || []).filter(t => t.suiteId === s.id).map(t => ({
+						id: t.id, name: t.name, description: t.description
+					}));
+					// If no tests in current run, generate placeholder test entries from testCount
+					const tests = suiteTests.length > 0 ? suiteTests :
+						Array.from({length: s.testCount}, (_, i) => ({id: `${s.id}-${i}`, name: `Test ${i+1}`, description: ''}));
+					return { id: s.id, name: s.name, description: s.description, tests, server: true };
+				});
+				testSuites = serverSuites;
+				// If there's a last run, show those results
+				if (data.status === 'done' && data.tests) {
+					lastServerRun = data;
+				}
 				if (testSuites.length > 0 && !selectedSuite) selectedSuite = testSuites[0].id;
 			}
 		} catch {}
+	}
+
+	let lastServerRun = null;
+
+	// Route test API calls: on dev hit directly, on prod proxy through production server (avoids CORS)
+	function devFetch(path, opts) {
+		if (isDev) return fetch(path, opts);
+		return fetch('/api/v1/dev/proxy/' + path.replace(/^\//, ''), opts);
+	}
+
+	async function runAllTests() {
+		testsRunning = true;
+		testResults = [];
+		if (!isDev) {
+			try {
+				const devCheck = await fetch('/api/v1/dev/start', { method: 'POST' });
+				const devData = await devCheck.json();
+				if (!devData.ok) {
+					testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Dev server not running. Start with: node dev-server.js', description: '' }];
+					testsRunning = false;
+					return;
+				}
+				await fetch('/api/v1/ui-commands', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ type: 'open_window', url: `http://localhost:${devData.port}/v2/terminal` })
+				});
+			} catch {
+				testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Could not reach dev server', description: '' }];
+				testsRunning = false;
+				return;
+			}
+		}
+		try {
+			await devFetch('/api/v1/tests/run', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ suite: 'all' })
+			});
+		} catch {}
+		let done = false;
+		for (let i = 0; i < 120 && !done; i++) {
+			await new Promise(r => setTimeout(r, 1000));
+			try {
+				const resp = await devFetch('/api/v1/tests');
+				if (resp.ok) {
+					const data = await resp.json();
+					const allTests = data.tests || [];
+					if (allTests.length > 0) {
+						testResults = allTests.map(t => ({
+							id: t.id, name: t.name, description: t.description,
+							status: t.status === 'passed' ? 'pass' : t.status === 'failed' ? 'fail' : t.status,
+							detail: t.result || t.error || ''
+						}));
+					}
+					if (data.status === 'done') done = true;
+				}
+			} catch {}
+		}
+		testsRunning = false;
 	}
 
 	async function runSuite() {
 		const suite = testSuites.find(s => s.id === selectedSuite);
 		if (!suite) return;
 		testsRunning = true;
-		testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
 
+		if (suite.server) {
+			// Always run tests on dev server, never production
+			if (!isDev) {
+				try {
+					const devCheck = await fetch('/api/v1/dev/start', { method: 'POST' });
+					const devData = await devCheck.json();
+					if (!devData.ok) {
+						testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Dev server not running. Start with: node dev-server.js', description: '' }];
+						testsRunning = false;
+						return;
+					}
+					await fetch('/api/v1/ui-commands', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ type: 'open_window', url: `http://localhost:${devData.port}/v2/terminal` })
+					});
+				} catch {
+					testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Could not reach dev server', description: '' }];
+					testsRunning = false;
+					return;
+				}
+			}
+
+			// Server-side suite — trigger via API and poll for results (uses proxy to avoid CORS)
+			testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
+			try {
+				await devFetch('/api/v1/tests/run', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ suite: suite.id })
+				});
+			} catch {}
+			let done = false;
+			for (let i = 0; i < 120 && !done; i++) {
+				await new Promise(r => setTimeout(r, 1000));
+				try {
+					const resp = await devFetch('/api/v1/tests');
+					if (resp.ok) {
+						const data = await resp.json();
+						const suiteTests = (data.tests || []).filter(t => t.suiteId === suite.id);
+						if (suiteTests.length > 0) {
+							testResults = suiteTests.map(t => ({
+								id: t.id, name: t.name, description: t.description,
+								status: t.status === 'passed' ? 'pass' : t.status === 'failed' ? 'fail' : t.status,
+								detail: t.result || t.error || ''
+							}));
+						}
+						if (data.status === 'done') done = true;
+						const ss = data.suiteStatus?.[suite.id];
+						if (ss && (ss.status === 'passed' || ss.status === 'failed' || ss.status === 'skipped')) done = true;
+					}
+				} catch {}
+			}
+			testsRunning = false;
+			return;
+		}
+
+		// Client-side suite — run in browser
+		testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
 		for (let i = 0; i < testResults.length; i++) {
 			testResults[i].status = 'running';
 			testResults = [...testResults];
@@ -1272,7 +1529,6 @@
 				testResults[i].detail = err.message || String(err);
 			}
 			testResults = [...testResults];
-			// Small delay between tests for visual feedback
 			await new Promise(r => setTimeout(r, 300));
 		}
 		testsRunning = false;
@@ -1482,18 +1738,34 @@
 		loadVoiceSettings();
 		loadTestSuites();
 
-		// Load services immediately
+		// Load services and approvals immediately
 		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
+		loadApprovals();
 
 		// Start chat refresh
 		chatRefreshInterval = setInterval(() => {
 			if (leftSection === 'transcript') loadChatHistory();
 		}, 10000);
 
-		// Refresh services every 30s
+		// Refresh services every 30s, approvals every 5s
 		const svcInterval = setInterval(() => {
 			api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 		}, 30000);
+		const approvalInterval = setInterval(loadApprovals, 5000);
+
+		// Poll for UI commands (window opens, etc.) — this runs in the renderer,
+		// so window.open creates real Electron windows from the interactive session
+		setInterval(async () => {
+			try {
+				const cmds = await api('/api/v1/ui-commands');
+				if (!Array.isArray(cmds)) return;
+				for (const cmd of cmds) {
+					if (cmd.type === 'open_window' && cmd.url) {
+						window.open(cmd.url, '_blank');
+					}
+				}
+			} catch {}
+		}, 2000);
 
 		// Auto-connect: wait for projects to load, then start terminal
 		setTimeout(async () => {
@@ -1507,13 +1779,22 @@
 
 			let reconnected = false;
 
-			// Strategy 1: Check server for live PTY sessions
+			// Strategy 1: Check server for live PTY sessions — dedupe by project (newest only)
 			try {
 				const sessData = await api('/api/v1/terminal/sessions').catch(() => ({ sessions: [] }));
 				const sessions = sessData.sessions || [];
 				if (sessions.length > 0) {
+					// Keep only the newest session per project
+					const byProject = new Map();
 					for (const s of sessions) {
 						if (!s.id.startsWith(sessionPrefix) && !s.id.startsWith('mob-')) continue;
+						const key = s.project || s.cwd || s.id;
+						const existing = byProject.get(key);
+						if (!existing || (s.createdAt || 0) > (existing.createdAt || 0)) {
+							byProject.set(key, s);
+						}
+					}
+					for (const s of byProject.values()) {
 						const matchedProject = projects.find(p => p.name === s.project);
 						const pid = matchedProject ? matchedProject.id : null;
 						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true);
@@ -1590,6 +1871,7 @@
 			window.removeEventListener('beforeunload', handleBeforeUnload);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			clearInterval(svcInterval);
+			clearInterval(approvalInterval);
 			for (const tab of tabs) {
 				tab._closing = true;
 				if (tab.ws) tab.ws.close();
@@ -1635,7 +1917,7 @@
 				{#if tab.id === tabs.find(t => t.project === tab.project)?.id && tab.project !== 'Shell'}
 					<span class="primary-dot"></span>
 				{/if}
-				{#if tab.host}{tab.host}/{/if}{tab.project || 'Shell'}
+				{#if tab.host}{tab.host}/{/if}{tab.project || 'Shell'}{#if tabs.filter(t => t.project === tab.project).length > 1} {tabs.filter(t => t.project === tab.project).indexOf(tab) + 1}{/if}
 				<span
 					class="tab-close"
 					onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
@@ -1649,9 +1931,9 @@
 <!-- MAIN LAYOUT -->
 <div class="terminal-layout">
 	<!-- LEFT PANEL -->
-	<div class="left-panel">
+	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
@@ -1860,6 +2142,15 @@
 							<div class="svc-name">Dev</div>
 							<div class="svc-detail">{isDev ? 'Current' : 'Run: npm run dev'}</div>
 						</div>
+						{#if !isDev}
+							<button class="instance-btn" onclick={async () => {
+								try {
+									const r = await fetch('/api/v1/dev/start', { method: 'POST' });
+									const d = await r.json();
+									if (d.port) window.open('http://localhost:' + d.port + '/v2/terminal', '_blank');
+								} catch { alert('Start dev server first: node dev-server.js'); }
+							}}>Open</button>
+						{/if}
 					</div>
 					<div class="instance-row">
 						<span class="svc-dot unknown"></span>
@@ -1932,6 +2223,10 @@
 			{/if}
 		</div>
 	</div>
+
+	<!-- LEFT RESIZE HANDLE -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="resize-handle" onmousedown={(e) => onResizeStart('left', e)}></div>
 
 	<!-- CENTER: Terminal / Chat -->
 	<div class="center-panel">
@@ -2050,6 +2345,8 @@
 					<!-- Detail panel for selected node -->
 					{#if atlasSelected && atlasData.nodeMap[atlasSelected]}
 						{@const sel = atlasData.nodeMap[atlasSelected]}
+						{@const connectedEdges = atlasData.edges.filter(e => e.from === atlasSelected || e.to === atlasSelected)}
+						{@const filePaths = sel.description ? (sel.description.match(/File:\s*([^\n]+)/) || [])[1]?.split(',').map(f => f.trim()) || [] : []}
 						<div class="atlas-detail">
 							<div class="atlas-detail-header">
 								<span class="atlas-detail-dot" style="background:{atlasStatusDot(sel.status)}"></span>
@@ -2058,9 +2355,37 @@
 								<button class="atlas-detail-close" onclick={() => { atlasSelected = null; }}>&times;</button>
 							</div>
 							<div class="atlas-detail-body">
-								<div>Status: {sel.status}</div>
-								{#if sel.detail}<div>{sel.detail}</div>{/if}
-								<div>Group: {sel.group}</div>
+								<div class="atlas-detail-status">
+									<span class="atlas-detail-status-dot" style="background:{atlasStatusDot(sel.status)}"></span>
+									{sel.status === 'up' ? 'Running' : sel.status === 'down' ? 'Offline' : sel.status === 'warn' ? 'Warning' : sel.status === 'idle' ? 'Idle' : 'Unknown'}
+								</div>
+								{#if sel.detail}<div class="atlas-detail-info">{sel.detail}</div>{/if}
+								{#if sel.description}
+									<div class="atlas-detail-desc">{sel.description.replace(/\s*File:.*$/, '')}</div>
+								{/if}
+								{#if connectedEdges.length > 0}
+									<div class="atlas-detail-section-title">Connected To</div>
+									<div class="atlas-detail-connections">
+										{#each connectedEdges as edge}
+											{@const otherId = edge.from === atlasSelected ? edge.to : edge.from}
+											{@const otherNode = atlasData.nodeMap[otherId]}
+											{#if otherNode}
+												<button class="atlas-detail-conn" onclick={() => { atlasSelected = otherId; }}>
+													<span class="atlas-detail-conn-dot" style="background:{atlasStatusDot(otherNode.status)}"></span>
+													<span class="atlas-detail-conn-name">{otherNode.label}</span>
+													{#if edge.label}<span class="atlas-detail-conn-label">{edge.label}</span>{/if}
+													<span class="atlas-detail-conn-dir">{edge.from === atlasSelected ? '\u2192' : '\u2190'}</span>
+												</button>
+											{/if}
+										{/each}
+									</div>
+								{/if}
+								{#if filePaths.length > 0}
+									<div class="atlas-detail-section-title">Files</div>
+									{#each filePaths as fp}
+										<code class="atlas-detail-file">{fp}</code>
+									{/each}
+								{/if}
 							</div>
 						</div>
 					{/if}
@@ -2118,13 +2443,14 @@
 		{/if}
 	</div>
 
+	<!-- RIGHT RESIZE HANDLE -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="resize-handle" onmousedown={(e) => onResizeStart('right', e)}></div>
+
 	<!-- RIGHT PANEL -->
-	<button class="panel-toggle right-toggle" onclick={() => { rightPanelCollapsed = !rightPanelCollapsed; setTimeout(() => { const tab = getActiveTab(); if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} } }, 200); }} title={rightPanelCollapsed ? 'Show Tasks' : 'Hide Tasks'}>
-		{rightPanelCollapsed ? '◂' : '▸'}
-	</button>
-	<div class="right-panel" class:collapsed={rightPanelCollapsed}>
+	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
@@ -2531,30 +2857,46 @@
 				{/if}
 			{:else if rightSection === 'tests'}
 				<div class="tests-panel">
-					<button class="test-run-btn" onclick={runAllTests} disabled={testsRunning}>
-						{testsRunning ? 'Running...' : 'Run All Tests'}
-					</button>
-					{#if testResults.length === 0}
-						<div class="empty-state">Click "Run All Tests" to check dashboard health</div>
+					{#if testSuites.length === 0}
+						<div class="empty-state">Loading test suites...</div>
 					{:else}
-						{#each testResults as t}
-							<div class="test-row">
-								<span class="test-icon" class:pass={t.status === 'pass'} class:fail={t.status === 'fail'} class:running={t.status === 'running'}>
-									{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : '\u25CF'}
-								</span>
-								<div class="test-info">
-									<div class="test-name">{t.name}</div>
-									<div class="test-detail" class:fail={t.status === 'fail'}>{t.detail}</div>
-								</div>
-							</div>
-						{/each}
-						{#if !testsRunning}
-							{@const passed = testResults.filter(t => t.status === 'pass').length}
-							{@const failed = testResults.filter(t => t.status === 'fail').length}
-							<div class="test-summary" class:all-pass={failed === 0}>
-								{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
-							</div>
+						<select class="right-select" bind:value={selectedSuite} style="margin-bottom:8px">
+							<option value="__all__">All Suites</option>
+							{#each testSuites as suite}
+								<option value={suite.id}>{suite.name} ({suite.tests.length} tests)</option>
+							{/each}
+						</select>
+						{#if selectedSuite === '__all__'}
+							<button class="test-run-btn" onclick={runAllTests} disabled={testsRunning}>
+								{testsRunning ? 'Running...' : 'Run All Tests'}
+							</button>
+						{:else}
+							{@const suite = testSuites.find(s => s.id === selectedSuite)}
+							{#if suite}
+								<div class="test-desc">{suite.description}</div>
+								<button class="test-run-btn" onclick={runSuite} disabled={testsRunning}>
+									{testsRunning ? 'Running...' : `Run ${suite.name}`}
+								</button>
+							{/if}
 						{/if}
+					{/if}
+					{#each testResults as t}
+						<div class="test-row">
+							<span class="test-icon" class:pass={t.status === 'pass'} class:fail={t.status === 'fail'} class:running={t.status === 'running'} class:pending={t.status === 'pending'}>
+								{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : t.status === 'running' ? '\u25CF' : '\u25CB'}
+							</span>
+							<div class="test-info">
+								<div class="test-name">{t.name}</div>
+								<div class="test-detail" class:fail={t.status === 'fail'}>{t.detail || t.description}</div>
+							</div>
+						</div>
+					{/each}
+					{#if testResults.length > 0 && !testsRunning}
+						{@const passed = testResults.filter(t => t.status === 'pass').length}
+						{@const failed = testResults.filter(t => t.status === 'fail').length}
+						<div class="test-summary" class:all-pass={failed === 0}>
+							{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
+						</div>
 					{/if}
 				</div>
 			{:else if rightSection === 'users'}
@@ -2946,14 +3288,26 @@
 
 	/* ==================== Left Panel ==================== */
 	.left-panel {
-		width: 260px;
-		min-width: 220px;
 		display: flex;
 		flex-direction: column;
 		border: 1px solid #1e1e2e;
 		border-radius: 6px 0 0 6px;
 		flex-shrink: 0;
 		overflow: hidden;
+	}
+
+	.resize-handle {
+		width: 5px;
+		cursor: col-resize;
+		background: #1e1e2e;
+		flex-shrink: 0;
+		transition: background 0.15s;
+	}
+	.resize-handle:hover {
+		background: #89b4fa;
+	}
+	.left-panel.resizing, .right-panel.resizing {
+		transition: none;
 	}
 
 
@@ -3185,33 +3539,9 @@
 	}
 
 	/* ==================== Panel Toggle ==================== */
-	.panel-toggle {
-		position: relative;
-		z-index: 2;
-		width: 28px;
-		background: #12121a;
-		border: 1px solid #1e1e2e;
-		border-left: none;
-		border-right: none;
-		color: #6c7086;
-		cursor: pointer;
-		font-size: 14px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		transition: all 0.15s;
-		flex-shrink: 0;
-		border-radius: 0;
-	}
-	.panel-toggle:hover {
-		color: #89b4fa;
-		background: #1a1a25;
-	}
 
 	/* ==================== Right Panel ==================== */
 	.right-panel {
-		width: 280px;
-		min-width: 220px;
 		transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease;
 		background: #12121a;
 		border: 1px solid #1e1e2e;
@@ -3223,13 +3553,6 @@
 		flex-direction: column;
 	}
 
-	.right-panel.collapsed {
-		width: 0;
-		min-width: 0;
-		overflow: hidden;
-		border: none;
-		padding: 0;
-	}
 
 	.right-header {
 		display: flex;
@@ -3589,20 +3912,25 @@
 		background: #1e1e2e;
 		border: 1px solid #313244;
 		border-radius: 8px;
-		padding: 10px 14px;
-		min-width: 220px;
-		max-width: 350px;
+		padding: 12px 16px;
+		min-width: 280px;
+		max-width: 420px;
+		max-height: 60%;
+		overflow-y: auto;
 		z-index: 10;
+		box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 	}
 	.atlas-detail-header {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		margin-bottom: 6px;
+		margin-bottom: 8px;
+		padding-bottom: 8px;
+		border-bottom: 1px solid #313244;
 	}
 	.atlas-detail-header strong {
 		color: #cdd6f4;
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.atlas-detail-dot {
 		width: 8px;
@@ -3623,10 +3951,97 @@
 		cursor: pointer;
 		font-size: 16px;
 	}
+	.atlas-detail-close:hover { color: #cdd6f4; }
 	.atlas-detail-body {
 		font-size: 11px;
 		color: #a6adc8;
 		line-height: 1.5;
+	}
+	.atlas-detail-status {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-weight: 600;
+		margin-bottom: 4px;
+	}
+	.atlas-detail-status-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		display: inline-block;
+	}
+	.atlas-detail-info {
+		color: #89b4fa;
+		font-size: 11px;
+		margin-bottom: 6px;
+	}
+	.atlas-detail-desc {
+		color: #bac2de;
+		font-size: 11px;
+		line-height: 1.6;
+		margin-bottom: 8px;
+	}
+	.atlas-detail-section-title {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: #6c7086;
+		margin: 8px 0 4px;
+		font-weight: 600;
+	}
+	.atlas-detail-connections {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.atlas-detail-conn {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 3px 6px;
+		background: #181825;
+		border: 1px solid transparent;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 11px;
+		color: #a6adc8;
+		text-align: left;
+		width: 100%;
+	}
+	.atlas-detail-conn:hover {
+		border-color: #45475a;
+		background: #1e1e2e;
+		color: #cdd6f4;
+	}
+	.atlas-detail-conn-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		display: inline-block;
+		flex-shrink: 0;
+	}
+	.atlas-detail-conn-name {
+		flex: 1;
+	}
+	.atlas-detail-conn-label {
+		color: #585b70;
+		font-size: 10px;
+		font-style: italic;
+	}
+	.atlas-detail-conn-dir {
+		color: #585b70;
+		font-size: 12px;
+	}
+	.atlas-detail-file {
+		display: block;
+		background: #181825;
+		padding: 3px 6px;
+		border-radius: 3px;
+		font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+		font-size: 10px;
+		color: #a6e3a1;
+		margin-bottom: 2px;
+		word-break: break-all;
 	}
 
 	/* ==================== Apps Grid ==================== */

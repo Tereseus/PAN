@@ -5,12 +5,22 @@
 // one file, always current, always accurate.
 
 import { all, get, insert } from './db.js';
+import { consolidate as consolidateMemory } from './memory/consolidation.js';
+import { evolve } from './evolution/engine.js';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
 let dreamInterval = null;
 
-const STATE_FILE = join(process.cwd(), '.pan-state.md');
+// State file goes in PROJECT ROOT (where CLAUDE.md lives)
+// inject-context.cjs reads from project root, dream writes there too
+// Write to BOTH locations for compatibility (server reads from cwd, hook reads from project root)
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __dreamDirname = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = join(__dreamDirname, '..', '..');
+const STATE_FILE = join(PROJECT_ROOT, '.pan-state.md');
+const SERVICE_STATE_FILE = join(__dreamDirname, '..', '.pan-state.md');
 
 function readCurrentState() {
   try {
@@ -121,9 +131,41 @@ Output ONLY the markdown document, nothing else.`,
       return;
     }
 
-    // Write the new state file
+    // Write the new state file to project root (where inject-context.cjs reads it)
     writeFileSync(STATE_FILE, result, 'utf8');
-    console.log(`[PAN Dream] State file updated (${result.length} chars) from ${entries.length} events`);
+    // Also write to service dir (where server reads it via process.cwd())
+    try { writeFileSync(SERVICE_STATE_FILE, result, 'utf8'); } catch {}
+    console.log(`[PAN Dream] State file updated (${result.length} chars) from ${entries.length} events → ${STATE_FILE}`);
+
+    // Consolidate vector memories from recent events
+    try {
+      await consolidateMemory({ useLLM: false });
+      console.log('[PAN Dream] Memory consolidation complete');
+    } catch (memErr) {
+      console.error('[PAN Dream] Memory consolidation failed:', memErr.message);
+    }
+
+    // Run evolution pipeline if enabled (default OFF)
+    try {
+      let evolutionEnabled = false;
+      try {
+        const toggleRow = get("SELECT value FROM settings WHERE key = 'feature_toggles'");
+        if (toggleRow) {
+          const toggles = JSON.parse(toggleRow.value);
+          evolutionEnabled = toggles.evolution === true;
+        }
+      } catch {}
+
+      if (evolutionEnabled) {
+        console.log('[PAN Dream] Triggering evolution cycle...');
+        const evoResult = await evolve();
+        console.log(`[PAN Dream] Evolution result: ${evoResult.status} (applied: ${evoResult.applied?.join(', ') || 'none'})`);
+      } else {
+        console.log('[PAN Dream] Evolution disabled by toggle — skipping');
+      }
+    } catch (evoErr) {
+      console.error('[PAN Dream] Evolution failed:', evoErr.message);
+    }
 
     // Log the dream cycle
     insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {

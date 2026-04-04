@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
 import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission } from '../terminal.js';
+import { buildContext as buildMemoryContext } from '../memory/index.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -105,7 +106,7 @@ router.post('/PermissionRequest', async (req, res) => {
 });
 
 // Inject readable session context into CLAUDE.md between PAN-CONTEXT markers
-function injectSessionContext(cwd) {
+async function injectSessionContext(cwd) {
   try {
     const claudeMdPath = join(cwd, 'CLAUDE.md');
     if (!existsSync(claudeMdPath)) return;
@@ -114,8 +115,8 @@ function injectSessionContext(cwd) {
     const startMarker = '<!-- PAN-CONTEXT-START -->';
     const endMarker = '<!-- PAN-CONTEXT-END -->';
     const startIdx = content.indexOf(startMarker);
-    const endIdx = content.indexOf(endMarker);
-    if (startIdx === -1 || endIdx === -1) return;
+    const endIdx = content.lastIndexOf(endMarker);
+    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) return;
 
     // Build readable context from multiple sources
 
@@ -132,21 +133,9 @@ function injectSessionContext(cwd) {
       { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%' }
     );
 
-    // 2. Read Claude's auto-memory files for this project
-    const memoryDir = join(process.env.USERPROFILE || 'C:\\Users\\tzuri', '.claude', 'projects',
-      'C--Users-tzuri-OneDrive-Desktop-' + fwd.split('/').pop(), 'memory');
-    let memoryContent = [];
-    if (existsSync(memoryDir)) {
-      const files = readdirSync(memoryDir).filter(f => f.endsWith('.md') && f !== 'MEMORY.md');
-      for (const f of files) {
-        try {
-          const raw = readFileSync(join(memoryDir, f), 'utf8');
-          // Strip frontmatter, keep the useful content
-          const body = raw.replace(/^---[\s\S]*?---\s*/, '').trim();
-          if (body.length > 20) memoryContent.push(body);
-        } catch {}
-      }
-    }
+    // 2. Claude's auto-memory files (~/.claude/projects/*/memory/*.md) are loaded
+    //    automatically by Claude Code — do NOT duplicate them here.
+    //    inject-context.cjs already noted this. Duplicating wastes context tokens.
 
     // 3. Open tasks for this project
     const project = get("SELECT id, name FROM projects WHERE path = :p", { ':p': fwd });
@@ -166,15 +155,23 @@ function injectSessionContext(cwd) {
     briefing += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
     briefing += `**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with something like "Last time we were working on..." and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.\n\n`;
 
-    // Memory summaries — the key context
-    if (memoryContent.length > 0) {
-      briefing += `### What You Should Know\n\n`;
-      for (const m of memoryContent) {
-        // Trim each memory to keep it readable
-        const trimmed = m.length > 600 ? m.substring(0, 600) + '...' : m;
-        briefing += trimmed + '\n\n';
-      }
+    // Read .pan-state.md for living state context (written by dream cycle)
+    const statePath = join(cwd, '.pan-state.md');
+    if (existsSync(statePath)) {
+      try {
+        let stateContent = readFileSync(statePath, 'utf8').trim();
+        stateContent = stateContent.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
+        briefing += stateContent + '\n\n';
+      } catch {}
     }
+
+    // Vector memory — small budget, only high-quality matches
+    try {
+      const memResult = await buildMemoryContext('session context', { tokenBudget: 2000 });
+      if (memResult.context) {
+        briefing += memResult.context + '\n\n';
+      }
+    } catch {}
 
     // Open tasks
     if (tasks.length > 0) {
@@ -201,21 +198,29 @@ function injectSessionContext(cwd) {
       }
       briefing += '\n';
 
-      // Include the last few messages at full length so the fresh session has real context
-      const lastMessages = chatItems.slice(-6); // last 6 messages (3 exchanges)
+      // Last 2 messages at moderate length for immediate context
+      const lastMessages = chatItems.slice(-4); // last 4 messages (2 exchanges)
       if (lastMessages.length > 0) {
         briefing += `### Last Messages (Full)\n`;
         for (const e of lastMessages) {
           try {
             const d = JSON.parse(e.data);
             if (e.event_type === 'UserPromptSubmit' && d.prompt) {
-              briefing += `**User** (${e.created_at}):\n${d.prompt.substring(0, 3000)}\n\n`;
+              briefing += `**User** (${e.created_at}):\n${d.prompt.substring(0, 1000)}\n\n`;
             } else if (e.event_type === 'Stop' && d.last_assistant_message) {
-              briefing += `**Claude** (${e.created_at}):\n${d.last_assistant_message.substring(0, 3000)}\n\n`;
+              briefing += `**Claude** (${e.created_at}):\n${d.last_assistant_message.substring(0, 1000)}\n\n`;
             }
           } catch {}
         }
       }
+    }
+
+    // Sanitize — strip any literal PAN-CONTEXT markers from injected content
+    briefing = briefing.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
+
+    // Cap injection to ~10000 chars to avoid bloating CLAUDE.md
+    if (briefing.length > 10000) {
+      briefing = briefing.substring(0, 10000) + '\n\n[... context trimmed ...]\n';
     }
 
     // Write to CLAUDE.md
@@ -278,18 +283,11 @@ router.post('/:eventType', (req, res) => {
           ':tp': payload.transcript_path || null
         });
       }
-      // Inject readable context into CLAUDE.md for this project
-      if (cwd) {
-        injectSessionContext(cwd);
-      }
+      // Context injection handled by inject-context.cjs command hook (runs before Claude reads CLAUDE.md)
+      // Server-side injection disabled to prevent dual write conflict
     }
 
-    // Also inject context on first UserPromptSubmit for a session
-    // SessionStart hooks often don't fire (server not up yet, timing issues)
-    // so we use the first prompt as a reliable fallback
-    if (eventType === 'UserPromptSubmit' && !existingSession && cwd) {
-      injectSessionContext(cwd);
-    }
+    // Server-side CLAUDE.md injection disabled — inject-context.cjs command hook handles this
 
     if (eventType === 'SessionEnd') {
       run(`UPDATE sessions SET ended_at = datetime('now','localtime'), transcript_path = :tp WHERE id = :id`, {

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PAN Terminal — Pre Renderer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; background: #1e1e2e; color: #cdd6f4; font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace; font-size: 14px; }
+
+.shell {
+  display: flex; flex-direction: column; height: 100%;
+}
+.topbar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  background: #181825; border-bottom: 1px solid #313244; flex-shrink: 0;
+}
+.topbar .label { color: #89b4fa; font-weight: 600; font-size: 13px; }
+.topbar .status { color: #a6e3a1; font-size: 12px; }
+.topbar .mode { color: #f9e2af; font-size: 12px; margin-left: auto; }
+
+.terminal-area {
+  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px;
+  min-height: 0; /* flex child */
+}
+
+/* The actual terminal output */
+#output {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+
+/* Input bar at bottom */
+.input-bar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: #181825; border-top: 1px solid #313244; flex-shrink: 0;
+}
+.input-bar .prompt { color: #89b4fa; font-weight: bold; }
+.input-bar textarea {
+  flex: 1; background: transparent; border: none; color: #cdd6f4;
+  font-family: inherit; font-size: 14px; resize: none; outline: none;
+  height: 22px; line-height: 22px;
+}
+
+/* ANSI color classes */
+.ansi-black { color: #45475a; } .ansi-red { color: #f38ba8; }
+.ansi-green { color: #a6e3a1; } .ansi-yellow { color: #f9e2af; }
+.ansi-blue { color: #89b4fa; } .ansi-magenta { color: #cba6f7; }
+.ansi-cyan { color: #94e2d5; } .ansi-white { color: #bac2de; }
+.ansi-bright-black { color: #585b70; } .ansi-bright-red { color: #f38ba8; }
+.ansi-bright-green { color: #a6e3a1; } .ansi-bright-yellow { color: #f9e2af; }
+.ansi-bright-blue { color: #89b4fa; } .ansi-bright-magenta { color: #cba6f7; }
+.ansi-bright-cyan { color: #94e2d5; } .ansi-bright-white { color: #a6adc8; }
+.ansi-bold { font-weight: bold; }
+.ansi-dim { opacity: 0.6; }
+.ansi-italic { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+.ansi-strikethrough { text-decoration: line-through; }
+.ansi-inverse { filter: invert(1); }
+
+/* 256-color and RGB handled inline via style attr */
+
+/* Links */
+#output a { color: #89b4fa; text-decoration: underline; cursor: pointer; }
+#output a:hover { color: #b4d0fb; }
+
+/* Scrollbar */
+.terminal-area::-webkit-scrollbar { width: 8px; }
+.terminal-area::-webkit-scrollbar-track { background: #1e1e2e; }
+.terminal-area::-webkit-scrollbar-thumb { background: #45475a; border-radius: 4px; }
+.terminal-area::-webkit-scrollbar-thumb:hover { background: #585b70; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <span class="label" id="hostLabel">Connecting...</span>
+    <span class="status" id="statusLabel"></span>
+    <span class="mode">PRE renderer (no xterm.js)</span>
+  </div>
+  <div class="terminal-area" id="termArea">
+    <div id="output"></div>
+  </div>
+  <div class="input-bar">
+    <span class="prompt">❯</span>
+    <textarea id="inputBox" rows="1" placeholder="Type here..." autofocus></textarea>
+  </div>
+</div>
+
+<script>
+// ==================== ANSI Parser ====================
+// Converts raw ANSI escape sequences to HTML spans with color classes
+
+const COLORS = ['black','red','green','yellow','blue','magenta','cyan','white'];
+const BRIGHT_COLORS = ['bright-black','bright-red','bright-green','bright-yellow','bright-blue','bright-magenta','bright-cyan','bright-white'];
+
+function ansiToHtml(raw) {
+  let html = '';
+  let i = 0;
+  let fg = null, bg = null, bold = false, dim = false, italic = false, underline = false, strikethrough = false, inverse = false;
+
+  function openSpan() {
+    const classes = [];
+    const styles = [];
+    if (bold) classes.push('ansi-bold');
+    if (dim) classes.push('ansi-dim');
+    if (italic) classes.push('ansi-italic');
+    if (underline) classes.push('ansi-underline');
+    if (strikethrough) classes.push('ansi-strikethrough');
+    if (inverse) classes.push('ansi-inverse');
+
+    if (fg !== null) {
+      if (typeof fg === 'string') styles.push('color:' + fg);
+      else if (fg < 8) classes.push('ansi-' + COLORS[fg]);
+      else if (fg < 16) classes.push('ansi-' + BRIGHT_COLORS[fg - 8]);
+      else styles.push('color:' + color256(fg));
+    }
+    if (bg !== null) {
+      if (typeof bg === 'string') styles.push('background:' + bg);
+      else if (bg < 8) styles.push('background:' + cssColor(COLORS[bg]));
+      else if (bg < 16) styles.push('background:' + cssColor(BRIGHT_COLORS[bg - 8]));
+      else styles.push('background:' + color256(bg));
+    }
+
+    if (classes.length || styles.length) {
+      html += '<span';
+      if (classes.length) html += ' class="' + classes.join(' ') + '"';
+      if (styles.length) html += ' style="' + styles.join(';') + '"';
+      html += '>';
+      return true;
+    }
+    return false;
+  }
+
+  function cssColor(name) {
+    const map = {
+      'black':'#45475a','red':'#f38ba8','green':'#a6e3a1','yellow':'#f9e2af',
+      'blue':'#89b4fa','magenta':'#cba6f7','cyan':'#94e2d5','white':'#bac2de',
+      'bright-black':'#585b70','bright-red':'#f38ba8','bright-green':'#a6e3a1','bright-yellow':'#f9e2af',
+      'bright-blue':'#89b4fa','bright-magenta':'#cba6f7','bright-cyan':'#94e2d5','bright-white':'#a6adc8',
+    };
+    return map[name] || '#cdd6f4';
+  }
+
+  // 256-color lookup
+  function color256(n) {
+    if (n < 16) return cssColor(n < 8 ? COLORS[n] : BRIGHT_COLORS[n-8]);
+    if (n < 232) {
+      n -= 16;
+      const r = Math.floor(n/36) * 51, g = Math.floor((n%36)/6) * 51, b = (n%6) * 51;
+      return `rgb(${r},${g},${b})`;
+    }
+    const v = (n - 232) * 10 + 8;
+    return `rgb(${v},${v},${v})`;
+  }
+
+  function esc(ch) {
+    if (ch === '<') return '&lt;';
+    if (ch === '>') return '&gt;';
+    if (ch === '&') return '&amp;';
+    return ch;
+  }
+
+  while (i < raw.length) {
+    // ESC sequence
+    if (raw[i] === '\x1b') {
+      // CSI: ESC [
+      if (raw[i+1] === '[') {
+        let j = i + 2;
+        let params = '';
+        while (j < raw.length && raw[j] >= '\x20' && raw[j] <= '\x3f') { params += raw[j]; j++; }
+        const cmd = raw[j]; j++;
+        i = j;
+
+        if (cmd === 'm') {
+          // SGR — Select Graphic Rendition
+          const codes = params ? params.split(';').map(Number) : [0];
+          let ci = 0;
+          while (ci < codes.length) {
+            const c = codes[ci];
+            if (c === 0) { fg = null; bg = null; bold = false; dim = false; italic = false; underline = false; strikethrough = false; inverse = false; }
+            else if (c === 1) bold = true;
+            else if (c === 2) dim = true;
+            else if (c === 3) italic = true;
+            else if (c === 4) underline = true;
+            else if (c === 7) inverse = true;
+            else if (c === 9) strikethrough = true;
+            else if (c === 22) { bold = false; dim = false; }
+            else if (c === 23) italic = false;
+            else if (c === 24) underline = false;
+            else if (c === 27) inverse = false;
+            else if (c === 29) strikethrough = false;
+            else if (c >= 30 && c <= 37) fg = c - 30;
+            else if (c === 38) {
+              if (codes[ci+1] === 5) { fg = codes[ci+2]; ci += 2; }
+              else if (codes[ci+1] === 2) { fg = `rgb(${codes[ci+2]},${codes[ci+3]},${codes[ci+4]})`; ci += 4; }
+            }
+            else if (c === 39) fg = null;
+            else if (c >= 40 && c <= 47) bg = c - 40;
+            else if (c === 48) {
+              if (codes[ci+1] === 5) { bg = codes[ci+2]; ci += 2; }
+              else if (codes[ci+1] === 2) { bg = `rgb(${codes[ci+2]},${codes[ci+3]},${codes[ci+4]})`; ci += 4; }
+            }
+            else if (c === 49) bg = null;
+            else if (c >= 90 && c <= 97) fg = c - 90 + 8;
+            else if (c >= 100 && c <= 107) bg = c - 100 + 8;
+            ci++;
+          }
+        }
+        // Skip other CSI sequences (cursor movement, erase, etc.) — we don't need them
+        continue;
+      }
+      // OSC: ESC ] ... BEL — title/hyperlink sequences, skip
+      if (raw[i+1] === ']') {
+        let j = i + 2;
+        while (j < raw.length && raw[j] !== '\x07' && !(raw[j] === '\x1b' && raw[j+1] === '\\')) j++;
+        if (raw[j] === '\x07') j++;
+        else if (raw[j] === '\x1b') j += 2;
+        i = j;
+        continue;
+      }
+      // Other escape sequences — skip 2 chars
+      i += 2;
+      continue;
+    }
+
+    // Carriage return — skip (we use pre-wrap, \n handles newlines)
+    if (raw[i] === '\r') { i++; continue; }
+
+    // Regular character — emit with current style
+    const hasStyle = fg !== null || bg !== null || bold || dim || italic || underline || strikethrough || inverse;
+    if (hasStyle) {
+      const opened = openSpan();
+      html += esc(raw[i]);
+      if (opened) html += '</span>';
+    } else {
+      html += esc(raw[i]);
+    }
+    i++;
+  }
+
+  return html;
+}
+
+// ==================== URL Detection ====================
+function linkify(html) {
+  return html.replace(/(https?:\/\/[^\s<>"']+)/g, '<a href="$1" target="_blank">$1</a>');
+}
+
+// ==================== WebSocket Connection ====================
+const params = new URLSearchParams(window.location.search);
+const sessionId = params.get('session') || 'dash-pre-test';
+const project = params.get('project') || 'PAN';
+const cwd = params.get('cwd') || 'C:\\Users\\tzuri\\Desktop\\PAN';
+const port = window.location.port || '7777';
+
+const outputEl = document.getElementById('output');
+const termArea = document.getElementById('termArea');
+const inputBox = document.getElementById('inputBox');
+const hostLabel = document.getElementById('hostLabel');
+const statusLabel = document.getElementById('statusLabel');
+
+let ws = null;
+let autoScroll = true; // only auto-scroll if user is at bottom
+
+// Track scroll position
+termArea.addEventListener('scroll', () => {
+  const atBottom = termArea.scrollHeight - termArea.scrollTop - termArea.clientHeight < 30;
+  autoScroll = atBottom;
+});
+
+function appendOutput(rawData) {
+  const html = linkify(ansiToHtml(rawData));
+  // Use insertAdjacentHTML for performance — no re-parsing existing content
+  outputEl.insertAdjacentHTML('beforeend', html);
+
+  // Only scroll if user was already at bottom
+  if (autoScroll) {
+    requestAnimationFrame(() => {
+      termArea.scrollTop = termArea.scrollHeight;
+    });
+  }
+}
+
+function connect() {
+  const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsHost = window.location.hostname;
+  const url = `${wsProto}://${wsHost}:${port}/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(project)}&cwd=${encodeURIComponent(cwd)}&cols=120&rows=30`;
+
+  statusLabel.textContent = 'connecting...';
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    statusLabel.textContent = 'connected';
+    statusLabel.style.color = '#a6e3a1';
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      switch (msg.type) {
+        case 'output':
+          appendOutput(msg.data);
+          break;
+        case 'info':
+          hostLabel.textContent = (msg.host || '') + ' — ' + (msg.project || 'shell');
+          break;
+        case 'exit':
+          appendOutput('\n\x1b[38;5;243m[Session ended]\x1b[0m\n');
+          break;
+        case 'error':
+          appendOutput('\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\n');
+          break;
+        case 'server_restarting':
+          appendOutput('\n\x1b[38;5;214m[Server restarting...]\x1b[0m\n');
+          break;
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    statusLabel.textContent = 'disconnected — reconnecting...';
+    statusLabel.style.color = '#f38ba8';
+    setTimeout(connect, 3000);
+  };
+
+  ws.onerror = () => {};
+}
+
+// ==================== Input ====================
+inputBox.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const text = inputBox.value;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'input', data: text + '\r' }));
+    }
+    inputBox.value = '';
+  }
+});
+
+// Start
+connect();
+</script>
+</body>
+</html>

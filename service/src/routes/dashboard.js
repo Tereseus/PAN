@@ -383,6 +383,9 @@ router.get('/api/events', (req, res) => {
   res.json({ events, total: total?.count || 0, limit, offset });
 });
 
+// Transcript cache — avoids re-parsing huge JSONL files on every poll
+const transcriptCache = new Map(); // path -> { mtime, messages }
+
 // GET /api/transcript — read full conversation from JSONL transcript file
 // Returns user prompts, full assistant text responses, and tool call summaries
 router.get('/api/transcript', (req, res) => {
@@ -405,6 +408,14 @@ router.get('/api/transcript', (req, res) => {
   }
 
   try {
+    // Check cache — skip re-parsing if file hasn't changed
+    const fileStat = statSync(transcriptPath);
+    const cached = transcriptCache.get(transcriptPath);
+    if (cached && cached.mtime >= fileStat.mtimeMs) {
+      const limit = parseInt(req.query.limit) || 200;
+      return res.json({ messages: cached.messages.slice(-limit) });
+    }
+
     const raw = readFileSync(transcriptPath, 'utf-8').trim();
     const lines = raw.split('\n');
     const messages = [];
@@ -479,6 +490,14 @@ router.get('/api/transcript', (req, res) => {
           }
         }
       }
+    }
+
+    // Cache the parsed result
+    transcriptCache.set(transcriptPath, { mtime: fileStat.mtimeMs, messages });
+    // Limit cache size to 20 entries
+    if (transcriptCache.size > 20) {
+      const oldest = transcriptCache.keys().next().value;
+      transcriptCache.delete(oldest);
     }
 
     // Only return the last N messages to keep payload reasonable

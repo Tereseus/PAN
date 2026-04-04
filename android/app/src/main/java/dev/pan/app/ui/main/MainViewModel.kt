@@ -108,9 +108,12 @@ class MainViewModel @Inject constructor(
     }
 
     fun toggleMic() {
-        val newState = !PanForegroundService.micEnabled.value
-        PanForegroundService.micEnabled.value = newState
-        sttEngine.enabled = newState
+        // Send TOGGLE_MIC intent to the service so it properly starts/stops STT
+        val ctx = application
+        val intent = android.content.Intent(ctx, PanForegroundService::class.java).apply {
+            action = "TOGGLE_MIC"
+        }
+        ctx.startService(intent)
     }
 
     fun setDeviceTarget(target: String) {

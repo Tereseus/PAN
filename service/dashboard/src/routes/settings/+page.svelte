@@ -158,11 +158,28 @@
 	}
 
 	async function restartServer() {
-		flash('Restarting...');
+		flash('Restarting server...');
 		try {
-			await api('/api/v1/restart', { method: 'POST' });
-			flash('Restart requested');
-		} catch { flash('Restart failed'); }
+			await api('/api/admin/restart', { method: 'POST' });
+		} catch {}
+		// Poll for server to come back — retry every 2s for up to 60s
+		flash('Waiting for server to restart...');
+		let attempts = 0;
+		const poll = setInterval(async () => {
+			attempts++;
+			try {
+				const resp = await fetch('/dashboard/api/stats');
+				if (resp.ok) {
+					clearInterval(poll);
+					flash('Server restarted successfully');
+					setTimeout(() => location.reload(), 1000);
+				}
+			} catch {}
+			if (attempts >= 30) {
+				clearInterval(poll);
+				flash('Server did not come back after 60s — check manually');
+			}
+		}, 2000);
 	}
 
 	async function saveSetting(key, value) {
@@ -419,6 +436,27 @@
 					<span>Enable Scrub Mode</span>
 				</div>
 				<p class="hint">When enabled, PAN adds extra confirmations before destructive actions and explains technical concepts in plain language.</p>
+			</section>
+
+			<section class="section">
+				<h3>Personality</h3>
+				<p class="hint">Describe how PAN should talk. Examples: "Talk like Morgan Freeman — calm, wise, measured", "Be sarcastic and witty like Tony Stark", "Speak with a British butler's formality", "Be enthusiastic and energetic like a sports commentator"</p>
+				<textarea
+					class="personality-input"
+					value={settings.personality || ''}
+					placeholder="Leave empty for default PAN personality..."
+					oninput={(e) => { settings.personality = e.target.value; }}
+					rows="3"
+				></textarea>
+				<button class="btn" onclick={async () => {
+					await fetch('/api/v1/settings', {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ personality: settings.personality || '' })
+					});
+					statusMsg = 'Personality saved';
+					setTimeout(() => statusMsg = '', 2000);
+				}}>Save Personality</button>
 			</section>
 
 			<section class="section">
@@ -1202,6 +1240,21 @@
 		line-height: 1.5;
 		margin-bottom: 10px;
 	}
+	.personality-input {
+		width: 100%;
+		min-height: 60px;
+		padding: 8px 12px;
+		background: #1a1a25;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px;
+		color: #cdd6f4;
+		font-family: inherit;
+		font-size: 13px;
+		resize: vertical;
+		outline: none;
+		margin-bottom: 8px;
+	}
+	.personality-input:focus { border-color: #89b4fa; }
 
 	.muted {
 		color: #6c7086;

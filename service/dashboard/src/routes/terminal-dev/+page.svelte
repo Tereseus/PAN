@@ -8,7 +8,7 @@
 	let tabs = $state([]);
 	let activeTabId = $state(null);
 	let leftTab = $state('transcript'); // any widget: 'transcript' | 'project' | 'services' | 'tasks' | 'bugs' | 'setup' | 'instances' | 'apps'
-	let rightSection = $state('tasks'); // any widget: same options as leftTab
+	let rightSection = $state('tests'); // default to tests on dev
 	let viewMode = $state('terminal'); // 'terminal' | 'chat'
 	let rightPanelCollapsed = $state(false);
 	let leftPanelCollapsed = $state(false);
@@ -36,6 +36,13 @@
 
 	// Alerts state — system notifications, errors, warnings
 	let alerts = $state([]);
+
+	// Tests state
+	let testSuites = $state([]);
+	let selectedSuite = $state(null);
+	let testResults = $state([]);
+	let testsRunning = $state(false);
+	let testPollTimer = null;
 
 	// Terminal container refs
 	let termContainerEl;
@@ -134,7 +141,7 @@
 			return;
 		}
 
-		const sessionId = 'dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
+		const sessionId = 'dev-dash-' + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
 
 		// Check if tab already exists
 		const existing = tabs.find(t => t.sessionId === sessionId);
@@ -156,7 +163,7 @@
 		const sameProjectTabs = tabs.filter(t => t.project === baseName || t.project.match(new RegExp('^' + baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(-\\d+)?$')));
 		const tabNum = sameProjectTabs.length + 1;
 		const projectName = tabNum > 1 ? `${baseName}-${tabNum}` : baseName;
-		const sessionId = 'dash-' + projectName.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+		const sessionId = 'dev-dash-' + projectName.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
 		createTab(sessionId, projectName, cwd, projectId, false);
 	}
 
@@ -309,6 +316,7 @@
 			tabData.ws = ws;
 
 			let firstOutput = true;
+			let hasExistingBuffer = false;
 			let reconnectAttempts = 0;
 			let reconnectTimer = null;
 			let serverRestarting = false;
@@ -334,6 +342,7 @@
 						case 'output': {
 							if (firstOutput) {
 								firstOutput = false;
+								hasExistingBuffer = msg.data.length > 100;
 								tabTerm.clear();
 								doFit();
 							}
@@ -362,7 +371,7 @@
 							lastChatSessionKey = ''; // invalidate cache so new messages load
 							// Associate this Claude session with the active tab if not already tracked
 							const updateSid = msg.session_id || '';
-							if (updateSid && !updateSid.startsWith('system-') && !updateSid.startsWith('phone-') && !updateSid.startsWith('router-') && !updateSid.startsWith('dash-') && !updateSid.startsWith('mob-')) {
+							if (updateSid && !updateSid.startsWith('system-') && !updateSid.startsWith('phone-') && !updateSid.startsWith('router-') && !updateSid.startsWith('dev-dash-') && !updateSid.startsWith('mob-')) {
 								// Check if any tab already owns this session
 								const ownerTab = tabs.find(t => t.claudeSessionIds.includes(updateSid));
 								if (!ownerTab) {
@@ -412,8 +421,8 @@
 						startPing();
 						newWs.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
 
-						// Claude auto-launch is handled server-side (terminal.js)
-						// Do NOT launch from client — causes duplicate "ΠΑΝ remembers.."
+						// On reconnect, don't re-launch Claude — hasExistingBuffer will be true
+						// since the server sends back the PTY buffer
 					};
 					newWs.onmessage = handleMessage;
 					newWs.onclose = () => {
@@ -434,8 +443,29 @@
 				if (activeTabId === tabId && terminalInputEl) terminalInputEl.focus();
 				startPing();
 
-				// Claude auto-launch is handled server-side (terminal.js)
-				// Do NOT launch from client — causes duplicate "ΠΑΝ remembers.."
+				// Auto-launch Claude for project tabs
+				if (projectName && projectName !== 'Shell') {
+					setTimeout(async () => {
+						if (ws.readyState === 1 && !tabData.claudeStarted && !hasExistingBuffer) {
+							tabData.claudeStarted = true;
+							let briefingReady = false;
+							try {
+								const briefingData = await fetch(api('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd))).then(r => r.json());
+								if (briefingData.briefing) {
+									ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
+									briefingReady = true;
+									await new Promise(r => setTimeout(r, 500));
+								}
+							} catch {}
+
+							if (briefingReady) {
+								ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+							} else {
+								ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
+							}
+						}
+					}, 1500);
+				}
 			};
 
 			ws.onmessage = handleMessage;
@@ -723,7 +753,7 @@
 						const seen = new Set();
 						for (const evt of probe.events) {
 							const sid = evt.session_id || '';
-							if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+							if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dev-dash-') && !sid.startsWith('mob-')) {
 								seen.add(sid);
 								sessionIds.push(sid);
 								if (sessionIds.length >= 3) break;
@@ -1086,8 +1116,64 @@
 
 	// ==================== Init ====================
 
+	async function loadTestSuites() {
+		try {
+			const data = await api('/api/v1/tests');
+			const serverSuites = (data.suites || []).map(s => {
+				const suiteTests = (data.tests || []).filter(t => t.suiteId === s.id).map(t => ({
+					id: t.id, name: t.name, description: t.description
+				}));
+				const tests = suiteTests.length > 0 ? suiteTests :
+					Array.from({length: s.testCount}, (_, i) => ({id: `${s.id}-${i}`, name: `Test ${i+1}`, description: ''}));
+				return { id: s.id, name: s.name, description: s.description, tests };
+			});
+			testSuites = serverSuites;
+			if (testSuites.length > 0 && !selectedSuite) selectedSuite = testSuites[0].id;
+			// If tests are running or just finished, show results
+			if (data.status === 'running' || data.status === 'done') {
+				const allTests = data.tests || [];
+				if (allTests.length > 0) {
+					testResults = allTests.map(t => ({
+						id: t.id, name: t.name, status: t.status === 'passed' ? 'pass' : t.status === 'failed' ? 'fail' : t.status,
+						detail: t.result || t.error || '', description: t.description || ''
+					}));
+					if (data.status === 'running') {
+						testsRunning = true;
+						rightSection = 'tests';
+					} else {
+						testsRunning = false;
+					}
+				}
+			}
+		} catch {}
+	}
+
+	function startTestPolling() {
+		if (testPollTimer) return;
+		testPollTimer = setInterval(async () => {
+			await loadTestSuites();
+		}, 2000);
+	}
+
+	async function runSuite() {
+		const suite = testSuites.find(s => s.id === selectedSuite);
+		if (!suite) return;
+		testsRunning = true;
+		testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
+		try {
+			await api('/api/v1/tests/run', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ suite: suite.id })
+			});
+		} catch {}
+		startTestPolling();
+	}
+
 	onMount(() => {
 		loadTerminalProjects();
+		loadTestSuites();
+		startTestPolling();
 
 		// Start chat refresh — poll every 3 seconds for real-time transcript updates
 		chatRefreshInterval = setInterval(() => {
@@ -1121,7 +1207,7 @@
 				const sessions = sessData.sessions || [];
 				if (sessions.length > 0) {
 					for (const s of sessions) {
-						if (!s.id.startsWith('dash-') && !s.id.startsWith('mob-')) continue;
+						if (!s.id.startsWith('dev-dash-') && !s.id.startsWith('mob-')) continue;
 						const matchedProject = projects.find(p => p.name === s.project);
 						const pid = matchedProject ? matchedProject.id : null;
 						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true);
@@ -1304,7 +1390,7 @@
 	<select class="project-select" onchange={(e) => {
 		const val = e.target.value;
 		if (val === '__shell__') {
-			createTab('dash-shell-' + Date.now(), 'Shell', 'C:\\Users\\tzuri\\Desktop', null, false);
+			createTab('dev-dash-shell-' + Date.now(), 'Shell', 'C:\\Users\\tzuri\\Desktop', null, false);
 		} else {
 			const proj = projects.find(p => String(p.id) === val || p.path === val);
 			if (proj) switchTerminalProject(proj);
@@ -1597,6 +1683,45 @@
 		{:else}
 			<div class="empty-state">Section not found</div>
 		{/if}
+	{:else if currentTab === 'tests'}
+		<div class="tests-panel" style="padding:8px">
+			{#if testSuites.length === 0}
+				<div class="empty-state">Loading test suites...</div>
+			{:else}
+				<select class="right-select" bind:value={selectedSuite} style="margin-bottom:8px;width:100%">
+					{#each testSuites as suite}
+						<option value={suite.id}>{suite.name} ({suite.tests.length} tests)</option>
+					{/each}
+				</select>
+				{@const suite = testSuites.find(s => s.id === selectedSuite)}
+				{#if suite}
+					<div style="font-size:11px;color:#6c7086;margin-bottom:8px">{suite.description}</div>
+					<button class="test-run-btn" onclick={runSuite} disabled={testsRunning} style="width:100%;padding:8px;margin-bottom:10px;background:#1e1e2e;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer">
+						{testsRunning ? 'Running...' : `Run ${suite.name}`}
+					</button>
+				{/if}
+				{#each testResults as t}
+					<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-bottom:1px solid #1e1e2e">
+						<span style="font-size:14px;min-width:16px;text-align:center;color:{t.status === 'pass' ? '#a6e3a1' : t.status === 'fail' ? '#f38ba8' : t.status === 'running' ? '#f9e2af' : '#6c7086'}">
+							{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : t.status === 'running' ? '\u25CF' : '\u25CB'}
+						</span>
+						<div style="flex:1;min-width:0">
+							<div style="font-size:12px;color:#cdd6f4">{t.name}</div>
+							{#if t.detail}
+								<div style="font-size:10px;color:{t.status === 'fail' ? '#f38ba8' : '#6c7086'};word-break:break-word">{t.detail}</div>
+							{/if}
+						</div>
+					</div>
+				{/each}
+				{#if testResults.length > 0 && !testsRunning}
+					{@const passed = testResults.filter(t => t.status === 'pass').length}
+					{@const failed = testResults.filter(t => t.status === 'fail').length}
+					<div style="margin-top:8px;padding:6px;border-radius:4px;text-align:center;font-size:12px;background:{failed === 0 ? '#1a2e1a' : '#2e1a1a'};color:{failed === 0 ? '#a6e3a1' : '#f38ba8'}">
+						{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
+					</div>
+				{/if}
+			{/if}
+		</div>
 	{/if}
 {/snippet}
 
@@ -1639,6 +1764,7 @@
 				<option value="tasks">Tasks</option>
 				<option value="bugs">Bugs</option>
 				<option value="instances">Instances</option>
+				<option value="tests">Tests</option>
 				<option value="apps">Apps</option>
 				<option value="setup">Setup Guide</option>
 				{#each sectionsData as s}
@@ -1792,6 +1918,7 @@
 				<option value="tasks">Tasks</option>
 				<option value="bugs">Bugs</option>
 				<option value="instances">Instances</option>
+				<option value="tests">Tests</option>
 				<option value="apps">Apps</option>
 				<option value="setup">Setup Guide</option>
 				{#each sectionsData as s}

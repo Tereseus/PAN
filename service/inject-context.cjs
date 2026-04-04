@@ -21,8 +21,8 @@ process.stdin.on('end', () => {
     const startMarker = '<!-- PAN-CONTEXT-START -->';
     const endMarker = '<!-- PAN-CONTEXT-END -->';
     const startIdx = content.indexOf(startMarker);
-    const endIdx = content.indexOf(endMarker);
-    if (startIdx === -1 || endIdx === -1) process.exit(0);
+    const endIdx = content.lastIndexOf(endMarker);
+    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) process.exit(0);
 
     // Read living state / briefing file
     const briefingPath = path.join(cwd, '.pan-briefing.md');
@@ -30,53 +30,37 @@ process.stdin.on('end', () => {
     let briefing = '';
 
     if (fs.existsSync(briefingPath)) {
-      briefing = fs.readFileSync(briefingPath, 'utf8');
-    } else if (fs.existsSync(statePath)) {
-      briefing = fs.readFileSync(statePath, 'utf8');
+      briefing = fs.readFileSync(briefingPath, 'utf8').trim();
+    }
+    if (!briefing && fs.existsSync(statePath)) {
+      briefing = fs.readFileSync(statePath, 'utf8').trim();
     }
 
     if (!briefing) process.exit(0);
 
-    // Also pull recent conversation from Claude's memory files
+    // Build the injection — memory files are NOT included here because
+    // Claude Code automatically loads ~/.claude/projects/<slug>/memory/*.md
+    // Duplicating them here wastes context tokens
     const fwdCwd = cwd.replace(/\\/g, '/');
     const projectName = path.basename(fwdCwd);
-    const cwdEncoded = 'C--' + cwd.replace(/^[A-Z]:[\\\/]/, '').replace(/[\\\/]/g, '-');
-    const memoryDir = path.join(
-      process.env.USERPROFILE || 'C:\\Users\\tzuri',
-      '.claude', 'projects', cwdEncoded, 'memory'
-    );
 
-    let memoryContent = [];
-    if (fs.existsSync(memoryDir)) {
-      const files = fs.readdirSync(memoryDir).filter(f => f.endsWith('.md') && f !== 'MEMORY.md');
-      for (const f of files) {
-        try {
-          const raw = fs.readFileSync(path.join(memoryDir, f), 'utf8');
-          const body = raw.replace(/^---[\s\S]*?---\s*/, '').trim();
-          if (body.length > 20) memoryContent.push(body);
-        } catch {}
-      }
-    }
-
-    // Build the injection
     let injection = `## PAN Session Context\n\n`;
     injection += `This is a fresh session for the "${projectName}" project.\n`;
     injection += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
     injection += `**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with something like "Last time we were working on..." and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.\n\n`;
 
-    // Memory summaries
-    if (memoryContent.length > 0) {
-      injection += `### What You Should Know\n\n`;
-      for (const m of memoryContent) {
-        const trimmed = m.length > 600 ? m.substring(0, 600) + '...' : m;
-        injection += trimmed + '\n\n';
-      }
-    }
+    // Sanitize briefing — strip any literal PAN-CONTEXT markers that would corrupt future runs
+    briefing = briefing.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
 
     // Append the briefing content (living state + recent conversation)
     injection += briefing + '\n';
 
     injection += `\n## Instructions\nThis is a fresh session. Your FIRST message to the user MUST be a brief summary of the Recent Conversation above — start with "Last time we were working on..." and list the key topics/issues. The user should NEVER have to ask what they were working on. You tell them immediately, every single time. Then pick up where they left off.\n`;
+
+    // Cap total injection to ~8000 chars to avoid bloating CLAUDE.md
+    if (injection.length > 8000) {
+      injection = injection.substring(0, 8000) + '\n\n[... context trimmed to reduce CLAUDE.md size ...]\n';
+    }
 
     // Write to CLAUDE.md
     const newContent = content.substring(0, startIdx + startMarker.length) + '\n' +

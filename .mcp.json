@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pan": {
+      "command": "node",
+      "args": ["C:/Users/tzuri/Desktop/PAN/service/src/mcp-server.js"]
+    }
+  }
+}

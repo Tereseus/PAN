@@ -23,10 +23,13 @@ import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
+import runnerRouter from './routes/runner.js';
 import { extractUser } from './middleware/auth.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startScout, stopScout } from './scout.js';
 import { startDream, stopDream } from './dream.js';
+import { evolve } from './evolution/engine.js';
+import { buildContext as buildMemoryContext } from './memory/index.js';
 import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { startStackScanner, stopStackScanner, getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
@@ -38,7 +41,7 @@ import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PORT = 7777;
+const PORT = parseInt(process.env.PAN_PORT) || 7777;
 const HOST = '0.0.0.0'; // Listen on all interfaces (phone needs LAN access)
 
 const app = express();
@@ -188,11 +191,15 @@ app.use('/api/v1/devices', devicesRouter);
 // Sensor management API
 app.use('/api/sensors', sensorsRouter);
 
+// Project Runner — start/stop/monitor project services
+app.use('/api/v1/runner', runnerRouter);
+
 // Feature registry — maps feature names to start/stop functions
 const featureRegistry = {
   scout: { start: startScout, stop: stopScout, interval: '12h', defaultMs: 12 * 60 * 60 * 1000 },
   dream: { start: startDream, stop: stopDream, interval: '6h', defaultMs: 6 * 60 * 60 * 1000 },
   autodev: { start: startAutoDev, stop: stopAutoDev, interval: '1h', defaultMs: 60 * 60 * 1000 },
+  evolution: { start: () => console.log('[PAN] Evolution enabled — runs after each dream cycle'), stop: () => console.log('[PAN] Evolution disabled'), interval: 'after-dream', defaultMs: 0 },
 };
 
 // GET /api/automation/status — current feature toggle states
@@ -207,6 +214,7 @@ app.get('/api/automation/status', (req, res) => {
     scout: { enabled: toggles.scout !== false, interval: '12h' },
     dream: { enabled: toggles.dream !== false, interval: '6h' },
     autodev: { enabled: toggles.autodev === true, interval: '1h' },
+    evolution: { enabled: toggles.evolution === true, interval: 'after-dream' },
     classifier: { enabled: true, interval: '5m', required: true },
     project_sync: { enabled: true, interval: '10m', required: true },
   };
@@ -845,18 +853,40 @@ app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
 // Serve clipboard images (pasted screenshots from dashboard)
 app.use('/clipboard', express.static(join(process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan-clipboard')));
 
-// Dev instance — detect running Vite dev server
+// Dev instance — detect running dev server (dev-server.js on 7781 or Vite on 5173+)
 app.post('/api/v1/dev/start', async (req, res) => {
-  // Check common Vite ports
-  for (const port of [5173, 5174, 5175, 5180, 5181, 5190]) {
+  for (const port of [7781, 5173, 5174, 5175, 5180, 5181, 5190]) {
     try {
-      const r = await fetch(`http://localhost:${port}/v2/`, { signal: AbortSignal.timeout(500) });
-      if (r.ok || r.status === 200) {
-        return res.json({ ok: true, port, running: true });
-      }
+      const r = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(500) });
+      if (r.ok) return res.json({ ok: true, port, running: true });
     } catch {}
+    // Vite doesn't have /health — try /v2/
+    if (port !== 7781) {
+      try {
+        const r = await fetch(`http://localhost:${port}/v2/`, { signal: AbortSignal.timeout(500) });
+        if (r.ok) return res.json({ ok: true, port, running: true });
+      } catch {}
+    }
   }
-  res.json({ ok: false, error: 'No Vite dev server found. Run: cd dashboard && npm run dev' });
+  res.json({ ok: false, error: 'No dev server found. Run: node dev-server.js' });
+});
+
+// Dev proxy — forwards test API calls to dev server (avoids CORS issues with browser-to-dev)
+app.all('/api/v1/dev/proxy/*proxyPath', async (req, res) => {
+  const devPort = 7781;
+  const targetPath = req.params.proxyPath; // everything after /proxy/
+  const url = `http://127.0.0.1:${devPort}/${targetPath}`;
+  try {
+    const opts = { method: req.method, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(120000) };
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
+      opts.body = JSON.stringify(req.body);
+    }
+    const r = await fetch(url, opts);
+    const text = await r.text();
+    res.status(r.status).type('json').send(text);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: `Dev server proxy failed: ${err.message}` });
+  }
 });
 
 // Terminal API — list sessions, projects for terminal
@@ -920,66 +950,41 @@ app.post('/api/v1/terminal/permissions/respond', (req, res) => {
   res.json({ ok: found, response: normalized, method: 'hook' });
 });
 
-// ==================== Test Suites API ====================
-const testSuites = [
-  {
-    id: 'page-refresh',
-    name: 'Page Refresh',
-    description: 'Tests that refreshing the dashboard preserves the terminal session',
-    tests: [
-      { id: 'pr-1', name: 'Open terminal session', description: 'Creates a new terminal session via WebSocket' },
-      { id: 'pr-2', name: 'Send test message', description: 'Sends a test string to the PTY and waits for echo' },
-      { id: 'pr-3', name: 'Simulate F5 (disconnect)', description: 'Closes the WebSocket to simulate page refresh' },
-      { id: 'pr-4', name: 'Verify session alive on server', description: 'Checks /api/v1/terminal/sessions returns the session' },
-      { id: 'pr-5', name: 'Reconnect with same session ID', description: 'Opens new WebSocket with same session ID and isReconnect=true' },
-      { id: 'pr-6', name: 'Verify buffer replayed', description: 'Checks that the pre-refresh output is replayed on reconnect' },
-      { id: 'pr-7', name: 'Cleanup', description: 'Closes session and verifies cleanup' },
-    ]
-  },
-  {
-    id: 'terminal-protocol',
-    name: 'Terminal Protocol',
-    description: 'Tests WebSocket terminal protocol: input, output, resize, ping/pong',
-    tests: [
-      { id: 'tp-1', name: 'WebSocket connects', description: 'Opens a WebSocket to /ws/terminal and gets output' },
-      { id: 'tp-2', name: 'Input sends to PTY', description: 'Sends type:input message and receives echo' },
-      { id: 'tp-3', name: 'Resize works', description: 'Sends type:resize and verifies no error' },
-      { id: 'tp-4', name: 'Ping/pong', description: 'Sends type:ping and receives type:pong' },
-      { id: 'tp-5', name: 'Multiple clients share session', description: 'Two WebSockets to same session both receive output' },
-    ]
-  },
-  {
-    id: 'widgets',
-    name: 'Widget Data',
-    description: 'Tests that all panel widgets load data correctly',
-    tests: [
-      { id: 'wd-1', name: 'Services API', description: 'GET /dashboard/api/services returns array' },
-      { id: 'wd-2', name: 'Projects API', description: 'GET /dashboard/api/projects returns array' },
-      { id: 'wd-3', name: 'Tasks API', description: 'GET /dashboard/api/projects/:id/tasks returns tasks+milestones' },
-      { id: 'wd-4', name: 'Stats API', description: 'GET /dashboard/api/stats returns counts' },
-      { id: 'wd-5', name: 'Health check', description: 'GET /health returns ok' },
-    ]
-  },
-  {
-    id: 'input-box',
-    name: 'Input Box',
-    description: 'Tests that the input box correctly sends text to the terminal',
-    tests: [
-      { id: 'ib-1', name: 'Text typed into terminal', description: 'Input box Enter writes text to PTY without newline' },
-      { id: 'ib-2', name: 'Empty Enter sends newline', description: 'Empty input box Enter sends \\n for approvals' },
-      { id: 'ib-3', name: 'Image paste uploads', description: 'POST /api/v1/clipboard-image accepts base64 image' },
-    ]
-  }
-];
+// ==================== Test Runner API ====================
+import { runTests, getTestStatus, resumeRestartTest } from './routes/tests.js';
+
+// Storage for external test results (from test-restart.js and other external scripts)
+let externalResults = [];
 
 app.get('/api/v1/tests', (req, res) => {
-  res.json(testSuites);
+  const status = getTestStatus();
+  // Merge external results into the response
+  if (externalResults.length > 0) {
+    status.externalResults = externalResults;
+  }
+  res.json(status);
 });
 
-app.get('/api/v1/tests/:suiteId', (req, res) => {
-  const suite = testSuites.find(s => s.id === req.params.suiteId);
-  if (!suite) return res.status(404).json({ error: 'Suite not found' });
-  res.json(suite);
+app.post('/api/v1/tests/run', async (req, res) => {
+  const { suite } = req.body || {};
+  const result = await runTests(suite || 'all');
+  res.json(result);
+});
+
+// Accept results from external test scripts (like test-restart.js)
+app.post('/api/v1/tests/external-result', (req, res) => {
+  const { suite, results, summary } = req.body || {};
+  if (!suite || !results) return res.status(400).json({ error: 'suite and results required' });
+  externalResults.unshift({
+    suite,
+    results,
+    summary,
+    receivedAt: new Date().toISOString(),
+  });
+  // Keep last 10 external results
+  if (externalResults.length > 10) externalResults.length = 10;
+  console.log(`[PAN Tests] External result received: ${suite} — ${summary?.passed || 0} passed, ${summary?.failed || 0} failed`);
+  res.json({ ok: true });
 });
 
 // AutoDev API
@@ -1032,7 +1037,7 @@ app.post('/api/v1/stacks/scan', (req, res) => {
 });
 
 // Context briefing — living state doc + recent chat for new Claude sessions
-app.get('/api/v1/context-briefing', (req, res) => {
+app.get('/api/v1/context-briefing', async (req, res) => {
   const projectPath = req.query.project_path || '';
 
   // 1. Read the living state document (maintained by dream cycle)
@@ -1089,7 +1094,19 @@ app.get('/api/v1/context-briefing', (req, res) => {
     projectBrief = '## Development Environment\n' + getEnvironmentBriefing() + '\n';
   }
 
-  // 5. Build briefing
+  // 5. Vector memory context — semantic facts, episodic memories, procedures
+  let memorySection = '';
+  try {
+    const memResult = await buildMemoryContext('session context', { tokenBudget: 8000 });
+    if (memResult.context) {
+      memorySection = memResult.context;
+      console.log(`[PAN Briefing] Memory context: ${memResult.stats.facts} facts, ${memResult.stats.episodes} episodes, ${memResult.stats.procedures} procedures`);
+    }
+  } catch (err) {
+    console.error('[PAN Briefing] Memory context failed:', err.message);
+  }
+
+  // 6. Build briefing
   let briefing = '=== PAN SESSION CONTEXT BRIEFING ===\n\n';
 
   // Environment context first — so Claude knows the tools before anything else
@@ -1098,6 +1115,11 @@ app.get('/api/v1/context-briefing', (req, res) => {
   // State doc is the primary context source
   if (stateDoc) {
     briefing += stateDoc + '\n\n';
+  }
+
+  // Vector memory — accumulated knowledge from past sessions
+  if (memorySection) {
+    briefing += memorySection + '\n\n';
   }
 
   if (tasks.length > 0) {
@@ -1346,11 +1368,24 @@ function start() {
       if (toggles.autodev === true) startAutoDev(60 * 60 * 1000);
       else console.log('[PAN] AutoDev disabled by toggle');
 
+      // Resume restart test if one was in progress before we died
+      resumeRestartTest().catch(err => console.error('[PAN Tests] Resume failed:', err.message));
+
       resolve(server);
     });
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`[PAN] Port ${PORT} already in use — is PAN already running?`);
+        // Retry with delay — port may be in TIME_WAIT from previous process
+        if (!server._retryCount) server._retryCount = 0;
+        server._retryCount++;
+        if (server._retryCount <= 15) {
+          console.log(`[PAN] Port ${PORT} in use — retry ${server._retryCount}/15 in 2s...`);
+          setTimeout(() => server.listen(PORT, HOST), 2000);
+          return;
+        }
+        console.error(`[PAN] Port ${PORT} still in use after 15 retries (30s). Exiting.`);
+        process.exit(1);
+        return;
       }
       reject(err);
     });
@@ -1363,37 +1398,158 @@ function stop() {
   stopDream();
   stopAutoDev();
   stopStackScanner();
-  if (server) server.close();
+  return new Promise((resolve) => {
+    if (server) {
+      let resolved = false;
+      const done = () => { if (!resolved) { resolved = true; resolve(); } };
+      server.close(done);
+      // Force-destroy all open connections so server.close() doesn't hang on keep-alive/websockets
+      if (server._connections || server.connections) {
+        try { server.closeAllConnections(); } catch {}
+      }
+      // Safety net — force resolve after 3 seconds
+      setTimeout(done, 3000);
+    } else {
+      resolve();
+    }
+  });
 }
 
 // Graceful shutdown — kill all background jobs and close the port
-function gracefulShutdown(signal) {
+async function gracefulShutdown(signal) {
   console.log(`\n[PAN] ${signal} received — shutting down...`);
-  stop();
+  await stop();
   process.exit(0);
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
 
+// ==================== UI Commands (dashboard frontend polls this, not Electron main) ====================
+const uiCommandQueue = [];
+
+app.get('/api/v1/ui-commands', (req, res) => {
+  const cmds = uiCommandQueue.splice(0);
+  res.json(cmds);
+});
+
+app.post('/api/v1/ui-commands', async (req, res) => {
+  const cmd = req.body;
+  if (!cmd || !cmd.type) return res.status(400).json({ error: 'type required' });
+  // Route window commands to Tauri shell
+  if (cmd.type === 'open_window') {
+    tauriFetch('/open', { method: 'POST', body: JSON.stringify(cmd) }).catch(() => {});
+  } else if (cmd.type === 'focus_window') {
+    tauriFetch('/focus', { method: 'POST', body: JSON.stringify(cmd) }).catch(() => {});
+  } else if (cmd.type === 'close_window') {
+    tauriFetch('/close', { method: 'POST', body: JSON.stringify(cmd) }).catch(() => {});
+  } else if (cmd.type === 'screenshot') {
+    tauriFetch('/screenshot', { method: 'POST' }).catch(() => {});
+  }
+  uiCommandQueue.push(cmd);
+  res.json({ ok: true });
+});
+
+// ==================== Tauri Shell (port 7790) — direct HTTP, no polling ====================
+const TAURI_URL = 'http://127.0.0.1:7790';
+
+async function tauriFetch(path, options = {}) {
+  const res = await fetch(`${TAURI_URL}${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+    signal: AbortSignal.timeout(10000),
+  });
+  return res.json();
+}
+
+// Screenshot (full screen)
+app.get('/api/v1/screenshot', async (req, res) => {
+  try {
+    const result = await tauriFetch('/screenshot', { method: 'POST' });
+    res.json(result);
+  } catch (err) {
+    res.json({ ok: false, error: `Tauri shell not responding: ${err.message}` });
+  }
+});
+
+// List all Tauri windows
+app.get('/api/v1/windows', async (req, res) => {
+  try {
+    const result = await tauriFetch('/windows');
+    res.json(result);
+  } catch (err) {
+    res.json({ ok: false, error: `Tauri shell not responding: ${err.message}` });
+  }
+});
+
+// Open window
+app.post('/api/v1/windows/open', async (req, res) => {
+  try {
+    const result = await tauriFetch('/open', {
+      method: 'POST',
+      body: JSON.stringify({ url: req.body.url, title: req.body.title }),
+    });
+    console.log(`[PAN Windows] Opened: ${req.body.url} → ${result.windowId}`);
+    res.json(result);
+  } catch (err) {
+    res.json({ ok: false, error: `Tauri shell not responding: ${err.message}` });
+  }
+});
+
+// Focus a window by ID
+app.post('/api/v1/windows/focus', async (req, res) => {
+  try {
+    const result = await tauriFetch('/focus', {
+      method: 'POST',
+      body: JSON.stringify({ windowId: req.body.windowId }),
+    });
+    res.json(result);
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// Close a window by ID
+app.post('/api/v1/windows/close', async (req, res) => {
+  try {
+    const result = await tauriFetch('/close', {
+      method: 'POST',
+      body: JSON.stringify({ windowId: req.body.windowId }),
+    });
+    res.json(result);
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // Dashboard restart endpoint — full process restart so code changes from disk are picked up
+// Production: node-windows wrapper auto-restarts on exit, so just exit cleanly.
+// Dev server: must spawn a replacement since there's no wrapper.
 app.post('/api/admin/restart', (req, res) => {
   res.json({ ok: true, message: 'Restarting...' });
   console.log('[PAN] Restart requested from dashboard');
   setTimeout(async () => {
     console.log('[PAN] Stopping all services...');
-    stop();
-    // Wait for port to fully release, then spawn fresh process and exit
-    await new Promise(r => setTimeout(r, 1500));
-    console.log('[PAN] Spawning fresh server process...');
-    const { spawn } = await import('child_process');
-    const child = spawn(process.execPath, ['pan.js', 'start'], {
-      cwd: join(__dirname, '..'),
-      stdio: 'inherit',
-      detached: true
-    });
-    child.unref();
-    console.log('[PAN] New process spawned, exiting old process');
+    await stop();
+    await new Promise(r => setTimeout(r, 1000));
+
+    const isDev = process.env.PAN_PORT && parseInt(process.env.PAN_PORT) !== 7777;
+
+    if (isDev) {
+      // Dev mode: no wrapper, must spawn replacement
+      console.log('[PAN] Dev mode — spawning fresh dev server...');
+      const { spawn } = await import('child_process');
+      const child = spawn(process.execPath, ['dev-server.js', String(process.env.PAN_PORT)], {
+        cwd: join(__dirname, '..'),
+        stdio: 'inherit',
+        detached: true,
+        env: { ...process.env }
+      });
+      child.unref();
+    }
+
+    // Exit — node-windows wrapper (prod) or nothing (dev) handles the rest
+    console.log(`[PAN] Exiting for restart (${isDev ? 'dev' : 'prod — wrapper will restart'})`);
     process.exit(0);
   }, 500);
 });
