@@ -105,8 +105,15 @@ async function handleUnified(text, context) {
 
   try {
     const isDash = context.source === 'dashboard';
+    // Load personality from settings
+    let personality = '';
+    try {
+      const row = get("SELECT value FROM settings WHERE key = 'personality'");
+      if (row) personality = row.value.replace(/^"|"$/g, '').trim();
+    } catch {}
+    const personalityBlock = personality ? `\nPersonality: ${personality}\nAlways stay in character.` : '';
     const raw = await claude(
-      `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.
+      `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
 ${historyBlock}${skillBlock}${sensorBlock}
 ${isDash ? `User typed: "${text}"` : `Mic heard: "${text}"`}
 

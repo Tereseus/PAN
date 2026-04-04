@@ -92,6 +92,9 @@ dependencies {
     // implementation("com.google.mediapipe:tasks-genai:0.10.33")
     // implementation(project(":llama-lib"))
 
+    // Piper TTS — high-quality on-device text-to-speech via sherpa-onnx
+    implementation(files("libs/sherpa-onnx.aar"))
+
     // PAN Remote Access — embedded Tailscale tsnet (gomobile AAR)
     implementation(files("libs/panvpn.aar"))
 }

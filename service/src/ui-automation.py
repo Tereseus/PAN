@@ -26,15 +26,15 @@ import base64
 import io
 
 def screenshot(region=None):
-    """Capture screen or region, return base64 JPEG."""
-    import pyautogui
-    from PIL import Image
+    """Capture screen or region, return base64 JPEG. Captures ALL monitors."""
+    from PIL import Image, ImageGrab
 
     if region:
         parts = [int(x) for x in region.split(',')]
-        img = pyautogui.screenshot(region=tuple(parts))
+        # Use bbox (left, top, right, bottom) for multi-monitor support
+        img = ImageGrab.grab(bbox=(parts[0], parts[1], parts[0]+parts[2], parts[1]+parts[3]), all_screens=True)
     else:
-        img = pyautogui.screenshot()
+        img = ImageGrab.grab(all_screens=True)
 
     # Resize to max 1920px wide for efficiency
     if img.width > 1920:
@@ -75,6 +75,52 @@ def focus_window(title_search):
             except Exception as e:
                 return {'ok': False, 'error': str(e)}
     return {'ok': False, 'error': f'No window matching "{title_search}"'}
+
+def screenshot_window(title_search):
+    """Find window by title, focus it, maximize it, and screenshot it."""
+    import pygetwindow as gw
+    from PIL import Image
+    import pyautogui
+    import time
+
+    search = title_search.lower()
+    target = None
+    for w in gw.getAllWindows():
+        if search in w.title.lower() and w.width > 50 and w.height > 50:
+            target = w
+            break
+
+    if not target:
+        # Fallback: use ctypes to find by URL in Electron windows
+        # All Electron windows may be titled "PAN" — match by position/size hint
+        return {'ok': False, 'error': f'No window matching "{title_search}"'}
+
+    try:
+        if target.isMinimized:
+            target.restore()
+            time.sleep(0.3)
+        target.maximize()
+        time.sleep(0.3)
+        target.activate()
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+    # Screenshot the now-maximized window using all_screens for multi-monitor
+    from PIL import ImageGrab
+    img = ImageGrab.grab(bbox=(target.left, target.top, target.left + target.width, target.top + target.height), all_screens=True)
+
+    if img.width > 1920:
+        ratio = 1920 / img.width
+        img = img.resize((1920, int(img.height * ratio)), Image.LANCZOS)
+
+    import io, base64
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=80)
+    b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return {'ok': True, 'image_base64': b64, 'width': img.width, 'height': img.height,
+            'window_title': target.title, 'maximized': True}
+
 
 def click(x, y):
     """Click at screen coordinates."""
@@ -263,10 +309,17 @@ if __name__ == '__main__':
             result = screenshot(args[0] if args else None)
         elif cmd == 'list_windows':
             result = list_windows()
+        elif cmd == 'screenshot_window':
+            result = screenshot_window(' '.join(args))
         elif cmd == 'focus':
             result = focus_window(' '.join(args))
         elif cmd == 'click':
-            result = click(args[0], args[1])
+            # Support both "click 600 300" and "click 600,300"
+            if len(args) == 1 and ',' in args[0]:
+                parts = args[0].split(',')
+                result = click(parts[0], parts[1])
+            else:
+                result = click(args[0], args[1])
         elif cmd == 'doubleclick':
             result = doubleclick(args[0], args[1])
         elif cmd == 'rightclick':

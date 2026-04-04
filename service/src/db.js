@@ -3,7 +3,7 @@
 // Every write goes directly to disk. No in-memory buffer.
 // No data loss on crash or service restart.
 
-import Database from 'better-sqlite3';
+import Database from 'better-sqlite3-multiple-ciphers';
 import { readFileSync, existsSync, mkdirSync, statSync, readdirSync, realpathSync, copyFileSync, renameSync } from 'fs';
 import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
@@ -37,11 +37,49 @@ if (existsSync(LEGACY_DB_PATH) && !existsSync(DB_PATH)) {
   console.log(`[PAN DB] Migration complete. Old DB renamed to pan.db.migrated`);
 }
 
-// Open database — writes go directly to disk
+// Encryption key — stored outside the DB in AppData
+const KEY_PATH = join(DATA_DIR, 'pan.key');
+if (!existsSync(KEY_PATH)) {
+  const { randomBytes } = await import('crypto');
+  const { writeFileSync } = await import('fs');
+  writeFileSync(KEY_PATH, randomBytes(32).toString('hex'), 'utf-8');
+  console.log(`[PAN DB] Generated new encryption key at ${KEY_PATH}`);
+}
+const DB_KEY = readFileSync(KEY_PATH, 'utf-8').trim();
+
+// Auto-encrypt plaintext database if needed (one-time migration)
+const dbHeader = existsSync(DB_PATH) ? readFileSync(DB_PATH, { encoding: null, flag: 'r' }).subarray(0, 16) : null;
+const isPlaintext = dbHeader && dbHeader.toString('utf-8').startsWith('SQLite format 3');
+
+if (isPlaintext) {
+  console.log('[PAN DB] Encrypting plaintext database with SQLCipher...');
+  const plainDb = new Database(DB_PATH);
+  plainDb.pragma('journal_mode = DELETE');
+
+  const encPath = DB_PATH + '.encrypting';
+  if (existsSync(encPath)) { const { unlinkSync } = await import('fs'); unlinkSync(encPath); }
+
+  plainDb.exec(`ATTACH DATABASE '${encPath.replace(/\\/g, '\\\\')}' AS encrypted KEY '${DB_KEY}'`);
+  plainDb.exec("SELECT sqlcipher_export('encrypted')");
+  plainDb.exec('DETACH DATABASE encrypted');
+  plainDb.close();
+
+  const backupPath = DB_PATH + '.plaintext.migrated';
+  if (!existsSync(backupPath)) copyFileSync(DB_PATH, backupPath);
+  try { const { unlinkSync } = await import('fs'); unlinkSync(DB_PATH + '-wal'); } catch {}
+  try { const { unlinkSync } = await import('fs'); unlinkSync(DB_PATH + '-shm'); } catch {}
+
+  renameSync(encPath, DB_PATH);
+  console.log('[PAN DB] Encryption complete. Plaintext backup at', backupPath);
+}
+
+// Open database — encrypted with SQLCipher
 const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL'); // Write-Ahead Logging for better concurrent access
-db.pragma('busy_timeout = 5000'); // Wait up to 5s if locked
-db.pragma('foreign_keys = OFF'); // Session IDs are free-form, not enforced FK
+db.pragma("cipher = 'sqlcipher'");
+db.pragma(`key = '${DB_KEY}'`);
+db.pragma('journal_mode = WAL');
+db.pragma('busy_timeout = 5000');
+db.pragma('foreign_keys = OFF');
 
 // Run schema (CREATE IF NOT EXISTS — safe to run every startup)
 const schema = readFileSync(SCHEMA_PATH, 'utf-8');
@@ -308,4 +346,23 @@ function backfillFTS() {
 // Run backfill on startup
 try { backfillFTS(); } catch (err) { console.error('[PAN FTS] Backfill error:', err.message); }
 
-export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS };
+// Log an event and index it for FTS
+function logEvent(sessionId, eventType, data, userId = null) {
+  const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
+  let eventId;
+  if (userId) {
+    eventId = insert(
+      `INSERT INTO events (session_id, event_type, data, user_id) VALUES (:sid, :type, :data, :uid)`,
+      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':uid': userId }
+    );
+  } else {
+    eventId = insert(
+      `INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`,
+      { ':sid': sessionId, ':type': eventType, ':data': dataStr }
+    );
+  }
+  if (eventId) indexEventFTS(eventId, eventType, dataStr);
+  return eventId;
+}
+
+export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent };

@@ -143,6 +143,69 @@ fun SettingsScreen(
                 onToggle = { viewModel.setVoiceResponse(it) }
             )
 
+            // Voice Quality dropdown
+            var voiceExpanded by remember { mutableStateOf(false) }
+            var currentVoice by remember { mutableStateOf(
+                context.getSharedPreferences("pan_tts_prefs", android.content.Context.MODE_PRIVATE)
+                    .getString("voice_quality", "android") ?: "android"
+            ) }
+            var voiceStatus by remember { mutableStateOf("") }
+            val voiceOptions = listOf(
+                "android" to "Default (Android)",
+                "low" to "Piper Low (15MB)",
+                "medium" to "Piper Medium (60MB)",
+                "high" to "Piper High (110MB)"
+            )
+            ExposedDropdownMenuBox(
+                expanded = voiceExpanded,
+                onExpandedChange = { voiceExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = voiceOptions.firstOrNull { it.first == currentVoice }?.second ?: "Default",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Voice Quality") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = voiceExpanded) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                )
+                ExposedDropdownMenu(
+                    expanded = voiceExpanded,
+                    onDismissRequest = { voiceExpanded = false }
+                ) {
+                    voiceOptions.forEach { (id, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                currentVoice = id
+                                voiceExpanded = false
+                                context.getSharedPreferences("pan_tts_prefs", android.content.Context.MODE_PRIVATE)
+                                    .edit().putString("voice_quality", id).apply()
+                                if (id != "android") {
+                                    voiceStatus = "Downloading..."
+                                    scope.launch {
+                                        val piper = dev.pan.app.tts.PiperTtsEngine(context)
+                                        if (!piper.isFullyReady(id)) {
+                                            val ok = piper.downloadVoice(id)
+                                            voiceStatus = if (ok) "Ready — restart app to activate" else "Download failed"
+                                        } else {
+                                            voiceStatus = "Ready — restart app to activate"
+                                        }
+                                    }
+                                } else {
+                                    voiceStatus = ""
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+            if (voiceStatus.isNotEmpty()) {
+                Text(voiceStatus, style = MaterialTheme.typography.bodySmall,
+                    color = if (voiceStatus.contains("Ready")) MaterialTheme.colorScheme.primary
+                           else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
             SettingToggle(
                 title = "Sound Effects",
                 description = "Audio tone when a command is detected",
