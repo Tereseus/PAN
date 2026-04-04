@@ -173,6 +173,29 @@ class PanForegroundService : Service() {
 
             panLog("AI: all queries via server (Cerebras/Gemini through Tailscale)")
 
+            // Auto-download Piper TTS voice in background (never blocks startup)
+            CoroutineScope(Dispatchers.IO).launch {
+                val piper = tts.piper
+                val preferred = tts.voiceQuality
+                if (preferred != "android" && piper.isFullyReady(preferred)) {
+                    // Already downloaded — just activate
+                    mainHandler.post { tts.activateVoice(preferred) }
+                    panLog("Piper TTS: $preferred voice ready")
+                } else if (piper.getDownloadedVoices().isEmpty()) {
+                    panLog("Piper TTS: downloading medium voice (~60MB)...")
+                    val ok = piper.downloadVoice("medium")
+                    if (ok) {
+                        mainHandler.post {
+                            tts.voiceQuality = "medium"
+                            panLog("Piper TTS: medium voice ready")
+                            panSpeak("Voice upgraded. Piper is ready.")
+                        }
+                    } else {
+                        panLog("Piper TTS: download failed, using Android TTS")
+                    }
+                }
+            }
+
             // Voice collector — DISABLED on phone (Android can't run two AudioRecords)
             // Raw audio for voice training comes from PC mic or pendant
             // Phone only saves transcripts via STT callback

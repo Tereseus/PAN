@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Loading project...</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+    .loading { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+    .loading .spinner { width: 40px; height: 40px; border: 3px solid #222; border-top-color: #00ff88; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    .loading .status { font-size: 14px; color: #888; }
+    .loading .error { color: #ff4444; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    iframe { flex: 1; border: none; width: 100%; }
+    .topbar {
+      height: 32px; background: #111118; border-bottom: 1px solid #222;
+      display: flex; align-items: center; padding: 0 12px; gap: 12px; font-size: 12px;
+    }
+    .topbar .name { font-weight: 600; color: #00ff88; }
+    .topbar .dot { width: 6px; height: 6px; border-radius: 50%; background: #00ff88; box-shadow: 0 0 4px #00ff88; }
+    .topbar .info { color: #666; }
+    .topbar .close-btn { margin-left: auto; color: #666; cursor: pointer; padding: 2px 8px; border-radius: 3px; }
+    .topbar .close-btn:hover { background: #ff444430; color: #ff4444; }
+  </style>
+</head>
+<body>
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div class="status" id="statusText">Starting services...</div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const projectPath = params.get('path');
+    const PAN = window.location.origin;
+    const statusEl = document.getElementById('statusText');
+
+    async function launch() {
+      if (!projectPath) {
+        statusEl.textContent = 'No project path specified';
+        statusEl.className = 'status error';
+        return;
+      }
+
+      // 1. Get project info
+      statusEl.textContent = 'Loading project...';
+      let projectInfo;
+      try {
+        const res = await fetch(`${PAN}/api/v1/runner/project?path=${encodeURIComponent(projectPath)}`);
+        projectInfo = await res.json();
+      } catch (err) {
+        statusEl.textContent = 'Failed to connect to PAN';
+        statusEl.className = 'status error';
+        return;
+      }
+
+      if (!projectInfo.services || projectInfo.services.length === 0) {
+        statusEl.textContent = 'No services defined for this project';
+        statusEl.className = 'status error';
+        return;
+      }
+
+      // 2. Start all services that aren't running
+      for (const svc of projectInfo.services) {
+        if (svc.status !== 'running') {
+          statusEl.textContent = `Starting ${svc.name}...`;
+          try {
+            await fetch(`${PAN}/api/v1/runner/start`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: projectPath, service: svc.name })
+            });
+          } catch {}
+        }
+      }
+
+      // 3. Wait for the main service with a dashboard to be healthy
+      const dashSvc = projectInfo.services.find(s => s.dashboard) || projectInfo.services[0];
+      if (!dashSvc || !dashSvc.port || !dashSvc.dashboard) {
+        statusEl.textContent = 'No dashboard configured for this project';
+        statusEl.className = 'status error';
+        return;
+      }
+
+      statusEl.textContent = `Waiting for ${dashSvc.name} to be ready...`;
+      const dashUrl = `http://localhost:${dashSvc.port}${dashSvc.dashboard}`;
+      const healthUrl = dashSvc.health ? `http://localhost:${dashSvc.port}${dashSvc.health}` : dashUrl;
+
+      // Poll until healthy (up to 15 seconds)
+      let healthy = false;
+      for (let i = 0; i < 30; i++) {
+        try {
+          const r = await fetch(healthUrl);
+          if (r.ok) { healthy = true; break; }
+        } catch {}
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      if (!healthy) {
+        statusEl.textContent = `${dashSvc.name} failed to start`;
+        statusEl.className = 'status error';
+        return;
+      }
+
+      // 4. Replace loading screen with the project's actual dashboard
+      document.title = projectInfo.name;
+      document.getElementById('loading').remove();
+
+      // Add thin status bar
+      const topbar = document.createElement('div');
+      topbar.className = 'topbar';
+      topbar.innerHTML = `
+        <div class="dot"></div>
+        <div class="name">${projectInfo.name}</div>
+        <div class="info">Port ${dashSvc.port}</div>
+      `;
+      document.body.prepend(topbar);
+
+      // Load the actual project dashboard in an iframe
+      const iframe = document.createElement('iframe');
+      iframe.src = dashUrl;
+      document.body.appendChild(iframe);
+    }
+
+    launch();
+  </script>
+</body>
+</html>

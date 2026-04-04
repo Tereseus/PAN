@@ -250,6 +250,77 @@ CREATE TABLE IF NOT EXISTS ai_usage (
 CREATE INDEX IF NOT EXISTS idx_ai_usage_caller ON ai_usage(caller);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
 
+-- === THREE-TIER VECTOR MEMORY ===
+
+-- Episodic memory — records of what happened (interactions, events, outcomes)
+CREATE TABLE IF NOT EXISTS episodic_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    summary TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    episode_type TEXT DEFAULT 'interaction',  -- interaction, error, correction, decision
+    outcome TEXT DEFAULT 'success',           -- success, failure, partial, unknown
+    importance REAL DEFAULT 0.5,              -- 0.0-1.0, used for retrieval ranking
+    session_id TEXT REFERENCES sessions(id),
+    project_id INTEGER REFERENCES projects(id),
+    embedding BLOB,                           -- vector embedding for semantic search
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodic_created ON episodic_memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_episodic_project ON episodic_memories(project_id);
+CREATE INDEX IF NOT EXISTS idx_episodic_importance ON episodic_memories(importance);
+
+-- Semantic memory — knowledge graph (subject-predicate-object triples with contradiction detection)
+CREATE TABLE IF NOT EXISTS semantic_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    category TEXT DEFAULT 'domain_knowledge',  -- user_preference, correction, domain_knowledge, project_fact
+    confidence REAL DEFAULT 0.8,
+    version INTEGER DEFAULT 1,
+    previous_version_id INTEGER REFERENCES semantic_facts(id),
+    valid_until TEXT,                          -- NULL = current, set when superseded
+    embedding BLOB,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_subject ON semantic_facts(subject);
+CREATE INDEX IF NOT EXISTS idx_semantic_category ON semantic_facts(category);
+CREATE INDEX IF NOT EXISTS idx_semantic_valid ON semantic_facts(valid_until);
+
+-- Procedural memory — learned multi-step procedures with success tracking
+CREATE TABLE IF NOT EXISTS procedural_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL,
+    trigger_pattern TEXT DEFAULT '',           -- regex/keyword that activates this procedure
+    steps TEXT NOT NULL DEFAULT '[]',          -- JSON array of step objects
+    preconditions TEXT DEFAULT '[]',
+    postconditions TEXT DEFAULT '[]',
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    embedding BLOB,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_procedural_name ON procedural_memories(name);
+
+-- Evolution versions — tracks config file changes from the self-improvement pipeline
+CREATE TABLE IF NOT EXISTS evolution_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_file TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    diff_from_previous TEXT,
+    validation_result TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evolution_file ON evolution_versions(config_file, version);
+
 -- Full-text search index for events — enables instant ranked search across all history
 -- content_text stores the clean extracted text, synced on insert via application code
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(

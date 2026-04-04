@@ -18,19 +18,54 @@ class TtsManager @Inject constructor(
 
     companion object {
         private const val TAG = "PanTTS"
+        private const val PREFS = "pan_tts_prefs"
+        private const val KEY_VOICE = "voice_quality"
     }
 
     private var tts: TextToSpeech? = null
     private var ready = false
 
-    // Callback to mute/unmute mic while speaking — set by PanForegroundService
+    // Piper engine — created but NEVER loads a model until files are confirmed ready
+    val piper = PiperTtsEngine(context)
+    private var piperActive = false
+
     var onSpeakingStateChanged: ((Boolean) -> Unit)? = null
+        set(value) {
+            field = value
+            piper.onSpeakingStateChanged = value
+        }
 
     val isSpeaking: Boolean
-        get() = tts?.isSpeaking == true
+        get() = if (piperActive) piper.isSpeaking else tts?.isSpeaking == true
+
+    var voiceQuality: String
+        get() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_VOICE, "android") ?: "android"
+        set(value) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_VOICE, value).apply()
+            activateVoice(value)
+        }
 
     init {
         tts = TextToSpeech(context, this)
+        // Do NOT load Piper here — wait until explicitly activated after download
+    }
+
+    /** Call this ONLY when piper.isFullyReady(quality) is true */
+    fun activateVoice(quality: String) {
+        if (quality == "android") {
+            piperActive = false
+            Log.i(TAG, "Using Android TTS")
+            return
+        }
+        if (piper.isFullyReady(quality) && piper.setVoice(quality)) {
+            piperActive = true
+            Log.i(TAG, "Piper active: $quality")
+        } else {
+            piperActive = false
+            Log.w(TAG, "Piper '$quality' not ready, using Android TTS")
+        }
     }
 
     override fun onInit(status: Int) {
@@ -39,7 +74,6 @@ class TtsManager @Inject constructor(
             tts?.setSpeechRate(1.1f)
             tts?.setPitch(0.95f)
 
-            // Use USAGE_ASSISTANT so volume keys adjust volume without stopping TTS
             tts?.setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANT)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -64,42 +98,48 @@ class TtsManager @Inject constructor(
                 }
             }
 
-            // Track when TTS starts/stops speaking so we can mute the mic
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    Log.d(TAG, "TTS started speaking")
-                    onSpeakingStateChanged?.invoke(true)
+                    if (!piperActive) onSpeakingStateChanged?.invoke(true)
                 }
-
                 override fun onDone(utteranceId: String?) {
-                    Log.d(TAG, "TTS done speaking")
-                    onSpeakingStateChanged?.invoke(false)
+                    if (!piperActive) onSpeakingStateChanged?.invoke(false)
                 }
-
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
-                    Log.e(TAG, "TTS error")
-                    onSpeakingStateChanged?.invoke(false)
+                    if (!piperActive) onSpeakingStateChanged?.invoke(false)
                 }
             })
 
             ready = true
             Log.i(TAG, "TTS initialized")
+
+            // Now try to activate Piper if user had it selected and files are ready
+            val q = voiceQuality
+            if (q != "android" && piper.isFullyReady(q)) {
+                activateVoice(q)
+            }
         } else {
             Log.e(TAG, "TTS init failed: $status")
         }
     }
 
     fun speak(text: String) {
-        if (!ready || text.isBlank()) return
+        if (text.isBlank()) return
 
-        // Strip markdown formatting so TTS doesn't read "star star bold star star"
+        if (piperActive) {
+            piper.speak(text)
+            return
+        }
+
+        // Android TTS fallback
+        if (!ready) return
         var cleaned = text
-            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")  // **bold** → bold
-            .replace(Regex("\\*(.+?)\\*"), "$1")          // *italic* → italic
-            .replace(Regex("`(.+?)`"), "$1")               // `code` → code
-            .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")  // # headers
-            .replace(Regex("^[\\-*]\\s+", RegexOption.MULTILINE), "") // - bullet points
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+            .replace(Regex("\\*(.+?)\\*"), "$1")
+            .replace(Regex("`(.+?)`"), "$1")
+            .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")
+            .replace(Regex("^[\\-*]\\s+", RegexOption.MULTILINE), "")
             .trim()
         val spoken = if (cleaned.length > 500) cleaned.take(500) + "... see full response in the app." else cleaned
         val params = Bundle()
@@ -108,10 +148,12 @@ class TtsManager @Inject constructor(
     }
 
     fun stop() {
+        piper.stop()
         tts?.stop()
     }
 
     fun destroy() {
+        piper.destroy()
         tts?.stop()
         tts?.shutdown()
         tts = null
