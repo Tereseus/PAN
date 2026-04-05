@@ -965,62 +965,130 @@
 		} catch {}
 	}
 
-	let mediaRecorder = null;
-	let audioChunks = [];
+	let voiceStream = null;
+	let voiceWs = null;
+	let voiceProcessor = null;
+	let voiceContext = null;
 
 	function toggleVoiceInput() {
 		if (isListening) {
-			stopVoiceRecording();
+			stopVoiceStreaming();
 		} else {
-			startVoiceRecording();
+			startVoiceStreaming();
 		}
 	}
 
-	async function startVoiceRecording() {
+	async function startVoiceStreaming() {
 		try {
-			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-			mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-			audioChunks = [];
-			mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
-			mediaRecorder.onstop = async () => {
-				stream.getTracks().forEach(t => t.stop());
-				if (audioChunks.length === 0) return;
-				const blob = new Blob(audioChunks, { type: 'audio/webm' });
-				await sendToWhisper(blob);
-			};
-			mediaRecorder.start();
+			// Get mic stream
+			voiceStream = await navigator.mediaDevices.getUserMedia({
+				audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+			});
 			isListening = true;
+
+			// Connect WebSocket to Whisper streaming server
+			const wsPort = 7783; // Whisper WS port = HTTP port + 1
+			voiceWs = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+			voiceWs.binaryType = 'arraybuffer';
+
+			voiceWs.onmessage = (e) => {
+				try {
+					const msg = JSON.parse(e.data);
+					if (msg.text !== undefined) {
+						terminalInputText = msg.text;
+					}
+					if (msg.action === 'send' && msg.type === 'final') {
+						// "over" trigger — auto-send
+						setTimeout(() => sendTerminalInput(), 100);
+						stopVoiceStreaming();
+					}
+				} catch {}
+			};
+
+			voiceWs.onclose = () => {
+				if (isListening) stopVoiceStreaming();
+			};
+
+			voiceWs.onerror = (err) => {
+				console.error('[Voice] WS error:', err);
+				// Fall back to batch mode
+				stopVoiceStreaming();
+				startBatchRecording();
+			};
+
+			// Wait for WS to open, then start streaming audio
+			voiceWs.onopen = () => {
+				voiceWs.send(JSON.stringify({ type: 'config', sample_rate: 16000 }));
+				startAudioStreaming(voiceStream);
+			};
 		} catch (err) {
 			console.error('[Voice] Mic access failed:', err);
 			isListening = false;
 		}
 	}
 
-	function stopVoiceRecording() {
-		if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-			mediaRecorder.stop();
-		}
-		isListening = false;
+	function startAudioStreaming(stream) {
+		// Use AudioWorklet or ScriptProcessor to get raw PCM
+		voiceContext = new AudioContext({ sampleRate: 16000 });
+		const source = voiceContext.createMediaStreamSource(stream);
+
+		// ScriptProcessor for broad compatibility (AudioWorklet needs separate file)
+		voiceProcessor = voiceContext.createScriptProcessor(4096, 1, 1);
+		voiceProcessor.onaudioprocess = (e) => {
+			if (!voiceWs || voiceWs.readyState !== 1) return;
+			const float32 = e.inputBuffer.getChannelData(0);
+			// Convert float32 to int16 PCM
+			const int16 = new Int16Array(float32.length);
+			for (let i = 0; i < float32.length; i++) {
+				int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
+			}
+			voiceWs.send(int16.buffer);
+		};
+
+		source.connect(voiceProcessor);
+		voiceProcessor.connect(voiceContext.destination);
 	}
 
-	async function sendToWhisper(blob) {
-		try {
-			const resp = await fetch('/api/v1/whisper/transcribe', {
-				method: 'POST',
-				headers: { 'Content-Type': 'audio/webm' },
-				body: blob,
-			});
-			if (resp.ok) {
-				const data = await resp.json();
-				if (data.text) {
-					terminalInputText = (terminalInputText ? terminalInputText + ' ' : '') + data.text.trim();
-				}
-			} else {
-				console.error('[Voice] Whisper returned', resp.status);
-			}
-		} catch (err) {
-			console.error('[Voice] Whisper transcribe failed:', err);
+	function stopVoiceStreaming() {
+		isListening = false;
+		if (voiceWs && voiceWs.readyState === 1) {
+			voiceWs.send(JSON.stringify({ type: 'stop' }));
+			// Wait briefly for final transcription before closing
+			setTimeout(() => { try { voiceWs.close(); } catch {} }, 1000);
 		}
+		if (voiceProcessor) { try { voiceProcessor.disconnect(); } catch {} voiceProcessor = null; }
+		if (voiceContext) { try { voiceContext.close(); } catch {} voiceContext = null; }
+		if (voiceStream) { voiceStream.getTracks().forEach(t => t.stop()); voiceStream = null; }
+	}
+
+	// Batch fallback if WebSocket streaming isn't available
+	let mediaRecorder = null;
+	let audioChunks = [];
+
+	function startBatchRecording() {
+		navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+			mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+			audioChunks = [];
+			isListening = true;
+			mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+			mediaRecorder.onstop = async () => {
+				stream.getTracks().forEach(t => t.stop());
+				isListening = false;
+				if (audioChunks.length === 0) return;
+				const blob = new Blob(audioChunks, { type: 'audio/webm' });
+				try {
+					const resp = await fetch('/api/v1/whisper/transcribe', {
+						method: 'POST', headers: { 'Content-Type': 'audio/webm' }, body: blob,
+					});
+					if (resp.ok) {
+						const data = await resp.json();
+						if (data.text) terminalInputText = (terminalInputText ? terminalInputText + ' ' : '') + data.text.trim();
+						if (data.action === 'send') setTimeout(() => sendTerminalInput(), 100);
+					}
+				} catch (err) { console.error('[Voice] Batch transcribe failed:', err); }
+			};
+			mediaRecorder.start();
+		}).catch(() => { isListening = false; });
 	}
 
 	function switchCenterView(view) {
