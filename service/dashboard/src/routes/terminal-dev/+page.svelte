@@ -1,5 +1,5 @@
 <script>
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { api, wsUrl } from '$lib/api.js';
 	import { getActiveProject, setActiveProject, sortProjects, getTerminalInput, setTerminalInput } from '$lib/stores.svelte.js';
 
@@ -9,7 +9,7 @@
 	let activeTabId = $state(null);
 	let leftTab = $state('transcript'); // any widget: 'transcript' | 'project' | 'services' | 'tasks' | 'bugs' | 'setup' | 'instances' | 'apps'
 	let rightSection = $state('tests'); // default to tests on dev
-	let viewMode = $state('terminal'); // 'terminal' | 'chat'
+	// viewMode removed — terminal output IS the chat now
 	let rightPanelCollapsed = $state(false);
 	let leftPanelCollapsed = $state(false);
 	let leftPanelWidth = $state(260);
@@ -54,7 +54,7 @@
 	let terminalInputEl;
 	let pastedImages = $state([]); // {dataUrl, path} — images waiting to be sent
 	let uploadingImages = $state(0); // count of images still uploading
-	let directMode = $state(false); // true = typing goes directly to terminal
+	// directMode removed — all input goes through the input bar
 	let voiceRecording = $state(false); // voice-to-text active
 	let pendingSend = $state(false); // queued send waiting for image upload or text paste
 	let pasteInProgress = $state(false); // clipboard read in progress
@@ -102,11 +102,6 @@
 		document.body.style.userSelect = '';
 		window.removeEventListener('mousemove', onResizeMove);
 		window.removeEventListener('mouseup', onResizeEnd);
-		// Re-fit terminal after resize
-		setTimeout(() => {
-			const tab = getActiveTab();
-			if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} }
-		}, 50);
 	}
 
 	// ==================== Projects ====================
@@ -167,73 +162,55 @@
 		createTab(sessionId, projectName, cwd, projectId, false);
 	}
 
+	// ==================== ANSI Parser ====================
+	// Converts raw terminal output (with ANSI escape codes) to styled HTML spans
+	// No ansiToHtml needed — server renders terminal output to HTML via @xterm/headless
+
 	async function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
 		const tabId = 'tab-' + (++tabCounter);
 
-		// Dynamic imports for xterm
-		const { Terminal } = await import('@xterm/xterm');
-		const { FitAddon } = await import('@xterm/addon-fit');
-		const { WebLinksAddon } = await import('@xterm/addon-web-links');
-		await import('@xterm/xterm/css/xterm.css');
-
-		// Create a container div for this tab
+		// Server-side rendered terminal — just a scrollable div that displays pre-rendered HTML lines
 		const tabContainer = document.createElement('div');
 		tabContainer.id = 'term-' + tabId;
-		tabContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;display:none';
+		tabContainer.className = 'term-output';
+		tabContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:44px;display:none;overflow-y:auto;overflow-x:hidden;font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace;font-size:14px;line-height:1.5;color:#cdd6f4;';
+
+		// Scrollback div (history above visible screen)
+		const scrollbackDiv = document.createElement('div');
+		scrollbackDiv.className = 'term-scrollback';
+		scrollbackDiv.style.cssText = 'padding:8px 12px;white-space:pre;';
+		tabContainer.appendChild(scrollbackDiv);
+
+		// Screen div (current visible terminal screen — fixed height grid)
+		const screenDiv = document.createElement('div');
+		screenDiv.className = 'term-screen';
+		screenDiv.style.cssText = 'padding:0 12px;white-space:pre;min-height:100%;';
+		tabContainer.appendChild(screenDiv);
+
 		termContainerEl.appendChild(tabContainer);
-
-		const tabTerm = new Terminal({
-			theme: {
-				background: '#1e1e2e',
-				foreground: '#cdd6f4',
-				cursor: '#f5e0dc',
-				cursorAccent: '#1e1e2e',
-				selectionBackground: '#45475a',
-				black: '#45475a',
-				red: '#f38ba8',
-				green: '#a6e3a1',
-				yellow: '#f9e2af',
-				blue: '#89b4fa',
-				magenta: '#cba6f7',
-				cyan: '#94e2d5',
-				white: '#bac2de',
-				brightBlack: '#585b70',
-				brightRed: '#f38ba8',
-				brightGreen: '#a6e3a1',
-				brightYellow: '#f9e2af',
-				brightBlue: '#89b4fa',
-				brightMagenta: '#cba6f7',
-				brightCyan: '#94e2d5',
-				brightWhite: '#a6adc8',
-			},
-			fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
-			fontSize: 14,
-			cursorBlink: true,
-			scrollback: 5000,
-			allowProposedApi: true,
-			rescaleOverlappingGlyphs: true,
-		});
-
-		const fitAddon = new FitAddon();
-		tabTerm.loadAddon(fitAddon);
-		tabTerm.loadAddon(new WebLinksAddon());
-		tabTerm.open(tabContainer);
 
 		const tabData = {
 			id: tabId,
 			sessionId,
-			term: tabTerm,
-			fitAddon,
 			ws: null,
 			project: projectName,
 			cwd,
 			projectId,
 			claudeStarted: false,
 			container: tabContainer,
+			scrollbackDiv,
+			screenDiv,
 			host: '',
 			_closing: false,
-			claudeSessionIds: [], // tracks which Claude sessions are running in this tab
+			claudeSessionIds: [],
+			userScrolledUp: false,
 		};
+
+		// Track if user has scrolled up (don't auto-scroll if so)
+		tabContainer.addEventListener('scroll', () => {
+			const atBottom = tabContainer.scrollHeight - tabContainer.scrollTop - tabContainer.clientHeight < 40;
+			tabData.userScrolledUp = !atBottom;
+		});
 
 		// Show only this tab's container
 		tabs.forEach(t => { if (t.container) t.container.style.display = 'none'; });
@@ -243,79 +220,13 @@
 		activeTabId = tabId;
 		sessionsCount = tabs.length;
 
-		// Smart scroll — only auto-scroll if user is already at the bottom
-		// If user scrolled up, lock their position so new output doesn't move them
-		function isAtBottom(term) {
-			const buf = term.buffer.active;
-			return buf.viewportY >= buf.baseY;
-		}
-		function smartScroll(term) {
-			if (isAtBottom(term)) term.scrollToBottom();
-		}
-		function getScrollPos(term) {
-			return { viewportY: term.buffer.active.viewportY, atBottom: isAtBottom(term) };
-		}
-		function restoreScrollPos(term, saved) {
-			if (saved.atBottom) {
-				term.scrollToBottom();
-			} else {
-				// Restore exact line position
-				term.scrollToLine(saved.viewportY);
-			}
-		}
-
-		// Fit helper
-		let lastCols = 0, lastRows = 0;
-		function doFit() {
-			try { fitAddon.fit(); } catch { return; }
-			if (tabTerm.cols !== lastCols || tabTerm.rows !== lastRows) {
-				lastCols = tabTerm.cols;
-				lastRows = tabTerm.rows;
-				if (tabData.ws && tabData.ws.readyState === 1) {
-					tabData.ws.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
-				}
-				try { tabTerm.refresh(0, tabTerm.rows - 1); } catch {}
-			}
-			smartScroll(tabTerm);
-		}
-
-		// ResizeObserver — only re-fit if terminal container size changed enough to matter
-		let resizeTimer = null;
-		let lastObsWidth = 0, lastObsHeight = 0;
-		const resizeObs = new ResizeObserver((entries) => {
-			if (activeTabId !== tabId) return;
-			const entry = entries[0];
-			if (!entry) return;
-			const w = Math.round(entry.contentRect.width);
-			const h = Math.round(entry.contentRect.height);
-			// Skip if height changed by less than one row (~20px) — avoids flash from input bar resize
-			if (Math.abs(w - lastObsWidth) < 10 && Math.abs(h - lastObsHeight) < 20) return;
-			lastObsWidth = w;
-			lastObsHeight = h;
-			if (resizeTimer) clearTimeout(resizeTimer);
-			resizeTimer = setTimeout(doFit, 300);
-		});
-		resizeObs.observe(termContainerEl);
-
-		// Wait for layout to settle before connecting
-		function waitForLayout(cb, attempt = 0) {
-			doFit();
-			if (tabTerm.cols < 20 && attempt < 30) {
-				setTimeout(() => waitForLayout(cb, attempt + 1), 50);
-				return;
-			}
-			cb();
-		}
-
-		waitForLayout(() => {
-			const wsCols = tabTerm.cols > 20 ? tabTerm.cols : 120;
-			const wsRows = tabTerm.rows > 5 ? tabTerm.rows : 30;
-			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${wsCols}&rows=${wsRows}`);
+		// Connect WebSocket — uses server-side rendered terminal endpoint
+		{
+			const wsUrlStr = wsUrl(`/ws/terminal-dev?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=120&rows=30`);
 
 			const ws = new WebSocket(wsUrlStr);
 			tabData.ws = ws;
 
-			let firstOutput = true;
 			let hasExistingBuffer = false;
 			let reconnectAttempts = 0;
 			let reconnectTimer = null;
@@ -339,47 +250,49 @@
 				try {
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
-						case 'output': {
-							if (firstOutput) {
-								firstOutput = false;
-								hasExistingBuffer = msg.data.length > 100;
-								tabTerm.clear();
-								doFit();
+						case 'screen': {
+							// Server sends pre-rendered HTML lines — just display them
+							if (msg.scrollback && msg.scrollback.length > 0) {
+								scrollbackDiv.innerHTML = msg.scrollback.join('\n');
 							}
-							const saved = getScrollPos(tabTerm);
-							tabTerm.write(msg.data, () => {
-								restoreScrollPos(tabTerm, saved);
-							});
+							screenDiv.innerHTML = msg.lines.join('\n');
+
+							// Auto-scroll to bottom unless user scrolled up
+							if (!tabData.userScrolledUp) {
+								tabContainer.scrollTop = tabContainer.scrollHeight;
+							}
+
+							// Detect if buffer has content (for auto-launch logic)
+							if (!hasExistingBuffer && msg.lines.some(l => l.trim().length > 0)) {
+								hasExistingBuffer = true;
+							}
 							break;
 						}
 						case 'info':
 							tabData.host = msg.host || '';
-							if (msg.claudeLaunched) tabData.claudeStarted = true; // server already launched Claude — don't duplicate
+							if (msg.claudeLaunched) tabData.claudeStarted = true;
 							if (activeTabId === tabId) {
 								hostLabel = `${msg.host} \u2014 ${msg.project || 'shell'}`;
 							}
-							tabs = [...tabs]; // trigger reactivity
+							tabs = [...tabs];
 							break;
 						case 'exit':
-							tabTerm.write('\r\n\x1b[38;5;243m[Session ended]\x1b[0m\r\n');
+							screenDiv.innerHTML += '\n<span style="color:#585b70">[Session ended]</span>';
 							break;
 						case 'error':
-							tabTerm.write('\r\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\r\n');
+							screenDiv.innerHTML += '\n<span style="color:#f38ba8">[Error: ' + msg.message + ']</span>';
 							addAlert('error', 'Terminal Error', msg.message, tabData.project);
 							break;
 						case 'chat_update': {
-							lastChatSessionKey = ''; // invalidate cache so new messages load
-							// Associate this Claude session with the active tab if not already tracked
+							lastChatSessionKey = '';
 							const updateSid = msg.session_id || '';
 							if (updateSid && !updateSid.startsWith('system-') && !updateSid.startsWith('phone-') && !updateSid.startsWith('router-') && !updateSid.startsWith('dev-dash-') && !updateSid.startsWith('mob-')) {
-								// Check if any tab already owns this session
 								const ownerTab = tabs.find(t => t.claudeSessionIds.includes(updateSid));
 								if (!ownerTab) {
-									// Assign to active tab
 									const activeTab = getActiveTab();
 									if (activeTab) {
 										activeTab.claudeSessionIds = [...new Set([...activeTab.claudeSessionIds, updateSid])];
-										tabs = [...tabs]; // trigger reactivity
+										tabs = [...tabs];
 									}
 								}
 							}
@@ -394,7 +307,7 @@
 						case 'server_restarting':
 							serverRestarting = true;
 							reconnectAttempts = 0;
-							tabTerm.write('\r\n\x1b[38;5;179m[Server restarting \u2014 will reconnect automatically...]\x1b[0m');
+							screenDiv.innerHTML += '\n<span style="color:#f9e2af">[Server restarting — will reconnect automatically...]</span>';
 							break;
 					}
 				} catch {}
@@ -404,8 +317,6 @@
 				if (reconnectTimer) return;
 				reconnectAttempts++;
 				const delay = Math.min(reconnectAttempts * 1000, 5000);
-				const label = serverRestarting ? 'Server restarting' : 'Reconnecting';
-				tabTerm.write(`\r\n\x1b[38;5;179m[${label}... attempt ${reconnectAttempts}]\x1b[0m`);
 
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = null;
@@ -416,31 +327,20 @@
 						reconnectAttempts = 0;
 						serverRestarting = false;
 						tabData.ws = newWs;
-						tabTerm.write('\r\n\x1b[38;5;114m[Reconnected]\x1b[0m\r\n');
-						doFit();
 						startPing();
-						newWs.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
-
-						// On reconnect, don't re-launch Claude — hasExistingBuffer will be true
-						// since the server sends back the PTY buffer
 					};
 					newWs.onmessage = handleMessage;
 					newWs.onclose = () => {
 						stopPing();
 						if (tabData._closing) return;
 						if (reconnectAttempts < 30) reconnect();
-						else tabTerm.write('\r\n\x1b[38;5;204m[Connection lost \u2014 refresh page to retry]\x1b[0m\r\n');
 					};
 					newWs.onerror = () => {};
 				}, delay);
 			}
 
 			ws.onopen = () => {
-				doFit();
-				if (tabTerm.cols > 0 && tabTerm.rows > 0) {
-					ws.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
-				}
-				if (activeTabId === tabId && terminalInputEl) terminalInputEl.focus();
+				if (terminalInputEl) terminalInputEl.focus();
 				startPing();
 
 				// Auto-launch Claude for project tabs
@@ -450,7 +350,7 @@
 							tabData.claudeStarted = true;
 							let briefingReady = false;
 							try {
-								const briefingData = await fetch(api('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd))).then(r => r.json());
+								const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
 								if (briefingData.briefing) {
 									ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
 									briefingReady = true;
@@ -476,51 +376,7 @@
 			};
 
 			ws.onerror = () => {};
-		});
-
-		// Key handler: block xterm from processing paste/copy, let browser handle natively
-		tabTerm.attachCustomKeyEventHandler((ev) => {
-			if (ev.type !== 'keydown') return true;
-			// Ctrl+C: copy selection
-			if (ev.ctrlKey && ev.key === 'c') {
-				const sel = tabTerm.getSelection();
-				if (sel && sel.length > 0) {
-					navigator.clipboard.writeText(sel);
-					tabTerm.clearSelection();
-					return false;
-				}
-				return true;
-			}
-			if (ev.ctrlKey && ev.shiftKey && ev.key === 'C') {
-				const sel = tabTerm.getSelection();
-				if (sel) navigator.clipboard.writeText(sel);
-				return false;
-			}
-			// Block xterm from handling Ctrl+V — let browser fire paste event on our textarea
-			if ((ev.ctrlKey && ev.key === 'v') || (ev.ctrlKey && ev.shiftKey && ev.key === 'V')) {
-				return false;
-			}
-			return true;
-		});
-
-		// Input handling
-		tabTerm.onData((data) => {
-			const activeWs = tabData.ws;
-			if (!activeWs || activeWs.readyState !== 1) return;
-			activeWs.send(JSON.stringify({ type: 'input', data }));
-		});
-
-		tabTerm.onResize(({ cols, rows }) => {
-			const activeWs = tabData.ws;
-			if (activeWs && activeWs.readyState === 1) {
-				activeWs.send(JSON.stringify({ type: 'resize', cols, rows }));
-			}
-		});
-
-		// Multi-fit passes for layout settling
-		setTimeout(doFit, 50);
-		setTimeout(doFit, 200);
-		setTimeout(doFit, 500);
+		}
 
 		// Load sidebar data
 		loadTerminalSidebar(projectId, projectName);
@@ -539,27 +395,11 @@
 		activeTabId = tabId;
 		hostLabel = tab.host ? `${tab.host} \u2014 ${tab.project || 'shell'}` : '';
 
-		// Re-fit
-		setTimeout(() => {
-			try {
-				tab.fitAddon.fit();
-				tab.term.refresh(0, tab.term.rows - 1);
-				if (tab.ws && tab.ws.readyState === 1) {
-					tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
-				}
-			} catch {}
-			if (terminalInputEl) terminalInputEl.focus();
-		}, 100);
-		setTimeout(() => {
-			try {
-				tab.fitAddon.fit();
-				tab.term.refresh(0, tab.term.rows - 1);
-			} catch {}
-		}, 500);
+		if (terminalInputEl) terminalInputEl.focus();
 
 		// Reload sidebar and transcript for the new tab
 		loadTerminalSidebar(tab.projectId, tab.project);
-		lastChatSessionKey = ''; // force transcript refresh for this tab's sessions
+		lastChatSessionKey = '';
 		if (leftTab === 'transcript') {
 			loadChatHistory();
 		}
@@ -574,7 +414,6 @@
 
 		tab._closing = true;
 		if (tab.ws) tab.ws.close();
-		if (tab.term) tab.term.dispose();
 		if (tab.container) tab.container.remove();
 
 		tabs = tabs.filter(t => t.id !== tabId);
@@ -662,22 +501,94 @@
 		}
 	}
 
-	// ==================== Voice ====================
+	// ==================== Voice (Whisper via browser mic) ====================
+
+	let mediaRecorder = null;
+	let audioChunks = [];
 
 	async function toggleVoice() {
-		voiceRecording = !voiceRecording;
-		// Focus the input so voice-to-text goes there
-		if (terminalInputEl) terminalInputEl.focus();
-		// Trigger voice via the server (sends keypress to AHK/pan-voice)
-		try {
-			await api('/api/v1/voice/toggle', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: voiceRecording ? 'start' : 'stop' }),
-			});
-		} catch {
-			// No voice endpoint yet — button just shows visual state
-			// Voice-to-text can be triggered with the physical mouse button (XButton2)
+		if (voiceRecording) {
+			// Stop recording — send to Whisper
+			voiceRecording = false;
+			if (mediaRecorder && mediaRecorder.state === 'recording') {
+				mediaRecorder.stop();
+			}
+		} else {
+			// Start recording from browser mic
+			try {
+				const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+				audioChunks = [];
+				mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+				mediaRecorder.ondataavailable = (e) => {
+					if (e.data.size > 0) audioChunks.push(e.data);
+				};
+
+				mediaRecorder.onstop = async () => {
+					// Stop all mic tracks
+					stream.getTracks().forEach(t => t.stop());
+
+					if (audioChunks.length === 0) return;
+
+					const blob = new Blob(audioChunks, { type: 'audio/webm' });
+
+					try {
+						// Convert webm to wav using AudioContext
+						const arrayBuffer = await blob.arrayBuffer();
+						const audioCtx = new AudioContext({ sampleRate: 16000 });
+						const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+						const pcmData = audioBuffer.getChannelData(0);
+
+						// Build WAV file
+						const wavBuffer = new ArrayBuffer(44 + pcmData.length * 2);
+						const view = new DataView(wavBuffer);
+						const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+						writeStr(0, 'RIFF');
+						view.setUint32(4, 36 + pcmData.length * 2, true);
+						writeStr(8, 'WAVE');
+						writeStr(12, 'fmt ');
+						view.setUint32(16, 16, true);
+						view.setUint16(20, 1, true); // PCM
+						view.setUint16(22, 1, true); // mono
+						view.setUint32(24, 16000, true); // sample rate
+						view.setUint32(28, 32000, true); // byte rate
+						view.setUint16(32, 2, true); // block align
+						view.setUint16(34, 16, true); // bits per sample
+						writeStr(36, 'data');
+						view.setUint32(40, pcmData.length * 2, true);
+						for (let i = 0; i < pcmData.length; i++) {
+							const s = Math.max(-1, Math.min(1, pcmData[i]));
+							view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+						}
+						audioCtx.close();
+
+						// Send WAV to Whisper endpoint
+						const res = await fetch('/api/v1/whisper', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/octet-stream' },
+							body: new Uint8Array(wavBuffer),
+						});
+						const data = await res.json();
+
+						if (data.ok && data.text) {
+							terminalInputText = (terminalInputText ? terminalInputText + ' ' : '') + data.text;
+							if (terminalInputEl) {
+								terminalInputEl.focus();
+								terminalInputEl.style.height = 'auto';
+								terminalInputEl.style.height = Math.min(terminalInputEl.scrollHeight, 118) + 'px';
+							}
+						}
+					} catch (err) {
+						console.error('[Voice] Whisper error:', err);
+					}
+				};
+
+				mediaRecorder.start();
+				voiceRecording = true;
+				if (terminalInputEl) terminalInputEl.focus();
+			} catch (err) {
+				console.error('[Voice] Mic access error:', err);
+			}
 		}
 	}
 
@@ -853,10 +764,7 @@
 		}
 	}
 
-	// Need tick for scroll
-	function tick() {
-		return new Promise(r => setTimeout(r, 0));
-	}
+	// tick imported from Svelte
 
 	// ==================== Right Panel ====================
 
@@ -1053,8 +961,8 @@
 			e.preventDefault();
 			tab.ws.send(JSON.stringify({ type: 'input', data: '\x1b[B' }));
 		} else if (e.ctrlKey && e.key.length === 1) {
-			// In chat mode, let browser handle Ctrl+C/V/A/X/Z natively
-			if (!directMode && 'cvaxz'.includes(e.key.toLowerCase())) return;
+			// Let browser handle Ctrl+C/V/A/X/Z natively in the input
+			if ('cvaxz'.includes(e.key.toLowerCase())) return;
 			e.preventDefault();
 			const code = e.key.charCodeAt(0) - 96;
 			if (code > 0 && code < 27) {
@@ -1106,12 +1014,8 @@
 				return;
 			}
 		}
-		// Text paste — send directly to terminal
-		const text = e.clipboardData?.getData('text');
-		if (text && tab?.ws && tab.ws.readyState === 1) {
-			e.preventDefault();
-			tab.ws.send(JSON.stringify({ type: 'input', data: text }));
-		}
+		// Text paste — insert into input bar
+		// (browser default will handle it since focus is on textarea)
 	}
 
 	// ==================== Init ====================
@@ -1233,20 +1137,8 @@
 
 		// Alt+V focuses the input bar, Ctrl+V pastes via Clipboard API
 		const handleKeyDown = async (e) => {
-			// Alt+D: toggle between chat input and direct terminal mode
-			if (e.altKey && (e.key === 'd' || e.key === 'D')) {
-				e.preventDefault();
-				directMode = !directMode;
-				if (directMode) {
-					const tab = getActiveTab();
-					if (tab?.term) tab.term.focus();
-				} else {
-					if (terminalInputEl) terminalInputEl.focus();
-				}
-				return;
-			}
-			// Escape in chat mode: send Ctrl+C to terminal (stop running command)
-			if (e.key === 'Escape' && !directMode) {
+			// Escape: send Ctrl+C to terminal (stop running command)
+			if (e.key === 'Escape') {
 				e.preventDefault();
 				const tab = getActiveTab();
 				if (tab?.ws && tab.ws.readyState === 1) {
@@ -1309,22 +1201,17 @@
 							return;
 						}
 					}
-					// No image — paste text into textarea (chat mode) or terminal (direct mode)
+					// No image — paste text into textarea
 					if (!foundImage) {
 						const text = await navigator.clipboard.readText();
 						if (text) {
-							if (inTextarea && !directMode) {
-								// Insert text at cursor in textarea
-								const start = terminalInputEl.selectionStart;
-								const end = terminalInputEl.selectionEnd;
-								terminalInputText = terminalInputText.substring(0, start) + text + terminalInputText.substring(end);
-								await tick();
+							const start = terminalInputEl?.selectionStart || 0;
+							const end = terminalInputEl?.selectionEnd || 0;
+							terminalInputText = terminalInputText.substring(0, start) + text + terminalInputText.substring(end);
+							await tick();
+							if (terminalInputEl) {
 								terminalInputEl.selectionStart = terminalInputEl.selectionEnd = start + text.length;
-							} else {
-								const t = getActiveTab();
-								if (t?.ws && t.ws.readyState === 1) {
-									t.ws.send(JSON.stringify({ type: 'input', data: text }));
-								}
+								terminalInputEl.focus();
 							}
 						}
 					}
@@ -1333,14 +1220,8 @@
 					try {
 						const text = await navigator.clipboard.readText();
 						if (text) {
-							if (inTextarea && !directMode) {
-								terminalInputText += text;
-							} else {
-								const t = getActiveTab();
-								if (t?.ws && t.ws.readyState === 1) {
-									t.ws.send(JSON.stringify({ type: 'input', data: text }));
-								}
-							}
+							terminalInputText += text;
+							if (terminalInputEl) terminalInputEl.focus();
 						}
 					} catch {}
 				}
@@ -1350,23 +1231,8 @@
 
 		// Global paste handler — catches image paste regardless of focus
 
-		// Global resize handler
-		let globalResizeTimer = null;
-		const handleResize = () => {
-			if (globalResizeTimer) clearTimeout(globalResizeTimer);
-			globalResizeTimer = setTimeout(() => {
-				const tab = getActiveTab();
-				if (tab && tab.fitAddon) {
-					try {
-						tab.fitAddon.fit();
-						tab.term.refresh(0, tab.term.rows - 1);
-						if (tab.ws && tab.ws.readyState === 1) {
-							tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
-						}
-					} catch {}
-				}
-			}, 300);
-		};
+		// Global resize handler — no-op now (output div auto-resizes)
+		const handleResize = () => {};
 		window.addEventListener('resize', handleResize);
 
 		return () => {
@@ -1379,7 +1245,6 @@
 			for (const tab of tabs) {
 				tab._closing = true;
 				if (tab.ws) tab.ws.close();
-				if (tab.term) tab.term.dispose();
 			}
 		};
 	});
@@ -1782,30 +1647,18 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="panel-resize-handle left-handle"
 		onmousedown={(e) => startResize('left', e)}
-		ondblclick={() => { leftPanelCollapsed = !leftPanelCollapsed; setTimeout(() => { const tab = getActiveTab(); if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} } }, 200); }}
+		ondblclick={() => { leftPanelCollapsed = !leftPanelCollapsed; 0; }}
 		title="Drag to resize, double-click to collapse"
 	></div>
 
 	<!-- CENTER: Terminal + Input Bar -->
 	<div class="term-wrapper">
-		<!-- View Mode Toggle -->
-		<div class="view-mode-bar">
-			<button class="view-mode-btn" class:active={viewMode === 'terminal'} onclick={() => { viewMode = 'terminal'; setTimeout(() => { const tab = getActiveTab(); if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} } }, 100); }}>Terminal</button>
-			<button class="view-mode-btn" class:active={viewMode === 'chat'} onclick={() => { viewMode = 'chat'; lastChatSessionKey = ''; loadChatHistory(); setTimeout(() => { if (chatViewEl) chatViewEl.scrollTop = chatViewEl.scrollHeight; }, 100); }}>Chat</button>
-		</div>
-
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="term-container" bind:this={termContainerEl} onclick={(e) => {
 			// Don't steal focus if user is selecting text
 			const sel = window.getSelection();
 			if (sel && sel.toString().length > 0) return;
-			if (directMode) {
-				// Focus the xterm terminal directly
-				const tab = getActiveTab();
-				if (tab?.term) tab.term.focus();
-			} else {
-				if (terminalInputEl) terminalInputEl.focus();
-			}
+			if (terminalInputEl) terminalInputEl.focus();
 		}}>
 			{#if tabs.length === 0}
 				<div class="term-empty">
@@ -1816,41 +1669,8 @@
 			{/if}
 		</div>
 
-		<!-- Chat View (overlay when in chat mode) -->
-		{#if viewMode === 'chat'}
-			<div class="chat-view" bind:this={chatViewEl}>
-				{#if chatBubbles.length === 0}
-					<div class="chat-view-empty">
-						<div class="chat-view-icon">&#x25C8;</div>
-						<div class="chat-view-title">ΠΑΝ Chat</div>
-						<div class="chat-view-sub">Send a message to start</div>
-					</div>
-				{:else}
-					<div class="chat-view-messages">
-						{#each chatBubbles as bubble}
-							{#if bubble.type === 'user'}
-								<div class="chat-msg user">
-									<div class="chat-msg-label">You</div>
-									<div class="chat-msg-body">{@html renderChatText(bubble.text)}</div>
-								</div>
-							{:else if bubble.type === 'assistant'}
-								<div class="chat-msg assistant">
-									<div class="chat-msg-label">ΠΑΝ</div>
-									<div class="chat-msg-body">{@html renderChatText(bubble.text)}</div>
-								</div>
-							{:else if bubble.type === 'tool'}
-								<div class="chat-msg tool">
-									<div class="chat-msg-body">{bubble.text}</div>
-								</div>
-							{/if}
-						{/each}
-					</div>
-				{/if}
-			</div>
-		{/if}
-
 		<!-- Input bar: overlays bottom of terminal -->
-		<div class="term-input-bar" class:direct-mode={directMode}>
+		<div class="term-input-bar">
 			{#if pastedImages.length || uploadingImages > 0}
 				<div class="term-image-previews">
 					{#each pastedImages as img, i}
@@ -1882,19 +1702,6 @@
 					placeholder="Speak or type here..."
 					rows="1"
 				></textarea>
-				{#if viewMode === 'terminal'}
-					<button class="term-mode-toggle" onclick={() => {
-						directMode = !directMode;
-						if (directMode) {
-							const tab = getActiveTab();
-							if (tab?.term) tab.term.focus();
-						} else {
-							if (terminalInputEl) terminalInputEl.focus();
-						}
-					}} title={directMode ? 'Switch to Chat (Alt+D)' : 'Switch to Terminal (Alt+D)'}>
-						{directMode ? '⌨' : '💬'}
-					</button>
-				{/if}
 				<button class="term-input-send" onclick={sendTerminalInput} title="Send (Enter)" disabled={uploadingImages > 0}>&#x27A4;</button>
 			</div>
 		</div>
@@ -1904,7 +1711,7 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="panel-resize-handle right-handle"
 		onmousedown={(e) => startResize('right', e)}
-		ondblclick={() => { rightPanelCollapsed = !rightPanelCollapsed; setTimeout(() => { const tab = getActiveTab(); if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} } }, 200); }}
+		ondblclick={() => { rightPanelCollapsed = !rightPanelCollapsed; 0; }}
 		title="Drag to resize, double-click to collapse"
 	></div>
 	<div class="right-panel" class:collapsed={rightPanelCollapsed} style="width:{rightPanelCollapsed ? 0 : rightPanelWidth}px">
@@ -2231,118 +2038,7 @@
 	}
 
 	/* ==================== View Mode Toggle ==================== */
-	.view-mode-bar {
-		display: flex;
-		gap: 0;
-		background: #11111b;
-		border-bottom: 1px solid #181825;
-		padding: 0;
-		flex-shrink: 0;
-	}
-	.view-mode-btn {
-		flex: 1;
-		padding: 6px 0;
-		background: transparent;
-		border: none;
-		color: #6c7086;
-		font-size: 12px;
-		font-weight: 600;
-		cursor: pointer;
-		letter-spacing: 0.5px;
-		text-transform: uppercase;
-		transition: all 0.15s;
-		border-bottom: 2px solid transparent;
-	}
-	.view-mode-btn:hover { color: #a6adc8; }
-	.view-mode-btn.active {
-		color: #cdd6f4;
-		border-bottom-color: #89b4fa;
-		background: #1e1e2e;
-	}
-
-	/* ==================== Chat View ==================== */
-	.chat-view {
-		position: absolute;
-		top: 30px; /* below view-mode-bar */
-		left: 0;
-		right: 0;
-		bottom: 0;
-		background: #1e1e2e;
-		overflow-y: auto;
-		padding: 16px;
-		padding-bottom: 60px;
-		z-index: 10;
-	}
-	.chat-view-empty {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		height: 100%;
-		color: #6c7086;
-		gap: 8px;
-	}
-	.chat-view-icon { font-size: 32px; opacity: 0.5; }
-	.chat-view-title { font-size: 16px; font-weight: 600; }
-	.chat-view-sub { font-size: 12px; opacity: 0.7; }
-	.chat-view-messages {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-	.chat-msg {
-		max-width: 85%;
-		border-radius: 12px;
-		padding: 10px 14px;
-		font-size: 13px;
-		line-height: 1.5;
-		word-wrap: break-word;
-	}
-	.chat-msg.user {
-		align-self: flex-end;
-		background: #313244;
-		color: #cdd6f4;
-		border-bottom-right-radius: 4px;
-	}
-	.chat-msg.assistant {
-		align-self: flex-start;
-		background: #181825;
-		color: #bac2de;
-		border-bottom-left-radius: 4px;
-		border-left: 2px solid #89b4fa;
-	}
-	.chat-msg.tool {
-		align-self: flex-start;
-		background: #11111b;
-		color: #585b70;
-		font-size: 11px;
-		font-family: 'JetBrains Mono', monospace;
-		padding: 6px 10px;
-		border-radius: 6px;
-		max-width: 95%;
-	}
-	.chat-msg-label {
-		font-size: 10px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		margin-bottom: 2px;
-		opacity: 0.6;
-	}
-	.chat-msg-body { white-space: pre-wrap; }
-	.chat-msg-body :global(code) {
-		background: #11111b;
-		padding: 1px 4px;
-		border-radius: 3px;
-		font-size: 12px;
-	}
-	.chat-msg-body :global(pre) {
-		background: #11111b;
-		padding: 8px;
-		border-radius: 6px;
-		overflow-x: auto;
-		margin: 4px 0;
-	}
+	/* View mode and chat view removed — terminal output IS the chat */
 
 	/* ==================== Voice Toggle ==================== */
 	.voice-toggle-btn {
@@ -2420,63 +2116,29 @@
 		line-height: 1;
 	}
 
-	/* xterm sits above glow — lock width, prevent voice-to-text overflow */
-	.term-container :global(.xterm) {
+	/* Output div styling */
+	.term-container :global(.term-output) {
 		position: relative;
 		z-index: 1;
-		height: 100% !important;
-		width: 100% !important;
-		max-width: 100% !important;
-		overflow: hidden !important;
+		scrollbar-width: thin;
+		scrollbar-color: #45475a #1e1e2e;
 	}
-	.term-container :global(.xterm-viewport) {
-		overflow-y: scroll !important;
-		overflow-x: hidden !important;
-		max-width: 100% !important;
+	.term-container :global(.term-output)::-webkit-scrollbar {
+		width: 8px;
 	}
-	.term-container :global(.xterm-screen) {
-		min-height: 100%;
-		width: 100% !important;
-		max-width: 100% !important;
-		overflow: hidden !important;
+	.term-container :global(.term-output)::-webkit-scrollbar-track {
+		background: #1e1e2e;
 	}
-	/* Constrain Windows voice-to-text / IME composition overlay */
-	.term-container :global(.xterm .composition-view) {
-		position: absolute !important;
-		max-width: 60% !important;
-		overflow: hidden !important;
-		word-break: break-all !important;
-		white-space: pre-wrap !important;
-		contain: content !important;
+	.term-container :global(.term-output)::-webkit-scrollbar-thumb {
+		background: #45475a;
+		border-radius: 4px;
 	}
-	/* Disable xterm's native textarea — our input bar handles all input */
-	.term-container :global(.xterm-helper-textarea) {
-		position: absolute !important;
-		width: 1px !important;
-		height: 1px !important;
-		opacity: 0 !important;
-		pointer-events: none !important;
-		overflow: hidden !important;
+	.term-container :global(.term-output)::-webkit-scrollbar-thumb:hover {
+		background: #585b70;
 	}
-	/* Clip any overflow from IME/voice-to-text elements */
-	.term-container :global(textarea),
-	.term-container :global(input) {
-		max-width: 100% !important;
-		overflow: hidden !important;
-	}
-
-	/* Scanline effect */
-	.term-container :global(.xterm-screen)::after {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: repeating-linear-gradient(
-			0deg,
-			transparent, transparent 1px,
-			rgba(0,0,0,0.03) 1px, rgba(0,0,0,0.03) 2px
-		);
-		pointer-events: none;
-		z-index: 2;
+	/* Text selection in output */
+	.term-container :global(.term-output::selection) {
+		background: #45475a;
 	}
 
 	/* ==================== Terminal Input Bar (overlays bottom of terminal) ==================== */
@@ -2589,21 +2251,6 @@
 	.hidden-bar {
 		display: none !important;
 	}
-	.direct-mode .term-input-textarea,
-	.direct-mode .term-input-send,
-	.direct-mode .term-image-previews {
-		display: none !important;
-	}
-	.direct-mode {
-		padding: 4px 10px;
-		border-top: none;
-		background: transparent;
-		backdrop-filter: none;
-	}
-	.direct-mode .term-input-row {
-		justify-content: flex-end;
-	}
-
 	.term-image-uploading {
 		color: #f9e2af;
 		font-size: 11px;
@@ -2611,23 +2258,6 @@
 		align-items: center;
 		padding: 4px 8px;
 	}
-
-	.term-mode-toggle {
-		background: transparent;
-		color: #89b4fa;
-		border: 1px solid #313244;
-		border-radius: 6px;
-		width: 32px;
-		height: 32px;
-		font-size: 14px;
-		cursor: pointer;
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0;
-	}
-	.term-mode-toggle:hover { background: #313244; }
 
 	.term-empty {
 		position: absolute;

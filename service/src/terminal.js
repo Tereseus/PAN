@@ -11,7 +11,7 @@ import { existsSync } from 'fs';
 import { all } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
 
-// Active terminal sessions: Map<sessionId, { pty, clients: Set<ws>, project }>
+// Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
 const sessions = new Map();
 
 // Default shell
@@ -21,9 +21,25 @@ const SHELL = existsSync('C:\\Program Files\\Git\\bin\\bash.exe')
 const SHELL_ARGS = SHELL.includes('bash') ? ['--login', '-i'] : [];
 
 let wss = null;
+let ScreenBufferClass = null; // loaded async
 
-function startTerminalServer(httpServer) {
-  wss = new WebSocketServer({ server: httpServer, path: '/ws/terminal' });
+async function startTerminalServer(httpServer) {
+  // Load ScreenBuffer for server-side rendering
+  const { ScreenBuffer } = await import('./screen-buffer.js');
+  ScreenBufferClass = ScreenBuffer;
+
+  wss = new WebSocketServer({ noServer: true });
+
+  // Single upgrade handler for all PAN WebSocket paths
+  httpServer.on('upgrade', (request, socket, head) => {
+    const pathname = new URL(request.url, 'http://localhost').pathname;
+    if (pathname === '/ws/terminal' || pathname === '/ws/terminal-dev') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    }
+    // Unknown paths: let socket hang/timeout naturally
+  });
 
   wss.on('connection', (ws, req) => {
     // Parse query params: ?session=<id>&project=<name>&cwd=<path>&cols=80&rows=24
@@ -37,6 +53,9 @@ function startTerminalServer(httpServer) {
     let session = sessions.get(sessionId);
 
     if (!session) {
+      // Create ScreenBuffer for server-side rendering
+      const term = new ScreenBufferClass(cols, rows);
+
       // Spawn new PTY
       try {
         const ptyProcess = pty.spawn(SHELL, SHELL_ARGS, {
@@ -54,66 +73,25 @@ function startTerminalServer(httpServer) {
 
         session = {
           pty: ptyProcess,
+          term,
           clients: new Set(),
           project: projectName,
           cwd,
-          buffer: '', // Keep last 50KB for new clients joining
           createdAt: Date.now(),
+          renderTimer: null,
+          lastRendered: '',
         };
         sessions.set(sessionId, session);
 
-        // Stream PTY output to all connected clients
-        // Also detect Claude permission prompts for mobile
-        let permBuffer = '';
+        // PTY output -> ScreenBuffer -> rendered HTML to clients
         ptyProcess.onData((data) => {
-          // Buffer recent output for late-joining clients (200KB, trim to 100KB)
-          session.buffer += data;
-          if (session.buffer.length > 200000) {
-            session.buffer = session.buffer.slice(-100000);
-          }
-          for (const client of session.clients) {
-            if (client.readyState === 1) {
-              client.send(JSON.stringify({ type: 'output', data }));
-            }
-          }
-
-          // Permission detection DISABLED — pty.write() cannot interact with Claude Code's
-          // permission prompt (see https://github.com/anthropics/claude-code/issues/38299)
-          // Re-enable when Anthropic adds a permission hook or API
-          const permMatch = false;
-          const stripped = data.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
-          if (permMatch) {
-            // Extract the command description from the buffer (look for the line before "requires permission")
-            const lines = permBuffer.split('\n').map(l => l.trim()).filter(Boolean);
-            let description = '';
-            for (let i = 0; i < lines.length; i++) {
-              if (lines[i].includes('requires permission') || lines[i].includes('Do you want to proceed')) {
-                // Get the command from earlier lines
-                for (let j = Math.max(0, i - 3); j < i; j++) {
-                  if (lines[j] && !lines[j].startsWith('⚡') && lines[j].length > 3) {
-                    description = lines[j];
-                    break;
-                  }
-                }
-                break;
-              }
-            }
-            const promptText = (description || 'Permission required').trim().substring(0, 200);
-            permBuffer = ''; // reset so we don't re-fire
-            // Deduplicate — don't fire if same prompt text was detected in last 30 seconds
-            const isDupe = pendingPermissions.some(p =>
-              p.prompt === promptText && (Date.now() - p.id) < 30000
-            );
-            if (!isDupe) {
-              const permData = {
-                session_id: sessionId,
-                project: session.project,
-                prompt: promptText,
-                timestamp: new Date().toISOString(),
-              };
-              addPendingPermission(permData);
-              broadcastNotification('permission_prompt', permData);
-            }
+          term.write(data);
+          // Debounce rendering — batch rapid output into single screen update
+          if (!session.renderTimer) {
+            session.renderTimer = setTimeout(() => {
+              session.renderTimer = null;
+              broadcastRenderedScreen(session);
+            }, 33); // ~30fps — sufficient for terminal output
           }
         });
 
@@ -127,7 +105,6 @@ function startTerminalServer(httpServer) {
         });
 
         // Inject session context into CLAUDE.md BEFORE Claude starts
-        // so the first message already has full context
         if (cwd) {
           try {
             injectSessionContext(cwd);
@@ -158,10 +135,8 @@ function startTerminalServer(httpServer) {
       host: hostname(),
     }));
 
-    // Send buffered output so new clients see recent history
-    if (session.buffer) {
-      ws.send(JSON.stringify({ type: 'output', data: session.buffer }));
-    }
+    // Send current screen state immediately (for new/reconnecting clients)
+    broadcastRenderedScreen(session, ws);
 
     // Handle incoming messages from client
     ws.on('message', (msg) => {
@@ -170,17 +145,13 @@ function startTerminalServer(httpServer) {
 
         switch (parsed.type) {
           case 'input':
-            // User typed something
-            if (parsed.data && parsed.data.charCodeAt(0) === 13) {
-              console.log(`[PAN Terminal] xterm Enter key: ${JSON.stringify(parsed.data)} bytes: ${[...parsed.data].map(c => c.charCodeAt(0).toString(16)).join(' ')}`);
-            }
             if (session.pty) session.pty.write(parsed.data);
             break;
 
           case 'resize':
-            // Terminal resized
-            if (session.pty && parsed.cols && parsed.rows) {
-              session.pty.resize(parsed.cols, parsed.rows);
+            if (parsed.cols && parsed.rows) {
+              if (session.pty) session.pty.resize(parsed.cols, parsed.rows);
+              session.term.resize(parsed.cols, parsed.rows);
             }
             break;
 
@@ -195,12 +166,49 @@ function startTerminalServer(httpServer) {
       if (session) {
         session.clients.delete(ws);
         // Don't kill the PTY when last client disconnects — keep it alive
-        // User can reconnect and see the buffer
       }
     });
   });
 
-  console.log(`[PAN Terminal] WebSocket server ready at /ws/terminal`);
+  console.log(`[PAN Terminal] Server-side rendered terminal ready at /ws/terminal`);
+}
+
+// Broadcast rendered screen from ScreenBuffer to connected clients
+function broadcastRenderedScreen(session, singleClient) {
+  const screen = session.term.renderScreen();
+  const screenStr = screen.join('\n');
+
+  // Skip if screen hasn't changed (unless sending to a specific new client)
+  if (!singleClient && screenStr === session.lastRendered) return;
+  session.lastRendered = screenStr;
+
+  // Only send scrollback when it changes or to new clients — not every frame
+  const scrollbackLen = session.term.scrollback.length;
+  const scrollbackChanged = scrollbackLen !== (session.lastScrollbackLen || 0);
+  session.lastScrollbackLen = scrollbackLen;
+
+  const payload = {
+    type: 'screen',
+    lines: screen,
+    cursor: { x: session.term.cx, y: session.term.cy },
+    rows: session.term.rows,
+    cols: session.term.cols,
+  };
+
+  // Include scrollback only when it changed or for initial client sync
+  if (singleClient || scrollbackChanged) {
+    payload.scrollback = session.term.getScrollback();
+  }
+
+  const msg = JSON.stringify(payload);
+
+  if (singleClient) {
+    if (singleClient.readyState === 1) singleClient.send(msg);
+  } else {
+    for (const client of session.clients) {
+      if (client.readyState === 1) client.send(msg);
+    }
+  }
 }
 
 // List active terminal sessions (for dashboard UI)
@@ -308,4 +316,10 @@ function broadcastNotification(type, data) {
   }
 }
 
-export { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission };
+// Legacy aliases — dev terminal now uses the same server-side renderer
+function listDevSessions() { return listSessions(); }
+function killDevSession(id) { return killSession(id); }
+
+async function startDevTerminalServer() { /* no-op — merged into startTerminalServer */ }
+
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession };
