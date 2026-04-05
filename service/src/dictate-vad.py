@@ -11,7 +11,7 @@ import tempfile
 import wave
 
 SILENCE_THRESHOLD = 150    # RMS below this = silence (very low to avoid premature stops)
-SILENCE_DURATION = 2.5     # Seconds of continuous silence before stopping
+SILENCE_DURATION = float(os.environ.get('WHISPER_SILENCE', '2.5'))  # Configurable via env
 MAX_DURATION = 300         # 5 minutes max recording
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -118,7 +118,15 @@ def main():
         t0 = time.time()
         text = transcribe(wav_path)
         transcribe_time = round(time.time() - t0, 1)
-        print(json.dumps({"text": text, "duration": round(duration, 1), "transcribe_seconds": transcribe_time}))
+        # Check for trigger word "over" — strip it and signal auto-send
+        action = None
+        if text.lower().rstrip(' .!?').endswith('over'):
+            text = text[:text.lower().rstrip(' .!?').rfind('over')].rstrip(' ,.')
+            action = 'send'
+        result = {"text": text, "duration": round(duration, 1), "transcribe_seconds": transcribe_time}
+        if action:
+            result["action"] = action
+        print(json.dumps(result))
     except Exception as e:
         print(json.dumps({"error": f"Transcription failed: {str(e)}"}))
     finally:
