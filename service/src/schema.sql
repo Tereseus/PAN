@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS open_tabs (
     project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
     cwd TEXT,
     tab_index INTEGER DEFAULT 0,
+    claude_session_ids TEXT DEFAULT '[]',
+    closed_at TEXT DEFAULT NULL,
     opened_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     last_active TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
