@@ -102,17 +102,33 @@
 		} catch {}
 	}
 
-	// Persist terminal session state across refresh
+	// Persist terminal tabs to server DB
 	function saveSessionState() {
 		try {
-			const state = tabs.map(t => ({
+			// Save to localStorage as fast fallback
+			const state = tabs.map((t, i) => ({
 				sessionId: t.sessionId,
+				tabName: t.tabName || '',
 				project: t.project,
 				cwd: t.cwd,
-				projectId: t.projectId
+				projectId: t.projectId,
+				tabIndex: i
 			}));
 			localStorage.setItem('pan-terminal-sessions', JSON.stringify(state));
 			localStorage.setItem('pan-terminal-active', activeTabId || '');
+
+			// Save to DB for persistence across restarts
+			api('/dashboard/api/open-tabs', {
+				method: 'POST',
+				body: JSON.stringify({ tabs: state.map(t => ({
+					session_id: t.sessionId,
+					tab_name: t.tabName || '',
+					project_id: t.projectId,
+					cwd: t.cwd,
+					tab_index: t.tabIndex
+				})) }),
+				headers: { 'Content-Type': 'application/json' }
+			}).catch(() => {});
 		} catch {}
 	}
 	function getSavedSessionState() {
@@ -120,6 +136,56 @@
 			const saved = localStorage.getItem('pan-terminal-sessions');
 			return saved ? JSON.parse(saved) : [];
 		} catch { return []; }
+	}
+	async function getDbSessionState() {
+		try {
+			const tabs = await api('/dashboard/api/open-tabs');
+			if (!Array.isArray(tabs) || tabs.length === 0) return [];
+			return tabs.map(t => ({
+				sessionId: t.session_id,
+				tabName: t.tab_name || '',
+				project: t.project_name || 'Shell',
+				cwd: t.project_path || t.cwd || 'C:\\Users\\tzuri\\Desktop',
+				projectId: t.project_id
+			}));
+		} catch { return []; }
+	}
+
+	// Tab naming
+	let tabNameCounter = 0;
+	function getNextTabName() {
+		tabNameCounter++;
+		return `PAN ${tabNameCounter}`;
+	}
+	let renamingTabId = $state(null);
+	let renameValue = $state('');
+
+	function startRenameTab(tabId) {
+		const tab = tabs.find(t => t.id === tabId);
+		if (!tab) return;
+		renamingTabId = tabId;
+		renameValue = tab.tabName || tab.project || '';
+	}
+	function finishRenameTab() {
+		if (!renamingTabId) return;
+		const tab = tabs.find(t => t.id === renamingTabId);
+		if (tab && renameValue.trim()) {
+			tab.tabName = renameValue.trim();
+			tabs = [...tabs];
+			// Persist rename to DB
+			api(`/dashboard/api/open-tabs/${encodeURIComponent(tab.sessionId)}/rename`, {
+				method: 'PATCH',
+				body: JSON.stringify({ name: tab.tabName }),
+				headers: { 'Content-Type': 'application/json' }
+			}).catch(() => {});
+			saveSessionState();
+		}
+		renamingTabId = null;
+		renameValue = '';
+	}
+	function cancelRenameTab() {
+		renamingTabId = null;
+		renameValue = '';
 	}
 
 	// Dev mode detection — Vite dev server runs on a different port than Prod (7777)
@@ -139,6 +205,49 @@
 	let isListening = $state(false);
 	let recognition = null;
 	let pastedImages = $state([]); // { dataUrl, path } — preview before send
+
+	// Perf widget
+	let perfData = $state({ wsLatency: 0, domTime: 0, linesChanged: 0, serverRender: 0, serverTotal: 0, msgSize: 0, fps: 0 });
+	let perfProcesses = $state([]);
+	let perfProcessTimer = null;
+	let perfFrames = 0;
+	let perfLastFpsTime = Date.now();
+
+	async function loadPerfProcesses() {
+		try {
+			const data = await api('/dashboard/api/processes');
+			if (data?.processes) perfProcesses = data.processes;
+		} catch {}
+	}
+
+	function startPerfPolling() {
+		if (perfProcessTimer) return;
+		loadPerfProcesses();
+		perfProcessTimer = setInterval(loadPerfProcesses, 5000);
+	}
+	function stopPerfPolling() {
+		if (perfProcessTimer) { clearInterval(perfProcessTimer); perfProcessTimer = null; }
+	}
+
+	async function killProcess(pid) {
+		try {
+			await api('/dashboard/api/processes/kill', { method: 'POST', body: JSON.stringify({ pid }), headers: { 'Content-Type': 'application/json' } });
+			setTimeout(loadPerfProcesses, 500);
+		} catch {}
+	}
+
+	function updatePerfOverlay(data) {
+		perfFrames++;
+		const now = Date.now();
+		if (now - perfLastFpsTime >= 1000) {
+			data.fps = perfFrames;
+			perfFrames = 0;
+			perfLastFpsTime = now;
+		} else {
+			data.fps = perfData.fps;
+		}
+		perfData = data;
+	}
 
 	// Intervals
 	let chatRefreshInterval = null;
@@ -188,7 +297,7 @@
 			return;
 		}
 
-		await createTab(sessionId, projectName, cwd, projectId, false);
+		await createTab(sessionId, projectName, cwd, projectId, false, null);
 	}
 
 	function newTerminalTab() {
@@ -197,10 +306,10 @@
 		const projectId = active?.projectId || null;
 		const cwd = active?.cwd || 'C:\\Users\\tzuri\\Desktop';
 		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
-		createTab(sessionId, projectName, cwd, projectId, false);
+		createTab(sessionId, projectName, cwd, projectId, false, null);
 	}
 
-	async function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
+	async function createTab(sessionId, projectName, cwd, projectId, isReconnect, tabName) {
 		const tabId = 'tab-' + (++tabCounter);
 
 		// Server-side rendered terminal — just a scrollable div that displays pre-rendered HTML lines
@@ -229,6 +338,7 @@
 		const tabData = {
 			id: tabId,
 			sessionId,
+			tabName: tabName || getNextTabName(),
 			ws: null,
 			project: projectName,
 			cwd,
@@ -285,6 +395,7 @@
 
 			function handleMessage(event) {
 				try {
+					const tRecv = performance.now();
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
 						case 'screen': {
@@ -303,12 +414,29 @@
 								screenDiv.removeChild(screenDiv.lastChild);
 							}
 							// Only update lines that changed
+							let linesChanged = 0;
 							for (let li = 0; li < lines.length; li++) {
 								if (lines[li] !== prevLines[li]) {
 									screenDiv.children[li].innerHTML = lines[li];
+									linesChanged++;
 								}
 							}
 							prevLines = lines.slice();
+
+							// Perf metrics
+							const tDom = performance.now();
+							const wsLatency = msg._ts ? (Date.now() - msg._ts) : -1;
+							const domTime = +(tDom - tRecv).toFixed(1);
+							const serverPerf = msg._perf || {};
+							updatePerfOverlay({
+								wsLatency,
+								domTime,
+								linesChanged,
+								serverRender: serverPerf.render || 0,
+								serverSerialize: serverPerf.serialize || 0,
+								serverTotal: serverPerf.total || 0,
+								msgSize: serverPerf.msgSize || event.data.length,
+							});
 
 							// Auto-scroll to bottom unless user scrolled up
 							if (!tabData.userScrolledUp) {
@@ -464,6 +592,8 @@
 
 		// Kill server-side PTY
 		try { fetch(`/api/v1/terminal/sessions/${encodeURIComponent(tab.sessionId)}`, { method: 'DELETE' }); } catch {}
+		// Remove from DB
+		api(`/dashboard/api/open-tabs/${encodeURIComponent(tab.sessionId)}`, { method: 'DELETE' }).catch(() => {});
 
 		tab._closing = true;
 		if (tab.ws) tab.ws.close();
@@ -697,9 +827,38 @@
 	}
 
 	function handleTerminalInputKey(e) {
+		const active = getActiveTab();
+		const ws = active?.ws?.readyState === 1 ? active.ws : null;
+
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			sendTerminalInput();
+			return;
+		}
+		// Escape → Ctrl+C to interrupt Claude
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			e.stopPropagation();
+			if (ws) ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+			return;
+		}
+		// Number keys 1-3 when input is empty → navigate Claude Code approval prompt
+		// The prompt is a TUI select list: arrow-down to move, Enter to confirm
+		// Check both the DOM value and the Svelte state to cover all timing cases
+		if (/^[1-3]$/.test(e.key) && (e.target.value.length === 0 || !e.target.value.trim())) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			// Clear any residual value
+			e.target.value = '';
+			terminalInputText = '';
+			if (ws) {
+				const n = parseInt(e.key);
+				let seq = '\x1b[A\x1b[A\x1b[A'; // 3 up arrows to ensure we're at top
+				for (let i = 1; i < n; i++) seq += '\x1b[B'; // down arrows to reach option
+				seq += '\r'; // Enter to confirm
+				ws.send(JSON.stringify({ type: 'input', data: seq }));
+			}
+			return;
 		}
 	}
 
@@ -1706,10 +1865,21 @@
 
 			let reconnected = false;
 
-			// Strategy 1: Check server for live PTY sessions — dedupe by project (newest only)
+			// Strategy 1: Check server for live PTY sessions — match with DB-saved tab names
 			try {
-				const sessData = await api('/api/v1/terminal/sessions').catch(() => ({ sessions: [] }));
+				const [sessData, dbTabs] = await Promise.all([
+					api('/api/v1/terminal/sessions').catch(() => ({ sessions: [] })),
+					getDbSessionState()
+				]);
 				const sessions = sessData.sessions || [];
+				const dbTabMap = new Map(dbTabs.map(t => [t.sessionId, t]));
+
+				// Set tabNameCounter from DB tabs to avoid collisions
+				for (const dt of dbTabs) {
+					const match = dt.tabName?.match(/^PAN (\d+)$/);
+					if (match) tabNameCounter = Math.max(tabNameCounter, parseInt(match[1]));
+				}
+
 				if (sessions.length > 0) {
 					// Keep only the newest session per project
 					const byProject = new Map();
@@ -1724,7 +1894,18 @@
 					for (const s of byProject.values()) {
 						const matchedProject = projects.find(p => p.name === s.project);
 						const pid = matchedProject ? matchedProject.id : null;
-						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true);
+						const savedTab = dbTabMap.get(s.id);
+						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true, savedTab?.tabName || null);
+						reconnected = true;
+					}
+				}
+
+				// If no live sessions, try restoring from DB-saved tabs (creates new PTY sessions)
+				if (!reconnected && dbTabs.length > 0) {
+					for (const dt of dbTabs) {
+						const matchedProject = projects.find(p => p.name === dt.project);
+						const pid = matchedProject ? matchedProject.id : dt.projectId;
+						await createTab(dt.sessionId, dt.project || 'Shell', dt.cwd || 'C:\\Users\\tzuri\\Desktop', pid, false, dt.tabName || null);
 						reconnected = true;
 					}
 				}
@@ -1732,20 +1913,14 @@
 				console.error('[Terminal] Session reconnect failed:', e);
 			}
 
-			// Strategy 2: Fall back to localStorage-saved sessions (only if server confirms they exist)
+			// Strategy 2: Fall back to localStorage if DB failed
 			if (!reconnected) {
 				const savedSessions = getSavedSessionState();
-				let serverSessions = [];
-				try { serverSessions = await (await fetch('/api/v1/terminal/sessions')).json(); } catch {}
-				const serverIds = new Set(serverSessions.map(s => s.id));
 				for (const s of savedSessions) {
 					if (!s.sessionId) continue;
-					// Only reconnect if the server still has this session
-					if (!serverIds.has(s.sessionId)) continue;
-					await createTab(s.sessionId, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', s.projectId, true);
+					await createTab(s.sessionId, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', s.projectId, false, s.tabName || null);
 					reconnected = true;
 				}
-				// Clean localStorage to match what actually reconnected
 				saveSessionState();
 			}
 
@@ -1776,9 +1951,37 @@
 		const handleResize = () => {};
 		window.addEventListener('resize', handleResize);
 
+		// Global key handler — Escape and number keys reach the terminal even without textarea focus
+		function handleGlobalKeydown(e) {
+			// Skip if user is typing in a non-terminal input (e.g. rename, search)
+			const tag = e.target?.tagName;
+			if ((tag === 'INPUT' || tag === 'TEXTAREA') && e.target !== terminalInputEl) return;
+
+			const active = getActiveTab();
+			if (!active?.ws || active.ws.readyState !== 1) return;
+
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				active.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+				return;
+			}
+			// Number keys 1-3 when input is empty — navigate Claude Code approval prompt
+			if (/^[1-3]$/.test(e.key) && !terminalInputEl?.value?.trim()) {
+				e.preventDefault();
+				const n = parseInt(e.key);
+				let seq = '\x1b[A\x1b[A\x1b[A';
+				for (let i = 1; i < n; i++) seq += '\x1b[B';
+				seq += '\r';
+				active.ws.send(JSON.stringify({ type: 'input', data: seq }));
+				return;
+			}
+		}
+		window.addEventListener('keydown', handleGlobalKeydown);
+
 		return () => {
 			saveSessionState(); // Persist session IDs before page unloads
 			saveChatToStorage(); // Persist chat before page unloads
+			window.removeEventListener('keydown', handleGlobalKeydown);
 			window.removeEventListener('resize', handleResize);
 			window.removeEventListener('beforeunload', handleBeforeUnload);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
@@ -1824,11 +2027,23 @@
 				class="term-tab"
 				class:active={activeTabId === tab.id}
 				onclick={() => switchToTab(tab.id)}
+				ondblclick={(e) => { e.preventDefault(); startRenameTab(tab.id); }}
 			>
-				{#if tab.id === tabs.find(t => t.project === tab.project)?.id && tab.project !== 'Shell'}
-					<span class="primary-dot"></span>
+				{#if renamingTabId === tab.id}
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						class="tab-rename-input"
+						type="text"
+						bind:value={renameValue}
+						autofocus
+						onclick={(e) => e.stopPropagation()}
+						onblur={finishRenameTab}
+						onkeydown={(e) => { if (e.key === 'Enter') finishRenameTab(); if (e.key === 'Escape') cancelRenameTab(); }}
+					/>
+				{:else}
+					<span class="tab-label">{tab.tabName || tab.project || 'Shell'}</span>
+					{#if tab.tabName && tab.tabName !== tab.project}<span class="tab-project-hint">{tab.project || ''}</span>{/if}
 				{/if}
-				{#if tab.host}{tab.host}/{/if}{tab.project || 'Shell'}{#if tabs.filter(t => t.project === tab.project).length > 1} {tabs.filter(t => t.project === tab.project).indexOf(tab) + 1}{/if}
 				<span
 					class="tab-close"
 					onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
@@ -1844,7 +2059,7 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
@@ -1854,6 +2069,7 @@
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
 				<option value="tasks">Tasks</option>
+				<option value="perf">Performance</option>
 				<option value="tests">Tests</option>
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
@@ -2016,6 +2232,69 @@
 						</div>
 					{/each}
 				{/if}
+			{:else if leftSection === 'perf'}
+				<div class="perf-widget">
+					<div class="perf-section-title">Terminal Stream</div>
+					<div class="perf-metric">
+						<span class="perf-label">WS Latency</span>
+						<span class="perf-value" class:perf-warn={perfData.wsLatency > 50} class:perf-bad={perfData.wsLatency > 200}>{perfData.wsLatency}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">DOM Update</span>
+						<span class="perf-value" class:perf-warn={perfData.domTime > 5} class:perf-bad={perfData.domTime > 16}>{perfData.domTime}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Server Render</span>
+						<span class="perf-value" class:perf-warn={perfData.serverRender > 5} class:perf-bad={perfData.serverRender > 15}>{perfData.serverRender}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Msg Size</span>
+						<span class="perf-value">{(perfData.msgSize / 1024).toFixed(1)} KB</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">FPS / Lines</span>
+						<span class="perf-value">{perfData.fps} / {perfData.linesChanged}</span>
+					</div>
+
+					<div class="perf-section-title" style="margin-top:12px">PAN Processes</div>
+					{#if perfProcesses.length === 0}
+						<div class="perf-metric"><span class="perf-label" style="opacity:0.5">Scanning...</span></div>
+					{:else}
+						{#each perfProcesses as proc}
+							<div class="perf-proc" class:perf-zombie={proc.isZombie}>
+								<div class="perf-proc-header">
+									<span class="perf-proc-name" class:vital={proc.vital}>{proc.name}</span>
+									{#if !proc.vital && proc.isZombie}
+										<button class="perf-kill-btn" onclick={() => killProcess(proc.pid)} title="Kill zombie">Kill</button>
+									{/if}
+								</div>
+								<div class="perf-proc-stats">
+									<span>CPU: {proc.cpuSec > 3600 ? (proc.cpuSec/3600).toFixed(1)+'h' : proc.cpuSec > 60 ? (proc.cpuSec/60).toFixed(1)+'m' : proc.cpuSec+'s'}</span>
+									<span>{proc.memMB}MB</span>
+									<span>{proc.uptimeHrs > 24 ? (proc.uptimeHrs/24).toFixed(1)+'d' : proc.uptimeHrs+'h'}</span>
+								</div>
+							</div>
+						{/each}
+					{/if}
+
+					{#if perfProcesses.filter(p => p.isZombie).length > 0}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-bad">{perfProcesses.filter(p => p.isZombie).length} ZOMBIE{perfProcesses.filter(p => p.isZombie).length > 1 ? 'S' : ''} DETECTED</span>
+						</div>
+					{:else if perfData.wsLatency > 200 || perfData.domTime > 16}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-bad">STREAM BOTTLENECK</span>
+						</div>
+					{:else if perfData.wsLatency > 50 || perfData.domTime > 5}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-warn">Moderate latency</span>
+						</div>
+					{:else}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-good">Running smooth</span>
+						</div>
+					{/if}
+				</div>
 			{:else if leftSection === 'usage'}
 				<div class="empty-state">Select Usage from the right panel</div>
 			{:else if leftSection === 'setup'}
@@ -2376,7 +2655,7 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
@@ -2386,6 +2665,7 @@
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
 				<option value="tasks">Tasks</option>
+				<option value="perf">Performance</option>
 				<option value="tests">Tests</option>
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
@@ -2575,6 +2855,69 @@
 					/>
 				</div>
 				<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
+			{:else if rightSection === 'perf'}
+				<div class="perf-widget">
+					<div class="perf-section-title">Terminal Stream</div>
+					<div class="perf-metric">
+						<span class="perf-label">WS Latency</span>
+						<span class="perf-value" class:perf-warn={perfData.wsLatency > 50} class:perf-bad={perfData.wsLatency > 200}>{perfData.wsLatency}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">DOM Update</span>
+						<span class="perf-value" class:perf-warn={perfData.domTime > 5} class:perf-bad={perfData.domTime > 16}>{perfData.domTime}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Server Render</span>
+						<span class="perf-value" class:perf-warn={perfData.serverRender > 5} class:perf-bad={perfData.serverRender > 15}>{perfData.serverRender}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Msg Size</span>
+						<span class="perf-value">{(perfData.msgSize / 1024).toFixed(1)} KB</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">FPS / Lines</span>
+						<span class="perf-value">{perfData.fps} / {perfData.linesChanged}</span>
+					</div>
+
+					<div class="perf-section-title" style="margin-top:12px">PAN Processes</div>
+					{#if perfProcesses.length === 0}
+						<div class="perf-metric"><span class="perf-label" style="opacity:0.5">Scanning...</span></div>
+					{:else}
+						{#each perfProcesses as proc}
+							<div class="perf-proc" class:perf-zombie={proc.isZombie}>
+								<div class="perf-proc-header">
+									<span class="perf-proc-name" class:vital={proc.vital}>{proc.name}</span>
+									{#if !proc.vital && proc.isZombie}
+										<button class="perf-kill-btn" onclick={() => killProcess(proc.pid)} title="Kill zombie">Kill</button>
+									{/if}
+								</div>
+								<div class="perf-proc-stats">
+									<span>CPU: {proc.cpuSec > 3600 ? (proc.cpuSec/3600).toFixed(1)+'h' : proc.cpuSec > 60 ? (proc.cpuSec/60).toFixed(1)+'m' : proc.cpuSec+'s'}</span>
+									<span>{proc.memMB}MB</span>
+									<span>{proc.uptimeHrs > 24 ? (proc.uptimeHrs/24).toFixed(1)+'d' : proc.uptimeHrs+'h'}</span>
+								</div>
+							</div>
+						{/each}
+					{/if}
+
+					{#if perfProcesses.filter(p => p.isZombie).length > 0}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-bad">{perfProcesses.filter(p => p.isZombie).length} ZOMBIE{perfProcesses.filter(p => p.isZombie).length > 1 ? 'S' : ''} DETECTED</span>
+						</div>
+					{:else if perfData.wsLatency > 200 || perfData.domTime > 16}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-bad">STREAM BOTTLENECK</span>
+						</div>
+					{:else if perfData.wsLatency > 50 || perfData.domTime > 5}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-warn">Moderate latency</span>
+						</div>
+					{:else}
+						<div class="perf-metric perf-status" style="margin-top:8px">
+							<span class="perf-good">Running smooth</span>
+						</div>
+					{/if}
+				</div>
 			{:else if rightSection === 'usage'}
 				{#if !usageData}
 					<div class="empty-state">Loading usage...</div>
@@ -3184,6 +3527,29 @@
 		background: #89b4fa;
 	}
 
+	.tab-label {
+		font-weight: 500;
+	}
+	.tab-project-hint {
+		font-size: 10px;
+		color: #585b70;
+		margin-left: 2px;
+	}
+	.term-tab.active .tab-project-hint {
+		color: #6c7086;
+	}
+	.tab-rename-input {
+		background: #181825;
+		border: 1px solid #89b4fa;
+		border-radius: 3px;
+		color: #cdd6f4;
+		font-size: 12px;
+		padding: 1px 4px;
+		width: 80px;
+		outline: none;
+		font-family: inherit;
+	}
+
 	.tab-close {
 		font-size: 14px;
 		opacity: 0.5;
@@ -3402,6 +3768,77 @@
 		50% { opacity: 1; }
 		100% { opacity: 0.7; }
 	}
+
+	/* Perf widget */
+	.perf-widget {
+		padding: 8px;
+	}
+	.perf-metric {
+		display: flex;
+		justify-content: space-between;
+		padding: 6px 8px;
+		border-bottom: 1px solid #1e1e2e;
+		font-size: 12px;
+	}
+	.perf-label { color: #a6adc8; }
+	.perf-value { color: #a6e3a1; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+	.perf-value.perf-warn { color: #f9e2af; }
+	.perf-value.perf-bad { color: #f38ba8; }
+	.perf-section-title {
+		font-size: 11px;
+		font-weight: bold;
+		color: #89b4fa;
+		padding: 4px 8px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+	.perf-proc {
+		padding: 6px 8px;
+		border-bottom: 1px solid #1e1e2e;
+	}
+	.perf-proc.perf-zombie {
+		background: rgba(243, 139, 168, 0.1);
+		border-left: 2px solid #f38ba8;
+	}
+	.perf-proc-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+	.perf-proc-name {
+		font-size: 12px;
+		color: #cdd6f4;
+	}
+	.perf-proc-name.vital {
+		color: #a6e3a1;
+	}
+	.perf-proc-name.vital::before {
+		content: '\u25CF ';
+		font-size: 8px;
+	}
+	.perf-proc-stats {
+		display: flex;
+		gap: 12px;
+		font-size: 10px;
+		color: #6c7086;
+		margin-top: 2px;
+		font-family: 'JetBrains Mono', monospace;
+	}
+	.perf-kill-btn {
+		background: #f38ba8;
+		color: #1e1e2e;
+		border: none;
+		border-radius: 3px;
+		font-size: 10px;
+		padding: 1px 6px;
+		cursor: pointer;
+		font-weight: bold;
+	}
+	.perf-kill-btn:hover { background: #eba0ac; }
+	.perf-status { justify-content: center; margin-top: 8px; border: none; }
+	.perf-good { color: #a6e3a1; }
+	.perf-warn { color: #f9e2af; }
+	.perf-bad { color: #f38ba8; font-weight: bold; }
 
 	/* Pi watermark */
 	.term-container::after {

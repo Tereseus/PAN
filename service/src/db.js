@@ -122,6 +122,27 @@ for (const table of tablesToAddUserId) {
   }
 }
 
+// Migration: upgrade open_tabs for persistent renamable tabs
+const otCols = db.pragma('table_info(open_tabs)').map(c => c.name);
+if (otCols.length > 0 && !otCols.includes('session_id')) {
+  console.log('[PAN DB] Migrating open_tabs for persistent tabs...');
+  db.exec(`
+    DROP TABLE IF EXISTS open_tabs;
+    CREATE TABLE IF NOT EXISTS open_tabs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL UNIQUE,
+      tab_name TEXT NOT NULL DEFAULT '',
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      cwd TEXT,
+      tab_index INTEGER DEFAULT 0,
+      opened_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      last_active TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_open_tabs_project ON open_tabs(project_id);
+  `);
+  console.log('[PAN DB] open_tabs migrated.');
+}
+
 // Auto-create default user (id=1) for backwards compatibility
 // When auth_mode=none, all requests use this user
 const defaultUser = db.prepare('SELECT * FROM users WHERE id = 1').get();
