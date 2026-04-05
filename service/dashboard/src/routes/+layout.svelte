@@ -19,6 +19,8 @@
 	let userName = $state('');
 	let userMenuOpen = $state(false);
 
+	const isDev = typeof window !== 'undefined' && window.location.port !== '7777' && window.location.port !== '';
+
 	let collapsed = $derived(isSidebarCollapsed());
 	let mobileMenuOpen = $state(false);
 
@@ -135,6 +137,7 @@
 	<main class="content">
 		<div class="topbar">
 			<button class="hamburger" onclick={() => mobileMenuOpen = !mobileMenuOpen}>☰</button>
+			{#if isDev}<span class="dev-badge">DEV</span>{/if}
 			<span class="topbar-title">{tabs.find(t => isActive(t))?.label || 'PAN'}</span>
 			<div class="topbar-spacer"></div>
 		</div>
@@ -466,6 +469,16 @@
 		background: #0e0e16;
 		border-bottom: 1px solid #1e1e2e;
 		gap: 8px;
+	}
+
+	.dev-badge {
+		background: #f9e2af;
+		color: #0a0a0f;
+		font-size: 10px;
+		font-weight: 700;
+		padding: 1px 6px;
+		border-radius: 3px;
+		letter-spacing: 1px;
 	}
 
 	.topbar-title {

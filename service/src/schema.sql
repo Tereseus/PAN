@@ -113,11 +113,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project ON project_tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_milestone ON project_tasks(milestone_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON project_tasks(status);
 
--- Track which project tabs are open in WezTerm for session restore
+-- Terminal tabs — persistent, renamable, survive restarts
 CREATE TABLE IF NOT EXISTS open_tabs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-    pane_id INTEGER,
+    session_id TEXT NOT NULL UNIQUE,
+    tab_name TEXT NOT NULL DEFAULT '',
+    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    cwd TEXT,
     tab_index INTEGER DEFAULT 0,
     opened_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     last_active TEXT NOT NULL DEFAULT (datetime('now','localtime'))

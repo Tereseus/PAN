@@ -1137,21 +1137,60 @@ router.get('/api/tasks/search', (req, res) => {
   res.json(tasks);
 });
 
-// POST /dashboard/api/open-tabs — record which tabs are open (for session restore)
+// POST /dashboard/api/open-tabs — save all open tabs (full replace)
 router.post('/api/open-tabs', (req, res) => {
   const { tabs } = req.body;
   if (!tabs || !Array.isArray(tabs)) return res.status(400).json({ error: 'tabs array required' });
 
-  // Clear existing and replace
   run("DELETE FROM open_tabs");
-  for (const tab of tabs) {
-    if (!tab.project_id) continue;
+  for (let i = 0; i < tabs.length; i++) {
+    const tab = tabs[i];
+    if (!tab.session_id) continue;
     insert(
-      "INSERT INTO open_tabs (project_id, pane_id, tab_index) VALUES (:pid, :pane, :idx)",
-      { ':pid': tab.project_id, ':pane': tab.pane_id || null, ':idx': tab.tab_index || 0 }
+      "INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index) VALUES (:sid, :name, :pid, :cwd, :idx)",
+      { ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null, ':cwd': tab.cwd || null, ':idx': i }
     );
   }
   res.json({ ok: true, saved: tabs.length });
+});
+
+// PUT /dashboard/api/open-tabs/:sessionId — upsert a single tab (create or update)
+router.put('/api/open-tabs/:sessionId', (req, res) => {
+  const sessionId = req.params.sessionId;
+  const { tab_name, project_id, cwd, tab_index } = req.body;
+  const existing = get("SELECT * FROM open_tabs WHERE session_id = :sid", { ':sid': sessionId });
+  if (existing) {
+    const updates = [];
+    const params = { ':sid': sessionId };
+    if (tab_name !== undefined) { updates.push("tab_name = :name"); params[':name'] = tab_name; }
+    if (project_id !== undefined) { updates.push("project_id = :pid"); params[':pid'] = project_id; }
+    if (cwd !== undefined) { updates.push("cwd = :cwd"); params[':cwd'] = cwd; }
+    if (tab_index !== undefined) { updates.push("tab_index = :idx"); params[':idx'] = tab_index; }
+    updates.push("last_active = datetime('now','localtime')");
+    if (updates.length > 0) run(`UPDATE open_tabs SET ${updates.join(', ')} WHERE session_id = :sid`, params);
+    res.json({ ok: true, action: 'updated' });
+  } else {
+    insert(
+      "INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index) VALUES (:sid, :name, :pid, :cwd, :idx)",
+      { ':sid': sessionId, ':name': tab_name || '', ':pid': project_id || null, ':cwd': cwd || null, ':idx': tab_index || 0 }
+    );
+    res.json({ ok: true, action: 'created' });
+  }
+});
+
+// PATCH /dashboard/api/open-tabs/:sessionId/rename — rename a tab
+router.patch('/api/open-tabs/:sessionId/rename', (req, res) => {
+  const { name } = req.body;
+  if (name === undefined) return res.status(400).json({ error: 'name required' });
+  run("UPDATE open_tabs SET tab_name = :name, last_active = datetime('now','localtime') WHERE session_id = :sid",
+    { ':name': name, ':sid': req.params.sessionId });
+  res.json({ ok: true });
+});
+
+// DELETE /dashboard/api/open-tabs/:sessionId — remove a tab
+router.delete('/api/open-tabs/:sessionId', (req, res) => {
+  run("DELETE FROM open_tabs WHERE session_id = :sid", { ':sid': req.params.sessionId });
+  res.json({ ok: true });
 });
 
 // Custom sections per project
@@ -1214,12 +1253,12 @@ router.delete('/api/section-items/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /dashboard/api/open-tabs — get last open tabs for session restore
+// GET /dashboard/api/open-tabs — get all saved tabs for session restore
 router.get('/api/open-tabs', (req, res) => {
   const tabs = all(`
     SELECT ot.*, p.name as project_name, p.path as project_path
     FROM open_tabs ot
-    JOIN projects p ON p.id = ot.project_id
+    LEFT JOIN projects p ON p.id = ot.project_id
     ORDER BY ot.tab_index
   `);
   res.json(tabs);

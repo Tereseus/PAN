@@ -175,7 +175,9 @@ async function startTerminalServer(httpServer) {
 
 // Broadcast rendered screen from ScreenBuffer to connected clients
 function broadcastRenderedScreen(session, singleClient) {
+  const t0 = performance.now();
   const screen = session.term.renderScreen();
+  const tRender = performance.now();
   const screenStr = screen.join('\n');
 
   // Skip if screen hasn't changed (unless sending to a specific new client)
@@ -193,6 +195,8 @@ function broadcastRenderedScreen(session, singleClient) {
     cursor: { x: session.term.cx, y: session.term.cy },
     rows: session.term.rows,
     cols: session.term.cols,
+    _ts: Date.now(), // timestamp for client-side latency measurement
+    _perf: { render: +(tRender - t0).toFixed(2) },
   };
 
   // Include scrollback only when it changed or for initial client sync
@@ -200,7 +204,17 @@ function broadcastRenderedScreen(session, singleClient) {
     payload.scrollback = session.term.getScrollback();
   }
 
+  const tSerialize = performance.now();
   const msg = JSON.stringify(payload);
+  const tDone = performance.now();
+  payload._perf.serialize = +(tDone - tSerialize).toFixed(2);
+  payload._perf.total = +(tDone - t0).toFixed(2);
+  payload._perf.msgSize = msg.length;
+
+  // Log slow frames
+  if (tDone - t0 > 10) {
+    console.log(`[PAN Terminal] Slow frame: render=${(tRender-t0).toFixed(1)}ms serialize=${(tDone-tSerialize).toFixed(1)}ms total=${(tDone-t0).toFixed(1)}ms size=${msg.length}`);
+  }
 
   if (singleClient) {
     if (singleClient.readyState === 1) singleClient.send(msg);
@@ -281,7 +295,10 @@ function addPendingPermission(data) {
 }
 
 function getPendingPermissions() {
-  return pendingPermissions;
+  // Filter out stale permissions (>30s old with no response — likely handled via terminal)
+  const cutoff = Date.now() - 30000;
+  pendingPermissions = pendingPermissions.filter(p => p.id > cutoff || p.response);
+  return pendingPermissions.filter(p => !p.response);
 }
 
 function clearPermission(id) {

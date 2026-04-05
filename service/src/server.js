@@ -35,7 +35,7 @@ import { startStackScanner, stopStackScanner, getAllStacks, scanStacks, getProje
 import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
-import { execFileSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
 
@@ -181,6 +181,53 @@ app.use('/api', (req, res, next) => {
 
 // Hook events from Claude Code
 app.use('/hooks', hooksRouter);
+
+// PAN Process Scanner
+const PAN_SIGNATURES = [
+  { pattern: 'pan.js start', name: 'PAN Server', vital: true },
+  { pattern: 'pan-atc.js', name: 'ATC', vital: true },
+  { pattern: 'mcp-server.js', name: 'MCP Server', vital: true },
+  { pattern: 'dev-server.js', name: 'Dev Server', vital: false },
+  { pattern: 'whisper-server', name: 'Whisper', vital: true },
+  { pattern: 'claude-code/cli.js', name: 'Claude Session', vital: false },
+  { pattern: 'chrome-devtools-mcp', name: 'Chrome MCP', vital: false },
+  { pattern: 'vite', name: 'Vite Dev', vital: false },
+  { pattern: 'wrapper.js', name: 'Service Wrapper', vital: true },
+];
+
+app.get('/dashboard/api/processes', (req, res) => {
+  try {
+    const raw = execSync(
+      'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object {$_.Name -eq \'node.exe\' -or $_.Name -eq \'python.exe\' -or $_.Name -eq \'claude.exe\'} | Select-Object ProcessId, Name, CommandLine, CreationDate, KernelModeTime, UserModeTime, WorkingSetSize | ConvertTo-Json -Depth 2"',
+      { encoding: 'utf8', timeout: 10000 }
+    );
+    const procs = JSON.parse(raw);
+    const procList = Array.isArray(procs) ? procs : [procs];
+    const now = Date.now();
+    const result = procList.map(p => {
+      const cmd = p.CommandLine || '';
+      const sig = PAN_SIGNATURES.find(s => cmd.includes(s.pattern));
+      const cpuSec = ((p.KernelModeTime || 0) + (p.UserModeTime || 0)) / 10000000;
+      const memMB = Math.round((p.WorkingSetSize || 0) / 1048576);
+      let uptimeHrs = 0, createdAt = null;
+      if (p.CreationDate) {
+        const match = String(p.CreationDate).match(/\/Date\((\d+)[+-]/);
+        if (match) { createdAt = new Date(parseInt(match[1])).toISOString(); uptimeHrs = +((now - parseInt(match[1])) / 3600000).toFixed(1); }
+      }
+      const cpuPerHour = uptimeHrs > 0 ? cpuSec / uptimeHrs : 0;
+      const isZombie = (!sig?.vital && uptimeHrs > 24) || cpuPerHour > 3600;
+      return { pid: p.ProcessId, name: sig?.name || (cmd.includes('python') ? 'Python' : 'Node'), vital: sig?.vital || false, cmd: cmd.length > 120 ? cmd.substring(0, 120) + '...' : cmd, cpuSec: +cpuSec.toFixed(1), memMB, uptimeHrs, createdAt, isZombie, isPan: !!sig };
+    }).filter(p => p.isPan || p.cpuSec > 10).sort((a, b) => b.cpuSec - a.cpuSec);
+    res.json({ ok: true, processes: result, scannedAt: new Date().toISOString() });
+  } catch (err) { res.json({ ok: false, error: err.message, processes: [] }); }
+});
+
+app.post('/dashboard/api/processes/kill', (req, res) => {
+  const { pid } = req.body;
+  if (!pid) return res.status(400).json({ ok: false, error: 'No PID' });
+  try { process.kill(pid, 'SIGTERM'); res.json({ ok: true, killed: pid }); }
+  catch (err) { res.json({ ok: false, error: err.message }); }
+});
 
 // API for Android app / Pandant data
 app.use('/api/v1', apiRouter);
@@ -1407,9 +1454,14 @@ async function autoDetectLocalModels() {
 }
 
 let server;
+let _startupIntervals = []; // Track intervals so soft restart can clear them
 
 function start() {
   _serverStartedAt = Date.now();
+  // Clear any intervals from previous start (soft restart)
+  for (const id of _startupIntervals) clearInterval(id);
+  _startupIntervals = [];
+
   return new Promise((resolve, reject) => {
     server = app.listen(PORT, HOST, () => {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
@@ -1441,14 +1493,14 @@ function start() {
       }
 
       // Keep PC device heartbeat alive (every 60 seconds)
-      setInterval(() => {
+      _startupIntervals.push(setInterval(() => {
         try {
           run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
         } catch {}
-      }, 60 * 1000);
+      }, 60 * 1000));
 
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
-      setInterval(syncProjects, 10 * 60 * 1000);
+      _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
 
       // Start classification engine (every 5 minutes)
       startClassifier(5 * 60 * 1000);
@@ -1629,36 +1681,54 @@ app.post('/api/v1/windows/close', async (req, res) => {
   }
 });
 
-// Dashboard restart endpoint — full process restart so code changes from disk are picked up
-// Production: node-windows wrapper auto-restarts on exit, so just exit cleanly.
-// Dev server: must spawn a replacement since there's no wrapper.
-app.post('/api/admin/restart', (req, res) => {
-  res.json({ ok: true, message: 'Restarting...' });
-  console.log('[PAN] Restart requested from dashboard');
-  setTimeout(async () => {
-    console.log('[PAN] Stopping all services...');
+// Restart endpoint — soft restart by default (stop + start, no process death).
+// Use ?hard=true for full process restart (reloads code from disk, needs wrapper to revive).
+// Soft restart: safe for MCP, curl, Claude sessions — nothing dies.
+// Hard restart: only use from dashboard button when JS source files changed on disk.
+app.post('/api/admin/restart', async (req, res) => {
+  const hard = req.query.hard === 'true' || req.body?.hard === true;
+
+  if (hard) {
+    // Hard restart — process.exit, wrapper revives. Kills all connections.
+    res.json({ ok: true, message: 'Hard restarting — process will exit...' });
+    console.log('[PAN] Hard restart requested');
+    setTimeout(async () => {
+      console.log('[PAN] Stopping all services...');
+      await stop();
+      await new Promise(r => setTimeout(r, 1000));
+
+      const isDev = process.env.PAN_PORT && parseInt(process.env.PAN_PORT) !== 7777;
+      if (isDev) {
+        console.log('[PAN] Dev mode — spawning fresh dev server...');
+        const { spawn } = await import('child_process');
+        const child = spawn(process.execPath, ['dev-server.js', String(process.env.PAN_PORT)], {
+          cwd: join(__dirname, '..'),
+          stdio: 'inherit',
+          detached: true,
+          env: { ...process.env }
+        });
+        child.unref();
+      }
+
+      console.log(`[PAN] Exiting for hard restart (${isDev ? 'dev' : 'prod — wrapper will restart'})`);
+      process.exit(0);
+    }, 500);
+    return;
+  }
+
+  // Soft restart — stop services + HTTP server, re-bind port, restart everything.
+  // Process stays alive. MCP, WebSockets, Claude sessions survive the brief gap.
+  console.log('[PAN] Soft restart requested — stopping services...');
+  try {
     await stop();
-    await new Promise(r => setTimeout(r, 1000));
-
-    const isDev = process.env.PAN_PORT && parseInt(process.env.PAN_PORT) !== 7777;
-
-    if (isDev) {
-      // Dev mode: no wrapper, must spawn replacement
-      console.log('[PAN] Dev mode — spawning fresh dev server...');
-      const { spawn } = await import('child_process');
-      const child = spawn(process.execPath, ['dev-server.js', String(process.env.PAN_PORT)], {
-        cwd: join(__dirname, '..'),
-        stdio: 'inherit',
-        detached: true,
-        env: { ...process.env }
-      });
-      child.unref();
-    }
-
-    // Exit — node-windows wrapper (prod) or nothing (dev) handles the rest
-    console.log(`[PAN] Exiting for restart (${isDev ? 'dev' : 'prod — wrapper will restart'})`);
-    process.exit(0);
-  }, 500);
+    console.log('[PAN] Services stopped. Re-starting...');
+    await start();
+    console.log('[PAN] Soft restart complete.');
+    res.json({ ok: true, message: 'Soft restart complete — server is back up.' });
+  } catch (err) {
+    console.error('[PAN] Soft restart failed:', err);
+    res.status(500).json({ ok: false, error: 'Soft restart failed: ' + err.message });
+  }
 });
 
 export { start, stop, app };
