@@ -90,41 +90,41 @@ When the user says "the dashboard" they mean: the web dashboard served by PAN
 - Browser extension: 10+ actions
 - MCP server with 15 tools wrapping PAN HTTP API
 - Dream cycle runs every 6h
-- `/api/v1/dev/proxy/*` route (Express 5 named wildcards)
 - Context briefing system working
 - Window registry with IDs and titles
 - `/api/v1/ui` endpoints: `list_windows`, `screenshot`, `focus` verified working
-- Screenshots capture all monitors with `all_screens=True`
 - Node.js dashboard server on port 7777
-- Tauri desktop shell running on port 7790 with PAN Π icon (window title + system tray correct)
-- Server running stable with package dependencies fixed
+- Tauri desktop shell running on port 7790 with PAN Π icon
+- Whisper voice transcription on port 7782 (WebM → WAV → transcription)
+- Server-side terminal rendering with @xterm/headless (dev instance) works
+- Dev terminal window opens and connects via Tauri API
 
 ## Known Issues
-- Chat input box broken
-- Terminal input lag: intermittent 10s+ delay
-- Ollama/embeddings: falls back to keyword hash when Ollama not running
-- Taskbar icon showing generic app icon instead of PAN Π
-- Server endpoints still reference Electron polling system (needs refactor but not blocking)
+- Message input routing to dev terminal needs verification (testing in progress)
+- Terminal width expands with voice-to-text input
+- `/api/v1/dev/restart` endpoint ready but untested on prod restart
 
 ## Current Priorities
-1. Push Tauri build to GitHub
-2. Fix taskbar icon in Tauri manifest
-3. Refactor server endpoints to call Tauri's HTTP API directly (port 7790)
-4. Delete Electron backup (`electron-OLD/`) once confident Tauri is stable
+1. Verify message input works through dev terminal (typing in chat input)
+2. Fix terminal width expansion with voice input
+3. Test `/api/v1/dev/restart` on production restart
+4. Migrate server-side renderer to production once stable
 
 ## Key Decisions
-- Tauri replaces Electron (DONE — 5MB vs 500MB, native OS integration)
-- Cardano blockchain for PAN token
+- Server-side terminal emulation (@xterm/headless) replaces browser xterm.js
+- Terminal input flows through chat input box, not separate TTY
+- Whisper handles voice-to-text, eliminates Windows STT garbage
+- Tauri handles window management and IPC
 - AGPL-3.0 license with treasury wallet addendum
-- Tailscale for all remote access
-- Service names: Steward, Intuition, Guardian
+- Cardano blockchain for PAN token
 
 ## User Preferences
 - Never ask for manual commands — do everything autonomously
-- Fix broken tools immediately, no workarounds
-- Don't ask for permission on dev actions (already agreed = just do it)
-- Multi-monitor support required
-- Keep dev instance stable during major architecture changes
+- Terminal must work through unified chat input paradigm
+- Voice input must not corrupt terminal display/width
+- Chat-first design is non-negotiable
+- Build features on dev first, test thoroughly before prod deployment
+- Auto-start services without prompting
 
 ## Known Facts
 - **user_correction** stated creating new sessions (user_preference, confidence: 0.9)
@@ -151,8 +151,7 @@ When the user says "the dashboard" they mean: the web dashboard served by PAN
 - [2026-04-01 20:37:24] Fixed nested CSS flexbox height rendering bug in dashboard: Added `min-height: 0` to every flex container in height chain (.content, .content-body, .terminal-layout, .term-container) and changed `100vh` to `100%` on html/body/.shell. Root cause: flex children 
 - [2026-04-01 14:03:43] Transcript loading issue diagnosed and fixed with fallback logic: After crash recovery, Claude session cwd was Desktop but terminal tab was PAN. Transcript now tries project path first, then falls back to most recent 3 sessions globally
 - [2026-04-01 20:37:25] Built PAN MCP server with 15 tools wrapping HTTP API: Created service/src/mcp-server.js, registered in .mcp.json (project-level) and Desktop/.mcp.json (global). Requires Claude Code restart to pick up new tools
-- [2026-04-01 14:03:43] User reported 7 bugs and priorities were set for the session [partial]: AHK not starting on reboot, conversation loading before terminal ready, steward not running, chat input issues, terminal paste issues, approvals tab flashing, escape key behavior
-- [2026-03-31 10:15:53] TEST: User f
+- [2026-04-01 14:03:43] User reported 7 bugs and priorities were set for the session [partial]: AHK not starting on reboot, conversation loading before terminal ready, steward not running, chat input issues, terminal paste issues, approvals tab flashing, 
 
 [... context trimmed to reduce CLAUDE.md size ...]
 <!-- PAN-CONTEXT-END -->

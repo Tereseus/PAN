@@ -43,6 +43,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"text": text, "seconds": elapsed}).encode())
 
-PORT = 7778
+PORT = 7782
 print(f"[PAN Whisper] Listening on http://127.0.0.1:{PORT}", flush=True)
 HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
