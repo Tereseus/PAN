@@ -7,6 +7,7 @@
 	let projects = $state([]);
 	let tabs = $state([]);
 	let activeTabId = $state(null);
+	let allProjectTabs = $state([]); // All tabs (open + closed) for current project dropdown
 	let leftSection = $state('transcript'); // same widget options as right panel
 	let centerView = $state('terminal'); // 'terminal' | 'chat'
 	let rightSection = $state('services'); // alphabetized panel widgets
@@ -80,6 +81,8 @@
 		document.removeEventListener('mouseup', onResizeEnd);
 		document.body.style.cursor = '';
 		document.body.style.userSelect = '';
+		// Trigger terminal resize after panel width change
+		setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
 	}
 
 	// Persist chat across refresh (localStorage survives tab close + refresh)
@@ -112,12 +115,13 @@
 				project: t.project,
 				cwd: t.cwd,
 				projectId: t.projectId,
-				tabIndex: i
+				tabIndex: i,
+				claudeSessionIds: t.claudeSessionIds || []
 			}));
 			localStorage.setItem('pan-terminal-sessions', JSON.stringify(state));
 			localStorage.setItem('pan-terminal-active', activeTabId || '');
 
-			// Save to DB for persistence across restarts
+			// Save to DB for persistence across restarts (includes claudeSessionIds)
 			api('/dashboard/api/open-tabs', {
 				method: 'POST',
 				body: JSON.stringify({ tabs: state.map(t => ({
@@ -125,7 +129,8 @@
 					tab_name: t.tabName || '',
 					project_id: t.projectId,
 					cwd: t.cwd,
-					tab_index: t.tabIndex
+					tab_index: t.tabIndex,
+					claude_session_ids: JSON.stringify(t.claudeSessionIds || [])
 				})) }),
 				headers: { 'Content-Type': 'application/json' }
 			}).catch(() => {});
@@ -141,13 +146,19 @@
 		try {
 			const tabs = await api('/dashboard/api/open-tabs');
 			if (!Array.isArray(tabs) || tabs.length === 0) return [];
-			return tabs.map(t => ({
-				sessionId: t.session_id,
-				tabName: t.tab_name || '',
-				project: t.project_name || 'Shell',
-				cwd: t.project_path || t.cwd || 'C:\\Users\\tzuri\\Desktop',
-				projectId: t.project_id
-			}));
+			return tabs.map(t => {
+				let csids = [];
+				try { csids = JSON.parse(t.claude_session_ids || '[]'); } catch {}
+				return {
+					sessionId: t.session_id,
+					tabName: t.tab_name || '',
+					project: t.project_name || 'Shell',
+					cwd: t.project_path || t.cwd || 'C:\\Users\\tzuri\\Desktop',
+					projectId: t.project_id,
+					tabIndex: t.tab_index ?? 0,
+					claudeSessionIds: csids
+				};
+			});
 		} catch { return []; }
 	}
 
@@ -186,6 +197,51 @@
 	function cancelRenameTab() {
 		renamingTabId = null;
 		renameValue = '';
+	}
+
+	// Load all tabs (open + closed) for a given project, deduped by name
+	async function loadAllProjectTabs(projectId) {
+		if (!projectId) { allProjectTabs = []; return; }
+		try {
+			const result = await api('/dashboard/api/all-tabs?project_id=' + encodeURIComponent(projectId));
+			const raw = Array.isArray(result) ? result : [];
+			// Always show open tabs; for closed tabs, only keep the most recent per tab_name
+			const open = raw.filter(t => !t.closed_at);
+			const closed = raw.filter(t => t.closed_at);
+			const closedByName = {};
+			for (const t of closed) {
+				const name = t.tab_name || 'Unnamed';
+				// Skip closed tabs that duplicate an open tab's name
+				if (open.some(o => (o.tab_name || 'Unnamed') === name)) continue;
+				if (!closedByName[name] || t.last_active > closedByName[name].last_active) {
+					closedByName[name] = t;
+				}
+			}
+			allProjectTabs = [...open, ...Object.values(closedByName)];
+		} catch { allProjectTabs = []; }
+	}
+
+	// Reopen a closed tab — creates a new PTY with fresh Claude, injects that tab's transcript
+	async function reopenTab(dbTab) {
+		// Mark it as reopened in DB
+		await api(`/dashboard/api/open-tabs/${dbTab.id}/reopen`, { method: 'POST' }).catch(() => {});
+
+		// Parse saved claude session IDs
+		let csids = [];
+		try { csids = JSON.parse(dbTab.claude_session_ids || '[]'); } catch {}
+
+		// Create new PTY session with a new ID but carry the tab name and transcript
+		const projectName = dbTab.project_name || 'Shell';
+		const cwd = dbTab.project_path || dbTab.cwd || 'C:\\Users\\tzuri\\Desktop';
+		const newSessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+
+		// Update the DB record with the new session ID
+		await api(`/dashboard/api/open-tabs/${dbTab.id}/reopen`, { method: 'POST' }).catch(() => {});
+
+		await createTab(newSessionId, projectName, cwd, dbTab.project_id, false, dbTab.tab_name || null, csids);
+
+		// Refresh the project tabs dropdown
+		if (dbTab.project_id) loadAllProjectTabs(dbTab.project_id);
 	}
 
 	// Dev mode detection — Vite dev server runs on a different port than Prod (7777)
@@ -288,16 +344,16 @@
 			return;
 		}
 
-		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
-
-		// Check if tab already exists
-		const existing = tabs.find(t => t.sessionId === sessionId);
+		// Check if tab already exists for this project (match by project name, not session ID)
+		const existing = tabs.find(t => t.project === projectName);
 		if (existing) {
 			switchToTab(existing.id);
 			return;
 		}
 
+		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
 		await createTab(sessionId, projectName, cwd, projectId, false, null);
+		if (projectId) loadAllProjectTabs(projectId);
 	}
 
 	function newTerminalTab() {
@@ -309,7 +365,7 @@
 		createTab(sessionId, projectName, cwd, projectId, false, null);
 	}
 
-	async function createTab(sessionId, projectName, cwd, projectId, isReconnect, tabName) {
+	async function createTab(sessionId, projectName, cwd, projectId, isReconnect, tabName, savedClaudeSessionIds) {
 		const tabId = 'tab-' + (++tabCounter);
 
 		// Server-side rendered terminal — just a scrollable div that displays pre-rendered HTML lines
@@ -321,13 +377,13 @@
 		// Scrollback div (history above visible screen)
 		const scrollbackDiv = document.createElement('div');
 		scrollbackDiv.className = 'term-scrollback';
-		scrollbackDiv.style.cssText = 'padding:8px 12px;white-space:pre;';
+		scrollbackDiv.style.cssText = 'padding:8px 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;';
 		tabContainer.appendChild(scrollbackDiv);
 
 		// Screen div (current visible terminal screen) — uses per-line divs for efficient diffing
 		const screenDiv = document.createElement('div');
 		screenDiv.className = 'term-screen';
-		screenDiv.style.cssText = 'padding:0 12px;white-space:pre;min-height:100%;';
+		screenDiv.style.cssText = 'padding:0 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;min-height:100%;';
 		tabContainer.appendChild(screenDiv);
 
 		// Cache of previous line HTML for diffing
@@ -349,7 +405,7 @@
 			screenDiv,
 			host: '',
 			_closing: false,
-			claudeSessionIds: [],
+			claudeSessionIds: savedClaudeSessionIds || [],
 			userScrolledUp: false,
 		};
 
@@ -369,7 +425,12 @@
 
 		// Connect WebSocket — server sends pre-rendered HTML via ScreenBuffer
 		{
-			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=120&rows=30`);
+			// Calculate cols from container width (monospace char ~8.4px at 14px font)
+			const charWidth = 8.4;
+			const containerWidth = termContainerEl ? termContainerEl.clientWidth - 24 : 900; // 24px padding
+			const calcCols = Math.max(80, Math.floor(containerWidth / charWidth));
+			const calcRows = termContainerEl ? Math.max(20, Math.floor(termContainerEl.clientHeight / 21)) : 30; // line-height ~21px
+			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}`);
 
 			const ws = new WebSocket(wsUrlStr);
 			tabData.ws = ws;
@@ -401,10 +462,29 @@
 						case 'screen': {
 							// Server sends pre-rendered HTML lines — diff per-line to avoid DOM thrashing
 							if (msg.scrollback && msg.scrollback.length > 0) {
-								scrollbackDiv.innerHTML = msg.scrollback.join('\n');
+								// Append only new scrollback lines instead of replacing all
+								const newLines = msg.scrollback;
+								const prevScrollbackLen = parseInt(scrollbackDiv.dataset.len || '0');
+								if (newLines.length > prevScrollbackLen) {
+									const toAdd = newLines.slice(prevScrollbackLen);
+									scrollbackDiv.insertAdjacentHTML('beforeend', (prevScrollbackLen > 0 ? '\n' : '') + toAdd.join('\n'));
+								} else if (newLines.length < prevScrollbackLen) {
+									// Scrollback was reset — full replace
+									scrollbackDiv.innerHTML = newLines.join('\n');
+								}
+								scrollbackDiv.dataset.len = String(newLines.length);
 							}
 
 							const lines = msg.lines;
+
+							// If screenDiv has non-div children (status messages appended as text/spans),
+							// rebuild cleanly so children[] indexing works
+							if (screenDiv.childNodes.length !== screenDiv.children.length ||
+								screenDiv.children.length === 0) {
+								screenDiv.innerHTML = '';
+								prevLines = [];
+							}
+
 							// Ensure correct number of line divs
 							while (screenDiv.children.length < lines.length) {
 								const div = document.createElement('div');
@@ -458,10 +538,10 @@
 							tabs = [...tabs];
 							break;
 						case 'exit':
-							screenDiv.innerHTML += '\n<span style="color:#585b70">[Session ended]</span>';
+							scrollbackDiv.innerHTML += '\n<span style="color:#585b70">[Session ended]</span>';
 							break;
 						case 'error':
-							screenDiv.innerHTML += '\n<span style="color:#f38ba8">[Error: ' + msg.message + ']</span>';
+							scrollbackDiv.innerHTML += '\n<span style="color:#f38ba8">[Error: ' + msg.message + ']</span>';
 							break;
 						case 'chat_update': {
 							const updateSid = msg.session_id || '';
@@ -485,8 +565,43 @@
 						case 'server_restarting':
 							serverRestarting = true;
 							reconnectAttempts = 0;
-							screenDiv.innerHTML += '\n<span style="color:#f9e2af">[Server restarting \u2014 will reconnect automatically...]</span>';
+							scrollbackDiv.innerHTML += '\n<span style="color:#f9e2af">[Server restarting \u2014 will reconnect automatically...]</span>';
 							break;
+						case 'voice_toggle':
+							// Only handle ONCE — use a global flag to prevent multiple tabs from recording
+							if (!window._panVoiceHandled) {
+								window._panVoiceHandled = true;
+								setTimeout(() => { window._panVoiceHandled = false; }, 300);
+								toggleVoiceInput();
+							}
+							break;
+						case 'voice_result': {
+							// Deduplicate — only process once per message across all tab WebSockets
+							const vrKey = `${msg.text?.substring(0,30)}_${msg.partial}`;
+							if (window._lastVoiceResult === vrKey) break;
+							window._lastVoiceResult = vrKey;
+							setTimeout(() => { if (window._lastVoiceResult === vrKey) window._lastVoiceResult = null; }, 200);
+							console.log('[Voice] voice_result received, partial=', msg.partial, 'text=', msg.text?.substring(0, 50));
+							if (msg.text !== undefined) {
+								// Snapshot existing text when voice session starts
+								if (!window._voiceBaseText && window._voiceBaseText !== '') {
+									window._voiceBaseText = terminalInputText.trim();
+								}
+								// Both partials and finals contain cumulative text — always replace, never append
+								const base = window._voiceBaseText || '';
+								terminalInputText = base ? base + ' ' + msg.text : msg.text;
+								requestAnimationFrame(() => autoGrowInput());
+								// Clear base text tracker and listening state when final result arrives
+								if (!msg.partial) {
+									window._voiceBaseText = undefined;
+									isListening = false;
+								}
+							}
+							if (msg.action === 'send') {
+								setTimeout(() => sendTerminalInput(), 100);
+							}
+							break;
+						}
 					}
 				} catch {}
 			}
@@ -496,7 +611,7 @@
 				reconnectAttempts++;
 				const delay = Math.min(reconnectAttempts * 1000, 5000);
 				const label = serverRestarting ? 'Server restarting' : 'Reconnecting';
-				screenDiv.innerHTML += `\n<span style="color:#f9e2af">[${label}... attempt ${reconnectAttempts}]</span>`;
+				scrollbackDiv.innerHTML += `\n<span style="color:#f9e2af">[${label}... attempt ${reconnectAttempts}]</span>`;
 
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = null;
@@ -507,7 +622,8 @@
 						reconnectAttempts = 0;
 						serverRestarting = false;
 						tabData.ws = newWs;
-						screenDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
+						prevLines = []; // Reset diff cache — server will send fresh screen
+						scrollbackDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
 						startPing();
 					};
 					newWs.onmessage = handleMessage;
@@ -515,7 +631,7 @@
 						stopPing();
 						if (tabData._closing) return;
 						if (reconnectAttempts < 30) reconnect();
-						else screenDiv.innerHTML += '\n<span style="color:#f38ba8">[Connection lost \u2014 refresh page to retry]</span>';
+						else scrollbackDiv.innerHTML += '\n<span style="color:#f38ba8">[Connection lost \u2014 refresh page to retry]</span>';
 					};
 					newWs.onerror = () => {};
 				}, delay);
@@ -531,7 +647,11 @@
 							tabData.claudeStarted = true;
 							let briefingReady = false;
 							try {
-								const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
+								let briefingUrl = '/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd);
+								if (tabData.claudeSessionIds && tabData.claudeSessionIds.length > 0) {
+									briefingUrl += '&session_ids=' + encodeURIComponent(tabData.claudeSessionIds.join(','));
+								}
+								const briefingData = await fetch(briefingUrl).then(r => r.json());
 								if (briefingData.briefing) {
 									ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
 									briefingReady = true;
@@ -665,10 +785,14 @@
 				chatCurrentProject = chatKey;
 			}
 
+			// Use this tab's saved Claude session IDs for its specific transcript
 			let sessionIds = [];
-			if (realSessionId) {
+			if (active.claudeSessionIds && active.claudeSessionIds.length > 0) {
+				sessionIds = [...active.claudeSessionIds];
+			} else if (realSessionId) {
 				sessionIds = [realSessionId];
 			} else {
+				// Fallback: probe events for this project path (only when tab has no saved sessions yet)
 				const projectKey = active.cwd || '';
 				if (projectKey) {
 					try {
@@ -842,13 +966,11 @@
 			if (ws) ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
 			return;
 		}
-		// Number keys 1-3 when input is empty → navigate Claude Code approval prompt
+		// Number keys 1-3 when input is empty AND there's a pending approval prompt
 		// The prompt is a TUI select list: arrow-down to move, Enter to confirm
-		// Check both the DOM value and the Svelte state to cover all timing cases
-		if (/^[1-3]$/.test(e.key) && (e.target.value.length === 0 || !e.target.value.trim())) {
+		if (/^[1-3]$/.test(e.key) && (e.target.value.length === 0 || !e.target.value.trim()) && approvalsData.length > 0) {
 			e.preventDefault();
 			e.stopImmediatePropagation();
-			// Clear any residual value
 			e.target.value = '';
 			terminalInputText = '';
 			if (ws) {
@@ -907,10 +1029,11 @@
 	}
 
 	function autoGrowInput(e) {
-		const el = e.target;
+		const el = e?.target || terminalInputEl;
+		if (!el) return;
 		el.style.height = 'auto';
 		const lineHeight = 20;
-		const maxLines = 5;
+		const maxLines = 10;
 		const maxHeight = lineHeight * maxLines;
 		el.style.height = Math.min(el.scrollHeight, maxHeight) + 'px';
 	}
@@ -969,78 +1092,64 @@
 	let voiceWs = null;
 	let voiceProcessor = null;
 	let voiceContext = null;
+	let preVoiceText = '';  // Text in input box before voice started (to append, not replace)
 
+	let voiceToggleLock = false;
 	function toggleVoiceInput() {
+		if (voiceToggleLock) return;
+		voiceToggleLock = true;
+		setTimeout(() => voiceToggleLock = false, 500);
 		if (isListening) {
-			stopVoiceStreaming();
-		} else {
-			startVoiceStreaming();
+			// Stop recording
+			if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+			return;
 		}
+		// Start recording in browser, transcribe via Whisper, put text in input box
+		preVoiceText = terminalInputText.trim();
+		startBatchRecording();
 	}
 
-	async function startVoiceStreaming() {
-		try {
-			// Get mic stream
-			voiceStream = await navigator.mediaDevices.getUserMedia({
-				audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
-			});
-			isListening = true;
-
-			// Connect WebSocket via same-origin proxy (PAN server proxies to Whisper on 7783)
-			const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-			voiceWs = new WebSocket(`${wsProto}//${window.location.host}/ws/whisper`);
-			voiceWs.binaryType = 'arraybuffer';
-
-			voiceWs.onmessage = (e) => {
-				try {
-					const msg = JSON.parse(e.data);
-					if (msg.text !== undefined) {
-						terminalInputText = msg.text;
-					}
-					if (msg.action === 'send' && msg.type === 'final') {
-						// "over" trigger — auto-send
-						setTimeout(() => sendTerminalInput(), 100);
-						stopVoiceStreaming();
-					}
-				} catch {}
-			};
-
-			voiceWs.onclose = () => {
-				if (isListening) stopVoiceStreaming();
-			};
-
-			voiceWs.onerror = (err) => {
-				console.error('[Voice] WS error:', err);
-				// Fall back to batch mode
-				stopVoiceStreaming();
-				startBatchRecording();
-			};
-
-			// Wait for WS to open, then start streaming audio
-			voiceWs.onopen = () => {
-				voiceWs.send(JSON.stringify({ type: 'config', sample_rate: 16000 }));
-				startAudioStreaming(voiceStream);
-			};
-		} catch (err) {
-			console.error('[Voice] Mic access failed:', err);
-			isListening = false;
-		}
-	}
-
-	function startAudioStreaming(stream) {
-		// Use AudioWorklet or ScriptProcessor to get raw PCM
-		voiceContext = new AudioContext({ sampleRate: 16000 });
+	// Kept for potential future WebSocket streaming use
+	function _startAudioStreaming(stream) {
+		// Create AudioContext at native rate — browsers ignore forced 16kHz
+		voiceContext = new AudioContext();
+		const nativeRate = voiceContext.sampleRate;
+		const targetRate = 16000;
 		const source = voiceContext.createMediaStreamSource(stream);
+
+		// Tell Whisper the actual sample rate we're sending
+		if (voiceWs && voiceWs.readyState === 1) {
+			voiceWs.send(JSON.stringify({ type: 'config', sample_rate: targetRate }));
+		}
 
 		// ScriptProcessor for broad compatibility (AudioWorklet needs separate file)
 		voiceProcessor = voiceContext.createScriptProcessor(4096, 1, 1);
 		voiceProcessor.onaudioprocess = (e) => {
 			if (!voiceWs || voiceWs.readyState !== 1) return;
 			const float32 = e.inputBuffer.getChannelData(0);
+
+			// Resample from native rate to 16kHz
+			let samples;
+			if (nativeRate !== targetRate) {
+				const ratio = nativeRate / targetRate;
+				const newLen = Math.round(float32.length / ratio);
+				samples = new Float32Array(newLen);
+				for (let i = 0; i < newLen; i++) {
+					const srcIdx = i * ratio;
+					const idx = Math.floor(srcIdx);
+					const frac = srcIdx - idx;
+					samples[i] = idx + 1 < float32.length
+						? float32[idx] * (1 - frac) + float32[idx + 1] * frac
+						: float32[idx];
+				}
+			} else {
+				samples = float32;
+			}
+
 			// Convert float32 to int16 PCM
-			const int16 = new Int16Array(float32.length);
-			for (let i = 0; i < float32.length; i++) {
-				int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
+			const int16 = new Int16Array(samples.length);
+			for (let i = 0; i < samples.length; i++) {
+				int16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
 			}
 			voiceWs.send(int16.buffer);
 		};
@@ -1050,15 +1159,26 @@
 	}
 
 	function stopVoiceStreaming() {
-		isListening = false;
-		if (voiceWs && voiceWs.readyState === 1) {
-			voiceWs.send(JSON.stringify({ type: 'stop' }));
-			// Wait briefly for final transcription before closing
-			setTimeout(() => { try { voiceWs.close(); } catch {} }, 1000);
+		console.log('[Voice] stopping, mediaRecorder state=', mediaRecorder?.state);
+		// Stop batch MediaRecorder (triggers onstop which transcribes)
+		if (mediaRecorder && mediaRecorder.state === 'recording') {
+			mediaRecorder.stop();
+			// isListening will be set to false in onstop handler after transcription
+			return;
 		}
+
+		isListening = false;
+		// Stop audio capture immediately (WebSocket path, currently unused)
 		if (voiceProcessor) { try { voiceProcessor.disconnect(); } catch {} voiceProcessor = null; }
 		if (voiceContext) { try { voiceContext.close(); } catch {} voiceContext = null; }
 		if (voiceStream) { voiceStream.getTracks().forEach(t => t.stop()); voiceStream = null; }
+
+		const ws = voiceWs;
+		voiceWs = null;
+		if (ws && ws.readyState === 1) {
+			ws.send(JSON.stringify({ type: 'stop' }));
+			setTimeout(() => { try { ws.close(); } catch {} }, 3000);
+		}
 	}
 
 	// Batch fallback if WebSocket streaming isn't available
@@ -1070,25 +1190,33 @@
 			mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 			audioChunks = [];
 			isListening = true;
+			console.log('[Voice] Batch recording started');
 			mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
 			mediaRecorder.onstop = async () => {
 				stream.getTracks().forEach(t => t.stop());
 				isListening = false;
+				mediaRecorder = null;
 				if (audioChunks.length === 0) return;
 				const blob = new Blob(audioChunks, { type: 'audio/webm' });
+				audioChunks = [];
+				console.log('[Voice] Batch recording stopped, transcribing', blob.size, 'bytes...');
 				try {
 					const resp = await fetch('/api/v1/whisper/transcribe', {
 						method: 'POST', headers: { 'Content-Type': 'audio/webm' }, body: blob,
 					});
 					if (resp.ok) {
 						const data = await resp.json();
-						if (data.text) terminalInputText = (terminalInputText ? terminalInputText + ' ' : '') + data.text.trim();
+						console.log('[Voice] Batch result:', data.text?.substring(0, 60));
+						if (data.text) {
+							terminalInputText = preVoiceText ? preVoiceText + ' ' + data.text.trim() : data.text.trim();
+							requestAnimationFrame(() => autoGrowInput());
+						}
 						if (data.action === 'send') setTimeout(() => sendTerminalInput(), 100);
 					}
 				} catch (err) { console.error('[Voice] Batch transcribe failed:', err); }
 			};
 			mediaRecorder.start();
-		}).catch(() => { isListening = false; });
+		}).catch((err) => { console.error('[Voice] Mic access failed:', err); isListening = false; });
 	}
 
 	function switchCenterView(view) {
@@ -1349,6 +1477,7 @@
 
 	async function loadTerminalSidebar(projectId, projectName) {
 		const active = getActiveTab();
+		if (projectId) loadAllProjectTabs(projectId);
 		// Always load services regardless of project
 		try {
 			const svcResp = await api('/dashboard/api/services');
@@ -1961,22 +2090,31 @@
 					if (match) tabNameCounter = Math.max(tabNameCounter, parseInt(match[1]));
 				}
 
-				if (sessions.length > 0) {
-					// Keep only the newest session per project
-					const byProject = new Map();
+				if (sessions.length > 0 && dbTabs.length > 0) {
+					// Only reconnect to sessions that have a matching DB tab record
+					// Kill orphan PTY sessions that aren't in the DB
+					const dbSessionIds = new Set(dbTabs.map(t => t.sessionId));
+					const liveSessions = sessions.filter(s =>
+						(s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')) && dbSessionIds.has(s.id)
+					);
+					// Kill orphans — sessions with no DB tab
 					for (const s of sessions) {
-						if (!s.id.startsWith(sessionPrefix) && !s.id.startsWith('mob-')) continue;
-						const key = s.project || s.cwd || s.id;
-						const existing = byProject.get(key);
-						if (!existing || (s.createdAt || 0) > (existing.createdAt || 0)) {
-							byProject.set(key, s);
+						if ((s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')) && !dbSessionIds.has(s.id)) {
+							fetch(`/api/v1/terminal/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' }).catch(() => {});
 						}
 					}
-					for (const s of byProject.values()) {
+					// Sort by DB tab index
+					liveSessions.sort((a, b) => {
+						const aTab = dbTabMap.get(a.id);
+						const bTab = dbTabMap.get(b.id);
+						if (aTab && bTab) return (aTab.tabIndex || 0) - (bTab.tabIndex || 0);
+						return (a.createdAt || 0) - (b.createdAt || 0);
+					});
+					for (const s of liveSessions) {
 						const matchedProject = projects.find(p => p.name === s.project);
 						const pid = matchedProject ? matchedProject.id : null;
 						const savedTab = dbTabMap.get(s.id);
-						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true, savedTab?.tabName || null);
+						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true, savedTab?.tabName || null, savedTab?.claudeSessionIds);
 						reconnected = true;
 					}
 				}
@@ -1986,7 +2124,7 @@
 					for (const dt of dbTabs) {
 						const matchedProject = projects.find(p => p.name === dt.project);
 						const pid = matchedProject ? matchedProject.id : dt.projectId;
-						await createTab(dt.sessionId, dt.project || 'Shell', dt.cwd || 'C:\\Users\\tzuri\\Desktop', pid, false, dt.tabName || null);
+						await createTab(dt.sessionId, dt.project || 'Shell', dt.cwd || 'C:\\Users\\tzuri\\Desktop', pid, false, dt.tabName || null, dt.claudeSessionIds);
 						reconnected = true;
 					}
 				}
@@ -1999,7 +2137,7 @@
 				const savedSessions = getSavedSessionState();
 				for (const s of savedSessions) {
 					if (!s.sessionId) continue;
-					await createTab(s.sessionId, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', s.projectId, false, s.tabName || null);
+					await createTab(s.sessionId, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', s.projectId, false, s.tabName || null, s.claudeSessionIds);
 					reconnected = true;
 				}
 				saveSessionState();
@@ -2028,8 +2166,24 @@
 		};
 		window.addEventListener('beforeunload', handleBeforeUnload);
 
-		// Global resize handler — server-side rendered terminal doesn't need client resize
-		const handleResize = () => {};
+		// Resize handler — recalculate cols/rows and notify PTY server
+		let resizeDebounce = null;
+		const handleResize = () => {
+			if (resizeDebounce) clearTimeout(resizeDebounce);
+			resizeDebounce = setTimeout(() => {
+				if (!termContainerEl) return;
+				const charWidth = 8.4;
+				const cw = termContainerEl.clientWidth - 24;
+				const ch = termContainerEl.clientHeight;
+				const newCols = Math.max(80, Math.floor(cw / charWidth));
+				const newRows = Math.max(20, Math.floor(ch / 21));
+				for (const tab of tabs) {
+					if (tab.ws && tab.ws.readyState === 1) {
+						tab.ws.send(JSON.stringify({ type: 'resize', cols: newCols, rows: newRows }));
+					}
+				}
+			}, 300);
+		};
 		window.addEventListener('resize', handleResize);
 
 		// Global key handler — Escape and number keys reach the terminal even without textarea focus
@@ -2046,8 +2200,8 @@
 				active.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
 				return;
 			}
-			// Number keys 1-3 when input is empty — navigate Claude Code approval prompt
-			if (/^[1-3]$/.test(e.key) && !terminalInputEl?.value?.trim()) {
+			// Number keys 1-3 when input is empty AND there's a pending approval
+			if (/^[1-3]$/.test(e.key) && !terminalInputEl?.value?.trim() && approvalsData.length > 0) {
 				e.preventDefault();
 				const n = parseInt(e.key);
 				let seq = '\x1b[A\x1b[A\x1b[A';
@@ -2093,6 +2247,26 @@
 		{/each}
 		<option value="__shell__">Shell</option>
 	</select>
+	{#if allProjectTabs.length > 0}
+		<select class="tab-history-select" onchange={(e) => {
+			const val = e.target.value;
+			if (!val) return;
+			e.target.value = '';
+			const dbTab = allProjectTabs.find(t => String(t.id) === val);
+			if (!dbTab) return;
+			if (dbTab.closed_at) {
+				reopenTab(dbTab);
+			} else {
+				const openTab = tabs.find(t => t.sessionId === dbTab.session_id);
+				if (openTab) switchToTab(openTab.id);
+			}
+		}}>
+			<option value="">Threads...</option>
+			{#each allProjectTabs as pt}
+				<option value={pt.id}>{pt.closed_at ? '\u{1F4CB} ' : '\u25CF '}{pt.tab_name || 'Unnamed'}</option>
+			{/each}
+		</select>
+	{/if}
 	<span class="host-label">{hostLabel}</span>
 	<div style="flex:1"></div>
 	<span class="sessions-count">
@@ -3393,7 +3567,7 @@
 
 	.center-input-bar {
 		display: flex;
-		align-items: center;
+		align-items: flex-end;
 		gap: 8px;
 		padding: 8px 12px;
 		background: #12121a;
@@ -3452,7 +3626,7 @@
 	.center-input {
 		flex: 1;
 		min-height: 36px;
-		max-height: 100px;
+		max-height: 200px;
 		padding: 8px 12px;
 		background: #1a1a25;
 		border: 1px solid #1e1e2e;
@@ -3553,6 +3727,19 @@
 		outline: none;
 	}
 	.project-select:focus { border-color: #89b4fa; }
+
+	.tab-history-select {
+		background: #0a0a0f;
+		color: #cdd6f4;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px;
+		padding: 6px 10px;
+		font-size: 13px;
+		outline: none;
+		max-width: 200px;
+		margin-left: 4px;
+	}
+	.tab-history-select:focus { border-color: #89b4fa; }
 
 	.host-label {
 		color: #6c7086;
@@ -3692,8 +3879,10 @@
 		flex: 1;
 		background: #12121a;
 		overflow-y: auto;
+		overflow-x: hidden;
 		padding: 10px;
 		font-size: 12px;
+		min-width: 0;
 	}
 
 	/* ==================== Chat ==================== */
@@ -3701,6 +3890,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+		min-width: 0;
 	}
 
 	.chat-bubble {
@@ -3941,6 +4131,15 @@
 		position: relative;
 		z-index: 1;
 		background: #1e1e2e;
+		max-width: 100%;
+	}
+	.term-container :global(.term-screen),
+	.term-container :global(.term-scrollback) {
+		overflow-x: hidden;
+		max-width: 100%;
+		white-space: pre-wrap;
+		word-break: break-word;
+		overflow-wrap: break-word;
 	}
 
 	.term-empty {

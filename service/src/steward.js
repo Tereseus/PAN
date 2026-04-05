@@ -24,6 +24,11 @@ import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
 import { listSessions } from './terminal.js';
 import { hostname } from 'os';
 import http from 'http';
+import { spawn, execSync } from 'child_process';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ==================== MODEL TIERS ====================
 // These define what kind of AI backend a service requires.
@@ -83,10 +88,10 @@ const services = [
   {
     id: 'whisper',
     name: 'Whisper STT',
-    description: 'Voice-to-text transcription server (WebM → WAV → text)',
+    description: 'Voice-to-text batch transcription (faster-whisper tiny, GPU)',
     modelTier: 'local',
-    modelMinSize: '~1.5B (whisper-medium)',
-    modelCurrent: 'whisper-medium',
+    modelMinSize: '~75MB (tiny)',
+    modelCurrent: 'faster-whisper-tiny',
     port: 7782,
     healthCheck: 'port',
     bootOrder: 3,
@@ -112,7 +117,25 @@ const services = [
     bootOrder: 4,
     dependsOn: ['whisper'],
     interval: null,
-    startFn: null,
+    startFn: () => {
+      const ahkScript = join(__dirname, '..', 'bin', 'Voice.ahk');
+      const ahkExe = 'C:\\Program Files\\AutoHotkey\\UX\\AutoHotkeyUX.exe';
+      const ahkLauncher = 'C:\\Program Files\\AutoHotkey\\UX\\launcher.ahk';
+      const taskName = 'PAN_AHK_Launch';
+      const tr = `"${ahkExe}" "${ahkLauncher}" "${ahkScript}"`;
+      // Use schtasks to launch in the interactive user session (Console session 1)
+      // even when steward runs from service session 0
+      try {
+        execSync(`schtasks /Create /TN "${taskName}" /TR "${tr}" /SC ONCE /ST 23:59 /F /RU "tzuri" /IT`, { stdio: 'ignore' });
+        execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'ignore' });
+        setTimeout(() => {
+          try { execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'ignore' }); } catch {}
+        }, 5000);
+        console.log('[Steward] Launched Voice.ahk via schtasks (user session)');
+      } catch (err) {
+        console.error('[Steward] Failed to launch Voice.ahk:', err.message);
+      }
+    },
     stopFn: null,
     _status: 'unknown',
     _lastCheck: null,
@@ -343,11 +366,13 @@ async function checkPortHealth(port, path = '/') {
 
 async function checkProcessRunning(processName) {
   try {
-    const { execSync } = await import('child_process');
-    const result = execSync(`tasklist /FI "IMAGENAME eq ${processName}" /NH`, {
-      encoding: 'utf8', timeout: 5000
+    const { exec } = await import('child_process');
+    return new Promise((resolve) => {
+      exec(`tasklist /FI "IMAGENAME eq ${processName}" /NH`, { encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
+        if (err) return resolve(false);
+        resolve(stdout.includes(processName));
+      });
     });
-    return result.includes(processName);
   } catch {
     return false;
   }
@@ -485,6 +510,18 @@ async function shutdownAll() {
 async function healthCheck() {
   for (const svc of services) {
     await checkServiceHealth(svc);
+    // Auto-restart services that have a startFn and are down
+    if (svc._status === 'down' && svc.startFn && isServiceEnabled(svc)) {
+      try {
+        console.log(`[Steward] Auto-restarting ${svc.name}...`);
+        svc.startFn();
+        svc._status = 'running';
+        svc._lastRun = Date.now();
+      } catch (err) {
+        svc._lastError = err.message;
+        console.error(`[Steward] Failed to restart ${svc.name}: ${err.message}`);
+      }
+    }
   }
 
   // Clean zombie PTY sessions (connected but no activity for 2 hours)

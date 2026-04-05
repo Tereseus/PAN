@@ -91,15 +91,27 @@ async fn screenshot_window(
         let size = window.outer_size().map_err(|e| format!("{}", e))?;
 
         let monitors = xcap::Monitor::all().map_err(|e| format!("{}", e))?;
-        if let Some(monitor) = monitors.first() {
+        // Find the monitor that contains this window
+        let monitor = monitors.iter().find(|m| {
+            let mx = m.x();
+            let my = m.y();
+            let mw = m.width() as i32;
+            let mh = m.height() as i32;
+            pos.x >= mx && pos.x < mx + mw && pos.y >= my && pos.y < my + mh
+        }).or_else(|| monitors.first());
+        if let Some(monitor) = monitor {
             let img = monitor.capture_image().map_err(|e| format!("{}", e))?;
-            // Crop to window region
+            // Crop to window region relative to this monitor
+            let crop_x = (pos.x - monitor.x()).max(0) as u32;
+            let crop_y = (pos.y - monitor.y()).max(0) as u32;
+            let crop_w = size.width.min(img.width().saturating_sub(crop_x));
+            let crop_h = size.height.min(img.height().saturating_sub(crop_y));
             let cropped = image::imageops::crop_imm(
                 &img,
-                pos.x.max(0) as u32,
-                pos.y.max(0) as u32,
-                size.width,
-                size.height,
+                crop_x,
+                crop_y,
+                crop_w,
+                crop_h,
             ).to_image();
 
             let mut buf = Cursor::new(Vec::new());
@@ -183,10 +195,11 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                         Ok(val) => {
                             let url = val["url"].as_str().unwrap_or("http://127.0.0.1:7777").to_string();
                             let title = val["title"].as_str().map(|s| s.to_string());
+                            let label = val["label"].as_str().map(|s| s.to_string());
                             let handle = app_handle.clone();
                             let reg = registry.clone();
-                            // Open window on main thread
-                            let win_id = new_window_id();
+                            // Use provided label or auto-generate
+                            let win_id = label.unwrap_or_else(|| new_window_id());
                             let win_title = title.unwrap_or_else(|| "PAN".to_string());
                             let wid = win_id.clone();
                             let wtitle = win_title.clone();
@@ -227,34 +240,105 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                 }
 
                 ("POST", "/screenshot") => {
-                    // Full screen screenshot
-                    match xcap::Monitor::all() {
-                        Ok(monitors) => {
-                            if let Some(monitor) = monitors.first() {
-                                match monitor.capture_image() {
-                                    Ok(img) => {
-                                        let mut buf = Cursor::new(Vec::new());
-                                        if img.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
-                                            let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
-                                            // Save to disk too
-                                            let path = std::env::temp_dir().join("pan-screenshot.png");
-                                            let _ = img.save(&path);
-                                            (200, serde_json::json!({
-                                                "ok": true,
-                                                "base64": b64,
-                                                "path": path.to_string_lossy()
-                                            }).to_string())
+                    let mut body_str = String::new();
+                    let _ = request.as_reader().read_to_string(&mut body_str);
+                    let val = serde_json::from_str::<serde_json::Value>(&body_str).unwrap_or_default();
+                    let window_id = val["windowId"].as_str().map(|s| s.to_string());
+
+                    if let Some(wid) = window_id {
+                        // Window-specific screenshot: find the window, find its monitor, crop
+                        let handle = app_handle.clone();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let handle2 = handle.clone();
+                        handle.run_on_main_thread(move || {
+                            if let Some(w) = handle2.get_webview_window(&wid) {
+                                let pos = w.outer_position().ok();
+                                let size = w.outer_size().ok();
+                                tx.send((pos, size)).ok();
+                            } else {
+                                tx.send((None, None)).ok();
+                            }
+                        }).ok();
+
+                        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                            Ok((Some(pos), Some(size))) => {
+                                match xcap::Monitor::all() {
+                                    Ok(monitors) => {
+                                        // Find which monitor contains this window
+                                        let wx = pos.x;
+                                        let wy = pos.y;
+                                        let target_mon = monitors.iter().find(|m| {
+                                            let mx = m.x();
+                                            let my = m.y();
+                                            let mw = m.width() as i32;
+                                            let mh = m.height() as i32;
+                                            wx >= mx && wx < mx + mw && wy >= my && wy < my + mh
+                                        }).or_else(|| monitors.first());
+
+                                        if let Some(monitor) = target_mon {
+                                            match monitor.capture_image() {
+                                                Ok(img) => {
+                                                    // Crop to window position relative to this monitor
+                                                    let crop_x = (wx - monitor.x()).max(0) as u32;
+                                                    let crop_y = (wy - monitor.y()).max(0) as u32;
+                                                    let crop_w = size.width.min(img.width().saturating_sub(crop_x));
+                                                    let crop_h = size.height.min(img.height().saturating_sub(crop_y));
+                                                    let cropped = image::imageops::crop_imm(&img, crop_x, crop_y, crop_w, crop_h).to_image();
+                                                    let mut buf = Cursor::new(Vec::new());
+                                                    if cropped.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
+                                                        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+                                                        let path = std::env::temp_dir().join("pan-screenshot.png");
+                                                        let _ = cropped.save(&path);
+                                                        (200, serde_json::json!({
+                                                            "ok": true, "base64": b64, "windowId": wid,
+                                                            "path": path.to_string_lossy(),
+                                                            "position": {"x": pos.x, "y": pos.y},
+                                                            "size": {"w": size.width, "h": size.height}
+                                                        }).to_string())
+                                                    } else {
+                                                        (500, serde_json::json!({"ok": false, "error": "encode failed"}).to_string())
+                                                    }
+                                                }
+                                                Err(e) => (500, serde_json::json!({"ok": false, "error": e.to_string()}).to_string()),
+                                            }
                                         } else {
-                                            (500, serde_json::json!({"ok": false, "error": "encode failed"}).to_string())
+                                            (500, serde_json::json!({"ok": false, "error": "no monitors"}).to_string())
                                         }
                                     }
                                     Err(e) => (500, serde_json::json!({"ok": false, "error": e.to_string()}).to_string()),
                                 }
-                            } else {
-                                (500, serde_json::json!({"ok": false, "error": "no monitors"}).to_string())
                             }
+                            Ok(_) => (404, serde_json::json!({"ok": false, "error": format!("Window '{}' not found or has no position", wid)}).to_string()),
+                            Err(_) => (500, serde_json::json!({"ok": false, "error": "Timeout getting window position"}).to_string()),
                         }
-                        Err(e) => (500, serde_json::json!({"ok": false, "error": e.to_string()}).to_string()),
+                    } else {
+                        // Full screen screenshot (all monitors stitched or first)
+                        match xcap::Monitor::all() {
+                            Ok(monitors) => {
+                                if let Some(monitor) = monitors.first() {
+                                    match monitor.capture_image() {
+                                        Ok(img) => {
+                                            let mut buf = Cursor::new(Vec::new());
+                                            if img.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
+                                                let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+                                                let path = std::env::temp_dir().join("pan-screenshot.png");
+                                                let _ = img.save(&path);
+                                                (200, serde_json::json!({
+                                                    "ok": true, "base64": b64,
+                                                    "path": path.to_string_lossy()
+                                                }).to_string())
+                                            } else {
+                                                (500, serde_json::json!({"ok": false, "error": "encode failed"}).to_string())
+                                            }
+                                        }
+                                        Err(e) => (500, serde_json::json!({"ok": false, "error": e.to_string()}).to_string()),
+                                    }
+                                } else {
+                                    (500, serde_json::json!({"ok": false, "error": "no monitors"}).to_string())
+                                }
+                            }
+                            Err(e) => (500, serde_json::json!({"ok": false, "error": e.to_string()}).to_string()),
+                        }
                     }
                 }
 

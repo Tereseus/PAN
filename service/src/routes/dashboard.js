@@ -1137,19 +1137,62 @@ router.get('/api/tasks/search', (req, res) => {
   res.json(tasks);
 });
 
-// POST /dashboard/api/open-tabs — save all open tabs (full replace)
+// POST /dashboard/api/open-tabs — save all open tabs (upsert, mark missing as closed)
 router.post('/api/open-tabs', (req, res) => {
   const { tabs } = req.body;
   if (!tabs || !Array.isArray(tabs)) return res.status(400).json({ error: 'tabs array required' });
 
-  run("DELETE FROM open_tabs");
+  const openIds = tabs.filter(t => t.session_id).map(t => t.session_id);
+
+  // Mark tabs not in the list as closed (instead of deleting)
+  if (openIds.length > 0) {
+    const params = {};
+    const placeholders = openIds.map((id, i) => { params[`:s${i}`] = id; return `:s${i}`; }).join(',');
+    run(`UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE session_id NOT IN (${placeholders}) AND closed_at IS NULL`, params);
+  } else {
+    run("UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE closed_at IS NULL");
+  }
+
+  // Upsert each open tab — reuse closed tabs with same name+project instead of creating duplicates
   for (let i = 0; i < tabs.length; i++) {
     const tab = tabs[i];
     if (!tab.session_id) continue;
-    insert(
-      "INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index) VALUES (:sid, :name, :pid, :cwd, :idx)",
-      { ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null, ':cwd': tab.cwd || null, ':idx': i }
-    );
+    const existing = get("SELECT id FROM open_tabs WHERE session_id = :sid", { ':sid': tab.session_id });
+    if (existing) {
+      run(
+        `UPDATE open_tabs SET tab_name = :name, project_id = :pid, cwd = :cwd, tab_index = :idx,
+         claude_session_ids = :csids, closed_at = NULL, last_active = datetime('now','localtime')
+         WHERE session_id = :sid`,
+        { ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null,
+          ':cwd': tab.cwd || null, ':idx': i, ':csids': tab.claude_session_ids || '[]' }
+      );
+    } else {
+      // Check for a closed tab with the same name+project — reuse it instead of creating a duplicate
+      const closedDupe = tab.project_id
+        ? get("SELECT id FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL ORDER BY last_active DESC LIMIT 1",
+            { ':name': tab.tab_name || '', ':pid': tab.project_id })
+        : null;
+      if (closedDupe) {
+        // Reuse the closed row: update session_id and reopen
+        run(
+          `UPDATE open_tabs SET session_id = :sid, tab_name = :name, project_id = :pid, cwd = :cwd, tab_index = :idx,
+           claude_session_ids = :csids, closed_at = NULL, last_active = datetime('now','localtime')
+           WHERE id = :id`,
+          { ':id': closedDupe.id, ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null,
+            ':cwd': tab.cwd || null, ':idx': i, ':csids': tab.claude_session_ids || '[]' }
+        );
+        // Purge any other closed duplicates with same name+project
+        run("DELETE FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL",
+          { ':name': tab.tab_name || '', ':pid': tab.project_id });
+      } else {
+        insert(
+          `INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index, claude_session_ids)
+           VALUES (:sid, :name, :pid, :cwd, :idx, :csids)`,
+          { ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null,
+            ':cwd': tab.cwd || null, ':idx': i, ':csids': tab.claude_session_ids || '[]' }
+        );
+      }
+    }
   }
   res.json({ ok: true, saved: tabs.length });
 });
@@ -1157,7 +1200,7 @@ router.post('/api/open-tabs', (req, res) => {
 // PUT /dashboard/api/open-tabs/:sessionId — upsert a single tab (create or update)
 router.put('/api/open-tabs/:sessionId', (req, res) => {
   const sessionId = req.params.sessionId;
-  const { tab_name, project_id, cwd, tab_index } = req.body;
+  const { tab_name, project_id, cwd, tab_index, claude_session_ids } = req.body;
   const existing = get("SELECT * FROM open_tabs WHERE session_id = :sid", { ':sid': sessionId });
   if (existing) {
     const updates = [];
@@ -1166,15 +1209,36 @@ router.put('/api/open-tabs/:sessionId', (req, res) => {
     if (project_id !== undefined) { updates.push("project_id = :pid"); params[':pid'] = project_id; }
     if (cwd !== undefined) { updates.push("cwd = :cwd"); params[':cwd'] = cwd; }
     if (tab_index !== undefined) { updates.push("tab_index = :idx"); params[':idx'] = tab_index; }
+    if (claude_session_ids !== undefined) { updates.push("claude_session_ids = :csids"); params[':csids'] = JSON.stringify(claude_session_ids); }
     updates.push("last_active = datetime('now','localtime')");
     if (updates.length > 0) run(`UPDATE open_tabs SET ${updates.join(', ')} WHERE session_id = :sid`, params);
     res.json({ ok: true, action: 'updated' });
   } else {
-    insert(
-      "INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index) VALUES (:sid, :name, :pid, :cwd, :idx)",
-      { ':sid': sessionId, ':name': tab_name || '', ':pid': project_id || null, ':cwd': cwd || null, ':idx': tab_index || 0 }
-    );
-    res.json({ ok: true, action: 'created' });
+    // Check for closed tab with same name+project to reuse
+    const closedDupe = project_id
+      ? get("SELECT id FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL ORDER BY last_active DESC LIMIT 1",
+          { ':name': tab_name || '', ':pid': project_id })
+      : null;
+    if (closedDupe) {
+      run(
+        `UPDATE open_tabs SET session_id = :sid, tab_name = :name, project_id = :pid, cwd = :cwd, tab_index = :idx,
+         claude_session_ids = :csids, closed_at = NULL, last_active = datetime('now','localtime')
+         WHERE id = :id`,
+        { ':id': closedDupe.id, ':sid': sessionId, ':name': tab_name || '', ':pid': project_id || null,
+          ':cwd': cwd || null, ':idx': tab_index || 0, ':csids': JSON.stringify(claude_session_ids || []) }
+      );
+      run("DELETE FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL",
+        { ':name': tab_name || '', ':pid': project_id });
+      res.json({ ok: true, action: 'reused' });
+    } else {
+      insert(
+        `INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index, claude_session_ids)
+         VALUES (:sid, :name, :pid, :cwd, :idx, :csids)`,
+        { ':sid': sessionId, ':name': tab_name || '', ':pid': project_id || null, ':cwd': cwd || null,
+          ':idx': tab_index || 0, ':csids': JSON.stringify(claude_session_ids || []) }
+      );
+      res.json({ ok: true, action: 'created' });
+    }
   }
 });
 
@@ -1187,9 +1251,16 @@ router.patch('/api/open-tabs/:sessionId/rename', (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /dashboard/api/open-tabs/:sessionId — remove a tab
+// DELETE /dashboard/api/open-tabs/:sessionId — mark tab as closed (never delete)
 router.delete('/api/open-tabs/:sessionId', (req, res) => {
-  run("DELETE FROM open_tabs WHERE session_id = :sid", { ':sid': req.params.sessionId });
+  run("UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE session_id = :sid", { ':sid': req.params.sessionId });
+  res.json({ ok: true });
+});
+
+// DELETE /dashboard/api/open-tabs/:id/purge — permanently delete a closed tab
+router.delete('/api/open-tabs/:id/purge', (req, res) => {
+  const id = parseInt(req.params.id);
+  run("DELETE FROM open_tabs WHERE id = :id AND closed_at IS NOT NULL", { ':id': id });
   res.json({ ok: true });
 });
 
@@ -1253,15 +1324,48 @@ router.delete('/api/section-items/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /dashboard/api/open-tabs — get all saved tabs for session restore
+// GET /dashboard/api/open-tabs — get all open (not closed) tabs for session restore
 router.get('/api/open-tabs', (req, res) => {
   const tabs = all(`
     SELECT ot.*, p.name as project_name, p.path as project_path
     FROM open_tabs ot
     LEFT JOIN projects p ON p.id = ot.project_id
+    WHERE ot.closed_at IS NULL
     ORDER BY ot.tab_index
   `);
   res.json(tabs);
+});
+
+// GET /dashboard/api/all-tabs — get ALL tabs (open + closed) for a project
+router.get('/api/all-tabs', (req, res) => {
+  const projectId = req.query.project_id;
+  let tabs;
+  if (projectId) {
+    tabs = all(`
+      SELECT ot.*, p.name as project_name, p.path as project_path
+      FROM open_tabs ot
+      LEFT JOIN projects p ON p.id = ot.project_id
+      WHERE ot.project_id = :pid
+      ORDER BY ot.closed_at IS NULL DESC, ot.last_active DESC
+    `, { ':pid': projectId });
+  } else {
+    tabs = all(`
+      SELECT ot.*, p.name as project_name, p.path as project_path
+      FROM open_tabs ot
+      LEFT JOIN projects p ON p.id = ot.project_id
+      ORDER BY ot.closed_at IS NULL DESC, ot.last_active DESC
+    `);
+  }
+  res.json(tabs);
+});
+
+// POST /dashboard/api/open-tabs/:id/reopen — reopen a closed tab
+router.post('/api/open-tabs/:id/reopen', (req, res) => {
+  const id = parseInt(req.params.id);
+  const tab = get("SELECT * FROM open_tabs WHERE id = :id", { ':id': id });
+  if (!tab) return res.status(404).json({ error: 'tab not found' });
+  run("UPDATE open_tabs SET closed_at = NULL, last_active = datetime('now','localtime') WHERE id = :id", { ':id': id });
+  res.json({ ok: true, tab });
 });
 
 export default router;

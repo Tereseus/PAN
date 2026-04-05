@@ -61,70 +61,63 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with something like "Last time we were working on..." and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
-=== PAN SESSION CONTEXT BRIEFING ===
-
-## Development Environment
-OS: Windows
-Terminal: WezTerm (config: C:\Users\tzuri\.wezterm.lua)
-Shell: bash (Git Bash)
-IDE: VS Code
-Tools: Claude Code CLI, Android SDK
-
-Runtimes: Node.js, Kotlin, Python, C/C++
-Frameworks: Express, Jetpack Compose
-Languages: C++, Python, JavaScript, HTML, TypeScript, C, Go, CSS, Swift, C#, SQL, Rust, Ruby
-
-## Term Mapping
-When the user says "terminal" they mean: WezTerm
-When the user says "the app" or "phone" they mean: the Android PAN app
-When the user says "the server" they mean: PAN Node.js server (port 7777)
-When the user says "the dashboard" they mean: the web dashboard served by PAN
-
-# PAN State — Updated 2026-04-04
+# PAN State — Updated 2026-04-05 (17:34)
 
 ## What Works
 - SQLite DB encrypted with SQLCipher (AES-256-CBC)
-- Phone voice pipeline: Google STT → PAN server → Claude Haiku → TTS
-- Phone commands: flashlight, timer, alarm, navigation, search, media controls
 - Tailscale remote access working
+- Phone commands: flashlight, timer, alarm, navigation, search, media controls
 - Browser extension: 10+ actions
 - MCP server with 15 tools wrapping PAN HTTP API
 - Dream cycle runs every 6h
-- Context briefing system working
-- Window registry with IDs and titles
-- `/api/v1/ui` endpoints: `list_windows`, `screenshot`, `focus` verified working
+- Context briefing system working via SessionEnd injection
+- Window registry supports labeled Tauri windows (e.g. "dev", "prod")
+- `/api/v1/ui` endpoints: `list_windows`, `screenshot`, `focus` with windowId routing
+- Tauri `/open` accepts `label` for deterministic window identification
+- Tauri `/screenshot` accepts `windowId` and captures correct monitor
 - Node.js dashboard server on port 7777
-- Tauri desktop shell running on port 7790 with PAN Π icon
-- Whisper voice transcription on port 7782 (WebM → WAV → transcription)
-- Server-side terminal rendering with @xterm/headless (dev instance) works
-- Dev terminal window opens and connects via Tauri API
+- Tauri desktop shell on port 7790 with PAN Π icon
+- Fast Whisper STT running with 0.3s end-silence delay, batch-only mode
+- AHK script launched via Tauri resolves Windows session boundary
+- Hard restart via settings button triggers full process restart
+- All live PTY sessions restored on page refresh
+- Terminal status messages no longer corrupt screen buffer
+- `.left-content` and `.chat-container` prevent horizontal overflow
+- Tabs are permanent in DB with `closed_at` and `claude_session_ids`
+- PTY dynamically resizes based on container width (px → columns)
+- Approval keys (1/2/3) only trigger when pending approval exists
+- Health checks now run asynchronously without blocking event loop
+- Bash and MCP tool permissions are allowlisted (effective next session)
+- Voice input uses batch MediaRecorder with single active tab enforcement
+- WebSocket broadcast for voice respects active tab focus and session scope
+- Terminal scroll regions reset correctly on buffer switch
+- Frontend deduplication ensures only one transcription per utterance across tabs
 
 ## Known Issues
-- Message input routing to dev terminal needs verification (testing in progress)
-- Terminal width expands with voice-to-text input
-- `/api/v1/dev/restart` endpoint ready but untested on prod restart
+- `/v2/terminal.html` access still returns 404 in dev instance
 
 ## Current Priorities
-1. Verify message input works through dev terminal (typing in chat input)
-2. Fix terminal width expansion with voice input
-3. Test `/api/v1/dev/restart` on production restart
-4. Migrate server-side renderer to production once stable
+1. Restore `/v2/terminal.html` access — fix dev server routing
+2. Confirm Fast Whisper batch mode eliminates duplication and deletion in input
+3. Validate single transcription per utterance across multiple dashboard tabs
+4. Clean up duplicate threads caused by session ID mismatch in project switch
 
 ## Key Decisions
-- Server-side terminal emulation (@xterm/headless) replaces browser xterm.js
-- Terminal input flows through chat input box, not separate TTY
-- Whisper handles voice-to-text, eliminates Windows STT garbage
-- Tauri handles window management and IPC
-- AGPL-3.0 license with treasury wallet addendum
-- Cardano blockchain for PAN token
+- STT engine choice must be settings-driven, not hardcoded
+- GUI processes (e.g. AHK) must be launched via Tauri due to Windows session isolation
+- Each dashboard tab is a named bookmark to a persistent conversation thread
+- Tauri windows must be labeled at creation for reliable identification and targeting
+- Background AI (Dream, Scout) requires 30B+ models — using Cerebras 120B
+- Interactive terminal uses Claude; embeddings via local Ollama 7B
+- Server-side terminal rendering (@xterm/headless) is standard
 
 ## User Preferences
-- Never ask for manual commands — do everything autonomously
-- Terminal must work through unified chat input paradigm
-- Voice input must not corrupt terminal display/width
-- Chat-first design is non-negotiable
-- Build features on dev first, test thoroughly before prod deployment
-- Auto-start services without prompting
+- Do everything autonomously — never ask for manual commands
+- Understand full architecture before building
+- Visual test verification required for all changes
+- Logo area in sidebar reserved for user company/app icons
+- Test in prod only after full system understanding
+- Avoid unnecessary restarts — they break context and session state
 
 ## Known Facts
 - **user_correction** stated creating new sessions (user_preference, confidence: 0.9)
@@ -150,8 +143,18 @@ When the user says "the dashboard" they mean: the web dashboard served by PAN
 - [2026-04-01 20:37:25] User decision: replace xterm.js with custom HTML/WebSocket terminal [partial]: xterm.js is too janky with unreliable scroll behavior. Plan to build simple <pre>/<div> renderer with ANSI color parsing and manual WebSocket PTY connection. Avoids all the TUI escape code complexity
 - [2026-04-01 20:37:24] Fixed nested CSS flexbox height rendering bug in dashboard: Added `min-height: 0` to every flex container in height chain (.content, .content-body, .terminal-layout, .term-container) and changed `100vh` to `100%` on html/body/.shell. Root cause: flex children 
 - [2026-04-01 14:03:43] Transcript loading issue diagnosed and fixed with fallback logic: After crash recovery, Claude session cwd was Desktop but terminal tab was PAN. Transcript now tries project path first, then falls back to most recent 3 sessions globally
+- [2026-03-31 10:15:53] TEST: User fixed the terminal scrollbar bug: Modified WezTerm config to prevent auto-scroll on new output
+- [2026-04-01 14:03:43] User reported 7 bugs and priorities were set for the session [partial]: AHK not starting on reboot, conversation loading before terminal ready, steward not running, chat input issues, terminal paste issues, approvals tab flashing, escape key behavior
 - [2026-04-01 20:37:25] Built PAN MCP server with 15 tools wrapping HTTP API: Created service/src/mcp-server.js, registered in .mcp.json (project-level) and Desktop/.mcp.json (global). Requires Claude Code restart to pick up new tools
-- [2026-04-01 14:03:43] User reported 7 bugs and priorities were set for the session [partial]: AHK not starting on reboot, conversation loading before terminal ready, steward not running, chat input issues, terminal paste issues, approvals tab flashing, 
+- [2026-04-01 14:03:43] Hard refresh button implemented to bypass browser cache: Refresh button now uses location.reload(true) to force cache bypass. This was necessary because old broken dashboard code was being cached
+- [2026-04-01 14:03:44] Multi-transcript system implemented for multi-tab support: Each dashboard tab now tracks its own claudeSessionIds array. Chat_update events associate sessions with active tabs
+- [2026-04-01 20:37:24] Fixed TedGL 'My Computer' showing offline when device is actively connected: Added hostname equality check in dashboard.js: `hostname === os.hostname()` to mark local PC as always online. This replaced dependency on heartbeat detection which was unreliable
+- [2026-04-01 14:03:44] Terminal/Chat toggle feature built with overlay architecture: Added toggle buttons to switch between Terminal and Chat views. Chat view overlays on top with position:absolute so terminal context is never lost
+- [2026-04-02 12:38:40] Critical bug: page refresh creates new session instead of persisting transcript [failure]: User loses entire chat history and terminal session context when hitting F5 or browser refresh. Attempted 3-layer fix (buffer detection, localStorage session persistence, localStorage chat) but fix wa
 
-[... context trimmed to reduce CLAUDE.md size ...]
+## Known Procedures
+- **Scope memory consolidation per project**: Run consolidation, dream cycle, and evolution cycles independently for each project to avoid mixing concerns
+  1. Identify .p
+
+[... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
