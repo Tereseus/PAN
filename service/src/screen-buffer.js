@@ -258,21 +258,26 @@ class ScreenBuffer {
         for (const mode of parts) {
           if (mode === 1049 || mode === 47) {
             if (final === 'h') {
-              // Save cursor + switch to alt screen
+              // Save cursor + scroll region + switch to alt screen
               this.altSavedCx = this.cx; this.altSavedCy = this.cy;
+              this.altSavedScrollTop = this.scrollTop;
+              this.altSavedScrollBottom = this.scrollBottom;
               this.altScreenBuf = this.screen;
               this.screen = [];
               for (let y = 0; y < this.rows; y++) this.screen.push(this._emptyRow());
               this.altScreen = true;
               this.cx = 0; this.cy = 0;
+              this.scrollTop = 0; this.scrollBottom = this.rows - 1;
             } else {
-              // Switch back + restore cursor
+              // Switch back + restore cursor + scroll region
               if (this.altScreenBuf) {
                 this.screen = this.altScreenBuf;
                 this.altScreenBuf = null;
               }
               this.altScreen = false;
               this.cx = this.altSavedCx; this.cy = this.altSavedCy;
+              this.scrollTop = this.altSavedScrollTop ?? 0;
+              this.scrollBottom = this.altSavedScrollBottom ?? (this.rows - 1);
             }
           } else if (mode === 7) {
             this.wraparound = (final === 'h');

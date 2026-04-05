@@ -143,6 +143,15 @@ if (otCols.length > 0 && !otCols.includes('session_id')) {
   console.log('[PAN DB] open_tabs migrated.');
 }
 
+// Migration: add claude_session_ids and closed_at to open_tabs for persistent tab history
+const otCols2 = db.pragma('table_info(open_tabs)').map(c => c.name);
+if (otCols2.length > 0 && !otCols2.includes('claude_session_ids')) {
+  console.log('[PAN DB] Adding claude_session_ids and closed_at to open_tabs...');
+  db.exec(`ALTER TABLE open_tabs ADD COLUMN claude_session_ids TEXT DEFAULT '[]'`);
+  db.exec(`ALTER TABLE open_tabs ADD COLUMN closed_at TEXT DEFAULT NULL`);
+  console.log('[PAN DB] open_tabs extended for tab history.');
+}
+
 // Auto-create default user (id=1) for backwards compatibility
 // When auth_mode=none, all requests use this user
 const defaultUser = db.prepare('SELECT * FROM users WHERE id = 1').get();

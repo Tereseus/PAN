@@ -283,17 +283,21 @@ router.post('/:eventType', (req, res) => {
           ':tp': payload.transcript_path || null
         });
       }
-      // Context injection handled by inject-context.cjs command hook (runs before Claude reads CLAUDE.md)
-      // Server-side injection disabled to prevent dual write conflict
     }
-
-    // Server-side CLAUDE.md injection disabled — inject-context.cjs command hook handles this
 
     if (eventType === 'SessionEnd') {
       run(`UPDATE sessions SET ended_at = datetime('now','localtime'), transcript_path = :tp WHERE id = :id`, {
         ':id': sessionId,
         ':tp': payload.transcript_path || null
       });
+
+      // Inject context into CLAUDE.md NOW so the NEXT session opens with fresh context
+      // (Claude Code reads CLAUDE.md before SessionStart hooks run, so this must happen on SessionEnd)
+      if (cwd) {
+        injectSessionContext(cwd).catch(err => {
+          console.error('[PAN Hook] SessionEnd context injection failed:', err.message);
+        });
+      }
     }
 
     // Store every event

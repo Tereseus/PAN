@@ -31,10 +31,10 @@ import { getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAuto
 import { getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { bootAll, shutdownAll, getAtlasData, getServiceStatus, reportServiceRun } from './steward.js';
 import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
-import { execFileSync, execSync } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
+import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -186,7 +186,7 @@ const PAN_SIGNATURES = [
   { pattern: 'pan-atc.js', name: 'ATC', vital: true },
   { pattern: 'mcp-server.js', name: 'MCP Server', vital: true },
   { pattern: 'dev-server.js', name: 'Dev Server', vital: false },
-  { pattern: 'whisper-server', name: 'Whisper', vital: true },
+  { pattern: 'vosk-server', name: 'Vosk STT', vital: true },
   { pattern: 'claude-code/cli.js', name: 'Claude Session', vital: false },
   { pattern: 'chrome-devtools-mcp', name: 'Chrome MCP', vital: false },
   { pattern: 'vite', name: 'Vite Dev', vital: false },
@@ -1171,6 +1171,7 @@ app.get('/api/v1/atlas/service/:id', (req, res) => {
 
 app.get('/api/v1/context-briefing', async (req, res) => {
   const projectPath = req.query.project_path || '';
+  const tabSessionIds = req.query.session_ids ? req.query.session_ids.split(',').filter(Boolean) : [];
 
   // 1. Read the living state document (maintained by dream cycle)
   const stateFile = join(process.cwd(), '.pan-state.md');
@@ -1179,9 +1180,20 @@ app.get('/api/v1/context-briefing', async (req, res) => {
     if (existsSync(stateFile)) stateDoc = readFileSync(stateFile, 'utf8');
   } catch {}
 
-  // 2. Recent conversation for this project (last 30 exchanges)
+  // 2. Recent conversation — scoped to tab's session IDs if available, else project path
   let recentChat = [];
-  if (projectPath) {
+  if (tabSessionIds.length > 0) {
+    // Tab-specific transcript: only load conversation from this tab's Claude sessions
+    const params = {};
+    const placeholders = tabSessionIds.map((id, i) => { params[`:ts${i}`] = id; return `:ts${i}`; }).join(',');
+    recentChat = all(
+      `SELECT event_type, data, created_at FROM events
+       WHERE event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage')
+       AND session_id IN (${placeholders})
+       ORDER BY created_at DESC LIMIT 30`,
+      params
+    );
+  } else if (projectPath) {
     const fwd = projectPath.replace(/\\/g, '/');
     const bk = fwd.replace(/\//g, '\\\\');
     recentChat = all(
@@ -1322,6 +1334,37 @@ app.post('/api/v1/dictate', async (req, res) => {
     console.error('[PAN Dictate] Error:', err.message);
     res.json({ ok: false, error: err.message });
   }
+});
+
+// Voice toggle — AHK or other clients can trigger dashboard mic streaming
+app.post('/api/v1/voice/toggle', (req, res) => {
+  broadcastNotification('voice_toggle', {});
+  res.json({ ok: true });
+});
+
+// Voice dictate — spawn dictate-vad.py server-side (for mic button, no AHK needed)
+let _dictateProc = null;
+app.post('/api/v1/voice/dictate', (req, res) => {
+  if (_dictateProc) {
+    // Already recording — signal stop
+    const stopFile = join(process.env.TEMP || '/tmp', 'pan_dictate.wav.stop');
+    writeFileSync(stopFile, 'stop');
+    res.json({ ok: true, action: 'stopping' });
+    return;
+  }
+  const script = join(dirname(fileURLToPath(import.meta.url)), 'dictate-vad.py');
+  _dictateProc = spawnChild('python', [script], { stdio: 'ignore', windowsHide: true });
+  _dictateProc.on('close', () => { _dictateProc = null; });
+  _dictateProc.on('error', () => { _dictateProc = null; });
+  res.json({ ok: true, action: 'started' });
+});
+
+// Voice result — receives partial/final transcription from dictate-vad.py and pushes to dashboard
+app.post('/api/v1/voice/result', (req, res) => {
+  const { text, action, partial } = req.body || {};
+  console.log(`[PAN Voice] voice_result: partial=${partial} action=${action} text="${(text||'').substring(0,50)}"`);
+  broadcastNotification('voice_result', { text: text || '', action: action || '', partial: !!partial });
+  res.json({ ok: true });
 });
 
 // Whisper transcription — accepts multipart form with WebM audio from dashboard mic button
@@ -1631,7 +1674,7 @@ app.post('/api/v1/ui-commands', async (req, res) => {
   } else if (cmd.type === 'close_window') {
     tauriFetch('/close', { method: 'POST', body: JSON.stringify(cmd) }).catch(() => {});
   } else if (cmd.type === 'screenshot') {
-    tauriFetch('/screenshot', { method: 'POST' }).catch(() => {});
+    tauriFetch('/screenshot', { method: 'POST', body: JSON.stringify({ windowId: cmd.windowId || null }) }).catch(() => {});
   }
   uiCommandQueue.push(cmd);
   res.json({ ok: true });
@@ -1652,7 +1695,11 @@ async function tauriFetch(path, options = {}) {
 // Screenshot (full screen)
 app.get('/api/v1/screenshot', async (req, res) => {
   try {
-    const result = await tauriFetch('/screenshot', { method: 'POST' });
+    const windowId = req.query.window || null;
+    const result = await tauriFetch('/screenshot', {
+      method: 'POST',
+      body: JSON.stringify({ windowId }),
+    });
     res.json(result);
   } catch (err) {
     res.json({ ok: false, error: `Tauri shell not responding: ${err.message}` });
@@ -1709,54 +1756,32 @@ app.post('/api/v1/windows/close', async (req, res) => {
   }
 });
 
-// Restart endpoint — soft restart by default (stop + start, no process death).
-// Use ?hard=true for full process restart (reloads code from disk, needs wrapper to revive).
-// Soft restart: safe for MCP, curl, Claude sessions — nothing dies.
-// Hard restart: only use from dashboard button when JS source files changed on disk.
+// Restart endpoint — always does a full process restart that reloads all code from disk.
+// The node-windows wrapper automatically revives the process after exit.
 app.post('/api/admin/restart', async (req, res) => {
-  const hard = req.query.hard === 'true' || req.body?.hard === true;
-
-  if (hard) {
-    // Hard restart — process.exit, wrapper revives. Kills all connections.
-    res.json({ ok: true, message: 'Hard restarting — process will exit...' });
-    console.log('[PAN] Hard restart requested');
-    setTimeout(async () => {
-      console.log('[PAN] Stopping all services...');
-      await stop();
-      await new Promise(r => setTimeout(r, 1000));
-
-      const isDev = process.env.PAN_PORT && parseInt(process.env.PAN_PORT) !== 7777;
-      if (isDev) {
-        console.log('[PAN] Dev mode — spawning fresh dev server...');
-        const { spawn } = await import('child_process');
-        const child = spawn(process.execPath, ['dev-server.js', String(process.env.PAN_PORT)], {
-          cwd: join(__dirname, '..'),
-          stdio: 'inherit',
-          detached: true,
-          env: { ...process.env }
-        });
-        child.unref();
-      }
-
-      console.log(`[PAN] Exiting for hard restart (${isDev ? 'dev' : 'prod — wrapper will restart'})`);
-      process.exit(0);
-    }, 500);
-    return;
-  }
-
-  // Soft restart — stop services + HTTP server, re-bind port, restart everything.
-  // Process stays alive. MCP, WebSockets, Claude sessions survive the brief gap.
-  console.log('[PAN] Soft restart requested — stopping services...');
-  try {
+  res.json({ ok: true, message: 'Restarting — process will exit and reload all code...' });
+  console.log('[PAN] Restart requested');
+  setTimeout(async () => {
+    console.log('[PAN] Stopping all services...');
     await stop();
-    console.log('[PAN] Services stopped. Re-starting...');
-    await start();
-    console.log('[PAN] Soft restart complete.');
-    res.json({ ok: true, message: 'Soft restart complete — server is back up.' });
-  } catch (err) {
-    console.error('[PAN] Soft restart failed:', err);
-    res.status(500).json({ ok: false, error: 'Soft restart failed: ' + err.message });
-  }
+    await new Promise(r => setTimeout(r, 1000));
+
+    const isDev = process.env.PAN_PORT && parseInt(process.env.PAN_PORT) !== 7777;
+    if (isDev) {
+      console.log('[PAN] Dev mode — spawning fresh dev server...');
+      const { spawn } = await import('child_process');
+      const child = spawn(process.execPath, ['dev-server.js', String(process.env.PAN_PORT)], {
+        cwd: join(__dirname, '..'),
+        stdio: 'inherit',
+        detached: true,
+        env: { ...process.env }
+      });
+      child.unref();
+    }
+
+    console.log(`[PAN] Exiting for restart (${isDev ? 'dev' : 'prod — wrapper will restart'})`);
+    process.exit(0);
+  }, 500);
 });
 
 export { start, stop, app };

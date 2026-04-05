@@ -230,11 +230,10 @@ server.tool(
 
 server.tool(
   'pan_restart',
-  'Soft-restart PAN server (stops services, re-binds port, restarts everything). Safe to call — process stays alive, no crash. For full code reload from disk, use hard=true.',
-  { hard: { type: 'boolean', description: 'If true, kills the process (will crash MCP connection). Only use when JS source files changed on disk.' } },
-  async ({ hard }) => {
-    const url = hard ? '/api/admin/restart?hard=true' : '/api/admin/restart';
-    try { return ok(await panFetch(url, { method: 'POST' })); }
+  'Restart PAN server — full process restart that reloads all code from disk. The wrapper automatically revives the process. This will briefly kill all connections (including this MCP session).',
+  {},
+  async () => {
+    try { return ok(await panFetch('/api/admin/restart', { method: 'POST' })); }
     catch (e) { return err(e); }
   }
 );
