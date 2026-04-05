@@ -36,7 +36,7 @@ import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
 import { execFileSync } from 'child_process';
-import { startTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -855,20 +855,89 @@ app.use('/clipboard', express.static(join(process.env.TEMP || 'C:\\Users\\tzuri\
 
 // Dev instance — detect running dev server (dev-server.js on 7781 or Vite on 5173+)
 app.post('/api/v1/dev/start', async (req, res) => {
-  for (const port of [7781, 5173, 5174, 5175, 5180, 5181, 5190]) {
+  const DEV_PORT = 7781;
+  // Check if already running
+  for (const port of [DEV_PORT, 5173, 5174, 5175, 5180, 5181, 5190]) {
     try {
       const r = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(500) });
       if (r.ok) return res.json({ ok: true, port, running: true });
     } catch {}
-    // Vite doesn't have /health — try /v2/
-    if (port !== 7781) {
+    if (port !== DEV_PORT) {
       try {
         const r = await fetch(`http://localhost:${port}/v2/`, { signal: AbortSignal.timeout(500) });
         if (r.ok) return res.json({ ok: true, port, running: true });
       } catch {}
     }
   }
-  res.json({ ok: false, error: 'No dev server found. Run: node dev-server.js' });
+  // Not running — launch it
+  try {
+    const { spawn } = await import('child_process');
+    const { dirname, join } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const serviceDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const devServerPath = join(serviceDir, 'dev-server.js');
+    const child = spawn('node', [devServerPath], {
+      cwd: serviceDir,
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env },
+    });
+    child.unref();
+    // Wait for it to come up (poll for up to 10 seconds)
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const r = await fetch(`http://localhost:${DEV_PORT}/health`, { signal: AbortSignal.timeout(500) });
+        if (r.ok) return res.json({ ok: true, port: DEV_PORT, running: true, started: true });
+      } catch {}
+    }
+    res.json({ ok: false, error: 'Dev server launched but not responding yet — try again in a few seconds' });
+  } catch (err) {
+    res.json({ ok: false, error: 'Failed to start dev server: ' + err.message });
+  }
+});
+
+// Dev restart — kill existing dev server and start fresh
+app.post('/api/v1/dev/restart', async (req, res) => {
+  const DEV_PORT = 7781;
+  const { execSync, spawn } = await import('child_process');
+  const { dirname, join } = await import('path');
+  const { fileURLToPath } = await import('url');
+
+  // Kill existing dev server
+  try {
+    const result = execSync(`netstat -ano | findstr :${DEV_PORT} | findstr LISTENING`, { encoding: 'utf8', timeout: 5000 });
+    const pids = new Set();
+    for (const line of result.trim().split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      const pid = parseInt(parts[parts.length - 1]);
+      if (pid && pid !== process.pid) pids.add(pid);
+    }
+    for (const pid of pids) {
+      try { execSync(`taskkill /PID ${pid} /T /F`, { timeout: 5000 }); } catch {}
+    }
+    if (pids.size > 0) await new Promise(r => setTimeout(r, 2000));
+  } catch {}
+
+  // Start new dev server
+  try {
+    const serviceDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const child = spawn('node', [join(serviceDir, 'dev-server.js')], {
+      cwd: serviceDir, detached: true, stdio: 'ignore', env: { ...process.env },
+    });
+    child.unref();
+
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const r = await fetch(`http://localhost:${DEV_PORT}/health`, { signal: AbortSignal.timeout(500) });
+        if (r.ok) return res.json({ ok: true, port: DEV_PORT, restarted: true });
+      } catch {}
+    }
+    res.json({ ok: false, error: 'Dev server launched but not responding yet' });
+  } catch (err) {
+    res.json({ ok: false, error: 'Failed to restart dev server: ' + err.message });
+  }
 });
 
 // Dev proxy — forwards test API calls to dev server (avoids CORS issues with browser-to-dev)
@@ -1192,6 +1261,44 @@ app.post('/api/v1/dictate', async (req, res) => {
   }
 });
 
+// Whisper transcription — accepts raw WAV audio from browser MediaRecorder
+app.post('/api/v1/whisper', express.raw({ type: 'application/octet-stream', limit: '10mb' }), async (req, res) => {
+  try {
+    const { writeFileSync, unlinkSync } = await import('fs');
+    const { join } = await import('path');
+    const tmpDir = process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp';
+
+    if (!req.body || req.body.length < 1000) {
+      return res.json({ ok: false, error: 'Audio too short' });
+    }
+
+    // Save as temp WAV file
+    const tmpFile = join(tmpDir, `pan-whisper-${Date.now()}.wav`);
+    writeFileSync(tmpFile, req.body);
+
+    // Send to Whisper server
+    const whisperRes = await fetch('http://127.0.0.1:7782/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wav_path: tmpFile }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const result = await whisperRes.json();
+
+    // Cleanup
+    try { unlinkSync(tmpFile); } catch {}
+
+    if (result.text) {
+      res.json({ ok: true, text: result.text, seconds: result.seconds });
+    } else {
+      res.json({ ok: false, error: result.error || 'No transcription' });
+    }
+  } catch (err) {
+    console.error('[PAN Whisper] Error:', err.message);
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // Health check
 let _serverStartedAt = Date.now();
 app.get('/health', (req, res) => {
@@ -1308,8 +1415,8 @@ function start() {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
       console.log(`[PAN] Listening for Claude Code hooks...`);
 
-      // Start WebSocket terminal server on same HTTP server
-      startTerminalServer(server);
+      // Start WebSocket terminal server (server-side rendered via ScreenBuffer)
+      startTerminalServer(server).catch(e => console.error('[PAN] Terminal init error:', e));
 
       // Sync projects with disk reality on startup
       syncProjects();

@@ -1,7 +1,7 @@
 <script>
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { api, wsUrl } from '$lib/api.js';
-	import { getActiveProject, setActiveProject, sortProjects } from '$lib/stores.svelte.js';
+	import { getActiveProject, setActiveProject, sortProjects, getTerminalInput, setTerminalInput } from '$lib/stores.svelte.js';
 
 	// --- State ---
 	let projects = $state([]);
@@ -10,7 +10,9 @@
 	let leftSection = $state('transcript'); // same widget options as right panel
 	let centerView = $state('terminal'); // 'terminal' | 'chat'
 	let rightSection = $state('services'); // alphabetized panel widgets
-	let directMode = $state(false); // false = input goes to input box, true = input goes directly to terminal
+	// Terminal input bar — persisted across tab switches
+	let terminalInputText = $state(getTerminalInput());
+	let terminalInputEl;
 
 	// Users
 	let usersData = $state([]);
@@ -78,9 +80,6 @@
 		document.removeEventListener('mouseup', onResizeEnd);
 		document.body.style.cursor = '';
 		document.body.style.userSelect = '';
-		// Trigger xterm fit after resize
-		const tab = getActiveTab();
-		if (tab?.fitAddon) { try { tab.fitAddon.fit(); } catch {} }
 	}
 
 	// Persist chat across refresh (localStorage survives tab close + refresh)
@@ -204,68 +203,51 @@
 	async function createTab(sessionId, projectName, cwd, projectId, isReconnect) {
 		const tabId = 'tab-' + (++tabCounter);
 
-		// Dynamic imports for xterm
-		const { Terminal } = await import('@xterm/xterm');
-		const { FitAddon } = await import('@xterm/addon-fit');
-		const { WebLinksAddon } = await import('@xterm/addon-web-links');
-		await import('@xterm/xterm/css/xterm.css');
-
-		// Create a container div for this tab
+		// Server-side rendered terminal — just a scrollable div that displays pre-rendered HTML lines
 		const tabContainer = document.createElement('div');
 		tabContainer.id = 'term-' + tabId;
-		tabContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;display:none';
+		tabContainer.className = 'term-output';
+		tabContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;display:none;overflow-y:auto;overflow-x:hidden;font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace;font-size:14px;line-height:1.5;color:#cdd6f4;background:#1e1e2e;';
+
+		// Scrollback div (history above visible screen)
+		const scrollbackDiv = document.createElement('div');
+		scrollbackDiv.className = 'term-scrollback';
+		scrollbackDiv.style.cssText = 'padding:8px 12px;white-space:pre;';
+		tabContainer.appendChild(scrollbackDiv);
+
+		// Screen div (current visible terminal screen) — uses per-line divs for efficient diffing
+		const screenDiv = document.createElement('div');
+		screenDiv.className = 'term-screen';
+		screenDiv.style.cssText = 'padding:0 12px;white-space:pre;min-height:100%;';
+		tabContainer.appendChild(screenDiv);
+
+		// Cache of previous line HTML for diffing
+		let prevLines = [];
+
 		termContainerEl.appendChild(tabContainer);
-
-		const tabTerm = new Terminal({
-			theme: {
-				background: '#1e1e2e',
-				foreground: '#cdd6f4',
-				cursor: '#f5e0dc',
-				cursorAccent: '#1e1e2e',
-				selectionBackground: '#45475a',
-				black: '#45475a',
-				red: '#f38ba8',
-				green: '#a6e3a1',
-				yellow: '#f9e2af',
-				blue: '#89b4fa',
-				magenta: '#cba6f7',
-				cyan: '#94e2d5',
-				white: '#bac2de',
-				brightBlack: '#585b70',
-				brightRed: '#f38ba8',
-				brightGreen: '#a6e3a1',
-				brightYellow: '#f9e2af',
-				brightBlue: '#89b4fa',
-				brightMagenta: '#cba6f7',
-				brightCyan: '#94e2d5',
-				brightWhite: '#a6adc8',
-			},
-			fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
-			fontSize: 14,
-			cursorBlink: true,
-			scrollback: 20000,
-			allowProposedApi: true,
-		});
-
-		const fitAddon = new FitAddon();
-		tabTerm.loadAddon(fitAddon);
-		tabTerm.loadAddon(new WebLinksAddon());
-		tabTerm.open(tabContainer);
 
 		const tabData = {
 			id: tabId,
 			sessionId,
-			term: tabTerm,
-			fitAddon,
 			ws: null,
 			project: projectName,
 			cwd,
 			projectId,
 			claudeStarted: false,
 			container: tabContainer,
+			scrollbackDiv,
+			screenDiv,
 			host: '',
 			_closing: false,
+			claudeSessionIds: [],
+			userScrolledUp: false,
 		};
+
+		// Track if user has scrolled up (don't auto-scroll if so)
+		tabContainer.addEventListener('scroll', () => {
+			const atBottom = tabContainer.scrollHeight - tabContainer.scrollTop - tabContainer.clientHeight < 40;
+			tabData.userScrolledUp = !atBottom;
+		});
 
 		// Show only this tab's container
 		tabs.forEach(t => { if (t.container) t.container.style.display = 'none'; });
@@ -275,49 +257,14 @@
 		activeTabId = tabId;
 		sessionsCount = tabs.length;
 
-		// Fit helper
-		let lastCols = 0, lastRows = 0;
-		function doFit() {
-			try { fitAddon.fit(); } catch { return; }
-			if (tabTerm.cols !== lastCols || tabTerm.rows !== lastRows) {
-				lastCols = tabTerm.cols;
-				lastRows = tabTerm.rows;
-				if (tabData.ws && tabData.ws.readyState === 1) {
-					tabData.ws.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
-				}
-				try { tabTerm.refresh(0, tabTerm.rows - 1); } catch {}
-			}
-		}
-
-		// ResizeObserver
-		let resizeTimer = null;
-		const resizeObs = new ResizeObserver(() => {
-			if (activeTabId !== tabId) return;
-			if (resizeTimer) clearTimeout(resizeTimer);
-			resizeTimer = setTimeout(doFit, 300);
-		});
-		resizeObs.observe(termContainerEl);
-
-		// Wait for layout to settle before connecting
-		function waitForLayout(cb, attempt = 0) {
-			doFit();
-			if (tabTerm.cols < 20 && attempt < 30) {
-				setTimeout(() => waitForLayout(cb, attempt + 1), 50);
-				return;
-			}
-			cb();
-		}
-
-		waitForLayout(() => {
-			const wsCols = tabTerm.cols > 20 ? tabTerm.cols : 120;
-			const wsRows = tabTerm.rows > 5 ? tabTerm.rows : 30;
-			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${wsCols}&rows=${wsRows}`);
+		// Connect WebSocket — server sends pre-rendered HTML via ScreenBuffer
+		{
+			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=120&rows=30`);
 
 			const ws = new WebSocket(wsUrlStr);
 			tabData.ws = ws;
 
-			let firstOutput = true;
-			let hasExistingBuffer = false; // true if server sent buffered output (existing session)
+			let hasExistingBuffer = false;
 			let reconnectAttempts = 0;
 			let reconnectTimer = null;
 			let serverRestarting = false;
@@ -340,46 +287,77 @@
 				try {
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
-						case 'output': {
-							if (firstOutput) {
-								firstOutput = false;
-								hasExistingBuffer = msg.data.length > 100; // server sent substantial buffer = existing session
-								doFit();
+						case 'screen': {
+							// Server sends pre-rendered HTML lines — diff per-line to avoid DOM thrashing
+							if (msg.scrollback && msg.scrollback.length > 0) {
+								scrollbackDiv.innerHTML = msg.scrollback.join('\n');
 							}
-							const vp = tabTerm.element?.querySelector('.xterm-viewport');
-							const wasAtBottom = !vp || (vp.scrollHeight - vp.scrollTop - vp.clientHeight < 30);
-							const savedScroll = vp?.scrollTop;
-							tabTerm.write(msg.data, () => {
-								if (!wasAtBottom && vp) {
-									requestAnimationFrame(() => { vp.scrollTop = savedScroll; });
+
+							const lines = msg.lines;
+							// Ensure correct number of line divs
+							while (screenDiv.children.length < lines.length) {
+								const div = document.createElement('div');
+								screenDiv.appendChild(div);
+							}
+							while (screenDiv.children.length > lines.length) {
+								screenDiv.removeChild(screenDiv.lastChild);
+							}
+							// Only update lines that changed
+							for (let li = 0; li < lines.length; li++) {
+								if (lines[li] !== prevLines[li]) {
+									screenDiv.children[li].innerHTML = lines[li];
 								}
-							});
+							}
+							prevLines = lines.slice();
+
+							// Auto-scroll to bottom unless user scrolled up
+							if (!tabData.userScrolledUp) {
+								tabContainer.scrollTop = tabContainer.scrollHeight;
+							}
+
+							// Detect if buffer has content (for auto-launch logic)
+							if (!hasExistingBuffer && msg.lines.some(l => l.trim().length > 0)) {
+								hasExistingBuffer = true;
+							}
 							break;
 						}
 						case 'info':
 							tabData.host = msg.host || '';
+							if (msg.claudeLaunched) tabData.claudeStarted = true;
 							if (activeTabId === tabId) {
 								hostLabel = `${msg.host} \u2014 ${msg.project || 'shell'}`;
 							}
-							tabs = [...tabs]; // trigger reactivity
+							tabs = [...tabs];
 							break;
 						case 'exit':
-							tabTerm.write('\r\n\x1b[38;5;243m[Session ended]\x1b[0m\r\n');
+							screenDiv.innerHTML += '\n<span style="color:#585b70">[Session ended]</span>';
 							break;
 						case 'error':
-							tabTerm.write('\r\n\x1b[38;5;204m[Error: ' + msg.message + ']\x1b[0m\r\n');
+							screenDiv.innerHTML += '\n<span style="color:#f38ba8">[Error: ' + msg.message + ']</span>';
 							break;
-						case 'chat_update':
+						case 'chat_update': {
+							const updateSid = msg.session_id || '';
+							if (updateSid && !updateSid.startsWith('system-') && !updateSid.startsWith('phone-') && !updateSid.startsWith('router-') && !updateSid.startsWith('dash-') && !updateSid.startsWith('dev-dash-') && !updateSid.startsWith('mob-')) {
+								const ownerTab = tabs.find(t => t.claudeSessionIds.includes(updateSid));
+								if (!ownerTab) {
+									const activeTab = getActiveTab();
+									if (activeTab) {
+										activeTab.claudeSessionIds = [...new Set([...activeTab.claudeSessionIds, updateSid])];
+										tabs = [...tabs];
+									}
+								}
+							}
 							if (leftSection === 'transcript') {
 								debouncedLoadChatHistory();
 							}
 							break;
+						}
 						case 'permission_prompt':
 							break;
 						case 'server_restarting':
 							serverRestarting = true;
 							reconnectAttempts = 0;
-							tabTerm.write('\r\n\x1b[38;5;179m[Server restarting \u2014 will reconnect automatically...]\x1b[0m');
+							screenDiv.innerHTML += '\n<span style="color:#f9e2af">[Server restarting \u2014 will reconnect automatically...]</span>';
 							break;
 					}
 				} catch {}
@@ -390,7 +368,7 @@
 				reconnectAttempts++;
 				const delay = Math.min(reconnectAttempts * 1000, 5000);
 				const label = serverRestarting ? 'Server restarting' : 'Reconnecting';
-				tabTerm.write(`\r\n\x1b[38;5;179m[${label}... attempt ${reconnectAttempts}]\x1b[0m`);
+				screenDiv.innerHTML += `\n<span style="color:#f9e2af">[${label}... attempt ${reconnectAttempts}]</span>`;
 
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = null;
@@ -401,34 +379,24 @@
 						reconnectAttempts = 0;
 						serverRestarting = false;
 						tabData.ws = newWs;
-						tabTerm.write('\r\n\x1b[38;5;114m[Reconnected]\x1b[0m\r\n');
-						doFit();
+						screenDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
 						startPing();
-						newWs.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
 					};
 					newWs.onmessage = handleMessage;
 					newWs.onclose = () => {
 						stopPing();
 						if (tabData._closing) return;
 						if (reconnectAttempts < 30) reconnect();
-						else tabTerm.write('\r\n\x1b[38;5;204m[Connection lost \u2014 refresh page to retry]\x1b[0m\r\n');
+						else screenDiv.innerHTML += '\n<span style="color:#f38ba8">[Connection lost \u2014 refresh page to retry]</span>';
 					};
 					newWs.onerror = () => {};
 				}, delay);
 			}
 
 			ws.onopen = () => {
-				doFit();
-				if (tabTerm.cols > 0 && tabTerm.rows > 0) {
-					ws.send(JSON.stringify({ type: 'resize', cols: tabTerm.cols, rows: tabTerm.rows }));
-				}
-				if (activeTabId === tabId) tabTerm.focus();
 				startPing();
 
 				// Auto-launch Claude for project tabs
-				// The ONLY guard is hasExistingBuffer — if the server sent back substantial output,
-				// it means Claude is already running. isReconnect alone is unreliable because
-				// localStorage might say "reconnect" but the server-side session may be dead.
 				if (projectName && projectName !== 'Shell') {
 					setTimeout(async () => {
 						if (ws.readyState === 1 && !tabData.claudeStarted && !hasExistingBuffer) {
@@ -461,91 +429,7 @@
 			};
 
 			ws.onerror = () => {};
-		});
-
-		// Copy/paste key handler
-		tabTerm.attachCustomKeyEventHandler((ev) => {
-			if (ev.type !== 'keydown') return true;
-			if (ev.ctrlKey && ev.key === 'c') {
-				const sel = tabTerm.getSelection();
-				if (sel && sel.length > 0) {
-					navigator.clipboard.writeText(sel);
-					tabTerm.clearSelection();
-					return false;
-				}
-				return true;
-			}
-			if ((ev.ctrlKey && ev.key === 'v') || (ev.ctrlKey && ev.shiftKey && ev.key === 'V')) {
-				ev.preventDefault();
-				ev.stopPropagation();
-				navigator.clipboard.read().then(async items => {
-					for (const item of items) {
-						const imageType = item.types.find(t => t.startsWith('image/'));
-						if (imageType) {
-							const blob = await item.getType(imageType);
-							const reader = new FileReader();
-							reader.onload = async () => {
-								const base64 = reader.result.split(',')[1];
-								try {
-									const resp = await fetch('/api/v1/clipboard-image', {
-										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ data: base64, mimeType: imageType })
-									});
-									const result = await resp.json();
-									if (result.ok) {
-										const unixPath = result.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
-										if (tabData.ws && tabData.ws.readyState === 1) {
-											tabData.ws.send(JSON.stringify({ type: 'input', data: unixPath + ' ' }));
-										}
-									}
-								} catch (err) {
-									tabTerm.write('\r\n\x1b[38;5;196m[Image paste failed: ' + err.message + ']\x1b[0m');
-								}
-							};
-							reader.readAsDataURL(blob);
-							return;
-						}
-					}
-					const text = await navigator.clipboard.readText();
-					if (text && tabData.ws && tabData.ws.readyState === 1) {
-						tabData.ws.send(JSON.stringify({ type: 'input', data: text }));
-					}
-				}).catch(() => {
-					navigator.clipboard.readText().then(text => {
-						if (text && tabData.ws && tabData.ws.readyState === 1) {
-							tabData.ws.send(JSON.stringify({ type: 'input', data: text }));
-						}
-					});
-				});
-				return false;
-			}
-			if (ev.ctrlKey && ev.shiftKey && ev.key === 'C') {
-				const sel = tabTerm.getSelection();
-				if (sel) navigator.clipboard.writeText(sel);
-				return false;
-			}
-			return true;
-		});
-
-		// Input handling
-		tabTerm.onData((data) => {
-			const activeWs = tabData.ws;
-			if (!activeWs || activeWs.readyState !== 1) return;
-			activeWs.send(JSON.stringify({ type: 'input', data }));
-		});
-
-		tabTerm.onResize(({ cols, rows }) => {
-			const activeWs = tabData.ws;
-			if (activeWs && activeWs.readyState === 1) {
-				activeWs.send(JSON.stringify({ type: 'resize', cols, rows }));
-			}
-		});
-
-		// Multi-fit passes for layout settling
-		setTimeout(doFit, 50);
-		setTimeout(doFit, 200);
-		setTimeout(doFit, 500);
+		}
 
 		// Load sidebar data
 		loadTerminalSidebar(projectId, projectName);
@@ -564,24 +448,12 @@
 		activeTabId = tabId;
 		hostLabel = tab.host ? `${tab.host} \u2014 ${tab.project || 'shell'}` : '';
 
-		// Re-fit
+		// Scroll to bottom on tab switch
 		setTimeout(() => {
-			try {
-				tab.fitAddon.fit();
-				tab.term.refresh(0, tab.term.rows - 1);
-				tab.term.focus();
-				if (tab.ws && tab.ws.readyState === 1) {
-					tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
-				}
-			} catch {}
-		}, 100);
-		setTimeout(() => {
-			try {
-				tab.fitAddon.fit();
-				tab.term.refresh(0, tab.term.rows - 1);
-			} catch {}
-		}, 500);
-
+			if (tab.container && !tab.userScrolledUp) {
+				tab.container.scrollTop = tab.container.scrollHeight;
+			}
+		}, 50);
 		// Reload sidebar
 		loadTerminalSidebar(tab.projectId, tab.project);
 	}
@@ -595,7 +467,6 @@
 
 		tab._closing = true;
 		if (tab.ws) tab.ws.close();
-		if (tab.term) tab.term.dispose();
 		if (tab.container) tab.container.remove();
 
 		tabs = tabs.filter(t => t.id !== tabId);
@@ -762,10 +633,7 @@
 		}
 	}
 
-	// Need tick for scroll
-	function tick() {
-		return new Promise(r => setTimeout(r, 0));
-	}
+	// tick imported from svelte
 
 	// ==================== Center Chat ====================
 
@@ -810,25 +678,47 @@
 		}
 	}
 
+	function sendTerminalInput() {
+		let text = terminalInputText.trim();
+		const imgPaths = pastedImages.filter(img => img.path).map(img => img.path.replace(/\\\\/g, '/').replace(/\\/g, '/'));
+		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
+		// Allow empty Enter — Claude Code needs it for approvals/confirmations
+		terminalInputText = '';
+		setTerminalInput('');
+		pastedImages = [];
+		// Reset textarea height
+		if (terminalInputEl) terminalInputEl.style.height = 'auto';
+
+		// Send to the terminal session via WebSocket (empty = just \r for approvals)
+		const active = getActiveTab();
+		if (active?.ws?.readyState === 1) {
+			active.ws.send(JSON.stringify({ type: 'input', data: (text ? text + '\r' : '\r') }));
+		}
+	}
+
+	function handleTerminalInputKey(e) {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			sendTerminalInput();
+		}
+	}
+
 	async function sendCenterChat() {
 		let text = centerChatInput.trim();
-		// Append image paths
 		const imgPaths = pastedImages.filter(img => img.path).map(img => `[Image: ${img.path}]`);
 		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
 		if (!text) return;
 		centerChatInput = '';
 		pastedImages = [];
-		// Reset textarea height
 		const textarea = document.querySelector('.center-input');
 		if (textarea) textarea.style.height = 'auto';
 		centerChatMessages = [...centerChatMessages, { role: 'user', text, ts: new Date().toISOString() }];
 		await tick();
 		if (centerChatEl) centerChatEl.scrollTop = centerChatEl.scrollHeight;
 
-		// Send to the terminal session via WebSocket
 		const active = getActiveTab();
 		if (active?.ws?.readyState === 1) {
-			active.ws.send(JSON.stringify({ type: 'input', data: text + '\n' }));
+			active.ws.send(JSON.stringify({ type: 'input', data: text + '\r' }));
 		}
 
 		centerChatLoading = true;
@@ -839,18 +729,21 @@
 		}, 3000);
 	}
 
-	function handleCenterChatKey(e) {
+	async function handleCenterChatKey(e) {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			const active = getActiveTab();
 			if (!active?.ws || active.ws.readyState !== 1) return;
 			if (!centerChatInput && pastedImages.length === 0) {
-				// Empty Enter — send newline to terminal (for approvals, confirmations)
-				active.ws.send(JSON.stringify({ type: 'input', data: '\n' }));
+				// Empty Enter — do nothing (use terminal directly for approvals/confirmations)
 				return;
 			}
 			// Use sendCenterChat for consistent behavior (adds to chat, sends with newline)
 			sendCenterChat();
+			// Keep focus on chat input so user can keep typing
+			await tick();
+			const textarea = document.querySelector('.center-input');
+			if (textarea) textarea.focus();
 		}
 	}
 
@@ -946,15 +839,7 @@
 		isListening = true;
 		recognition.onresult = (e) => {
 			const transcript = e.results[0][0].transcript;
-			if (directMode) {
-				// Send directly to terminal
-				const active = getActiveTab();
-				if (active?.ws?.readyState === 1) {
-					active.ws.send(JSON.stringify({ type: 'input', data: transcript + '\n' }));
-				}
-			} else {
-				centerChatInput = (centerChatInput ? centerChatInput + ' ' : '') + transcript;
-			}
+			terminalInputText = (terminalInputText ? terminalInputText + ' ' : '') + transcript;
 		};
 		recognition.onend = () => { isListening = false; recognition = null; };
 		recognition.onerror = () => { isListening = false; recognition = null; };
@@ -972,14 +857,6 @@
 			loadCenterChat();
 		} else if (view === 'atlas') {
 			loadAtlasData();
-		} else {
-			// Re-fit terminal when switching back
-			setTimeout(() => {
-				const tab = getActiveTab();
-				if (tab?.fitAddon) {
-					try { tab.fitAddon.fit(); } catch {}
-				}
-			}, 100);
 		}
 	}
 
@@ -1003,8 +880,8 @@
 	function buildAtlasGraph(svcResp, jobsResp, statsResp, projResp) {
 		const nodes = [];
 		const edges = [];
-		let nx = 0;
 		const nodeMap = {};
+		const zones = [];
 
 		function addNode(id, label, type, status, detail, group, x, y, description) {
 			const n = { id, label, type, status: status || 'unknown', detail: detail || '', group, x, y, description: description || '' };
@@ -1013,119 +890,169 @@
 			return n;
 		}
 
-		// Core hub
-		addNode('pan-server', 'PAN Server', 'core', 'up', 'Port 7777', 'core', 400, 300, 'The central PAN server (Node.js/Express). Runs on port 7777 as a Windows service. Handles all API requests, serves the dashboard, manages WebSocket connections for terminals, and coordinates all background services. File: service/src/server.js');
-
-		// Services from API
-		const services = svcResp?.services || [];
-		const coreServices = services.filter(s => s.category === 'PAN Core' && s.name !== 'PAN Server');
-		const devices = services.filter(s => s.category === 'Devices');
-
-		// Core services — arc around top
-		coreServices.forEach((s, i) => {
-			const angle = -Math.PI/2 + (i - (coreServices.length-1)/2) * 0.5;
-			const x = 400 + Math.cos(angle) * 200;
-			const y = 300 + Math.sin(angle) * 180;
-			const svcDesc = s.name === 'Steward' ? 'Health monitor (watchdog.ps1). Checks every 30s: PAN server, Whisper, AHK Voice. Restarts services if down. Cleans Tailscale ghost devices. File: service/src/watchdog.ps1' : (s.detail || s.name);
-			addNode(`svc-${s.name}`, s.name, 'service', s.status === 'up' ? 'up' : s.status === 'offline' ? 'down' : 'unknown', s.detail, 'services', x, y, svcDesc);
-			edges.push({ from: 'pan-server', to: `svc-${s.name}`, label: '' });
-		});
-
-		// Devices — below
-		devices.forEach((d, i) => {
-			const x = 200 + i * 200;
-			const y = 520;
-			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y, d.detail || d.name);
-			edges.push({ from: 'pan-server', to: `dev-${d.name}`, label: 'API' });
-		});
-
-		// Jobs — right side
-		const jobs = jobsResp?.jobs || [];
-		const runningJobs = jobs.filter(j => j.status === 'running' || j.status === 'ready' || j.status === 'training');
-		runningJobs.forEach((j, i) => {
-			const x = 700;
-			const y = 80 + i * 55;
-			const status = j.status === 'running' ? 'up' : j.status === 'training' ? 'warn' : 'idle';
-			addNode(`job-${j.name}`, j.name, 'job', status, j.description, 'jobs', x, y, j.description || j.name);
-			edges.push({ from: 'pan-server', to: `job-${j.name}`, label: j.schedule ? '' : '' });
-		});
-
-		// Database — left
-		if (statsResp) {
-			addNode('database', 'SQLite DB', 'data', 'up', `${statsResp.total_events || 0} events, ${statsResp.total_sessions || 0} sessions`, 'data', 100, 300, 'SQLite database encrypted with SQLCipher (AES-256-CBC). Tables: events, sessions, projects, memory_items, episodic_memories, semantic_facts, procedural_memories, devices, settings. FTS5 search index on events. File: service/src/db.js, service/src/schema.sql');
-			edges.push({ from: 'pan-server', to: 'database', label: 'read/write' });
+		function addZone(id, label, x, y, w, h, color) {
+			zones.push({ id, label, x, y, w, h, color });
 		}
 
-		// Projects — bottom left
-		const projs = projResp || [];
-		projs.forEach((p, i) => {
-			const x = 50 + i * 120;
-			const y = 150;
-			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y, `Project: ${p.name}. Path: ${p.path || 'unknown'}`);
-			edges.push({ from: 'database', to: `proj-${p.id}`, label: '' });
-		});
+		// ==================== ZONES ====================
+		// Layout: 1500x1000 viewBox — generous spacing, readable labels
+		//
+		//  ┌── Intelligence ─────────┐  ┌──── Core ────┐  ┌── Services ──────────┐
+		//  │ Claude Code             │  │              │  │ Dashboard   Steward  │
+		//  │ Task Router             │  │  PAN Server  │  │ Whisper     Tauri    │
+		//  │ WASM Fast   Token Cache │  │              │  │                      │
+		//  └─────────────────────────┘  └──────────────┘  └──────────────────────┘
+		//  ┌── Memory ─────────────────────────────────┐  ┌── Processing ────────┐
+		//  │ SQLite DB    Memory Hub    Embeddings     │  │ Classifier   Dream   │
+		//  │ Episodic   Semantic   Procedural          │  │ Consolidation  Evol  │
+		//  │ inject-ctx  hooks.js   Knowledge Graph    │  │ Event Workers        │
+		//  └───────────────────────────────────────────┘  └──────────────────────┘
+		//  ┌── Devices ──────────┐  ┌── Projects ────────┐
+		//  │ Phone    Desktop    │  │ PAN   WoE   Bot   │
+		//  └─────────────────────┘  └────────────────────┘
 
-		// Dashboard
-		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'ui', 200, 400, 'Svelte v2 dashboard served at /v2/. The Electron app loads this. Contains Terminal, Chat, Atlas, and all panel widgets (Tasks, Services, Tests, etc.). Source: service/dashboard/src/routes/');
-		edges.push({ from: 'pan-server', to: 'dashboard', label: 'serves' });
+		addZone('z-intel', 'Intelligence', 20, 20, 500, 290, '#89b4fa');
+		addZone('z-core', 'Core', 540, 20, 260, 290, '#f5c2e7');
+		addZone('z-services', 'Services', 820, 20, 460, 290, '#a6e3a1');
+		addZone('z-memory', 'Memory', 20, 340, 780, 320, '#cba6f7');
+		addZone('z-processing', 'Processing', 820, 340, 460, 320, '#f9e2af');
+		addZone('z-devices', 'Devices', 20, 690, 380, 200, '#fab387');
+		addZone('z-projects', 'Projects', 420, 690, 380, 200, '#94e2d5');
 
-		// Claude Code
-		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions', 'ai', 550, 150, 'Claude Code CLI sessions. PAN communicates via hooks (SessionStart, SessionEnd, UserPromptSubmit). inject-context.cjs runs as a command hook to inject memory into CLAUDE.md before each session. File: service/inject-context.cjs, service/src/routes/hooks.js');
-		edges.push({ from: 'pan-server', to: 'claude', label: 'hooks' });
-
-		// ==================== Memory System ====================
 		// Derive statuses from services data
+		const services = svcResp?.services || [];
 		const svcByName = Object.fromEntries(services.map(s => [s.name, s]));
 		const dreamUp = svcByName['Dream']?.status === 'up';
 		const stewardUp = svcByName['Steward']?.status === 'up';
-		const ollamaUp = false; // TODO: check Ollama status from API
+		const whisperUp = svcByName['Whisper']?.status === 'up';
+		const ollamaUp = false;
 
-		// Memory Hub
-		addNode('memory-hub', 'Memory System', 'memory', 'up', 'Vector memory + context injection', 'memory', 400, 550, 'Unified memory system with three vector stores (episodic, semantic, procedural). Context builder assembles memories for injection into Claude sessions with a token budget. File: service/src/memory/index.js, service/src/memory/context-builder.js');
-		edges.push({ from: 'pan-server', to: 'memory-hub', label: 'manages' });
+		// Edge color constants per zone
+		const EC = {
+			intel: '#89b4fa', core: '#f5c2e7', svc: '#a6e3a1',
+			mem: '#cba6f7', proc: '#f9e2af', dev: '#fab387', proj: '#94e2d5'
+		};
 
-		// Three Memory Stores
-		addNode('mem-episodic', 'Episodic', 'memory', 'up', 'What happened — events, outcomes, importance', 'memory', 250, 650, 'Stores what happened — events, outcomes, importance scores (0-1). Hybrid recall scoring: vector similarity + recency + importance. Updated by consolidation after dream cycles. File: service/src/memory/episodic.js');
-		addNode('mem-semantic', 'Semantic', 'memory', 'up', 'Knowledge graph — subject/predicate/object', 'memory', 400, 650, 'Knowledge graph of subject/predicate/object triples. Auto-detects contradictions — when a new fact conflicts with an existing one (>0.85 cosine similarity), the old fact is superseded with version tracking. File: service/src/memory/semantic.js');
-		addNode('mem-procedural', 'Procedural', 'memory', 'up', 'Workflows — steps, success/failure rates', 'memory', 550, 650, 'Learned multi-step workflows with success/failure tracking. Recall weighted 60% vector similarity + 40% success rate. Steps stored as JSON arrays. File: service/src/memory/procedural.js');
-		edges.push({ from: 'memory-hub', to: 'mem-episodic', label: 'store' });
-		edges.push({ from: 'memory-hub', to: 'mem-semantic', label: 'store' });
-		edges.push({ from: 'memory-hub', to: 'mem-procedural', label: 'store' });
+		// ==================== CORE ====================
+		addNode('pan-server', 'PAN Server', 'core', 'up', 'Port 7777 — Node.js/Express', 'core', 670, 170, 'The central PAN server (Node.js/Express). Runs on port 7777 as a Windows service. Handles all API requests, serves the dashboard, manages WebSocket connections for terminals, and coordinates all background services. File: service/src/server.js');
 
-		// Embeddings
-		addNode('embeddings', 'Embeddings', 'memory', ollamaUp ? 'up' : 'warn', ollamaUp ? 'Ollama llama3.2 (3072D)' : 'Keyword fallback (no Ollama)', 'memory', 700, 650, 'Vector embedding layer. Uses Ollama (llama3.2, 3072 dimensions) for semantic search. Falls back to deterministic keyword hash vectors when Ollama is not running — low quality but functional. File: service/src/memory/embeddings.js');
-		edges.push({ from: 'mem-episodic', to: 'embeddings', label: 'vector' });
-		edges.push({ from: 'mem-semantic', to: 'embeddings', label: 'vector' });
-		edges.push({ from: 'mem-procedural', to: 'embeddings', label: 'vector' });
+		// ==================== INTELLIGENCE ====================
+		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions via hooks', 'intel', 160, 100, 'Claude Code CLI sessions. PAN communicates via hooks (SessionStart, SessionEnd, UserPromptSubmit). inject-context.cjs runs as a command hook to inject memory into CLAUDE.md before each session. File: service/inject-context.cjs, service/src/routes/hooks.js');
+		addNode('task-router', 'Task Router', 'ai', 'down', 'Q-Learning \u2014 route to cheapest model', 'intel', 380, 100, 'Learned task router (planned). Uses Q-Learning to route requests to the cheapest capable handler: WASM fast-path for deterministic ops, Haiku for simple tasks, Opus for complex reasoning. Improves routing accuracy over time based on outcome feedback. Inspired by ruflo MoE router.');
+		addNode('wasm-fast', 'WASM Fast Path', 'ai', 'down', 'Deterministic ops \u2014 zero LLM cost', 'intel', 160, 220, 'WebAssembly fast-path for deterministic operations (planned). Handles regex commands, time/date, sensor reads, dashboard queries without any LLM call. <1ms response. Extends Claude subscription by skipping LLM for simple tasks. Inspired by ruflo Agent Booster.');
+		addNode('token-cache', 'Token Cache', 'ai', 'down', 'Cache + dedup \u2014 30-50% savings', 'intel', 380, 220, 'Token optimization layer (planned). Caches repeated query patterns, deduplicates context, batches similar requests. Target: 30-50% token reduction. Combines pattern retrieval, result caching at 95% hit rate, and optimal batching. Inspired by ruflo Token Optimizer.');
+		edges.push({ from: 'pan-server', to: 'task-router', label: 'routes', color: EC.core });
+		edges.push({ from: 'task-router', to: 'claude', label: 'complex', color: EC.intel });
+		edges.push({ from: 'task-router', to: 'wasm-fast', label: 'simple', color: EC.intel });
+		edges.push({ from: 'task-router', to: 'token-cache', label: 'cached?', color: EC.intel });
+		edges.push({ from: 'token-cache', to: 'claude', label: 'miss', color: EC.intel });
 
-		// Processing Pipeline
-		addNode('dream-cycle', 'Dream Cycle', 'process', dreamUp ? 'up' : 'idle', 'Every 6h: rewrite .pan-state.md via Haiku', 'memory', 150, 550, 'Runs every 6 hours (first run 2min after startup). Reads all events since last dream, sends to Claude Haiku to rewrite .pan-state.md — the living state document. Also triggers heuristic consolidation. File: service/src/dream.js');
-		addNode('consolidation', 'Consolidation', 'process', 'idle', 'Extract memories from raw events', 'memory', 150, 650, 'Extracts memories from raw events. Two modes: (1) Heuristic — regex patterns for corrections, preferences, errors. (2) LLM — sends events to Haiku for structured extraction. Feeds all three memory stores. File: service/src/memory/consolidation.js');
-		addNode('classifier', 'Classifier', 'process', 'up', 'Every 5min: mark events, trigger dream', 'memory', 100, 450, 'Runs every 5 minutes. Marks events as processed. When 10+ events accumulate since last dream, triggers an early dream cycle. Acts as the event counter/trigger. File: service/src/classifier.js');
-		addNode('evolution', 'Evolution', 'process', 'down', 'NOT WIRED — 6-step config optimization', 'memory', 700, 550, 'NOT WIRED — 6-step config optimization pipeline: Observe, Critique, Generate Deltas, Validate, Apply, Consolidate. Built but never connected to server.js. The pan-config/ directory does not exist. File: service/src/evolution/engine.js');
+		// ==================== SERVICES ====================
+		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'services', 940, 100, 'Svelte v2 dashboard served at /v2/. The Tauri app loads this. Contains Terminal, Chat, Atlas, and all panel widgets. Source: service/dashboard/src/routes/');
+		addNode('steward', 'Steward', 'service', stewardUp ? 'up' : 'down', 'Health monitor every 30s', 'services', 1160, 100, 'Health monitor (watchdog.ps1). Checks every 30s: PAN server, Whisper, AHK Voice. Restarts services if down. Cleans Tailscale ghost devices. File: service/src/watchdog.ps1');
+		addNode('whisper', 'Whisper', 'service', whisperUp ? 'up' : 'warn', 'Port 7782 \u2014 voice transcription', 'services', 940, 220, 'Whisper voice transcription server on port 7782. Converts WebM audio to WAV then transcribes. Handles voice-to-text for dashboard and phone input. File: service/src/whisper-server.py');
+		addNode('tauri', 'Tauri Shell', 'ui', 'up', 'Port 7790 \u2014 desktop app', 'services', 1160, 220, 'Tauri desktop shell running on port 7790 with PAN \u03A0 icon. Lightweight native window (~5MB) replacing Electron. Handles window management and IPC.');
 
-		edges.push({ from: 'classifier', to: 'dream-cycle', label: '10+ events' });
-		edges.push({ from: 'dream-cycle', to: 'consolidation', label: 'triggers' });
-		edges.push({ from: 'consolidation', to: 'mem-episodic', label: 'writes' });
-		edges.push({ from: 'consolidation', to: 'mem-semantic', label: 'writes' });
-		edges.push({ from: 'consolidation', to: 'mem-procedural', label: 'writes' });
-		edges.push({ from: 'dream-cycle', to: 'evolution', label: 'should trigger' });
-		edges.push({ from: 'database', to: 'classifier', label: 'events' });
-		edges.push({ from: 'database', to: 'dream-cycle', label: 'events' });
+		// Dynamic services from API (ones not already placed)
+		const placedServices = new Set(['PAN Server', 'Steward', 'Whisper', 'Dashboard']);
+		const extraServices = services.filter(s => s.category === 'PAN Core' && !placedServices.has(s.name));
+		extraServices.forEach((s, i) => {
+			const x = 940 + (i % 2) * 220;
+			const y = 220 + Math.floor(i / 2) * 70;
+			if (y < 310) {
+				addNode(`svc-${s.name}`, s.name, 'service', s.status === 'up' ? 'up' : s.status === 'offline' ? 'down' : 'unknown', s.detail, 'services', x, y, s.detail || s.name);
+				edges.push({ from: 'pan-server', to: `svc-${s.name}`, label: '', color: EC.svc });
+			}
+		});
 
-		// Context Injection Paths
-		addNode('inject-local', 'inject-context.cjs', 'process', 'up', 'Path A: command hook → CLAUDE.md (before session)', 'injection', 550, 450, 'Path A — command hook that runs BEFORE Claude reads CLAUDE.md. Reads .pan-state.md + Claude auto-memory files (~46 files). Injects between PAN-CONTEXT markers in CLAUDE.md. This is the one that actually works for the current session. File: service/inject-context.cjs');
-		addNode('inject-server', 'hooks.js inject', 'process', 'up', 'Path B: HTTP hook → CLAUDE.md (after session reads)', 'injection', 700, 450, 'Path B — HTTP hook that runs AFTER Claude reads CLAUDE.md (invisible to current session, only affects NEXT session). Richer data: vector memory + tasks + conversation history from DB. Overwrites Path A content. File: service/src/routes/hooks.js');
-		edges.push({ from: 'memory-hub', to: 'inject-local', label: 'context' });
-		edges.push({ from: 'memory-hub', to: 'inject-server', label: 'context' });
-		edges.push({ from: 'inject-local', to: 'claude', label: 'writes CLAUDE.md' });
-		edges.push({ from: 'inject-server', to: 'claude', label: 'overwrites CLAUDE.md' });
+		edges.push({ from: 'pan-server', to: 'dashboard', label: 'serves', color: EC.svc });
+		edges.push({ from: 'steward', to: 'pan-server', label: 'monitors', color: EC.svc });
+		edges.push({ from: 'pan-server', to: 'whisper', label: 'transcribe', color: EC.svc });
+		edges.push({ from: 'pan-server', to: 'tauri', label: 'IPC', color: EC.svc });
 
-		// Steward
-		addNode('steward', 'Steward', 'service', stewardUp ? 'up' : 'down', 'watchdog.ps1 — health monitor every 30s', 'services', 100, 350, 'Health monitor (watchdog.ps1). Checks every 30s: PAN server, Whisper, AHK Voice. Restarts services if down. Cleans Tailscale ghost devices. File: service/src/watchdog.ps1');
-		edges.push({ from: 'steward', to: 'pan-server', label: 'restarts if down' });
+		// ==================== MEMORY ====================
+		addNode('database', 'SQLite DB', 'data', 'up', statsResp ? `${statsResp.total_events || 0} events, ${statsResp.total_sessions || 0} sessions` : 'Encrypted SQLCipher', 'memory', 120, 420, 'SQLite database encrypted with SQLCipher (AES-256-CBC). Tables: events, sessions, projects, memory_items, episodic_memories, semantic_facts, procedural_memories, devices, settings. FTS5 search index on events. File: service/src/db.js, service/src/schema.sql');
+		addNode('memory-hub', 'Memory Hub', 'memory', 'up', 'Vector stores + context builder', 'memory', 370, 420, 'Unified memory system with three vector stores (episodic, semantic, procedural). Context builder assembles memories for injection into Claude sessions with a token budget. File: service/src/memory/index.js, service/src/memory/context-builder.js');
+		addNode('embeddings', 'Local Embeddings', 'memory', ollamaUp ? 'up' : 'warn', ollamaUp ? 'ONNX MiniLM (384D)' : 'Keyword fallback (no ONNX yet)', 'memory', 640, 420, 'Vector embedding layer (migration planned). Target: ONNX Runtime with MiniLM model for local embeddings \u2014 75x faster than API, zero token cost, 384 dimensions. Currently falls back to keyword hash vectors. Inspired by ruflo. File: service/src/memory/embeddings.js');
+		addNode('mem-episodic', 'Episodic', 'memory', 'up', 'Events, outcomes, importance', 'memory', 160, 540, 'Stores what happened \u2014 events, outcomes, importance scores (0-1). Hybrid recall scoring: vector similarity + recency + importance. Updated by consolidation after dream cycles. File: service/src/memory/episodic.js');
+		addNode('mem-semantic', 'Semantic', 'memory', 'up', 'Subject/predicate/object triples', 'memory', 400, 540, 'Knowledge graph of subject/predicate/object triples. Auto-detects contradictions \u2014 when a new fact conflicts (>0.85 cosine similarity), old fact is superseded with version tracking. File: service/src/memory/semantic.js');
+		addNode('mem-procedural', 'Procedural', 'memory', 'up', 'Workflows, success/failure rates', 'memory', 640, 540, 'Learned multi-step workflows with success/failure tracking. Recall weighted 60% vector similarity + 40% success rate. Steps stored as JSON arrays. File: service/src/memory/procedural.js');
+		addNode('knowledge-graph', 'Knowledge Graph', 'memory', 'down', 'PageRank \u2014 surface key insights', 'memory', 400, 620, 'Knowledge graph with PageRank analysis (planned). Connects conversations \u2192 projects \u2192 decisions \u2192 outcomes. Uses community detection to surface influential insights and trace decision chains. Builds on semantic memory triples. Inspired by ruflo Knowledge Graph.');
+		addNode('inject-local', 'inject-context', 'process', 'up', 'Hook \u2192 CLAUDE.md (before read)', 'memory', 160, 620, 'Path A \u2014 command hook that runs BEFORE Claude reads CLAUDE.md. Reads .pan-state.md + Claude auto-memory files. Injects between PAN-CONTEXT markers. File: service/inject-context.cjs');
+		addNode('inject-server', 'hooks.js', 'process', 'up', 'HTTP hook \u2192 CLAUDE.md (after read)', 'memory', 640, 620, 'Path B \u2014 HTTP hook that runs AFTER Claude reads CLAUDE.md (invisible to current session). Richer data: vector memory + tasks + conversation history. File: service/src/routes/hooks.js');
 
-		return { nodes, edges, nodeMap, stats: statsResp };
+		edges.push({ from: 'pan-server', to: 'database', label: 'read/write', color: EC.core });
+		edges.push({ from: 'database', to: 'memory-hub', label: 'feeds', color: EC.mem });
+		edges.push({ from: 'pan-server', to: 'memory-hub', label: 'manages', color: EC.core });
+		edges.push({ from: 'memory-hub', to: 'mem-episodic', label: '', color: EC.mem });
+		edges.push({ from: 'memory-hub', to: 'mem-semantic', label: '', color: EC.mem });
+		edges.push({ from: 'memory-hub', to: 'mem-procedural', label: '', color: EC.mem });
+		edges.push({ from: 'mem-episodic', to: 'embeddings', label: 'vector', color: EC.mem });
+		edges.push({ from: 'mem-semantic', to: 'embeddings', label: 'vector', color: EC.mem });
+		edges.push({ from: 'mem-procedural', to: 'embeddings', label: 'vector', color: EC.mem });
+		edges.push({ from: 'mem-semantic', to: 'knowledge-graph', label: 'triples', color: EC.mem });
+		edges.push({ from: 'knowledge-graph', to: 'embeddings', label: 'vector', color: EC.mem });
+		edges.push({ from: 'memory-hub', to: 'inject-local', label: '', color: EC.mem });
+		edges.push({ from: 'memory-hub', to: 'inject-server', label: '', color: EC.mem });
+		edges.push({ from: 'inject-local', to: 'claude', label: 'CLAUDE.md', color: EC.intel });
+		edges.push({ from: 'inject-server', to: 'claude', label: 'CLAUDE.md', color: EC.intel });
+
+		// ==================== PROCESSING ====================
+		addNode('classifier', 'Classifier', 'process', 'up', 'Every 5min: count events', 'processing', 940, 420, 'Runs every 5 minutes. Marks events as processed. When 10+ events accumulate since last dream, triggers an early dream cycle. File: service/src/classifier.js');
+		addNode('dream-cycle', 'Dream Cycle', 'process', dreamUp ? 'up' : 'idle', 'Every 6h: rewrite .pan-state.md', 'processing', 1160, 420, 'Runs every 6 hours. Reads all events since last dream, sends to Claude Haiku to rewrite .pan-state.md. Also triggers consolidation. File: service/src/dream.js');
+		addNode('consolidation', 'Consolidation', 'process', 'idle', 'Extract memories from events', 'processing', 940, 530, 'Extracts memories from raw events. Two modes: (1) Heuristic \u2014 regex patterns. (2) LLM \u2014 Haiku structured extraction. Feeds all three memory stores. File: service/src/memory/consolidation.js');
+		addNode('evolution', 'Evolution', 'process', 'down', 'NOT WIRED \u2014 6-step optimization', 'processing', 1160, 530, 'NOT WIRED \u2014 6-step config optimization pipeline: Observe, Critique, Generate Deltas, Validate, Apply, Consolidate. Built but never connected. File: service/src/evolution/engine.js');
+		addNode('event-workers', 'Event Workers', 'process', 'down', 'Auto-dispatch on triggers', 'processing', 1050, 620, 'Event-driven background workers (planned). Auto-dispatch on triggers: index new conversations on arrival, tag photos on sync, update project state on git commits, re-embed on memory changes. Replaces polling with reactive processing. Inspired by ruflo background workers.');
+
+		edges.push({ from: 'database', to: 'classifier', label: 'events', color: EC.proc });
+		edges.push({ from: 'classifier', to: 'dream-cycle', label: '10+ events', color: EC.proc });
+		edges.push({ from: 'dream-cycle', to: 'consolidation', label: 'triggers', color: EC.proc });
+		edges.push({ from: 'consolidation', to: 'mem-episodic', label: 'writes', color: EC.proc });
+		edges.push({ from: 'consolidation', to: 'mem-semantic', label: 'writes', color: EC.proc });
+		edges.push({ from: 'consolidation', to: 'mem-procedural', label: 'writes', color: EC.proc });
+		edges.push({ from: 'dream-cycle', to: 'evolution', label: 'triggers', color: EC.proc });
+		edges.push({ from: 'database', to: 'event-workers', label: 'triggers', color: EC.proc });
+		edges.push({ from: 'event-workers', to: 'memory-hub', label: 'updates', color: EC.proc });
+		edges.push({ from: 'event-workers', to: 'embeddings', label: 're-embed', color: EC.proc });
+
+		// ==================== DEVICES ====================
+		const devices = services.filter(s => s.category === 'Devices');
+		devices.forEach((d, i) => {
+			const x = 120 + i * 200;
+			const y = 800;
+			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y, d.detail || d.name);
+			edges.push({ from: 'pan-server', to: `dev-${d.name}`, label: '', color: EC.dev });
+		});
+		if (!devices.find(d => d.name === 'Phone')) {
+			addNode('dev-phone', 'Phone', 'device', 'unknown', 'Android \u2014 voice + sensors', 'devices', 120, 800, 'Android phone app. Always-listening voice assistant with Google STT, on-device commands, routes complex queries to PAN server via Tailscale.');
+			edges.push({ from: 'pan-server', to: 'dev-phone', label: '', color: EC.dev });
+		}
+		if (!devices.find(d => d.name === 'Desktop')) {
+			addNode('dev-desktop', 'Desktop', 'device', 'up', 'Windows \u2014 primary workstation', 'devices', 300, 800, 'Primary Windows workstation. Runs PAN server, Claude Code sessions, Tauri dashboard.');
+			edges.push({ from: 'pan-server', to: 'dev-desktop', label: '', color: EC.dev });
+		}
+
+		// ==================== PROJECTS ====================
+		const projs = projResp || [];
+		projs.forEach((p, i) => {
+			const x = 520 + (i % 3) * 120;
+			const y = 760 + Math.floor(i / 3) * 70;
+			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y, `Project: ${p.name}. Path: ${p.path || 'unknown'}`);
+			edges.push({ from: 'database', to: `proj-${p.id}`, label: '', color: EC.proj });
+		});
+
+		// ==================== JOBS ====================
+		const jobs = jobsResp?.jobs || [];
+		const runningJobs = jobs.filter(j => j.status === 'running' || j.status === 'ready' || j.status === 'training');
+		runningJobs.forEach((j, i) => {
+			const x = 940 + (i % 2) * 220;
+			const y = 620 + Math.floor(i / 2) * 60;
+			const status = j.status === 'running' ? 'up' : j.status === 'training' ? 'warn' : 'idle';
+			addNode(`job-${j.name}`, j.name, 'job', status, j.description, 'processing', x, y, j.description || j.name);
+			edges.push({ from: 'pan-server', to: `job-${j.name}`, label: '', color: EC.proc });
+		});
+
+		return { nodes, edges, nodeMap, zones, stats: statsResp };
 	}
 
 	function atlasNodeColor(node) {
@@ -1845,23 +1772,8 @@
 		};
 		window.addEventListener('beforeunload', handleBeforeUnload);
 
-		// Global resize handler
-		let globalResizeTimer = null;
-		const handleResize = () => {
-			if (globalResizeTimer) clearTimeout(globalResizeTimer);
-			globalResizeTimer = setTimeout(() => {
-				const tab = getActiveTab();
-				if (tab && tab.fitAddon) {
-					try {
-						tab.fitAddon.fit();
-						tab.term.refresh(0, tab.term.rows - 1);
-						if (tab.ws && tab.ws.readyState === 1) {
-							tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
-						}
-					} catch {}
-				}
-			}, 300);
-		};
+		// Global resize handler — server-side rendered terminal doesn't need client resize
+		const handleResize = () => {};
 		window.addEventListener('resize', handleResize);
 
 		return () => {
@@ -1875,7 +1787,6 @@
 			for (const tab of tabs) {
 				tab._closing = true;
 				if (tab.ws) tab.ws.close();
-				if (tab.term) tab.term.dispose();
 			}
 		};
 	});
@@ -2144,11 +2055,14 @@
 						</div>
 						{#if !isDev}
 							<button class="instance-btn" onclick={async () => {
-								try {
-									const r = await fetch('/api/v1/dev/start', { method: 'POST' });
-									const d = await r.json();
-									if (d.port) window.open('http://localhost:' + d.port + '/v2/terminal', '_blank');
-								} catch { alert('Start dev server first: node dev-server.js'); }
+								const r = await fetch('/api/v1/dev/start', { method: 'POST' });
+								const d = await r.json();
+								const port = d.port || 7781;
+								fetch('/api/v1/ui-commands', {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal-dev` })
+								});
 							}}>Open</button>
 						{/if}
 					</div>
@@ -2290,8 +2204,27 @@
 							<span class="atlas-stat">{atlasData.nodes.length} nodes</span>
 						{/if}
 					</div>
-					<svg bind:this={atlasSvgEl} class="atlas-svg" viewBox="0 0 900 650" preserveAspectRatio="xMidYMid meet">
+					<svg bind:this={atlasSvgEl} class="atlas-svg" viewBox="0 0 1500 1000" preserveAspectRatio="xMidYMid meet">
+						<defs>
+							<filter id="glow">
+								<feGaussianBlur stdDeviation="2" result="blur"/>
+								<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+							</filter>
+						</defs>
 						<g transform="translate({atlasTransform.x},{atlasTransform.y}) scale({atlasTransform.scale})">
+							<!-- Zone backgrounds -->
+							{#each atlasData.zones || [] as zone}
+								<rect
+									x={zone.x} y={zone.y} width={zone.w} height={zone.h}
+									rx="16" fill="{zone.color}0a" stroke="{zone.color}40"
+									stroke-width="1.5" stroke-dasharray="8,4"
+								/>
+								<text
+									x={zone.x + 14} y={zone.y + 22}
+									fill="{zone.color}bb" font-size="14" font-weight="700"
+									letter-spacing="1.5"
+								>{zone.label.toUpperCase()}</text>
+							{/each}
 							<!-- Edges -->
 							{#each atlasData.edges as edge}
 								{@const fromNode = atlasData.nodeMap[edge.from]}
@@ -2300,16 +2233,24 @@
 									<line
 										x1={fromNode.x} y1={fromNode.y}
 										x2={toNode.x} y2={toNode.y}
-										stroke="#313244"
-										stroke-width="1.5"
-										stroke-dasharray={edge.label ? '' : '4,4'}
+										stroke={edge.color || '#313244'}
+										stroke-width={edge.label ? 2 : 1.2}
+										stroke-dasharray={edge.label ? '' : '5,5'}
+										stroke-opacity={edge.label ? 0.6 : 0.3}
 									/>
 									{#if edge.label}
+										<rect
+											x={(fromNode.x + toNode.x) / 2 - edge.label.length * 3.5}
+											y={(fromNode.y + toNode.y) / 2 - 14}
+											width={edge.label.length * 7 + 8}
+											height="16" rx="4"
+											fill="#11111b" fill-opacity="0.85"
+										/>
 										<text
 											x={(fromNode.x + toNode.x) / 2}
-											y={(fromNode.y + toNode.y) / 2 - 6}
-											fill="#585b70"
-											font-size="9"
+											y={(fromNode.y + toNode.y) / 2 - 3}
+											fill={edge.color || '#6c7086'}
+											font-size="10"
 											text-anchor="middle"
 										>{edge.label}</text>
 									{/if}
@@ -2327,17 +2268,18 @@
 								>
 									<!-- Node bg -->
 									<rect
-										x="-50" y="-20" width="100" height="40" rx="8"
+										x="-75" y="-24" width="150" height="48" rx="10"
 										fill={atlasHovered === node.id || atlasSelected === node.id ? '#1e1e2e' : '#11111b'}
-										stroke={atlasSelected === node.id ? atlasNodeColor(node) : atlasHovered === node.id ? '#45475a' : '#1e1e2e'}
-										stroke-width={atlasSelected === node.id ? 2 : 1}
+										stroke={atlasSelected === node.id ? atlasNodeColor(node) : atlasHovered === node.id ? '#45475a' : atlasNodeColor(node) + '30'}
+										stroke-width={atlasSelected === node.id ? 2.5 : 1}
+										filter={atlasSelected === node.id ? 'url(#glow)' : ''}
 									/>
 									<!-- Status dot -->
-									<circle cx="-38" cy="0" r="4" fill={atlasStatusDot(node.status)} />
+									<circle cx="-60" cy="-8" r="5" fill={atlasStatusDot(node.status)} />
 									<!-- Label -->
-									<text x="-26" y="4" fill="#cdd6f4" font-size="11" font-weight="500">{node.label.length > 14 ? node.label.slice(0,13) + '..' : node.label}</text>
-									<!-- Type badge -->
-									<text x="45" y="-10" fill={atlasNodeColor(node)} font-size="8" text-anchor="end">{node.type}</text>
+									<text x="-48" y="-4" fill="#cdd6f4" font-size="13" font-weight="600">{node.label.length > 18 ? node.label.slice(0,17) + '..' : node.label}</text>
+									<!-- Detail line -->
+									<text x="-60" y="14" fill="#6c7086" font-size="9">{(node.detail || '').length > 26 ? (node.detail || '').slice(0,25) + '..' : (node.detail || '')}</text>
 								</g>
 							{/each}
 						</g>
@@ -2398,49 +2340,33 @@
 				{/if}
 			</div>
 		{/if}
-		{#if !directMode}
-			{#if pastedImages.length > 0}
-				<div class="image-preview-bar">
-					{#each pastedImages as img, idx}
-						<div class="image-preview-item">
-							<img src={img.dataUrl} alt="Pasted" class="image-preview-thumb" />
-							{#if img.uploading}
-								<span class="image-uploading">...</span>
-							{/if}
-							<button class="image-remove" onclick={() => removePastedImage(idx)}>&times;</button>
-						</div>
-					{/each}
-				</div>
-			{/if}
-			<div class="center-input-bar">
-				<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
-				<button
-					class="direct-mode-btn"
-					class:active={directMode}
-					onclick={() => { directMode = !directMode; }}
-					title="Switch to direct terminal mode (hides input box)"
-				><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
-				<textarea
-					bind:value={centerChatInput}
-					onkeydown={handleCenterChatKey}
-					oninput={autoGrowInput}
-					onpaste={handleInputPaste}
-					placeholder="Type a message..."
-					rows="1"
-					class="center-input"
-				></textarea>
-				<button class="center-send-btn" onclick={sendCenterChat} disabled={centerChatLoading || !centerChatInput.trim()} title="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
-			</div>
-		{:else}
-			<div class="center-input-bar direct-bar">
-				<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
-				<button
-					class="direct-mode-btn active"
-					onclick={() => { directMode = !directMode; }}
-					title="Switch to input box mode"
-				><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+		{#if pastedImages.length > 0}
+			<div class="image-preview-bar">
+				{#each pastedImages as img, idx}
+					<div class="image-preview-item">
+						<img src={img.dataUrl} alt="Pasted" class="image-preview-thumb" />
+						{#if img.uploading}
+							<span class="image-uploading">...</span>
+						{/if}
+						<button class="image-remove" onclick={() => removePastedImage(idx)}>&times;</button>
+					</div>
+				{/each}
 			</div>
 		{/if}
+		<div class="center-input-bar">
+			<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+			<textarea
+				bind:this={terminalInputEl}
+				bind:value={terminalInputText}
+				onkeydown={handleTerminalInputKey}
+				oninput={autoGrowInput}
+				onpaste={handleInputPaste}
+				placeholder="Type a message..."
+				rows="1"
+				class="center-input"
+			></textarea>
+			<button class="center-send-btn" onclick={sendTerminalInput} disabled={!terminalInputText.trim()} title="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+		</div>
 	</div>
 
 	<!-- RIGHT RESIZE HANDLE -->
@@ -2536,11 +2462,14 @@
 						</div>
 						{#if !isDev}
 							<button class="instance-btn" onclick={async () => {
-								try {
-									const r = await fetch('/api/v1/dev/start', { method: 'POST' });
-									const d = await r.json();
-									if (d.port) window.open('http://localhost:' + d.port + '/v2/terminal', '_blank');
-								} catch { alert('Start dev server first: cd dashboard && npm run dev'); }
+								const r = await fetch('/api/v1/dev/start', { method: 'POST' });
+								const d = await r.json();
+								const port = d.port || 7781;
+								fetch('/api/v1/ui-commands', {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal-dev` })
+								});
 							}}>Open</button>
 						{/if}
 					</div>
@@ -3489,31 +3418,11 @@
 		line-height: 1;
 	}
 
-	/* xterm sits above glow */
-	.term-container :global(.xterm) {
+	/* Server-rendered terminal output */
+	.term-container :global(.term-output) {
 		position: relative;
 		z-index: 1;
-		height: 100% !important;
-	}
-	.term-container :global(.xterm-viewport) {
-		overflow-y: scroll !important;
-	}
-	.term-container :global(.xterm-screen) {
-		min-height: 100%;
-	}
-
-	/* Scanline effect */
-	.term-container :global(.xterm-screen)::after {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: repeating-linear-gradient(
-			0deg,
-			transparent, transparent 1px,
-			rgba(0,0,0,0.03) 1px, rgba(0,0,0,0.03) 2px
-		);
-		pointer-events: none;
-		z-index: 2;
+		background: #1e1e2e;
 	}
 
 	.term-empty {
