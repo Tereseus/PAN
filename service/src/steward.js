@@ -524,6 +524,21 @@ function cleanZombieSessions() {
 // ==================== ATLAS DATA ====================
 // Returns the full service registry with live status for Atlas rendering
 
+// Read the actual model configured for a service from DB settings
+function getConfiguredModel(serviceId) {
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'job_models'");
+    if (row) {
+      const jobModels = JSON.parse(row.value);
+      if (jobModels[serviceId]) return jobModels[serviceId];
+    }
+    // Fall back to the global default model
+    const defaultRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
+    if (defaultRow) return defaultRow.value.replace(/^"|"$/g, '');
+  } catch {}
+  return null;
+}
+
 function getAtlasData() {
   return {
     modelTiers: MODEL_TIERS,
@@ -536,7 +551,7 @@ function getAtlasData() {
       modelTierLabel: MODEL_TIERS[svc.modelTier]?.label || svc.modelTier,
       modelTierColor: MODEL_TIERS[svc.modelTier]?.color || '#6c7086',
       modelMinSize: svc.modelMinSize,
-      modelCurrent: svc.modelCurrent,
+      modelCurrent: (svc.modelTier === 'reasoning' ? getConfiguredModel(svc.id) : null) || svc.modelCurrent,
       // Runtime state
       status: svc._status,
       lastCheck: svc._lastCheck,
