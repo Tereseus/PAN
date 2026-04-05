@@ -965,49 +965,62 @@
 		} catch {}
 	}
 
+	let mediaRecorder = null;
+	let audioChunks = [];
+
 	function toggleVoiceInput() {
-		const method = voiceSettings.control_voice_method || 'windows';
-		if (method === 'whisper') {
-			startWhisperListening();
+		if (isListening) {
+			stopVoiceRecording();
 		} else {
-			// Trigger Windows voice typing (Win+H)
-			triggerWindowsVoice();
+			startVoiceRecording();
 		}
 	}
 
-	function triggerWindowsVoice() {
-		// Simulate Win+H via the configured voice key or fallback
-		const key = voiceSettings.control_voice_key || '';
-		if (key) {
-			// Try to dispatch the key event to trigger the OS voice typing
-			const evt = new KeyboardEvent('keydown', { key, bubbles: true });
-			document.dispatchEvent(evt);
+	async function startVoiceRecording() {
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+			audioChunks = [];
+			mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+			mediaRecorder.onstop = async () => {
+				stream.getTracks().forEach(t => t.stop());
+				if (audioChunks.length === 0) return;
+				const blob = new Blob(audioChunks, { type: 'audio/webm' });
+				await sendToWhisper(blob);
+			};
+			mediaRecorder.start();
+			isListening = true;
+		} catch (err) {
+			console.error('[Voice] Mic access failed:', err);
+			isListening = false;
 		}
-		// Fall back to Web Speech API
-		startBrowserSpeechRecognition();
 	}
 
-	function startBrowserSpeechRecognition() {
-		const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-		if (!SpeechRecognition) return;
-		if (recognition) { recognition.stop(); recognition = null; isListening = false; return; }
-		recognition = new SpeechRecognition();
-		recognition.continuous = false;
-		recognition.interimResults = false;
-		recognition.lang = 'en-US';
-		isListening = true;
-		recognition.onresult = (e) => {
-			const transcript = e.results[0][0].transcript;
-			terminalInputText = (terminalInputText ? terminalInputText + ' ' : '') + transcript;
-		};
-		recognition.onend = () => { isListening = false; recognition = null; };
-		recognition.onerror = () => { isListening = false; recognition = null; };
-		recognition.start();
+	function stopVoiceRecording() {
+		if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+			mediaRecorder.stop();
+		}
+		isListening = false;
 	}
 
-	async function startWhisperListening() {
-		// Use Web Speech API for capture, send to Whisper server for better accuracy
-		startBrowserSpeechRecognition();
+	async function sendToWhisper(blob) {
+		try {
+			const resp = await fetch('/api/v1/whisper/transcribe', {
+				method: 'POST',
+				headers: { 'Content-Type': 'audio/webm' },
+				body: blob,
+			});
+			if (resp.ok) {
+				const data = await resp.json();
+				if (data.text) {
+					terminalInputText = (terminalInputText ? terminalInputText + ' ' : '') + data.text.trim();
+				}
+			} else {
+				console.error('[Voice] Whisper returned', resp.status);
+			}
+		} catch (err) {
+			console.error('[Voice] Whisper transcribe failed:', err);
+		}
 	}
 
 	function switchCenterView(view) {

@@ -1324,7 +1324,45 @@ app.post('/api/v1/dictate', async (req, res) => {
   }
 });
 
-// Whisper transcription — accepts raw WAV audio from browser MediaRecorder
+// Whisper transcription — accepts multipart form with WebM audio from dashboard mic button
+app.post('/api/v1/whisper/transcribe', express.raw({ type: 'audio/webm', limit: '10mb' }), async (req, res) => {
+  try {
+    const { writeFileSync, unlinkSync } = await import('fs');
+    const { join } = await import('path');
+    const tmpDir = process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp';
+
+    // Parse multipart or raw body
+    let audioBuffer = req.body;
+    if (!audioBuffer || audioBuffer.length < 500) {
+      return res.json({ ok: false, error: 'Audio too short' });
+    }
+
+    // Save as temp WebM file
+    const tmpFile = join(tmpDir, `pan-whisper-${Date.now()}.webm`);
+    writeFileSync(tmpFile, audioBuffer);
+
+    // Send to Whisper server (it handles WebM → WAV conversion)
+    const whisperRes = await fetch('http://127.0.0.1:7782/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wav_path: tmpFile }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const result = await whisperRes.json();
+    try { unlinkSync(tmpFile); } catch {}
+
+    if (result.text) {
+      res.json({ ok: true, text: result.text, seconds: result.seconds });
+    } else {
+      res.json({ ok: false, error: result.error || 'No transcription' });
+    }
+  } catch (err) {
+    console.error('[PAN Whisper] Transcribe error:', err.message);
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// Whisper transcription — accepts raw WAV audio (legacy endpoint)
 app.post('/api/v1/whisper', express.raw({ type: 'application/octet-stream', limit: '10mb' }), async (req, res) => {
   try {
     const { writeFileSync, unlinkSync } = await import('fs');
