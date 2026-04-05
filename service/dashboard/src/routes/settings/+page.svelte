@@ -160,7 +160,7 @@
 	async function restartServer() {
 		flash('Restarting server...');
 		try {
-			await api('/api/admin/restart', { method: 'POST' });
+			await api('/api/admin/restart?hard=true', { method: 'POST' });
 		} catch {}
 		// Poll for server to come back — retry every 2s for up to 60s
 		flash('Waiting for server to restart...');
