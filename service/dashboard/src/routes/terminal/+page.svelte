@@ -986,9 +986,9 @@
 			});
 			isListening = true;
 
-			// Connect WebSocket to Whisper streaming server
-			const wsPort = 7783; // Whisper WS port = HTTP port + 1
-			voiceWs = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+			// Connect WebSocket via same-origin proxy (PAN server proxies to Whisper on 7783)
+			const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+			voiceWs = new WebSocket(`${wsProto}//${window.location.host}/ws/whisper`);
 			voiceWs.binaryType = 'arraybuffer';
 
 			voiceWs.onmessage = (e) => {

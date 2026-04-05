@@ -5,7 +5,7 @@
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pty = require('node-pty');
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { hostname } from 'os';
 import { existsSync } from 'fs';
 import { all } from './db.js';
@@ -37,6 +37,9 @@ async function startTerminalServer(httpServer) {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
+    } else if (pathname === '/ws/whisper') {
+      // Proxy to Whisper streaming server on port 7783
+      proxyWhisperWs(request, socket, head);
     }
     // Unknown paths: let socket hang/timeout naturally
   });
@@ -338,5 +341,29 @@ function listDevSessions() { return listSessions(); }
 function killDevSession(id) { return killSession(id); }
 
 async function startDevTerminalServer() { /* no-op — merged into startTerminalServer */ }
+
+// Proxy WebSocket to Whisper streaming server (port 7783)
+// This lets the dashboard connect to ws://<same-origin>/ws/whisper instead of cross-origin ws://127.0.0.1:7783
+function proxyWhisperWs(request, socket, head) {
+  const upstream = new WebSocket('ws://127.0.0.1:7783');
+
+  upstream.on('open', () => {
+    const proxyWss = new WebSocketServer({ noServer: true });
+    proxyWss.handleUpgrade(request, socket, head, (clientWs) => {
+      clientWs.on('message', (data, isBinary) => {
+        if (upstream.readyState === 1) upstream.send(data, { binary: isBinary });
+      });
+      clientWs.on('close', () => upstream.close());
+      upstream.on('message', (data, isBinary) => {
+        if (clientWs.readyState === 1) clientWs.send(data, { binary: isBinary });
+      });
+      upstream.on('close', () => { if (clientWs.readyState === 1) clientWs.close(); });
+    });
+  });
+
+  upstream.on('error', () => {
+    socket.destroy();
+  });
+}
 
 export { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession };
