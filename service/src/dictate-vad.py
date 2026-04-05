@@ -120,8 +120,12 @@ def main():
         transcribe_time = round(time.time() - t0, 1)
         # Check for trigger word "over" — strip it and signal auto-send
         action = None
-        if text.lower().rstrip(' .!?').endswith('over'):
-            text = text[:text.lower().rstrip(' .!?').rfind('over')].rstrip(' ,.')
+        stripped = text.lower().rstrip(' .!?,')
+        if stripped.endswith(' over') or stripped == 'over':
+            # Remove "over" from end
+            idx = text.lower().rfind('over')
+            if idx >= 0:
+                text = text[:idx].rstrip(' ,.')
             action = 'send'
         result = {"text": text, "duration": round(duration, 1), "transcribe_seconds": transcribe_time}
         if action:
