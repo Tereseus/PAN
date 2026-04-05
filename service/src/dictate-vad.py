@@ -81,7 +81,7 @@ def transcribe(wav_path):
     """Send to PAN Whisper server (pre-loaded model, instant response)."""
     import urllib.request
     req = urllib.request.Request(
-        'http://127.0.0.1:7778/',
+        'http://127.0.0.1:7782/',
         data=json.dumps({"wav_path": wav_path}).encode('utf-8'),
         headers={'Content-Type': 'application/json'}
     )
