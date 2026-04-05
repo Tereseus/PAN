@@ -25,13 +25,11 @@ import dashboardRouter from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
 import runnerRouter from './routes/runner.js';
 import { extractUser } from './middleware/auth.js';
-import { startClassifier, stopClassifier } from './classifier.js';
-import { startScout, stopScout } from './scout.js';
-import { startDream, stopDream } from './dream.js';
 import { evolve } from './evolution/engine.js';
 import { buildContext as buildMemoryContext } from './memory/index.js';
-import { startAutoDev, stopAutoDev, getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
-import { startStackScanner, stopStackScanner, getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
+import { getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
+import { getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
+import { bootAll, shutdownAll, getAtlasData, getServiceStatus, reportServiceRun } from './steward.js';
 import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
@@ -241,7 +239,14 @@ app.use('/api/sensors', sensorsRouter);
 // Project Runner — start/stop/monitor project services
 app.use('/api/v1/runner', runnerRouter);
 
-// Feature registry — maps feature names to start/stop functions
+// Feature registry — maps feature names to Steward services for toggle API
+// Import start/stop directly for the toggle endpoint (Steward handles boot, this handles runtime toggles)
+import { startScout, stopScout } from './scout.js';
+import { startDream, stopDream } from './dream.js';
+import { startClassifier, stopClassifier } from './classifier.js';
+import { startAutoDev, stopAutoDev } from './autodev.js';
+import { startStackScanner, stopStackScanner } from './stack-scanner.js';
+
 const featureRegistry = {
   scout: { start: startScout, stop: stopScout, interval: '12h', defaultMs: 12 * 60 * 60 * 1000 },
   dream: { start: startDream, stop: stopDream, interval: '6h', defaultMs: 6 * 60 * 60 * 1000 },
@@ -1153,6 +1158,17 @@ app.post('/api/v1/stacks/scan', (req, res) => {
 });
 
 // Context briefing — living state doc + recent chat for new Claude sessions
+// Atlas — service graph data from Steward registry
+app.get('/api/v1/atlas/services', (req, res) => {
+  res.json(getAtlasData());
+});
+
+app.get('/api/v1/atlas/service/:id', (req, res) => {
+  const svc = getServiceStatus(req.params.id);
+  if (!svc) return res.status(404).json({ error: 'Service not found' });
+  res.json(svc);
+});
+
 app.get('/api/v1/context-briefing', async (req, res) => {
   const projectPath = req.query.project_path || '';
 
@@ -1502,30 +1518,8 @@ function start() {
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
 
-      // Start classification engine (every 5 minutes)
-      startClassifier(5 * 60 * 1000);
-
-      // Respect feature toggles from settings
-      let toggles = {};
-      try {
-        const toggleRow = get("SELECT value FROM settings WHERE key = 'feature_toggles'");
-        if (toggleRow) toggles = JSON.parse(toggleRow.value);
-      } catch {}
-
-      // Start tool scout (every 12 hours — discovers new CLIs and tools)
-      if (toggles.scout !== false) startScout(12 * 60 * 60 * 1000);
-      else console.log('[PAN] Scout disabled by toggle');
-
-      // Start auto-dream (every 6 hours — consolidates events into structured memory)
-      if (toggles.dream !== false) startDream(6 * 60 * 60 * 1000);
-      else console.log('[PAN] Dream disabled by toggle');
-
-      // Start Stack Scanner (every 6 hours — discovers tech stacks per project)
-      startStackScanner(6 * 60 * 60 * 1000);
-
-      // Start AutoDev (checks hourly, runs at configured time — disabled by default)
-      if (toggles.autodev === true) startAutoDev(60 * 60 * 1000);
-      else console.log('[PAN] AutoDev disabled by toggle');
+      // Steward boots all background services in dependency order
+      bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
 
       // Resume restart test if one was in progress before we died
       resumeRestartTest().catch(err => console.error('[PAN Tests] Resume failed:', err.message));
@@ -1552,11 +1546,7 @@ function start() {
 }
 
 function stop() {
-  stopClassifier();
-  stopScout();
-  stopDream();
-  stopAutoDev();
-  stopStackScanner();
+  shutdownAll();
   return new Promise((resolve) => {
     if (server) {
       let resolved = false;
