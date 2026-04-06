@@ -250,8 +250,9 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                         let handle = app_handle.clone();
                         let (tx, rx) = std::sync::mpsc::channel();
                         let handle2 = handle.clone();
+                        let wid_for_closure = wid.clone();
                         handle.run_on_main_thread(move || {
-                            if let Some(w) = handle2.get_webview_window(&wid) {
+                            if let Some(w) = handle2.get_webview_window(&wid_for_closure) {
                                 let pos = w.outer_position().ok();
                                 let size = w.outer_size().ok();
                                 tx.send((pos, size)).ok();

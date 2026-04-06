@@ -257,6 +257,7 @@
 	let centerChatLoading = $state(false);
 	let centerChatMessages = $state([]);
 	let centerChatEl;
+	let centerChatUserScrolledUp = false;
 	let voiceSettings = $state({});
 	let isListening = $state(false);
 	let recognition = null;
@@ -377,13 +378,13 @@
 		// Scrollback div (history above visible screen)
 		const scrollbackDiv = document.createElement('div');
 		scrollbackDiv.className = 'term-scrollback';
-		scrollbackDiv.style.cssText = 'padding:8px 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;';
+		scrollbackDiv.style.cssText = 'padding:8px 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;position:relative;z-index:2;background:#1e1e2e;';
 		tabContainer.appendChild(scrollbackDiv);
 
 		// Screen div (current visible terminal screen) — uses per-line divs for efficient diffing
 		const screenDiv = document.createElement('div');
 		screenDiv.className = 'term-screen';
-		screenDiv.style.cssText = 'padding:0 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;min-height:100%;';
+		screenDiv.style.cssText = 'padding:0 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;min-height:100%;position:relative;z-index:1;background:#1e1e2e;';
 		tabContainer.appendChild(screenDiv);
 
 		// Cache of previous line HTML for diffing
@@ -461,6 +462,7 @@
 					switch (msg.type) {
 						case 'screen': {
 							// Server sends pre-rendered HTML lines — diff per-line to avoid DOM thrashing
+							const scrollHeightBefore = tabData.userScrolledUp ? tabContainer.scrollHeight : 0;
 							if (msg.scrollback && msg.scrollback.length > 0) {
 								// Append only new scrollback lines instead of replacing all
 								const newLines = msg.scrollback;
@@ -521,6 +523,14 @@
 							// Auto-scroll to bottom unless user scrolled up
 							if (!tabData.userScrolledUp) {
 								tabContainer.scrollTop = tabContainer.scrollHeight;
+							} else if (scrollHeightBefore > 0) {
+								// User is reading scrollback — new scrollback lines push content down
+								// Adjust scrollTop so their view stays on the same content
+								const scrollHeightAfter = tabContainer.scrollHeight;
+								const delta = scrollHeightAfter - scrollHeightBefore;
+								if (delta > 0) {
+									tabContainer.scrollTop += delta;
+								}
 							}
 
 							// Detect if buffer has content (for auto-launch logic)
@@ -581,8 +591,14 @@
 							if (window._lastVoiceResult === vrKey) break;
 							window._lastVoiceResult = vrKey;
 							setTimeout(() => { if (window._lastVoiceResult === vrKey) window._lastVoiceResult = null; }, 200);
-							console.log('[Voice] voice_result received, partial=', msg.partial, 'text=', msg.text?.substring(0, 50));
-							if (msg.text !== undefined) {
+							console.log('[Voice] voice_result received, partial=', msg.partial, 'text=', msg.text?.substring(0, 50), 'action=', msg.action);
+							// 'done' action = process exited, just reset state
+							if (msg.action === 'done') {
+								isListening = false;
+								window._voiceBaseText = undefined;
+								break;
+							}
+							if (msg.text !== undefined && msg.text !== '') {
 								// Snapshot existing text when voice session starts
 								if (!window._voiceBaseText && window._voiceBaseText !== '') {
 									window._voiceBaseText = terminalInputText.trim();
@@ -596,6 +612,10 @@
 									window._voiceBaseText = undefined;
 									isListening = false;
 								}
+							} else if (!msg.partial) {
+								// Empty final = no speech detected, just reset
+								isListening = false;
+								window._voiceBaseText = undefined;
 							}
 							if (msg.action === 'send') {
 								setTimeout(() => sendTerminalInput(), 100);
@@ -924,9 +944,20 @@
 				if (data?.messages) all.push(...data.messages);
 			}));
 			all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+			const wasAtBottom = centerChatEl ? (centerChatEl.scrollHeight - centerChatEl.scrollTop - centerChatEl.clientHeight < 50) : true;
 			centerChatMessages = all;
 			await tick();
-			if (centerChatEl) centerChatEl.scrollTop = centerChatEl.scrollHeight;
+			// Restore saved scroll position on page load, or auto-scroll if at bottom
+			const savedRatio = localStorage.getItem('pan_chat_scroll_ratio');
+			const savedScrolledUp = localStorage.getItem('pan_chat_scrolled_up');
+			if (centerChatEl && savedScrolledUp === '1' && savedRatio !== null) {
+				// User was scrolled up — restore their position
+				const ratio = parseFloat(savedRatio);
+				centerChatEl.scrollTop = ratio * (centerChatEl.scrollHeight - centerChatEl.clientHeight);
+				centerChatUserScrolledUp = true;
+			} else if (centerChatEl && (wasAtBottom || !centerChatUserScrolledUp)) {
+				centerChatEl.scrollTop = centerChatEl.scrollHeight;
+			}
 		} catch (err) {
 			console.error('[Center Chat] load error:', err);
 		}
@@ -996,6 +1027,7 @@
 		centerChatMessages = [...centerChatMessages, { role: 'user', text, ts: new Date().toISOString() }];
 		await tick();
 		if (centerChatEl) centerChatEl.scrollTop = centerChatEl.scrollHeight;
+		centerChatUserScrolledUp = false;
 
 		const active = getActiveTab();
 		if (active?.ws?.readyState === 1) {
@@ -1099,14 +1131,39 @@
 		if (voiceToggleLock) return;
 		voiceToggleLock = true;
 		setTimeout(() => voiceToggleLock = false, 500);
+
+		// Call server-side dictate-vad.py via toggle API (same as AHK XButton2)
+		// Server spawns dictate-vad.py on first call, signals stop on second call
+		// Results arrive via WebSocket voice_result messages (handled in WS handler)
 		if (isListening) {
-			// Stop recording
-			if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+			// Stop recording — tell server to signal dictate-vad.py to stop
+			console.log('[Voice] Stopping server-side dictation');
+			fetch('/api/v1/voice/dictate', { method: 'POST' })
+				.then(r => r.json())
+				.then(data => console.log('[Voice] Dictate stop response:', data))
+				.catch(err => console.error('[Voice] Dictate stop failed:', err));
+			isListening = false;
 			return;
 		}
-		// Start recording in browser, transcribe via Whisper, put text in input box
+
+		// Start recording — snapshot existing text for appending
 		preVoiceText = terminalInputText.trim();
-		startBatchRecording();
+		window._voiceBaseText = preVoiceText;
+		isListening = true;
+		console.log('[Voice] Starting server-side dictation');
+		fetch('/api/v1/voice/dictate', { method: 'POST' })
+			.then(r => r.json())
+			.then(data => {
+				console.log('[Voice] Dictate start response:', data);
+				if (!data.ok) {
+					console.error('[Voice] Dictate failed:', data.error);
+					isListening = false;
+				}
+			})
+			.catch(err => {
+				console.error('[Voice] Dictate start failed:', err);
+				isListening = false;
+			});
 	}
 
 	// Kept for potential future WebSocket streaming use
@@ -2692,7 +2749,17 @@
 			{/if}
 		</div>
 		{#if centerView === 'chat'}
-			<div class="center-chat" bind:this={centerChatEl}>
+			<div class="center-chat" bind:this={centerChatEl} onscroll={() => {
+				if (centerChatEl) {
+					centerChatUserScrolledUp = centerChatEl.scrollHeight - centerChatEl.scrollTop - centerChatEl.clientHeight > 50;
+					// Persist scroll position for refresh survival
+					try {
+						const ratio = centerChatEl.scrollTop / Math.max(1, centerChatEl.scrollHeight - centerChatEl.clientHeight);
+						localStorage.setItem('pan_chat_scroll_ratio', String(ratio));
+						localStorage.setItem('pan_chat_scrolled_up', centerChatUserScrolledUp ? '1' : '0');
+					} catch {}
+				}
+			}}>
 				{#if centerChatMessages.length === 0}
 					<div class="term-empty">
 						<div class="term-empty-title">Chat</div>
@@ -3519,7 +3586,9 @@
 	.center-chat {
 		flex: 1;
 		min-height: 0;
+		min-width: 0;
 		overflow-y: auto;
+		overflow-x: hidden;
 		padding: 12px 16px;
 		display: flex;
 		flex-direction: column;
@@ -3534,7 +3603,11 @@
 		font-size: 13px;
 		line-height: 1.5;
 		word-wrap: break-word;
+		word-break: break-word;
+		overflow-wrap: break-word;
 		white-space: pre-wrap;
+		overflow-x: auto;
+		min-width: 0;
 	}
 
 	.cc-user {
@@ -3895,7 +3968,11 @@
 
 	.chat-bubble {
 		word-break: break-word;
+		overflow-wrap: break-word;
 		white-space: pre-wrap;
+		overflow-x: auto;
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	.chat-bubble.user {
@@ -4173,6 +4250,7 @@
 		border: 1px solid #1e1e2e;
 		border-radius: 0 6px 6px 0;
 		overflow-y: auto;
+		overflow-x: hidden;
 		font-size: 12px;
 		flex-shrink: 0;
 		display: flex;
@@ -4209,6 +4287,8 @@
 		padding: 10px;
 		flex: 1;
 		overflow-y: auto;
+		overflow-x: hidden;
+		min-width: 0;
 	}
 
 	/* ==================== Services ==================== */

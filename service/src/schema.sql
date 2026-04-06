@@ -325,6 +325,23 @@ CREATE TABLE IF NOT EXISTS evolution_versions (
 
 CREATE INDEX IF NOT EXISTS idx_evolution_file ON evolution_versions(config_file, version);
 
+-- Client logs — universal telemetry from browsers, phones, ESP32s, pendants
+CREATE TABLE IF NOT EXISTS client_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,              -- hostname, user-agent hash, or device serial
+    device_type TEXT NOT NULL DEFAULT 'browser',  -- browser, phone, esp32, pendant
+    level TEXT NOT NULL DEFAULT 'error',  -- error, warn, info, debug
+    source TEXT NOT NULL DEFAULT 'console', -- console, crash, network, sensor, app
+    message TEXT NOT NULL,
+    meta TEXT DEFAULT '{}',               -- JSON: url, stack, user-agent, etc.
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_logs_device ON client_logs(device_id);
+CREATE INDEX IF NOT EXISTS idx_client_logs_level ON client_logs(level);
+CREATE INDEX IF NOT EXISTS idx_client_logs_created ON client_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_client_logs_device_type ON client_logs(device_type);
+
 -- Full-text search index for events — enables instant ranked search across all history
 -- content_text stores the clean extracted text, synced on insert via application code
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
