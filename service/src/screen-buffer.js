@@ -48,6 +48,9 @@ class ScreenBuffer {
     this.rows = rows;
     this.scrollback = [];
     this.maxScrollback = 2000;
+    this.log = [];        // Append-only rendered HTML lines — immune to state corruption
+    this.logSeq = 0;      // Monotonic sequence number for incremental sync
+    this.maxLog = 5000;
     this.cx = 0;
     this.cy = 0;
     this.savedCx = 0;
@@ -83,8 +86,13 @@ class ScreenBuffer {
     while (this.screen.length < rows) this.screen.push(this._emptyRow());
     while (this.screen.length > rows) {
       const removed = this.screen.shift();
-      this.scrollback.push(this._renderLine(removed));
+      const rendered = this._renderLine(removed);
+      this.scrollback.push(rendered);
       if (this.scrollback.length > this.maxScrollback) this.scrollback.shift();
+      if (!this.altScreen) {
+        this.log.push({ seq: this.logSeq++, html: rendered });
+        if (this.log.length > this.maxLog) this.log.shift();
+      }
     }
     if (cols !== this.cols) {
       for (let y = 0; y < this.screen.length; y++) {
@@ -102,8 +110,12 @@ class ScreenBuffer {
   _scrollUp() {
     const removed = this.screen.splice(this.scrollTop, 1)[0];
     if (this.scrollTop === 0 && !this.altScreen) {
-      this.scrollback.push(this._renderLine(removed));
+      const rendered = this._renderLine(removed);
+      this.scrollback.push(rendered);
       if (this.scrollback.length > this.maxScrollback) this.scrollback.shift();
+      // Append to immutable log — survives screen corruption
+      this.log.push({ seq: this.logSeq++, html: rendered });
+      if (this.log.length > this.maxLog) this.log.shift();
     }
     this.screen.splice(this.scrollBottom, 0, this._emptyRow());
   }
@@ -502,6 +514,22 @@ class ScreenBuffer {
 
   getScrollback(maxLines = 500) {
     return this.scrollback.slice(-maxLines);
+  }
+
+  get isAltScreen() {
+    return this.altScreen;
+  }
+
+  getLogSince(fromSeq = 0) {
+    const startIdx = this.log.findIndex(e => e.seq >= fromSeq);
+    if (startIdx === -1) return { lines: [], fromSeq: this.logSeq, length: this.log.length, nextSeq: this.logSeq };
+    const entries = this.log.slice(startIdx);
+    return {
+      lines: entries.map(e => e.html),
+      fromSeq: entries[0].seq,
+      length: this.log.length,
+      nextSeq: this.logSeq,
+    };
   }
 }
 

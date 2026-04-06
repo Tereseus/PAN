@@ -73,6 +73,9 @@
 	<div class="mobile-overlay" onclick={closeMobileMenu}></div>
 {/if}
 
+{#if page.url.pathname.includes('/atlas')}
+	{@render children()}
+{:else}
 <div class="shell">
 	<nav class="sidebar" class:collapsed class:mobile-open={mobileMenuOpen}>
 		<div class="logo">
@@ -146,6 +149,7 @@
 		</div>
 	</main>
 </div>
+{/if}
 
 <style>
 	:global(*) {

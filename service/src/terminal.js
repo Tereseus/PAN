@@ -47,6 +47,9 @@ async function startTerminalServer(httpServer) {
   wss.on('connection', (ws, req) => {
     // Parse query params: ?session=<id>&project=<name>&cwd=<path>&cols=80&rows=24
     const url = new URL(req.url, 'http://localhost');
+    const isDev = url.pathname === '/ws/terminal-dev';
+    ws._panDev = true;  // All clients get screen-v2 with append-only log
+    ws._logPosition = 0;  // Track log cursor for incremental sync
     const sessionId = url.searchParams.get('session') || 'default';
     const projectName = url.searchParams.get('project') || '';
     const cwd = url.searchParams.get('cwd') || 'C:\\Users\\tzuri\\Desktop';
@@ -161,6 +164,12 @@ async function startTerminalServer(httpServer) {
           case 'ping':
             ws.send(JSON.stringify({ type: 'pong' }));
             break;
+
+          case 'sync':
+            // Dev client requesting log from a position
+            ws._logPosition = parsed.logPosition || 0;
+            broadcastRenderedScreen(session, ws);
+            break;
         }
       } catch {}
     });
@@ -183,47 +192,73 @@ function broadcastRenderedScreen(session, singleClient) {
   const tRender = performance.now();
   const screenStr = screen.join('\n');
 
-  // Skip if screen hasn't changed (unless sending to a specific new client)
-  if (!singleClient && screenStr === session.lastRendered) return;
-  session.lastRendered = screenStr;
+  // Check if screen changed
+  const screenChanged = screenStr !== session.lastRendered;
+  // Check if log has new entries for any dev client
+  const currentLogSeq = session.term.logSeq;
+
+  // Skip if nothing changed (unless sending to a specific new client)
+  if (!singleClient && !screenChanged && currentLogSeq === (session.lastLogSeq || 0)) return;
+  if (screenChanged) session.lastRendered = screenStr;
+  session.lastLogSeq = currentLogSeq;
 
   // Only send scrollback when it changes or to new clients — not every frame
   const scrollbackLen = session.term.scrollback.length;
   const scrollbackChanged = scrollbackLen !== (session.lastScrollbackLen || 0);
   session.lastScrollbackLen = scrollbackLen;
 
+  // Build v1 payload for production clients
   const payload = {
     type: 'screen',
     lines: screen,
     cursor: { x: session.term.cx, y: session.term.cy },
     rows: session.term.rows,
     cols: session.term.cols,
-    _ts: Date.now(), // timestamp for client-side latency measurement
+    _ts: Date.now(),
     _perf: { render: +(tRender - t0).toFixed(2) },
   };
 
-  // Include scrollback only when it changed or for initial client sync
   if (singleClient || scrollbackChanged) {
     payload.scrollback = session.term.getScrollback();
   }
 
-  const tSerialize = performance.now();
   const msg = JSON.stringify(payload);
-  const tDone = performance.now();
-  payload._perf.serialize = +(tDone - tSerialize).toFixed(2);
-  payload._perf.total = +(tDone - t0).toFixed(2);
-  payload._perf.msgSize = msg.length;
 
   // Log slow frames
+  const tDone = performance.now();
   if (tDone - t0 > 10) {
-    console.log(`[PAN Terminal] Slow frame: render=${(tRender-t0).toFixed(1)}ms serialize=${(tDone-tSerialize).toFixed(1)}ms total=${(tDone-t0).toFixed(1)}ms size=${msg.length}`);
+    console.log(`[PAN Terminal] Slow frame: render=${(tRender-t0).toFixed(1)}ms total=${(tDone-t0).toFixed(1)}ms size=${msg.length}`);
+  }
+
+  function sendToClient(client) {
+    if (client.readyState !== 1) return;
+    if (client._panDev) {
+      // Dev client: send screen-v2 with incremental log
+      const logData = session.term.getLogSince(client._logPosition || 0);
+      const devPayload = {
+        type: 'screen-v2',
+        lines: screen,
+        cursor: { x: session.term.cx, y: session.term.cy },
+        rows: session.term.rows,
+        cols: session.term.cols,
+        altScreen: session.term.isAltScreen,
+        logLength: logData.length,
+        logSince: logData.fromSeq,
+        logLines: logData.lines,
+        _ts: Date.now(),
+      };
+      client.send(JSON.stringify(devPayload));
+      client._logPosition = logData.nextSeq;
+    } else {
+      client.send(msg);
+    }
   }
 
   if (singleClient) {
-    if (singleClient.readyState === 1) singleClient.send(msg);
+    sendToClient(singleClient);
   } else {
     for (const client of session.clients) {
-      if (client.readyState === 1) client.send(msg);
+      sendToClient(client);
     }
   }
 }

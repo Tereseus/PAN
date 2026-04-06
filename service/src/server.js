@@ -17,7 +17,7 @@
 import express from 'express';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import hooksRouter from './routes/hooks.js';
+import hooksRouter, { injectSessionContext } from './routes/hooks.js';
 import apiRouter from './routes/api.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
@@ -1072,7 +1072,7 @@ app.post('/api/v1/terminal/permissions/respond', (req, res) => {
 });
 
 // ==================== Test Runner API ====================
-import { runTests, getTestStatus, resumeRestartTest } from './routes/tests.js';
+import { runTests, getTestStatus, resumeRestartTest, cancelTests } from './routes/tests.js';
 
 // Storage for external test results (from test-restart.js and other external scripts)
 let externalResults = [];
@@ -1090,6 +1090,11 @@ app.post('/api/v1/tests/run', async (req, res) => {
   const { suite } = req.body || {};
   const result = await runTests(suite || 'all');
   res.json(result);
+});
+
+app.post('/api/v1/tests/cancel', (req, res) => {
+  const cancelled = cancelTests();
+  res.json({ ok: cancelled, message: cancelled ? 'Tests cancelled' : 'No tests running' });
 });
 
 // Accept results from external test scripts (like test-restart.js)
@@ -1167,6 +1172,18 @@ app.get('/api/v1/atlas/service/:id', (req, res) => {
   const svc = getServiceStatus(req.params.id);
   if (!svc) return res.status(404).json({ error: 'Service not found' });
   res.json(svc);
+});
+
+// Inject context into CLAUDE.md — called by frontend before launching Claude
+app.post('/api/v1/inject-context', async (req, res) => {
+  const { cwd } = req.body || {};
+  if (!cwd) return res.status(400).json({ error: 'cwd required' });
+  try {
+    injectSessionContext(cwd);
+    res.json({ ok: true, message: 'Context injected into CLAUDE.md' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/v1/context-briefing', async (req, res) => {

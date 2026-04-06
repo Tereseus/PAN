@@ -18,7 +18,7 @@ CheckDashboardMicTrigger() {
             FileDelete(panTriggerFile)
         }
         if (content = "winh") {
-            Send "#h"
+            SendInput "{LWin down}h{LWin up}"
         } else if (content = "dictate") {
             DoPanDictation()
         }
@@ -26,7 +26,10 @@ CheckDashboardMicTrigger() {
 }
 
 ; Back side button = Windows voice-to-text
-XButton1::Send "#h"
+XButton1:: {
+    KeyWait "XButton1"
+    Send "#h"
+}
 
 ; Forward side button = PAN Dictation
 XButton2:: {
