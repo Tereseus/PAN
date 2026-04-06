@@ -84,4 +84,8 @@ interface PanServerApi {
 
     @POST("/api/v1/tailscale/auto-auth")
     suspend fun getTailscaleAuthKey(@Body request: Map<String, String>): Response<Map<String, Any>>
+
+    // Telemetry — ship logs to server
+    @POST("/api/v1/logs")
+    suspend fun shipLogs(@Body logs: List<LogEntry>): Response<LogInsertResponse>
 }

@@ -1,8 +1,12 @@
 {
   "project_name": "service",
-  "last_session_id": "56cc0fa9-8efb-47d2-97dc-8a57159dd6eb",
-  "last_session_time": "2026-04-05T21:37:23.705Z",
+  "last_session_id": "6aa459d0-f541-440d-88ec-b733f3612562",
+  "last_session_time": "2026-04-06T13:06:56.417Z",
   "session_history": [
+    {
+      "id": "6aa459d0-f541-440d-88ec-b733f3612562",
+      "time": "2026-04-06T13:06:56.417Z"
+    },
     {
       "id": "56cc0fa9-8efb-47d2-97dc-8a57159dd6eb",
       "time": "2026-04-05T21:37:23.705Z"
@@ -38,10 +42,6 @@
     {
       "id": "df96eecb-5321-41b9-b1db-9743ad40e737",
       "time": "2026-04-05T13:45:56.537Z"
-    },
-    {
-      "id": "25003729-6b90-4911-9adb-e54c210679a6",
-      "time": "2026-04-05T13:37:28.056Z"
     }
   ]
 }

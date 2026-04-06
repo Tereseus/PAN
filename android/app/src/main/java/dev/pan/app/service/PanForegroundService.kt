@@ -28,6 +28,7 @@ import dev.pan.app.MainActivity
 import dev.pan.app.audio.FeedbackSounds
 import dev.pan.app.camera.CameraCapture
 import dev.pan.app.data.DataRepository
+import dev.pan.app.network.LogShipper
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.network.SyncManager
 import dev.pan.app.network.dto.AudioUpload
@@ -51,6 +52,7 @@ class PanForegroundService : Service() {
 
     @Inject lateinit var serverClient: PanServerClient
     @Inject lateinit var syncManager: SyncManager
+    @Inject lateinit var logShipper: LogShipper
     @Inject lateinit var dataRepository: DataRepository
     @Inject lateinit var sttEngine: GoogleStreamingStt
     @Inject lateinit var feedbackSounds: FeedbackSounds
@@ -94,18 +96,11 @@ class PanForegroundService : Service() {
         }
     }
 
-    // Persistent log — sends to PAN server so logs are always available
+    // Persistent log — ships to PAN server via batched telemetry endpoint
     private fun panLog(msg: String) {
         Log.i(TAG, msg)
-        serviceScope.launch {
-            try {
-                serverClient.sendAudio(AudioUpload(
-                    transcript = msg,
-                    timestamp = System.currentTimeMillis(),
-                    duration_ms = 0,
-                    source = "phone_log"
-                ))
-            } catch (_: Exception) {}
+        if (::logShipper.isInitialized) {
+            logShipper.info("service", msg)
         }
     }
 
@@ -223,6 +218,7 @@ class PanForegroundService : Service() {
         panLog("Sensors started")
 
         acquireWakeLock()
+        logShipper.start()
         serviceScope.launch { syncManager.start() }
 
         // Notification updater
@@ -315,15 +311,8 @@ class PanForegroundService : Service() {
 
     // Log every command to the server so it's always visible for debugging
     private fun logToServer(text: String, intent: String, result: String, handledBy: String) {
-        serviceScope.launch {
-            try {
-                serverClient.sendAudio(AudioUpload(
-                    transcript = "[$handledBy|$intent] $text -> $result",
-                    timestamp = System.currentTimeMillis(),
-                    duration_ms = 0,
-                    source = "phone_command_log"
-                ))
-            } catch (_: Exception) {}
+        if (::logShipper.isInitialized) {
+            logShipper.info("command", "[$handledBy|$intent] $text -> $result")
         }
     }
 
@@ -1419,6 +1408,7 @@ class PanForegroundService : Service() {
         sttEngine.destroy()
         mainHandler.post { tts.destroy() }
         syncManager.stop()
+        logShipper.stop()
         sensorContext.stop()
         try { unregisterReceiver(screenOffReceiver) } catch (_: Exception) {}
         releaseWakeLock()
