@@ -7,7 +7,6 @@ const state = $state({
 	chatMessages: new Map(), // keyed by project id
 	chatInput: '',
 	chatImages: [], // pasted images survive tab switches
-	terminalInput: '', // terminal input survives tab switches
 	starredProjects: new Set(JSON.parse(localStorage.getItem('pan_starred_projects') || '[]')),
 });
 
@@ -53,14 +52,6 @@ export function getChatImages() {
 
 export function setChatImages(imgs) {
 	state.chatImages = imgs;
-}
-
-export function getTerminalInput() {
-	return state.terminalInput;
-}
-
-export function setTerminalInput(v) {
-	state.terminalInput = v;
 }
 
 export function isStarred(projectId) {
