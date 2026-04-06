@@ -228,11 +228,8 @@ class GoogleStreamingStt @Inject constructor(
                         else -> "UNKNOWN($error)"
                     }
 
-                    // NO_MATCH and SPEECH_TIMEOUT are normal — just means silence
-                    if (error != SpeechRecognizer.ERROR_NO_MATCH &&
-                        error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                        log("Error: $errorName")
-                    }
+                    // Log ALL errors for debugging (NO_MATCH/SPEECH_TIMEOUT are normal but still useful to know)
+                    log("Error: $errorName")
 
                     // Always restart
                     restartListening()
@@ -246,6 +243,7 @@ class GoogleStreamingStt @Inject constructor(
             })
 
             recognizer?.startListening(createRecognizerIntent())
+            log("Recognizer started (available=${SpeechRecognizer.isRecognitionAvailable(context)})")
         } catch (e: Exception) {
             log("Failed to start: ${e.message}")
             // Retry after delay

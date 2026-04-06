@@ -60,3 +60,4 @@ STRATEGY.md
 # Temp
 *.tmp
 *.log
+service/models/

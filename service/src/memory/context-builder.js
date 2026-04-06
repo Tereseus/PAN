@@ -21,16 +21,13 @@ async function buildContext(query, { tokenBudget = 50000, projectId = null } = {
   const sections = [];
 
   // 1. Semantic facts — user preferences, domain knowledge, codebase facts
-  // Only include high-quality facts (not raw voice transcription dumps)
-  const facts = await semantic.recall(query, { limit: 15 });
+  const facts = await semantic.recall(query, { limit: 30 });
   if (facts.length > 0) {
     let factsText = '## Known Facts\n';
     for (const f of facts) {
-      if (f.similarity < 0.4) continue; // higher threshold — skip loosely related facts
-      // Skip garbage: raw voice dumps are usually very long objects with casual speech patterns
-      if (f.object && f.object.length > 100) continue;
+      if (f.similarity < 0.3) continue; // skip irrelevant facts
       const line = `- **${f.subject}** ${f.predicate} ${f.object}${f.description ? ` — ${f.description}` : ''} (${f.category}, confidence: ${f.confidence})\n`;
-      if (used + estimateTokens(line) > tokenBudget * 0.3) break; // cap facts at 30% of budget
+      if (used + estimateTokens(line) > tokenBudget * 0.4) break; // cap facts at 40% of budget
       factsText += line;
       used += estimateTokens(line);
     }

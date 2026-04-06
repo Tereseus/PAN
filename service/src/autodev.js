@@ -6,7 +6,7 @@
 // Safety: ALL jobs off by default. Must be explicitly enabled per-project.
 // Changes are NOT auto-committed — user must review and approve.
 
-import { all, get, insert, run } from './db.js';
+import { all, get, run, logEvent } from './db.js';
 import { spawn } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -159,20 +159,16 @@ async function autodev() {
     const result = await executeTask(task, config);
 
     // Log the result
-    insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-      ':sid': 'autodev-' + Date.now(),
-      ':type': 'AutoDevCycle',
-      ':data': JSON.stringify({
-        task_id: task.id,
-        task_title: task.title,
-        project: task.project_name,
-        project_path: task.project_path,
-        success: result.ok,
-        output: result.output,
-        error: result.error,
-        elapsed_seconds: result.elapsed,
-        timestamp: Date.now()
-      })
+    logEvent('autodev-' + Date.now(), 'AutoDevCycle', {
+      task_id: task.id,
+      task_title: task.title,
+      project: task.project_name,
+      project_path: task.project_path,
+      success: result.ok,
+      output: result.output,
+      error: result.error,
+      elapsed_seconds: result.elapsed,
+      timestamp: Date.now()
     });
 
     if (result.ok) {

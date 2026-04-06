@@ -1,26 +1,25 @@
-// PAN Auto-Dream — living project state maintenance
+// PAN Dream Cycle — evolution pipeline + state maintenance
 //
-// Runs periodically to review recent events and REWRITE a single living
-// state document (.pan-state.md). No more appending rows to a database —
-// one file, always current, always accurate.
+// Runs periodically (every 6h). Two phases:
+//   1. Evolution pipeline — observe/critique/generate/validate/apply config changes
+//   2. State update — rewrite the living .pan-state.md document
+//
+// The evolution pipeline also triggers memory consolidation (episodic/semantic/procedural).
 
-import { all, get, insert } from './db.js';
-import { consolidate as consolidateMemory } from './memory/consolidation.js';
-import { evolve } from './evolution/engine.js';
+import { all, get, logEvent } from './db.js';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { evolve } from './evolution/engine.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let dreamInterval = null;
+let lastDreamTime = 0;
+const MIN_DREAM_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours minimum between dreams
 
-// State file goes in PROJECT ROOT (where CLAUDE.md lives)
-// inject-context.cjs reads from project root, dream writes there too
-// Write to BOTH locations for compatibility (server reads from cwd, hook reads from project root)
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-const __dreamDirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = join(__dreamDirname, '..', '..');
-const STATE_FILE = join(PROJECT_ROOT, '.pan-state.md');
-const SERVICE_STATE_FILE = join(__dreamDirname, '..', '.pan-state.md');
+// State file lives in the PAN project root (service/../), not process.cwd()
+const STATE_FILE = join(__dirname, '..', '..', '.pan-state.md');
 
 function readCurrentState() {
   try {
@@ -30,9 +29,22 @@ function readCurrentState() {
 }
 
 async function dream() {
-  console.log('[PAN Dream] Starting state update...');
+  // Guard against restart storms — minimum 4h between dream cycles
+  const now = Date.now();
+  if (now - lastDreamTime < MIN_DREAM_INTERVAL) {
+    console.log(`[PAN Dream] Skipping — last dream was ${Math.round((now - lastDreamTime) / 60000)}m ago (min ${MIN_DREAM_INTERVAL / 3600000}h)`);
+    return;
+  }
+
+  console.log('[PAN Dream] Starting dream cycle...');
 
   try {
+    // === Phase 1: Evolution Pipeline ===
+    // Runs observe/critique/generate/validate/apply + memory consolidation
+    const evolutionResult = await evolve();
+    console.log(`[PAN Dream] Evolution: ${evolutionResult.status}${evolutionResult.applied?.length ? ` (${evolutionResult.applied.join(', ')})` : ''}`);
+
+    // === Phase 2: State Document Update ===
     const { claude } = await import('./claude.js');
 
     // Get events since last dream (or last 12 hours)
@@ -42,13 +54,15 @@ async function dream() {
     const events = all(
       `SELECT id, event_type, data, created_at FROM events
        WHERE created_at > :since
-       AND event_type NOT IN ('SessionStart', 'SessionEnd', 'DreamCycle', 'MobileSend')
+       AND event_type NOT IN ('SessionStart', 'SessionEnd', 'DreamCycle', 'EvolutionCycle', 'MobileSend')
        ORDER BY created_at ASC`,
       { ':since': since }
     );
 
     if (events.length < 5) {
-      console.log(`[PAN Dream] Only ${events.length} events since last dream — skipping`);
+      console.log(`[PAN Dream] Only ${events.length} events since last dream — skipping state update`);
+      lastDreamTime = Date.now();
+      logDreamCycle(events.length, 0, evolutionResult);
       return;
     }
 
@@ -78,7 +92,9 @@ async function dream() {
     }
 
     if (entries.length < 3) {
-      console.log(`[PAN Dream] Only ${entries.length} meaningful entries — skipping`);
+      console.log(`[PAN Dream] Only ${entries.length} meaningful entries — skipping state update`);
+      lastDreamTime = Date.now();
+      logDreamCycle(events.length, entries.length, evolutionResult);
       return;
     }
 
@@ -89,7 +105,6 @@ async function dream() {
       context += entry + '\n\n';
     }
 
-    // Read existing state file
     const currentState = readCurrentState();
 
     // Ask Haiku to rewrite the state document
@@ -123,75 +138,53 @@ CRITICAL RULES:
 - This document should be SHORT — under 80 lines total.
 
 Output ONLY the markdown document, nothing else.`,
-      { maxTokens: 3000, timeout: 60000, caller: 'dream' }
+      { model: 'claude-haiku-4-5-20251001', maxTokens: 3000, timeout: 60000, caller: 'dream' }
     );
 
     if (!result || result.length < 50) {
       console.log('[PAN Dream] Haiku response too short, skipping state update');
+      lastDreamTime = Date.now();
       return;
     }
 
-    // Write the new state file to project root (where inject-context.cjs reads it)
     writeFileSync(STATE_FILE, result, 'utf8');
-    // Also write to service dir (where server reads it via process.cwd())
-    try { writeFileSync(SERVICE_STATE_FILE, result, 'utf8'); } catch {}
-    console.log(`[PAN Dream] State file updated (${result.length} chars) from ${entries.length} events → ${STATE_FILE}`);
+    lastDreamTime = Date.now();
+    console.log(`[PAN Dream] State file updated (${result.length} chars) from ${entries.length} events`);
 
-    // Consolidate vector memories from recent events
-    try {
-      await consolidateMemory({ useLLM: false });
-      console.log('[PAN Dream] Memory consolidation complete');
-    } catch (memErr) {
-      console.error('[PAN Dream] Memory consolidation failed:', memErr.message);
-    }
-
-    // Run evolution pipeline if enabled (default OFF)
-    try {
-      let evolutionEnabled = false;
-      try {
-        const toggleRow = get("SELECT value FROM settings WHERE key = 'feature_toggles'");
-        if (toggleRow) {
-          const toggles = JSON.parse(toggleRow.value);
-          evolutionEnabled = toggles.evolution === true;
-        }
-      } catch {}
-
-      if (evolutionEnabled) {
-        console.log('[PAN Dream] Triggering evolution cycle...');
-        const evoResult = await evolve();
-        console.log(`[PAN Dream] Evolution result: ${evoResult.status} (applied: ${evoResult.applied?.join(', ') || 'none'})`);
-      } else {
-        console.log('[PAN Dream] Evolution disabled by toggle — skipping');
-      }
-    } catch (evoErr) {
-      console.error('[PAN Dream] Evolution failed:', evoErr.message);
-    }
-
-    // Log the dream cycle
-    insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-      ':sid': 'system-dream',
-      ':type': 'DreamCycle',
-      ':data': JSON.stringify({
-        events_reviewed: events.length,
-        entries_processed: entries.length,
-        state_file_size: result.length,
-        since,
-        timestamp: Date.now()
-      })
-    });
+    logDreamCycle(events.length, entries.length, evolutionResult, result.length);
 
   } catch (err) {
     console.error('[PAN Dream] Error:', err.message);
   }
 }
 
+function logDreamCycle(eventsCount, entriesCount, evolutionResult, stateSize = 0) {
+  logEvent('system-dream', 'DreamCycle', {
+    events_reviewed: eventsCount,
+    entries_processed: entriesCount,
+    state_file_size: stateSize,
+    evolution: evolutionResult,
+    timestamp: Date.now()
+  });
+}
+
 function startDream(intervalMs = 6 * 60 * 60 * 1000) {
+  // Initialize lastDreamTime from DB so we respect interval across restarts
+  try {
+    const lastDreamRow = get("SELECT MAX(created_at) as t FROM events WHERE event_type = 'DreamCycle'");
+    if (lastDreamRow?.t) {
+      lastDreamTime = new Date(lastDreamRow.t).getTime();
+      const ago = Math.round((Date.now() - lastDreamTime) / 60000);
+      console.log(`[PAN Dream] Last dream was ${ago}m ago`);
+    }
+  } catch {}
+
   // Run first dream after 2 minutes (let other systems settle)
   setTimeout(() => {
     dream();
     dreamInterval = setInterval(dream, intervalMs);
   }, 120000);
-  console.log(`[PAN Dream] Scheduled every ${Math.round(intervalMs / 3600000)}h`);
+  console.log(`[PAN Dream] Scheduled every ${Math.round(intervalMs / 3600000)}h, state file: ${STATE_FILE}`);
 }
 
 function stopDream() {

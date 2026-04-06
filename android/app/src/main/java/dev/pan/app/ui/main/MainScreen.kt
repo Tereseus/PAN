@@ -29,6 +29,7 @@ fun MainScreen(
     val isServerConnected by viewModel.isServerConnected.collectAsState()
     val isMicEnabled by viewModel.isMicEnabled.collectAsState()
     val lastAction by viewModel.lastAction.collectAsState()
+    val sttStatus by viewModel.sttStatus.collectAsState()
     val pendingCount by viewModel.pendingCount.collectAsState()
     val deviceTarget by viewModel.deviceTarget.collectAsState()
     val devices by viewModel.devices.collectAsState()
@@ -125,14 +126,16 @@ fun MainScreen(
                 }
             }
 
-            // Last action
-            if (lastAction.isNotEmpty()) {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Last action", style = MaterialTheme.typography.labelSmall,
+            // Last action / STT status — always visible
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    if (lastAction.isNotEmpty()) {
+                        Text("Last Action", style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(lastAction, style = MaterialTheme.typography.bodyMedium)
                     }
+                    Text("STT: $sttStatus", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
