@@ -408,6 +408,7 @@
 			_closing: false,
 			claudeSessionIds: savedClaudeSessionIds || [],
 			userScrolledUp: false,
+			logLines: [],       // Append-only log from server (immune to corruption)
 		};
 
 		// Track if user has scrolled up (don't auto-scroll if so)
@@ -460,34 +461,28 @@
 					const tRecv = performance.now();
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
-						case 'screen': {
-							// Server sends pre-rendered HTML lines — diff per-line to avoid DOM thrashing
+						case 'screen-v2': {
+							// Append-only log system — scrollback from immutable log, viewport from live screen
 							const scrollHeightBefore = tabData.userScrolledUp ? tabContainer.scrollHeight : 0;
-							if (msg.scrollback && msg.scrollback.length > 0) {
-								// Append only new scrollback lines instead of replacing all
-								const newLines = msg.scrollback;
-								const prevScrollbackLen = parseInt(scrollbackDiv.dataset.len || '0');
-								if (newLines.length > prevScrollbackLen) {
-									const toAdd = newLines.slice(prevScrollbackLen);
-									scrollbackDiv.insertAdjacentHTML('beforeend', (prevScrollbackLen > 0 ? '\n' : '') + toAdd.join('\n'));
-								} else if (newLines.length < prevScrollbackLen) {
-									// Scrollback was reset — full replace
-									scrollbackDiv.innerHTML = newLines.join('\n');
+
+							if (msg.logLines && msg.logLines.length > 0) {
+								tabData.logLines.push(...msg.logLines);
+								if (tabData.logLines.length > 5000) {
+									tabData.logLines = tabData.logLines.slice(-5000);
+									scrollbackDiv.innerHTML = tabData.logLines.join('\n');
+								} else {
+									scrollbackDiv.insertAdjacentHTML('beforeend',
+										(tabData.logLines.length > msg.logLines.length ? '\n' : '') + msg.logLines.join('\n'));
 								}
-								scrollbackDiv.dataset.len = String(newLines.length);
 							}
 
+							// Live viewport — per-line diffing
 							const lines = msg.lines;
-
-							// If screenDiv has non-div children (status messages appended as text/spans),
-							// rebuild cleanly so children[] indexing works
 							if (screenDiv.childNodes.length !== screenDiv.children.length ||
 								screenDiv.children.length === 0) {
 								screenDiv.innerHTML = '';
 								prevLines = [];
 							}
-
-							// Ensure correct number of line divs
 							while (screenDiv.children.length < lines.length) {
 								const div = document.createElement('div');
 								screenDiv.appendChild(div);
@@ -495,7 +490,6 @@
 							while (screenDiv.children.length > lines.length) {
 								screenDiv.removeChild(screenDiv.lastChild);
 							}
-							// Only update lines that changed
 							let linesChanged = 0;
 							for (let li = 0; li < lines.length; li++) {
 								if (lines[li] !== prevLines[li]) {
@@ -509,31 +503,48 @@
 							const tDom = performance.now();
 							const wsLatency = msg._ts ? (Date.now() - msg._ts) : -1;
 							const domTime = +(tDom - tRecv).toFixed(1);
-							const serverPerf = msg._perf || {};
 							updatePerfOverlay({
 								wsLatency,
 								domTime,
 								linesChanged,
-								serverRender: serverPerf.render || 0,
-								serverSerialize: serverPerf.serialize || 0,
-								serverTotal: serverPerf.total || 0,
-								msgSize: serverPerf.msgSize || event.data.length,
+								serverRender: 0,
+								serverSerialize: 0,
+								serverTotal: 0,
+								msgSize: event.data.length,
 							});
 
-							// Auto-scroll to bottom unless user scrolled up
+							// Auto-scroll
 							if (!tabData.userScrolledUp) {
 								tabContainer.scrollTop = tabContainer.scrollHeight;
 							} else if (scrollHeightBefore > 0) {
-								// User is reading scrollback — new scrollback lines push content down
-								// Adjust scrollTop so their view stays on the same content
 								const scrollHeightAfter = tabContainer.scrollHeight;
 								const delta = scrollHeightAfter - scrollHeightBefore;
-								if (delta > 0) {
-									tabContainer.scrollTop += delta;
-								}
+								if (delta > 0) tabContainer.scrollTop += delta;
 							}
 
-							// Detect if buffer has content (for auto-launch logic)
+							if (!hasExistingBuffer && msg.lines.some(l => l.trim().length > 0)) {
+								hasExistingBuffer = true;
+							}
+							break;
+						}
+						case 'screen': {
+							// Legacy v1 fallback
+							const scrollHeightBefore2 = tabData.userScrolledUp ? tabContainer.scrollHeight : 0;
+							if (msg.scrollback && msg.scrollback.length > 0) {
+								const newLines = msg.scrollback;
+								const prevScrollbackLen = parseInt(scrollbackDiv.dataset.len || '0');
+								if (newLines.length > prevScrollbackLen) {
+									const toAdd = newLines.slice(prevScrollbackLen);
+									scrollbackDiv.insertAdjacentHTML('beforeend', (prevScrollbackLen > 0 ? '\n' : '') + toAdd.join('\n'));
+								} else if (newLines.length < prevScrollbackLen) {
+									scrollbackDiv.innerHTML = newLines.join('\n');
+								}
+								scrollbackDiv.dataset.len = String(newLines.length);
+							}
+							screenDiv.innerHTML = (msg.lines || []).join('\n');
+							if (!tabData.userScrolledUp) {
+								tabContainer.scrollTop = tabContainer.scrollHeight;
+							}
 							if (!hasExistingBuffer && msg.lines.some(l => l.trim().length > 0)) {
 								hasExistingBuffer = true;
 							}
@@ -642,9 +653,27 @@
 						reconnectAttempts = 0;
 						serverRestarting = false;
 						tabData.ws = newWs;
-						prevLines = []; // Reset diff cache — server will send fresh screen
+						tabData.claudeStarted = false;
+						prevLines = [];
 						scrollbackDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
 						startPing();
+
+						// Relaunch Claude after reconnect (server restart = fresh PTY)
+						if (projectName && projectName !== 'Shell') {
+							setTimeout(async () => {
+								if (newWs.readyState !== 1 || tabData.claudeStarted) return;
+								tabData.claudeStarted = true;
+								try {
+									await api('/api/v1/inject-context', {
+										method: 'POST',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ cwd })
+									});
+									await new Promise(r => setTimeout(r, 300));
+								} catch {}
+								newWs.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+							}, 2000);
+						}
 					};
 					newWs.onmessage = handleMessage;
 					newWs.onclose = () => {
@@ -660,30 +689,38 @@
 			ws.onopen = () => {
 				startPing();
 
-				// Auto-launch Claude for project tabs
+				// Auto-launch Claude (PAN) for project tabs
 				if (projectName && projectName !== 'Shell') {
 					setTimeout(async () => {
-						if (ws.readyState === 1 && !tabData.claudeStarted && !hasExistingBuffer) {
-							tabData.claudeStarted = true;
-							let briefingReady = false;
-							try {
-								let briefingUrl = '/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd);
-								if (tabData.claudeSessionIds && tabData.claudeSessionIds.length > 0) {
-									briefingUrl += '&session_ids=' + encodeURIComponent(tabData.claudeSessionIds.join(','));
-								}
-								const briefingData = await fetch(briefingUrl).then(r => r.json());
-								if (briefingData.briefing) {
-									ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
-									briefingReady = true;
-									await new Promise(r => setTimeout(r, 500));
-								}
-							} catch {}
+						if (ws.readyState !== 1) return;
 
-							if (briefingReady) {
-								ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
-							} else {
-								ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
-							}
+						// Check if Claude is already running (❯ prompt visible)
+						await new Promise(r => setTimeout(r, 500));
+						const screenText = tabData.screenDiv ? tabData.screenDiv.textContent : '';
+						const lastLine = screenText.trim().split('\n').pop() || '';
+						if (lastLine.includes('❯')) {
+							tabData.claudeStarted = true;
+							return;
+						}
+
+						tabData.claudeStarted = true;
+
+						// Inject context into CLAUDE.md
+						let briefingReady = false;
+						try {
+							await api('/api/v1/inject-context', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ cwd })
+							});
+							briefingReady = true;
+							await new Promise(r => setTimeout(r, 300));
+						} catch {}
+
+						if (briefingReady) {
+							ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+						} else {
+							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
 						}
 					}, 1500);
 				}
@@ -982,6 +1019,9 @@
 	}
 
 	function handleTerminalInputKey(e) {
+		// Let Win+H pass through to Windows for voice typing
+		if (e.key === 'h' && e.metaKey) return;
+
 		const active = getActiveTab();
 		const ws = active?.ws?.readyState === 1 ? active.ws : null;
 
@@ -1286,30 +1326,35 @@
 	}
 
 	// --- Atlas ---
+	let atlasRefreshTimer = null;
 	async function loadAtlasData() {
-		atlasLoading = true;
+		atlasLoading = !atlasData; // only show loading on first load
 		try {
-			const [svcResp, jobsResp, statsResp, projResp] = await Promise.all([
+			const [svcResp, atlasResp, statsResp, projResp] = await Promise.all([
 				api('/dashboard/api/services'),
-				api('/dashboard/api/jobs'),
+				api('/api/v1/atlas/services'),
 				api('/dashboard/api/stats'),
 				api('/dashboard/api/projects'),
 			]);
-			atlasData = buildAtlasGraph(svcResp, jobsResp, statsResp, projResp);
+			atlasData = buildAtlasGraph(svcResp, atlasResp, statsResp, projResp);
 		} catch (e) {
 			console.error('Atlas load failed:', e);
 		}
 		atlasLoading = false;
+		// Auto-refresh every 30s
+		if (!atlasRefreshTimer) {
+			atlasRefreshTimer = setInterval(loadAtlasData, 30000);
+		}
 	}
 
-	function buildAtlasGraph(svcResp, jobsResp, statsResp, projResp) {
+	function buildAtlasGraph(svcResp, atlasResp, statsResp, projResp) {
 		const nodes = [];
 		const edges = [];
 		const nodeMap = {};
 		const zones = [];
 
-		function addNode(id, label, type, status, detail, group, x, y, description) {
-			const n = { id, label, type, status: status || 'unknown', detail: detail || '', group, x, y, description: description || '' };
+		function addNode(id, label, type, status, detail, group, x, y, description, navigate) {
+			const n = { id, label, type, status: status || 'unknown', detail: detail || '', group, x, y, description: description || '', navigate: navigate || null };
 			nodes.push(n);
 			nodeMap[id] = n;
 			return n;
@@ -1319,165 +1364,158 @@
 			zones.push({ id, label, x, y, w, h, color });
 		}
 
-		// ==================== ZONES ====================
-		// Layout: 1500x1000 viewBox — generous spacing, readable labels
-		//
-		//  ┌── Intelligence ─────────┐  ┌──── Core ────┐  ┌── Services ──────────┐
-		//  │ Claude Code             │  │              │  │ Dashboard   Steward  │
-		//  │ Task Router             │  │  PAN Server  │  │ Whisper     Tauri    │
-		//  │ WASM Fast   Token Cache │  │              │  │                      │
-		//  └─────────────────────────┘  └──────────────┘  └──────────────────────┘
-		//  ┌── Memory ─────────────────────────────────┐  ┌── Processing ────────┐
-		//  │ SQLite DB    Memory Hub    Embeddings     │  │ Classifier   Dream   │
-		//  │ Episodic   Semantic   Procedural          │  │ Consolidation  Evol  │
-		//  │ inject-ctx  hooks.js   Knowledge Graph    │  │ Event Workers        │
-		//  └───────────────────────────────────────────┘  └──────────────────────┘
-		//  ┌── Devices ──────────┐  ┌── Projects ────────┐
-		//  │ Phone    Desktop    │  │ PAN   WoE   Bot   │
-		//  └─────────────────────┘  └────────────────────┘
+		// Use Atlas API for rich service data (status, interval, lastRun, port, model)
+		const atlasSvcs = atlasResp?.services || [];
+		const atlasMap = Object.fromEntries(atlasSvcs.map(s => [s.id, s]));
 
-		addZone('z-intel', 'Intelligence', 20, 20, 500, 290, '#89b4fa');
-		addZone('z-core', 'Core', 540, 20, 260, 290, '#f5c2e7');
-		addZone('z-services', 'Services', 820, 20, 460, 290, '#a6e3a1');
-		addZone('z-memory', 'Memory', 20, 340, 780, 320, '#cba6f7');
-		addZone('z-processing', 'Processing', 820, 340, 460, 320, '#f9e2af');
-		addZone('z-devices', 'Devices', 20, 690, 380, 200, '#fab387');
-		addZone('z-projects', 'Projects', 420, 690, 380, 200, '#94e2d5');
+		// Dashboard services for device info
+		const dashServices = svcResp?.services || [];
+		const devices = dashServices.filter(s => s.category === 'Devices');
 
-		// Derive statuses from services data
-		const services = svcResp?.services || [];
-		const svcByName = Object.fromEntries(services.map(s => [s.name, s]));
-		const dreamUp = svcByName['Dream']?.status === 'up';
-		const stewardUp = svcByName['Steward']?.status === 'up';
-		const whisperUp = svcByName['Whisper']?.status === 'up';
-		const ollamaUp = false;
+		function svcStatus(id) {
+			const s = atlasMap[id];
+			if (!s) return 'unknown';
+			if (s.status === 'running') return 'up';
+			if (s.status === 'stopped') return 'idle';
+			if (s.status === 'down' || s.status === 'error') return 'down';
+			return 'unknown';
+		}
 
-		// Edge color constants per zone
+		function svcDetail(id) {
+			const s = atlasMap[id];
+			if (!s) return '';
+			const parts = [];
+			if (s.port) parts.push(`Port ${s.port}`);
+			if (s.interval) parts.push(`Every ${s.interval}`);
+			if (s.lastRun) {
+				const ago = Math.round((Date.now() - s.lastRun) / 60000);
+				parts.push(ago < 60 ? `${ago}m ago` : `${Math.round(ago/60)}h ago`);
+			}
+			if (s.modelTierLabel && s.modelTier !== 'none') parts.push(s.modelTierLabel);
+			return parts.join(' \u2014 ') || s.status;
+		}
+
 		const EC = {
 			intel: '#89b4fa', core: '#f5c2e7', svc: '#a6e3a1',
 			mem: '#cba6f7', proc: '#f9e2af', dev: '#fab387', proj: '#94e2d5'
 		};
 
-		// ==================== CORE ====================
-		addNode('pan-server', 'PAN Server', 'core', 'up', 'Port 7777 — Node.js/Express', 'core', 670, 170, 'The central PAN server (Node.js/Express). Runs on port 7777 as a Windows service. Handles all API requests, serves the dashboard, manages WebSocket connections for terminals, and coordinates all background services. File: service/src/server.js');
+		// ==================== ZONES ====================
+		addZone('z-core', 'Core', 20, 20, 340, 180, '#f5c2e7');
+		addZone('z-services', 'Services', 380, 20, 440, 180, '#a6e3a1');
+		addZone('z-processing', 'Processing', 840, 20, 440, 180, '#f9e2af');
+		addZone('z-memory', 'Memory', 20, 220, 560, 200, '#cba6f7');
+		addZone('z-intel', 'Intelligence', 600, 220, 340, 200, '#89b4fa');
+		addZone('z-devices', 'Devices', 960, 220, 320, 200, '#fab387');
+		addZone('z-projects', 'Projects', 20, 440, 560, 130, '#94e2d5');
 
-		// ==================== INTELLIGENCE ====================
-		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions via hooks', 'intel', 160, 100, 'Claude Code CLI sessions. PAN communicates via hooks (SessionStart, SessionEnd, UserPromptSubmit). inject-context.cjs runs as a command hook to inject memory into CLAUDE.md before each session. File: service/inject-context.cjs, service/src/routes/hooks.js');
-		addNode('task-router', 'Task Router', 'ai', 'down', 'Q-Learning \u2014 route to cheapest model', 'intel', 380, 100, 'Learned task router (planned). Uses Q-Learning to route requests to the cheapest capable handler: WASM fast-path for deterministic ops, Haiku for simple tasks, Opus for complex reasoning. Improves routing accuracy over time based on outcome feedback. Inspired by ruflo MoE router.');
-		addNode('wasm-fast', 'WASM Fast Path', 'ai', 'down', 'Deterministic ops \u2014 zero LLM cost', 'intel', 160, 220, 'WebAssembly fast-path for deterministic operations (planned). Handles regex commands, time/date, sensor reads, dashboard queries without any LLM call. <1ms response. Extends Claude subscription by skipping LLM for simple tasks. Inspired by ruflo Agent Booster.');
-		addNode('token-cache', 'Token Cache', 'ai', 'down', 'Cache + dedup \u2014 30-50% savings', 'intel', 380, 220, 'Token optimization layer (planned). Caches repeated query patterns, deduplicates context, batches similar requests. Target: 30-50% token reduction. Combines pattern retrieval, result caching at 95% hit rate, and optimal batching. Inspired by ruflo Token Optimizer.');
-		edges.push({ from: 'pan-server', to: 'task-router', label: 'routes', color: EC.core });
-		edges.push({ from: 'task-router', to: 'claude', label: 'complex', color: EC.intel });
-		edges.push({ from: 'task-router', to: 'wasm-fast', label: 'simple', color: EC.intel });
-		edges.push({ from: 'task-router', to: 'token-cache', label: 'cached?', color: EC.intel });
-		edges.push({ from: 'token-cache', to: 'claude', label: 'miss', color: EC.intel });
+		// ==================== CORE ====================
+		addNode('pan-server', 'PAN Server', 'core', 'up',
+			statsResp ? `${statsResp.total_events} events, ${statsResp.total_sessions} sessions` : 'Port 7777',
+			'core', 110, 80, 'Central PAN server on port 7777. Node.js/Express.', { page: 'settings' });
+		addNode('database', 'SQLite DB', 'data', 'up',
+			statsResp ? `${(statsResp.db_size_bytes / 1048576).toFixed(1)}MB encrypted` : 'SQLCipher',
+			'core', 280, 80, 'SQLCipher AES-256 encrypted database.', { page: 'data' });
+		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'core', 110, 150, 'Svelte dashboard with terminal, chat, atlas.', null);
+		addNode('tauri', 'Tauri Shell', 'ui', 'up', 'Port 7790 \u2014 desktop app', 'core', 280, 150, 'Lightweight native desktop shell.', null);
 
 		// ==================== SERVICES ====================
-		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'services', 940, 100, 'Svelte v2 dashboard served at /v2/. The Tauri app loads this. Contains Terminal, Chat, Atlas, and all panel widgets. Source: service/dashboard/src/routes/');
-		addNode('steward', 'Steward', 'service', stewardUp ? 'up' : 'down', 'Health monitor every 30s', 'services', 1160, 100, 'Health monitor (watchdog.ps1). Checks every 30s: PAN server, Whisper, AHK Voice. Restarts services if down. Cleans Tailscale ghost devices. File: service/src/watchdog.ps1');
-		addNode('whisper', 'Whisper', 'service', whisperUp ? 'up' : 'warn', 'Port 7782 \u2014 voice transcription', 'services', 940, 220, 'Whisper voice transcription server on port 7782. Converts WebM audio to WAV then transcribes. Handles voice-to-text for dashboard and phone input. File: service/src/whisper-server.py');
-		addNode('tauri', 'Tauri Shell', 'ui', 'up', 'Port 7790 \u2014 desktop app', 'services', 1160, 220, 'Tauri desktop shell running on port 7790 with PAN \u03A0 icon. Lightweight native window (~5MB) replacing Electron. Handles window management and IPC.');
+		addNode('steward', 'Steward', 'service', svcStatus('pan-server'), svcDetail('pan-server') || 'Health monitor',
+			'services', 470, 80, 'Monitors all services, auto-restarts on failure. Heartbeat every 60s.', { page: 'services' });
+		addNode('whisper', 'Whisper STT', 'service', svcStatus('whisper'), svcDetail('whisper') || 'Port 7782',
+			'services', 660, 80, 'faster-whisper voice transcription on port 7782.', null);
+		addNode('ahk', 'Voice Hotkeys', 'service', svcStatus('ahk'), svcDetail('ahk') || 'AHK',
+			'services', 470, 150, 'AutoHotkey voice dictation hotkeys.', null);
+		addNode('ollama', 'Ollama', 'service', svcStatus('ollama'), svcDetail('ollama') || 'Port 11434',
+			'services', 660, 150, 'Local model server for embeddings.', null);
+		addNode('tailscale', 'Tailscale', 'service', svcStatus('tailscale'), 'VPN mesh',
+			'services', 565, 150, 'Encrypted VPN tunnel for remote access.', null);
 
-		// Dynamic services from API (ones not already placed)
-		const placedServices = new Set(['PAN Server', 'Steward', 'Whisper', 'Dashboard']);
-		const extraServices = services.filter(s => s.category === 'PAN Core' && !placedServices.has(s.name));
-		extraServices.forEach((s, i) => {
-			const x = 940 + (i % 2) * 220;
-			const y = 220 + Math.floor(i / 2) * 70;
-			if (y < 310) {
-				addNode(`svc-${s.name}`, s.name, 'service', s.status === 'up' ? 'up' : s.status === 'offline' ? 'down' : 'unknown', s.detail, 'services', x, y, s.detail || s.name);
-				edges.push({ from: 'pan-server', to: `svc-${s.name}`, label: '', color: EC.svc });
-			}
-		});
+		edges.push({ from: 'steward', to: 'whisper', label: 'monitors', color: EC.svc });
+		edges.push({ from: 'steward', to: 'ahk', label: 'launches', color: EC.svc });
+		edges.push({ from: 'steward', to: 'ollama', label: 'checks', color: EC.svc });
+		edges.push({ from: 'pan-server', to: 'steward', label: '', color: EC.core });
+		edges.push({ from: 'pan-server', to: 'whisper', label: 'transcribe', color: EC.core });
+		edges.push({ from: 'pan-server', to: 'dashboard', label: 'serves', color: EC.core });
+		edges.push({ from: 'pan-server', to: 'tauri', label: 'IPC', color: EC.core });
+		edges.push({ from: 'pan-server', to: 'database', label: '', color: EC.core });
 
-		edges.push({ from: 'pan-server', to: 'dashboard', label: 'serves', color: EC.svc });
-		edges.push({ from: 'steward', to: 'pan-server', label: 'monitors', color: EC.svc });
-		edges.push({ from: 'pan-server', to: 'whisper', label: 'transcribe', color: EC.svc });
-		edges.push({ from: 'pan-server', to: 'tauri', label: 'IPC', color: EC.svc });
+		// ==================== PROCESSING ====================
+		addNode('classifier', 'Classifier', 'process', svcStatus('classifier'), svcDetail('classifier'),
+			'processing', 940, 80, 'Marks events as processed every 5 minutes.', null);
+		addNode('dream-cycle', 'Dream Cycle', 'process', svcStatus('dream'), svcDetail('dream'),
+			'processing', 1130, 80, 'Rewrites .pan-state.md every 6 hours.', null);
+		addNode('consolidation', 'Consolidation', 'process', svcStatus('consolidation'), svcDetail('consolidation'),
+			'processing', 940, 150, 'Extracts episodic/semantic/procedural memories.', null);
+		addNode('evolution', 'Evolution', 'process', svcStatus('evolution'), svcDetail('evolution'),
+			'processing', 1130, 150, '6-step config optimization pipeline.', null);
+
+		edges.push({ from: 'database', to: 'classifier', label: 'events', color: EC.proc });
+		edges.push({ from: 'classifier', to: 'dream-cycle', label: 'triggers', color: EC.proc });
+		edges.push({ from: 'dream-cycle', to: 'consolidation', label: '', color: EC.proc });
+		edges.push({ from: 'dream-cycle', to: 'evolution', label: '', color: EC.proc });
 
 		// ==================== MEMORY ====================
-		addNode('database', 'SQLite DB', 'data', 'up', statsResp ? `${statsResp.total_events || 0} events, ${statsResp.total_sessions || 0} sessions` : 'Encrypted SQLCipher', 'memory', 120, 420, 'SQLite database encrypted with SQLCipher (AES-256-CBC). Tables: events, sessions, projects, memory_items, episodic_memories, semantic_facts, procedural_memories, devices, settings. FTS5 search index on events. File: service/src/db.js, service/src/schema.sql');
-		addNode('memory-hub', 'Memory Hub', 'memory', 'up', 'Vector stores + context builder', 'memory', 370, 420, 'Unified memory system with three vector stores (episodic, semantic, procedural). Context builder assembles memories for injection into Claude sessions with a token budget. File: service/src/memory/index.js, service/src/memory/context-builder.js');
-		addNode('embeddings', 'Local Embeddings', 'memory', ollamaUp ? 'up' : 'warn', ollamaUp ? 'ONNX MiniLM (384D)' : 'Keyword fallback (no ONNX yet)', 'memory', 640, 420, 'Vector embedding layer (migration planned). Target: ONNX Runtime with MiniLM model for local embeddings \u2014 75x faster than API, zero token cost, 384 dimensions. Currently falls back to keyword hash vectors. Inspired by ruflo. File: service/src/memory/embeddings.js');
-		addNode('mem-episodic', 'Episodic', 'memory', 'up', 'Events, outcomes, importance', 'memory', 160, 540, 'Stores what happened \u2014 events, outcomes, importance scores (0-1). Hybrid recall scoring: vector similarity + recency + importance. Updated by consolidation after dream cycles. File: service/src/memory/episodic.js');
-		addNode('mem-semantic', 'Semantic', 'memory', 'up', 'Subject/predicate/object triples', 'memory', 400, 540, 'Knowledge graph of subject/predicate/object triples. Auto-detects contradictions \u2014 when a new fact conflicts (>0.85 cosine similarity), old fact is superseded with version tracking. File: service/src/memory/semantic.js');
-		addNode('mem-procedural', 'Procedural', 'memory', 'up', 'Workflows, success/failure rates', 'memory', 640, 540, 'Learned multi-step workflows with success/failure tracking. Recall weighted 60% vector similarity + 40% success rate. Steps stored as JSON arrays. File: service/src/memory/procedural.js');
-		addNode('knowledge-graph', 'Knowledge Graph', 'memory', 'down', 'PageRank \u2014 surface key insights', 'memory', 400, 620, 'Knowledge graph with PageRank analysis (planned). Connects conversations \u2192 projects \u2192 decisions \u2192 outcomes. Uses community detection to surface influential insights and trace decision chains. Builds on semantic memory triples. Inspired by ruflo Knowledge Graph.');
-		addNode('inject-local', 'inject-context', 'process', 'up', 'Hook \u2192 CLAUDE.md (before read)', 'memory', 160, 620, 'Path A \u2014 command hook that runs BEFORE Claude reads CLAUDE.md. Reads .pan-state.md + Claude auto-memory files. Injects between PAN-CONTEXT markers. File: service/inject-context.cjs');
-		addNode('inject-server', 'hooks.js', 'process', 'up', 'HTTP hook \u2192 CLAUDE.md (after read)', 'memory', 640, 620, 'Path B \u2014 HTTP hook that runs AFTER Claude reads CLAUDE.md (invisible to current session). Richer data: vector memory + tasks + conversation history. File: service/src/routes/hooks.js');
+		addNode('memory-hub', 'Memory Hub', 'memory', 'up', 'Vector stores + context builder',
+			'memory', 120, 290, 'Assembles memories for Claude session injection.', null);
+		addNode('mem-episodic', 'Episodic', 'memory', 'up', 'Events + outcomes',
+			'memory', 300, 290, 'What happened. Importance-weighted recall.', null);
+		addNode('mem-semantic', 'Semantic', 'memory', 'up', 'Knowledge triples',
+			'memory', 450, 290, 'Subject/predicate/object facts with contradiction detection.', null);
+		addNode('embeddings', 'Embeddings', 'memory', svcStatus('embeddings'), svcDetail('embeddings') || 'Keyword fallback',
+			'memory', 300, 370, 'Vector encoding for memory search.', null);
+		addNode('inject-ctx', 'Context Inject', 'process', 'up', 'CLAUDE.md \u2190 memory',
+			'memory', 120, 370, 'Injects memory into CLAUDE.md before each session.', null);
+		addNode('mem-procedural', 'Procedural', 'memory', 'up', 'Learned workflows',
+			'memory', 450, 370, 'Multi-step procedures with success tracking.', null);
 
-		edges.push({ from: 'pan-server', to: 'database', label: 'read/write', color: EC.core });
-		edges.push({ from: 'database', to: 'memory-hub', label: 'feeds', color: EC.mem });
-		edges.push({ from: 'pan-server', to: 'memory-hub', label: 'manages', color: EC.core });
+		edges.push({ from: 'pan-server', to: 'memory-hub', label: '', color: EC.core });
 		edges.push({ from: 'memory-hub', to: 'mem-episodic', label: '', color: EC.mem });
 		edges.push({ from: 'memory-hub', to: 'mem-semantic', label: '', color: EC.mem });
 		edges.push({ from: 'memory-hub', to: 'mem-procedural', label: '', color: EC.mem });
-		edges.push({ from: 'mem-episodic', to: 'embeddings', label: 'vector', color: EC.mem });
-		edges.push({ from: 'mem-semantic', to: 'embeddings', label: 'vector', color: EC.mem });
-		edges.push({ from: 'mem-procedural', to: 'embeddings', label: 'vector', color: EC.mem });
-		edges.push({ from: 'mem-semantic', to: 'knowledge-graph', label: 'triples', color: EC.mem });
-		edges.push({ from: 'knowledge-graph', to: 'embeddings', label: 'vector', color: EC.mem });
-		edges.push({ from: 'memory-hub', to: 'inject-local', label: '', color: EC.mem });
-		edges.push({ from: 'memory-hub', to: 'inject-server', label: '', color: EC.mem });
-		edges.push({ from: 'inject-local', to: 'claude', label: 'CLAUDE.md', color: EC.intel });
-		edges.push({ from: 'inject-server', to: 'claude', label: 'CLAUDE.md', color: EC.intel });
+		edges.push({ from: 'mem-episodic', to: 'embeddings', label: '', color: EC.mem });
+		edges.push({ from: 'mem-semantic', to: 'embeddings', label: '', color: EC.mem });
+		edges.push({ from: 'memory-hub', to: 'inject-ctx', label: '', color: EC.mem });
+		edges.push({ from: 'consolidation', to: 'memory-hub', label: 'writes', color: EC.proc });
 
-		// ==================== PROCESSING ====================
-		addNode('classifier', 'Classifier', 'process', 'up', 'Every 5min: count events', 'processing', 940, 420, 'Runs every 5 minutes. Marks events as processed. When 10+ events accumulate since last dream, triggers an early dream cycle. File: service/src/classifier.js');
-		addNode('dream-cycle', 'Dream Cycle', 'process', dreamUp ? 'up' : 'idle', 'Every 6h: rewrite .pan-state.md', 'processing', 1160, 420, 'Runs every 6 hours. Reads all events since last dream, sends to Claude Haiku to rewrite .pan-state.md. Also triggers consolidation. File: service/src/dream.js');
-		addNode('consolidation', 'Consolidation', 'process', 'idle', 'Extract memories from events', 'processing', 940, 530, 'Extracts memories from raw events. Two modes: (1) Heuristic \u2014 regex patterns. (2) LLM \u2014 Haiku structured extraction. Feeds all three memory stores. File: service/src/memory/consolidation.js');
-		addNode('evolution', 'Evolution', 'process', 'down', 'NOT WIRED \u2014 6-step optimization', 'processing', 1160, 530, 'NOT WIRED \u2014 6-step config optimization pipeline: Observe, Critique, Generate Deltas, Validate, Apply, Consolidate. Built but never connected. File: service/src/evolution/engine.js');
-		addNode('event-workers', 'Event Workers', 'process', 'down', 'Auto-dispatch on triggers', 'processing', 1050, 620, 'Event-driven background workers (planned). Auto-dispatch on triggers: index new conversations on arrival, tag photos on sync, update project state on git commits, re-embed on memory changes. Replaces polling with reactive processing. Inspired by ruflo background workers.');
+		// ==================== INTELLIGENCE ====================
+		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions via hooks',
+			'intel', 700, 290, 'Claude Code CLI. Memory injected via hooks.', null);
+		addNode('scout', 'Scout', 'ai', svcStatus('scout'), svcDetail('scout'),
+			'intel', 850, 290, 'Tool discovery \u2014 GitHub trending, MCP servers.', null);
+		addNode('orchestrator', 'Orchestrator', 'ai', svcStatus('orchestrator'), svcDetail('orchestrator'),
+			'intel', 700, 370, 'Autonomous agent \u2014 processes findings, generates tasks.', null);
+		addNode('autodev', 'AutoDev', 'ai', svcStatus('autodev'), svcDetail('autodev'),
+			'intel', 850, 370, 'Spawns headless Claude sessions for tasks.', null);
 
-		edges.push({ from: 'database', to: 'classifier', label: 'events', color: EC.proc });
-		edges.push({ from: 'classifier', to: 'dream-cycle', label: '10+ events', color: EC.proc });
-		edges.push({ from: 'dream-cycle', to: 'consolidation', label: 'triggers', color: EC.proc });
-		edges.push({ from: 'consolidation', to: 'mem-episodic', label: 'writes', color: EC.proc });
-		edges.push({ from: 'consolidation', to: 'mem-semantic', label: 'writes', color: EC.proc });
-		edges.push({ from: 'consolidation', to: 'mem-procedural', label: 'writes', color: EC.proc });
-		edges.push({ from: 'dream-cycle', to: 'evolution', label: 'triggers', color: EC.proc });
-		edges.push({ from: 'database', to: 'event-workers', label: 'triggers', color: EC.proc });
-		edges.push({ from: 'event-workers', to: 'memory-hub', label: 'updates', color: EC.proc });
-		edges.push({ from: 'event-workers', to: 'embeddings', label: 're-embed', color: EC.proc });
+		edges.push({ from: 'inject-ctx', to: 'claude', label: 'CLAUDE.md', color: EC.intel });
+		edges.push({ from: 'scout', to: 'orchestrator', label: 'findings', color: EC.intel });
+		edges.push({ from: 'orchestrator', to: 'autodev', label: 'tasks', color: EC.intel });
 
 		// ==================== DEVICES ====================
-		const devices = services.filter(s => s.category === 'Devices');
+		const seenDevices = new Set();
 		devices.forEach((d, i) => {
-			const x = 120 + i * 200;
-			const y = 800;
-			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y, d.detail || d.name);
+			if (seenDevices.has(d.name)) return;
+			seenDevices.add(d.name);
+			const x = 1060 + (i % 2) * 160;
+			const y = 290 + Math.floor(i / 2) * 70;
+			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y, d.detail || d.name, { page: 'devices', device: d.name });
 			edges.push({ from: 'pan-server', to: `dev-${d.name}`, label: '', color: EC.dev });
 		});
-		if (!devices.find(d => d.name === 'Phone')) {
-			addNode('dev-phone', 'Phone', 'device', 'unknown', 'Android \u2014 voice + sensors', 'devices', 120, 800, 'Android phone app. Always-listening voice assistant with Google STT, on-device commands, routes complex queries to PAN server via Tailscale.');
+		if (!seenDevices.has('Phone') && !devices.find(d => d.name?.includes('Pixel'))) {
+			addNode('dev-phone', 'Phone', 'device', 'unknown', 'Android', 'devices', 1060, 290, 'Android phone.', { page: 'devices' });
 			edges.push({ from: 'pan-server', to: 'dev-phone', label: '', color: EC.dev });
-		}
-		if (!devices.find(d => d.name === 'Desktop')) {
-			addNode('dev-desktop', 'Desktop', 'device', 'up', 'Windows \u2014 primary workstation', 'devices', 300, 800, 'Primary Windows workstation. Runs PAN server, Claude Code sessions, Tauri dashboard.');
-			edges.push({ from: 'pan-server', to: 'dev-desktop', label: '', color: EC.dev });
 		}
 
 		// ==================== PROJECTS ====================
 		const projs = projResp || [];
 		projs.forEach((p, i) => {
-			const x = 520 + (i % 3) * 120;
-			const y = 760 + Math.floor(i / 3) * 70;
-			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y, `Project: ${p.name}. Path: ${p.path || 'unknown'}`);
-			edges.push({ from: 'database', to: `proj-${p.id}`, label: '', color: EC.proj });
+			const x = 100 + (i % 5) * 120;
+			const y = 490 + Math.floor(i / 5) * 50;
+			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y, `Project: ${p.name}`, { page: 'projects', project: p.name });
 		});
 
-		// ==================== JOBS ====================
-		const jobs = jobsResp?.jobs || [];
-		const runningJobs = jobs.filter(j => j.status === 'running' || j.status === 'ready' || j.status === 'training');
-		runningJobs.forEach((j, i) => {
-			const x = 940 + (i % 2) * 220;
-			const y = 620 + Math.floor(i / 2) * 60;
-			const status = j.status === 'running' ? 'up' : j.status === 'training' ? 'warn' : 'idle';
-			addNode(`job-${j.name}`, j.name, 'job', status, j.description, 'processing', x, y, j.description || j.name);
-			edges.push({ from: 'pan-server', to: `job-${j.name}`, label: '', color: EC.proc });
-		});
-
-		return { nodes, edges, nodeMap, zones, stats: statsResp };
+		return { nodes, edges, nodeMap, zones, stats: statsResp, atlas: atlasResp };
 	}
 
 	function atlasNodeColor(node) {
@@ -1720,7 +1758,7 @@
 
 	async function loadTestSuites() {
 		try {
-			const resp = await fetch('/api/v1/tests');
+			const resp = await devFetch('/api/v1/tests');
 			if (resp.ok) {
 				const data = await resp.json();
 				// Server returns {status, suites: [...], tests: [...], ...}
@@ -2086,6 +2124,13 @@
 	// ==================== Init ====================
 
 	onMount(() => {
+		// Check URL params — apps open in new windows with ?view=atlas etc.
+		const urlParams = new URLSearchParams(window.location.search);
+		const viewParam = urlParams.get('view');
+		if (viewParam === 'atlas') {
+			switchCenterView('atlas');
+		}
+
 		restoreChatFromStorage(); // Instantly restore chat from before refresh
 		loadTerminalProjects();
 		loadVoiceSettings();
@@ -2245,6 +2290,8 @@
 
 		// Global key handler — Escape and number keys reach the terminal even without textarea focus
 		function handleGlobalKeydown(e) {
+			// Let Win+H pass through to Windows for voice typing
+			if (e.key === 'h' && e.metaKey) return;
 			// Skip if user is typing in a non-terminal input (e.g. rename, search)
 			const tag = e.target?.tagName;
 			if ((tag === 'INPUT' || tag === 'TEXTAREA') && e.target !== terminalInputEl) return;
@@ -2377,11 +2424,11 @@
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="perf">Performance</option>
 				<option value="project">Project</option>
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
 				<option value="tasks">Tasks</option>
-				<option value="perf">Performance</option>
 				<option value="tests">Tests</option>
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
@@ -2622,11 +2669,21 @@
 				</div>
 			{:else if leftSection === 'apps'}
 				<div class="apps-grid">
-					<button class="app-card" onclick={() => switchCenterView('atlas')}>
-						<div class="app-icon">&#x1F5FA;</div>
-						<div class="app-name">Atlas</div>
-						<div class="app-desc">System architecture</div>
-					</button>
+					<button class="app-card" onclick={() => {
+							const url = `${window.location.origin}/v2/atlas`;
+							const win = window.open(url, '_blank', 'width=1400,height=900');
+							if (!win) {
+								fetch('/api/v1/ui-commands', {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ type: 'open_window', url })
+								});
+							}
+						}}>
+							<div class="app-icon">&#x1F5FA;</div>
+							<div class="app-name">Atlas</div>
+							<div class="app-desc">System architecture</div>
+						</button>
 				</div>
 			{:else if leftSection === 'instances'}
 				<div class="instances-panel">
@@ -2805,7 +2862,7 @@
 							<span class="atlas-stat">{atlasData.nodes.length} nodes</span>
 						{/if}
 					</div>
-					<svg bind:this={atlasSvgEl} class="atlas-svg" viewBox="0 0 1500 1000" preserveAspectRatio="xMidYMid meet">
+					<svg bind:this={atlasSvgEl} class="atlas-svg" viewBox="0 0 1320 590" preserveAspectRatio="xMidYMid meet">
 						<defs>
 							<filter id="glow">
 								<feGaussianBlur stdDeviation="2" result="blur"/>
@@ -2864,7 +2921,17 @@
 									transform="translate({node.x},{node.y})"
 									onpointerenter={() => { atlasHovered = node.id; }}
 									onpointerleave={() => { atlasHovered = null; }}
-									onclick={() => { atlasSelected = atlasSelected === node.id ? null : node.id; }}
+									onclick={() => {
+									if (atlasSelected === node.id && node.navigate) {
+										// Double-click navigates
+										if (node.navigate.page === 'services') { leftSection = 'services'; }
+										else if (node.navigate.page === 'devices') { leftSection = 'devices'; }
+										else if (node.navigate.page === 'data') { leftSection = 'data'; }
+										else if (node.navigate.page === 'settings') { leftSection = 'settings'; }
+										else if (node.navigate.page === 'projects') { leftSection = 'projects'; }
+									}
+									atlasSelected = atlasSelected === node.id ? null : node.id;
+								}}
 									style="cursor:pointer"
 								>
 									<!-- Node bg -->
@@ -2922,6 +2989,16 @@
 											{/if}
 										{/each}
 									</div>
+								{/if}
+								{#if sel.navigate}
+									<button class="atlas-nav-btn" onclick={() => {
+										if (sel.navigate.page === 'services') { leftSection = 'services'; }
+										else if (sel.navigate.page === 'devices') { leftSection = 'devices'; }
+										else if (sel.navigate.page === 'data') { leftSection = 'data'; }
+										else if (sel.navigate.page === 'settings') { leftSection = 'settings'; }
+										else if (sel.navigate.page === 'projects') { leftSection = 'projects'; }
+										atlasSelected = null;
+									}}>Go to {sel.navigate.page} &rarr;</button>
 								{/if}
 								{#if filePaths.length > 0}
 									<div class="atlas-detail-section-title">Files</div>
@@ -2983,11 +3060,11 @@
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="perf">Performance</option>
 				<option value="project">Project</option>
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
 				<option value="tasks">Tasks</option>
-				<option value="perf">Performance</option>
 				<option value="tests">Tests</option>
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
@@ -3030,11 +3107,21 @@
 				{/if}
 			{:else if rightSection === 'apps'}
 				<div class="apps-grid">
-					<button class="app-card" onclick={() => switchCenterView('atlas')}>
-						<div class="app-icon">&#x1F5FA;</div>
-						<div class="app-name">Atlas</div>
-						<div class="app-desc">System architecture</div>
-					</button>
+					<button class="app-card" onclick={() => {
+							const url = `${window.location.origin}/v2/atlas`;
+							const win = window.open(url, '_blank', 'width=1400,height=900');
+							if (!win) {
+								fetch('/api/v1/ui-commands', {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ type: 'open_window', url })
+								});
+							}
+						}}>
+							<div class="app-icon">&#x1F5FA;</div>
+							<div class="app-name">Atlas</div>
+							<div class="app-desc">System architecture</div>
+						</button>
 				</div>
 			{:else if rightSection === 'instances'}
 				<div class="instances-panel">
@@ -4658,6 +4745,20 @@
 		font-size: 16px;
 	}
 	.atlas-detail-close:hover { color: #cdd6f4; }
+	.atlas-nav-btn {
+		display: block;
+		width: 100%;
+		margin-top: 8px;
+		padding: 6px 12px;
+		background: #313244;
+		border: 1px solid #45475a;
+		color: #89b4fa;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 11px;
+		text-align: center;
+	}
+	.atlas-nav-btn:hover { background: #45475a; color: #cdd6f4; }
 	.atlas-detail-body {
 		font-size: 11px;
 		color: #a6adc8;

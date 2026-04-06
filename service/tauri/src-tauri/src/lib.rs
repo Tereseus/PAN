@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const PAN_SERVER: &str = "http://127.0.0.1:7777";
 const SHELL_PORT: u16 = 7790;
@@ -414,6 +415,43 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(|app, shortcut, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let win_h = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
+                    if shortcut == &win_h {
+                        // Blur active element so webview releases keyboard focus
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.eval("document.activeElement && document.activeElement.blur()");
+                        }
+                        // Unregister, send real Win+H to OS, re-register
+                        let handle = app.clone();
+                        std::thread::spawn(move || {
+                            let _ = handle.global_shortcut().unregister(win_h);
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            // Send real Win+H via Windows API
+                            #[cfg(target_os = "windows")]
+                            unsafe {
+                                use std::mem::size_of;
+                                #[repr(C)]
+                                struct KeybdInput { r#type: u32, vk: u16, scan: u16, flags: u32, time: u32, extra: usize }
+                                extern "system" { fn SendInput(count: u32, inputs: *const KeybdInput, size: i32) -> u32; }
+                                let inputs = [
+                                    KeybdInput { r#type: 1, vk: 0x5B, scan: 0, flags: 0, time: 0, extra: 0 }, // LWin down
+                                    KeybdInput { r#type: 1, vk: 0x48, scan: 0, flags: 0, time: 0, extra: 0 }, // H down
+                                    KeybdInput { r#type: 1, vk: 0x48, scan: 0, flags: 2, time: 0, extra: 0 }, // H up
+                                    KeybdInput { r#type: 1, vk: 0x5B, scan: 0, flags: 2, time: 0, extra: 0 }, // LWin up
+                                ];
+                                SendInput(4, inputs.as_ptr(), size_of::<KeybdInput>() as i32);
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            let _ = handle.global_shortcut().register(win_h);
+                        });
+                    }
+                }
+            })
+            .build()
+        )
         .manage(registry.clone())
         .invoke_handler(tauri::generate_handler![
             list_windows,
@@ -462,6 +500,10 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // ---- Register Win+H global shortcut to bypass WebView2 interception ----
+            let win_h = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
+            app.global_shortcut().register(win_h)?;
 
             // ---- Start HTTP API so PAN server can call us directly ----
             let handle = app.handle().clone();
