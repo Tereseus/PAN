@@ -61,3 +61,4 @@ STRATEGY.md
 *.tmp
 *.log
 service/models/
+__pycache__/
