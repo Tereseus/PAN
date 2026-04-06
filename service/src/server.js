@@ -30,7 +30,7 @@ import { buildContext as buildMemoryContext } from './memory/index.js';
 import { getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { bootAll, shutdownAll, getAtlasData, getServiceStatus, reportServiceRun } from './steward.js';
-import { syncProjects, get, all, insert, run, indexEventFTS } from './db.js';
+import { syncProjects, get, all, insert, run, indexEventFTS, db } from './db.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
@@ -1342,20 +1342,26 @@ app.post('/api/v1/voice/toggle', (req, res) => {
   res.json({ ok: true });
 });
 
-// Voice dictate — spawn dictate-vad.py server-side (for mic button, no AHK needed)
-let _dictateProc = null;
+// Voice dictate — triggers AHK to run dictate-vad.py in user session (Session 0 has no audio)
+// Hardcode user temp path — process.env.TEMP is C:\WINDOWS\TEMP in Session 0, but AHK runs in Session 1
+let _dictateActive = false;
 app.post('/api/v1/voice/dictate', (req, res) => {
-  if (_dictateProc) {
-    // Already recording — signal stop
-    const stopFile = join(process.env.TEMP || '/tmp', 'pan_dictate.wav.stop');
-    writeFileSync(stopFile, 'stop');
+  const triggerFile = join('C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan_voice_trigger');
+  const stopFile = join('C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan_dictate.wav.stop');
+  if (_dictateActive) {
+    // Signal AHK's dictate-vad.py to stop
+    try { writeFileSync(stopFile, 'stop'); } catch {}
+    _dictateActive = false;
     res.json({ ok: true, action: 'stopping' });
     return;
   }
-  const script = join(dirname(fileURLToPath(import.meta.url)), 'dictate-vad.py');
-  _dictateProc = spawnChild('python', [script], { stdio: 'ignore', windowsHide: true });
-  _dictateProc.on('close', () => { _dictateProc = null; });
-  _dictateProc.on('error', () => { _dictateProc = null; });
+  // Write trigger file that AHK polls every 250ms
+  try { writeFileSync(triggerFile, 'dictate'); } catch (err) {
+    return res.json({ ok: false, error: err.message });
+  }
+  _dictateActive = true;
+  // Auto-reset after 5 minutes (max recording duration) in case stop signal is missed
+  setTimeout(() => { _dictateActive = false; }, 300000);
   res.json({ ok: true, action: 'started' });
 });
 
@@ -1364,6 +1370,8 @@ app.post('/api/v1/voice/result', (req, res) => {
   const { text, action, partial } = req.body || {};
   console.log(`[PAN Voice] voice_result: partial=${partial} action=${action} text="${(text||'').substring(0,50)}"`);
   broadcastNotification('voice_result', { text: text || '', action: action || '', partial: !!partial });
+  // Reset dictate state when final result arrives
+  if (!partial) _dictateActive = false;
   res.json({ ok: true });
 });
 
@@ -1600,7 +1608,8 @@ function start() {
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
 
       // Steward boots all background services in dependency order
-      bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
+      // DISABLED: steward making unwanted API calls — re-enable when needed
+      // bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
 
       // Resume restart test if one was in progress before we died
       resumeRestartTest().catch(err => console.error('[PAN Tests] Resume failed:', err.message));
@@ -1753,6 +1762,102 @@ app.post('/api/v1/windows/close', async (req, res) => {
     res.json(result);
   } catch (err) {
     res.json({ ok: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Client Logs — universal telemetry from all devices
+// ═══════════════════════════════════════════════════════════════════
+
+// POST /api/v1/logs — accept single or batch logs
+app.post('/api/v1/logs', (req, res) => {
+  try {
+    const entries = Array.isArray(req.body) ? req.body : [req.body];
+    if (entries.length === 0) return res.json({ ok: true, inserted: 0 });
+    if (entries.length > 100) return res.status(400).json({ error: 'Max 100 logs per batch' });
+
+    const stmt = db.prepare(`INSERT INTO client_logs (device_id, device_type, level, source, message, meta, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'))`);
+
+    let inserted = 0;
+    for (const e of entries) {
+      if (!e.message) continue;
+      stmt.run(
+        e.device_id || 'unknown',
+        e.device_type || 'browser',
+        e.level || 'error',
+        e.source || 'console',
+        String(e.message).slice(0, 4000),
+        JSON.stringify(e.meta || {})
+      );
+      inserted++;
+    }
+    res.json({ ok: true, inserted });
+  } catch (err) {
+    console.error('[Client Logs] Insert error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/logs — query logs with filters
+app.get('/api/v1/logs', (req, res) => {
+  try {
+    const { device, device_type, level, source, since, limit: lim } = req.query;
+    let sql = 'SELECT * FROM client_logs WHERE 1=1';
+    const params = [];
+
+    if (device) { sql += ' AND device_id = ?'; params.push(device); }
+    if (device_type) { sql += ' AND device_type = ?'; params.push(device_type); }
+    if (level) { sql += ' AND level = ?'; params.push(level); }
+    if (source) { sql += ' AND source = ?'; params.push(source); }
+    if (since) {
+      // since=1h, since=24h, since=7d
+      const match = since.match(/^(\d+)([hmd])$/);
+      if (match) {
+        const [, n, unit] = match;
+        const mins = unit === 'h' ? n * 60 : unit === 'd' ? n * 1440 : parseInt(n);
+        sql += ` AND created_at >= datetime('now','localtime','-${mins} minutes')`;
+      }
+    }
+
+    sql += ' ORDER BY created_at DESC LIMIT ?';
+    params.push(parseInt(lim) || 100);
+
+    const rows = db.prepare(sql).all(...params);
+    res.json(rows);
+  } catch (err) {
+    console.error('[Client Logs] Query error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/v1/logs — retention cleanup
+app.delete('/api/v1/logs', (req, res) => {
+  try {
+    const { older_than } = req.query; // e.g. 7d, 30d
+    const match = (older_than || '30d').match(/^(\d+)([hmd])$/);
+    if (!match) return res.status(400).json({ error: 'Invalid older_than format (e.g. 7d, 24h)' });
+    const [, n, unit] = match;
+    const mins = unit === 'h' ? n * 60 : unit === 'd' ? n * 1440 : parseInt(n);
+    const result = db.prepare(`DELETE FROM client_logs WHERE created_at < datetime('now','localtime','-${mins} minutes')`).run();
+    res.json({ ok: true, deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/logs/summary — quick overview of log counts by device/level
+app.get('/api/v1/logs/summary', (req, res) => {
+  try {
+    const since = req.query.since || '24h';
+    const match = since.match(/^(\d+)([hmd])$/);
+    const mins = match ? (match[2] === 'h' ? match[1] * 60 : match[2] === 'd' ? match[1] * 1440 : parseInt(match[1])) : 1440;
+    const rows = db.prepare(`SELECT device_id, device_type, level, COUNT(*) as count
+      FROM client_logs WHERE created_at >= datetime('now','localtime','-${mins} minutes')
+      GROUP BY device_id, device_type, level ORDER BY count DESC`).all();
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

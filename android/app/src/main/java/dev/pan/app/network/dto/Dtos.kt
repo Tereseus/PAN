@@ -147,3 +147,18 @@ data class SensorUpdateRequest(
 data class SensorAttachRequest(
     val enabled: Boolean
 )
+
+// Telemetry log entry — matches server's /api/v1/logs schema
+data class LogEntry(
+    val device_id: String,
+    val device_type: String = "phone",
+    val level: String = "info",
+    val source: String = "app",
+    val message: String,
+    val meta: Map<String, String>? = null
+)
+
+data class LogInsertResponse(
+    val ok: Boolean,
+    val inserted: Int
+)

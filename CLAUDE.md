@@ -61,7 +61,7 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with something like "Last time we were working on..." and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
-# PAN State — Updated 2026-04-05 (17:34)
+# PAN State — Updated 2026-04-06 (11:22)
 
 ## What Works
 - SQLite DB encrypted with SQLCipher (AES-256-CBC)
@@ -92,15 +92,26 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 - WebSocket broadcast for voice respects active tab focus and session scope
 - Terminal scroll regions reset correctly on buffer switch
 - Frontend deduplication ensures only one transcription per utterance across tabs
+- Input box auto-grows up to 10 lines during voice input
+- Voice transcription no longer duplicates text on partial updates
+- AHK tooltip shows only "Π Listening" with no extra text or actions
+- New `client_logs` table in DB with indexes for device, level, created_at, device_type
+- New log endpoints: `POST /api/v1/logs`, `GET /api/v1/logs`, `GET /api/v1/logs/summary`, `DELETE /api/v1/logs`
+- Android `LogShipper.kt` batches logs every 5s with retry and OOM protection
+- Terminal overflow fixed: code blocks wrap or scroll without overlapping
+- Mic button now works via server-side Whisper with streaming partials
+- `dictate-vad.py` plays stop sound correctly (G4, 100ms)
+- Steward uses `schtasks` to launch AHK (reverted to working method)
 
 ## Known Issues
-- `/v2/terminal.html` access still returns 404 in dev instance
+- Mic button start sound (C5+E5, 150ms) is cut off or inaudible
+- Mouse hotkey (XButton2) does not trigger AHK reliably after restart
+- Mic button fails to initiate recording despite UI feedback
 
 ## Current Priorities
-1. Restore `/v2/terminal.html` access — fix dev server routing
-2. Confirm Fast Whisper batch mode eliminates duplication and deletion in input
-3. Validate single transcription per utterance across multiple dashboard tabs
-4. Clean up duplicate threads caused by session ID mismatch in project switch
+1. Fix mic button start sound cut-off — ensure full 150ms tone plays before recording
+2. Restore reliable XButton2 hotkey functionality after restart
+3. Fix mic button recording failure — diagnose Whisper trigger path
 
 ## Key Decisions
 - STT engine choice must be settings-driven, not hardcoded
@@ -110,6 +121,7 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 - Background AI (Dream, Scout) requires 30B+ models — using Cerebras 120B
 - Interactive terminal uses Claude; embeddings via local Ollama 7B
 - Server-side terminal rendering (@xterm/headless) is standard
+- Universal device telemetry requires a common log protocol and ingestion endpoint
 
 ## User Preferences
 - Do everything autonomously — never ask for manual commands
@@ -148,13 +160,7 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 - [2026-04-01 20:37:25] Built PAN MCP server with 15 tools wrapping HTTP API: Created service/src/mcp-server.js, registered in .mcp.json (project-level) and Desktop/.mcp.json (global). Requires Claude Code restart to pick up new tools
 - [2026-04-01 14:03:43] Hard refresh button implemented to bypass browser cache: Refresh button now uses location.reload(true) to force cache bypass. This was necessary because old broken dashboard code was being cached
 - [2026-04-01 14:03:44] Multi-transcript system implemented for multi-tab support: Each dashboard tab now tracks its own claudeSessionIds array. Chat_update events associate sessions with active tabs
-- [2026-04-01 20:37:24] Fixed TedGL 'My Computer' showing offline when device is actively connected: Added hostname equality check in dashboard.js: `hostname === os.hostname()` to mark local PC as always online. This replaced dependency on heartbeat detection which was unreliable
-- [2026-04-01 14:03:44] Terminal/Chat toggle feature built with overlay architecture: Added toggle buttons to switch between Terminal and Chat views. Chat view overlays on top with position:absolute so terminal context is never lost
-- [2026-04-02 12:38:40] Critical bug: page refresh creates new session instead of persisting transcript [failure]: User loses entire chat history and terminal session context when hitting F5 or browser refresh. Attempted 3-layer fix (buffer detection, localStorage session persistence, localStorage chat) but fix wa
-
-## Known Procedures
-- **Scope memory consolidation per project**: Run consolidation, dream cycle, and evolution cycles independently for each project to avoid mixing concerns
-  1. Identify .p
+- [2026-04-01 20:37:24] Fixed TedGL 'My Computer' showing offline when device is actively connected: Added hostname equality check in dashboard.j
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

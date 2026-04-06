@@ -1,6 +1,6 @@
 {
   "project_name": "PAN",
-  "last_session_id": "605f96ce-26a5-4674-b043-ca512a751086",
+  "last_session_id": "03c87d8e-5777-4fcb-aa71-76556c909e25",
   "claude_project_dir": "C:\\Users\\tzuri\\.claude\\projects\\C--Users-tzuri-Desktop-PAN",
   "previous_paths": [
     "C:\\Users\\tzuri\\Desktop\\PAN\\service"
@@ -10,8 +10,24 @@
     "C--Users-tzuri-OneDrive-Desktop-PAN",
     "C--Users-tzuri-Desktop-PAN"
   ],
-  "last_session_time": "2026-04-05T21:54:49.695Z",
+  "last_session_time": "2026-04-06T15:28:25.962Z",
   "session_history": [
+    {
+      "id": "03c87d8e-5777-4fcb-aa71-76556c909e25",
+      "time": "2026-04-06T15:28:25.962Z"
+    },
+    {
+      "id": "304bf673-d630-4eb2-ab81-bfc863f50ab4",
+      "time": "2026-04-06T14:50:55.862Z"
+    },
+    {
+      "id": "5d78507d-8213-43e9-968b-af41978d80be",
+      "time": "2026-04-06T13:15:31.006Z"
+    },
+    {
+      "id": "b200fc1a-40a3-4348-94fa-b731663c5c94",
+      "time": "2026-04-05T22:58:12.131Z"
+    },
     {
       "id": "605f96ce-26a5-4674-b043-ca512a751086",
       "time": "2026-04-05T21:54:49.696Z"
@@ -35,22 +51,6 @@
     {
       "id": "9034f15f-548f-4d54-9a9d-4df73397caac",
       "time": "2026-04-05T20:22:19.058Z"
-    },
-    {
-      "id": "df49e3b0-03a5-4062-890a-dd35dd6c7c1a",
-      "time": "2026-04-05T19:59:00.192Z"
-    },
-    {
-      "id": "df49e3b0-03a5-4062-890a-dd35dd6c7c1a",
-      "time": "2026-04-05T19:47:09.502Z"
-    },
-    {
-      "id": "3dbc1173-f7b3-4090-8a7f-149a2152b64e",
-      "time": "2026-04-05T19:39:13.718Z"
-    },
-    {
-      "id": "3dbc1173-f7b3-4090-8a7f-149a2152b64e",
-      "time": "2026-04-05T19:10:53.731Z"
     }
   ]
 }

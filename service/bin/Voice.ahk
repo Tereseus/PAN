@@ -45,7 +45,7 @@ DoPanDictation() {
     ToolTip("Π Listening...")
 
     try {
-        RunWait('python.exe "' panDir '\dictate-vad.py"',, "Hide")
+        RunWait('python.exe "' panDir '\dictate-vad.py" --no-sounds',, "Hide")
     } catch as e {
         ToolTip("PAN: Dictation failed - " e.Message)
         Sleep(2000)

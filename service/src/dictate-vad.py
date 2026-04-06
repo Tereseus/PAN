@@ -11,7 +11,7 @@ import tempfile
 import wave
 
 SILENCE_THRESHOLD = 150    # RMS below this = silence (very low to avoid premature stops)
-SILENCE_DURATION = float(os.environ.get('WHISPER_SILENCE', '2.5'))  # Configurable via env
+SILENCE_DURATION = float(os.environ.get('WHISPER_SILENCE', '1.0'))  # Configurable via env
 MAX_DURATION = 300         # 5 minutes max recording
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -151,6 +151,24 @@ def transcribe(wav_path):
         result = json.loads(resp.read().decode('utf-8'))
         return result.get("text", "")
 
+def play_sound(name):
+    """Play start/stop WAV sound synchronously — must finish before recording starts."""
+    try:
+        import sounddevice as sd
+        import numpy as np
+        sound_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bin', 'sounds')
+        wav_file = os.path.join(sound_dir, f'voice-{name}.wav')
+        if not os.path.exists(wav_file):
+            return
+        with wave.open(wav_file, 'r') as wf:
+            data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+            if wf.getnchannels() == 2:
+                data = data.reshape(-1, 2)
+            sd.play(data, samplerate=wf.getframerate())
+            sd.wait()
+    except:
+        pass
+
 def main():
     try:
         import sounddevice as sd
@@ -158,11 +176,20 @@ def main():
     except ImportError:
         os.system(f'{sys.executable} -m pip install sounddevice numpy --quiet')
 
+    # Play sounds unless --no-sounds flag passed (AHK plays its own)
+    own_sounds = '--no-sounds' not in sys.argv
+
+    if own_sounds:
+        play_sound('start')
+
     # Record
     audio = record_until_silence()
     if audio is None:
         print(json.dumps({"error": "No speech detected"}))
         return
+
+    if own_sounds:
+        play_sound('stop')
 
     # Save WAV (keep file for server to read — server doesn't delete it)
     wav_path = os.path.join(tempfile.gettempdir(), 'pan_dictate.wav')
