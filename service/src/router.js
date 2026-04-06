@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { insert, all, get } from './db.js';
+import { insert, all, get, logEvent } from './db.js';
 import { claude } from './claude.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
@@ -29,7 +29,7 @@ function serverClassify(text) {
 }
 
 // Quick system handlers that need no Claude call at all
-function tryQuickSystem(text) {
+async function tryQuickSystem(text) {
   const lower = text.toLowerCase();
 
   if (lower.includes('status')) {
@@ -46,6 +46,21 @@ function tryQuickSystem(text) {
 
   if (lower.includes('stop') || lower.includes('pause') || lower.includes('sleep')) {
     return { intent: 'system', response: 'PAN paused. Say "PAN wake up" to resume.', action: 'pause' };
+  }
+
+  // Screen recording
+  if (lower.match(/start\s+(screen\s+)?record/)) {
+    const { startRecording } = await import('./screen-recorder.js');
+    const result = startRecording({ fps: 2 });
+    if (result.error) return { intent: 'system', response: `Already recording: ${result.file}` };
+    return { intent: 'system', response: `Recording started at 2 FPS. Say "stop recording" when done.` };
+  }
+
+  if (lower.match(/stop\s+(screen\s+)?record/)) {
+    const { stopRecording } = await import('./screen-recorder.js');
+    const result = stopRecording();
+    if (result.error) return { intent: 'system', response: 'Not currently recording.' };
+    return { intent: 'system', response: `Recording saved (${result.duration} seconds). File: ${result.file}` };
   }
 
   return null;
@@ -399,11 +414,7 @@ async function route(text, context = {}) {
 }
 
 function insertRouterEvent(text, intent, response, context) {
-  insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-    ':sid': `router-${Date.now()}`,
-    ':type': 'RouterCommand',
-    ':data': JSON.stringify({ text, intent, result: response, context })
-  });
+  logEvent(`router-${Date.now()}`, 'RouterCommand', { text, intent, result: response, context });
 }
 
 // Legacy export — kept for compatibility but no longer used internally

@@ -39,6 +39,7 @@ class MainViewModel @Inject constructor(
     val remoteAccessIp: StateFlow<String> = remoteAccessManager.ip
     val remoteAccessOrg: StateFlow<String> = remoteAccessManager.org
     val lastAction: StateFlow<String> = PanForegroundService.lastAction
+    val sttStatus: StateFlow<String> = PanForegroundService.sttStatus
 
     val isMicEnabled: StateFlow<Boolean> = PanForegroundService.micEnabled
 
@@ -108,12 +109,13 @@ class MainViewModel @Inject constructor(
     }
 
     fun toggleMic() {
-        // Send TOGGLE_MIC intent to the service so it properly starts/stops STT
-        val ctx = application
-        val intent = android.content.Intent(ctx, PanForegroundService::class.java).apply {
+        // Send TOGGLE_MIC intent to the foreground service — it handles STT start/stop,
+        // notification update, and callback setup. Don't touch sttEngine directly here
+        // because the callback is only set up in the service's onStartCommand.
+        val intent = android.content.Intent(application, PanForegroundService::class.java).apply {
             action = "TOGGLE_MIC"
         }
-        ctx.startService(intent)
+        application.startService(intent)
     }
 
     fun setDeviceTarget(target: String) {

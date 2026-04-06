@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { all, get, insert, logEvent } from '../db.js';
+import { all, get, logEvent } from '../db.js';
 import { claude } from '../claude.js';
 import { consolidate as consolidateMemory } from '../memory/consolidation.js';
 

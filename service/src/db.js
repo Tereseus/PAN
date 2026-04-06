@@ -1,21 +1,24 @@
-// PAN Database — better-sqlite3 (direct disk writes, no data loss)
+// PAN Database — SQLCipher encrypted (better-sqlite3-multiple-ciphers)
 //
 // Every write goes directly to disk. No in-memory buffer.
 // No data loss on crash or service restart.
+// Database is encrypted at rest using SQLCipher (AES-256-CBC).
 
-import Database from 'better-sqlite3-multiple-ciphers';
-import { readFileSync, existsSync, mkdirSync, statSync, readdirSync, realpathSync, copyFileSync, renameSync } from 'fs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const Database = require('better-sqlite3-multiple-ciphers');
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, realpathSync, copyFileSync, renameSync, unlinkSync, openSync, readSync, closeSync } from 'fs';
 import { join, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
+import { randomBytes } from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, 'schema.sql');
 
 // Database lives OUTSIDE OneDrive to prevent SQLite WAL corruption from cloud sync.
-// OneDrive can sync partial WAL files mid-write, destroying data on crash/restart.
-// Source code on OneDrive is fine — only the live database needs a local path.
 const DATA_DIR = join(process.env.LOCALAPPDATA || join(process.env.USERPROFILE || 'C:\\Users\\user', 'AppData', 'Local'), 'PAN', 'data');
 const DB_PATH = join(DATA_DIR, 'pan.db');
+const KEY_PATH = join(DATA_DIR, 'pan.key');
 
 // Legacy path — migrate if old DB exists and new one doesn't
 const LEGACY_DATA_DIR = join(__dirname, '..', 'data');
@@ -29,51 +32,125 @@ if (!existsSync(DATA_DIR)) {
 if (existsSync(LEGACY_DB_PATH) && !existsSync(DB_PATH)) {
   console.log(`[PAN DB] Migrating database from OneDrive to local: ${DB_PATH}`);
   copyFileSync(LEGACY_DB_PATH, DB_PATH);
-  // Also copy WAL/SHM if they exist
   if (existsSync(LEGACY_DB_PATH + '-wal')) copyFileSync(LEGACY_DB_PATH + '-wal', DB_PATH + '-wal');
   if (existsSync(LEGACY_DB_PATH + '-shm')) copyFileSync(LEGACY_DB_PATH + '-shm', DB_PATH + '-shm');
-  // Rename old DB so it doesn't get used accidentally
   try { renameSync(LEGACY_DB_PATH, LEGACY_DB_PATH + '.migrated'); } catch {}
   console.log(`[PAN DB] Migration complete. Old DB renamed to pan.db.migrated`);
 }
 
-// Encryption key — stored outside the DB in AppData
-const KEY_PATH = join(DATA_DIR, 'pan.key');
-if (!existsSync(KEY_PATH)) {
-  const { randomBytes } = await import('crypto');
-  const { writeFileSync } = await import('fs');
-  writeFileSync(KEY_PATH, randomBytes(32).toString('hex'), 'utf-8');
-  console.log(`[PAN DB] Generated new encryption key at ${KEY_PATH}`);
+// --- Encryption key management ---
+function getOrCreateKey() {
+  if (existsSync(KEY_PATH)) {
+    return readFileSync(KEY_PATH, 'utf-8').trim();
+  }
+  const key = randomBytes(32).toString('hex');
+  writeFileSync(KEY_PATH, key, { mode: 0o600 });
+  console.log(`[PAN DB] Generated new encryption key: ${KEY_PATH}`);
+  return key;
 }
-const DB_KEY = readFileSync(KEY_PATH, 'utf-8').trim();
 
-// Auto-encrypt plaintext database if needed (one-time migration)
-const dbHeader = existsSync(DB_PATH) ? readFileSync(DB_PATH, { encoding: null, flag: 'r' }).subarray(0, 16) : null;
-const isPlaintext = dbHeader && dbHeader.toString('utf-8').startsWith('SQLite format 3');
+const DB_KEY = getOrCreateKey();
 
-if (isPlaintext) {
-  console.log('[PAN DB] Encrypting plaintext database with SQLCipher...');
+// --- Detect if existing DB is plaintext (needs encryption migration) ---
+function isPlaintextSqlite(dbPath) {
+  if (!existsSync(dbPath)) return false;
+  try {
+    const header = Buffer.alloc(16);
+    const fd = openSync(dbPath, 'r');
+    readSync(fd, header, 0, 16, 0);
+    closeSync(fd);
+    return header.toString('utf-8', 0, 15) === 'SQLite format 3';
+  } catch { return false; }
+}
+
+// --- Migrate plaintext DB to encrypted ---
+function migrateToEncrypted() {
+  const BACKUP_PATH = DB_PATH + '.plaintext.bak';
+  console.log(`[PAN DB] Encrypting existing plaintext database...`);
+  console.log(`[PAN DB] Backup saved to: ${BACKUP_PATH}`);
+  copyFileSync(DB_PATH, BACKUP_PATH);
+  // Also backup WAL/SHM
+  if (existsSync(DB_PATH + '-wal')) copyFileSync(DB_PATH + '-wal', BACKUP_PATH + '-wal');
+  if (existsSync(DB_PATH + '-shm')) copyFileSync(DB_PATH + '-shm', BACKUP_PATH + '-shm');
+
+  const ENCRYPTED_PATH = DB_PATH + '.encrypted';
+
+  // Open plaintext DB, export to encrypted
   const plainDb = new Database(DB_PATH);
-  plainDb.pragma('journal_mode = DELETE');
+  plainDb.pragma('journal_mode = DELETE'); // Checkpoint WAL before export
 
-  const encPath = DB_PATH + '.encrypting';
-  if (existsSync(encPath)) { const { unlinkSync } = await import('fs'); unlinkSync(encPath); }
+  // Create encrypted DB using sqlcipher_export
+  const encDb = new Database(ENCRYPTED_PATH);
+  encDb.pragma("cipher = 'sqlcipher'");
+  encDb.pragma(`key = '${DB_KEY}'`);
+  encDb.pragma('foreign_keys = OFF');
 
-  plainDb.exec(`ATTACH DATABASE '${encPath.replace(/\\/g, '\\\\')}' AS encrypted KEY '${DB_KEY}'`);
-  plainDb.exec("SELECT sqlcipher_export('encrypted')");
-  plainDb.exec('DETACH DATABASE encrypted');
+  // Dump all data from plain → encrypted
+  const tables = plainDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL").all();
+  const indexes = plainDb.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL").all();
+  const triggers = plainDb.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND sql IS NOT NULL").all();
+  const views = plainDb.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND sql IS NOT NULL").all();
+
+  // Create schema in encrypted DB
+  for (const { sql } of tables) {
+    try { encDb.exec(sql); } catch {}
+  }
+  for (const { sql } of indexes) {
+    try { encDb.exec(sql); } catch {}
+  }
+  for (const { sql } of triggers) {
+    try { encDb.exec(sql); } catch {}
+  }
+  for (const { sql } of views) {
+    try { encDb.exec(sql); } catch {}
+  }
+
+  // Copy data table by table (skip FTS shadow tables — they auto-populate)
+  const ftsSkip = new Set();
+  const tableNames = plainDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
+  for (const { name } of tableNames) {
+    if (name.match(/_data$|_idx$|_docsize$|_config$/) && tableNames.some(t => t.name === name.replace(/_(data|idx|docsize|config)$/, ''))) {
+      ftsSkip.add(name);
+    }
+  }
+  for (const { name } of tableNames) {
+    if (ftsSkip.has(name)) { console.log(`[PAN DB] Skipped FTS shadow table "${name}"`); continue; }
+    const rows = plainDb.prepare(`SELECT * FROM "${name}"`).all();
+    if (rows.length === 0) continue;
+    const cols = Object.keys(rows[0]);
+    const placeholders = cols.map(() => '?').join(', ');
+    const insertStmt = encDb.prepare(`INSERT OR IGNORE INTO "${name}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders})`);
+    const insertMany = encDb.transaction((rows) => {
+      for (const row of rows) {
+        insertStmt.run(...cols.map(c => row[c]));
+      }
+    });
+    insertMany(rows);
+    console.log(`[PAN DB] Migrated table "${name}": ${rows.length} rows`);
+  }
+
   plainDb.close();
+  encDb.close();
 
-  const backupPath = DB_PATH + '.plaintext.migrated';
-  if (!existsSync(backupPath)) copyFileSync(DB_PATH, backupPath);
-  try { const { unlinkSync } = await import('fs'); unlinkSync(DB_PATH + '-wal'); } catch {}
-  try { const { unlinkSync } = await import('fs'); unlinkSync(DB_PATH + '-shm'); } catch {}
+  // Swap files
+  renameSync(DB_PATH, DB_PATH + '.pre-encrypt');
+  renameSync(ENCRYPTED_PATH, DB_PATH);
+  // Clean up WAL/SHM from old plaintext DB
+  try { unlinkSync(DB_PATH + '.pre-encrypt-wal'); } catch {}
+  try { unlinkSync(DB_PATH + '.pre-encrypt-shm'); } catch {}
+  try { unlinkSync(DB_PATH + '-wal'); } catch {}
+  try { unlinkSync(DB_PATH + '-shm'); } catch {}
 
-  renameSync(encPath, DB_PATH);
-  console.log('[PAN DB] Encryption complete. Plaintext backup at', backupPath);
+  console.log(`[PAN DB] Encryption migration complete!`);
+  console.log(`[PAN DB] Plaintext backup: ${BACKUP_PATH}`);
 }
 
-// Open database — encrypted with SQLCipher
+// Run migration if DB exists and is plaintext
+if (isPlaintextSqlite(DB_PATH)) {
+  migrateToEncrypted();
+}
+
+// Open encrypted database
 const db = new Database(DB_PATH);
 db.pragma("cipher = 'sqlcipher'");
 db.pragma(`key = '${DB_KEY}'`);
@@ -120,36 +197,6 @@ for (const table of tablesToAddUserId) {
     console.log(`[PAN DB] Adding user_id column to ${table}...`);
     db.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER REFERENCES users(id)`);
   }
-}
-
-// Migration: upgrade open_tabs for persistent renamable tabs
-const otCols = db.pragma('table_info(open_tabs)').map(c => c.name);
-if (otCols.length > 0 && !otCols.includes('session_id')) {
-  console.log('[PAN DB] Migrating open_tabs for persistent tabs...');
-  db.exec(`
-    DROP TABLE IF EXISTS open_tabs;
-    CREATE TABLE IF NOT EXISTS open_tabs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL UNIQUE,
-      tab_name TEXT NOT NULL DEFAULT '',
-      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-      cwd TEXT,
-      tab_index INTEGER DEFAULT 0,
-      opened_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-      last_active TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_open_tabs_project ON open_tabs(project_id);
-  `);
-  console.log('[PAN DB] open_tabs migrated.');
-}
-
-// Migration: add claude_session_ids and closed_at to open_tabs for persistent tab history
-const otCols2 = db.pragma('table_info(open_tabs)').map(c => c.name);
-if (otCols2.length > 0 && !otCols2.includes('claude_session_ids')) {
-  console.log('[PAN DB] Adding claude_session_ids and closed_at to open_tabs...');
-  db.exec(`ALTER TABLE open_tabs ADD COLUMN claude_session_ids TEXT DEFAULT '[]'`);
-  db.exec(`ALTER TABLE open_tabs ADD COLUMN closed_at TEXT DEFAULT NULL`);
-  console.log('[PAN DB] open_tabs extended for tab history.');
 }
 
 // Auto-create default user (id=1) for backwards compatibility
@@ -376,7 +423,11 @@ function backfillFTS() {
 // Run backfill on startup
 try { backfillFTS(); } catch (err) { console.error('[PAN FTS] Backfill error:', err.message); }
 
-// Log an event and index it for FTS
+// --- Centralized event logging ---
+// All event inserts should go through this function.
+// Handles: insert + FTS indexing. Anonymization is available on export (raw data stays in encrypted DB).
+import { anonymize, anonymizeEventData } from './anonymizer.js';
+
 function logEvent(sessionId, eventType, data, userId = null) {
   const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
   let eventId;
@@ -391,8 +442,8 @@ function logEvent(sessionId, eventType, data, userId = null) {
       { ':sid': sessionId, ':type': eventType, ':data': dataStr }
     );
   }
-  if (eventId) indexEventFTS(eventId, eventType, dataStr);
+  indexEventFTS(eventId, eventType, dataStr);
   return eventId;
 }
 
-export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent };
+export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, anonymize, anonymizeEventData };

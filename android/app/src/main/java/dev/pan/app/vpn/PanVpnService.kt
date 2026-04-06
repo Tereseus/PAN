@@ -76,8 +76,12 @@ class PanVpnService : VpnService() {
             }
 
             val prefs = getSharedPreferences("pan_vpn", Context.MODE_PRIVATE)
-            val hostname = prefs.getString("hostname", "pan-phone") ?: "pan-phone"
+            // Stable hostname based on device — prevents duplicate tailnet entries on reinstall
+            val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+            val hostname = prefs.getString("hostname", null) ?: "pan-${deviceId.take(6)}"
+            prefs.edit().putString("hostname", hostname).apply()
             val authKey = prefs.getString("auth_key", "") ?: ""
+
             val dataDir = filesDir.absolutePath
 
             os.Setenv("TMPDIR", dataDir)
@@ -90,76 +94,107 @@ class PanVpnService : VpnService() {
             if (result.isNotEmpty()) {
                 loginUrl = result
                 Log.i(TAG, "Login required: $result")
+                updateNotification("Login required - opening browser...")
+
+                // Open login URL in browser
+                try {
+                    val loginIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(result))
+                    loginIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(loginIntent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Couldn't open login URL: ${e.message}")
+                }
+
+                // Poll for login completion — check every 3 seconds for up to 2 minutes
+                Log.i(TAG, "Waiting for login to complete...")
                 updateNotification("Waiting for login...")
-            } else {
-                loginUrl = null
-                val myIp = Panvpn.getStatus().ip
-                val srvPort = getServerPort()
-                Log.i(TAG, "Connected. Self=$myIp port=$srvPort")
-
-                var serverHost = ""
-
-                // 1. Try saved verified IP first (instant — no discovery needed)
-                val savedIp = prefs.getString("verified_server_ip", "") ?: ""
-                if (savedIp.isNotEmpty() && savedIp != myIp) {
-                    Log.i(TAG, "Trying saved server $savedIp...")
+                var loggedIn = false
+                for (attempt in 1..40) {
+                    delay(3000)
                     try {
-                        val health = Panvpn.dialHTTP(savedIp, srvPort.toLong(), "/health")
-                        if (health.isNotEmpty()) {
-                            serverHost = savedIp
-                            Log.i(TAG, "Saved server OK: $savedIp")
+                        val status = Panvpn.getStatus()
+                        if (status.connected && status.ip.isNotEmpty()) {
+                            loggedIn = true
+                            Log.i(TAG, "Login succeeded after ${attempt * 3}s, IP=${status.ip}")
+                            loginUrl = null
+                            break
                         }
-                    } catch (_: Exception) {
-                        Log.i(TAG, "Saved server $savedIp failed")
-                    }
+                    } catch (_: Exception) {}
                 }
-
-                // 2. Try pan-hub hostname
-                if (serverHost.isEmpty()) {
-                    val hubIp = Panvpn.findServerIP("pan-hub")
-                    Log.i(TAG, "FindServerIP(pan-hub) = '$hubIp'")
-                    if (hubIp.isNotEmpty() && hubIp != myIp) {
-                        try {
-                            val health = Panvpn.dialHTTP(hubIp, srvPort.toLong(), "/health")
-                            if (health.isNotEmpty()) {
-                                serverHost = hubIp
-                                Log.i(TAG, "pan-hub OK: $hubIp")
-                            }
-                        } catch (_: Exception) {}
-                    }
-                }
-
-                // 3. Scan all online peers
-                if (serverHost.isEmpty()) {
-                    Log.i(TAG, "Scanning all peers...")
-                    val peers = Panvpn.listPeers()
-                    for (entry in peers.split("|")) {
-                        val m = Regex("""(.+?)=(.+?)\((.+?)\)""").find(entry) ?: continue
-                        val (name, ip, st) = m.destructured
-                        if (st != "online" || ip == myIp || ip.isEmpty()) continue
-                        try {
-                            val h = Panvpn.dialHTTP(ip, srvPort.toLong(), "/health")
-                            if (h.isNotEmpty()) {
-                                serverHost = ip
-                                Log.i(TAG, "Found: $name at $ip")
-                                break
-                            }
-                        } catch (_: Exception) {}
-                    }
-                }
-
-                if (serverHost.isEmpty()) {
-                    Log.e(TAG, "No PAN server found")
-                    updateNotification("No server found")
+                if (!loggedIn) {
+                    Log.e(TAG, "Login timed out after 120s")
+                    updateNotification("Login timed out")
                     return
                 }
-
-                val proxyPort = Panvpn.startProxy(serverHost, srvPort.toLong())
-                Log.i(TAG, "Proxy: localhost:$proxyPort -> $serverHost:$srvPort")
-                // Save VERIFIED working IP
-                prefs.edit().putString("verified_server_ip", serverHost).apply()
-                updateNotification("Connected")
             }
+
+            // Now connected (either no login needed, or login completed) — find the PAN server
+            loginUrl = null
+            val myIp = Panvpn.getStatus().ip
+            val srvPort = getServerPort()
+            Log.i(TAG, "Connected. Self=$myIp port=$srvPort")
+
+            var serverHost = ""
+
+            // 1. Try saved verified IP first (instant)
+            val savedIp = prefs.getString("verified_server_ip", "") ?: ""
+            if (savedIp.isNotEmpty() && savedIp != myIp) {
+                Log.i(TAG, "Trying saved server $savedIp...")
+                try {
+                    val health = Panvpn.dialHTTP(savedIp, srvPort.toLong(), "/health")
+                    if (health.isNotEmpty()) {
+                        serverHost = savedIp
+                        Log.i(TAG, "Saved server OK: $savedIp")
+                    }
+                } catch (_: Exception) {
+                    Log.i(TAG, "Saved server $savedIp failed")
+                }
+            }
+
+            // 2. Try pan-hub hostname
+            if (serverHost.isEmpty()) {
+                val hubIp = Panvpn.findServerIP("pan-hub")
+                Log.i(TAG, "FindServerIP(pan-hub) = '$hubIp'")
+                if (hubIp.isNotEmpty() && hubIp != myIp) {
+                    try {
+                        val health = Panvpn.dialHTTP(hubIp, srvPort.toLong(), "/health")
+                        if (health.isNotEmpty()) {
+                            serverHost = hubIp
+                            Log.i(TAG, "pan-hub OK: $hubIp")
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // 3. Scan all online peers
+            if (serverHost.isEmpty()) {
+                Log.i(TAG, "Scanning all peers...")
+                val peers = Panvpn.listPeers()
+                for (entry in peers.split("|")) {
+                    val m = Regex("""(.+?)=(.+?)\((.+?)\)""").find(entry) ?: continue
+                    val (name, ip, st) = m.destructured
+                    if (st != "online" || ip == myIp || ip.isEmpty()) continue
+                    try {
+                        val h = Panvpn.dialHTTP(ip, srvPort.toLong(), "/health")
+                        if (h.isNotEmpty()) {
+                            serverHost = ip
+                            Log.i(TAG, "Found: $name at $ip")
+                            break
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            if (serverHost.isEmpty()) {
+                Log.e(TAG, "No PAN server found")
+                updateNotification("No server found")
+                return
+            }
+
+            val proxyPort = Panvpn.startProxy(serverHost, srvPort.toLong())
+            Log.i(TAG, "Proxy: localhost:$proxyPort -> $serverHost:$srvPort")
+            prefs.edit().putString("verified_server_ip", serverHost).apply()
+            updateNotification("Connected")
         } catch (e: Exception) {
             Log.e(TAG, "Connection failed", e)
             updateNotification("Error: ${e.message}")

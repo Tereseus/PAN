@@ -12,7 +12,7 @@
 $ErrorActionPreference = "Continue"
 
 # === CONFIG ===
-$PanDir = (Split-Path (Split-Path $PSScriptRoot))
+$PanDir = "C:\Users\tzuri\OneDrive\Desktop\PAN"
 $ServiceDir = "$PanDir\service"
 $LogFile = "$env:LOCALAPPDATA\PAN\data\steward.log"
 $CheckInterval = 30

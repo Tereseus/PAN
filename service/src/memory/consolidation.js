@@ -11,21 +11,20 @@ import * as semantic from './semantic.js';
 import * as procedural from './procedural.js';
 
 // Heuristic patterns for extracting facts without LLM
-// IMPORTANT: These must be STRICT to avoid capturing casual speech/voice transcriptions.
-// Only match when the user is clearly stating a rule, preference, or correction.
 const CORRECTION_PATTERNS = [
-  /no,?\s+(?:actually|it's|it is|that's)\s+(.{10,80})$/i,
-  /(?:don't|do not)\s+(?:ever|use|add|change|modify|delete|remove)\s+(.{10,80})$/i,
-  /(?:stop|quit)\s+(?:doing|adding|changing|using)\s+(.{10,80})$/i,
-  /never\s+(?:use|do|add|change|modify|ask|suggest)\s+(.{10,80})$/i,
-  /always\s+(?:use|do|check|make|run|start|test)\s+(.{10,80})$/i,
-  /(?:I|we)\s+prefer\s+(?:to\s+)?(?:use|have|keep)\s+(.{10,80})$/i,
-  /(?:from now on|going forward),?\s+(.{10,80})$/i,
+  /no,?\s+(?:actually|it's|it is|that's|use)\s+(.+)/i,
+  /don't\s+(.+)/i,
+  /stop\s+(.+)/i,
+  /never\s+(.+)/i,
+  /always\s+(.+)/i,
+  /(?:I|we)\s+prefer\s+(.+)/i,
+  /(?:from now on|going forward)\s+(.+)/i,
 ];
 
 const PREFERENCE_PATTERNS = [
-  /(?:the rule is|the pattern is)\s+(.{10,80})$/i,
-  /(?:make sure|ensure)\s+(?:to\s+)?(?:always|never)\s+(.{10,80})$/i,
+  /(?:I|we)\s+(?:like|want|need|prefer)\s+(.+)/i,
+  /(?:make sure|ensure|remember)\s+(?:to\s+)?(.+)/i,
+  /(?:the rule is|the pattern is)\s+(.+)/i,
 ];
 
 // Extract episodes and facts from recent events using heuristics
@@ -42,34 +41,29 @@ function heuristicExtract(events) {
       const prompt = data.prompt || '';
       if (prompt.length < 20 || prompt.startsWith('{')) continue;
 
-      // Check for corrections/preferences — only short, clear statements
-      // Skip voice-to-text noise (long rambling prompts are rarely clean preferences)
-      if (prompt.length < 300) {
-        for (const pattern of CORRECTION_PATTERNS) {
-          const match = prompt.match(pattern);
-          if (match && match[1].length >= 10 && match[1].length <= 80) {
-            facts.push({
-              subject: 'user_correction',
-              predicate: 'stated',
-              object: match[1].trim(),
-              category: 'user_preference',
-              confidence: 0.9,
-            });
-            break; // one fact per prompt max
-          }
+      // Check for corrections/preferences
+      for (const pattern of CORRECTION_PATTERNS) {
+        const match = prompt.match(pattern);
+        if (match) {
+          facts.push({
+            subject: 'user_correction',
+            predicate: 'stated',
+            object: match[1].slice(0, 200),
+            category: 'user_preference',
+            confidence: 0.9,
+          });
         }
-        for (const pattern of PREFERENCE_PATTERNS) {
-          const match = prompt.match(pattern);
-          if (match && match[1].length >= 10 && match[1].length <= 80) {
-            facts.push({
-              subject: 'user_preference',
-              predicate: 'wants',
-              object: match[1].trim(),
-              category: 'user_preference',
-              confidence: 0.8,
-            });
-            break; // one fact per prompt max
-          }
+      }
+      for (const pattern of PREFERENCE_PATTERNS) {
+        const match = prompt.match(pattern);
+        if (match) {
+          facts.push({
+            subject: 'user_preference',
+            predicate: 'wants',
+            object: match[1].slice(0, 200),
+            category: 'user_preference',
+            confidence: 0.8,
+          });
         }
       }
     }
