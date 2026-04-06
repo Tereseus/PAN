@@ -41,6 +41,7 @@
 	let testSuites = $state([]);
 	let selectedSuite = $state(null);
 	let testResults = $state([]);
+	let testGroup = $state('PAN Core');
 	let testsRunning = $state(false);
 	let testPollTimer = null;
 
@@ -204,6 +205,8 @@
 			_closing: false,
 			claudeSessionIds: [],
 			userScrolledUp: false,
+			logLines: [],       // Append-only log from server (immune to corruption)
+			logPosition: 0,     // Last known log sequence number
 		};
 
 		// Track if user has scrolled up (don't auto-scroll if so)
@@ -250,19 +253,50 @@
 				try {
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
-						case 'screen': {
-							// Server sends pre-rendered HTML lines — just display them
-							if (msg.scrollback && msg.scrollback.length > 0) {
-								scrollbackDiv.innerHTML = msg.scrollback.join('\n');
+						case 'screen-v2': {
+							// Append-only log system — append new log lines, render viewport separately
+							if (msg.logLines && msg.logLines.length > 0) {
+								tabData.logLines.push(...msg.logLines);
+								// Cap client-side log
+								if (tabData.logLines.length > 5000) {
+									tabData.logLines = tabData.logLines.slice(-5000);
+									scrollbackDiv.innerHTML = tabData.logLines.join('\n');
+								} else {
+									// Incremental append — much faster than full innerHTML replace
+									scrollbackDiv.insertAdjacentHTML('beforeend',
+										(tabData.logLines.length > msg.logLines.length ? '\n' : '') + msg.logLines.join('\n'));
+								}
 							}
+
+							// Live viewport — may be TUI/alt screen, self-corrects on corruption
 							screenDiv.innerHTML = msg.lines.join('\n');
+							if (msg.altScreen) {
+								screenDiv.classList.add('alt-screen');
+							} else {
+								screenDiv.classList.remove('alt-screen');
+							}
 
 							// Auto-scroll to bottom unless user scrolled up
 							if (!tabData.userScrolledUp) {
 								tabContainer.scrollTop = tabContainer.scrollHeight;
 							}
 
-							// Detect if buffer has content (for auto-launch logic)
+							if (!hasExistingBuffer && msg.lines.some(l => l.trim().length > 0)) {
+								hasExistingBuffer = true;
+							}
+							break;
+						}
+						case 'screen': {
+							// Legacy v1 fallback
+							if (msg.scrollback && msg.scrollback.length > 0) {
+								scrollbackDiv.innerHTML = msg.scrollback.join('\n');
+							}
+							screenDiv.innerHTML = msg.lines.join('\n');
+
+							if (!tabData.userScrolledUp) {
+								tabContainer.scrollTop = tabContainer.scrollHeight;
+							}
+
 							if (!hasExistingBuffer && msg.lines.some(l => l.trim().length > 0)) {
 								hasExistingBuffer = true;
 							}
@@ -327,7 +361,26 @@
 						reconnectAttempts = 0;
 						serverRestarting = false;
 						tabData.ws = newWs;
+						tabData.claudeStarted = false; // Reset — Claude needs to relaunch after reconnect
 						startPing();
+						newWs.send(JSON.stringify({ type: 'sync', logPosition: 0 }));
+
+						// Relaunch Claude after reconnect (server restart = fresh PTY)
+						if (projectName && projectName !== 'Shell') {
+							setTimeout(async () => {
+								if (newWs.readyState !== 1 || tabData.claudeStarted) return;
+								tabData.claudeStarted = true;
+								try {
+									await api('/api/v1/inject-context', {
+										method: 'POST',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ cwd })
+									});
+									await new Promise(r => setTimeout(r, 300));
+								} catch {}
+								newWs.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+							}, 2000);
+						}
 					};
 					newWs.onmessage = handleMessage;
 					newWs.onclose = () => {
@@ -343,26 +396,42 @@
 				if (terminalInputEl) terminalInputEl.focus();
 				startPing();
 
-				// Auto-launch Claude for project tabs
+				// Auto-launch Claude (PAN) for project tabs — ALWAYS in dev
 				if (projectName && projectName !== 'Shell') {
 					setTimeout(async () => {
-						if (ws.readyState === 1 && !tabData.claudeStarted && !hasExistingBuffer) {
-							tabData.claudeStarted = true;
-							let briefingReady = false;
-							try {
-								const briefingData = await fetch('/api/v1/context-briefing?project_path=' + encodeURIComponent(cwd)).then(r => r.json());
-								if (briefingData.briefing) {
-									ws.send(JSON.stringify({ type: 'input', data: "cat > .pan-briefing.md << 'PANBRIEFEOF'\n" + briefingData.briefing + "\nPANBRIEFEOF\n" }));
-									briefingReady = true;
-									await new Promise(r => setTimeout(r, 500));
-								}
-							} catch {}
+						if (ws.readyState !== 1) return;
 
-							if (briefingReady) {
-								ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
-							} else {
-								ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
-							}
+						// Check if Claude is actually running (❯ prompt visible = Claude active)
+						// Wait for screen to populate first
+						await new Promise(r => setTimeout(r, 500));
+						const screenText = tabData.screenDiv ? tabData.screenDiv.textContent : '';
+						const lastLine = screenText.trim().split('\n').pop() || '';
+
+						// If Claude's prompt (❯) is the last thing on screen, Claude is already running
+						if (lastLine.includes('❯')) {
+							tabData.claudeStarted = true;
+							return;
+						}
+
+						// Claude is NOT running — launch it
+						tabData.claudeStarted = true;
+
+						// Inject context into CLAUDE.md first
+						let briefingReady = false;
+						try {
+							await api('/api/v1/inject-context', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ cwd })
+							});
+							briefingReady = true;
+							await new Promise(r => setTimeout(r, 300));
+						} catch {}
+
+						if (briefingReady) {
+							ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+						} else {
+							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
 						}
 					}, 1500);
 				}
@@ -1029,7 +1098,7 @@
 				}));
 				const tests = suiteTests.length > 0 ? suiteTests :
 					Array.from({length: s.testCount}, (_, i) => ({id: `${s.id}-${i}`, name: `Test ${i+1}`, description: ''}));
-				return { id: s.id, name: s.name, description: s.description, tests };
+				return { id: s.id, name: s.name, description: s.description, tests, group: s.group || 'PAN Core', runInAll: s.runInAll !== false };
 			});
 			testSuites = serverSuites;
 			if (testSuites.length > 0 && !selectedSuite) selectedSuite = testSuites[0].id;
@@ -1059,8 +1128,9 @@
 		}, 2000);
 	}
 
-	async function runSuite() {
-		const suite = testSuites.find(s => s.id === selectedSuite);
+	async function runSuite(suiteId) {
+		const id = suiteId || selectedSuite;
+		const suite = testSuites.find(s => s.id === id);
 		if (!suite) return;
 		testsRunning = true;
 		testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
@@ -1068,10 +1138,34 @@
 			await api('/api/v1/tests/run', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ suite: suite.id })
+				body: JSON.stringify({ suite: id })
 			});
 		} catch {}
 		startTestPolling();
+	}
+
+	async function runAllTests() {
+		testsRunning = true;
+		testResults = testSuites.flatMap(s => s.tests.map(t => ({ ...t, status: 'pending', detail: '' })));
+		try {
+			await api('/api/v1/tests/run', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ suite: 'all' })
+			});
+		} catch {}
+		startTestPolling();
+	}
+
+	async function cancelTests() {
+		try {
+			await api('/api/v1/tests/cancel', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: '{}'
+			});
+		} catch {}
+		testsRunning = false;
 	}
 
 	onMount(() => {
@@ -1553,36 +1647,63 @@
 			{#if testSuites.length === 0}
 				<div class="empty-state">Loading test suites...</div>
 			{:else}
-				<select class="right-select" bind:value={selectedSuite} style="margin-bottom:8px;width:100%">
-					{#each testSuites as suite}
-						<option value={suite.id}>{suite.name} ({suite.tests.length} tests)</option>
+				<!-- App group dropdown -->
+				{@const groups = [...new Set(testSuites.map(s => s.group || 'PAN Core'))]}
+				<select bind:value={testGroup} style="width:100%;margin-bottom:8px;padding:5px 8px;background:#1a1a25;border:1px solid #1e1e2e;border-radius:6px;color:#cdd6f4;font-size:12px">
+					{#each groups as g}
+						<option value={g}>{g}</option>
 					{/each}
 				</select>
-				{@const suite = testSuites.find(s => s.id === selectedSuite)}
-				{#if suite}
-					<div style="font-size:11px;color:#6c7086;margin-bottom:8px">{suite.description}</div>
-					<button class="test-run-btn" onclick={runSuite} disabled={testsRunning} style="width:100%;padding:8px;margin-bottom:10px;background:#1e1e2e;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer">
-						{testsRunning ? 'Running...' : `Run ${suite.name}`}
+
+				<!-- Run All / Cancel buttons -->
+				<div style="display:flex;gap:6px;margin-bottom:10px">
+					<button onclick={runAllTests} disabled={testsRunning} style="flex:1;padding:6px;background:#1e1e2e;color:#89b4fa;border:1px solid #89b4fa;border-radius:6px;cursor:pointer;font-size:12px">
+						{testsRunning ? 'Running...' : 'Run All'}
 					</button>
-				{/if}
-				{#each testResults as t}
-					<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-bottom:1px solid #1e1e2e">
-						<span style="font-size:14px;min-width:16px;text-align:center;color:{t.status === 'pass' ? '#a6e3a1' : t.status === 'fail' ? '#f38ba8' : t.status === 'running' ? '#f9e2af' : '#6c7086'}">
-							{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : t.status === 'running' ? '\u25CF' : '\u25CB'}
-						</span>
-						<div style="flex:1;min-width:0">
-							<div style="font-size:12px;color:#cdd6f4">{t.name}</div>
-							{#if t.detail}
-								<div style="font-size:10px;color:{t.status === 'fail' ? '#f38ba8' : '#6c7086'};word-break:break-word">{t.detail}</div>
-							{/if}
+					{#if testsRunning}
+						<button onclick={cancelTests} style="padding:6px 12px;background:#2e1a1a;color:#f38ba8;border:1px solid #f38ba8;border-radius:6px;cursor:pointer;font-size:12px">
+							Cancel
+						</button>
+					{/if}
+				</div>
+
+				<!-- Suites filtered by selected group -->
+				{#each testSuites.filter(s => (s.group || 'PAN Core') === testGroup) as suite, si}
+					<div style="margin-bottom:8px">
+						<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #1e1e2e">
+							<span style="font-size:11px;color:#585b70;min-width:18px">{si + 1}.</span>
+							<span style="font-size:12px;font-weight:500;color:#cdd6f4;flex:1">{suite.name}{#if !suite.runInAll} <span style="font-size:9px;color:#585b70">(manual)</span>{/if}</span>
+							<button onclick={() => runSuite(suite.id)} disabled={testsRunning} style="padding:2px 8px;background:transparent;color:#89b4fa;border:1px solid #313244;border-radius:4px;cursor:pointer;font-size:10px">
+								Run
+							</button>
 						</div>
+						<!-- Tests within this suite -->
+						{#each testResults.filter(t => {
+							const suiteTests = suite.tests.map(st => st.id);
+							return suiteTests.includes(t.id);
+						}) as t}
+							<div style="display:flex;gap:6px;align-items:flex-start;padding:3px 0 3px 24px">
+								<span style="font-size:12px;min-width:14px;text-align:center;color:{t.status === 'pass' ? '#a6e3a1' : t.status === 'fail' ? '#f38ba8' : t.status === 'running' ? '#f9e2af' : t.status === 'cancelled' ? '#fab387' : '#6c7086'}">
+									{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : t.status === 'running' ? '\u25CF' : t.status === 'cancelled' ? '\u25A0' : '\u25CB'}
+								</span>
+								<div style="flex:1;min-width:0">
+									<div style="font-size:11px;color:#bac2de">{t.name}</div>
+									{#if t.detail}
+										<div style="font-size:9px;color:{t.status === 'fail' ? '#f38ba8' : '#585b70'};word-break:break-word">{t.detail}</div>
+									{/if}
+								</div>
+							</div>
+						{/each}
 					</div>
 				{/each}
+
+				<!-- Summary -->
 				{#if testResults.length > 0 && !testsRunning}
 					{@const passed = testResults.filter(t => t.status === 'pass').length}
 					{@const failed = testResults.filter(t => t.status === 'fail').length}
-					<div style="margin-top:8px;padding:6px;border-radius:4px;text-align:center;font-size:12px;background:{failed === 0 ? '#1a2e1a' : '#2e1a1a'};color:{failed === 0 ? '#a6e3a1' : '#f38ba8'}">
-						{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
+					{@const cancelled = testResults.filter(t => t.status === 'cancelled').length}
+					<div style="margin-top:8px;padding:6px;border-radius:4px;text-align:center;font-size:12px;background:{failed === 0 && cancelled === 0 ? '#1a2e1a' : '#2e1a1a'};color:{failed === 0 && cancelled === 0 ? '#a6e3a1' : '#f38ba8'}">
+						{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}{cancelled > 0 ? `, ${cancelled} cancelled` : ''}
 					</div>
 				{/if}
 			{/if}
@@ -1621,17 +1742,17 @@
 		{#if !leftPanelCollapsed}
 		<div class="right-header">
 			<select class="right-select" bind:value={leftTab} onchange={() => { if (leftTab === 'transcript') { loadChatHistory(); } }}>
-				<option value="transcript">Transcript</option>
-				<option value="project">Project</option>
-				<option value="services">Services</option>
-				<option value="approvals">Approvals{pendingApprovals.length > 0 ? ` (${pendingApprovals.length})` : ''}</option>
 				<option value="alerts">Alerts{alerts.length > 0 ? ` (${alerts.length})` : ''}</option>
-				<option value="tasks">Tasks</option>
+				<option value="approvals">Approvals{pendingApprovals.length > 0 ? ` (${pendingApprovals.length})` : ''}</option>
+				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
 				<option value="instances">Instances</option>
-				<option value="tests">Tests</option>
-				<option value="apps">Apps</option>
+				<option value="project">Project</option>
+				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
+				<option value="tasks">Tasks</option>
+				<option value="tests">Tests</option>
+				<option value="transcript">Transcript</option>
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
@@ -1717,17 +1838,17 @@
 	<div class="right-panel" class:collapsed={rightPanelCollapsed} style="width:{rightPanelCollapsed ? 0 : rightPanelWidth}px">
 		<div class="right-header">
 			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'transcript') loadChatHistory(); }}>
-				<option value="transcript">Transcript</option>
-				<option value="project">Project</option>
-				<option value="services">Services</option>
-				<option value="approvals">Approvals{pendingApprovals.length > 0 ? ` (${pendingApprovals.length})` : ''}</option>
 				<option value="alerts">Alerts{alerts.length > 0 ? ` (${alerts.length})` : ''}</option>
-				<option value="tasks">Tasks</option>
+				<option value="approvals">Approvals{pendingApprovals.length > 0 ? ` (${pendingApprovals.length})` : ''}</option>
+				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
 				<option value="instances">Instances</option>
-				<option value="tests">Tests</option>
-				<option value="apps">Apps</option>
+				<option value="project">Project</option>
+				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
+				<option value="tasks">Tasks</option>
+				<option value="tests">Tests</option>
+				<option value="transcript">Transcript</option>
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
@@ -1740,6 +1861,11 @@
 </div>
 
 <style>
+	/* Alt screen indicator — subtle left border when TUI is active */
+	:global(.alt-screen) {
+		border-left: 2px solid #89b4fa33;
+	}
+
 	/* Lock page — never allow horizontal scroll from voice-to-text */
 	:global(html), :global(body) {
 		overflow-x: hidden !important;

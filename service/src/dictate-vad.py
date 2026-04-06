@@ -11,7 +11,7 @@ import tempfile
 import wave
 
 SILENCE_THRESHOLD = 150    # RMS below this = silence (very low to avoid premature stops)
-SILENCE_DURATION = float(os.environ.get('WHISPER_SILENCE', '1.0'))  # Configurable via env
+SILENCE_DURATION = float(os.environ.get('WHISPER_SILENCE', '1.4'))  # Configurable via env
 MAX_DURATION = 300         # 5 minutes max recording
 SAMPLE_RATE = 16000
 CHANNELS = 1
