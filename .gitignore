@@ -62,3 +62,5 @@ STRATEGY.md
 *.log
 service/models/
 __pycache__/
+tmp-eval-claude-bot/
+tmp-eval-opencode-bot/
