@@ -85,10 +85,12 @@ dependencies {
     // Vosk — offline speech recognition (no profanity filter, no audio focus steal)
     implementation("com.alphacephei:vosk-android:0.3.47")
 
-    // On-device AI REMOVED — all AI goes through server (Cerebras/Gemini via Tailscale)
-    // MediaPipe tasks-genai (1-2GB model), ML Kit GenAI, and llama.cpp all removed
-    // Offline fallback uses tiny Qwen 0.6B classifier already bundled in assets
-    // implementation("com.google.mlkit:genai-prompt:1.0.0-beta1")
+    // On-device AI — ML Kit GenAI Summarization uses the phone's built-in Gemini Nano
+    // Used for on-device text classification (summarization API doubles as classifier)
+    implementation("com.google.mlkit:genai-summarization:1.0.0-beta1")
+    // Also need guava-android for .await() on Tasks
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.7.3")
+    // MediaPipe (bundles 1-2GB model) and llama.cpp REMOVED — not needed
     // implementation("com.google.mediapipe:tasks-genai:0.10.33")
     // implementation(project(":llama-lib"))
 

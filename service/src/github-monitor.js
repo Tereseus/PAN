@@ -5,7 +5,7 @@
 // Can also be started standalone for backward compatibility.
 
 import { execSync } from 'child_process';
-import { get, run, insert, indexEventFTS } from './db.js';
+import { get, run, logEvent } from './db.js';
 import { registerJobType, upsertJob } from './jobs.js';
 
 const GITHUB_USER = 'Tereseus';
@@ -104,17 +104,7 @@ export async function checkGithubNow(config = {}) {
 
       newComments.push(entry);
 
-      const eventId = insert(
-        `INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`,
-        {
-          ':sid': `github-${Date.now()}`,
-          ':type': 'GitHubComment',
-          ':data': JSON.stringify(entry),
-        }
-      );
-
-      const searchText = `${entry.repo}#${entry.issue_number} ${entry.issue_title} — ${entry.author}: ${entry.body}`;
-      indexEventFTS(eventId, 'GitHubComment', JSON.stringify({ text: searchText }));
+      logEvent(`github-${Date.now()}`, 'GitHubComment', entry);
 
       console.log(`[GitHub] New: ${repo}#${issue.number} by @${entry.author}`);
       console.log(`  "${entry.body.slice(0, 120)}${entry.body.length > 120 ? '...' : ''}"`);
@@ -124,22 +114,15 @@ export async function checkGithubNow(config = {}) {
   saveLastCheck(checkStart);
 
   if (newComments.length > 0) {
-    insert(
-      `INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`,
-      {
-        ':sid': `github-${Date.now()}`,
-        ':type': 'GitHubMonitorSummary',
-        ':data': JSON.stringify({
-          checked_at: checkStart,
-          new_comments: newComments.length,
-          issues_with_comments: [...new Set(newComments.map(c => `${c.repo}#${c.issue_number}`))],
-          comments: newComments.map(c => ({
-            repo: c.repo, issue: `#${c.issue_number}`, title: c.issue_title,
-            author: c.author, url: c.comment_url, preview: c.body.slice(0, 200),
-          })),
-        }),
-      }
-    );
+    logEvent(`github-${Date.now()}`, 'GitHubMonitorSummary', {
+      checked_at: checkStart,
+      new_comments: newComments.length,
+      issues_with_comments: [...new Set(newComments.map(c => `${c.repo}#${c.issue_number}`))],
+      comments: newComments.map(c => ({
+        repo: c.repo, issue: `#${c.issue_number}`, title: c.issue_title,
+        author: c.author, url: c.comment_url, preview: c.body.slice(0, 200),
+      })),
+    });
     console.log(`[GitHub] Found ${newComments.length} new comment(s)`);
   } else {
     console.log('[GitHub] No new comments');

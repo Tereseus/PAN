@@ -2,7 +2,7 @@
 // Runs as part of the PAN service, checks once per day
 // Results logged to the dashboard and reported to the user
 
-import { insert } from './db.js';
+import { logEvent } from './db.js';
 
 const ISSUES = [
   { repo: 'anthropics/claude-code', number: 37205, title: 'OAuth tokens for API' },
@@ -57,11 +57,7 @@ export async function checkIssues() {
 
   // Log results
   if (results.length > 0) {
-    insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-      ':sid': `issues-${Date.now()}`,
-      ':type': 'IssueCheck',
-      ':data': JSON.stringify({ checked: new Date().toISOString(), issues: results })
-    });
+    logEvent(`issues-${Date.now()}`, 'IssueCheck', { checked: new Date().toISOString(), issues: results });
 
     console.log(`[Issues] Checked ${results.length} issues:`);
     for (const r of results) {

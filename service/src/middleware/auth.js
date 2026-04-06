@@ -6,13 +6,41 @@
 //
 // Every request gets req.user = { id, email, display_name, role }
 
-import { get, run } from '../db.js';
+import { get, all, run } from '../db.js';
 
-const ROLE_HIERARCHY = ['viewer', 'user', 'manager', 'admin', 'owner'];
+// Default hierarchy — used as fallback if roles table is empty or missing
+const DEFAULT_ROLES = { viewer: 0, user: 25, manager: 50, admin: 75, owner: 100 };
+
+// Cache role levels from DB (refreshed on each request — cheap single query)
+let _roleCache = null;
+let _roleCacheTime = 0;
+
+function getRoleLevels() {
+  const now = Date.now();
+  if (_roleCache && now - _roleCacheTime < 30000) return _roleCache; // cache for 30s
+  try {
+    const rows = all("SELECT name, level FROM roles");
+    if (rows.length > 0) {
+      _roleCache = {};
+      for (const r of rows) _roleCache[r.name] = r.level;
+      _roleCacheTime = now;
+      return _roleCache;
+    }
+  } catch {}
+  return DEFAULT_ROLES;
+}
+
+// Exported for backwards compat — dynamic list of role names sorted by level
+function getRoleHierarchy() {
+  const levels = getRoleLevels();
+  return Object.entries(levels).sort((a, b) => a[1] - b[1]).map(e => e[0]);
+}
+
+const ROLE_HIERARCHY = getRoleHierarchy(); // initial load
 
 function getRoleLevel(role) {
-  const idx = ROLE_HIERARCHY.indexOf(role);
-  return idx >= 0 ? idx : 0;
+  const levels = getRoleLevels();
+  return levels[role] ?? 0;
 }
 
 /**
@@ -97,4 +125,4 @@ function requireRole(minRole) {
   };
 }
 
-export { extractUser, requireRole, ROLE_HIERARCHY, getRoleLevel };
+export { extractUser, requireRole, ROLE_HIERARCHY, getRoleLevel, getRoleHierarchy, getRoleLevels };
