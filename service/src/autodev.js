@@ -189,11 +189,20 @@ async function autodev() {
 }
 
 function startAutoDev(intervalMs = 60 * 60 * 1000) {
-  // Check every hour if it's time to run (respects run_at_hour)
+  const run = async () => {
+    try {
+      await autodev();
+      const { reportServiceRun } = await import('./steward.js');
+      reportServiceRun('autodev');
+    } catch (err) {
+      try { const { reportServiceRun } = await import('./steward.js'); reportServiceRun('autodev', err.message); } catch {}
+      console.error('[PAN AutoDev]', err.message);
+    }
+  };
   setTimeout(() => {
-    autodev();
-    devInterval = setInterval(autodev, intervalMs);
-  }, 30000); // 30s initial delay
+    run();
+    devInterval = setInterval(run, intervalMs);
+  }, 30000);
   console.log('[PAN AutoDev] Scheduled (checks hourly, runs at configured hour)');
 }
 

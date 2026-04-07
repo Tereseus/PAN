@@ -180,9 +180,19 @@ function startDream(intervalMs = 6 * 60 * 60 * 1000) {
   } catch {}
 
   // Run first dream after 2 minutes (let other systems settle)
+  const run = async () => {
+    try {
+      await dream();
+      const { reportServiceRun } = await import('./steward.js');
+      reportServiceRun('dream');
+    } catch (err) {
+      try { const { reportServiceRun } = await import('./steward.js'); reportServiceRun('dream', err.message); } catch {}
+      console.error('[PAN Dream]', err.message);
+    }
+  };
   setTimeout(() => {
-    dream();
-    dreamInterval = setInterval(dream, intervalMs);
+    run();
+    dreamInterval = setInterval(run, intervalMs);
   }, 120000);
   console.log(`[PAN Dream] Scheduled every ${Math.round(intervalMs / 3600000)}h, state file: ${STATE_FILE}`);
 }

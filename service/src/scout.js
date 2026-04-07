@@ -303,10 +303,18 @@ function updateFinding(id, status) {
 }
 
 function startScout(intervalMs = 24 * 60 * 60 * 1000) {
-  // Run first scan after 30 seconds (let server start up)
-  setTimeout(() => scout().catch(console.error), 30000);
-  // Then run on interval (default: daily)
-  timer = setInterval(() => scout().catch(console.error), intervalMs);
+  const run = async () => {
+    try {
+      await scout();
+      const { reportServiceRun } = await import('./steward.js');
+      reportServiceRun('scout');
+    } catch (err) {
+      try { const { reportServiceRun } = await import('./steward.js'); reportServiceRun('scout', err.message); } catch {}
+      console.error('[PAN Scout]', err.message);
+    }
+  };
+  setTimeout(run, 30000);
+  timer = setInterval(run, intervalMs);
   console.log(`[PAN Scout] Running every ${Math.round(intervalMs / 3600000)}h`);
 }
 

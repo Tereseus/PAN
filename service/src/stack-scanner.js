@@ -250,9 +250,18 @@ function getAllStacks() {
 }
 
 function startStackScanner(intervalMs = 6 * 60 * 60 * 1000) {
-  // Run first scan after 15 seconds
-  setTimeout(scanStacks, 15000);
-  scanInterval = setInterval(scanStacks, intervalMs);
+  const run = async () => {
+    try {
+      await scanStacks();
+      const { reportServiceRun } = await import('./steward.js');
+      reportServiceRun('stack-scanner');
+    } catch (err) {
+      try { const { reportServiceRun } = await import('./steward.js'); reportServiceRun('stack-scanner', err.message); } catch {}
+      console.error('[PAN Stack]', err.message);
+    }
+  };
+  setTimeout(run, 15000);
+  scanInterval = setInterval(run, intervalMs);
   console.log('[PAN Stack] Scanner scheduled every ' + Math.round(intervalMs / 3600000) + 'h');
 }
 
