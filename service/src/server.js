@@ -241,7 +241,7 @@ app.use('/api/v1/runner', runnerRouter);
 
 // Feature registry — maps feature names to Steward services for toggle API
 // Import start/stop directly for the toggle endpoint (Steward handles boot, this handles runtime toggles)
-import { startScout, stopScout } from './scout.js';
+import { startScout, stopScout, getFindings, updateFinding } from './scout.js';
 import { startDream, stopDream } from './dream.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startAutoDev, stopAutoDev } from './autodev.js';
@@ -340,6 +340,43 @@ app.get('/api/automation/usage', (req, res) => {
     });
   } catch (e) {
     console.error('[PAN Usage] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ==================== SCOUT ENDPOINTS ====================
+
+// GET /dashboard/api/scout — list scout findings
+app.get('/dashboard/api/scout', (req, res) => {
+  try {
+    const status = req.query.status || 'new';
+    const limit = parseInt(req.query.limit) || 20;
+    const findings = getFindings({ status, limit });
+    res.json({ findings });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /dashboard/api/scout/run — trigger a scout scan (does NOT enable the scout service)
+app.post('/dashboard/api/scout/run', async (req, res) => {
+  try {
+    const { scout } = await import('./scout.js');
+    await scout();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /dashboard/api/scout/:id — approve/dismiss a finding
+app.patch('/dashboard/api/scout/:id', (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!status) return res.status(400).json({ error: 'status required' });
+    updateFinding(parseInt(req.params.id), status);
+    res.json({ ok: true });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

@@ -8,6 +8,8 @@
 	let expandedSensorId = $state(null);
 	let pollInterval = $state(null);
 	let lastSensorJson = $state('');
+	let categoryFilter = $state('all'); // 'all', 'passive', 'active'
+	let searchQuery = $state('');
 
 	async function loadDevices() {
 		try {
@@ -98,8 +100,33 @@
 	{:else if sensors.length === 0}
 		<div class="muted">No sensors found for this device.</div>
 	{:else}
+		{@const passiveCount = sensors.filter(s => s.category === 'passive').length}
+		{@const activeCount = sensors.filter(s => s.category === 'active').length}
+		<div class="category-bar">
+			<button class="cat-btn" class:active={categoryFilter === 'all'} onclick={() => categoryFilter = 'all'}>
+				All ({sensors.length})
+			</button>
+			<button class="cat-btn" class:active={categoryFilter === 'passive'} onclick={() => categoryFilter = 'passive'}>
+				Passive ({passiveCount})
+			</button>
+			<button class="cat-btn" class:active={categoryFilter === 'active'} onclick={() => categoryFilter = 'active'}>
+				Active ({activeCount})
+			</button>
+			<input class="sensor-search" type="text" placeholder="Search sensors..." bind:value={searchQuery} />
+		</div>
+
+		{@const filtered = sensors.filter(s => {
+			if (categoryFilter !== 'all' && s.category !== categoryFilter) return false;
+			if (searchQuery && !s.name.toLowerCase().includes(searchQuery.toLowerCase()) && !s.description.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+			return true;
+		})}
+
+		{#if filtered.length === 0}
+			<div class="muted">No sensors match the filter.</div>
+		{/if}
+
 		<div class="sensor-grid">
-			{#each sensors as s}
+			{#each filtered as s}
 				{@const isOn = s.enabled}
 				{@const isExpanded = expandedSensorId === s.id}
 				{@const isLocked = s.locked}
@@ -209,6 +236,45 @@
 
 	.muted { color: #6c7086; font-size: 14px; padding: 16px; }
 	.muted-sm { color: #6c7086; font-size: 11px; }
+
+	.category-bar {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 14px;
+		flex-wrap: wrap;
+	}
+
+	.cat-btn {
+		background: #12121a;
+		border: 1px solid #1e1e2e;
+		color: #6c7086;
+		padding: 5px 14px;
+		border-radius: 6px;
+		font-size: 12px;
+		cursor: pointer;
+		font-family: 'Inter', sans-serif;
+		transition: all 0.15s;
+	}
+
+	.cat-btn:hover { border-color: #89b4fa; color: #cdd6f4; }
+	.cat-btn.active { background: rgba(137, 180, 250, 0.1); border-color: #89b4fa; color: #89b4fa; font-weight: 500; }
+
+	.sensor-search {
+		margin-left: auto;
+		background: #12121a;
+		border: 1px solid #1e1e2e;
+		color: #cdd6f4;
+		padding: 5px 12px;
+		border-radius: 6px;
+		font-size: 12px;
+		font-family: 'Inter', sans-serif;
+		outline: none;
+		width: 180px;
+	}
+
+	.sensor-search:focus { border-color: #89b4fa; }
+	.sensor-search::placeholder { color: #45475a; }
 
 	.sensor-grid {
 		display: grid;

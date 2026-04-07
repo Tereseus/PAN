@@ -270,9 +270,18 @@ function addScoutMission(topic, description) {
 }
 
 function startOrchestrator(intervalMs = 4 * 60 * 60 * 1000) {
-  // First run after 2 minutes (let subsystems warm up)
-  setTimeout(() => orchestrate().catch(console.error), 120000);
-  timer = setInterval(() => orchestrate().catch(console.error), intervalMs);
+  const run = async () => {
+    try {
+      await orchestrate();
+      const { reportServiceRun } = await import('./steward.js');
+      reportServiceRun('orchestrator');
+    } catch (err) {
+      try { const { reportServiceRun } = await import('./steward.js'); reportServiceRun('orchestrator', err.message); } catch {}
+      console.error('[Orchestrator]', err.message);
+    }
+  };
+  setTimeout(run, 120000);
+  timer = setInterval(run, intervalMs);
   console.log(`[Orchestrator] Running every ${Math.round(intervalMs / 3600000)}h`);
 }
 

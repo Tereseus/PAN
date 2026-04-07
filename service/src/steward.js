@@ -21,6 +21,8 @@ import { startDream, stopDream } from './dream.js';
 import { startAutoDev, stopAutoDev } from './autodev.js';
 import { startStackScanner, stopStackScanner } from './stack-scanner.js';
 import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
+import { consolidate as consolidateMemory } from './memory/consolidation.js';
+import { evolve as runEvolution } from './evolution/engine.js';
 import { listSessions } from './terminal.js';
 import { hostname } from 'os';
 import http from 'http';
@@ -88,16 +90,28 @@ const services = [
   {
     id: 'whisper',
     name: 'Whisper STT',
-    description: 'Voice-to-text batch transcription (faster-whisper tiny, GPU)',
+    description: 'Voice-to-text batch transcription (faster-whisper base, GPU)',
     modelTier: 'local',
-    modelMinSize: '~75MB (tiny)',
-    modelCurrent: 'faster-whisper-tiny',
+    modelMinSize: '~145MB (base)',
+    modelCurrent: 'faster-whisper-base',
     port: 7782,
     healthCheck: 'port',
     bootOrder: 3,
     dependsOn: [],
     interval: null, // always-on
-    startFn: null,
+    startFn: () => {
+      const whisperScript = join(__dirname, 'whisper-server.py');
+      try {
+        spawn('python', [whisperScript], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        }).unref();
+        console.log('[Steward] Launched whisper-server.py');
+      } catch (err) {
+        console.error('[Steward] Failed to launch whisper-server.py:', err.message);
+      }
+    },
     stopFn: null,
     _status: 'unknown',
     _lastCheck: null,
@@ -214,9 +228,20 @@ const services = [
     healthCheck: 'interval',
     bootOrder: 8,
     dependsOn: ['embeddings', 'dream'],
-    interval: 'per-session',
-    startFn: null, // triggered by dream/classifier, not on a timer
-    stopFn: null,
+    interval: '12h',
+    intervalMs: 12 * 60 * 60 * 1000,
+    startFn: () => {
+      // Run consolidation on a 12h timer (also triggered by dream cycle)
+      const run = () => consolidateMemory({ useLLM: true })
+        .then(() => reportServiceRun('consolidation'))
+        .catch(err => reportServiceRun('consolidation', err.message));
+      setTimeout(run, 5 * 60 * 1000); // first run after 5 min
+      services.find(s => s.id === 'consolidation')._timer = setInterval(run, 12 * 60 * 60 * 1000);
+    },
+    stopFn: () => {
+      const svc = services.find(s => s.id === 'consolidation');
+      if (svc._timer) { clearInterval(svc._timer); svc._timer = null; }
+    },
     _status: 'unknown',
     _lastCheck: null,
     _lastError: null,
@@ -276,8 +301,19 @@ const services = [
     bootOrder: 11,
     dependsOn: ['dream', 'consolidation'],
     interval: '6h',
-    startFn: null, // triggered after dream, not standalone timer
-    stopFn: null,
+    intervalMs: 6 * 60 * 60 * 1000,
+    startFn: () => {
+      // Run evolution on a 6h timer (also triggered after dream)
+      const run = () => runEvolution()
+        .then(() => reportServiceRun('evolution'))
+        .catch(err => reportServiceRun('evolution', err.message));
+      setTimeout(run, 10 * 60 * 1000); // first run after 10 min
+      services.find(s => s.id === 'evolution')._timer = setInterval(run, 6 * 60 * 60 * 1000);
+    },
+    stopFn: () => {
+      const svc = services.find(s => s.id === 'evolution');
+      if (svc._timer) { clearInterval(svc._timer); svc._timer = null; }
+    },
     toggle: 'evolution',
     _status: 'stopped',
     _lastCheck: null,
@@ -393,12 +429,20 @@ async function checkServiceHealth(svc) {
         break;
       }
       case 'interval': {
-        // For interval-based services, check if they've been started
-        // The actual service modules track their own timer state
-        if (svc._status === 'stopped' && svc.startFn) {
-          svc._status = 'stopped';
+        if (svc._status === 'stopped' || svc._status === 'unknown') {
+          // Never started or explicitly stopped — leave as-is
+          break;
         }
-        // If running, verify last run wasn't too long ago
+        // Service was started — verify it's still alive by checking _lastRun
+        if (svc._lastRun && svc.intervalMs) {
+          const elapsed = now - svc._lastRun;
+          // If 3x the interval has passed without a reportServiceRun call, it's dead
+          const overdueThreshold = svc.intervalMs * 3;
+          if (elapsed > overdueThreshold) {
+            svc._status = 'down';
+            svc._lastError = `Overdue: last run ${Math.round(elapsed / 60000)}m ago (expected every ${Math.round(svc.intervalMs / 60000)}m)`;
+          }
+        }
         break;
       }
       case 'self': {
@@ -507,9 +551,35 @@ async function shutdownAll() {
 
 // ==================== HEALTH MONITORING ====================
 
+function logServiceEvent(serviceId, action, details = {}) {
+  try {
+    insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+      ':sid': 'steward',
+      ':type': 'StewardAction',
+      ':data': JSON.stringify({
+        service: serviceId,
+        action,
+        ...details,
+        timestamp: Date.now(),
+      })
+    });
+  } catch {}
+}
+
 async function healthCheck() {
   for (const svc of services) {
+    const prevStatus = svc._status;
     await checkServiceHealth(svc);
+
+    // Detect status transitions and log them
+    if (prevStatus !== svc._status && prevStatus !== 'unknown') {
+      logServiceEvent(svc.id, 'status_change', {
+        from: prevStatus,
+        to: svc._status,
+        error: svc._lastError,
+      });
+    }
+
     // Auto-restart services that have a startFn and are down
     if (svc._status === 'down' && svc.startFn && isServiceEnabled(svc)) {
       try {
@@ -517,9 +587,11 @@ async function healthCheck() {
         svc.startFn();
         svc._status = 'running';
         svc._lastRun = Date.now();
+        logServiceEvent(svc.id, 'restart', { success: true });
       } catch (err) {
         svc._lastError = err.message;
         console.error(`[Steward] Failed to restart ${svc.name}: ${err.message}`);
+        logServiceEvent(svc.id, 'restart', { success: false, error: err.message });
       }
     }
   }

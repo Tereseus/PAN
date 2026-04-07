@@ -89,7 +89,7 @@ async function startTerminalServer(httpServer) {
         };
         sessions.set(sessionId, session);
 
-        // PTY output -> ScreenBuffer -> rendered HTML to clients
+        // PTY output -> append-only log (raw) + ScreenBuffer (VT100) -> HTML to clients
         ptyProcess.onData((data) => {
           term.write(data);
           // Debounce rendering — batch rapid output into single screen update
