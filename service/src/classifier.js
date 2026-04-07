@@ -5,6 +5,7 @@
 // new meaningful events have accumulated.
 
 import { all, get, insert } from './db.js';
+import { reportServiceRun } from './steward.js';
 
 let timer = null;
 
@@ -37,8 +38,11 @@ async function classify() {
 }
 
 function startClassifier(intervalMs) {
-  setTimeout(() => classify().catch(console.error), 10000);
-  timer = setInterval(() => classify().catch(console.error), intervalMs);
+  const run = () => classify()
+    .then(() => reportServiceRun('classifier'))
+    .catch(err => { reportServiceRun('classifier', err.message); console.error('[Classifier]', err.message); });
+  setTimeout(run, 10000);
+  timer = setInterval(run, intervalMs);
   console.log(`[PAN] Classifier running every ${intervalMs / 1000}s`);
 }
 

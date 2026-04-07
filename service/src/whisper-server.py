@@ -6,7 +6,7 @@ Batch mode only — no streaming, no duplication possible.
   2. HTTP POST / — batch transcription (send wav_path, get text back)
   3. WebSocket  — record audio, on stop transcribe entire clip at once
 
-Model: tiny (fastest possible, ~1s transcription for 30s audio on GPU)
+Model: base (good accuracy/speed balance, ~1.5s transcription for 30s audio on GPU)
 """
 import json
 import time
@@ -22,7 +22,7 @@ print("[PAN Whisper] Loading model...", flush=True)
 t0 = time.time()
 from faster_whisper import WhisperModel
 
-MODEL_SIZE = os.environ.get('WHISPER_MODEL', 'tiny')
+MODEL_SIZE = os.environ.get('WHISPER_MODEL', 'base')
 model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
 print(f"[PAN Whisper] Model loaded in {time.time()-t0:.1f}s ({MODEL_SIZE})", flush=True)
 

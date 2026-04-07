@@ -14,6 +14,10 @@
 	// Terminal input bar — persisted across tab switches
 	let terminalInputText = $state(getTerminalInput());
 	let terminalInputEl;
+	// Approval prompt detection — populated when Claude shows a 1/2/3 style menu
+	let approvalOptions = $state(null); // null | [{ num: 1, label: 'Yes' }, ...]
+	// Claude ready state — false while processing, true when waiting for user input
+	let claudeReady = $state(true);
 
 	// Users
 	let usersData = $state([]);
@@ -81,8 +85,7 @@
 		document.removeEventListener('mouseup', onResizeEnd);
 		document.body.style.cursor = '';
 		document.body.style.userSelect = '';
-		// Trigger terminal resize after panel width change
-		setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+		// ResizeObserver on termContainerEl handles resize automatically — no synthetic event needed
 	}
 
 	// Persist chat across refresh (localStorage survives tab close + refresh)
@@ -373,18 +376,20 @@
 		const tabContainer = document.createElement('div');
 		tabContainer.id = 'term-' + tabId;
 		tabContainer.className = 'term-output';
-		tabContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;display:none;overflow-y:auto;overflow-x:hidden;font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace;font-size:14px;line-height:1.5;color:#cdd6f4;background:#1e1e2e;';
+		tabContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;display:none;overflow-y:auto;overflow-x:hidden;font-family:"JetBrains Mono","Cascadia Code","Fira Code",Consolas,monospace;font-size:13px;line-height:1.35;color:#cdd6f4;background:#11111b;';
 
-		// Scrollback div (history above visible screen)
+		// Scrollback div — tight terminal-style line rendering
 		const scrollbackDiv = document.createElement('div');
 		scrollbackDiv.className = 'term-scrollback';
-		scrollbackDiv.style.cssText = 'padding:8px 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;position:relative;z-index:2;background:#1e1e2e;';
+		scrollbackDiv.style.cssText = 'padding:6px 10px 12px 10px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;position:relative;z-index:2;background:#11111b;';
 		tabContainer.appendChild(scrollbackDiv);
 
-		// Screen div (current visible terminal screen) — uses per-line divs for efficient diffing
+		// Screen div — hidden. We use msg.lines server-side data only for detecting
+		// approval prompts (1/2/3 menus) and surface them as numbered buttons in the
+		// input area. The visual scrollback comes entirely from the transcript JSON.
 		const screenDiv = document.createElement('div');
 		screenDiv.className = 'term-screen';
-		screenDiv.style.cssText = 'padding:0 12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;min-height:100%;position:relative;z-index:1;background:#1e1e2e;';
+		screenDiv.style.cssText = 'display:none;';
 		tabContainer.appendChild(screenDiv);
 
 		// Cache of previous line HTML for diffing
@@ -425,6 +430,18 @@
 		activeTabId = tabId;
 		sessionsCount = tabs.length;
 
+		// Initial transcript render — populate from clean message data
+		setTimeout(() => renderTranscriptToTerminal(tabData), 100);
+
+		// Poll transcript every 1s while tab is active — chat_update only fires at Stop,
+		// so polling is the main streaming-update mechanism. Server-side mtime cache
+		// makes this nearly free when nothing changed.
+		tabData._pollTimer = setInterval(() => {
+			if (activeTabId === tabData.id && !document.hidden) {
+				renderTranscriptToTerminal(tabData);
+			}
+		}, 1000);
+
 		// Connect WebSocket — server sends pre-rendered HTML via ScreenBuffer
 		{
 			// Calculate cols from container width (monospace char ~8.4px at 14px font)
@@ -462,42 +479,30 @@
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
 						case 'screen-v2': {
-							// Append-only log system — scrollback from immutable log, viewport from live screen
-							const scrollHeightBefore = tabData.userScrolledUp ? tabContainer.scrollHeight : 0;
-
-							if (msg.logLines && msg.logLines.length > 0) {
-								tabData.logLines.push(...msg.logLines);
-								if (tabData.logLines.length > 5000) {
-									tabData.logLines = tabData.logLines.slice(-5000);
-									scrollbackDiv.innerHTML = tabData.logLines.join('\n');
+							// Visual scrollback comes from transcript JSON. Here we only
+							// scan the live screen text to detect Claude's interactive
+							// approval menus AND whether Claude is ready to accept input.
+							if (!hasExistingBuffer) {
+								hasExistingBuffer = true;
+								renderTranscriptToTerminal(tabData);
+							}
+							const allLines = msg.lines || [];
+							const plainLines = allLines.map(l => (l || '').replace(/<[^>]*>/g, '').trim());
+							const detected = detectApprovalOptions(plainLines);
+							// Detect if Claude's input prompt is ready: the bottom area
+							// contains a line with the ❯ prompt character. When Claude is
+							// busy processing, the prompt is replaced with a spinner/status.
+							const ready = detectClaudeReady(plainLines);
+							tabData.claudeReady = ready;
+							if (activeTabId === tabData.id) {
+								claudeReady = ready;
+								if (detected) {
+									approvalOptions = detected;
 								} else {
-									scrollbackDiv.insertAdjacentHTML('beforeend',
-										(tabData.logLines.length > msg.logLines.length ? '\n' : '') + msg.logLines.join('\n'));
+									approvalOptions = null;
 								}
 							}
-
-							// Live viewport — per-line diffing
-							const lines = msg.lines;
-							if (screenDiv.childNodes.length !== screenDiv.children.length ||
-								screenDiv.children.length === 0) {
-								screenDiv.innerHTML = '';
-								prevLines = [];
-							}
-							while (screenDiv.children.length < lines.length) {
-								const div = document.createElement('div');
-								screenDiv.appendChild(div);
-							}
-							while (screenDiv.children.length > lines.length) {
-								screenDiv.removeChild(screenDiv.lastChild);
-							}
-							let linesChanged = 0;
-							for (let li = 0; li < lines.length; li++) {
-								if (lines[li] !== prevLines[li]) {
-									screenDiv.children[li].innerHTML = lines[li];
-									linesChanged++;
-								}
-							}
-							prevLines = lines.slice();
+							const linesChanged = 0;
 
 							// Perf metrics
 							const tDom = performance.now();
@@ -579,6 +584,8 @@
 							if (leftSection === 'transcript') {
 								debouncedLoadChatHistory();
 							}
+							// Refresh main terminal view from transcript
+							renderTranscriptToTerminal(tabData);
 							break;
 						}
 						case 'permission_prompt':
@@ -650,19 +657,27 @@
 
 					const newWs = new WebSocket(wsUrlStr);
 					newWs.onopen = () => {
+						const wasServerRestart = serverRestarting;
 						reconnectAttempts = 0;
 						serverRestarting = false;
 						tabData.ws = newWs;
-						tabData.claudeStarted = false;
 						prevLines = [];
 						scrollbackDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
 						startPing();
 
-						// Relaunch Claude after reconnect (server restart = fresh PTY)
-						if (projectName && projectName !== 'Shell') {
+						// Only relaunch Claude on reconnect if the SERVER actually restarted
+						// (which means a fresh PTY). For network-blip reconnects, the existing
+						// PTY is still alive and Claude is still running — re-running the
+						// trigger would type the printf on top of an active Claude session.
+						if (wasServerRestart && projectName && projectName !== 'Shell') {
+							const launchKey = 'pan_claude_launched:' + sessionId;
+							sessionStorage.removeItem(launchKey); // server restart = invalidate guard
+							tabData.claudeStarted = false;
 							setTimeout(async () => {
 								if (newWs.readyState !== 1 || tabData.claudeStarted) return;
+								if (sessionStorage.getItem(launchKey) === '1') return;
 								tabData.claudeStarted = true;
+								sessionStorage.setItem(launchKey, '1');
 								try {
 									await api('/api/v1/inject-context', {
 										method: 'POST',
@@ -689,10 +704,20 @@
 			ws.onopen = () => {
 				startPing();
 
-				// Auto-launch Claude (PAN) for project tabs
+				// Auto-launch Claude (PAN) for project tabs — but only ONCE per project session.
+				// Previously this fired on every WebSocket reconnect, re-running the printf trigger.
 				if (projectName && projectName !== 'Shell') {
 					setTimeout(async () => {
 						if (ws.readyState !== 1) return;
+
+						// Persistent guard: if we already launched Claude for this project's
+						// PTY session, never re-run the trigger. Keyed by sessionId so a real
+						// fresh session (different sessionId) will still launch.
+						const launchKey = 'pan_claude_launched:' + sessionId;
+						if (sessionStorage.getItem(launchKey) === '1') {
+							tabData.claudeStarted = true;
+							return;
+						}
 
 						// Check if Claude is already running (❯ prompt visible)
 						await new Promise(r => setTimeout(r, 500));
@@ -700,10 +725,12 @@
 						const lastLine = screenText.trim().split('\n').pop() || '';
 						if (lastLine.includes('❯')) {
 							tabData.claudeStarted = true;
+							sessionStorage.setItem(launchKey, '1');
 							return;
 						}
 
 						tabData.claudeStarted = true;
+						sessionStorage.setItem(launchKey, '1');
 
 						// Inject context into CLAUDE.md
 						let briefingReady = false;
@@ -773,6 +800,7 @@
 		api(`/dashboard/api/open-tabs/${encodeURIComponent(tab.sessionId)}`, { method: 'DELETE' }).catch(() => {});
 
 		tab._closing = true;
+		if (tab._pollTimer) { clearInterval(tab._pollTimer); tab._pollTimer = null; }
 		if (tab.ws) tab.ws.close();
 		if (tab.container) tab.container.remove();
 
@@ -808,6 +836,136 @@
 	function escapeHtml(str) {
 		if (!str) return '';
 		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+	}
+
+	// Seed default username/LLM name on first run — user can override in settings.
+	// Names are always rendered with first-cap (Tereseus, Claude).
+	if (typeof localStorage !== 'undefined') {
+		if (!localStorage.getItem('pan_username')) localStorage.setItem('pan_username', 'Tereseus');
+		// Force-update existing lowercase value from previous build
+		const existingLlm = localStorage.getItem('pan_llm_name');
+		if (!existingLlm || existingLlm === 'claude') localStorage.setItem('pan_llm_name', 'Claude');
+	}
+
+	// Render the main terminal view from clean transcript data instead of raw VT100 PTY output.
+	// This avoids escape-code rendering issues by using the same parsed messages the sidebar uses.
+	// No inflight guard — concurrent calls are fine, the latest write wins on the DOM.
+	async function renderTranscriptToTerminal(tabData) {
+		if (!tabData || !tabData.scrollbackDiv) return;
+		try {
+			// Cache resolved session IDs on tabData to avoid the slow events probe on every poll.
+			let sessionIds = tabData._resolvedSessionIds;
+			if (!sessionIds || sessionIds.length === 0 ||
+				(tabData.claudeSessionIds && tabData.claudeSessionIds.length > sessionIds.length)) {
+				sessionIds = [];
+				if (tabData.claudeSessionIds && tabData.claudeSessionIds.length > 0) {
+					sessionIds = [...tabData.claudeSessionIds];
+				} else if (tabData.sessionId && !/^(dash|mob|dev-dash)-/.test(tabData.sessionId)) {
+					sessionIds = [tabData.sessionId];
+				} else if (tabData.cwd && !tabData._probedCwd) {
+					tabData._probedCwd = true; // probe at most once
+					try {
+						const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(tabData.cwd));
+						if (probe?.events) {
+							const seen = new Set();
+							for (const evt of probe.events) {
+								const sid = evt.session_id || '';
+								if (sid && !seen.has(sid) && !/^(system|phone|router|dash|mob|dev-dash)-/.test(sid)) {
+									seen.add(sid);
+									sessionIds.push(sid);
+									if (sessionIds.length >= 3) break;
+								}
+							}
+						}
+					} catch {}
+				}
+				tabData._resolvedSessionIds = sessionIds;
+			}
+			if (sessionIds.length === 0) return;
+
+			const allMessages = [];
+			await Promise.all(sessionIds.map(async (sid) => {
+				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300');
+				if (data?.messages) allMessages.push(...data.messages);
+			}));
+			allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+			if (allMessages.length === 0) return;
+
+			// Terminal-style rendering: tight monospace lines, simple prompt prefix.
+			// Username + LLM name come from settings (localStorage). Both are first-cap.
+			const firstCap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+			const username = firstCap((localStorage.getItem('pan_username') || 'User').replace(/[^a-zA-Z0-9_-]/g, ''));
+			const llmName = firstCap((localStorage.getItem('pan_llm_name') || 'Claude').replace(/[^a-zA-Z0-9_-]/g, ''));
+
+			function buildLineHtml(msg) {
+				if (msg.role === 'user' && msg.type === 'prompt') {
+					if (msg.text && /^\u03A0\u0391\u039D remembers/i.test(msg.text.trim())) return null;
+					const text = escapeHtml(msg.text || '');
+					return (
+						`<div class="t-line t-user">` +
+						`<span style="color:#a6e3a1;font-weight:bold;">${escapeHtml(username)}</span>` +
+						`<span style="color:#89b4fa;">$ </span>` +
+						`<span style="color:#cdd6f4;">${text}</span>` +
+						`</div>`
+					);
+				} else if (msg.role === 'assistant' && msg.type === 'text') {
+					return (
+						`<div class="t-line t-assistant">` +
+						`<span style="color:#cba6f7;font-weight:bold;">${escapeHtml(llmName)}</span>` +
+						`<span style="color:#89b4fa;">$ </span>` +
+						`<span style="color:#bac2de;">${escapeHtml(msg.text || '')}</span>` +
+						`</div>`
+					);
+				} else if (msg.role === 'assistant' && msg.type === 'tool') {
+					return (
+						`<div class="t-line t-tool">` +
+						`<span style="color:#6c7086;">\u2192 </span>` +
+						`<span style="color:#f9e2af;">${escapeHtml(msg.text || '')}</span>` +
+						`</div>`
+					);
+				}
+				return null;
+			}
+
+			// Skip update entirely if user has an active selection inside the scrollback
+			// — replacing innerHTML would wipe their selection mid-copy.
+			const sel = window.getSelection();
+			if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+				const range = sel.getRangeAt(0);
+				if (tabData.scrollbackDiv.contains(range.commonAncestorContainer)) {
+					return; // user is selecting text — don't re-render
+				}
+			}
+
+			// Append-only: track how many messages we've already rendered, only add new ones.
+			// This preserves selection state and is much cheaper than full innerHTML replace.
+			const renderedCount = tabData._renderedMsgCount || 0;
+			const totalCount = allMessages.length;
+
+			if (totalCount < renderedCount) {
+				// Transcript shrunk (new session, etc.) — full reset
+				tabData.scrollbackDiv.innerHTML = '';
+				tabData._renderedMsgCount = 0;
+			}
+
+			if (totalCount > (tabData._renderedMsgCount || 0)) {
+				const newParts = [];
+				for (let i = (tabData._renderedMsgCount || 0); i < totalCount; i++) {
+					const html = buildLineHtml(allMessages[i]);
+					if (html) newParts.push(html);
+				}
+				if (newParts.length > 0) {
+					const wasAtBottom = !tabData.userScrolledUp;
+					tabData.scrollbackDiv.insertAdjacentHTML('beforeend', newParts.join(''));
+					if (wasAtBottom && tabData.container) {
+						tabData.container.scrollTop = tabData.container.scrollHeight;
+					}
+				}
+				tabData._renderedMsgCount = totalCount;
+			}
+		} catch (err) {
+			console.error('[PAN Terminal] renderTranscriptToTerminal error:', err);
+		}
 	}
 
 	let chatServerLoaded = false; // true once server data has been received
@@ -1000,22 +1158,137 @@
 		}
 	}
 
+	// Detect whether Claude Code is ready for user input by scanning the live PTY screen.
+	// Ready = the ❯ input prompt line is visible near the bottom AND no spinner/status text
+	// is currently being shown. Busy = Claude is processing/streaming.
+	function detectClaudeReady(plainLines) {
+		if (!plainLines || plainLines.length === 0) return true; // assume ready if unknown
+		// Look at the bottom 12 lines
+		const start = Math.max(0, plainLines.length - 12);
+		let sawPromptBox = false;
+		let sawSpinner = false;
+		for (let i = start; i < plainLines.length; i++) {
+			const line = plainLines[i];
+			if (!line) continue;
+			// Claude's input prompt box has a ❯ character at the start
+			if (/[\u276F>]\s*$/.test(line) || /^[│|]?\s*[\u276F>]\s/.test(line)) sawPromptBox = true;
+			// Spinner / status indicators while busy
+			if (/(\u2728|esc to interrupt|tokens|↓|↑\s*\d|Thinking|Pondering|Cogitating|Ruminating|Considering|Reasoning)/i.test(line)) {
+				sawSpinner = true;
+			}
+		}
+		if (sawSpinner) return false;
+		return sawPromptBox;
+	}
+
+	// Detect Claude Code's interactive approval menus from the live PTY screen text.
+	// Looks for lines like "1. Yes", "❯ 1. Yes", "  2. Yes, allow always", etc.
+	// Returns an array of {num, label} or null if no menu is currently shown.
+	function detectApprovalOptions(plainLines) {
+		if (!plainLines || plainLines.length === 0) return null;
+		// Scan the last 20 lines (approval menus live near the bottom)
+		const start = Math.max(0, plainLines.length - 20);
+		const opts = [];
+		const seen = new Set();
+		for (let i = start; i < plainLines.length; i++) {
+			const line = plainLines[i];
+			if (!line) continue;
+			// Match: optional ❯, optional whitespace, digit, dot/paren, label
+			const m = line.match(/^[\u276F>\s]*(\d)[.)]\s+(.{1,80})$/);
+			if (m) {
+				const num = parseInt(m[1]);
+				if (num >= 1 && num <= 9 && !seen.has(num)) {
+					seen.add(num);
+					opts.push({ num, label: m[2].trim() });
+				}
+			}
+		}
+		// Need at least 2 numbered options to count as a menu
+		if (opts.length < 2) return null;
+		// Sort by number and ensure they're contiguous starting from 1
+		opts.sort((a, b) => a.num - b.num);
+		if (opts[0].num !== 1) return null;
+		for (let i = 1; i < opts.length; i++) {
+			if (opts[i].num !== opts[i - 1].num + 1) return null;
+		}
+		return opts;
+	}
+
+	function sendApproval(num) {
+		const active = getActiveTab();
+		if (!active?.ws || active.ws.readyState !== 1) {
+			console.warn('[PAN Terminal] sendApproval: ws not ready');
+			return;
+		}
+		console.log('[PAN Terminal] sendApproval', num);
+		// Claude Code's approval prompt is a TUI select list, NOT a 1/2/3 keypress menu.
+		// To pick option N: reset to top with up-arrows, then (N-1) down-arrows, then Enter.
+		// This matches what the existing approvalsData handler does at handleTerminalInputKey.
+		try {
+			let seq = '\x1b[A\x1b[A\x1b[A\x1b[A\x1b[A'; // 5 up arrows — guarantees top
+			for (let i = 1; i < num; i++) seq += '\x1b[B'; // (N-1) down arrows
+			seq += '\r'; // Enter to confirm
+			active.ws.send(JSON.stringify({ type: 'input', data: seq }));
+			approvalOptions = null; // hide buttons immediately for responsiveness
+		} catch (err) {
+			console.error('[PAN Terminal] sendApproval failed:', err);
+		}
+	}
+
 	function sendTerminalInput() {
 		let text = terminalInputText.trim();
 		const imgPaths = pastedImages.filter(img => img.path).map(img => img.path.replace(/\\\\/g, '/').replace(/\\/g, '/'));
 		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
-		// Allow empty Enter — Claude Code needs it for approvals/confirmations
+
+		const active = getActiveTab();
+		const wsReady = active?.ws?.readyState === 1;
+		const ready = active?.claudeReady !== false;
+		console.log('[PAN Terminal] sendTerminalInput', {
+			textLen: text.length,
+			textPreview: text.substring(0, 60),
+			wsReady,
+			claudeReady: ready,
+			tabId: active?.id,
+			sessionId: active?.sessionId,
+		});
+
+		if (!wsReady) {
+			console.warn('[PAN Terminal] WS not ready — keeping text in input box for retry');
+			if (terminalInputEl) {
+				terminalInputEl.style.outline = '2px solid #f9e2af';
+				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 600);
+			}
+			return;
+		}
+
+		// If Claude is busy, DON'T send — the PTY would buffer the input and Claude
+		// would process it later as a separate prompt, causing the "messages disappear
+		// into the void then all flush at once" bug. Hold the text in the input box
+		// and flash the status so the user knows to wait.
+		if (!ready && text) {
+			console.warn('[PAN Terminal] Claude is busy — holding message');
+			if (terminalInputEl) {
+				terminalInputEl.style.outline = '2px solid #f9e2af';
+				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 800);
+			}
+			return;
+		}
+
+		try {
+			active.ws.send(JSON.stringify({ type: 'input', data: (text ? text + '\r' : '\r') }));
+		} catch (err) {
+			console.error('[PAN Terminal] ws.send failed, keeping text:', err);
+			return;
+		}
+
+		// Only clear AFTER successful send
 		terminalInputText = '';
 		setTerminalInput('');
 		pastedImages = [];
-		// Reset textarea height
 		if (terminalInputEl) terminalInputEl.style.height = 'auto';
-
-		// Send to the terminal session via WebSocket (empty = just \r for approvals)
-		const active = getActiveTab();
-		if (active?.ws?.readyState === 1) {
-			active.ws.send(JSON.stringify({ type: 'input', data: (text ? text + '\r' : '\r') }));
-		}
+		// Optimistically mark Claude as busy until next screen update confirms
+		if (active) active.claudeReady = false;
+		claudeReady = false;
 	}
 
 	function handleTerminalInputKey(e) {
@@ -2268,8 +2541,9 @@
 		};
 		window.addEventListener('beforeunload', handleBeforeUnload);
 
-		// Resize handler — recalculate cols/rows and notify PTY server
+		// Resize handler — ResizeObserver on terminal container (fires on drag, maximize, minimize)
 		let resizeDebounce = null;
+		let termResizeObserver = null;
 		const handleResize = () => {
 			if (resizeDebounce) clearTimeout(resizeDebounce);
 			resizeDebounce = setTimeout(() => {
@@ -2284,8 +2558,13 @@
 						tab.ws.send(JSON.stringify({ type: 'resize', cols: newCols, rows: newRows }));
 					}
 				}
-			}, 300);
+			}, 200);
 		};
+		if (termContainerEl) {
+			termResizeObserver = new ResizeObserver(handleResize);
+			termResizeObserver.observe(termContainerEl);
+		}
+		// Fallback for window-level resize (maximize/minimize when observer may miss)
 		window.addEventListener('resize', handleResize);
 
 		// Global key handler — Escape and number keys reach the terminal even without textarea focus
@@ -2322,6 +2601,7 @@
 			saveChatToStorage(); // Persist chat before page unloads
 			window.removeEventListener('keydown', handleGlobalKeydown);
 			window.removeEventListener('resize', handleResize);
+			if (termResizeObserver) termResizeObserver.disconnect();
 			window.removeEventListener('beforeunload', handleBeforeUnload);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			clearInterval(svcInterval);
@@ -3028,6 +3308,23 @@
 						{/if}
 						<button class="image-remove" onclick={() => removePastedImage(idx)}>&times;</button>
 					</div>
+				{/each}
+			</div>
+		{/if}
+		{#if !claudeReady && (!approvalOptions || approvalOptions.length === 0)}
+			<div class="status-bar">
+				<span class="status-spinner"></span>
+				<span class="status-text">Claude is thinking…</span>
+			</div>
+		{/if}
+		{#if approvalOptions && approvalOptions.length > 0}
+			<div class="approval-bar">
+				<span class="approval-label">Claude needs approval:</span>
+				{#each approvalOptions as opt}
+					<button class="approval-btn" onclick={() => sendApproval(opt.num)} title="Press {opt.num}">
+						<span class="approval-num">{opt.num}</span>
+						<span class="approval-text">{opt.label}</span>
+					</button>
 				{/each}
 			</div>
 		{/if}
@@ -3868,6 +4165,77 @@
 	.center-send-btn:hover { background: #74a8fc; }
 	.center-send-btn:disabled { background: #45475a; color: #6c7086; cursor: not-allowed; }
 
+	.status-bar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 5px 10px;
+		background: #181825;
+		border-top: 1px solid #313244;
+		font-size: 12px;
+		color: #cba6f7;
+	}
+	.status-spinner {
+		display: inline-block;
+		width: 10px;
+		height: 10px;
+		border: 2px solid #313244;
+		border-top-color: #cba6f7;
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	.status-text { font-style: italic; }
+	@keyframes spin { to { transform: rotate(360deg); } }
+
+	.approval-bar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 10px;
+		background: #181825;
+		border-top: 1px solid #f9e2af;
+		flex-wrap: wrap;
+	}
+	.approval-label {
+		color: #f9e2af;
+		font-size: 12px;
+		font-weight: 600;
+		margin-right: 4px;
+	}
+	.approval-btn {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 10px;
+		background: #313244;
+		color: #cdd6f4;
+		border: 1px solid #45475a;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 12px;
+		font-family: inherit;
+		transition: background 0.1s;
+	}
+	.approval-btn:hover { background: #45475a; border-color: #89b4fa; }
+	.approval-num {
+		display: inline-block;
+		min-width: 16px;
+		height: 16px;
+		line-height: 16px;
+		text-align: center;
+		background: #89b4fa;
+		color: #1e1e2e;
+		border-radius: 3px;
+		font-weight: bold;
+		font-size: 11px;
+	}
+	.approval-text {
+		max-width: 200px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	/* ==================== Layout ==================== */
 	.toolbar {
 		display: flex;
@@ -4304,6 +4672,24 @@
 		white-space: pre-wrap;
 		word-break: break-word;
 		overflow-wrap: break-word;
+	}
+	.term-container :global(.t-line) {
+		padding: 0;
+		margin: 0;
+		line-height: 1.4;
+	}
+	.term-container :global(.t-user) {
+		margin-top: 6px;
+	}
+	.term-container :global(.t-out) {
+		color: #cdd6f4;
+		padding-left: 0;
+	}
+	.term-container :global(.t-assistant) {
+		margin-top: 4px;
+	}
+	.term-container :global(.t-tool) {
+		padding-left: 2px;
 	}
 
 	.term-empty {

@@ -125,6 +125,35 @@ class ScreenBuffer {
     this.screen.splice(this.scrollTop, 0, this._emptyRow());
   }
 
+  // Append raw PTY output to the immutable log BEFORE VT100 processing.
+  // This ensures nothing is ever lost — even if cursor repositioning overwrites
+  // content on the live screen, the log has the original output.
+  writeRaw(data) {
+    if (this.altScreen) return; // Don't log alt-screen apps (vim, less, etc.)
+
+    // Strip ANSI escape sequences and split into lines
+    const stripped = data
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')  // CSI sequences
+      .replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, '')  // OSC sequences
+      .replace(/\x1b[()][A-Z0-9]/g, '')  // Charset designations
+      .replace(/\x1b[78McDEc=>]/g, '')  // Simple ESC sequences
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');  // Control chars except \t \n \r
+
+    // Split on newlines, render each non-empty line as HTML
+    const lines = stripped.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.replace(/\r/g, '').replace(/ +$/, '');
+      if (trimmed.length === 0) continue;
+      // Escape HTML entities
+      const html = trimmed
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      this.log.push({ seq: this.logSeq++, html });
+      if (this.log.length > this.maxLog) this.log.shift();
+    }
+  }
+
   write(data) {
     let i = 0;
     while (i < data.length) {
