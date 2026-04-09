@@ -245,4 +245,4 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 
 **License:** Open Source
 **Created by:** [Tereseus](https://github.com/Tereseus)
-**Concept:** AI Cyclosis — the recursive loop of AI-driven development
+
