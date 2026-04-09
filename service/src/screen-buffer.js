@@ -2,6 +2,9 @@
 // Processes PTY output into a screen grid, renders to HTML.
 // No xterm.js dependency — pure JS, runs server-side.
 
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { dirname } from 'path';
+
 const PALETTE = [
   '#45475a','#f38ba8','#a6e3a1','#f9e2af','#89b4fa','#cba6f7','#94e2d5','#bac2de',
   '#585b70','#f38ba8','#a6e3a1','#f9e2af','#89b4fa','#cba6f7','#94e2d5','#a6adc8',
@@ -68,6 +71,70 @@ class ScreenBuffer {
     for (let y = 0; y < rows; y++) {
       this.screen.push(this._emptyRow());
     }
+
+    this._logFilePath = null;  // Set via setLogFile() for disk persistence
+  }
+
+  // Enable disk persistence — every log entry is appended to this file.
+  // Call loadLogFile() first to restore prior entries from a previous server lifetime.
+  setLogFile(filePath) {
+    this._logFilePath = filePath;
+    const dir = dirname(filePath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+
+  // Load prior log entries from disk (survives server restarts).
+  // Inserts a separator so the user can see where the restart boundary is.
+  loadLogFile() {
+    if (!this._logFilePath || !existsSync(this._logFilePath)) return 0;
+    try {
+      const raw = readFileSync(this._logFilePath, 'utf8').trim();
+      if (!raw) return 0;
+      const lines = raw.split('\n');
+      let loaded = 0;
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          this.log.push({ seq: this.logSeq++, html: entry.html });
+          loaded++;
+        } catch {}
+      }
+      if (this.log.length > this.maxLog) {
+        this.log = this.log.slice(-this.maxLog);
+      }
+      // Add restart separator so user sees where the boundary is
+      if (loaded > 0) {
+        const sep = '<span style="color:#f9e2af;font-weight:bold">──── server restarted ────</span>';
+        this.log.push({ seq: this.logSeq++, html: sep });
+        this._appendToDisk(sep);
+      }
+      return loaded;
+    } catch (err) {
+      console.error(`[ScreenBuffer] Failed to load log file:`, err.message);
+      return 0;
+    }
+  }
+
+  // Append a single HTML line to the log file on disk
+  _appendToDisk(html) {
+    if (!this._logFilePath) return;
+    try {
+      appendFileSync(this._logFilePath, JSON.stringify({ html, ts: Date.now() }) + '\n');
+    } catch {}
+  }
+
+  // Flush current visible screen to the log (call before shutdown)
+  flushScreenToLog() {
+    for (let y = 0; y < this.rows; y++) {
+      const rendered = this._renderLine(this.screen[y]);
+      if (rendered.trim()) {
+        this.log.push({ seq: this.logSeq++, html: rendered });
+        this._appendToDisk(rendered);
+      }
+    }
+    if (this.log.length > this.maxLog) {
+      this.log = this.log.slice(-this.maxLog);
+    }
   }
 
   _emptyRow() {
@@ -92,6 +159,7 @@ class ScreenBuffer {
       if (!this.altScreen) {
         this.log.push({ seq: this.logSeq++, html: rendered });
         if (this.log.length > this.maxLog) this.log.shift();
+        this._appendToDisk(rendered);
       }
     }
     if (cols !== this.cols) {
@@ -116,6 +184,7 @@ class ScreenBuffer {
       // Append to immutable log — survives screen corruption
       this.log.push({ seq: this.logSeq++, html: rendered });
       if (this.log.length > this.maxLog) this.log.shift();
+      this._appendToDisk(rendered);
     }
     this.screen.splice(this.scrollBottom, 0, this._emptyRow());
   }
@@ -151,6 +220,7 @@ class ScreenBuffer {
         .replace(/>/g, '&gt;');
       this.log.push({ seq: this.logSeq++, html });
       if (this.log.length > this.maxLog) this.log.shift();
+      this._appendToDisk(html);
     }
   }
 

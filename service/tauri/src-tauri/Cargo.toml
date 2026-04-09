@@ -24,3 +24,5 @@ xcap = "0.0.14"
 base64 = "0.22"
 tiny_http = "0.12"
 image = "0.25"
+rdev = "0.5"
+ureq = { version = "2", features = ["json"] }

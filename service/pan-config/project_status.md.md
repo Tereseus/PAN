@@ -22,3 +22,5 @@ DO NOT add new items to this file without confirming they're actually reproducib
 5. Phase 4: Make Incognito write to new `incognito_events` table (scope migration)
 6. Forget/Danger Zone deletion features (time-range, keyword, smart delete with preview)
 7. Phase 7: Geofencing + zones (sensor enforcement, org-forced toggles greyed-out)
+
+Voice hotkey implementation (AHK → Tauri global-shortcut, ~5 min / ~30 lines) — Tauri 2.0 already available, use OS-level hotkey listeners + clipboard injection. PRIORITY: implement as quick win. ✓

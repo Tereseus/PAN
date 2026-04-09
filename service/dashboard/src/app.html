@@ -10,6 +10,32 @@
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
+		<script>
+			// Block mouse back/forward buttons from navigating — PAN uses them for voice hotkeys
+			// XButton1 (button 3) = back = Win+H voice typing
+			// XButton2 (button 4) = forward = PAN whisper dictation
+			var _panXbFired = {};
+			['mousedown','mouseup','pointerdown','pointerup','auxclick'].forEach(function(evt) {
+				window.addEventListener(evt, function(e) {
+					if (e.button === 3 || e.button === 4) {
+						e.preventDefault();
+						e.stopPropagation();
+						// Fire voice action on mousedown only (not repeat for mouseup etc)
+						if (evt === 'mousedown' && !_panXbFired[e.button]) {
+							_panXbFired[e.button] = true;
+							var action = e.button === 3 ? 'winh' : 'dictate';
+							fetch('/api/v1/voice/trigger', {
+								method: 'POST',
+								headers: {'Content-Type': 'application/json'},
+								body: JSON.stringify({action: action})
+							}).catch(function(){});
+						}
+						if (evt === 'mouseup') _panXbFired[e.button] = false;
+						return false;
+					}
+				}, true);
+			});
+		</script>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>

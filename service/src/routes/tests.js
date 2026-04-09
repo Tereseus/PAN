@@ -325,7 +325,7 @@ const suites = {
 
           // Launch Claude (same command as frontend)
           if (briefingReady) {
-            ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+            ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
           } else {
             ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
           }
