@@ -45,6 +45,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = parseInt(process.env.PAN_PORT) || 7777;
 const HOST = '0.0.0.0'; // Listen on all interfaces (phone needs LAN access)
+// Dev mode: PAN_DEV=1 runs server on a separate port with no side-effects.
+// Skips steward, orphan reaping, device registration, service boots — just
+// Express + API + DB (read-safe via WAL) + test runner. Safe to run alongside prod.
+const IS_DEV = process.env.PAN_DEV === '1' || process.env.PAN_DEV === 'true';
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -211,7 +215,7 @@ app.get('/dashboard/api/processes', (req, res) => {
   try {
     const raw = execSync(
       "powershell -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('node.exe','python.exe','python3.exe','AutoHotkey64.exe','tailscaled.exe','ollama.exe','claude.exe')} | Select-Object ProcessId, Name, CommandLine, CreationDate, KernelModeTime, UserModeTime, WorkingSetSize | ConvertTo-Json -Depth 2\"",
-      { encoding: 'utf8', timeout: 10000 }
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
     );
     const parsed = JSON.parse(raw || '[]');
     const procList = Array.isArray(parsed) ? parsed : [parsed];
@@ -1069,6 +1073,7 @@ app.post('/api/v1/dev/start', async (req, res) => {
       cwd: serviceDir,
       detached: true,
       stdio: 'ignore',
+      windowsHide: true,
       env: { ...process.env },
     });
     child.unref();
@@ -1089,30 +1094,18 @@ app.post('/api/v1/dev/start', async (req, res) => {
 // Dev restart — kill existing dev server and start fresh
 app.post('/api/v1/dev/restart', async (req, res) => {
   const DEV_PORT = 7781;
-  const { execSync, spawn } = await import('child_process');
-  const { dirname, join } = await import('path');
-  const { fileURLToPath } = await import('url');
+  const { spawn } = await import('child_process');
+  const { killProcessOnPort } = await import('./platform.js');
 
   // Kill existing dev server
-  try {
-    const result = execSync(`netstat -ano | findstr :${DEV_PORT} | findstr LISTENING`, { encoding: 'utf8', timeout: 5000 });
-    const pids = new Set();
-    for (const line of result.trim().split('\n')) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parseInt(parts[parts.length - 1]);
-      if (pid && pid !== process.pid) pids.add(pid);
-    }
-    for (const pid of pids) {
-      try { execSync(`taskkill /PID ${pid} /T /F`, { timeout: 5000 }); } catch {}
-    }
-    if (pids.size > 0) await new Promise(r => setTimeout(r, 2000));
-  } catch {}
+  const killed = await killProcessOnPort(DEV_PORT);
+  if (killed.size > 0) await new Promise(r => setTimeout(r, 2000));
 
   // Start new dev server
   try {
     const serviceDir = join(dirname(fileURLToPath(import.meta.url)), '..');
     const child = spawn('node', [join(serviceDir, 'dev-server.js')], {
-      cwd: serviceDir, detached: true, stdio: 'ignore', env: { ...process.env },
+      cwd: serviceDir, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env },
     });
     child.unref();
 
@@ -1628,7 +1621,7 @@ app.post('/api/v1/voice/trigger', async (req, res) => {
     } catch {
       // Fallback: PowerShell keybd_event if Tauri is down
       const { exec } = await import('child_process');
-      exec('powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\' -Name W -Namespace K; [K.W]::keybd_event(0x5B,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x48,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x48,0,2,[UIntPtr]::Zero); [K.W]::keybd_event(0x5B,0,2,[UIntPtr]::Zero)"');
+      exec('powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\' -Name W -Namespace K; [K.W]::keybd_event(0x5B,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x48,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x48,0,2,[UIntPtr]::Zero); [K.W]::keybd_event(0x5B,0,2,[UIntPtr]::Zero)"', { windowsHide: true });
       res.json({ ok: true, action: 'winh', via: 'powershell-fallback' });
     }
   } else if (action === 'dictate') {
@@ -1779,11 +1772,11 @@ app.get('/health', (req, res) => {
   // Include Tailscale IP so phone can discover the server's remote address
   let tailscaleIp = null;
   try {
-    tailscaleIp = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', ['ip', '-4'], { timeout: 3000, encoding: 'utf8' }).trim();
+    tailscaleIp = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
   } catch {
     // Try PATH fallback
     try {
-      tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8' }).trim();
+      tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
     } catch {}
   }
   res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime, tailscaleIp, mode: PAN_MODE });
@@ -1976,48 +1969,25 @@ function start() {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
       console.log(`[PAN] Listening for Claude Code hooks...`);
 
-      // Start WebSocket terminal server (server-side rendered via ScreenBuffer).
-      // Gated to user-session mode only — node-pty's ConPTY backend crashes
-      // with "AttachConsole failed" when there's no real console (Session 0
-      // services). In service mode the dashboard hides terminal tabs entirely.
+      // ── SHARED BOOT (prod + dev) ─────────────────────────────────
+      // Dev is an exact copy of prod on a different port + database.
+      // Only system-wide singletons (steward, orphan reaper, device
+      // heartbeat) are skipped in dev — they're one-per-machine and
+      // would conflict with the running prod server.
+
+      // Start WebSocket terminal server (PTY sessions).
+      // Gated to user-session mode only — node-pty's ConPTY backend
+      // crashes with "AttachConsole failed" when there's no real
+      // console (Session 0 services).
       if (IS_USER_MODE) {
-        startTerminalServer(server).catch(e => console.error('[PAN] Terminal init error:', e));
+        (IS_DEV ? startDevTerminalServer(server) : startTerminalServer(server))
+          .catch(e => console.error('[PAN] Terminal init error:', e));
       } else {
         console.log('[PAN] Terminal server SKIPPED — service mode (no console)');
       }
 
-      // Reap orphan bash/claude processes left over from prior PAN runs.
-      // Runs async — never blocks startup. Excludes this server PID and any
-      // currently-tracked PTY PIDs (none on cold boot, but defensive). Bails
-      // silently if wmic enumeration is too slow (10s hard timeout in module).
-      setImmediate(async () => {
-        try {
-          const result = await reapOrphans({ activeChildPids: getActivePtyPids() });
-          if (result.ok) {
-            console.log(`[PAN Reap] Killed ${result.killed.length} orphan(s) (scanned ${result.scanned}, errors ${result.errors?.length || 0})`);
-            if (result.killed.length) {
-              console.log(`[PAN Reap] Pids: ${result.killed.map(k => `${k.name}#${k.pid}`).join(', ')}`);
-            }
-          } else {
-            console.warn(`[PAN Reap] Skipped: ${result.error}`);
-          }
-        } catch (e) {
-          console.warn(`[PAN Reap] Failed: ${e.message}`);
-        }
-      });
-
       // Sync projects with disk reality on startup
       syncProjects();
-
-      // Hybrid memory search: backfill embeddings for any events that don't
-      // already have one. Runs async in the background — doesn't block boot.
-      // First boot after this lands will index the historical events; from
-      // then on the per-event hook keeps things current.
-      setImmediate(() => {
-        backfillEmbeddings('main')
-          .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
-          .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
-      });
 
       // Seed sensor definitions (22 sensors)
       seedSensors();
@@ -2025,32 +1995,66 @@ function start() {
       // Auto-detect local model providers (Ollama, LM Studio)
       autoDetectLocalModels();
 
-      // Auto-register this PC as a device
-      const pcHost = hostname();
-      const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
-      if (!existing) {
-        insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
-          VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'))`, {
-          ':h': pcHost, ':name': pcHost
-        });
-        console.log(`[PAN] Registered PC: ${pcHost}`);
-      } else {
-        run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
-      }
-
-      // Keep PC device heartbeat alive (every 60 seconds)
-      _startupIntervals.push(setInterval(() => {
-        try {
-          run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
-        } catch {}
-      }, 60 * 1000));
-
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
 
-      // Steward boots all background services in dependency order.
-      // Re-enabled so AHK voice hotkeys come back up on restart.
-      bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
+      if (IS_DEV) {
+        // ── DEV-ONLY ──────────────────────────────────────────────────
+        // Full server copy — terminal, dashboard, all routes — just no
+        // system-wide singletons that would fight with prod.
+        console.log('[PAN DEV] Full server on port ' + PORT + ' (terminal + dashboard + API)');
+        console.log('[PAN DEV] Skipping: steward, orphan reaper, device heartbeat');
+        console.log(`[PAN DEV] Dashboard: http://localhost:${PORT}`);
+      } else {
+        // ── PROD-ONLY ─────────────────────────────────────────────────
+
+        // Reap orphan bash/claude processes left over from prior PAN runs.
+        setImmediate(async () => {
+          try {
+            const result = await reapOrphans({ activeChildPids: getActivePtyPids() });
+            if (result.ok) {
+              console.log(`[PAN Reap] Killed ${result.killed.length} orphan(s) (scanned ${result.scanned}, errors ${result.errors?.length || 0})`);
+              if (result.killed.length) {
+                console.log(`[PAN Reap] Pids: ${result.killed.map(k => `${k.name}#${k.pid}`).join(', ')}`);
+              }
+            } else {
+              console.warn(`[PAN Reap] Skipped: ${result.error}`);
+            }
+          } catch (e) {
+            console.warn(`[PAN Reap] Failed: ${e.message}`);
+          }
+        });
+
+        // Hybrid memory search: backfill embeddings
+        setImmediate(() => {
+          backfillEmbeddings('main')
+            .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
+            .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
+        });
+
+        // Auto-register this PC as a device
+        const pcHost = hostname();
+        const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
+        if (!existing) {
+          insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
+            VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'))`, {
+            ':h': pcHost, ':name': pcHost
+          });
+          console.log(`[PAN] Registered PC: ${pcHost}`);
+        } else {
+          run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
+        }
+
+        // Keep PC device heartbeat alive (every 60 seconds)
+        _startupIntervals.push(setInterval(() => {
+          try {
+            run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
+          } catch {}
+        }, 60 * 1000));
+
+        // Steward boots all background services in dependency order.
+        bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
+      }
 
       // Resume restart test if one was in progress before we died
       resumeRestartTest().catch(err => console.error('[PAN Tests] Resume failed:', err.message));
@@ -2331,6 +2335,7 @@ app.post('/api/admin/restart', async (req, res) => {
         cwd: join(__dirname, '..'),
         stdio: 'inherit',
         detached: true,
+        windowsHide: true,
         env: { ...process.env }
       });
       child.unref();

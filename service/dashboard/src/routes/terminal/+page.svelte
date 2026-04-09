@@ -104,6 +104,31 @@
 		let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 		// Code blocks (```...```) — must come before inline code
 		html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre class="md-codeblock"><code>$2</code></pre>');
+		// Tables — detect consecutive lines starting with |
+		const lines = html.split('\n');
+		let tableStart = -1;
+		for (let i = 0; i <= lines.length; i++) {
+			const isTableLine = i < lines.length && /^\|.+\|$/.test(lines[i].trim());
+			if (isTableLine && tableStart === -1) tableStart = i;
+			if (!isTableLine && tableStart !== -1) {
+				const tableLines = lines.slice(tableStart, i).map(l => l.trim());
+				if (tableLines.length >= 2) {
+					const isSep = /^[\s\-:|]+$/.test(tableLines[1].replace(/\|/g, '|').split('|').slice(1, -1).join(''));
+					const dataRows = isSep ? [tableLines[0], ...tableLines.slice(2)] : tableLines;
+					let table = '<table class="md-table">';
+					dataRows.forEach((row, ri) => {
+						const cells = row.split('|').slice(1, -1).map(c => c.trim());
+						const tag = (ri === 0 && isSep) ? 'th' : 'td';
+						table += '<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>';
+					});
+					table += '</table>';
+					lines.splice(tableStart, i - tableStart, table);
+					i = tableStart + 1;
+				}
+				tableStart = -1;
+			}
+		}
+		html = lines.join('\n');
 		// Inline code (`...`)
 		html = html.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
 		// Bold (**...**)
@@ -123,6 +148,7 @@
 		// Clean up <br> after block elements
 		html = html.replace(/(<\/div>)<br>/g, '$1');
 		html = html.replace(/(<\/pre>)<br>/g, '$1');
+		html = html.replace(/(<\/table>)<br>/g, '$1');
 		return html;
 	}
 
@@ -3610,9 +3636,21 @@
 								fetch('/api/v1/ui-commands', {
 									method: 'POST',
 									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal-dev` })
+									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
 								});
 							}}>Open</button>
+							<button class="instance-btn restart" onclick={async () => {
+								const r = await fetch('/api/v1/dev/restart', { method: 'POST' });
+								const d = await r.json();
+								if (d.ok) {
+									const port = d.port || 7781;
+									fetch('/api/v1/ui-commands', {
+										method: 'POST',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
+									});
+								}
+							}}>Restart</button>
 						{/if}
 					</div>
 					<div class="instance-row">
@@ -4105,9 +4143,21 @@
 								fetch('/api/v1/ui-commands', {
 									method: 'POST',
 									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal-dev` })
+									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
 								});
 							}}>Open</button>
+							<button class="instance-btn restart" onclick={async () => {
+								const r = await fetch('/api/v1/dev/restart', { method: 'POST' });
+								const d = await r.json();
+								if (d.ok) {
+									const port = d.port || 7781;
+									fetch('/api/v1/ui-commands', {
+										method: 'POST',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
+									});
+								}
+							}}>Restart</button>
 						{/if}
 					</div>
 					{#if isDev}
@@ -5247,6 +5297,11 @@
 	.chat-bubble .md-h1 { font-size: 1.2em; font-weight: 700; margin: 6px 0 4px; color: #cdd6f4; }
 	.chat-bubble .md-h2 { font-size: 1.1em; font-weight: 600; margin: 4px 0 2px; color: #cdd6f4; }
 	.chat-bubble .md-h3 { font-size: 1.0em; font-weight: 600; margin: 4px 0 2px; color: #bac2de; }
+	.chat-bubble .md-table { border-collapse: collapse; margin: 6px 0; width: 100%; font-size: 0.9em; }
+	.chat-bubble .md-table th, .chat-bubble .md-table td { border: 1px solid #313244; padding: 4px 8px; text-align: left; }
+	.chat-bubble .md-table th { background: rgba(137,180,250,0.1); font-weight: 600; color: #cdd6f4; }
+	.chat-bubble .md-table td { color: #bac2de; }
+	.chat-bubble .md-table tr:nth-child(even) td { background: rgba(49,50,68,0.3); }
 
 	/* ==================== Project Info ==================== */
 	.project-info {
@@ -6097,6 +6152,8 @@
 		cursor: pointer; font-size: 12px;
 	}
 	.instance-btn:hover { background: #45475a; }
+	.instance-btn.restart { background: #45475a; margin-left: 4px; }
+	.instance-btn.restart:hover { background: #585b70; }
 	.instance-note {
 		padding: 8px; margin-top: 8px; font-size: 11px;
 		color: #a6adc8; background: #181825; border-radius: 6px;

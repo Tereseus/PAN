@@ -7,17 +7,15 @@ const require = createRequire(import.meta.url);
 const pty = require('node-pty');
 import { WebSocketServer, WebSocket } from 'ws';
 import { hostname } from 'os';
-import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { existsSync, mkdirSync } from 'fs';
 import { all, insert } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
 import { subscribeToTranscript, writeSystemEvent } from './transcript-watcher.js';
+import { getTerminalLogDir, getShell } from './platform.js';
 
 // Terminal log directory — persists ScreenBuffer logs across server restarts
-const TERMINAL_LOG_DIR = join(
-  process.env.LOCALAPPDATA || join(process.env.USERPROFILE || 'C:\\Users\\user', 'AppData', 'Local'),
-  'PAN', 'data', 'terminal-logs'
-);
+const TERMINAL_LOG_DIR = getTerminalLogDir();
 try { mkdirSync(TERMINAL_LOG_DIR, { recursive: true }); } catch {}
 
 // Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
@@ -59,11 +57,8 @@ function getInFlightTool(cwd) {
   return inFlightTools.get(_cwdKey(cwd)) || null;
 }
 
-// Default shell
-const SHELL = existsSync('C:\\Program Files\\Git\\bin\\bash.exe')
-  ? 'C:\\Program Files\\Git\\bin\\bash.exe'
-  : 'powershell.exe';
-const SHELL_ARGS = SHELL.includes('bash') ? ['--login', '-i'] : [];
+// Default shell — platform.js handles Git Bash detection + Linux/Mac
+const { shell: SHELL, args: SHELL_ARGS } = getShell();
 
 let wss = null;
 let ScreenBufferClass = null; // loaded async
@@ -90,6 +85,13 @@ async function startTerminalServer(httpServer) {
   });
 
   wss.on('connection', (ws, req) => {
+    try { _handleTerminalConnection(ws, req); } catch (err) {
+      console.error(`[PAN Terminal] FATAL connection handler error:`, err);
+      try { ws.send(JSON.stringify({ type: 'error', message: err.message })); } catch {}
+    }
+  });
+
+  function _handleTerminalConnection(ws, req) {
     // Parse query params: ?session=<id>&project=<name>&cwd=<path>&cols=80&rows=24
     const url = new URL(req.url, 'http://localhost');
     const isDev = url.pathname === '/ws/terminal-dev';
@@ -357,7 +359,7 @@ async function startTerminalServer(httpServer) {
         ws._unsubscribeTranscript = null;
       }
     });
-  });
+  } // end _handleTerminalConnection
 
   console.log(`[PAN Terminal] Server-side rendered terminal ready at /ws/terminal`);
 }
@@ -664,7 +666,11 @@ function broadcastToSession(sessionId, type, data) {
 function listDevSessions() { return listSessions(); }
 function killDevSession(id) { return killSession(id); }
 
-async function startDevTerminalServer() { /* no-op — merged into startTerminalServer */ }
+async function startDevTerminalServer(httpServer) {
+  // Dev uses the same terminal server — identical PTY, WebSocket, ScreenBuffer.
+  // The only difference is the HTTP server instance (dev port vs prod port).
+  return startTerminalServer(httpServer);
+}
 
 // Proxy WebSocket to Whisper streaming server (port 7783)
 // This lets the dashboard connect to ws://<same-origin>/ws/whisper instead of cross-origin ws://127.0.0.1:7783

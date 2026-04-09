@@ -6,6 +6,7 @@ import { spawn } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { EventEmitter } from 'events';
+import { killProcessTree } from './platform.js';
 
 class ProjectRunner extends EventEmitter {
   constructor() {
@@ -145,16 +146,9 @@ class ProjectRunner extends EventEmitter {
     const proc = proj.services.get(serviceName);
     if (!proc || !proc.process) throw new Error('Service not running');
 
-    // On Windows, need to kill the process tree
+    // Kill the process tree (cross-platform via platform.js)
     const pid = proc.process.pid;
-    try {
-      process.kill(pid);
-    } catch {}
-
-    // Also try taskkill for the tree (Windows)
-    try {
-      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { shell: true, stdio: 'ignore' });
-    } catch {}
+    killProcessTree(pid);
 
     proj.services.delete(serviceName);
     if (proj.services.size === 0) this.projects.delete(projectPath);

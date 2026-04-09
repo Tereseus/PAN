@@ -91,6 +91,62 @@ Work autonomously — don't ask for permission, just do it.
 ## Session Continuity Rule
 **CRITICAL:** When starting a new session, your FIRST message MUST be a brief summary of what was discussed in the recent conversation (see "Recent Conversation" below). Start with "ΠΑΝ Remembers:" and list the key topics. The user should NEVER have to ask what they were working on — you tell them immediately, every single time.
 
+## Dev & Testing
+
+### Environments
+| Env | Port | Database | What runs |
+|-----|------|----------|-----------|
+| **Prod** | 7777 | `%LOCALAPPDATA%/PAN/data/` | Everything: terminal, steward, orphan reaper, device heartbeat, all services |
+| **Dev** | 7781 | `%LOCALAPPDATA%/PAN/data-dev/` | Full copy of prod (terminal, dashboard, API, sensors, project sync). Skips only system-wide singletons: steward, orphan reaper, device heartbeat |
+
+Dev is an exact copy of prod on a different port + DB. Same terminal, same dashboard page (`/v2/terminal`), same PTY. The page auto-detects dev via port number and uses separate session IDs (`dev-dash-*`).
+
+### Dev Server Commands
+```bash
+# Start dev (from prod — opens in Electron window)
+curl -s http://127.0.0.1:7777/api/v1/dev/start -X POST
+
+# Restart dev (kills old, starts fresh, opens window)
+curl -s http://127.0.0.1:7777/api/v1/dev/restart -X POST
+
+# Check dev health
+curl -s http://127.0.0.1:7781/health
+
+# Open dev dashboard directly
+# http://localhost:7781/v2/terminal
+```
+
+The Instances panel in the dashboard sidebar has **Open** and **Restart** buttons for dev.
+
+### Dashboard (SvelteKit)
+- **Source**: `service/dashboard/src/routes/` (Svelte 5 + SvelteKit)
+- **Build**: `cd service/dashboard && npm run build` → outputs to `service/public/v2/`
+- **MUST rebuild after editing .svelte files** — prod/dev both serve from `public/v2/`
+- Key pages: `terminal/+page.svelte` (main), `settings/+page.svelte`, `conversations/+page.svelte`
+
+### Process Spawning on Windows
+**CRITICAL**: Every `execSync()`, `exec()`, `execFile()`, `spawn()` call MUST include `windowsHide: true` in options. Without it, a visible black CMD window flashes on screen. PAN runs dozens of these per minute (health checks, process enumeration, taskkill) — missing `windowsHide` causes hundreds of CMD windows opening/closing.
+
+### Tests
+- Tests run via the dashboard Tests panel (right sidebar)
+- ALL verification is visual via screenshots — never curl/API
+- Test suites have dependency chains — if a dependency fails, dependents are skipped
+- Platform Compatibility test validates `service/src/platform.js` cross-platform abstractions
+
+### Key Files
+| File | Purpose |
+|------|---------|
+| `service/src/server.js` | Main server — routes, boot sequence, prod/dev mode |
+| `service/dev-server.js` | Dev server launcher — sets PAN_DEV=1, separate port/DB |
+| `service/src/terminal.js` | PTY sessions, WebSocket server, ScreenBuffer |
+| `service/src/steward.js` | Service orchestrator — health checks every 60s, auto-restart |
+| `service/src/platform.js` | Cross-platform abstractions (paths, shell, process mgmt) |
+| `service/src/reap-orphans.js` | Kills orphaned bash/claude processes from prior runs |
+| `service/src/routes/dashboard.js` | Dashboard API (events, projects, jobs, conversations) |
+| `service/src/routes/tests.js` | Test runner — sequential suites with screenshot verification |
+| `service/src/mcp-server.js` | MCP server — 15 tools for Claude to interact with PAN |
+| `dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (6000+ lines, both prod and dev) |
+
 <!-- PAN-CONTEXT-START -->
 ## PAN Session Context
 
@@ -100,21 +156,6 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**User** (2026-04-06 12:37:09): ❯ pan dashboard is not loading just a black page
-
-● Let me check the server and dashboard status.
-
-● Bash(powershell -Command "Get-Process | Where-Object { \$_.ProcessName -match 'node|electron|pan' }
-**User** (2026-04-07 15:54:28): OK so now I can talk to Claude they are there I don't understand what is going on Let me just send you everything just in case something weird is happening I want you to I want you to read it  Tereseu
-**Claude** (2026-04-07 15:57:30): Yes — totally different sessions. To be precise:
-
-**This conversation (me, in WezTerm):**
-- Started by you directly in WezTerm
-- cwd: `C:\Users\tzuri\OneDrive\Desktop\PAN`
-- Writes to: `~/.claude/projects/C--Users-tzuri-OneDrive-Desktop-PAN/<my-session-id>.jsonl`
-
-**PAN dashboard's terminal tab:**
--
 **Claude** (2026-04-07 16:36:26): ```json
 {
   "episodes": [
@@ -177,50 +218,72 @@ EVENTS:
     {
       "summary": "Transcript visibility bug — path separator mismatch in watchers Map",
       "detail": "Messages were written to JSONL correctly but not appearing in dashboard terminal. Root cause: watchers Map keyed by raw cwd strings with inconsistent path separato
+**User** (2026-04-09 15:46:23): Tereseus
+15:19
+Tereseus$ Oh actually that's not actually correct I think it's still showing old data Let me send you this message you reply and then I'll show you what it shows in the transcript I had
+**Claude** (2026-04-09 18:27:13): ```json
+{
+  "episodes": [
+    {
+      "summary": "Transcript visibility bug fixed — path separator mismatch in watchers Map",
+      "detail": "Terminal was registered with forward slashes (C:/Users/tzuri/Desktop/PAN) but hooks called nudgeTranscript with backslashes (C:\\Users\\tzuri\\Desktop\\PAN).
+**User** (2026-04-09 18:27:19): You are PAN's memory system. You maintain a LIVING STATE DOCUMENT that tracks what's going on across the project.
+
+CURRENT STATE DOCUMENT:
+# PAN State — Updated 2026-04-09
+
+## What Works
+- PAN server 
 
 # PAN State — Updated 2026-04-09
 
 ## What Works
-- PAN server running in user session (Session 1) with visible cmd window and respawn loop
-- Dual-mode detection verified — `/health` reports mode:"user", all user features enabled
-- Voice hotkey migration to Tauri complete — XButton1 (Win+H) and XButton2 (Whisper) both functional
-- ΠΑΝ Remembers briefing system with restart banner — displays on new session start
-- Escape key interruption — now sends proper `\x1b` signal to stop Claude thinking
-- Steward reaper fixed — walks full ancestor chain, won't kill legitimate Claude processes
-- Transcript dedup — ghost messages from locked-out sessions no longer bleed into current transcript
+- PAN server running in user session (Session 1) with visible cmd window
+- Dual-mode detection (mode:"user" confirmed working)
+- ΠΑΝ Remembers briefing system with restart banner
+- Escape key interruption (sends `\x1b` signal to stop Claude)
+- Steward reaper fixed (walks full ancestor chain)
+- Transcript dedup working (no cross-session message contamination)
 - PTY exit detection and red crash banner
-- Orphan cleanup and AHK respawn with exponential backoff
-- Library widget endpoint scanning docs/ and memory files recursively
+- Orphan cleanup with AHK respawn and exponential backoff
+- Library widget scanning docs/ and memory files
 - Remote access via Tailscale
+- Path separator normalization in watchers Map (fixed transcript visibility)
+- Status bar reconnect logic (resets claudeReady/claudeRunning on reconnect)
+- Server broadcast of `server_restarting` message before shutdown
+- Transcript file polling with fsWatcher fallback for Windows
 
 ## Known Issues
 - Copy-paste (Ctrl+V) crashes PTY — terminal freezes on text injection
-- Message queue invisibility — messages sent while Claude thinking don't appear in transcript until Claude responds
+- Message queue invisibility — messages sent while Claude thinking don't appear until Claude responds
 - Hard refresh (Ctrl+Shift+R) shows white screen — requires second hard refresh
 - Device status showing stale or incorrect connection state
 - LaTeX/`.tex` files won't render in markdown viewer
+- **Transcript real-time updates broken after restart** — manual refresh required to see new messages, nudge mechanism still not firing
+- **FTS backfill blocking server startup** — Full-Text Search indexes 6081 events synchronously, blocks `listen()` call
 
 ## Current Priorities
-1. **Carrier/Lifeboat/Craft phases 4-7** — PTY handoff, Claude handoff, Shadow Traffic, Crucible (phases 1-3 done)
-2. **Fix copy-paste PTY crash** — blocks dashboard terminal text injection
-3. **Solve message queue visibility during tool execution** — messages must appear immediately
-4. **Locate and rebuild efficiency reports** — format: 15,000-20,000% multiplier comparisons
+1. **Fix FTS backfill blocking server startup** — async backfill or defer indexing
+2. **Fix transcript real-time updates after restart** — nudge mechanism not firing despite path fix
+3. **Fix copy-paste PTY crash** — blocks dashboard terminal text injection
+4. **Platform.js cross-platform support** — wire cross-platform paths into all modules, test in dev
+5. **Carrier/Lifeboat/Craft phases 4-7** — PTY handoff, Claude handoff, Shadow Traffic, Crucible
 
 ## Key Decisions
 - Federated multi-org: each org runs own PAN server on own tailnet
 - Library widget unified (not split docs/reports), shows all `.md` and `.pan` files
-- Reports and design docs open in new windows via markdown viewer (not terminal)
-- Restart count is north-star metric driving architecture (Carrier/Lifeboat/Craft)
+- Reports and design docs open in new windows via markdown viewer
+- Restart count is north-star metric driving architecture
 - Conversation is source-of-truth; memory files are supporting cache
-- ΠΑΝ Remembers branding for session continuity system
+- ΠΑΝ Remembers branding for session continuity
 
 ## User Preferences
-- Work autonomously through PAN dashboard, not WezTerm terminal
-- Never restart PAN without explicit permission (cmd window is visible kill switch)
-- All docs must display with proper styling/formatting in windows
-- Surface critical docs prominently in Library
-- Capitalize all UI labels and titles
-- Don't spam "claude" or any random text into the terminal
+- Work autonomously through PAN dashboard, not WezTerm
+- Never restart PAN without explicit permission
+- All docs must display with proper styling in windows
+- Surface critical docs in Library
+- Test in dev via Electron UI screenshots (not curl/API)
+- Do NOT restart production just to test dev changes
 
 ## Known Facts
 - **briefing text** new canonical format ΠΑΝ Remembers: — Session greeting changed from 'Last time we were working on...' to 'ΠΑΝ Remembers:'. Affects all future session briefings. (user_preference, confidence: 0.95)
@@ -238,13 +301,12 @@ EVENTS:
 - [2026-04-09 12:30:31] Transcript dedup fixed to prevent cross-session contamination: `transcript-watcher.js` was loading last 5 JSONL session files and merging them, causing ghost messages from locked-out sessions to bleed into current terminal. Dedup logic added to filter out message
 - [2026-04-09 12:04:27] Ghost 'Claude' messages from locked-out session bleeding into current transcript: User discovered spurious 'Claude' messages appearing in terminal during voice input. Root cause: transcript-watcher.js loads the last 5 JSONL session files for the same project directory and merges th
 - [2026-04-08 22:35:47] PAN server now running in user mode with visible console: Server moved from SYSTEM session (Session 0) to interactive user session (Session 1). Runs with visible cmd window on desktop showing live logs, can be closed to kill PAN cleanly.
-- [2026-04-09 14:42:21] Transcript data loss on page refresh after server restart [failure]: User performed hard refresh after server restart. Terminal transcript lost most content. JSONL session file only contains 3 actual user messages, but many more were sent. Messages disappearing from di
+- [2026-04-09 19:15:56] Dev/prod resource isolation crisis identified and fixed: User discovered dev instance was sharing database (pan.db), terminal logs, JSONL transcripts, and recordings with prod. This prevented safe dev testing. Claude modified db.js to respect PAN_DATA_DIR e
 - [2026-04-08 18:11:09] Memory consolidation system completely broken [failure]: Completed tasks marked solved weeks ago still showing as open issues. Chat input fixes, terminal fixes implemented but never marked complete, causing false repetition. No mechanism to archive/remove c
-- [2026-04-09 14:22:33] Critical transcript data loss on page refresh after restart [failure]: User performed hard page refresh (via dashboard button) to restart PAN after Claude's build. Upon reconnection, entire terminal transcript lost all content - messages sent during session, screenshots 
+- [2026-04-09 14:42:21] Transcript data loss on page refresh after server restart [failure]: User performed hard refresh after server restart. Terminal transcript lost most content. JSONL session file only contains 3 actual user messages, but many more were sent. Messages disappearing from di
+- [2026-04-09 18:27:14] Critical architecture problem — dev and prod sharing same terminal, transcript, and database [failure]: User discovered that dev instance is not a true separate copy. Both share same terminal PTY, same JSONL transcript files, and same database. Dev should be completely isolated from prod to allow safe t
 - [2026-04-09 11:43:44] Session continuity (PAN Remembers) working correctly: After server restart, user confirmed that memory system survived and provided proper context briefing about what was being worked on.
-- [2026-04-09 12:09:33] User requested full Carrier/Lifeboat/Craft plan visibility [partial]: User asked to see 'the whole plan and where we are now' for the 7-phase hot-restart architecture. High-priority context request to review multi-phase system design.
-- [2026-04-09 13:52:43] Transcript file content doesn't match terminal display [failure]: User discovered critical mismatch: JSONL session file content differs from what's shown in the terminal. Messages are being written to disk but not appearing in terminal view, or vice versa. Restart m
-- [2026-04-09 12:58:06] Sent message missing from transcript after restart [failure]
+- [2026-04-09 14:22:33] Critical transcript data loss on page refresh after restart [failure]: User performed hard page 
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

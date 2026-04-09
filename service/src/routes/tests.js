@@ -1088,6 +1088,133 @@ const suites = {
 
   // Steward suite MERGED into 'services' above
 
+  'platform': {
+    name: 'Platform Compatibility',
+    description: 'Verify platform.js utility: correct paths, shell detection, process listing, mode detection — must work on both Windows and Linux',
+    dependsOn: ['startup'],
+    tests: [
+      {
+        id: 'plat-detection', name: 'Platform detected',
+        description: 'platform.js exports correct OS detection flags',
+        run: async () => {
+          const plat = await import('../platform.js');
+          if (!['win32', 'linux', 'darwin'].includes(plat.platform)) throw new Error(`Unknown platform: ${plat.platform}`);
+          const flags = [plat.isWindows, plat.isLinux, plat.isMac].filter(Boolean).length;
+          if (flags !== 1) throw new Error(`${flags} platform flags set (expected 1)`);
+          return `Platform: ${plat.platform}, isWindows=${plat.isWindows}, isLinux=${plat.isLinux}`;
+        }
+      },
+      {
+        id: 'plat-dirs', name: 'Directory paths valid',
+        description: 'All directory getters return non-empty strings that make sense for this OS',
+        run: async () => {
+          const { existsSync } = await import('fs');
+          const plat = await import('../platform.js');
+          const dataDir = plat.getDataDir();
+          const configDir = plat.getConfigDir();
+          const homeDir = plat.getHomeDir();
+          const desktopDir = plat.getDesktopDir();
+          const tempDir = plat.getTempDir();
+          if (!dataDir || dataDir.length < 5) throw new Error(`Bad dataDir: ${dataDir}`);
+          if (!configDir || configDir.length < 5) throw new Error(`Bad configDir: ${configDir}`);
+          if (!homeDir) throw new Error('Empty homeDir');
+          if (!existsSync(homeDir)) throw new Error(`homeDir doesn't exist: ${homeDir}`);
+          if (!existsSync(tempDir)) throw new Error(`tempDir doesn't exist: ${tempDir}`);
+          return `data=${dataDir}, config=${configDir}, home=${homeDir}, desktop=${desktopDir}`;
+        }
+      },
+      {
+        id: 'plat-shell', name: 'Shell detection',
+        description: 'getShell() returns a valid shell path and args array',
+        run: async () => {
+          const { existsSync } = await import('fs');
+          const plat = await import('../platform.js');
+          const { shell, args } = plat.getShell();
+          if (!shell) throw new Error('Empty shell');
+          if (!Array.isArray(args)) throw new Error('args not an array');
+          if (!existsSync(shell)) throw new Error(`Shell not found: ${shell}`);
+          return `Shell: ${shell}, args: [${args.join(', ')}]`;
+        }
+      },
+      {
+        id: 'plat-claude-cmd', name: 'Claude CLI path',
+        description: 'getClaudeCmd() returns a valid path to claude',
+        run: async () => {
+          const plat = await import('../platform.js');
+          const cmd = plat.getClaudeCmd();
+          if (!cmd || !cmd.includes('claude')) throw new Error(`Bad claude cmd: ${cmd}`);
+          return `Claude CLI: ${cmd}`;
+        }
+      },
+      {
+        id: 'plat-mode', name: 'Mode detection',
+        description: 'detectMode() returns user or service',
+        run: async () => {
+          const plat = await import('../platform.js');
+          const mode = plat.detectMode();
+          if (mode !== 'user' && mode !== 'service') throw new Error(`Bad mode: ${mode}`);
+          return `Mode: ${mode}`;
+        }
+      },
+      {
+        id: 'plat-normalize', name: 'Path normalization',
+        description: 'normalizePath and toNativePath handle both separators correctly',
+        run: async () => {
+          const plat = await import('../platform.js');
+          const n1 = plat.normalizePath('C:\\Users\\test\\path');
+          if (n1 !== 'C:/Users/test/path') throw new Error(`normalizePath backslash: ${n1}`);
+          const n2 = plat.normalizePath('C:/Users/test/');
+          if (n2 !== 'C:/Users/test') throw new Error(`normalizePath trailing: ${n2}`);
+          const n3 = plat.normalizePath('');
+          if (n3 !== '') throw new Error(`normalizePath empty: ${n3}`);
+          const native = plat.toNativePath('C:/Users/test');
+          if (plat.isWindows && native !== 'C:\\Users\\test') throw new Error(`toNativePath windows: ${native}`);
+          if (plat.isLinux && native !== 'C:/Users/test') throw new Error(`toNativePath linux: ${native}`);
+          return `normalizePath OK, toNativePath OK (${plat.isWindows ? 'backslash' : 'forward slash'})`;
+        }
+      },
+      {
+        id: 'plat-list-procs', name: 'Process listing',
+        description: 'listProcesses finds at least this node process',
+        run: async () => {
+          const plat = await import('../platform.js');
+          const procs = await plat.listProcesses(['node']);
+          if (!Array.isArray(procs)) throw new Error('Not an array');
+          if (procs.length === 0) throw new Error('Found 0 node processes (should find at least this one)');
+          const self = procs.find(p => p.pid === process.pid);
+          return `${procs.length} node processes found${self ? ' (including self)' : ''}`;
+        }
+      },
+      {
+        id: 'plat-kill-safety', name: 'Kill safety checks',
+        description: 'killProcess refuses null/0/self PIDs',
+        run: async () => {
+          const plat = await import('../platform.js');
+          if (plat.killProcess(0) !== false) throw new Error('Should reject PID 0');
+          if (plat.killProcess(null) !== false) throw new Error('Should reject null');
+          if (plat.killProcess(process.pid) !== false) throw new Error('Should reject own PID');
+          return 'Kill safety: rejects 0, null, and self PID';
+        }
+      },
+      {
+        id: 'plat-ensure-dirs', name: 'ensureDataDirs creates directories',
+        description: 'ensureDataDirs creates data, terminal-logs, and recordings dirs without error',
+        run: async () => {
+          const { existsSync } = await import('fs');
+          const plat = await import('../platform.js');
+          plat.ensureDataDirs();
+          const dataExists = existsSync(plat.getDataDir());
+          const logsExists = existsSync(plat.getTerminalLogDir());
+          const recsExists = existsSync(plat.getRecordingsDir());
+          if (!dataExists) throw new Error('Data dir not created');
+          if (!logsExists) throw new Error('Terminal logs dir not created');
+          if (!recsExists) throw new Error('Recordings dir not created');
+          return `All dirs exist: data=${dataExists}, logs=${logsExists}, recordings=${recsExists}`;
+        }
+      }
+    ]
+  },
+
   'restart': {
     name: 'Server Restart',
     runInAll: false, // Excluded from Run All — kills server and wipes test state

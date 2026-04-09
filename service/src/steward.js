@@ -418,13 +418,13 @@ async function checkProcessRunning(processName, cmdLineMatch) {
       if (cmdLineMatch) {
         const escaped = cmdLineMatch.replace(/'/g, "''");
         const ps = `Get-CimInstance Win32_Process -Filter "Name = '${processName}'" | Where-Object { $_.CommandLine -like '*${escaped}*' } | Select-Object -First 1 -ExpandProperty ProcessId`;
-        exec(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
+        exec(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 5000, windowsHide: true }, (err, stdout) => {
           if (err) return resolve(false);
           resolve(/\d+/.test(stdout.trim()));
         });
         return;
       }
-      exec(`tasklist /FI "IMAGENAME eq ${processName}" /NH`, { encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
+      exec(`tasklist /FI "IMAGENAME eq ${processName}" /NH`, { encoding: 'utf8', timeout: 5000, windowsHide: true }, (err, stdout) => {
         if (err) return resolve(false);
         resolve(stdout.includes(processName));
       });
@@ -718,7 +718,7 @@ $result | ConvertTo-Json -Compress -Depth 3`;
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
     const psFile = join(tmpDir, 'pan-reap-orphans.ps1');
     writeFileSync(psFile, ps);
-    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 15000 }).trim();
+    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true }).trim();
     if (!out) return;
     const parsed = JSON.parse(out);
     const claudeProcs = parsed.claude ? (Array.isArray(parsed.claude) ? parsed.claude : [parsed.claude]) : [];
@@ -787,7 +787,7 @@ $map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProces
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
     const psFile = join(tmpDir, 'pan-check-claude.ps1');
     writeFileSync(psFile, ps);
-    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 10000 }).trim();
+    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 10000, windowsHide: true }).trim();
 
     if (!out) return; // Can't enumerate — don't blindly relaunch
 

@@ -230,7 +230,9 @@ server.tool(
 
 server.tool(
   'pan_restart',
-  'Restart PAN server — full process restart that reloads all code from disk. The wrapper automatically revives the process. This will briefly kill all connections (including this MCP session).',
+  `Restart PAN server — full process restart that reloads all code from disk. The wrapper automatically revives the process. This will briefly kill all connections (including this MCP session).
+
+⚠️ CRITICAL: This is the ONLY safe way to restart PAN. NEVER run "node pan.js start", "node server.js", or any PAN startup command via Bash/shell. Doing so spawns a second PAN instance whose orphan-reaper will KILL your Claude session. Use this tool or the user's visible cmd window — nothing else.`,
   {},
   async () => {
     try { return ok(await panFetch('/api/admin/restart', { method: 'POST' })); }
@@ -242,44 +244,62 @@ server.tool(
 
 server.tool(
   'pan_dev',
-  `Dashboard development info. IMPORTANT: Before deploying ANY UI change to Prod, test on Dev first.
+  `Dashboard development & testing. Use this tool to start a dev server and open it in a new window.
 
-HOW TO TEST UI CHANGES:
-1. Edit Svelte source in service/dashboard/src/
-2. Run: cd service/dashboard && npm run dev  (starts Vite on port 5173+)
-3. Dev instance uses isolated session IDs (dev-dash-*) so it won't affect Prod
-4. Dev server proxies API/WebSocket calls to PAN server (port 7777)
-5. Verify changes work, THEN: npm run build (deploys to public/v2/)
-6. Refresh Prod dashboard
+⚠️ CRITICAL SAFETY RULES:
+- NEVER run "node pan.js start", "node server.js", or ANY PAN startup command via Bash/shell
+- Doing so spawns a second PAN instance whose orphan-reaper KILLS your Claude session
+- ALWAYS use this tool with action:"start" to launch dev — it starts an isolated server on a separate port and opens it in a new browser window automatically
+- To restart production, use pan_restart tool — NEVER Bash
+
+HOW TO TEST CODE CHANGES:
+1. Edit server code in service/src/ (or Svelte in service/dashboard/src/)
+2. Call pan_dev with action:"start" — starts dev server on port 7781 and opens it in a new window
+3. Dev server runs isolated: separate port, separate session IDs (dev-dash-*), shared DB (read-safe WAL)
+4. Dev server skips steward, orphan-reaper, device registration — safe alongside production
+5. Test your changes in the dev window, verify visually
+6. When satisfied: use pan_restart to reload production with the new code
 
 KEY FILES:
 - Terminal page: dashboard/src/routes/terminal/+page.svelte
 - API helper: dashboard/src/lib/api.js
-- Stores: dashboard/src/lib/stores.svelte.js
 - Server terminal mgmt: src/terminal.js
 - Server routes: src/server.js
-- Electron app: electron/main.cjs
+- Test suites: src/routes/tests.js
 
 SESSION LIFECYCLE:
-- Session IDs are deterministic: dash-<project> (or dev-dash-<project> on Dev)
-- PTY stays alive when WebSocket disconnects (line 194-199 in terminal.js)
-- Reconnect: onMount checks /api/v1/terminal/sessions, then localStorage fallback
+- Session IDs are deterministic: dash-<project> (prod) or dev-dash-<project> (dev)
+- PTY stays alive when WebSocket disconnects
 - Auto-launch Claude: ONLY if PTY has no existing buffer (hasExistingBuffer check)
-- Never use isReconnect as sole guard — buffer presence is the real signal
 
 TESTING CHECKLIST:
 - [ ] Check /api/v1/terminal/sessions before and after refresh
 - [ ] Verify session count doesn't increase on refresh
 - [ ] Verify chat messages persist in localStorage
 - [ ] Verify Claude doesn't re-launch on reconnect`,
-  { action: z.enum(['status', 'sessions', 'start']).optional().describe('status: check dev server, sessions: list all terminal sessions, start: find dev server port') },
+  { action: z.enum(['status', 'sessions', 'start']).optional().describe('status: check dev server, sessions: list all terminal sessions, start: start dev server + open in new window') },
   async ({ action }) => {
     try {
       if (action === 'sessions') {
         return ok(await panFetch('/api/v1/terminal/sessions'));
       }
       if (action === 'start') {
-        return ok(await panFetch('/api/v1/dev/start', { method: 'POST' }));
+        // Start dev server
+        const dev = await panFetch('/api/v1/dev/start', { method: 'POST' });
+        const devPort = dev.port || 7781;
+        const devUrl = `http://localhost:${devPort}/v2/terminal`;
+        // Open dev dashboard in a new window via ui-commands
+        try {
+          await panFetch('/api/v1/ui-commands', {
+            method: 'POST',
+            body: { type: 'open_window', url: devUrl }
+          });
+        } catch {}
+        return ok({
+          devServer: devUrl,
+          port: devPort,
+          message: `Dev server started on port ${devPort}. Window opening via ui-commands.`
+        });
       }
       // Default: status overview
       const sessions = await panFetch('/api/v1/terminal/sessions');
@@ -291,7 +311,7 @@ TESTING CHECKLIST:
       return ok({
         sessions: sessions.sessions,
         devServer: devPort ? `http://localhost:${devPort}/v2/terminal` : 'Not running',
-        testingGuide: 'Use pan_dev tool description for full testing workflow'
+        testingGuide: 'Call pan_dev with action:"start" to launch dev server + open window'
       });
     } catch (e) { return err(e); }
   }
