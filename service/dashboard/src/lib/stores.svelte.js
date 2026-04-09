@@ -106,3 +106,39 @@ export function getTerminalInput() {
 export function setTerminalInput(v) {
 	terminalState.input = v;
 }
+
+// PAN deployment mode — populated by /health on boot. Used to hide
+// user-session-only features (terminal tabs, AHK config, etc.) when the
+// dashboard is connected to a server running in service/Session 0 mode.
+const modeState = $state({ mode: 'unknown' });
+
+export function getPanMode() {
+	return modeState.mode;
+}
+
+export function setPanMode(m) {
+	modeState.mode = m;
+}
+
+export function isUserMode() {
+	return modeState.mode === 'user';
+}
+
+export function isServiceMode() {
+	return modeState.mode === 'service';
+}
+
+// Fetch /health on first call and cache the mode. Idempotent.
+let _modeFetched = false;
+export async function fetchPanMode() {
+	if (_modeFetched) return modeState.mode;
+	_modeFetched = true;
+	try {
+		const r = await fetch('/health');
+		if (r.ok) {
+			const j = await r.json();
+			if (j.mode) modeState.mode = j.mode;
+		}
+	} catch {}
+	return modeState.mode;
+}

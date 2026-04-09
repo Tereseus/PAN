@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
-import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission } from '../terminal.js';
+import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool } from '../terminal.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
@@ -298,6 +298,35 @@ router.post('/:eventType', (req, res) => {
           console.error('[PAN Hook] SessionEnd context injection failed:', err.message);
         });
       }
+    }
+
+    // Track in-flight tools so the dashboard status bar can show what
+    // Claude is actually doing right now (Bash, Read, Explore subagent...)
+    // instead of a dead-looking spinner. Keyed by cwd because the Claude
+    // session id is different from the PAN PTY session id, but cwd matches.
+    try {
+      if (eventType === 'PreToolUse') {
+        const toolName = payload.tool_name || 'tool';
+        const ti = payload.tool_input || {};
+        let summary = '';
+        if (ti.command) summary = String(ti.command).substring(0, 80);
+        else if (ti.file_path) summary = String(ti.file_path).split(/[\\/]/).pop();
+        else if (ti.pattern) summary = String(ti.pattern).substring(0, 60);
+        else if (ti.description) summary = String(ti.description).substring(0, 80);
+        else if (ti.subagent_type) summary = String(ti.subagent_type) + ' agent';
+        setInFlightTool(cwd, {
+          tool: toolName,
+          summary,
+          claudeSessionId: sessionId,
+          isSubagent: toolName === 'Agent' || toolName === 'Task',
+        });
+      } else if (eventType === 'PostToolUse') {
+        clearInFlightTool(cwd, sessionId);
+      } else if (eventType === 'Stop' || eventType === 'SessionEnd') {
+        clearInFlightTool(cwd, sessionId);
+      }
+    } catch (e) {
+      console.error('[PAN Hook] in-flight tracker failed:', e.message);
     }
 
     // Store every event

@@ -30,11 +30,15 @@ import { buildContext as buildMemoryContext } from './memory/index.js';
 import { getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { bootAll, shutdownAll, getAtlasData, getServiceStatus, reportServiceRun } from './steward.js';
+import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db } from './db.js';
+import { searchMemory, backfillEmbeddings } from './memory-search.js';
+import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
+import { reapOrphans } from './reap-orphans.js';
 import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -194,30 +198,121 @@ const PAN_SIGNATURES = [
 ];
 
 app.get('/dashboard/api/processes', (req, res) => {
+  // Single source of truth: the steward service registry. Each registered
+  // PAN service either runs in the main pan-server process (interval/function
+  // health checks) or as its own OS process (port/process health checks).
+  // We resolve OS-process services to real PIDs by matching the Windows
+  // process list against each service's port or processName, and surface
+  // their real CPU/mem/uptime alongside the canonical name from the registry.
+  //
+  // Anything Node/Python eating >10% CPU that ISN'T a PAN service shows up
+  // in a small `other` list so the user can still spot zombie hogs without
+  // them polluting the main PAN process panel.
   try {
     const raw = execSync(
-      'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object {$_.Name -eq \'node.exe\' -or $_.Name -eq \'python.exe\' -or $_.Name -eq \'claude.exe\'} | Select-Object ProcessId, Name, CommandLine, CreationDate, KernelModeTime, UserModeTime, WorkingSetSize | ConvertTo-Json -Depth 2"',
+      "powershell -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('node.exe','python.exe','python3.exe','AutoHotkey64.exe','tailscaled.exe','ollama.exe','claude.exe')} | Select-Object ProcessId, Name, CommandLine, CreationDate, KernelModeTime, UserModeTime, WorkingSetSize | ConvertTo-Json -Depth 2\"",
       { encoding: 'utf8', timeout: 10000 }
     );
-    const procs = JSON.parse(raw);
-    const procList = Array.isArray(procs) ? procs : [procs];
+    const parsed = JSON.parse(raw || '[]');
+    const procList = Array.isArray(parsed) ? parsed : [parsed];
     const now = Date.now();
-    const result = procList.map(p => {
+    const enriched = procList.map(p => {
       const cmd = p.CommandLine || '';
-      const sig = PAN_SIGNATURES.find(s => cmd.includes(s.pattern));
       const cpuSec = ((p.KernelModeTime || 0) + (p.UserModeTime || 0)) / 10000000;
       const memMB = Math.round((p.WorkingSetSize || 0) / 1048576);
       let uptimeHrs = 0, createdAt = null;
       if (p.CreationDate) {
-        const match = String(p.CreationDate).match(/\/Date\((\d+)[+-]/);
-        if (match) { createdAt = new Date(parseInt(match[1])).toISOString(); uptimeHrs = +((now - parseInt(match[1])) / 3600000).toFixed(1); }
+        const m = String(p.CreationDate).match(/\/Date\((\d+)[+-]/);
+        if (m) { createdAt = new Date(parseInt(m[1])).toISOString(); uptimeHrs = +((now - parseInt(m[1])) / 3600000).toFixed(1); }
       }
-      const cpuPerHour = uptimeHrs > 0 ? cpuSec / uptimeHrs : 0;
-      const isZombie = (!sig?.vital && uptimeHrs > 24) || cpuPerHour > 3600;
-      return { pid: p.ProcessId, name: sig?.name || (cmd.includes('python') ? 'Python' : 'Node'), vital: sig?.vital || false, cmd: cmd.length > 120 ? cmd.substring(0, 120) + '...' : cmd, cpuSec: +cpuSec.toFixed(1), memMB, uptimeHrs, createdAt, isZombie, isPan: !!sig };
-    }).filter(p => p.isPan || p.cpuSec > 10).sort((a, b) => b.cpuSec - a.cpuSec);
-    res.json({ ok: true, processes: result, scannedAt: new Date().toISOString() });
-  } catch (err) { res.json({ ok: false, error: err.message, processes: [] }); }
+      return { pid: p.ProcessId, exe: p.Name, cmd, cpuSec: +cpuSec.toFixed(1), memMB, uptimeHrs, createdAt };
+    });
+
+    // Match a steward service to a Windows process. Returns the matching
+    // enriched proc or null if not found.
+    function matchProcForService(svc) {
+      // 1. Self — pan-server is THIS node process (server.js).
+      if (svc.id === 'pan-server') {
+        return enriched.find(p => p.exe === 'node.exe' && /server\.js/i.test(p.cmd)) || null;
+      }
+      // 2. processName-based services (AHK, Tailscale).
+      if (svc.processName) {
+        const candidates = enriched.filter(p => p.exe.toLowerCase() === svc.processName.toLowerCase());
+        if (svc.processCmdLineMatch) {
+          const re = new RegExp(svc.processCmdLineMatch.replace(/\\\\/g, '\\\\'), 'i');
+          return candidates.find(p => re.test(p.cmd)) || candidates[0] || null;
+        }
+        return candidates[0] || null;
+      }
+      // 3. Port-based services. Match by port appearing in the command line —
+      // works for whisper-server.py (port 7782) and ollama (port 11434).
+      // Less reliable than netstat but doesn't require admin or extra calls.
+      if (svc.port) {
+        const portStr = String(svc.port);
+        const byCmd = enriched.find(p => p.cmd.includes(portStr));
+        if (byCmd) return byCmd;
+        // Ollama special-case: it's `ollama.exe`, no port in cmdline.
+        if (svc.id === 'ollama') return enriched.find(p => p.exe === 'ollama.exe') || null;
+        return null;
+      }
+      // 4. In-process services (interval/function health checks). They share
+      // the main pan-server process — return null so the UI knows to mark
+      // them as "in-process" rather than missing.
+      return null;
+    }
+
+    const atlas = getAtlasData();
+    const services = (atlas.services || []).map(svc => {
+      const proc = matchProcForService(svc);
+      const inProcess = !proc && (svc.healthCheck === 'interval' || svc.healthCheck === 'function');
+      return {
+        id: svc.id,
+        name: svc.name,
+        status: svc.status,
+        lastError: svc.lastError,
+        lastRun: svc.lastRun,
+        port: svc.port,
+        modelTier: svc.modelTier,
+        modelTierLabel: svc.modelTierLabel,
+        // Real OS metrics (or null if in-process / not running)
+        pid: proc?.pid || null,
+        cpuSec: proc?.cpuSec ?? null,
+        memMB: proc?.memMB ?? null,
+        uptimeHrs: proc?.uptimeHrs ?? null,
+        createdAt: proc?.createdAt || null,
+        inProcess,
+      };
+    });
+
+    // Anything else eating >10% CPU that ISN'T claimed by a PAN service —
+    // surfaced separately as "other" so zombie processes are visible without
+    // muddying the canonical PAN list.
+    const claimedPids = new Set(services.map(s => s.pid).filter(Boolean));
+    const other = enriched
+      .filter(p => !claimedPids.has(p.pid) && p.cpuSec > 10)
+      .map(p => ({
+        pid: p.pid,
+        exe: p.exe,
+        cmd: p.cmd.length > 120 ? p.cmd.substring(0, 117) + '...' : p.cmd,
+        cpuSec: p.cpuSec,
+        memMB: p.memMB,
+        uptimeHrs: p.uptimeHrs,
+      }))
+      .sort((a, b) => b.cpuSec - a.cpuSec);
+
+    // Legacy `processes` field kept for backwards compat with the existing
+    // dashboard widget — flat list of just the running PAN services with
+    // real PIDs, sorted by CPU. The new `services` and `other` fields are
+    // the preferred shape for the rebuilt panel.
+    const processes = services
+      .filter(s => s.pid)
+      .map(s => ({ pid: s.pid, name: s.name, vital: true, cpuSec: s.cpuSec, memMB: s.memMB, uptimeHrs: s.uptimeHrs, createdAt: s.createdAt, isPan: true, isZombie: false, cmd: '' }))
+      .sort((a, b) => (b.cpuSec || 0) - (a.cpuSec || 0));
+
+    res.json({ ok: true, services, other, processes, scannedAt: new Date().toISOString() });
+  } catch (err) {
+    res.json({ ok: false, error: err.message, services: [], other: [], processes: [] });
+  }
 });
 
 app.post('/dashboard/api/processes/kill', (req, res) => {
@@ -1058,6 +1153,18 @@ app.delete('/api/v1/terminal/sessions/:id', (req, res) => {
   const killed = killSession(req.params.id);
   res.json({ ok: killed });
 });
+
+// Manually reap orphan PAN-spawned bash/claude processes from prior runs.
+// POST { dryRun: true } to preview without killing.
+app.post('/api/v1/admin/reap-orphans', async (req, res) => {
+  try {
+    const dryRun = !!(req.body && req.body.dryRun);
+    const result = await reapOrphans({ activeChildPids: getActivePtyPids(), dryRun });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 // Permission prompts — mobile polls this to show Allow/Deny buttons
 app.get('/api/v1/terminal/permissions', (req, res) => {
   res.json({ permissions: getPendingPermissions() });
@@ -1066,24 +1173,44 @@ app.delete('/api/v1/terminal/permissions/:id', (req, res) => {
   clearPermission(parseInt(req.params.id));
   res.json({ ok: true });
 });
-// Send text to active terminal (phone voice commands → terminal)
+// Send text to active terminal (phone voice commands → terminal, or
+// the desktop dashboard's own input — same endpoint, different source).
 app.post('/api/v1/terminal/send', (req, res) => {
-  const { text, session_id, raw } = req.body;
+  const { text, session_id, raw, source: bodySource } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
   // raw=true sends without appending \r (for single-keypress responses like permission prompts)
   const toSend = raw ? text : text + '\r';
   const sent = sendToSession(session_id || null, toSend);
-  console.log(`[PAN Send] "${text}" → ${session_id || 'auto'} (raw=${!!raw}, sent=${sent})`);
 
-  // Log as event so mobile sends are tracked
+  // Derive the real client source. Priority:
+  //   1) explicit body.source (caller knows best)
+  //   2) X-PAN-Source header
+  //   3) User-Agent sniff (Electron/Chrome on desktop vs Android/Mobile)
+  //   4) fallback to 'unknown'
+  // The old code hardcoded everything to 'mobile_dashboard' / 'MobileSend',
+  // which made the desktop terminal lie about itself in the event log.
+  const ua = String(req.headers['user-agent'] || '');
+  const headerSource = req.headers['x-pan-source'];
+  let source = bodySource || headerSource;
+  if (!source) {
+    if (/Electron/i.test(ua)) source = 'desktop_electron';
+    else if (/Android|iPhone|Mobile/i.test(ua)) source = 'mobile';
+    else if (/Mozilla/i.test(ua)) source = 'desktop_browser';
+    else source = 'unknown';
+  }
+  const isMobile = /mobile/i.test(source);
+  const eventType = isMobile ? 'MobileSend' : 'DesktopSend';
+  console.log(`[PAN Send] (${source}) "${String(text).substring(0,60)}" → ${session_id || 'auto'} (raw=${!!raw}, sent=${sent})`);
+
+  // Log as event with the REAL source so the event log shows where it came from
   const dataStr = JSON.stringify({
     text, session_id: session_id || 'auto', sent, raw: !!raw,
-    source: 'mobile_dashboard', timestamp: Date.now()
+    source, user_agent: ua.substring(0, 120), timestamp: Date.now()
   });
   const eventId = insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-    ':sid': session_id || 'mobile-send', ':type': 'MobileSend', ':data': dataStr
+    ':sid': session_id || (isMobile ? 'mobile-send' : 'desktop-send'), ':type': eventType, ':data': dataStr
   });
-  indexEventFTS(eventId, 'MobileSend', dataStr);
+  indexEventFTS(eventId, eventType, dataStr);
 
   const sessInfo = listSessions();
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
@@ -1203,6 +1330,84 @@ app.post('/api/v1/stacks/scan', (req, res) => {
 // Atlas — service graph data from Steward registry
 app.get('/api/v1/atlas/services', (req, res) => {
   res.json(getAtlasData());
+});
+
+// Hybrid memory search — FTS5 (lexical) + sqlite-vec (semantic) fused with
+// reciprocal rank fusion. Multi-tenant via the `scope` query param.
+//
+// Usage:
+//   GET /api/v1/memory/search?q=onedrive%20removal&scope=main&limit=20
+app.get('/api/v1/memory/search', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const scope = String(req.query.scope || 'main');
+  const limit = Math.min(100, parseInt(req.query.limit, 10) || 20);
+  if (!q) return res.status(400).json({ error: 'q (query) required' });
+  try {
+    const results = await searchMemory(q, { scope, limit });
+    res.json({ scope, q, count: results.length, results });
+  } catch (err) {
+    console.error('[PAN MemorySearch] endpoint error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List registered DB scopes (for debugging / Atlas surfacing).
+app.get('/api/v1/memory/scopes', (req, res) => {
+  res.json({ scopes: listScopes() });
+});
+
+// Tier 0 Phase 4: org policy lookup for the phone.
+// Returns the active org's policy fields so the phone can grey out toggles
+// (incognito, blackout) when the org disallows them.
+app.get('/api/v1/org/policy', async (req, res) => {
+  try {
+    const { getActiveOrg } = await import('./org-policy.js');
+    const org = getActiveOrg(req);
+    res.json({
+      org_id: org.id,
+      org_slug: org.slug,
+      org_name: org.name,
+      incognito_allowed: org.policy_incognito_allowed !== 0,
+      blackout_allowed: org.policy_blackout_allowed !== 0,
+      data_retention_days: org.policy_data_retention_days,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Wipe a non-main scope (close + delete its SQLCipher file). Used by the
+// phone when toggling incognito OFF — true "forget everything" semantics.
+// Refuses to wipe `main`.
+//
+// Tier 0 Phase 4: writes an audit log entry when a non-personal org wipes
+// a scope. Personal mode is intentionally NOT audited (the user owns it
+// and the whole point of personal incognito is privacy).
+app.post('/api/v1/memory/scope/:scope/wipe', async (req, res) => {
+  const scope = String(req.params.scope || '').trim();
+  if (!scope || scope === 'main') return res.status(400).json({ error: 'cannot wipe main' });
+  if (!/^[a-z0-9-]{1,32}$/.test(scope)) return res.status(400).json({ error: 'invalid scope name' });
+  try {
+    const result = wipeScope(scope);
+
+    // Audit only when in an org context. Personal mode = no audit (privacy).
+    try {
+      const { getActiveOrg } = await import('./org-policy.js');
+      const org = getActiveOrg(req);
+      if (org.id !== 'org_personal') {
+        const { auditLog } = await import('./middleware/org-context.js');
+        // Synthesize the minimum req shape auditLog expects
+        const auditReq = { user: { id: req.user?.id || 1 }, org_id: org.id };
+        auditLog(auditReq, 'incognito.wipe', scope, { wiped_path: result.path });
+      }
+    } catch (auditErr) {
+      console.warn('[scope/wipe] audit failed:', auditErr.message);
+    }
+
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/v1/atlas/service/:id', (req, res) => {
@@ -1523,7 +1728,12 @@ app.get('/health', (req, res) => {
       tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8' }).trim();
     } catch {}
   }
-  res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime, tailscaleIp });
+  res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime, tailscaleIp, mode: PAN_MODE });
+});
+
+// Detailed deployment-mode info for debugging which features are gated.
+app.get('/api/v1/mode', (req, res) => {
+  res.json({ ...MODE_INFO, features: { pty: IS_USER_MODE, ahk: IS_USER_MODE, screenshots: IS_USER_MODE, hooks: true, api: true, db: true } });
 });
 
 // Auto-detect local model providers (Ollama, LM Studio)
@@ -1626,11 +1836,48 @@ function start() {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
       console.log(`[PAN] Listening for Claude Code hooks...`);
 
-      // Start WebSocket terminal server (server-side rendered via ScreenBuffer)
-      startTerminalServer(server).catch(e => console.error('[PAN] Terminal init error:', e));
+      // Start WebSocket terminal server (server-side rendered via ScreenBuffer).
+      // Gated to user-session mode only — node-pty's ConPTY backend crashes
+      // with "AttachConsole failed" when there's no real console (Session 0
+      // services). In service mode the dashboard hides terminal tabs entirely.
+      if (IS_USER_MODE) {
+        startTerminalServer(server).catch(e => console.error('[PAN] Terminal init error:', e));
+      } else {
+        console.log('[PAN] Terminal server SKIPPED — service mode (no console)');
+      }
+
+      // Reap orphan bash/claude processes left over from prior PAN runs.
+      // Runs async — never blocks startup. Excludes this server PID and any
+      // currently-tracked PTY PIDs (none on cold boot, but defensive). Bails
+      // silently if wmic enumeration is too slow (10s hard timeout in module).
+      setImmediate(async () => {
+        try {
+          const result = await reapOrphans({ activeChildPids: getActivePtyPids() });
+          if (result.ok) {
+            console.log(`[PAN Reap] Killed ${result.killed.length} orphan(s) (scanned ${result.scanned}, errors ${result.errors?.length || 0})`);
+            if (result.killed.length) {
+              console.log(`[PAN Reap] Pids: ${result.killed.map(k => `${k.name}#${k.pid}`).join(', ')}`);
+            }
+          } else {
+            console.warn(`[PAN Reap] Skipped: ${result.error}`);
+          }
+        } catch (e) {
+          console.warn(`[PAN Reap] Failed: ${e.message}`);
+        }
+      });
 
       // Sync projects with disk reality on startup
       syncProjects();
+
+      // Hybrid memory search: backfill embeddings for any events that don't
+      // already have one. Runs async in the background — doesn't block boot.
+      // First boot after this lands will index the historical events; from
+      // then on the per-event hook keeps things current.
+      setImmediate(() => {
+        backfillEmbeddings('main')
+          .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
+          .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
+      });
 
       // Seed sensor definitions (22 sensors)
       seedSensors();
@@ -1661,9 +1908,9 @@ function start() {
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
 
-      // Steward boots all background services in dependency order
-      // DISABLED: steward making unwanted API calls — re-enable when needed
-      // bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
+      // Steward boots all background services in dependency order.
+      // Re-enabled so AHK voice hotkeys come back up on restart.
+      bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
 
       // Resume restart test if one was in progress before we died
       resumeRestartTest().catch(err => console.error('[PAN Tests] Resume failed:', err.message));
@@ -1690,6 +1937,13 @@ function start() {
 }
 
 function stop() {
+  // Kill every tracked PTY child first so bash/claude don't orphan
+  try {
+    const n = killAllSessions();
+    if (n) console.log(`[PAN] Killed ${n} tracked PTY session(s) on shutdown`);
+  } catch (e) {
+    console.warn(`[PAN] killAllSessions failed: ${e.message}`);
+  }
   shutdownAll();
   return new Promise((resolve) => {
     if (server) {

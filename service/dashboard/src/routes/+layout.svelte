@@ -1,12 +1,12 @@
 <script>
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
-	import { isSidebarCollapsed, toggleSidebar } from '$lib/stores.svelte.js';
+	import { isSidebarCollapsed, toggleSidebar, setPanMode, getPanMode } from '$lib/stores.svelte.js';
 
 	let { children } = $props();
 
-	const tabs = [
-		{ label: 'Terminal', href: `${base}/terminal`, icon: '⌨' },
+	const allTabs = [
+		{ label: 'Terminal', href: `${base}/terminal`, icon: '⌨', userOnly: true },
 		{ label: 'Automation', href: `${base}/automation`, icon: '⚡' },
 		{ label: 'Projects', href: `${base}/projects`, icon: '📁' },
 		{ label: 'Conversations', href: `${base}/conversations`, icon: '💬' },
@@ -14,6 +14,9 @@
 		{ label: 'Data', href: `${base}/data`, icon: '🗄' },
 		{ label: 'Settings', href: `${base}/settings`, icon: '⚙' },
 	];
+	// Hide userOnly tabs (Terminal) when the connected server is in service mode.
+	// Until /health responds we render all tabs (assume user mode by default).
+	let tabs = $derived(allTabs.filter(t => !(t.userOnly && getPanMode() === 'service')));
 
 	let serverStatus = $state('connecting');
 	let userName = $state('');
@@ -40,6 +43,12 @@
 		try {
 			const res = await fetch('/health');
 			serverStatus = res.ok ? 'online' : 'offline';
+			if (res.ok) {
+				try {
+					const j = await res.json();
+					if (j.mode) setPanMode(j.mode);
+				} catch {}
+			}
 		} catch {
 			serverStatus = 'offline';
 		}
@@ -57,6 +66,21 @@
 
 	function closeUserMenu() {
 		userMenuOpen = false;
+	}
+
+	// Hard refresh — force a full reload that bypasses the browser HTTP cache.
+	// Adds a cache-busting query param to the current URL so the browser MUST
+	// fetch fresh JS/CSS bundles. Then reloads.
+	function hardRefresh() {
+		try {
+			// Clear any service worker / app caches if present
+			if ('caches' in window) {
+				caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+			}
+		} catch {}
+		const url = new URL(window.location.href);
+		url.searchParams.set('_r', String(Date.now()));
+		window.location.replace(url.toString());
 	}
 
 	$effect(() => {
@@ -86,7 +110,7 @@
 				class:offline={serverStatus === 'offline'}
 				title={serverStatus === 'online' ? 'Server Online' : 'Server Offline'}
 			></span>
-			<button class="logo-refresh" onclick={() => location.reload()} title="Refresh Page">↻</button>
+			<button class="logo-refresh" onclick={hardRefresh} title="Hard Refresh (bypass cache)">↻</button>
 		</div>
 
 		<button class="collapse-btn" onclick={toggleSidebar} title={collapsed ? 'Expand' : 'Collapse'}>

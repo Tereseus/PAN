@@ -21,6 +21,18 @@ object DeviceNameHolder {
     @Volatile var name: String = android.os.Build.MODEL
 }
 
+/**
+ * Holds the current PAN memory scope tag. Sent on every server request as
+ * the `X-PAN-Scope` header so the server can route writes to the right
+ * SQLCipher file. Default = "main" (canonical pan.db). Toggling incognito
+ * mode in Settings flips this to "incognito" — the server then writes all
+ * phone-originated events to a sibling pan.incognito.db that can be wiped
+ * with one API call when the user toggles the mode back off.
+ */
+object ScopeHolder {
+    @Volatile var scope: String = "main"
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
@@ -50,6 +62,7 @@ object NetworkModule {
                 request = request.newBuilder()
                     .addHeader("X-Device-Name", DeviceNameHolder.name)
                     .addHeader("X-Device-Id", android.os.Build.MODEL.lowercase().replace(" ", "-"))
+                    .addHeader("X-PAN-Scope", ScopeHolder.scope)
                     .build()
                 chain.proceed(request)
             })

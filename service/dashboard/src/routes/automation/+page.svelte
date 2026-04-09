@@ -8,7 +8,7 @@
 		{ id: 'stacks', label: 'Tech Stacks' },
 		{ id: 'scout', label: 'Scout' },
 		{ id: 'approvals', label: 'Approvals' },
-		{ id: 'autodev', label: 'AutoDev' },
+		{ id: 'autodev', label: 'Forge' },
 	];
 
 	// Jobs state
@@ -40,6 +40,14 @@
 	let autodevRunning = $state(false);
 
 	const featureNames = {
+		classifier: 'Augur',
+		project_sync: 'Project Sync',
+		scout: 'Scout',
+		dream: 'Dream',
+		autodev: 'Forge',
+	};
+
+	const featureTechNames = {
 		classifier: 'Classifier',
 		project_sync: 'Project Sync',
 		scout: 'Scout',

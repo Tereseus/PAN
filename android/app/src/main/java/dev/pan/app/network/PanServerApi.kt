@@ -20,6 +20,14 @@ interface PanServerApi {
     @GET("/health")
     suspend fun health(): Response<ServerStatus>
 
+    // Tier 0: current user + active org info
+    @GET("/api/v1/auth/me")
+    suspend fun getMe(): Response<MeResponse>
+
+    // Tier 0 Phase 4: org policy (incognito/blackout allowed, retention days)
+    @GET("/api/v1/org/policy")
+    suspend fun getOrgPolicy(): Response<OrgPolicyResponse>
+
     @POST("/api/v1/sync")
     suspend fun syncBatch(@Body batch: SyncBatch): Response<Unit>
 
@@ -81,6 +89,13 @@ interface PanServerApi {
 
     @GET("/api/v1/settings")
     suspend fun getSettings(): Response<Map<String, Any>>
+
+    @retrofit2.http.PUT("/api/v1/settings")
+    suspend fun updateSettings(@Body body: Map<String, String>): Response<Map<String, Any>>
+
+    // Wipe a non-main memory scope on the server (true incognito "forget").
+    @POST("/api/v1/memory/scope/{scope}/wipe")
+    suspend fun wipeScope(@retrofit2.http.Path("scope") scope: String): Response<Map<String, Any>>
 
     @POST("/api/v1/tailscale/auto-auth")
     suspend fun getTailscaleAuthKey(@Body request: Map<String, String>): Response<Map<String, Any>>

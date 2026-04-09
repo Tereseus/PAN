@@ -33,6 +33,51 @@
 	let pwCurrent = $state('');
 	let pwNew = $state('');
 
+	// Terminal appearance — persisted in localStorage, read on mount
+	const TERM_DEFAULTS = {
+		username: 'Tereseus',
+		llmName: 'Claude',
+		userColor: '#89b4fa',  // blue
+		userTextColor: '',     // empty = auto-derive (lighter shade of name color)
+		llmColor: '#fab387',   // orange
+		llmTextColor: '',      // empty = auto-derive
+		toolColor: '#f9e2af',
+		bgColor: '#11111b',
+	};
+	const TERM_KEY_MAP = {
+		username: 'pan_username',
+		llmName: 'pan_llm_name',
+		userColor: 'pan_term_user_color',
+		userTextColor: 'pan_term_user_text_color',
+		llmColor: 'pan_term_llm_color',
+		llmTextColor: 'pan_term_llm_text_color',
+		toolColor: 'pan_term_tool_color',
+		bgColor: 'pan_term_bg_color',
+	};
+	let termSettings = $state({ ...TERM_DEFAULTS });
+	if (typeof localStorage !== 'undefined') {
+		for (const [field, key] of Object.entries(TERM_KEY_MAP)) {
+			const v = localStorage.getItem(key);
+			if (v) termSettings[field] = v;
+		}
+	}
+	function updateTermSetting(key, value) {
+		localStorage.setItem(key, value);
+		// Update local reactive state so the color inputs stay in sync
+		for (const [field, mapped] of Object.entries(TERM_KEY_MAP)) {
+			if (mapped === key) { termSettings[field] = value; break; }
+		}
+		// Notify the terminal page to re-render
+		window.dispatchEvent(new CustomEvent('pan-terminal-settings-changed'));
+	}
+	function resetTermSettings() {
+		for (const [field, key] of Object.entries(TERM_KEY_MAP)) {
+			localStorage.setItem(key, TERM_DEFAULTS[field]);
+			termSettings[field] = TERM_DEFAULTS[field];
+		}
+		window.dispatchEvent(new CustomEvent('pan-terminal-settings-changed'));
+	}
+
 	// Rename device
 	let renameDeviceId = $state(null);
 	let renameDeviceName = $state('');
@@ -50,13 +95,13 @@
 	];
 
 	const jobDefs = [
-		{ key: 'router', name: 'Router', desc: 'Voice command classification + response' },
-		{ key: 'scout', name: 'Scout', desc: 'Discovers new tools & CLIs' },
-		{ key: 'dream', name: 'Dream', desc: 'Consolidates memories into state file' },
-		{ key: 'autodev', name: 'AutoDev', desc: 'Automated development tasks' },
-		{ key: 'classifier', name: 'Classifier', desc: 'Extracts memories from events' },
-		{ key: 'recall', name: 'Recall', desc: 'On-demand memory search' },
-		{ key: 'vision', name: 'Vision', desc: 'Photo/image analysis' },
+		{ key: 'router', name: 'Ferry', tech: 'Router', desc: 'Voice command classification + response' },
+		{ key: 'scout', name: 'Scout', tech: 'Scout', desc: 'Discovers new tools & CLIs' },
+		{ key: 'dream', name: 'Dream', tech: 'Dream', desc: 'Consolidates memories into state file' },
+		{ key: 'autodev', name: 'Forge', tech: 'AutoDev', desc: 'Automated development tasks' },
+		{ key: 'classifier', name: 'Augur', tech: 'Classifier', desc: 'Extracts memories from events' },
+		{ key: 'recall', name: 'Remembrance', tech: 'Recall', desc: 'On-demand memory search' },
+		{ key: 'vision', name: 'Vision', tech: 'Vision', desc: 'Photo/image analysis' },
 	];
 
 	function fmtTime(ts) {
@@ -457,6 +502,46 @@
 					statusMsg = 'Personality saved';
 					setTimeout(() => statusMsg = '', 2000);
 				}}>Save Personality</button>
+			</section>
+
+			<section class="section">
+				<h3>Terminal Appearance</h3>
+				<p class="hint">Customize your name, LLM name, and terminal colors. Changes apply immediately to the terminal view.</p>
+				<div class="row">
+					<span class="label">Your Name</span>
+					<input type="text" class="term-input" value={termSettings.username} oninput={(e) => updateTermSetting('pan_username', e.target.value)} placeholder="Tereseus" />
+				</div>
+				<div class="row">
+					<span class="label">LLM Name</span>
+					<input type="text" class="term-input" value={termSettings.llmName} oninput={(e) => updateTermSetting('pan_llm_name', e.target.value)} placeholder="Claude" />
+				</div>
+				<div class="row">
+					<span class="label">Your Prompt Color</span>
+					<input type="color" value={termSettings.userColor} oninput={(e) => updateTermSetting('pan_term_user_color', e.target.value)} />
+				</div>
+				<div class="row">
+					<span class="label">Your Text Color</span>
+					<input type="color" value={termSettings.userTextColor} oninput={(e) => updateTermSetting('pan_term_user_text_color', e.target.value)} />
+				</div>
+				<div class="row">
+					<span class="label">LLM Prompt Color</span>
+					<input type="color" value={termSettings.llmColor} oninput={(e) => updateTermSetting('pan_term_llm_color', e.target.value)} />
+				</div>
+				<div class="row">
+					<span class="label">LLM Text Color</span>
+					<input type="color" value={termSettings.llmTextColor} oninput={(e) => updateTermSetting('pan_term_llm_text_color', e.target.value)} />
+				</div>
+				<div class="row">
+					<span class="label">Tool Call Color</span>
+					<input type="color" value={termSettings.toolColor} oninput={(e) => updateTermSetting('pan_term_tool_color', e.target.value)} />
+				</div>
+				<div class="row">
+					<span class="label">Background Color</span>
+					<input type="color" value={termSettings.bgColor} oninput={(e) => updateTermSetting('pan_term_bg_color', e.target.value)} />
+				</div>
+				<div style="margin-top:10px">
+					<button class="btn" onclick={resetTermSettings}>Reset to Defaults</button>
+				</div>
 			</section>
 
 			<section class="section">
@@ -1156,6 +1241,21 @@
 
 	.btn:hover {
 		opacity: 0.85;
+	}
+
+	.term-input {
+		background: #1e1e2e;
+		color: #cdd6f4;
+		border: 1px solid #45475a;
+		border-radius: 4px;
+		padding: 6px 10px;
+		font-size: 13px;
+		font-family: inherit;
+		min-width: 180px;
+	}
+	.term-input:focus {
+		outline: none;
+		border-color: #89b4fa;
 	}
 
 	.btn.accent {

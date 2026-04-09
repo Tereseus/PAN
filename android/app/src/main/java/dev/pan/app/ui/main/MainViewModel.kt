@@ -49,6 +49,16 @@ class MainViewModel @Inject constructor(
     private val _deviceName = MutableStateFlow(android.os.Build.MODEL)
     val deviceName: StateFlow<String> = _deviceName
 
+    // Tier 0: identity for the top bar — display nickname + active org name.
+    // Defaults to "Personal" so the bar renders something sane before the
+    // /me request returns.
+    private val _displayNickname = MutableStateFlow("")
+    val displayNickname: StateFlow<String> = _displayNickname
+    private val _activeOrgName = MutableStateFlow("Personal")
+    val activeOrgName: StateFlow<String> = _activeOrgName
+    private val _activeOrgSlug = MutableStateFlow("personal")
+    val activeOrgSlug: StateFlow<String> = _activeOrgSlug
+
     private val _devices = MutableStateFlow<List<DeviceItem>>(emptyList())
     val devices: StateFlow<List<DeviceItem>> = _devices
 
@@ -81,6 +91,27 @@ class MainViewModel @Inject constructor(
             }
         }
 
+        // Tier 0: fetch identity for the top bar. Polls periodically so org
+        // switching on the server is reflected without an app restart.
+        viewModelScope.launch {
+            while (true) {
+                try {
+                    val res = api.getMe()
+                    if (res.isSuccessful) {
+                        val me = res.body()
+                        if (me != null) {
+                            _displayNickname.value = me.display_nickname ?: me.display_name
+                            me.org?.let { o ->
+                                _activeOrgName.value = o.name
+                                _activeOrgSlug.value = o.slug
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+                delay(60000) // refresh every 60s
+            }
+        }
+
         viewModelScope.launch {
             while (true) {
                 serverClient.checkHealth()
@@ -109,13 +140,98 @@ class MainViewModel @Inject constructor(
     }
 
     fun toggleMic() {
-        // Send TOGGLE_MIC intent to the foreground service — it handles STT start/stop,
-        // notification update, and callback setup. Don't touch sttEngine directly here
-        // because the callback is only set up in the service's onStartCommand.
+        // Mute is a bulk-sensor toggle: muting snapshots all currently-enabled
+        // sensors and disables them; unmuting restores from the snapshot.
+        // The snapshot is stored per phone device in SharedPreferences so each
+        // phone remembers its own previous state independently.
+        val wasEnabled = PanForegroundService.micEnabled.value
+        if (wasEnabled) {
+            snapshotAndDisableAllSensors()
+        } else {
+            restoreSensorSnapshot()
+        }
+
+        // Existing behavior: tell the foreground service to flip the mic.
+        // Send TOGGLE_MIC intent — it handles STT start/stop, notification
+        // update, and callback setup.
         val intent = android.content.Intent(application, PanForegroundService::class.java).apply {
             action = "TOGGLE_MIC"
         }
         application.startService(intent)
+    }
+
+    /**
+     * Snapshot all currently-enabled sensors for this device into SharedPreferences,
+     * then disable them all on the server. Per-device key so each phone has its
+     * own snapshot.
+     */
+    private fun snapshotAndDisableAllSensors() {
+        val deviceId = activeSensorDeviceId ?: return
+        val currentSensors = _sensors.value
+        if (currentSensors.isEmpty()) return
+
+        // TODO(tier0-phase7): once geofencing/zones land, skip sensors where
+        // forced_by_org = 1 — orgs may require certain sensors (e.g. GPS in
+        // an airport sterile zone) to stay on regardless of user mute. The
+        // sensor_toggles.forced_by_org column already exists in the schema
+        // but is unused until Phase 7 wires zones + polygon-in-point + UI.
+        // When that lands: filter currentSensors to non-forced before snapshot,
+        // and don't try to re-enable forced sensors on restore (they were never off).
+        val snapshot = currentSensors.associate { it.id to it.enabled }
+        val json = org.json.JSONObject(snapshot as Map<*, *>).toString()
+        val prefs = application.getSharedPreferences("pan_sensor_cache", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putString("snapshot_$deviceId", json).apply()
+
+        viewModelScope.launch {
+            for (sensor in currentSensors) {
+                if (sensor.enabled) {
+                    try {
+                        api.updateSensor(deviceId, sensor.id, SensorUpdateRequest(enabled = false))
+                        sensorContext.setSensorEnabled(sensor.id, false)
+                    } catch (_: Exception) {}
+                }
+            }
+            _sensors.value = _sensors.value.map { it.copy(enabled = false) }
+        }
+    }
+
+    /**
+     * Restore the previously-snapshotted sensor states for this device.
+     * If no snapshot exists (e.g. first launch, or app was killed while muted
+     * after we cleared the snapshot), this is a no-op.
+     */
+    private fun restoreSensorSnapshot() {
+        val deviceId = activeSensorDeviceId ?: return
+        val prefs = application.getSharedPreferences("pan_sensor_cache", android.content.Context.MODE_PRIVATE)
+        val json = prefs.getString("snapshot_$deviceId", null) ?: return
+
+        val snapshot: Map<String, Boolean> = try {
+            val obj = org.json.JSONObject(json)
+            buildMap {
+                val it = obj.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    put(k, obj.getBoolean(k))
+                }
+            }
+        } catch (_: Exception) { return }
+
+        viewModelScope.launch {
+            for ((sensorId, enabled) in snapshot) {
+                if (enabled) {
+                    try {
+                        api.updateSensor(deviceId, sensorId, SensorUpdateRequest(enabled = true))
+                        sensorContext.setSensorEnabled(sensorId, true)
+                    } catch (_: Exception) {}
+                }
+            }
+            _sensors.value = _sensors.value.map { s ->
+                s.copy(enabled = snapshot[s.id] ?: s.enabled)
+            }
+        }
+
+        // Clear the snapshot — we've consumed it.
+        prefs.edit().remove("snapshot_$deviceId").apply()
     }
 
     fun setDeviceTarget(target: String) {

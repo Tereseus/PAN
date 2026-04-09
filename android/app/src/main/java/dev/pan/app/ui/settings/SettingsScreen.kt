@@ -43,6 +43,9 @@ fun SettingsScreen(
     val isServerConnected by viewModel.isServerConnected.collectAsState()
     val downloadingId by viewModel.downloadingId.collectAsState()
     val geminiKey by viewModel.geminiKey.collectAsState()
+    val personality by viewModel.personality.collectAsState()
+    val incognitoMode by viewModel.incognitoMode.collectAsState()
+    val incognitoAllowed by viewModel.incognitoAllowed.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -271,7 +274,7 @@ fun SettingsScreen(
             val queryAnswerSource by viewModel.queryAnswerSource.collectAsState()
             SettingDropdown(
                 title = "Query Answers",
-                description = "How to answer questions (local = on-device, cloud = API)",
+                description = "How to answer questions (Local = on-device, Cloud = API)",
                 selected = queryAnswerSource,
                 options = listOf("Cloud", "Local", "Auto"),
                 onSelect = { viewModel.setQueryAnswerSource(it) }
@@ -367,6 +370,94 @@ fun SettingsScreen(
             HorizontalDivider()
 
             HorizontalDivider()
+
+            // Incognito mode + service controls — top of the list because the
+            // user explicitly asked for these to be discoverable.
+            Text("Privacy & Service", style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Incognito Mode",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (incognitoAllowed) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        when {
+                            !incognitoAllowed -> "Disabled by your organization's policy."
+                            incognitoMode -> "ON — phone events go to a separate database. Toggle off to wipe."
+                            else -> "Routes all phone-originated events to a separate, wipeable database."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = incognitoMode,
+                    onCheckedChange = { viewModel.setIncognitoMode(it) },
+                    enabled = incognitoAllowed
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { viewModel.stopPanService() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Stop PAN Service") }
+                Button(
+                    onClick = { viewModel.forceRestartApp() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Force Restart") }
+            }
+            Text(
+                "Stop = kills the foreground service (voice triggers, log shipping). " +
+                "Force Restart = stop service, kill process, cold-start the app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Personality (PAN voice/character — empty = default/off)
+            Text("Personality", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Describe how PAN should talk. Leave empty for the default PAN voice (no personality).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            var personalityInput by remember(personality) { mutableStateOf(personality) }
+            OutlinedTextField(
+                value = personalityInput,
+                onValueChange = { personalityInput = it },
+                label = { Text("Personality prompt") },
+                placeholder = { Text("e.g. Sarcastic, witty, like Tony Stark") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                maxLines = 5
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (personalityInput != personality) {
+                    Button(
+                        onClick = { viewModel.setPersonality(personalityInput) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Save") }
+                }
+                if (personality.isNotEmpty() || personalityInput.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = {
+                            personalityInput = ""
+                            viewModel.clearPersonality()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Turn Off") }
+                }
+            }
 
             // Gemini API Key
             Text("Gemini API Key", style = MaterialTheme.typography.titleMedium)

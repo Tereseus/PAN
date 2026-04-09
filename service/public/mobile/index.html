@@ -25,13 +25,37 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .page { display:none; }
 .page.active { display:block; }
 
-/* Chat */
-.messages { display:flex; flex-direction:column; gap:6px; padding:12px; min-height:200px; }
-.msg-u { background:#89b4fa; color:#000; border-radius:16px 16px 4px 16px; padding:8px 14px; align-self:flex-end; max-width:80%; word-break:break-word; font-size:14px; }
-.msg-p { background:#313244; color:#cdd6f4; border-radius:16px 16px 16px 4px; padding:8px 14px; align-self:flex-start; max-width:80%; word-break:break-word; font-size:14px; }
-.msg-time { font-size:10px; color:var(--text2); margin-top:2px; }
+/* Terminal-style chat — matches desktop terminal renderer */
+.messages { display:flex; flex-direction:column; padding:8px 10px; min-height:200px; background:#11111b; font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.4; }
+.t-line { padding:0; margin:0; word-break:break-word; white-space:pre-wrap; }
+.t-user { margin-top:6px; color:#cdd6f4; }
+.t-user .name { color:#a6e3a1; font-weight:bold; }
+.t-user .sep { color:#89b4fa; }
+.t-assistant { margin-top:4px; color:#bac2de; }
+.t-assistant .name { color:#cba6f7; font-weight:bold; }
+.t-assistant .sep { color:#89b4fa; }
+.t-tool { color:#f9e2af; padding-left:2px; }
+.t-tool .arrow { color:#6c7086; }
+.t-pending { opacity:0.5; font-style:italic; }
+.status-bar { display:flex; align-items:center; gap:8px; padding:5px 10px; background:#181825; border-top:1px solid #313244; font-size:12px; color:#cba6f7; }
+.spinner { display:inline-block; width:10px; height:10px; border:2px solid #313244; border-top-color:#cba6f7; border-radius:50%; animation:spin 0.8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* Approvals banner — sticky at top, visible on every tab */
+.approvals-banner { position:sticky; top:80px; z-index:18; background:#f9e2af; color:#1e1e2e; padding:10px 12px; border-top:1px solid #d4a72c; border-bottom:1px solid #d4a72c; display:none; }
+.approvals-banner.visible { display:block; animation:pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{background:#f9e2af} 50%{background:#fab387} }
+.approvals-banner .hdr { font-weight:700; font-size:13px; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
+.approvals-banner .hdr .count { background:#1e1e2e; color:#f9e2af; border-radius:10px; padding:1px 8px; font-size:11px; }
+.approvals-item { background:#fff; border-radius:6px; padding:8px 10px; margin-top:6px; }
+.approvals-item .prompt { font-size:12px; color:#1e1e2e; word-break:break-word; margin-bottom:6px; max-height:60px; overflow:hidden; text-overflow:ellipsis; }
+.approvals-item .btns { display:flex; gap:6px; }
+.approvals-item button { flex:1; border:none; border-radius:4px; padding:8px; font-size:13px; font-weight:600; cursor:pointer; }
+.approvals-item .allow-btn { background:#a6e3a1; color:#1e1e2e; }
+.approvals-item .deny-btn { background:#f38ba8; color:#1e1e2e; }
+.tab .badge { display:inline-block; background:#f38ba8; color:#1e1e2e; border-radius:10px; padding:1px 6px; font-size:10px; font-weight:700; margin-left:4px; }
 .input-bar { display:flex; gap:8px; padding:8px 12px; border-top:1px solid var(--border); background:var(--bg); position:sticky; bottom:0; z-index:5; }
-.input-bar input { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; font-size:14px; outline:none; }
+.input-bar input { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; font-size:14px; outline:none; font-family:inherit; }
 .input-bar button { background:var(--accent); color:#000; border:none; border-radius:var(--radius); padding:10px 16px; font-weight:600; font-size:14px; }
 
 /* Cards */
@@ -100,9 +124,16 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div class="tab" data-tab="settings">Settings</div>
 </div>
 
-<!-- CHAT — conversation history + input -->
+<!-- Approvals banner — sticky, visible on every tab when something is pending -->
+<div id="approvals-banner" class="approvals-banner">
+  <div class="hdr">⚠ Pending approval <span class="count" id="approvals-count">0</span></div>
+  <div id="approvals-list"></div>
+</div>
+
+<!-- CHAT / TERMINAL — terminal-style transcript + input -->
 <div id="chat" class="page active">
   <div class="messages" id="chat-msgs"><div class="muted">Loading conversations...</div></div>
+  <div id="chat-status" class="status-bar" style="display:none"><span class="spinner"></span><span>Claude is thinking…</span></div>
   <div class="input-bar">
     <input id="chat-input" placeholder="Message PAN..." onkeydown="if(event.key==='Enter')sendChat()">
     <button onclick="sendChat()">Send</button>
@@ -171,6 +202,79 @@ function onProjectChange() {
   if (active) loadTab(active.id);
 }
 
+// ========== APPROVALS BANNER ==========
+// Polls /api/v1/terminal/permissions and shows a sticky banner when anything is pending.
+// Visible on every tab. Also updates a red badge on the Chat tab.
+let _lastApprovalIds = '';
+async function pollApprovals() {
+  try {
+    const res = await fetch(API + '/api/v1/terminal/permissions');
+    const data = await res.json();
+    const perms = (data.permissions || []).filter(p => !p.response);
+    const banner = document.getElementById('approvals-banner');
+    const listEl = document.getElementById('approvals-list');
+    const countEl = document.getElementById('approvals-count');
+    const chatTab = document.querySelector('.tab[data-tab="chat"]');
+
+    // Update chat tab badge
+    if (chatTab) {
+      const existingBadge = chatTab.querySelector('.badge');
+      if (perms.length > 0) {
+        if (!existingBadge) {
+          chatTab.insertAdjacentHTML('beforeend', ' <span class="badge">' + perms.length + '</span>');
+        } else {
+          existingBadge.textContent = perms.length;
+        }
+      } else if (existingBadge) {
+        existingBadge.remove();
+      }
+    }
+
+    if (perms.length === 0) {
+      banner.classList.remove('visible');
+      _lastApprovalIds = '';
+      return;
+    }
+    // Only re-render if the set of pending IDs changed
+    const idSig = perms.map(p => p.id).join(',');
+    if (idSig === _lastApprovalIds) return;
+    _lastApprovalIds = idSig;
+
+    countEl.textContent = perms.length;
+    listEl.innerHTML = '';
+    for (const p of perms) {
+      const div = document.createElement('div');
+      div.className = 'approvals-item';
+      div.innerHTML =
+        '<div class="prompt">' + esc((p.prompt || p.tool_name || 'unknown').slice(0, 300)) + '</div>' +
+        '<div class="btns">' +
+          '<button class="allow-btn">Allow</button>' +
+          '<button class="deny-btn">Deny</button>' +
+        '</div>';
+      div.querySelector('.allow-btn').addEventListener('click', () => respondToApproval(p.id, 'allow'));
+      div.querySelector('.deny-btn').addEventListener('click', () => respondToApproval(p.id, 'deny'));
+      listEl.appendChild(div);
+    }
+    banner.classList.add('visible');
+  } catch (e) {
+    console.error('pollApprovals error:', e);
+  }
+}
+
+async function respondToApproval(permId, response) {
+  try {
+    await fetch(API + '/api/v1/terminal/permissions/respond', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ id: permId, response: response })
+    });
+    _lastApprovalIds = ''; // force re-render on next poll
+    setTimeout(pollApprovals, 200);
+  } catch (e) {
+    console.error('respondToApproval failed:', e);
+  }
+}
+
 // INIT
 async function init() {
   console.log('init: fetching projects from ' + API);
@@ -194,45 +298,91 @@ async function init() {
     const active = document.querySelector('.page.active');
     if (active) loadTab(active.id);
   }, 3000);
+  // Poll approvals every 2 seconds — independent of active tab so the banner
+  // appears no matter where the user is in the app
+  pollApprovals();
+  setInterval(pollApprovals, 2000);
 }
 
-// ========== CHAT ==========
+// ========== CHAT / TERMINAL ==========
+// Settings — same keys as desktop terminal
+const PAN_USER = (localStorage.getItem('pan_username') || 'Tereseus').replace(/[^a-zA-Z0-9_-]/g, '');
+const PAN_LLM = (localStorage.getItem('pan_llm_name') || 'Claude').replace(/[^a-zA-Z0-9_-]/g, '');
+function firstCap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+const USERNAME = firstCap(PAN_USER);
+const LLMNAME = firstCap(PAN_LLM);
+
+let _renderedMsgIds = []; // append-only render: track which msgs have been rendered
+function renderMsgLine(msg) {
+  const role = msg.role || '';
+  const type = msg.type || '';
+  const text = msg.text || '';
+  if (!text || text.length < 1) return null;
+  // Filter out the "ΠΑΝ remembers" trigger
+  if (role === 'user' && /^ΠΑΝ remembers/i.test(text.trim())) return null;
+  if (role === 'user' && type === 'prompt') {
+    return '<div class="t-line t-user"><span class="name">' + esc(USERNAME) + '</span><span class="sep">$ </span>' + esc(text) + '</div>';
+  }
+  if (role === 'assistant' && type === 'text') {
+    return '<div class="t-line t-assistant"><span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>' + esc(text) + '</div>';
+  }
+  if (role === 'assistant' && type === 'tool') {
+    return '<div class="t-line t-tool"><span class="arrow">→ </span>' + esc(text) + '</div>';
+  }
+  return null;
+}
+
 async function loadChat() {
   const el = document.getElementById('chat-msgs');
   // Don't refresh if user sent a message in the last 5 seconds
   if (Date.now() - lastSentTime < 5000) return;
   try {
-    // Try to load transcript for active project (same as desktop)
     if (activeProject) {
-      // Get the latest session for this project
-      const probeRes = await fetch(API + '/dashboard/api/events?limit=1&project_path=' + encodeURIComponent(activeProject.path));
+      const probeRes = await fetch(API + '/dashboard/api/events?limit=10&project_path=' + encodeURIComponent(activeProject.path));
       const probeData = await probeRes.json();
-      const latestEvent = (probeData.events || [])[0];
-      if (latestEvent) {
-        const sid = latestEvent.session_id;
-        if (sid) {
-          const tRes = await fetch(API + '/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=100');
+      const events = probeData.events || [];
+      // Collect up to 3 unique non-system session IDs
+      const sids = [];
+      const seen = new Set();
+      for (const e of events) {
+        const sid = e.session_id || '';
+        if (sid && !seen.has(sid) && !/^(system|phone|router|dash|mob|dev-dash)-/.test(sid)) {
+          seen.add(sid);
+          sids.push(sid);
+          if (sids.length >= 3) break;
+        }
+      }
+      if (sids.length) {
+        const all = [];
+        await Promise.all(sids.map(async (sid) => {
+          const tRes = await fetch(API + '/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=200');
           const tData = await tRes.json();
-          const messages = tData.messages || [];
-          if (messages.length) {
+          if (tData.messages) all.push(...tData.messages);
+        }));
+        all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+        if (all.length) {
+          // Append-only: only add lines we haven't rendered yet (preserve scroll position)
+          if (_renderedMsgIds.length === 0) el.innerHTML = '';
+          const existingCount = _renderedMsgIds.length;
+          if (all.length < existingCount) {
+            // transcript shrunk — full reset
             el.innerHTML = '';
-            for (const msg of messages) {
-              const role = msg.role || msg.type || '';
-              const text = msg.content || msg.text || '';
-              if (!text || text.length < 2) continue;
-              if (role === 'user' || role === 'human') {
-                el.innerHTML += '<div class="msg-u">' + esc(text.slice(0,500)) + '</div>';
-              } else if (role === 'assistant' || role === 'tool_result') {
-                el.innerHTML += '<div class="msg-p">' + esc(text.slice(0,500)) + '</div>';
-              }
-            }
-            el.scrollTop = el.scrollHeight;
-            return;
+            _renderedMsgIds = [];
           }
+          const wasNearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
+          let added = 0;
+          for (let i = _renderedMsgIds.length; i < all.length; i++) {
+            const html = renderMsgLine(all[i]);
+            if (html) { el.insertAdjacentHTML('beforeend', html); added++; }
+            _renderedMsgIds.push(1);
+          }
+          if (added > 0 && wasNearBottom) el.scrollTop = el.scrollHeight;
+          return;
         }
       }
     }
     // Fallback: show events if no transcript
+    if (_renderedMsgIds.length > 0) return; // don't wipe an already-loaded transcript
     let url = API + '/dashboard/api/events?limit=30&type=RouterCommand';
     const res = await fetch(url);
     const data = await res.json();
@@ -244,9 +394,8 @@ async function loadChat() {
         const d = JSON.parse(e.data);
         const text = d.text || d.query || '';
         const resp = d.result || d.response || '';
-        const time = e.created_at?.slice(11,16) || '';
-        if (text) el.innerHTML += '<div class="msg-u">' + esc(text.slice(0,200)) + '<div class="msg-time">' + time + '</div></div>';
-        if (resp && resp !== '[AMBIENT]') el.innerHTML += '<div class="msg-p">' + esc(resp.slice(0,300)) + '<div class="msg-time">' + time + '</div></div>';
+        if (text) el.innerHTML += '<div class="t-line t-user"><span class="name">' + esc(USERNAME) + '</span><span class="sep">$ </span>' + esc(text.slice(0,500)) + '</div>';
+        if (resp && resp !== '[AMBIENT]') el.innerHTML += '<div class="t-line t-assistant"><span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>' + esc(resp.slice(0,500)) + '</div>';
       } catch {}
     }
     el.scrollTop = el.scrollHeight;
@@ -260,9 +409,12 @@ async function sendChat() {
   input.value = '';
   lastSentTime = Date.now();
   const el = document.getElementById('chat-msgs');
-  el.innerHTML += '<div class="msg-u">' + esc(text) + '</div>';
-  el.innerHTML += '<div class="msg-p" id="chat-typing" style="opacity:0.5">Thinking...</div>';
+  const status = document.getElementById('chat-status');
+  // Optimistic local echo as a terminal user line + faded pending placeholder
+  el.insertAdjacentHTML('beforeend', '<div class="t-line t-user"><span class="name">' + esc(USERNAME) + '</span><span class="sep">$ </span>' + esc(text) + '</div>');
+  el.insertAdjacentHTML('beforeend', '<div class="t-line t-assistant t-pending" id="chat-typing"><span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>thinking…</div>');
   el.scrollTop = el.scrollHeight;
+  if (status) status.style.display = 'flex';
 
   const sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
   try {
@@ -274,31 +426,30 @@ async function sendChat() {
     const data = await res.json();
     if (!data.ok) {
       const t = document.getElementById('chat-typing');
-      if (t) { t.textContent = 'Send failed: ' + (data.error||''); t.style.color='var(--red)'; t.removeAttribute('id'); }
+      if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>send failed: ' + esc(data.error || ''); t.style.color = 'var(--red)'; t.removeAttribute('id'); }
+      if (status) status.style.display = 'none';
       return;
     }
-    // Poll transcript every 2 seconds for up to 60 seconds to get Claude's response
-    let prevCount = el.children.length;
+    // Poll transcript for Claude's response
+    let prevCount = _renderedMsgIds.length;
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 2000));
-      // Reload chat to see if Claude responded
-      const beforeCount = el.children.length;
       lastSentTime = Date.now(); // keep blocking auto-refresh
       await loadChat();
-      // If new messages appeared, Claude responded
-      if (el.children.length > prevCount + 1) {
+      if (_renderedMsgIds.length > prevCount + 1) {
         const t = document.getElementById('chat-typing');
         if (t) t.remove();
         break;
       }
     }
     const t = document.getElementById('chat-typing');
-    if (t) { t.textContent = 'Claude may still be processing...'; t.style.opacity = '0.5'; t.removeAttribute('id'); }
+    if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>still processing…'; t.removeAttribute('id'); }
   } catch(e) {
     const t = document.getElementById('chat-typing');
-    if (t) { t.textContent = 'Error: ' + e.message; t.style.color='var(--red)'; t.removeAttribute('id'); }
+    if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>error: ' + esc(e.message); t.style.color = 'var(--red)'; t.removeAttribute('id'); }
   }
-  lastSentTime = 0; // resume auto-refresh
+  if (status) status.style.display = 'none';
+  lastSentTime = 0;
   el.scrollTop = el.scrollHeight;
 }
 
