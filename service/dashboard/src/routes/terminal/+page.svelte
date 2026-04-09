@@ -17,7 +17,7 @@
 	// Approval prompt detection — populated when Claude shows a 1/2/3 style menu
 	let approvalOptions = $state(null); // null | [{ num: 1, label: 'Yes' }, ...]
 	// Claude ready state — false while processing, true when waiting for user input
-	let claudeReady = $state(true);
+	let claudeReady = $state(false); // Start false — must detect Claude actually running
 	// Number of messages sent but not yet confirmed in the JSONL transcript
 	let pendingSendCount = $state(0);
 
@@ -95,6 +95,35 @@
 		document.body.style.cursor = '';
 		document.body.style.userSelect = '';
 		// ResizeObserver on termContainerEl handles resize automatically — no synthetic event needed
+	}
+
+	// Lightweight markdown → HTML for chat bubbles (bold, bullets, inline code, links)
+	function renderMarkdown(text) {
+		if (!text) return '';
+		// Escape HTML first
+		let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+		// Code blocks (```...```) — must come before inline code
+		html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre class="md-codeblock"><code>$2</code></pre>');
+		// Inline code (`...`)
+		html = html.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+		// Bold (**...**)
+		html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+		// Italic (*...*)
+		html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+		// Headings (## ...)
+		html = html.replace(/^### (.+)$/gm, '<div class="md-h3">$1</div>');
+		html = html.replace(/^## (.+)$/gm, '<div class="md-h2">$1</div>');
+		html = html.replace(/^# (.+)$/gm, '<div class="md-h1">$1</div>');
+		// Bullet lists (- item or * item)
+		html = html.replace(/^[\-\*] (.+)$/gm, '<div class="md-bullet">$1</div>');
+		// Numbered lists (1. item)
+		html = html.replace(/^\d+\. (.+)$/gm, '<div class="md-bullet md-numbered">$1</div>');
+		// Line breaks
+		html = html.replace(/\n/g, '<br>');
+		// Clean up <br> after block elements
+		html = html.replace(/(<\/div>)<br>/g, '$1');
+		html = html.replace(/(<\/pre>)<br>/g, '$1');
+		return html;
 	}
 
 	// Persist chat across refresh (localStorage survives tab close + refresh)
@@ -274,6 +303,36 @@
 	let isListening = $state(false);
 	let recognition = null;
 	let pastedImages = $state([]); // { dataUrl, path } — preview before send
+
+	// Library widget
+	let libraryItems = $state([]);
+	let libraryFilter = $state('all');
+	let libraryQuery = $state('');
+	async function loadLibrary() {
+		try {
+			const r = await fetch('/api/v1/library');
+			const j = await r.json();
+			libraryItems = j.items || [];
+		} catch (e) { libraryItems = []; }
+	}
+	function openLibraryItem(item) {
+		const url = `${window.location.origin}/api/v1/library/view?path=${encodeURIComponent(item.path)}`;
+		const win = window.open(url, '_blank', 'width=1100,height=800');
+		if (!win) {
+			fetch('/api/v1/ui-commands', {
+				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type: 'open_window', url })
+			});
+		}
+	}
+	function filteredLibrary() {
+		const q = libraryQuery.trim().toLowerCase();
+		return libraryItems.filter(i => {
+			if (libraryFilter !== 'all' && i.type !== libraryFilter) return false;
+			if (q && !i.title.toLowerCase().includes(q) && !(i.snippet || '').toLowerCase().includes(q)) return false;
+			return true;
+		});
+	}
 
 	// Perf widget
 	let perfData = $state({ wsLatency: 0, domTime: 0, linesChanged: 0, serverRender: 0, serverTotal: 0, msgSize: 0, fps: 0 });
@@ -500,12 +559,41 @@
 					const tRecv = performance.now();
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
+						case 'user_echo': {
+							// Immediate echo from server — user message appears instantly
+							// without waiting for JSONL. Dedup handles overlap when JSONL arrives.
+							if (!tabData._echoMessages) tabData._echoMessages = [];
+							tabData._echoMessages.push({
+								role: 'user', type: 'prompt',
+								text: msg.text, ts: msg.ts,
+								_echo: true,
+							});
+							renderTranscriptToTerminal(tabData);
+							break;
+						}
 						case 'transcript_messages': {
 							// Server pushed parsed messages from the JSONL file watcher.
 							// Replaces polling. We get the full deduped message list each
 							// time any JSONL in the project's dir changes.
 							tabData._pushedMessages = msg.messages || [];
+							// Clear loading indicator once real transcript data arrives
+							if (tabData._claudeLoading && msg.messages?.length) {
+								tabData._claudeLoading = false;
+							}
+							// Clear echoes that now have matching JSONL entries
+							if (tabData._echoMessages?.length) {
+								const jsonlTexts = new Set((msg.messages || [])
+									.filter(m => m.role === 'user')
+									.map(m => (m.text || '').replace(/\s+/g, ' ').trim()));
+								tabData._echoMessages = tabData._echoMessages
+									.filter(e => !jsonlTexts.has((e.text || '').replace(/\s+/g, ' ').trim()));
+							}
 							renderTranscriptToTerminal(tabData);
+							// Also refresh the chat panel — it uses HTTP API which may
+							// not have been triggered by a hook event yet.
+							if (leftSection === 'transcript') {
+								debouncedLoadChatHistory();
+							}
 							break;
 						}
 						case 'screen-v2': {
@@ -625,8 +713,11 @@
 							tabData.claudeStarted = false;
 							tabData.ptyDead = true;
 							tabData.ptyExitCode = msg.code;
+							tabData.ptyUptimeSec = uptimeSec;
 							if (activeTabId === tabData.id) claudeReady = true;
-							scrollbackDiv.innerHTML += '\n<div style="margin:8px 0;padding:8px 12px;background:#3c1f24;border-left:3px solid #f38ba8;color:#f38ba8;font-weight:600">⚠ Claude PTY exited (code ' + msg.code + ', uptime ' + uptimeSec + 's) — switch tabs and back, or refresh, to relaunch.</div>';
+							// Re-render so the PTY exit banner appears via renderTranscriptToTerminal
+							// (don't append raw HTML — it gets wiped on next render cycle)
+							renderTranscriptToTerminal(tabData);
 							tabs = [...tabs];
 							break;
 						}
@@ -729,7 +820,27 @@
 						serverRestarting = false;
 						tabData.ws = newWs;
 						prevLines = [];
-						scrollbackDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
+						// Reset PTY death state so the exit banner doesn't persist
+						tabData.ptyDead = false;
+						tabData.ptyExitCode = null;
+						tabData.ptyUptimeSec = 0;
+						tabData._lastRenderedHtml = '';
+						// Reset Claude status immediately — don't inherit stale "Ready"
+						// from the pre-restart session. Poll will correct once Claude
+						// actually starts and ❯ prompt appears.
+						tabData.claudeReady = false;
+						tabData.claudeRunning = false;
+						if (activeTabId === tabData.id) claudeReady = false;
+
+						if (wasServerRestart) {
+							// Add a prominent restart separator — keep all scrollback above
+							scrollbackDiv.innerHTML += `<div style="margin:16px 0;padding:10px 16px;background:#1a3a2a;border:1px solid #a6e3a1;border-left:3px solid #a6e3a1;color:#a6e3a1;font-weight:600;text-align:center">` +
+								`PAN Restarted — New Session` +
+								`<div style="font-size:0.8em;font-weight:400;opacity:0.7;margin-top:4px">${new Date().toLocaleTimeString()}</div></div>` +
+								`<hr style="border:none;border-top:1px solid #45475a;margin:8px 0">`;
+						} else {
+							scrollbackDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
+						}
 						startPing();
 
 						// Only relaunch Claude on reconnect if the SERVER actually restarted
@@ -740,6 +851,8 @@
 							const launchKey = 'pan_claude_launched:' + sessionId;
 							sessionStorage.removeItem(launchKey); // server restart = invalidate guard
 							tabData.claudeStarted = false;
+							tabData._claudeLoading = true;
+							renderTranscriptToTerminal(tabData);
 							setTimeout(async () => {
 								if (newWs.readyState !== 1 || tabData.claudeStarted) return;
 								if (sessionStorage.getItem(launchKey) === '1') return;
@@ -753,8 +866,37 @@
 									});
 									await new Promise(r => setTimeout(r, 300));
 								} catch {}
-								newWs.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+								newWs.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
 							}, 2000);
+						} else if (projectName && projectName !== 'Shell') {
+							// FALLBACK: server_restarting message may have been lost (race
+							// with socket close). Poll PTY status after 5s — if we have a
+							// fresh PTY (uptime <10s) with no Claude running, launch it.
+							setTimeout(async () => {
+								if (newWs.readyState !== 1 || tabData.claudeStarted) return;
+								try {
+									const r = await api('/api/v1/terminal/sessions');
+									const list = r?.sessions || [];
+									const match = list.find(s => s.id === sessionId);
+									if (match && !match.claudeRunning && match.createdAt && (Date.now() - match.createdAt < 15000)) {
+										console.log('[PAN] Fallback Claude launch: fresh PTY detected without Claude');
+										const launchKey = 'pan_claude_launched:' + sessionId;
+										sessionStorage.removeItem(launchKey);
+										tabData.claudeStarted = true;
+										tabData._claudeLoading = true;
+										sessionStorage.setItem(launchKey, '1');
+										try {
+											await api('/api/v1/inject-context', {
+												method: 'POST',
+												headers: { 'Content-Type': 'application/json' },
+												body: JSON.stringify({ cwd })
+											});
+											await new Promise(r => setTimeout(r, 300));
+										} catch {}
+										newWs.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+									}
+								} catch {}
+							}, 5000);
 						}
 					};
 					newWs.onmessage = handleMessage;
@@ -798,6 +940,8 @@
 						}
 
 						tabData.claudeStarted = true;
+						tabData._claudeLoading = true;
+						renderTranscriptToTerminal(tabData);
 						sessionStorage.setItem(launchKey, '1');
 
 						// Inject context into CLAUDE.md
@@ -813,7 +957,7 @@
 						} catch {}
 
 						if (briefingReady) {
-							ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
 						} else {
 							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
 						}
@@ -958,8 +1102,11 @@
 			// PUSH-BASED: messages come from the server's transcript file watcher
 			// via the WebSocket `transcript_messages` event, stored on tabData.
 			// No more HTTP polling, no session ID resolution, no stale cache.
-			const allMessages = tabData._pushedMessages || [];
-			console.log('[PAN DIAG] RENDER ← tab.sessionId =', tabData.sessionId, '| messages =', allMessages.length);
+			// Merge JSONL transcript messages with any pending echo messages
+			const pushed = tabData._pushedMessages || [];
+			const echoes = tabData._echoMessages || [];
+			const allMessages = echoes.length ? [...pushed, ...echoes].sort((a, b) => (a.ts || '').localeCompare(b.ts || '')) : pushed;
+			console.log('[PAN DIAG] RENDER ← tab.sessionId =', tabData.sessionId, '| messages =', allMessages.length, '| echoes =', echoes.length);
 			if (allMessages.length === 0) return;
 
 			// Terminal-style rendering: tight monospace lines, simple prompt prefix.
@@ -997,10 +1144,8 @@
 					// added to long multi-line pasted prompts. The actual user text
 					// follows immediately after the placeholder in the same string.
 					raw = raw.replace(/^\[Pasted text #\d+ \+\d+ lines\]/, '').trimStart();
-					// Skip the ΠΑΝ remembers trigger — match the bare text OR the full
-					// printf launch command (either can end up in the transcript).
+					// Skip the ΠΑΝ remembers trigger prompt from the terminal view
 					if (/^\u03A0\u0391\u039D remembers/i.test(raw)) return null;
-					if (/printf\s+["'][^"']*\u03A0\u0391\u039D\s*remembers/i.test(raw)) return null;
 					if (/claude\s+--permission-mode\s+auto\s+["']\u03A0\u0391\u039D\s*remembers/i.test(raw)) return null;
 					// Skip Claude Code system-injected messages that come in as "user" role
 					// but aren't actually from the user: task-notification, system-reminder,
@@ -1030,6 +1175,20 @@
 						`<div class="t-line t-tool">` +
 						`<span style="color:#6c7086;">\u2192 </span>` +
 						`<span style="color:${toolColor};">${escapeHtml(msg.text || '')}</span>` +
+						`</div>`
+					);
+				} else if (msg.role === 'system') {
+					const isError = msg.type === 'pty_exit' || msg.type === 'banner';
+					const isRestart = msg.type === 'server_restart';
+					const bg = isRestart ? '#1a2332' : '#3c1f24';
+					const border = isRestart ? '#89b4fa' : '#f38ba8';
+					const color = isRestart ? '#89b4fa' : '#f38ba8';
+					const icon = isRestart ? '↻' : '⚠';
+					const ts = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '';
+					return (
+						`<div style="margin:8px 0;padding:8px 12px;background:${bg};border-left:3px solid ${border};color:${color};font-weight:600">` +
+						`${icon} ${escapeHtml(msg.text || '')}` +
+						(ts ? `<span style="float:right;font-weight:400;opacity:0.6;font-size:0.85em">${ts}</span>` : '') +
 						`</div>`
 					);
 				}
@@ -1075,6 +1234,7 @@
 				if (m.role === 'user' && m.type === 'prompt') kind = 'user';
 				else if (m.role === 'assistant' && m.type === 'text') kind = 'assistant';
 				else if (m.role === 'assistant' && m.type === 'tool') kind = 'tool';
+				else if (m.role === 'system') kind = 'system';
 				if (!kind) continue;
 
 				items.push({ kind, html: lineHtml, ts: m.ts || '', model: m.model || null });
@@ -1135,6 +1295,7 @@
 						lastShownModel = m;
 					}
 				}
+				else if (turn.kind === 'system') { headLabel = ''; cls = 'turn turn-system'; }
 				else { headLabel = ''; cls = 'turn turn-tool'; }
 
 				{
@@ -1151,6 +1312,23 @@
 						`</div>`
 					);
 				}
+			}
+			// Loading indicator — shows while Claude is starting up after restart
+			if (tabData._claudeLoading) {
+				parts.push(
+					`<div style="margin:8px 0;padding:8px 12px;background:#1a2332;border-left:3px solid #89b4fa;color:#89b4fa;font-weight:600">` +
+					`↻ Claude is loading... transcript will update when ready</div>`
+				);
+			}
+			// Append PTY exit banner if the PTY died — rendered here so it
+			// survives the full innerHTML replacement instead of being wiped.
+			if (tabData.ptyDead) {
+				const code = tabData.ptyExitCode ?? '?';
+				const up = tabData.ptyUptimeSec ?? 0;
+				parts.push(
+					`<div style="margin:8px 0;padding:8px 12px;background:#3c1f24;border-left:3px solid #f38ba8;color:#f38ba8;font-weight:600">` +
+					`⚠ Claude PTY exited (code ${code}, uptime ${up}s)</div>`
+				);
 			}
 			const newHtml = parts.join('');
 			if (newHtml !== tabData._lastRenderedHtml) {
@@ -1233,59 +1411,71 @@
 		}
 
 		try {
-			const sessionId = active.sessionId || '';
-			const isDashboardSession = /^(dash|mob)-/.test(sessionId);
-			const realSessionId = isDashboardSession ? '' : sessionId;
-			const chatKey = realSessionId || active.cwd || '';
-
-			if (chatCurrentProject !== chatKey) {
-				chatCurrentProject = chatKey;
-			}
-
-			// Use this tab's saved Claude session IDs for its specific transcript
-			let sessionIds = [];
-			if (active.claudeSessionIds && active.claudeSessionIds.length > 0) {
-				sessionIds = [...active.claudeSessionIds];
-			} else if (realSessionId) {
-				sessionIds = [realSessionId];
+			// Fast path: if we already have pushed messages from the transcript
+			// file watcher (WebSocket), use those directly instead of round-tripping
+			// through the HTTP API (which requires a DB lookup that may not have the
+			// session yet). Both parse the same JSONL files.
+			const pushed = active._pushedMessages || [];
+			const echoes = active._echoMessages || [];
+			let allMessages;
+			if (pushed.length > 0) {
+				allMessages = echoes.length
+					? [...pushed, ...echoes].sort((a, b) => (a.ts || '').localeCompare(b.ts || ''))
+					: [...pushed];
 			} else {
-				// Fallback: probe events for this project path (only when tab has no saved sessions yet)
-				const projectKey = active.cwd || '';
-				if (projectKey) {
-					try {
-						const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(projectKey));
-						if (probe && probe.events) {
-							const seen = new Set();
-							for (const evt of probe.events) {
-								const sid = evt.session_id || '';
-								if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
-									seen.add(sid);
-									sessionIds.push(sid);
-									if (sessionIds.length >= 5) break;
+				// Fallback: fetch from HTTP API when no pushed messages available
+				const sessionId = active.sessionId || '';
+				const isDashboardSession = /^(dash|mob)-/.test(sessionId);
+				const realSessionId = isDashboardSession ? '' : sessionId;
+				const chatKey = realSessionId || active.cwd || '';
+
+				if (chatCurrentProject !== chatKey) {
+					chatCurrentProject = chatKey;
+				}
+
+				let sessionIds = [];
+				if (active.claudeSessionIds && active.claudeSessionIds.length > 0) {
+					sessionIds = [...active.claudeSessionIds];
+				} else if (realSessionId) {
+					sessionIds = [realSessionId];
+				} else {
+					const projectKey = active.cwd || '';
+					if (projectKey) {
+						try {
+							const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(projectKey));
+							if (probe && probe.events) {
+								const seen = new Set();
+								for (const evt of probe.events) {
+									const sid = evt.session_id || '';
+									if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
+										seen.add(sid);
+										sessionIds.push(sid);
+										if (sessionIds.length >= 5) break;
+									}
 								}
 							}
-						}
-					} catch {}
-				}
-			}
-
-			if (sessionIds.length === 0) {
-				if (chatServerLoaded) chatBubbles = [];
-				return;
-			}
-
-			const allMessages = [];
-			await Promise.all(sessionIds.map(async (sid, idx) => {
-				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300&_t=' + Date.now());
-				if (data && data.messages) {
-					for (const msg of data.messages) {
-						msg._sessionIdx = idx;
-						allMessages.push(msg);
+						} catch {}
 					}
 				}
-			}));
 
-			allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+				if (sessionIds.length === 0) {
+					if (chatServerLoaded) chatBubbles = [];
+					return;
+				}
+
+				allMessages = [];
+				await Promise.all(sessionIds.map(async (sid, idx) => {
+					const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300&_t=' + Date.now());
+					if (data && data.messages) {
+						for (const msg of data.messages) {
+							msg._sessionIdx = idx;
+							allMessages.push(msg);
+						}
+					}
+				}));
+
+				allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+			}
 
 			if (allMessages.length === 0) {
 				if (chatServerLoaded) chatBubbles = [];
@@ -1293,7 +1483,8 @@
 			}
 
 			const sessionColors = ['var(--accent)', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7'];
-			const multiSession = sessionIds.length > 1;
+			const seenSessionIdxs = new Set(allMessages.map(m => m._sessionIdx || 0));
+			const multiSession = seenSessionIdxs.size > 1;
 			const newBubbles = [];
 
 			// Same shortener as the main terminal renderer.
@@ -1425,23 +1616,29 @@
 	// Ready = the ❯ input prompt line is visible near the bottom AND no spinner/status text
 	// is currently being shown. Busy = Claude is processing/streaming.
 	function detectClaudeReady(plainLines) {
-		if (!plainLines || plainLines.length === 0) return true; // assume ready if unknown
+		if (!plainLines || plainLines.length === 0) return false; // empty screen = NOT ready
 		// Look at the bottom 12 lines
 		const start = Math.max(0, plainLines.length - 12);
-		let sawPromptBox = false;
+		let sawClaudePrompt = false;
 		let sawSpinner = false;
+		let sawBashOnly = false;
 		for (let i = start; i < plainLines.length; i++) {
 			const line = plainLines[i];
 			if (!line) continue;
-			// Claude's input prompt box has a ❯ character at the start
-			if (/[\u276F>]\s*$/.test(line) || /^[│|]?\s*[\u276F>]\s/.test(line)) sawPromptBox = true;
+			// Claude's input prompt uses the ❯ character (U+276F) specifically —
+			// do NOT match generic ">" which is just a bash prompt. Claude is not running
+			// if we only see bash's $ or > prompt.
+			if (/\u276F/.test(line)) sawClaudePrompt = true;
+			// Detect bare bash prompt (Claude not running)
+			if (/^\s*(\$|bash-\d|>)\s*$/.test(line.trim())) sawBashOnly = true;
 			// Spinner / status indicators while busy
 			if (/(\u2728|esc to interrupt|tokens|↓|↑\s*\d|Thinking|Pondering|Cogitating|Ruminating|Considering|Reasoning)/i.test(line)) {
 				sawSpinner = true;
 			}
 		}
 		if (sawSpinner) return false;
-		return sawPromptBox;
+		// Only ready if we see Claude's actual ❯ prompt, not a bash prompt
+		return sawClaudePrompt;
 	}
 
 	// Detect Claude Code's interactive approval menus from the live PTY screen text.
@@ -1609,11 +1806,11 @@
 			sendTerminalInput(e.target?.value);
 			return;
 		}
-		// Escape → Ctrl+C to interrupt Claude
+		// Escape → interrupt Claude (sends Ctrl+C + logs system message)
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
-			if (ws) ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+			if (ws) ws.send(JSON.stringify({ type: 'interrupt' }));
 			return;
 		}
 		// Number keys 1-3 when input is empty AND there's a pending approval prompt
@@ -1662,6 +1859,15 @@
 	}
 
 	async function handleCenterChatKey(e) {
+		// Escape → interrupt Claude from center chat too
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			const active = getActiveTab();
+			if (active?.ws?.readyState === 1) {
+				active.ws.send(JSON.stringify({ type: 'interrupt' }));
+			}
+			return;
+		}
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			const active = getActiveTab();
@@ -2745,9 +2951,18 @@
 				// Sync the legacy claudeReady flag from authoritative state so the
 				// rest of the UI stops lying after refreshes / tab switches.
 				if (match) {
-					const realReady = !match.thinking;
-					if (claudeReady !== realReady) claudeReady = realReady;
-					if (tab.claudeReady !== realReady) tab.claudeReady = realReady;
+					// Only show "Ready" if Claude is actually running in this PTY.
+					// Without this, a bare bash prompt shows "Ready" because
+					// thinking=false when idle — that's a lie.
+					if (match.claudeRunning) {
+						const realReady = !match.thinking;
+						if (claudeReady !== realReady) claudeReady = realReady;
+						if (tab.claudeReady !== realReady) tab.claudeReady = realReady;
+					} else {
+						// Claude not running — force NOT ready
+						if (claudeReady) claudeReady = false;
+						if (tab.claudeReady) tab.claudeReady = false;
+					}
 				}
 			} catch {}
 		}, 1500);
@@ -2914,7 +3129,7 @@
 
 			if (e.key === 'Escape') {
 				e.preventDefault();
-				active.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+				active.ws.send(JSON.stringify({ type: 'interrupt' }));
 				return;
 			}
 			// Number keys 1-3 when input is empty AND there's a pending approval
@@ -3037,12 +3252,13 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="library">Library</option>
 				<option value="perf">Performance</option>
 				<option value="project">Project</option>
 				<option value="services">Services</option>
@@ -3071,7 +3287,7 @@
 										{#if bubble.multiSession}
 											<span class="session-dot" style="background:{bubble.accentColor}"></span>
 										{/if}
-										{bubble.text}
+										{@html renderMarkdown(bubble.text)}
 									</div>
 								</div>
 							{:else if bubble.type === 'assistant'}
@@ -3081,7 +3297,7 @@
 										{#if bubble.model}<span class="chat-model">{bubble.model}</span>{/if}
 									</div>
 									<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
-										{bubble.text}
+										{@html renderMarkdown(bubble.text)}
 									</div>
 								</div>
 							{:else if bubble.type === 'tool'}
@@ -3311,6 +3527,33 @@
 							<span class="perf-good">Running smooth</span>
 						</div>
 					{/if}
+				</div>
+			{:else if leftSection === 'library'}
+				<div class="library-panel">
+					<div class="library-toolbar">
+						<input type="text" class="library-search" placeholder="Search library..." bind:value={libraryQuery} />
+						<select class="library-filter" bind:value={libraryFilter}>
+							<option value="all">All</option>
+							<option value="doc">Docs</option>
+							<option value="memory">Memory</option>
+							<option value="pan">PAN State</option>
+						</select>
+						<button class="library-refresh" onclick={loadLibrary}>↻</button>
+					</div>
+					<div class="library-list">
+						{#each filteredLibrary() as item (item.path)}
+							<div class="library-row" onclick={() => openLibraryItem(item)}>
+								<div class="library-row-head">
+									<span class="library-type library-type-{item.type}">{item.type}</span>
+									<span class="library-title">{item.title}</span>
+								</div>
+								{#if item.snippet}<div class="library-snippet">{item.snippet}</div>{/if}
+							</div>
+						{/each}
+						{#if filteredLibrary().length === 0}
+							<div class="empty-state">No items</div>
+						{/if}
+					</div>
 				</div>
 			{:else if leftSection === 'usage'}
 				<div class="empty-state">Select Usage from the right panel</div>
@@ -3692,7 +3935,7 @@
 		{#if !approvalOptions || approvalOptions.length === 0}
 			{@const _now = ptyStatusNow}
 			{@const _pty = ptyStatus}
-			{@const _state = !_pty ? 'no-pty' : _pty.thinking ? 'thinking' : 'ready'}
+			{@const _state = !_pty ? 'no-pty' : !_pty.claudeRunning ? 'no-claude' : _pty.thinking ? 'thinking' : 'ready'}
 			{@const _inAgo = _pty?.lastInputTs ? Math.max(0, Math.round((_now - _pty.lastInputTs) / 1000)) : null}
 			{@const _outAgo = _pty?.lastOutputTs ? Math.max(0, Math.round((_now - _pty.lastOutputTs) / 1000)) : null}
 			{@const _upS = _pty?.createdAt ? Math.max(0, Math.round((_now - _pty.createdAt) / 1000)) : null}
@@ -3705,6 +3948,9 @@
 				{:else if _state === 'thinking'}
 					<span class="status-spinner"></span>
 					<span class="status-text">Claude is thinking…{pendingSendCount > 0 ? ` (${pendingSendCount} queued)` : ''}</span>
+				{:else if _state === 'no-claude'}
+					<span class="status-dot dot-yellow"></span>
+					<span class="status-text">Claude not running — bash only</span>
 				{:else if _state === 'ready'}
 					<span class="status-dot dot-green"></span>
 					<span class="status-text">Ready</span>
@@ -3755,12 +4001,13 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="library">Library</option>
 				<option value="perf">Performance</option>
 				<option value="project">Project</option>
 				<option value="services">Services</option>
@@ -4311,6 +4558,33 @@
 						</div>
 					{/if}
 				</div>
+			{:else if rightSection === 'library'}
+				<div class="library-panel">
+					<div class="library-toolbar">
+						<input type="text" class="library-search" placeholder="Search library..." bind:value={libraryQuery} />
+						<select class="library-filter" bind:value={libraryFilter}>
+							<option value="all">All</option>
+							<option value="doc">Docs</option>
+							<option value="memory">Memory</option>
+							<option value="pan">PAN State</option>
+						</select>
+						<button class="library-refresh" onclick={loadLibrary}>↻</button>
+					</div>
+					<div class="library-list">
+						{#each filteredLibrary() as item (item.path)}
+							<div class="library-row" onclick={() => openLibraryItem(item)}>
+								<div class="library-row-head">
+									<span class="library-type library-type-{item.type}">{item.type}</span>
+									<span class="library-title">{item.title}</span>
+								</div>
+								{#if item.snippet}<div class="library-snippet">{item.snippet}</div>{/if}
+							</div>
+						{/each}
+						{#if filteredLibrary().length === 0}
+							<div class="empty-state">No items</div>
+						{/if}
+					</div>
+				</div>
 			{:else if rightSection === 'users'}
 				<div class="users-panel">
 					{#if usersData.length === 0}
@@ -4636,6 +4910,7 @@
 	.pty-status-bar.pty-thinking { color: #cba6f7; }
 	.pty-status-bar.pty-thinking .status-text { font-style: italic; }
 	.pty-status-bar.pty-ready { color: #a6e3a1; }
+	.pty-status-bar.pty-no-claude { color: #f9e2af; }
 	.pty-status-bar.pty-no-pty { color: #f38ba8; }
 	.pty-status-bar .status-text { font-style: normal; font-weight: 600; }
 	.pty-meta {
@@ -4651,6 +4926,7 @@
 		border-radius: 50%;
 	}
 	.dot-green { background: #a6e3a1; box-shadow: 0 0 6px #a6e3a1; }
+	.dot-yellow { background: #f9e2af; box-shadow: 0 0 6px #f9e2af; }
 	.dot-red { background: #f38ba8; box-shadow: 0 0 6px #f38ba8; }
 
 	.approval-bar {
@@ -4912,9 +5188,10 @@
 	.chat-bubble {
 		word-break: break-word;
 		overflow-wrap: break-word;
-		white-space: pre-wrap;
+		white-space: normal;
 		overflow-x: auto;
 		min-width: 0;
+		line-height: 1.4;
 		max-width: 100%;
 	}
 
@@ -4957,6 +5234,19 @@
 		font-family: monospace;
 		word-break: break-all;
 	}
+
+	/* ==================== Markdown in chat bubbles ==================== */
+	.chat-bubble strong { font-weight: 700; color: #cdd6f4; }
+	.chat-bubble em { font-style: italic; color: #bac2de; }
+	.chat-bubble .md-bullet { padding-left: 14px; position: relative; margin: 2px 0; }
+	.chat-bubble .md-bullet::before { content: '•'; position: absolute; left: 2px; color: #6c7086; }
+	.chat-bubble .md-numbered::before { content: counter(md-list) '.'; counter-increment: md-list; }
+	.chat-bubble .md-code { background: rgba(137,180,250,0.12); padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
+	.chat-bubble .md-codeblock { background: #11111b; padding: 6px 8px; border-radius: 4px; font-family: monospace; font-size: 0.85em; overflow-x: auto; margin: 4px 0; white-space: pre; }
+	.chat-bubble .md-codeblock code { background: none; padding: 0; }
+	.chat-bubble .md-h1 { font-size: 1.2em; font-weight: 700; margin: 6px 0 4px; color: #cdd6f4; }
+	.chat-bubble .md-h2 { font-size: 1.1em; font-weight: 600; margin: 4px 0 2px; color: #cdd6f4; }
+	.chat-bubble .md-h3 { font-size: 1.0em; font-weight: 600; margin: 4px 0 2px; color: #bac2de; }
 
 	/* ==================== Project Info ==================== */
 	.project-info {
@@ -5059,6 +5349,23 @@
 		50% { opacity: 1; }
 		100% { opacity: 0.7; }
 	}
+
+	/* Library widget */
+	.library-panel { display: flex; flex-direction: column; height: 100%; padding: 8px; gap: 8px; }
+	.library-toolbar { display: flex; gap: 6px; }
+	.library-search { flex: 1; background: #181b22; border: 1px solid #2a2f3a; color: #cdd6f4; padding: 4px 8px; border-radius: 3px; font-size: 12px; }
+	.library-filter { background: #181b22; border: 1px solid #2a2f3a; color: #cdd6f4; padding: 4px; border-radius: 3px; font-size: 12px; }
+	.library-refresh { background: #181b22; border: 1px solid #2a2f3a; color: #cdd6f4; padding: 4px 8px; border-radius: 3px; cursor: pointer; }
+	.library-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+	.library-row { padding: 6px 8px; background: #14171d; border: 1px solid #232831; border-radius: 3px; cursor: pointer; }
+	.library-row:hover { background: #1c2029; border-color: #3a4150; }
+	.library-row-head { display: flex; align-items: center; gap: 6px; }
+	.library-type { font-size: 9px; padding: 1px 5px; border-radius: 2px; text-transform: uppercase; font-weight: 600; }
+	.library-type-doc { background: #1e3a5f; color: #89b4fa; }
+	.library-type-memory { background: #3a2a4d; color: #cba6f7; }
+	.library-type-pan { background: #2d4a2d; color: #a6e3a1; }
+	.library-title { font-size: 12px; color: #cdd6f4; }
+	.library-snippet { font-size: 11px; color: #6c7086; margin-top: 3px; padding-left: 2px; }
 
 	/* Perf widget */
 	.perf-widget {

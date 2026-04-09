@@ -7,10 +7,18 @@ const require = createRequire(import.meta.url);
 const pty = require('node-pty');
 import { WebSocketServer, WebSocket } from 'ws';
 import { hostname } from 'os';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
 import { all, insert } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
-import { subscribeToTranscript } from './transcript-watcher.js';
+import { subscribeToTranscript, writeSystemEvent } from './transcript-watcher.js';
+
+// Terminal log directory — persists ScreenBuffer logs across server restarts
+const TERMINAL_LOG_DIR = join(
+  process.env.LOCALAPPDATA || join(process.env.USERPROFILE || 'C:\\Users\\user', 'AppData', 'Local'),
+  'PAN', 'data', 'terminal-logs'
+);
+try { mkdirSync(TERMINAL_LOG_DIR, { recursive: true }); } catch {}
 
 // Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
 const sessions = new Map();
@@ -99,6 +107,20 @@ async function startTerminalServer(httpServer) {
       // Create ScreenBuffer for server-side rendering
       const term = new ScreenBufferClass(cols, rows);
 
+      // Persist terminal log across restarts — keyed by sessionId
+      const logFile = join(TERMINAL_LOG_DIR, sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') + '.jsonl');
+      term.setLogFile(logFile);
+      const restored = term.loadLogFile();
+      if (restored > 0) {
+        console.log(`[PAN Terminal] Restored ${restored} log entries from prior session: ${sessionId}`);
+        // Persist restart marker to JSONL transcript so it appears in transcript view
+        writeSystemEvent(cwd, 'server_restart', `Server restarted — restored ${restored} log entries from prior session`, {
+          session_id: sessionId,
+          project: projectName,
+          restored_entries: restored,
+        });
+      }
+
       // Spawn new PTY
       try {
         const ptyProcess = pty.spawn(SHELL, SHELL_ARGS, {
@@ -123,17 +145,25 @@ async function startTerminalServer(httpServer) {
           createdAt: Date.now(),
           renderTimer: null,
           lastRendered: '',
+          // System messages (banners, PTY events, interrupts) that persist
+          // across transcript refreshes. Merged into every transcript push.
+          systemMessages: [],
           // Liveness tracking — used by listSessions() so the dashboard can
           // derive a real "thinking" state from input-vs-output recency,
           // not local UI state that desyncs across refreshes/tabs.
           lastInputTs: 0,
           lastOutputTs: Date.now(),
+          claudeRunning: false, // true once Claude's ❯ prompt is detected in PTY output
         };
         sessions.set(sessionId, session);
 
         // PTY output -> append-only log (raw) + ScreenBuffer (VT100) -> HTML to clients
         ptyProcess.onData((data) => {
           session.lastOutputTs = Date.now();
+          // Detect Claude's ❯ prompt to know Claude is actually running
+          if (!session.claudeRunning && data.includes('\u276F')) {
+            session.claudeRunning = true;
+          }
           term.write(data);
           // Debounce rendering — batch rapid output into single screen update
           if (!session.renderTimer) {
@@ -166,6 +196,17 @@ async function startTerminalServer(httpServer) {
             console.error(`[PAN Terminal] Failed to log PtyExit:`, err.message);
           }
           console.log(`[PAN Terminal] PTY exited: ${sessionId} code=${exitCode} uptime=${Math.round(uptimeMs/1000)}s`);
+          // Persist PTY exit to JSONL transcript so it survives server restarts
+          writeSystemEvent(session.cwd, 'pty_exit', `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`, {
+            exit_code: exitCode,
+            uptime_ms: uptimeMs,
+            pid: ptyProcess.pid,
+            session_id: sessionId,
+            project: session.project,
+          });
+          // Add PTY exit as system message so it shows in transcript
+          const exitMsg = { role: 'system', type: 'banner', text: `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`, ts: new Date().toISOString() };
+          if (session.systemMessages) session.systemMessages.push(exitMsg);
           for (const client of session.clients) {
             if (client.readyState === 1) {
               client.send(JSON.stringify({
@@ -174,6 +215,12 @@ async function startTerminalServer(httpServer) {
                 uptime_ms: uptimeMs,
                 project: session.project,
               }));
+              // Push updated system messages so PTY exit appears in transcript
+              try {
+                const merged = [...(session.systemMessages || []), ...(session._lastTranscriptMessages || [])];
+                merged.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+                client.send(JSON.stringify({ type: 'transcript_messages', messages: merged }));
+              } catch {}
             }
           }
           sessions.delete(sessionId);
@@ -191,20 +238,13 @@ async function startTerminalServer(httpServer) {
 
         console.log(`[PAN Terminal] New session: ${sessionId} (${projectName || 'shell'}) in ${cwd}`);
 
-        // Auto-launch Claude Code in the new PTY. Without this, the user sees
-        // a bare bash prompt and their messages get fed to bash (which fails),
-        // never reaching a Claude session and never producing a JSONL transcript.
-        // Wait briefly for bash to finish initializing before sending the command.
-        setTimeout(() => {
-          try {
-            if (sessions.get(sessionId)?.pty) {
-              ptyProcess.write('claude\r');
-              console.log(`[PAN Terminal] Auto-launched claude in ${sessionId}`);
-            }
-          } catch (err) {
-            console.error(`[PAN Terminal] Failed to auto-launch claude:`, err.message);
-          }
-        }, 800);
+        // Claude auto-launch is handled by the FRONTEND (not here).
+        // The frontend's onopen/reconnect handler calls /api/v1/inject-context
+        // first, then sends `claude --permission-mode auto "ΠΑΝ remembers..."`.
+        // A server-side launch here races with the frontend's launch, causing
+        // the second command to be typed INTO the already-loading Claude session
+        // as user input — which swallows the user's first real message.
+        // See +page.svelte:876-922 (onopen) and :840-858 (reconnect).
       } catch (err) {
         console.error(`[PAN Terminal] Failed to spawn PTY:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to create terminal: ' + err.message }));
@@ -228,15 +268,25 @@ async function startTerminalServer(httpServer) {
     // Send current screen state immediately (for new/reconnecting clients)
     broadcastRenderedScreen(session, ws);
 
+    // NOTE: No session-start banner here — Claude's own "ΠΑΝ Remembers:" response
+    // (triggered by the dashboard auto-launch) IS the briefing. A separate system
+    // banner was rendering as a red warning box which looked wrong.
+
     // Subscribe this WebSocket to JSONL transcript file changes for the project's
     // cwd. The watcher uses fs.watch to detect any change to .jsonl files in the
     // Claude Code projects dir for this cwd, parses them, and pushes the full
-    // message list as `transcript_messages`. Replaces the broken polling model.
+    // message list as `transcript_messages`. Merges system messages (banners,
+    // PTY events) so they persist across refreshes.
     if (cwd) {
       const unsubscribe = subscribeToTranscript(cwd, (messages) => {
         if (ws.readyState === 1) {
           try {
-            ws.send(JSON.stringify({ type: 'transcript_messages', messages }));
+            // Cache raw transcript messages for later merges (PTY exit, etc.)
+            session._lastTranscriptMessages = messages;
+            // Merge system messages with transcript
+            const merged = [...(session.systemMessages || []), ...messages];
+            merged.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+            ws.send(JSON.stringify({ type: 'transcript_messages', messages: merged }));
           } catch (err) {
             console.error('[PAN Terminal] transcript push failed:', err.message);
           }
@@ -255,6 +305,24 @@ async function startTerminalServer(httpServer) {
             if (session.pty) {
               session.lastInputTs = Date.now();
               session.pty.write(parsed.data);
+            }
+            break;
+
+          case 'interrupt':
+            // User pressed Escape — send Ctrl+C AND log it as system message
+            if (session.pty) {
+              session.lastInputTs = Date.now();
+              session.pty.write('\x03');
+              const intMsg = { role: 'system', type: 'banner', text: 'Interrupted (Escape)', ts: new Date().toISOString() };
+              if (session.systemMessages) session.systemMessages.push(intMsg);
+              // Push to all clients immediately
+              const merged = [...(session.systemMessages || []), ...(session._lastTranscriptMessages || [])];
+              merged.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+              for (const client of session.clients) {
+                if (client.readyState === 1) {
+                  try { client.send(JSON.stringify({ type: 'transcript_messages', messages: merged })); } catch {}
+                }
+              }
             }
             break;
 
@@ -404,6 +472,7 @@ function listSessions() {
       lastInputTs: lastIn,
       lastOutputTs: lastOut,
       thinking,
+      claudeRunning: !!session.claudeRunning,
       currentTool: inFlight ? {
         tool: inFlight.tool,
         summary: inFlight.summary,
@@ -425,9 +494,49 @@ function getActivePtyPids() {
 }
 
 // Kill every tracked PTY (called on graceful shutdown so children don't orphan)
-function killAllSessions() {
+// Returns a Promise — caller must await to ensure WS broadcast lands before kill.
+async function killAllSessions() {
+  // Notify ALL connected WebSocket clients that the server is restarting
+  // BEFORE killing PTYs. This sets the frontend's `serverRestarting` flag
+  // so the reconnect handler knows to relaunch Claude after reconnecting.
+  for (const [, session] of sessions) {
+    for (const ws of session.clients) {
+      try {
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'server_restarting' }));
+        }
+      } catch {}
+    }
+  }
+
+  // Wait 200ms for WebSocket messages to flush to clients.
+  // Without this, the socket is killed before the server_restarting message
+  // reaches the frontend, causing wasServerRestart to be false and Claude
+  // never auto-relaunches after restart.
+  await new Promise(r => setTimeout(r, 200));
+
   let n = 0;
   for (const [id, session] of sessions) {
+    // Persist shutdown event to JSONL transcript BEFORE killing anything
+    try {
+      const uptimeMs = Date.now() - (session.createdAt || Date.now());
+      writeSystemEvent(session.cwd, 'server_shutdown', `Server shutting down — session ${id} killed (uptime ${Math.round(uptimeMs/1000)}s)`, {
+        session_id: id,
+        project: session.project,
+        pid: session.pty?.pid,
+        uptime_ms: uptimeMs,
+      });
+    } catch {}
+    // Flush current screen content to disk BEFORE killing the PTY.
+    // This ensures anything visible in the terminal at shutdown time
+    // is preserved and will appear when the session reconnects.
+    try {
+      if (session.term?.flushScreenToLog) {
+        session.term.flushScreenToLog();
+      }
+    } catch (err) {
+      console.error(`[PAN Terminal] Failed to flush log for ${id}:`, err.message);
+    }
     try {
       session.pty?.kill();
       n++;
@@ -531,6 +640,26 @@ function broadcastNotification(type, data) {
   }
 }
 
+// Broadcast to a SPECIFIC session's WebSocket clients
+function broadcastToSession(sessionId, type, data) {
+  let session = sessionId ? sessions.get(sessionId) : null;
+  if (!session) {
+    // Fallback: find most active session (same logic as sendToSession)
+    let best = null;
+    for (const [, s] of sessions) {
+      if (!best || s.clients.size > best.clients.size || s.createdAt > best.createdAt) best = s;
+    }
+    session = best;
+  }
+  if (!session) return;
+  const msg = JSON.stringify({ type, ...data });
+  for (const client of session.clients) {
+    if (client.readyState === 1) {
+      try { client.send(msg); } catch {}
+    }
+  }
+}
+
 // Legacy aliases — dev terminal now uses the same server-side renderer
 function listDevSessions() { return listSessions(); }
 function killDevSession(id) { return killSession(id); }
@@ -561,4 +690,4 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool };

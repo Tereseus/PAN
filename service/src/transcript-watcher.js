@@ -7,7 +7,7 @@
 // subscribe; they all get the same updates. Watchers are torn down when
 // the last subscriber disconnects.
 
-import { watch as fsWatch, readFileSync, statSync, existsSync, readdirSync } from 'fs';
+import { watch as fsWatch, readFileSync, statSync, existsSync, readdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -23,6 +23,39 @@ function cwdToClaudeDir(cwd) {
   return join(homedir(), '.claude', 'projects', slug);
 }
 
+// Write a system event (PTY exit, restart, disconnect, etc.) directly into the
+// most recent JSONL session file for a project cwd. This makes system events
+// persist across server restarts and appear in the transcript view permanently.
+// Event format: { type: 'system', event: 'pty_exit'|'restart'|'disconnect'|..., text: '...', timestamp: ISO }
+export function writeSystemEvent(cwd, event, text, meta = {}) {
+  const dir = cwdToClaudeDir(cwd);
+  if (!existsSync(dir)) return false;
+  try {
+    const files = readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    if (files.length === 0) return false;
+    // Find the most recent JSONL file
+    const filesWithMtime = files.map(f => {
+      const full = join(dir, f);
+      try { return { full, mtime: statSync(full).mtimeMs }; }
+      catch { return { full, mtime: 0 }; }
+    }).sort((a, b) => b.mtime - a.mtime);
+    const target = filesWithMtime[0].full;
+    const record = JSON.stringify({
+      type: 'system',
+      event,
+      text,
+      timestamp: new Date().toISOString(),
+      ...meta,
+    });
+    appendFileSync(target, '\n' + record);
+    console.log(`[transcript-watcher] Wrote system event: ${event} → ${target.split(/[/\\]/).pop()}`);
+    return true;
+  } catch (err) {
+    console.error('[transcript-watcher] writeSystemEvent error:', err.message);
+    return false;
+  }
+}
+
 // Parse a Claude Code JSONL transcript file into a flat list of messages.
 // Returns { messages: [{role, type, text, ts}], path }.
 function parseJsonlFile(filepath) {
@@ -34,6 +67,12 @@ function parseJsonlFile(filepath) {
     for (const line of lines) {
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
+
+      // System events (PTY exit, restart, disconnect, etc.) — written by writeSystemEvent()
+      if (obj.type === 'system' && obj.event) {
+        messages.push({ role: 'system', type: obj.event, text: obj.text || obj.event, ts: obj.timestamp });
+        continue;
+      }
 
       // User prompt
       if (obj.type === 'user' && obj.message) {
@@ -68,6 +107,8 @@ function parseJsonlFile(filepath) {
             else if (name === 'Write' && input.file_path) summary = `Write: ${input.file_path.split(/[/\\]/).pop()}`;
             else if (name === 'Grep' && input.pattern) summary = `Grep: ${input.pattern.substring(0, 60)}`;
             else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
+            else if (name === 'Agent' && input.description) summary = `Agent: ${input.description}`;
+            else if (name === 'Agent' && input.prompt) summary = `Agent: ${input.prompt.substring(0, 80)}`;
             messages.push({ role: 'assistant', type: 'tool', text: summary, ts: obj.timestamp });
           }
         }
@@ -98,11 +139,12 @@ function readAllForCwd(cwd) {
     }
     // Sort merged messages by timestamp ascending
     allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-    // Dedup by role+type+text (cross-session merge can produce duplicates)
+    // Dedup by role+type+text+timestamp — timestamp prevents dropping
+    // identical user messages sent at different times (e.g. "STOP" twice).
     const seen = new Set();
     const out = [];
     for (const m of allMessages) {
-      const sig = `${m.role}|${m.type}|${(m.text || '').replace(/\s+/g, ' ').trim()}`;
+      const sig = `${m.role}|${m.type}|${m.ts || ''}|${(m.text || '').replace(/\s+/g, ' ').trim()}`;
       if (sig.length > 10 && seen.has(sig)) continue;
       seen.add(sig);
       out.push(m);
@@ -152,7 +194,7 @@ export function subscribeToTranscript(cwd, callback) {
     // appends to a file with the handle held open (Claude Code does this). So
     // we also poll the directory's .jsonl mtimes every 500ms and emit when any
     // change. Cheap on Linux too — and harmless since emit() is debounced.
-    const pollMtimes = new Map(); // filepath → mtimeMs
+    const pollState = new Map(); // filepath → "mtimeMs:size"
     const poller = setInterval(() => {
       if (!existsSync(dir)) return;
       try {
@@ -162,16 +204,17 @@ export function subscribeToTranscript(cwd, callback) {
         for (const f of files) {
           const full = join(dir, f);
           seen.add(full);
-          let mt = 0;
-          try { mt = statSync(full).mtimeMs; } catch { continue; }
-          if (pollMtimes.get(full) !== mt) {
-            pollMtimes.set(full, mt);
+          let mt = 0, sz = 0;
+          try { const st = statSync(full); mt = st.mtimeMs; sz = st.size; } catch { continue; }
+          const key = `${mt}:${sz}`;
+          if (pollState.get(full) !== key) {
+            pollState.set(full, key);
             changed = true;
           }
         }
         // Detect deletions too
-        for (const k of pollMtimes.keys()) {
-          if (!seen.has(k)) { pollMtimes.delete(k); changed = true; }
+        for (const k of pollState.keys()) {
+          if (!seen.has(k)) { pollState.delete(k); changed = true; }
         }
         if (changed) emit();
       } catch {}

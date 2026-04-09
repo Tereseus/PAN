@@ -378,7 +378,7 @@
 									});
 									await new Promise(r => setTimeout(r, 300));
 								} catch {}
-								newWs.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+								newWs.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
 							}, 2000);
 						}
 					};
@@ -429,7 +429,7 @@
 						} catch {}
 
 						if (briefingReady) {
-							ws.send(JSON.stringify({ type: 'input', data: 'printf "\\033[1;96m\u03A0\u0391\u039D remembers..\\033[0m\\n" && claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
 						} else {
 							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
 						}
