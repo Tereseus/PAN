@@ -29,6 +29,8 @@ import http from 'http';
 import { spawn, execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { writeFileSync } from 'fs';
+import { IS_USER_MODE, IS_SERVICE_MODE } from './mode.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -50,7 +52,8 @@ const MODEL_TIERS = {
 const services = [
   {
     id: 'ollama',
-    name: 'Ollama',
+    name: 'Local Intelligence',
+    technicalName: 'Ollama',
     description: 'Local model server for embeddings (llama3.2 7B, CUDA)',
     modelTier: 'none',
     modelMinSize: 'N/A',
@@ -70,7 +73,8 @@ const services = [
   },
   {
     id: 'embeddings',
-    name: 'Embeddings',
+    name: 'Resonance',
+    technicalName: 'Embeddings',
     description: 'Vector text encoding for memory search (3072D)',
     modelTier: 'local',
     modelMinSize: '7B',
@@ -101,13 +105,25 @@ const services = [
     interval: null, // always-on
     startFn: () => {
       const whisperScript = join(__dirname, 'whisper-server.py');
+      // Kill any pre-existing whisper-server.py instances before spawning a new
+      // one. Each instance commits ~1.95GB and steward used to leak one per
+      // PAN restart (detached + .unref() means they outlived the parent node).
+      // We saw 11 zombies eating ~21GB committed in the wild — never again.
+      try {
+        execSync(
+          'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'python.exe\'\\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like \'*whisper-server*\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"',
+          { stdio: 'ignore', timeout: 8000, windowsHide: true }
+        );
+      } catch (err) {
+        console.warn('[Steward] Whisper pre-kill failed (non-fatal):', err.message);
+      }
       try {
         spawn('python', [whisperScript], {
           detached: true,
           stdio: 'ignore',
           windowsHide: true,
         }).unref();
-        console.log('[Steward] Launched whisper-server.py');
+        console.log('[Steward] Launched whisper-server.py (killed any prior instances first)');
       } catch (err) {
         console.error('[Steward] Failed to launch whisper-server.py:', err.message);
       }
@@ -128,24 +144,43 @@ const services = [
     port: null,
     healthCheck: 'process',
     processName: 'AutoHotkey64.exe',
+    // Verify the running AHK process is OUR Voice.ahk, not a stale manual one
+    processCmdLineMatch: 'service\\\\bin\\\\Voice.ahk',
+    // AHK needs an interactive desktop session — skip in service/Session 0 mode
+    userOnly: true,
     bootOrder: 4,
     dependsOn: ['whisper'],
     interval: null,
     startFn: () => {
       const ahkScript = join(__dirname, '..', 'bin', 'Voice.ahk');
-      const ahkExe = 'C:\\Program Files\\AutoHotkey\\UX\\AutoHotkeyUX.exe';
-      const ahkLauncher = 'C:\\Program Files\\AutoHotkey\\UX\\launcher.ahk';
-      const taskName = 'PAN_AHK_Launch';
-      const tr = `"${ahkExe}" "${ahkLauncher}" "${ahkScript}"`;
-      // Use schtasks to launch in the interactive user session (Console session 1)
-      // even when steward runs from service session 0
+      const ahkExe = 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe';
+      // PAN often runs in Windows Session 0 (SYSTEM) when launched via the
+      // pan.exe daemon. Mouse/keyboard hooks in Session 0 cannot see input
+      // from the user's interactive Session 1, so XButton1/XButton2 in
+      // Voice.ahk never fire. Use schtasks with /IT /RU to launch AHK in
+      // the user's interactive session. Avoid nested-quoting hell by writing
+      // a tiny launcher .bat to %TEMP% first and pointing /TR at it.
       try {
-        execSync(`schtasks /Create /TN "${taskName}" /TR "${tr}" /SC ONCE /ST 23:59 /F /RU "tzuri" /IT`, { stdio: 'ignore' });
+        const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
+        const launcherBat = join(tmpDir, 'pan-ahk-launch.bat');
+        const batContent = `@echo off\r\nstart "" "${ahkExe}" /restart /script "${ahkScript}"\r\n`;
+        writeFileSync(launcherBat, batContent);
+
+        const taskName = 'PAN_AHK_Launch';
+        // Quietly delete any prior task
+        try { execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'ignore' }); } catch {}
+        // Create as interactive task running as the current user. /IT requires
+        // the user to be logged on (which they are, since AHK only matters then).
+        execSync(
+          `schtasks /Create /TN "${taskName}" /TR "\\"${launcherBat}\\"" /SC ONCE /ST 23:59 /F /RU "${process.env.USERNAME || 'tzuri'}" /IT`,
+          { stdio: 'ignore' }
+        );
         execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'ignore' });
+        // Clean the task entry up after launch (the AHK process keeps running)
         setTimeout(() => {
           try { execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'ignore' }); } catch {}
         }, 5000);
-        console.log('[Steward] Launched Voice.ahk via schtasks (user session)');
+        console.log('[Steward] Launched Voice.ahk in user session via schtasks:', ahkScript);
       } catch (err) {
         console.error('[Steward] Failed to launch Voice.ahk:', err.message);
       }
@@ -158,7 +193,8 @@ const services = [
   },
   {
     id: 'classifier',
-    name: 'Classifier',
+    name: 'Augur',
+    technicalName: 'Classifier',
     description: 'Event processor — marks events, triggers Dream when enough accumulate',
     modelTier: 'none',
     modelMinSize: 'N/A',
@@ -178,7 +214,8 @@ const services = [
   },
   {
     id: 'stack-scanner',
-    name: 'Stack Scanner',
+    name: 'Cartographer',
+    technicalName: 'Stack Scanner',
     description: 'Tech stack discovery from project files (package.json, Cargo.toml, etc.)',
     modelTier: 'none',
     modelMinSize: 'N/A',
@@ -219,7 +256,8 @@ const services = [
   },
   {
     id: 'consolidation',
-    name: 'Memory Consolidation',
+    name: 'Archivist',
+    technicalName: 'Memory Consolidation',
     description: 'Extracts episodes, facts, procedures from events into vector memory',
     modelTier: 'reasoning',
     modelMinSize: '30B+',
@@ -322,7 +360,8 @@ const services = [
   },
   {
     id: 'autodev',
-    name: 'AutoDev',
+    name: 'Forge',
+    technicalName: 'AutoDev',
     description: 'Automated development — spawns headless Claude sessions for tasks',
     modelTier: 'interactive',
     modelMinSize: '70B+',
@@ -344,7 +383,8 @@ const services = [
   },
   {
     id: 'tailscale',
-    name: 'Tailscale',
+    name: 'Tether',
+    technicalName: 'Tailscale',
     description: 'VPN mesh for remote access (phone, laptop, server)',
     modelTier: 'none',
     modelMinSize: 'N/A',
@@ -364,7 +404,8 @@ const services = [
   },
   {
     id: 'pan-server',
-    name: 'PAN Server',
+    name: 'Core',
+    technicalName: 'PAN Server',
     description: 'Core server — API, dashboard, hooks, terminal, database',
     modelTier: 'none',
     modelMinSize: 'N/A',
@@ -400,10 +441,23 @@ async function checkPortHealth(port, path = '/') {
   });
 }
 
-async function checkProcessRunning(processName) {
+async function checkProcessRunning(processName, cmdLineMatch) {
   try {
     const { exec } = await import('child_process');
     return new Promise((resolve) => {
+      // If a cmdLineMatch is given, use PowerShell to verify the process is
+      // running THE EXPECTED script — not just any instance of the binary.
+      // This stops Steward from being fooled by a stale AHK process running
+      // an old/manually-launched script.
+      if (cmdLineMatch) {
+        const escaped = cmdLineMatch.replace(/'/g, "''");
+        const ps = `Get-CimInstance Win32_Process -Filter "Name = '${processName}'" | Where-Object { $_.CommandLine -like '*${escaped}*' } | Select-Object -First 1 -ExpandProperty ProcessId`;
+        exec(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
+          if (err) return resolve(false);
+          resolve(/\d+/.test(stdout.trim()));
+        });
+        return;
+      }
       exec(`tasklist /FI "IMAGENAME eq ${processName}" /NH`, { encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
         if (err) return resolve(false);
         resolve(stdout.includes(processName));
@@ -424,7 +478,7 @@ async function checkServiceHealth(svc) {
         break;
       }
       case 'process': {
-        const running = await checkProcessRunning(svc.processName);
+        const running = await checkProcessRunning(svc.processName, svc.processCmdLineMatch);
         svc._status = running ? 'running' : 'down';
         break;
       }
@@ -479,6 +533,9 @@ function loadToggles() {
 }
 
 function isServiceEnabled(svc) {
+  // Skip user-session-only services when running in service/Session 0 mode.
+  // These need a desktop, console, or input simulation to function.
+  if (svc.userOnly && IS_SERVICE_MODE) return false;
   if (!svc.toggle) return true; // no toggle = always enabled
   if (svc.defaultEnabled === false) return _toggles[svc.toggle] === true;
   return _toggles[svc.toggle] !== false;
@@ -493,12 +550,16 @@ async function bootAll() {
     .filter(s => s.startFn && isServiceEnabled(s))
     .sort((a, b) => a.bootOrder - b.bootOrder);
 
-  // Check external services first (ollama, whisper, ahk, tailscale)
-  const externals = services.filter(s => !s.startFn && s.healthCheck !== 'self');
+  // Check external services first (ollama, whisper, ahk, tailscale).
+  // userOnly services are skipped in service mode (no desktop to talk to).
+  const externals = services.filter(s => !s.startFn && s.healthCheck !== 'self' && !(s.userOnly && IS_SERVICE_MODE));
   for (const svc of externals) {
     await checkServiceHealth(svc);
     const icon = svc._status === 'running' ? '✓' : svc._status === 'down' ? '✗' : '?';
     console.log(`[Steward] ${icon} ${svc.name}: ${svc._status}`);
+  }
+  if (IS_SERVICE_MODE) {
+    console.log('[Steward] Service mode — userOnly services skipped (AHK, etc.)');
   }
 
   // Boot internal services in order
@@ -568,6 +629,9 @@ function logServiceEvent(serviceId, action, details = {}) {
 
 async function healthCheck() {
   for (const svc of services) {
+    // Skip userOnly services entirely in service/Session 0 mode — checking
+    // them just produces "down" + auto-restart loops that can never succeed.
+    if (svc.userOnly && IS_SERVICE_MODE) continue;
     const prevStatus = svc._status;
     await checkServiceHealth(svc);
 
@@ -580,24 +644,57 @@ async function healthCheck() {
       });
     }
 
-    // Auto-restart services that have a startFn and are down
+    // Auto-restart services that have a startFn and are down — with backoff.
+    // If a service keeps flapping (down → restart → down) we exponentially
+    // delay further restarts so we don't burn CPU + spawn processes once a
+    // minute forever (the AHK / Voice.ahk loop that crashed PAN on 2026-04-08).
     if (svc._status === 'down' && svc.startFn && isServiceEnabled(svc)) {
-      try {
-        console.log(`[Steward] Auto-restarting ${svc.name}...`);
-        svc.startFn();
-        svc._status = 'running';
-        svc._lastRun = Date.now();
-        logServiceEvent(svc.id, 'restart', { success: true });
-      } catch (err) {
-        svc._lastError = err.message;
-        console.error(`[Steward] Failed to restart ${svc.name}: ${err.message}`);
-        logServiceEvent(svc.id, 'restart', { success: false, error: err.message });
+      const now = Date.now();
+      svc._restartFailures = svc._restartFailures || 0;
+      svc._restartCooldownUntil = svc._restartCooldownUntil || 0;
+      if (now < svc._restartCooldownUntil) {
+        // still cooling down — skip silently
+      } else if (svc._restartFailures >= 5) {
+        // Give up after 5 failed restart cycles. Log once, then stay quiet.
+        if (!svc._restartGaveUp) {
+          console.error(`[Steward] ${svc.name} failed ${svc._restartFailures} restart cycles — giving up. Manual restart required.`);
+          logServiceEvent(svc.id, 'restart_giveup', { failures: svc._restartFailures });
+          svc._restartGaveUp = true;
+        }
+      } else {
+        try {
+          console.log(`[Steward] Auto-restarting ${svc.name}... (attempt ${svc._restartFailures + 1})`);
+          svc.startFn();
+          svc._status = 'running';
+          svc._lastRun = Date.now();
+          logServiceEvent(svc.id, 'restart', { success: true });
+          // Exponential backoff: 1m, 2m, 4m, 8m, 16m. Reset on a successful
+          // health check (handled below in checkServiceHealth path).
+          svc._restartFailures += 1;
+          svc._restartCooldownUntil = now + Math.min(60_000 * Math.pow(2, svc._restartFailures - 1), 16 * 60_000);
+        } catch (err) {
+          svc._lastError = err.message;
+          console.error(`[Steward] Failed to restart ${svc.name}: ${err.message}`);
+          logServiceEvent(svc.id, 'restart', { success: false, error: err.message });
+          svc._restartFailures += 1;
+          svc._restartCooldownUntil = now + Math.min(60_000 * Math.pow(2, svc._restartFailures - 1), 16 * 60_000);
+        }
       }
+    } else if (svc._status === 'running' && svc._restartFailures) {
+      // Service recovered — reset backoff counters.
+      svc._restartFailures = 0;
+      svc._restartCooldownUntil = 0;
+      svc._restartGaveUp = false;
     }
   }
 
   // Clean zombie PTY sessions (connected but no activity for 2 hours)
   cleanZombieSessions();
+
+  // Reap orphaned Claude CLI processes (parent PTY gone, still alive).
+  // Catches the April-6-style zombies where the PTY died but the child
+  // claude cli.js kept running, accumulating CPU forever.
+  reapOrphanClaudeProcesses();
 
   // Log a heartbeat event
   try {
@@ -630,6 +727,58 @@ function cleanZombieSessions() {
   } catch {}
 }
 
+// Find Claude CLI (cli.js) processes whose parent PID is NOT one of our
+// tracked PTY pids and is older than 30 minutes — those are orphans left
+// behind by a crashed PTY. Kill them. Windows-only via PowerShell CIM.
+function reapOrphanClaudeProcesses() {
+  if (process.platform !== 'win32') return;
+  try {
+    const ourPtyPids = new Set(listSessions().map(s => s.pid).filter(Boolean));
+    // Also exempt our own pid + ppid (server.js + steward) just in case.
+    ourPtyPids.add(process.pid);
+    if (process.ppid) ourPtyPids.add(process.ppid);
+
+    // Write the PS script to a temp .ps1 file to dodge cmd/powershell
+    // double-quote nesting hell. The previous inline `-Command "...Name='node.exe'..."`
+    // had the inner double-quotes terminate the outer string and cmd would
+    // pass an invalid -Filter, making the reaper throw on every health tick.
+    const ps = `$procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*@anthropic-ai/claude-code/cli.js*' } | Select-Object ProcessId, ParentProcessId, CreationDate
+if ($procs) { $procs | ConvertTo-Json -Compress }`;
+    const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
+    const psFile = join(tmpDir, 'pan-reap-orphans.ps1');
+    writeFileSync(psFile, ps);
+    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 10000 }).trim();
+    if (!out) return;
+    const parsed = JSON.parse(out);
+    const procs = Array.isArray(parsed) ? parsed : [parsed];
+    const now = Date.now();
+    const MIN_AGE_MS = 30 * 60 * 1000; // 30 min — don't touch fresh hook callbacks
+
+    for (const p of procs) {
+      const pid = p.ProcessId;
+      const ppid = p.ParentProcessId;
+      // Parse Windows CIM date "/Date(1775681352482)/"
+      const m = /\((\d+)\)/.exec(p.CreationDate || '');
+      const startedAt = m ? parseInt(m[1], 10) : 0;
+      const ageMs = startedAt ? (now - startedAt) : 0;
+
+      if (ourPtyPids.has(ppid)) continue;       // child of a live PTY → keep
+      if (ageMs < MIN_AGE_MS) continue;          // too young → probably hook callback
+
+      try {
+        process.kill(pid);
+        console.log(`[Steward] Reaped orphan claude cli.js pid=${pid} ppid=${ppid} age=${Math.round(ageMs/60000)}min`);
+        logServiceEvent('claude-reaper', 'orphan_killed', { pid, ppid, age_ms: ageMs });
+      } catch (err) {
+        console.error(`[Steward] Failed to reap pid ${pid}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    // Reaper failures are non-fatal — log and continue
+    console.error(`[Steward] reapOrphanClaudeProcesses error: ${err.message}`);
+  }
+}
+
 // ==================== ATLAS DATA ====================
 // Returns the full service registry with live status for Atlas rendering
 
@@ -654,6 +803,7 @@ function getAtlasData() {
     services: services.map(svc => ({
       id: svc.id,
       name: svc.name,
+      technicalName: svc.technicalName || svc.name,
       description: svc.description,
       // Model requirements — what Atlas shows as badges
       modelTier: svc.modelTier,

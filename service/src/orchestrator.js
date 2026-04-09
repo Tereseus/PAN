@@ -15,7 +15,7 @@
 //   - Phone notifications (via /api/v1/actions queue)
 //   - Console log for terminal users
 
-import { all, get, run, logEvent } from './db.js';
+import { all, get, run, insert, logEvent } from './db.js';
 import { claude } from './claude.js';
 
 let timer = null;

@@ -18,6 +18,15 @@
 	let approvalOptions = $state(null); // null | [{ num: 1, label: 'Yes' }, ...]
 	// Claude ready state — false while processing, true when waiting for user input
 	let claudeReady = $state(true);
+	// Number of messages sent but not yet confirmed in the JSONL transcript
+	let pendingSendCount = $state(0);
+
+	// Live PTY status from /api/v1/terminal/sessions, polled every 2s.
+	// This is the source of truth for "is the PTY alive / is Claude thinking"
+	// — replaces the lying local claudeReady flag that desyncs across refreshes.
+	// Shape: { pid, thinking, lastInputTs, lastOutputTs, clients, createdAt } | null
+	let ptyStatus = $state(null);
+	let ptyStatusNow = $state(Date.now()); // ticks every 1s for live duration display
 
 	// Users
 	let usersData = $state([]);
@@ -269,6 +278,9 @@
 	// Perf widget
 	let perfData = $state({ wsLatency: 0, domTime: 0, linesChanged: 0, serverRender: 0, serverTotal: 0, msgSize: 0, fps: 0 });
 	let perfProcesses = $state([]);
+	// New panel data: canonical PAN services from steward + outside-PAN noise.
+	let perfServices = $state([]);
+	let perfOther = $state([]);
 	let perfProcessTimer = null;
 	let perfFrames = 0;
 	let perfLastFpsTime = Date.now();
@@ -276,7 +288,16 @@
 	async function loadPerfProcesses() {
 		try {
 			const data = await api('/dashboard/api/processes');
-			if (data?.processes) perfProcesses = data.processes;
+			// New endpoint returns { services, other, processes }. Prefer the
+			// canonical `services` list (steward registry → real PIDs); fall
+			// back to legacy `processes` so an old server build still works.
+			if (data?.services) {
+				perfServices = data.services;
+				perfOther = data.other || [];
+				perfProcesses = data.processes || [];
+			} else if (data?.processes) {
+				perfProcesses = data.processes;
+			}
 		} catch {}
 	}
 
@@ -433,14 +454,14 @@
 		// Initial transcript render — populate from clean message data
 		setTimeout(() => renderTranscriptToTerminal(tabData), 100);
 
-		// Poll transcript every 1s while tab is active — chat_update only fires at Stop,
-		// so polling is the main streaming-update mechanism. Server-side mtime cache
-		// makes this nearly free when nothing changed.
-		tabData._pollTimer = setInterval(() => {
-			if (activeTabId === tabData.id && !document.hidden) {
-				renderTranscriptToTerminal(tabData);
-			}
-		}, 1000);
+		// (REMOVED) HTTP polling. The server now pushes parsed transcript
+		// messages via the `transcript_messages` WebSocket event whenever
+		// any JSONL in the project's Claude Code dir changes (via fs.watch).
+		// renderTranscriptToTerminal is called from that handler.
+		tabData._pollTimer = null;
+		// (REMOVED) The 30-second full-refresh "safety net" was causing the page to
+		// flash visibly. It was the wrong fix for a polling problem — root cause
+		// should be fixed instead of nuking the DOM periodically.
 
 		// Connect WebSocket — server sends pre-rendered HTML via ScreenBuffer
 		{
@@ -467,10 +488,11 @@
 						tabData.ws.send(JSON.stringify({ type: 'ping' }));
 					}
 				}, 25000);
+				tabData._pingTimer = pingTimer;
 			}
 
 			function stopPing() {
-				if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+				if (pingTimer) { clearInterval(pingTimer); pingTimer = null; tabData._pingTimer = null; }
 			}
 
 			function handleMessage(event) {
@@ -478,10 +500,20 @@
 					const tRecv = performance.now();
 					const msg = JSON.parse(event.data);
 					switch (msg.type) {
+						case 'transcript_messages': {
+							// Server pushed parsed messages from the JSONL file watcher.
+							// Replaces polling. We get the full deduped message list each
+							// time any JSONL in the project's dir changes.
+							tabData._pushedMessages = msg.messages || [];
+							renderTranscriptToTerminal(tabData);
+							break;
+						}
 						case 'screen-v2': {
 							// Visual scrollback comes from transcript JSON. Here we only
 							// scan the live screen text to detect Claude's interactive
-							// approval menus AND whether Claude is ready to accept input.
+							// approval menus. The "thinking" indicator is now driven by
+							// actual message arrival, not screen scanning (the regex was
+							// unreliable and left the indicator stuck on).
 							if (!hasExistingBuffer) {
 								hasExistingBuffer = true;
 								renderTranscriptToTerminal(tabData);
@@ -489,17 +521,38 @@
 							const allLines = msg.lines || [];
 							const plainLines = allLines.map(l => (l || '').replace(/<[^>]*>/g, '').trim());
 							const detected = detectApprovalOptions(plainLines);
-							// Detect if Claude's input prompt is ready: the bottom area
-							// contains a line with the ❯ prompt character. When Claude is
-							// busy processing, the prompt is replaced with a spinner/status.
-							const ready = detectClaudeReady(plainLines);
-							tabData.claudeReady = ready;
 							if (activeTabId === tabData.id) {
-								claudeReady = ready;
 								if (detected) {
 									approvalOptions = detected;
 								} else {
 									approvalOptions = null;
+								}
+							}
+							// Reality-check the "thinking" indicator against the actual
+							// live PTY screen. The send-driven flag (`claudeReady=false`
+							// after a send, cleared when the transcript HTML stabilizes)
+							// has historically gotten stuck when sends fail or transcript
+							// updates don't arrive. The PTY screen IS the source of truth:
+							// if the input prompt (❯) is visible at the bottom and there's
+							// no spinner text, Claude is idle no matter what flags say.
+							// This forcibly clears the indicator the instant reality says
+							// it should be cleared.
+							const ptySaysReady = detectClaudeReady(plainLines);
+							if (ptySaysReady) {
+								if (tabData.claudeReady === false) {
+									tabData.claudeReady = true;
+									tabData._htmlAtSend = null;
+									if (tabData._readyTimer) { clearTimeout(tabData._readyTimer); tabData._readyTimer = null; }
+								}
+								if (activeTabId === tabData.id && !claudeReady) {
+									claudeReady = true;
+								}
+							} else {
+								// PTY says busy — make sure the flag agrees so the indicator
+								// shows even when the user did not initiate the activity
+								// (e.g. AutoDev sent a prompt, or a hook is running).
+								if (activeTabId === tabData.id && claudeReady) {
+									claudeReady = false;
 								}
 							}
 							const linesChanged = 0;
@@ -563,9 +616,20 @@
 							}
 							tabs = [...tabs];
 							break;
-						case 'exit':
-							scrollbackDiv.innerHTML += '\n<span style="color:#585b70">[Session ended]</span>';
+						case 'exit': {
+							// PTY died. Clear thinking state, paint a red banner, and surface
+							// the exit code. Without this the tab silently freezes — which is
+							// exactly the 30-minute black hole that prompted this fix.
+							const uptimeSec = Math.round((msg.uptime_ms || 0) / 1000);
+							tabData.claudeReady = true;
+							tabData.claudeStarted = false;
+							tabData.ptyDead = true;
+							tabData.ptyExitCode = msg.code;
+							if (activeTabId === tabData.id) claudeReady = true;
+							scrollbackDiv.innerHTML += '\n<div style="margin:8px 0;padding:8px 12px;background:#3c1f24;border-left:3px solid #f38ba8;color:#f38ba8;font-weight:600">⚠ Claude PTY exited (code ' + msg.code + ', uptime ' + uptimeSec + 's) — switch tabs and back, or refresh, to relaunch.</div>';
+							tabs = [...tabs];
 							break;
+						}
 						case 'error':
 							scrollbackDiv.innerHTML += '\n<span style="color:#f38ba8">[Error: ' + msg.message + ']</span>';
 							break;
@@ -645,6 +709,7 @@
 			}
 
 			function reconnect() {
+				if (tabData._closing) return;
 				if (reconnectTimer) return;
 				reconnectAttempts++;
 				const delay = Math.min(reconnectAttempts * 1000, 5000);
@@ -653,6 +718,8 @@
 
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = null;
+					tabData._reconnectTimer = null;
+					if (tabData._closing) return;
 					if (tabData.ws && tabData.ws.readyState <= 1) return;
 
 					const newWs = new WebSocket(wsUrlStr);
@@ -699,6 +766,7 @@
 					};
 					newWs.onerror = () => {};
 				}, delay);
+				tabData._reconnectTimer = reconnectTimer;
 			}
 
 			ws.onopen = () => {
@@ -779,6 +847,10 @@
 
 		activeTabId = tabId;
 		hostLabel = tab.host ? `${tab.host} \u2014 ${tab.project || 'shell'}` : '';
+		// Sync thinking indicator to the tab we just switched to. Without this,
+		// a top-level `claudeReady=false` from a prior send on a different tab
+		// would leak across tabs and pin "Claude is thinking…" forever.
+		claudeReady = tab.claudeReady !== false;
 
 		// Scroll to bottom on tab switch
 		setTimeout(() => {
@@ -838,13 +910,36 @@
 		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 	}
 
-	// Seed default username/LLM name on first run — user can override in settings.
-	// Names are always rendered with first-cap (Tereseus, Claude).
+	// Listen for terminal settings changes — wipe cached renders so colors apply immediately
+	if (typeof window !== 'undefined') {
+		window.addEventListener('pan-terminal-settings-changed', () => {
+			for (const t of tabs) {
+				if (t.scrollbackDiv) t.scrollbackDiv.innerHTML = '';
+				t._renderedMsgCount = 0;
+				renderTranscriptToTerminal(t);
+			}
+		});
+	}
+
+	// Seed default username/LLM name + terminal colors on first run.
+	// All are overridable from Settings → Terminal. Names are first-cap.
 	if (typeof localStorage !== 'undefined') {
 		if (!localStorage.getItem('pan_username')) localStorage.setItem('pan_username', 'Tereseus');
-		// Force-update existing lowercase value from previous build
 		const existingLlm = localStorage.getItem('pan_llm_name');
 		if (!existingLlm || existingLlm === 'claude') localStorage.setItem('pan_llm_name', 'Claude');
+		// Color defaults — blue for user, orange for Claude.
+		// Force-migrate the OLD defaults (green/mauve from previous build) to the
+		// new ones, so users who didn't manually pick a color get the update.
+		const userColorCur = localStorage.getItem('pan_term_user_color');
+		if (!userColorCur || userColorCur === '#a6e3a1') localStorage.setItem('pan_term_user_color', '#89b4fa');
+		const llmColorCur = localStorage.getItem('pan_term_llm_color');
+		if (!llmColorCur || llmColorCur === '#cba6f7') localStorage.setItem('pan_term_llm_color', '#fab387');
+		// Wipe any explicitly-set text colors so they auto-derive from name colors
+		// going forward. (Users can re-set explicit text colors in settings if desired.)
+		if (localStorage.getItem('pan_term_user_text_color') === '#cdd6f4') localStorage.removeItem('pan_term_user_text_color');
+		if (localStorage.getItem('pan_term_llm_text_color') === '#bac2de') localStorage.removeItem('pan_term_llm_text_color');
+		if (!localStorage.getItem('pan_term_tool_color')) localStorage.setItem('pan_term_tool_color', '#f9e2af');
+		if (!localStorage.getItem('pan_term_bg_color')) localStorage.setItem('pan_term_bg_color', '#11111b');
 	}
 
 	// Render the main terminal view from clean transcript data instead of raw VT100 PTY output.
@@ -852,75 +947,89 @@
 	// No inflight guard — concurrent calls are fine, the latest write wins on the DOM.
 	async function renderTranscriptToTerminal(tabData) {
 		if (!tabData || !tabData.scrollbackDiv) return;
+		// Skip render entirely if user has an active text selection inside the
+		// scrollback — replacing innerHTML would wipe their selection mid-copy.
+		const sel = window.getSelection();
+		if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+			const range = sel.getRangeAt(0);
+			if (tabData.scrollbackDiv.contains(range.commonAncestorContainer)) return;
+		}
 		try {
-			// Cache resolved session IDs on tabData to avoid the slow events probe on every poll.
-			let sessionIds = tabData._resolvedSessionIds;
-			if (!sessionIds || sessionIds.length === 0 ||
-				(tabData.claudeSessionIds && tabData.claudeSessionIds.length > sessionIds.length)) {
-				sessionIds = [];
-				if (tabData.claudeSessionIds && tabData.claudeSessionIds.length > 0) {
-					sessionIds = [...tabData.claudeSessionIds];
-				} else if (tabData.sessionId && !/^(dash|mob|dev-dash)-/.test(tabData.sessionId)) {
-					sessionIds = [tabData.sessionId];
-				} else if (tabData.cwd && !tabData._probedCwd) {
-					tabData._probedCwd = true; // probe at most once
-					try {
-						const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(tabData.cwd));
-						if (probe?.events) {
-							const seen = new Set();
-							for (const evt of probe.events) {
-								const sid = evt.session_id || '';
-								if (sid && !seen.has(sid) && !/^(system|phone|router|dash|mob|dev-dash)-/.test(sid)) {
-									seen.add(sid);
-									sessionIds.push(sid);
-									if (sessionIds.length >= 3) break;
-								}
-							}
-						}
-					} catch {}
-				}
-				tabData._resolvedSessionIds = sessionIds;
-			}
-			if (sessionIds.length === 0) return;
-
-			const allMessages = [];
-			await Promise.all(sessionIds.map(async (sid) => {
-				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300');
-				if (data?.messages) allMessages.push(...data.messages);
-			}));
-			allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+			// PUSH-BASED: messages come from the server's transcript file watcher
+			// via the WebSocket `transcript_messages` event, stored on tabData.
+			// No more HTTP polling, no session ID resolution, no stale cache.
+			const allMessages = tabData._pushedMessages || [];
+			console.log('[PAN DIAG] RENDER ← tab.sessionId =', tabData.sessionId, '| messages =', allMessages.length);
 			if (allMessages.length === 0) return;
 
 			// Terminal-style rendering: tight monospace lines, simple prompt prefix.
-			// Username + LLM name come from settings (localStorage). Both are first-cap.
+			// Username + LLM name + colors come from settings (localStorage). Names first-cap.
 			const firstCap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 			const username = firstCap((localStorage.getItem('pan_username') || 'User').replace(/[^a-zA-Z0-9_-]/g, ''));
 			const llmName = firstCap((localStorage.getItem('pan_llm_name') || 'Claude').replace(/[^a-zA-Z0-9_-]/g, ''));
+			const userColor = localStorage.getItem('pan_term_user_color') || '#89b4fa';
+			const llmColor = localStorage.getItem('pan_term_llm_color') || '#fab387';
+			// Lighten a hex color by mixing it with white. ratio 0..1, higher = lighter.
+			function lightenHex(hex, ratio) {
+				const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+				if (!m) return hex;
+				const n = parseInt(m[1], 16);
+				let r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+				r = Math.round(r + (255 - r) * ratio);
+				g = Math.round(g + (255 - g) * ratio);
+				b = Math.round(b + (255 - b) * ratio);
+				return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+			}
+			// Text colors auto-derive from name color (lighter shade) unless user
+			// has explicitly overridden them in settings.
+			const userTextColor = localStorage.getItem('pan_term_user_text_color') || lightenHex(userColor, 0.55);
+			const llmTextColor = localStorage.getItem('pan_term_llm_text_color') || lightenHex(llmColor, 0.55);
+			const toolColor = localStorage.getItem('pan_term_tool_color') || '#f9e2af';
+			const bgColor = localStorage.getItem('pan_term_bg_color') || '#11111b';
+			// Apply background to the container on every render (cheap, idempotent)
+			if (tabData.container) tabData.container.style.background = bgColor;
+			if (tabData.scrollbackDiv) tabData.scrollbackDiv.style.background = bgColor;
 
 			function buildLineHtml(msg) {
 				if (msg.role === 'user' && msg.type === 'prompt') {
-					if (msg.text && /^\u03A0\u0391\u039D remembers/i.test(msg.text.trim())) return null;
-					const text = escapeHtml(msg.text || '');
+					let raw = (msg.text || '').trim();
+					// Strip Claude Code's "[Pasted text #N +M lines]" prefix that gets
+					// added to long multi-line pasted prompts. The actual user text
+					// follows immediately after the placeholder in the same string.
+					raw = raw.replace(/^\[Pasted text #\d+ \+\d+ lines\]/, '').trimStart();
+					// Skip the ΠΑΝ remembers trigger — match the bare text OR the full
+					// printf launch command (either can end up in the transcript).
+					if (/^\u03A0\u0391\u039D remembers/i.test(raw)) return null;
+					if (/printf\s+["'][^"']*\u03A0\u0391\u039D\s*remembers/i.test(raw)) return null;
+					if (/claude\s+--permission-mode\s+auto\s+["']\u03A0\u0391\u039D\s*remembers/i.test(raw)) return null;
+					// Skip Claude Code system-injected messages that come in as "user" role
+					// but aren't actually from the user: task-notification, system-reminder,
+					// command-message, command-name, local-command-stdout, etc. These are
+					// XML-tagged blocks injected by the Claude Code harness.
+					if (/^<(task-notification|system-reminder|command-message|command-name|command-args|local-command-stdout|local-command-stderr|user-prompt-submit-hook)[\s>]/i.test(raw)) return null;
+					// Skip messages that are ONLY an XML tag wrapper (e.g. just <tag>...</tag>)
+					if (/^<[a-z-]+>[\s\S]*<\/[a-z-]+>$/i.test(raw) && !/\n[^<]/.test(raw)) return null;
+					const text = escapeHtml(raw);
 					return (
 						`<div class="t-line t-user">` +
-						`<span style="color:#a6e3a1;font-weight:bold;">${escapeHtml(username)}</span>` +
+						`<span style="color:${userColor};font-weight:bold;">${escapeHtml(username)}</span>` +
 						`<span style="color:#89b4fa;">$ </span>` +
-						`<span style="color:#cdd6f4;">${text}</span>` +
+						`<span style="color:${userTextColor};">${text}</span>` +
 						`</div>`
 					);
 				} else if (msg.role === 'assistant' && msg.type === 'text') {
 					return (
 						`<div class="t-line t-assistant">` +
-						`<span style="color:#cba6f7;font-weight:bold;">${escapeHtml(llmName)}</span>` +
+						`<span style="color:${llmColor};font-weight:bold;">${escapeHtml(llmName)}</span>` +
 						`<span style="color:#89b4fa;">$ </span>` +
-						`<span style="color:#bac2de;">${escapeHtml(msg.text || '')}</span>` +
+						`<span style="color:${llmTextColor};">${escapeHtml(msg.text || '')}</span>` +
 						`</div>`
 					);
 				} else if (msg.role === 'assistant' && msg.type === 'tool') {
 					return (
 						`<div class="t-line t-tool">` +
 						`<span style="color:#6c7086;">\u2192 </span>` +
-						`<span style="color:#f9e2af;">${escapeHtml(msg.text || '')}</span>` +
+						`<span style="color:${toolColor};">${escapeHtml(msg.text || '')}</span>` +
 						`</div>`
 					);
 				}
@@ -937,32 +1046,165 @@
 				}
 			}
 
-			// Append-only: track how many messages we've already rendered, only add new ones.
-			// This preserves selection state and is much cheaper than full innerHTML replace.
-			const renderedCount = tabData._renderedMsgCount || 0;
-			const totalCount = allMessages.length;
+			// FULL RE-RENDER every poll. Build all message HTML, replace innerHTML
+			// in one go.
+			//
+			// Turn-grouped rendering: consecutive messages from the same speaker
+			// (user / assistant text / tool) get wrapped in a single .turn block
+			// so we can draw a left gutter bar, a header row (name · time), and
+			// optionally collapse long runs of tool calls.
+			let lastAssistantText = '';
+			let lastAssistantTs = '';
+			let lastUserTs = '';
+			const normalize = s => (s || '').replace(/\s+/g, ' ').trim();
+			const seenSig = new Set();
 
-			if (totalCount < renderedCount) {
-				// Transcript shrunk (new session, etc.) — full reset
-				tabData.scrollbackDiv.innerHTML = '';
-				tabData._renderedMsgCount = 0;
+			// First pass: filter, dedupe, and bucket each surviving message into
+			// a "kind" we group by: 'user' | 'assistant' | 'tool'.
+			const items = [];
+			for (const m of allMessages) {
+				const cleanText = (m.text || '').replace(/^\[Pasted text #\d+ \+\d+ lines\]/, '').trimStart();
+				const sig = (m.role || '') + '|' + (m.type || '') + '|' + normalize(cleanText);
+				if (sig.length > 10 && seenSig.has(sig)) continue;
+				seenSig.add(sig);
+
+				const lineHtml = buildLineHtml(m);
+				if (!lineHtml) continue;
+
+				let kind = null;
+				if (m.role === 'user' && m.type === 'prompt') kind = 'user';
+				else if (m.role === 'assistant' && m.type === 'text') kind = 'assistant';
+				else if (m.role === 'assistant' && m.type === 'tool') kind = 'tool';
+				if (!kind) continue;
+
+				items.push({ kind, html: lineHtml, ts: m.ts || '', model: m.model || null });
+
+				if (kind === 'assistant') { lastAssistantText = m.text || ''; lastAssistantTs = m.ts || ''; }
+				if (kind === 'user') { lastUserTs = m.ts || ''; }
 			}
 
-			if (totalCount > (tabData._renderedMsgCount || 0)) {
-				const newParts = [];
-				for (let i = (tabData._renderedMsgCount || 0); i < totalCount; i++) {
-					const html = buildLineHtml(allMessages[i]);
-					if (html) newParts.push(html);
-				}
-				if (newParts.length > 0) {
-					const wasAtBottom = !tabData.userScrolledUp;
-					tabData.scrollbackDiv.insertAdjacentHTML('beforeend', newParts.join(''));
-					if (wasAtBottom && tabData.container) {
-						tabData.container.scrollTop = tabData.container.scrollHeight;
+			// Second pass: collapse adjacent same-kind items into turn blocks.
+			const turns = [];
+			for (const it of items) {
+				const last = turns[turns.length - 1];
+				if (last && last.kind === it.kind) last.items.push(it);
+				else turns.push({ kind: it.kind, items: [it] });
+			}
+
+			// Format a timestamp into HH:MM (cheap, no Date locale fuss).
+			function fmtTs(ts) {
+				if (!ts) return '';
+				const d = new Date(ts);
+				if (isNaN(d.getTime())) return '';
+				const h = String(d.getHours()).padStart(2, '0');
+				const m = String(d.getMinutes()).padStart(2, '0');
+				return `${h}:${m}`;
+			}
+
+			// Trim Anthropic-style model IDs down to the useful tail:
+			//   "claude-opus-4-6-20251015" → "opus-4-6"
+			//   "claude-sonnet-4-6"        → "sonnet-4-6"
+			function shortModel(id) {
+				if (!id) return '';
+				let s = String(id).replace(/^claude-/i, '');
+				s = s.replace(/-\d{8}$/, ''); // strip trailing date stamp
+				return s;
+			}
+
+			// Render each turn into HTML. Tool turns are ALWAYS expanded — every
+			// Edit/Read/Bash/etc shows in the terminal exactly like in the transcript.
+			// (Earlier collapse-into-<details> behavior was hiding them entirely.)
+			const parts = [];
+			let lastShownModel = null;
+			for (const turn of turns) {
+				const lastItem = turn.items[turn.items.length - 1];
+				const headTs = fmtTs(lastItem.ts);
+				let headLabel = '';
+				let cls = '';
+				let modelLabel = '';
+				if (turn.kind === 'user') { headLabel = username; cls = 'turn turn-user'; }
+				else if (turn.kind === 'assistant') {
+					headLabel = llmName;
+					cls = 'turn turn-assistant';
+					// Show the model only when it changes between assistant turns,
+					// so the user can spot which model produced which reply without
+					// repeating the badge on every single turn.
+					const m = shortModel(turn.items.find(i => i.model)?.model);
+					if (m && m !== lastShownModel) {
+						modelLabel = m;
+						lastShownModel = m;
 					}
 				}
-				tabData._renderedMsgCount = totalCount;
+				else { headLabel = ''; cls = 'turn turn-tool'; }
+
+				{
+					parts.push(
+						`<div class="${cls}">` +
+						(headLabel
+							? `<div class="turn-head">` +
+								`<span class="turn-name">${escapeHtml(headLabel)}</span>` +
+								(headTs ? `<span class="turn-time">${headTs}</span>` : '') +
+								(modelLabel ? `<span class="turn-model">${escapeHtml(modelLabel)}</span>` : '') +
+								`</div>`
+							: '') +
+						turn.items.map(i => i.html).join('') +
+						`</div>`
+					);
+				}
 			}
+			const newHtml = parts.join('');
+			if (newHtml !== tabData._lastRenderedHtml) {
+				// Preserve scroll position across re-renders. innerHTML replacement
+				// would otherwise snap the scroll to 0 every time the transcript
+				// updates, which is what made re-reading old messages painful.
+				const container = tabData.container;
+				const prevScrollTop = container ? container.scrollTop : 0;
+				const prevScrollHeight = container ? container.scrollHeight : 0;
+				const distanceFromBottom = container ? (prevScrollHeight - prevScrollTop - container.clientHeight) : 0;
+				const wasAtBottom = !tabData.userScrolledUp || distanceFromBottom < 8;
+
+				tabData.scrollbackDiv.innerHTML = newHtml;
+				tabData._lastRenderedHtml = newHtml;
+
+				if (container) {
+					if (wasAtBottom) {
+						// Stick to the bottom while live conversation is streaming.
+						container.scrollTop = container.scrollHeight;
+					} else {
+						// Scrolled up reading history — keep the same content under
+						// the user's eye by anchoring to distance-from-bottom (so new
+						// content appended below doesn't shove their view up or down).
+						container.scrollTop = container.scrollHeight - container.clientHeight - distanceFromBottom;
+					}
+				}
+			}
+			// "Thinking" indicator — push-model aware. The previous "wait for 2
+			// stable polls" logic was unreachable because the watcher only emits
+			// on actual file changes. Instead: as soon as an assistant message
+			// has appeared AFTER the user's last prompt (= Claude has replied),
+			// debounce 800ms of no further changes and mark ready.
+			if (tabData._htmlAtSend != null) {
+				// Find the index of the last user prompt and check if any
+				// assistant message appears after it.
+				let lastUserIdx = -1;
+				for (let i = allMessages.length - 1; i >= 0; i--) {
+					if (allMessages[i].role === 'user') { lastUserIdx = i; break; }
+				}
+				const hasAssistantReply = lastUserIdx >= 0 &&
+					allMessages.slice(lastUserIdx + 1).some(m => m.role === 'assistant');
+
+				if (hasAssistantReply) {
+					// Reset the settle timer on every new push (still streaming)
+					if (tabData._readyTimer) clearTimeout(tabData._readyTimer);
+					tabData._readyTimer = setTimeout(() => {
+						tabData.claudeReady = true;
+						tabData._htmlAtSend = null;
+						tabData._readyTimer = null;
+						if (activeTabId === tabData.id) claudeReady = true;
+					}, 800);
+				}
+			}
+			tabData._prevPolledHtml = newHtml;
 		} catch (err) {
 			console.error('[PAN Terminal] renderTranscriptToTerminal error:', err);
 		}
@@ -1034,7 +1276,7 @@
 
 			const allMessages = [];
 			await Promise.all(sessionIds.map(async (sid, idx) => {
-				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300');
+				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=300&_t=' + Date.now());
 				if (data && data.messages) {
 					for (const msg of data.messages) {
 						msg._sessionIdx = idx;
@@ -1054,6 +1296,19 @@
 			const multiSession = sessionIds.length > 1;
 			const newBubbles = [];
 
+			// Same shortener as the main terminal renderer.
+			const _shortModel = (id) => {
+				if (!id) return '';
+				let s = String(id).replace(/^claude-/i, '');
+				return s.replace(/-\d{8}$/, '');
+			};
+			// Pull the same display names the main terminal uses so the two views
+			// stay consistent.
+			const _firstCap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+			const _username = _firstCap((localStorage.getItem('pan_username') || 'User').replace(/[^a-zA-Z0-9_-]/g, ''));
+			const _llmName = _firstCap((localStorage.getItem('pan_llm_name') || 'Claude').replace(/[^a-zA-Z0-9_-]/g, ''));
+
+			let _lastBubbleModel = null;
 			for (const msg of allMessages) {
 				const accentColor = multiSession ? (sessionColors[msg._sessionIdx] || 'var(--accent)') : 'var(--accent)';
 				if (msg.role === 'user') {
@@ -1063,13 +1318,21 @@
 						text: msg.text || '',
 						accentColor,
 						multiSession,
+						speaker: _username,
 					});
 				} else if (msg.type === 'text') {
+					const modelShort = _shortModel(msg.model);
+					// Same "show on change" rule as the main terminal so the model
+					// label only appears when it actually flips.
+					const modelTag = (modelShort && modelShort !== _lastBubbleModel) ? modelShort : '';
+					if (modelShort) _lastBubbleModel = modelShort;
 					newBubbles.push({
 						type: 'assistant',
 						text: msg.text || '',
 						accentColor,
 						multiSession,
+						speaker: _llmName,
+						model: modelTag,
 					});
 				} else if (msg.type === 'tool') {
 					newBubbles.push({
@@ -1135,7 +1398,7 @@
 			if (!sids.length) { centerChatMessages = []; return; }
 			const all = [];
 			await Promise.all(sids.map(async (sid) => {
-				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=200');
+				const data = await api('/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=200&_t=' + Date.now());
 				if (data?.messages) all.push(...data.messages);
 			}));
 			all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
@@ -1235,60 +1498,102 @@
 		}
 	}
 
-	function sendTerminalInput() {
-		let text = terminalInputText.trim();
+	async function sendTerminalInput(explicitValue) {
+		// Resolution order: explicit value passed in (Enter handler) > textarea DOM > state.
+		// Type-guard: button onclick passes a MouseEvent here, ignore non-strings.
+		const explicit = (typeof explicitValue === 'string' ? explicitValue : '').trim();
+		const domValue = (terminalInputEl?.value || '').trim();
+		const stateValue = terminalInputText.trim();
+		let text = explicit || domValue || stateValue;
 		const imgPaths = pastedImages.filter(img => img.path).map(img => img.path.replace(/\\\\/g, '/').replace(/\\/g, '/'));
 		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
 
 		const active = getActiveTab();
-		const wsReady = active?.ws?.readyState === 1;
-		const ready = active?.claudeReady !== false;
 		console.log('[PAN Terminal] sendTerminalInput', {
 			textLen: text.length,
 			textPreview: text.substring(0, 60),
-			wsReady,
-			claudeReady: ready,
 			tabId: active?.id,
 			sessionId: active?.sessionId,
 		});
 
-		if (!wsReady) {
-			console.warn('[PAN Terminal] WS not ready — keeping text in input box for retry');
-			if (terminalInputEl) {
-				terminalInputEl.style.outline = '2px solid #f9e2af';
-				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 600);
-			}
+		if (!active) {
+			console.warn('[PAN Terminal] sendTerminalInput: no active tab');
 			return;
 		}
 
-		// If Claude is busy, DON'T send — the PTY would buffer the input and Claude
-		// would process it later as a separate prompt, causing the "messages disappear
-		// into the void then all flush at once" bug. Hold the text in the input box
-		// and flash the status so the user knows to wait.
-		if (!ready && text) {
-			console.warn('[PAN Terminal] Claude is busy — holding message');
-			if (terminalInputEl) {
-				terminalInputEl.style.outline = '2px solid #f9e2af';
-				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 800);
-			}
-			return;
-		}
+		// Use HTTP POST to /api/v1/terminal/send instead of WebSocket. The WebSocket
+		// silently queues sends to a possibly-dead socket; HTTP gives us a clear
+		// success/failure response. This is the same endpoint the mobile page uses
+		// and it has been proven reliable. We still keep the WebSocket connection
+		// for RECEIVING screen updates and chat_update events.
+		console.log('[PAN DIAG] SEND → session_id =', active.sessionId, '| text =', JSON.stringify(text.substring(0, 60)));
 
+		// ALWAYS split the send into two HTTP POSTs: text first, then \r separately.
+		// This prevents Claude Code's "[Pasted text +N lines]" buffer from
+		// concatenating multiple sends into one prompt. Each send is its own
+		// complete paste-then-submit cycle. Empty input (just Enter for prompts)
+		// only does the second step.
+		const httpSend = async (payload) => {
+			const res = await fetch('/api/v1/terminal/send', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-PAN-Source': 'dashboard' },
+				body: JSON.stringify({ session_id: active.sessionId, text: payload, raw: true, source: 'dashboard' }),
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = await res.json();
+			if (!data.ok) throw new Error(data.error || 'send failed');
+		};
 		try {
-			active.ws.send(JSON.stringify({ type: 'input', data: (text ? text + '\r' : '\r') }));
+			if (text) {
+				// Phase 1: send text only (no \r)
+				await httpSend(text);
+				// Delay so the REPL finishes paste-detection before the Enter
+				await new Promise(r => setTimeout(r, 150));
+			}
+			// Phase 2: send the Enter to submit
+			await httpSend('\r');
+			// Phase 3: belt-and-suspenders second Enter. Sometimes the first \r
+			// gets eaten by Claude Code's paste-detection buffer or never makes
+			// it past the input-box "commit" step, leaving the message stuck.
+			// A second Enter after a short delay reliably commits it. If Claude
+			// is already processing, a stray Enter on the busy state is a no-op.
+			await new Promise(r => setTimeout(r, 120));
+			await httpSend('\r');
+			console.log('[PAN Terminal] HTTP send ok (split, double-enter)');
 		} catch (err) {
-			console.error('[PAN Terminal] ws.send failed, keeping text:', err);
-			return;
+			console.error('[PAN Terminal] HTTP send failed:', err);
+			if (terminalInputEl) {
+				terminalInputEl.style.outline = '2px solid #f38ba8';
+				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 1500);
+			}
+			return; // KEEP the text in the input box so the user can retry
 		}
+
+		// (REMOVED) Optimistic echo — was hiding messages when dedup matched them
+		// to the wrong polled entry, or when polling early-returned. Reverted per
+		// user request: "significantly worse for messages to be deleted".
 
 		// Only clear AFTER successful send
 		terminalInputText = '';
 		setTerminalInput('');
 		pastedImages = [];
 		if (terminalInputEl) terminalInputEl.style.height = 'auto';
-		// Optimistically mark Claude as busy until next screen update confirms
-		if (active) active.claudeReady = false;
+		// Mark Claude as busy. The poll loop watches the rendered HTML and clears
+		// the indicator only when the DOM has been stable for 2 polls AND has
+		// changed at least once since send. 60s hard failsafe.
+		if (active) {
+			active.claudeReady = false;
+			active._htmlAtSend = active._lastRenderedHtml || '';
+			active._stablePolls = 0;
+		}
 		claudeReady = false;
+		setTimeout(() => {
+			if (active && active.claudeReady === false) {
+				active.claudeReady = true;
+				active._htmlAtSend = null;
+				if (activeTabId === active.id) claudeReady = true;
+			}
+		}, 60000);
 	}
 
 	function handleTerminalInputKey(e) {
@@ -1300,7 +1605,8 @@
 
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			sendTerminalInput();
+			// Pass the textarea's CURRENT value directly — bypasses any Svelte state lag
+			sendTerminalInput(e.target?.value);
 			return;
 		}
 		// Escape → Ctrl+C to interrupt Claude
@@ -2424,9 +2730,33 @@
 		}, 30000);
 		const approvalInterval = setInterval(loadApprovals, 5000);
 
+		// Poll live PTY status for the active tab every 1.5s. The server now
+		// returns a real `thinking` flag derived from input-vs-output recency,
+		// plus pid/uptime/lastInput/lastOutput so we can show what the PTY is
+		// actually doing instead of guessing from local state.
+		const ptyStatusInterval = setInterval(async () => {
+			try {
+				const tab = getActiveTab();
+				if (!tab?.sessionId) { ptyStatus = null; return; }
+				const r = await api('/api/v1/terminal/sessions');
+				const list = r?.sessions || [];
+				const match = list.find(s => s.id === tab.sessionId);
+				ptyStatus = match || null;
+				// Sync the legacy claudeReady flag from authoritative state so the
+				// rest of the UI stops lying after refreshes / tab switches.
+				if (match) {
+					const realReady = !match.thinking;
+					if (claudeReady !== realReady) claudeReady = realReady;
+					if (tab.claudeReady !== realReady) tab.claudeReady = realReady;
+				}
+			} catch {}
+		}, 1500);
+		// 1s ticker so the "Xs ago" labels in the status bar update smoothly
+		const ptyTicker = setInterval(() => { ptyStatusNow = Date.now(); }, 1000);
+
 		// Poll for UI commands (window opens, etc.) — this runs in the renderer,
 		// so window.open creates real Electron windows from the interactive session
-		setInterval(async () => {
+		const uiCmdInterval = setInterval(async () => {
 			try {
 				const cmds = await api('/api/v1/ui-commands');
 				if (!Array.isArray(cmds)) return;
@@ -2472,9 +2802,13 @@
 					const liveSessions = sessions.filter(s =>
 						(s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')) && dbSessionIds.has(s.id)
 					);
-					// Kill orphans — sessions with no DB tab
+					// Kill orphans — sessions with no DB tab AND no live clients.
+					// A session with clients > 0 is being held by another window/tab
+					// (or by a tab whose DB write just hasn't landed yet) — killing
+					// it yanks the PTY out from under an active user. Only kill
+					// sessions that nobody is currently watching.
 					for (const s of sessions) {
-						if ((s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')) && !dbSessionIds.has(s.id)) {
+						if ((s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')) && !dbSessionIds.has(s.id) && (s.clients || 0) === 0) {
 							fetch(`/api/v1/terminal/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' }).catch(() => {});
 						}
 					}
@@ -2606,8 +2940,13 @@
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			clearInterval(svcInterval);
 			clearInterval(approvalInterval);
+			clearInterval(ptyStatusInterval);
+			clearInterval(ptyTicker);
+			clearInterval(uiCmdInterval);
 			for (const tab of tabs) {
 				tab._closing = true;
+				if (tab._reconnectTimer) { try { clearTimeout(tab._reconnectTimer); } catch {} tab._reconnectTimer = null; }
+				if (tab._pingTimer) { try { clearInterval(tab._pingTimer); } catch {} tab._pingTimer = null; }
 				if (tab.ws) tab.ws.close();
 			}
 		};
@@ -2726,15 +3065,24 @@
 					<div class="chat-container">
 						{#each chatBubbles as bubble}
 							{#if bubble.type === 'user'}
-								<div class="chat-bubble user">
-									{#if bubble.multiSession}
-										<span class="session-dot" style="background:{bubble.accentColor}"></span>
-									{/if}
-									{bubble.text}
+								<div class="chat-turn">
+									<div class="chat-speaker chat-speaker-user">{bubble.speaker || 'You'}</div>
+									<div class="chat-bubble user">
+										{#if bubble.multiSession}
+											<span class="session-dot" style="background:{bubble.accentColor}"></span>
+										{/if}
+										{bubble.text}
+									</div>
 								</div>
 							{:else if bubble.type === 'assistant'}
-								<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
-									{bubble.text}
+								<div class="chat-turn">
+									<div class="chat-speaker chat-speaker-assistant">
+										{bubble.speaker || 'Claude'}
+										{#if bubble.model}<span class="chat-model">{bubble.model}</span>{/if}
+									</div>
+									<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
+										{bubble.text}
+									</div>
 								</div>
 							{:else if bubble.type === 'tool'}
 								<div class="chat-bubble tool">{bubble.text}</div>
@@ -2895,30 +3243,60 @@
 						<span class="perf-value">{perfData.fps} / {perfData.linesChanged}</span>
 					</div>
 
-					<div class="perf-section-title" style="margin-top:12px">PAN Processes</div>
-					{#if perfProcesses.length === 0}
+					<div class="perf-section-title" style="margin-top:12px">PAN Services</div>
+					{#if perfServices.length === 0}
 						<div class="perf-metric"><span class="perf-label" style="opacity:0.5">Scanning...</span></div>
 					{:else}
-						{#each perfProcesses as proc}
-							<div class="perf-proc" class:perf-zombie={proc.isZombie}>
+						{#each perfServices as svc}
+							<div class="perf-proc" class:perf-zombie={svc.status === 'down' || svc.status === 'error'}>
 								<div class="perf-proc-header">
-									<span class="perf-proc-name" class:vital={proc.vital}>{proc.name}</span>
-									{#if !proc.vital && proc.isZombie}
-										<button class="perf-kill-btn" onclick={() => killProcess(proc.pid)} title="Kill zombie">Kill</button>
+									<span class="perf-proc-name vital">{svc.name}</span>
+									{#if svc.inProcess}
+										<span class="perf-proc-tag" title="Runs inside the PAN server process">in-proc</span>
+									{:else if svc.pid}
+										<button class="perf-kill-btn" onclick={() => killProcess(svc.pid)} title="Kill {svc.name} (pid {svc.pid})">Kill</button>
+									{:else}
+										<span class="perf-proc-tag perf-bad" title="No matching OS process found">offline</span>
 									{/if}
 								</div>
 								<div class="perf-proc-stats">
-									<span>CPU: {proc.cpuSec > 3600 ? (proc.cpuSec/3600).toFixed(1)+'h' : proc.cpuSec > 60 ? (proc.cpuSec/60).toFixed(1)+'m' : proc.cpuSec+'s'}</span>
-									<span>{proc.memMB}MB</span>
-									<span>{proc.uptimeHrs > 24 ? (proc.uptimeHrs/24).toFixed(1)+'d' : proc.uptimeHrs+'h'}</span>
+									{#if svc.pid}
+										<span>CPU: {svc.cpuSec > 3600 ? (svc.cpuSec/3600).toFixed(1)+'h' : svc.cpuSec > 60 ? (svc.cpuSec/60).toFixed(1)+'m' : svc.cpuSec+'s'}</span>
+										<span>{svc.memMB}MB</span>
+										<span>{svc.uptimeHrs > 24 ? (svc.uptimeHrs/24).toFixed(1)+'d' : svc.uptimeHrs+'h'}</span>
+									{:else if svc.inProcess}
+										<span style="opacity:0.6">{svc.modelTierLabel || 'in-process job'}</span>
+									{:else}
+										<span class="perf-bad">not running</span>
+									{/if}
+								</div>
+								{#if svc.lastError}
+									<div class="perf-proc-stats perf-bad" style="font-size:9px;margin-top:2px">{String(svc.lastError).slice(0,80)}</div>
+								{/if}
+							</div>
+						{/each}
+					{/if}
+
+					{#if perfOther.length > 0}
+						<div class="perf-section-title" style="margin-top:12px">Other (>10% CPU)</div>
+						{#each perfOther.slice(0, 5) as p}
+							<div class="perf-proc">
+								<div class="perf-proc-header">
+									<span class="perf-proc-name" style="opacity:0.7">{p.exe}</span>
+									<button class="perf-kill-btn" onclick={() => killProcess(p.pid)} title="Kill pid {p.pid}">Kill</button>
+								</div>
+								<div class="perf-proc-stats">
+									<span>CPU: {p.cpuSec > 3600 ? (p.cpuSec/3600).toFixed(1)+'h' : p.cpuSec > 60 ? (p.cpuSec/60).toFixed(1)+'m' : p.cpuSec+'s'}</span>
+									<span>{p.memMB}MB</span>
+									<span>{p.uptimeHrs > 24 ? (p.uptimeHrs/24).toFixed(1)+'d' : p.uptimeHrs+'h'}</span>
 								</div>
 							</div>
 						{/each}
 					{/if}
 
-					{#if perfProcesses.filter(p => p.isZombie).length > 0}
+					{#if perfServices.filter(s => s.status === 'down' || s.status === 'error').length > 0}
 						<div class="perf-metric perf-status" style="margin-top:8px">
-							<span class="perf-bad">{perfProcesses.filter(p => p.isZombie).length} ZOMBIE{perfProcesses.filter(p => p.isZombie).length > 1 ? 'S' : ''} DETECTED</span>
+							<span class="perf-bad">{perfServices.filter(s => s.status === 'down' || s.status === 'error').length} SERVICE{perfServices.filter(s => s.status === 'down' || s.status === 'error').length > 1 ? 'S' : ''} DOWN</span>
 						</div>
 					{:else if perfData.wsLatency > 200 || perfData.domTime > 16}
 						<div class="perf-metric perf-status" style="margin-top:8px">
@@ -3311,10 +3689,36 @@
 				{/each}
 			</div>
 		{/if}
-		{#if !claudeReady && (!approvalOptions || approvalOptions.length === 0)}
-			<div class="status-bar">
-				<span class="status-spinner"></span>
-				<span class="status-text">Claude is thinking…</span>
+		{#if !approvalOptions || approvalOptions.length === 0}
+			{@const _now = ptyStatusNow}
+			{@const _pty = ptyStatus}
+			{@const _state = !_pty ? 'no-pty' : _pty.thinking ? 'thinking' : 'ready'}
+			{@const _inAgo = _pty?.lastInputTs ? Math.max(0, Math.round((_now - _pty.lastInputTs) / 1000)) : null}
+			{@const _outAgo = _pty?.lastOutputTs ? Math.max(0, Math.round((_now - _pty.lastOutputTs) / 1000)) : null}
+			{@const _upS = _pty?.createdAt ? Math.max(0, Math.round((_now - _pty.createdAt) / 1000)) : null}
+			{@const _tool = _pty?.currentTool}
+			{@const _toolElapsed = _tool?.startedAt ? Math.max(0, Math.round((_now - _tool.startedAt) / 1000)) : null}
+			<div class="pty-status-bar pty-{_state}" title="Live PTY status from /api/v1/terminal/sessions">
+				{#if _tool}
+					<span class="status-spinner"></span>
+					<span class="status-text">{_tool.isSubagent ? '🤖' : '🔧'} {_tool.tool}{_tool.summary ? ' · ' + _tool.summary : ''} · {_toolElapsed}s</span>
+				{:else if _state === 'thinking'}
+					<span class="status-spinner"></span>
+					<span class="status-text">Claude is thinking…{pendingSendCount > 0 ? ` (${pendingSendCount} queued)` : ''}</span>
+				{:else if _state === 'ready'}
+					<span class="status-dot dot-green"></span>
+					<span class="status-text">Ready</span>
+				{:else}
+					<span class="status-dot dot-red"></span>
+					<span class="status-text">No PTY attached</span>
+				{/if}
+				{#if _pty}
+					<span class="pty-meta">pid {_pty.pid}</span>
+					{#if _upS != null}<span class="pty-meta">up {_upS < 60 ? `${_upS}s` : _upS < 3600 ? `${Math.floor(_upS/60)}m` : `${Math.floor(_upS/3600)}h${Math.floor((_upS%3600)/60)}m`}</span>{/if}
+					{#if _inAgo != null && _pty.lastInputTs > 0}<span class="pty-meta">in {_inAgo}s ago</span>{/if}
+					{#if _outAgo != null}<span class="pty-meta">out {_outAgo}s ago</span>{/if}
+					<span class="pty-meta">{_pty.clients} client{_pty.clients === 1 ? '' : 's'}</span>
+				{/if}
 			</div>
 		{/if}
 		{#if approvalOptions && approvalOptions.length > 0}
@@ -3585,30 +3989,60 @@
 						<span class="perf-value">{perfData.fps} / {perfData.linesChanged}</span>
 					</div>
 
-					<div class="perf-section-title" style="margin-top:12px">PAN Processes</div>
-					{#if perfProcesses.length === 0}
+					<div class="perf-section-title" style="margin-top:12px">PAN Services</div>
+					{#if perfServices.length === 0}
 						<div class="perf-metric"><span class="perf-label" style="opacity:0.5">Scanning...</span></div>
 					{:else}
-						{#each perfProcesses as proc}
-							<div class="perf-proc" class:perf-zombie={proc.isZombie}>
+						{#each perfServices as svc}
+							<div class="perf-proc" class:perf-zombie={svc.status === 'down' || svc.status === 'error'}>
 								<div class="perf-proc-header">
-									<span class="perf-proc-name" class:vital={proc.vital}>{proc.name}</span>
-									{#if !proc.vital && proc.isZombie}
-										<button class="perf-kill-btn" onclick={() => killProcess(proc.pid)} title="Kill zombie">Kill</button>
+									<span class="perf-proc-name vital">{svc.name}</span>
+									{#if svc.inProcess}
+										<span class="perf-proc-tag" title="Runs inside the PAN server process">in-proc</span>
+									{:else if svc.pid}
+										<button class="perf-kill-btn" onclick={() => killProcess(svc.pid)} title="Kill {svc.name} (pid {svc.pid})">Kill</button>
+									{:else}
+										<span class="perf-proc-tag perf-bad" title="No matching OS process found">offline</span>
 									{/if}
 								</div>
 								<div class="perf-proc-stats">
-									<span>CPU: {proc.cpuSec > 3600 ? (proc.cpuSec/3600).toFixed(1)+'h' : proc.cpuSec > 60 ? (proc.cpuSec/60).toFixed(1)+'m' : proc.cpuSec+'s'}</span>
-									<span>{proc.memMB}MB</span>
-									<span>{proc.uptimeHrs > 24 ? (proc.uptimeHrs/24).toFixed(1)+'d' : proc.uptimeHrs+'h'}</span>
+									{#if svc.pid}
+										<span>CPU: {svc.cpuSec > 3600 ? (svc.cpuSec/3600).toFixed(1)+'h' : svc.cpuSec > 60 ? (svc.cpuSec/60).toFixed(1)+'m' : svc.cpuSec+'s'}</span>
+										<span>{svc.memMB}MB</span>
+										<span>{svc.uptimeHrs > 24 ? (svc.uptimeHrs/24).toFixed(1)+'d' : svc.uptimeHrs+'h'}</span>
+									{:else if svc.inProcess}
+										<span style="opacity:0.6">{svc.modelTierLabel || 'in-process job'}</span>
+									{:else}
+										<span class="perf-bad">not running</span>
+									{/if}
+								</div>
+								{#if svc.lastError}
+									<div class="perf-proc-stats perf-bad" style="font-size:9px;margin-top:2px">{String(svc.lastError).slice(0,80)}</div>
+								{/if}
+							</div>
+						{/each}
+					{/if}
+
+					{#if perfOther.length > 0}
+						<div class="perf-section-title" style="margin-top:12px">Other (>10% CPU)</div>
+						{#each perfOther.slice(0, 5) as p}
+							<div class="perf-proc">
+								<div class="perf-proc-header">
+									<span class="perf-proc-name" style="opacity:0.7">{p.exe}</span>
+									<button class="perf-kill-btn" onclick={() => killProcess(p.pid)} title="Kill pid {p.pid}">Kill</button>
+								</div>
+								<div class="perf-proc-stats">
+									<span>CPU: {p.cpuSec > 3600 ? (p.cpuSec/3600).toFixed(1)+'h' : p.cpuSec > 60 ? (p.cpuSec/60).toFixed(1)+'m' : p.cpuSec+'s'}</span>
+									<span>{p.memMB}MB</span>
+									<span>{p.uptimeHrs > 24 ? (p.uptimeHrs/24).toFixed(1)+'d' : p.uptimeHrs+'h'}</span>
 								</div>
 							</div>
 						{/each}
 					{/if}
 
-					{#if perfProcesses.filter(p => p.isZombie).length > 0}
+					{#if perfServices.filter(s => s.status === 'down' || s.status === 'error').length > 0}
 						<div class="perf-metric perf-status" style="margin-top:8px">
-							<span class="perf-bad">{perfProcesses.filter(p => p.isZombie).length} ZOMBIE{perfProcesses.filter(p => p.isZombie).length > 1 ? 'S' : ''} DETECTED</span>
+							<span class="perf-bad">{perfServices.filter(s => s.status === 'down' || s.status === 'error').length} SERVICE{perfServices.filter(s => s.status === 'down' || s.status === 'error').length > 1 ? 'S' : ''} DOWN</span>
 						</div>
 					{:else if perfData.wsLatency > 200 || perfData.domTime > 16}
 						<div class="perf-metric perf-status" style="margin-top:8px">
@@ -4187,6 +4621,38 @@
 	.status-text { font-style: italic; }
 	@keyframes spin { to { transform: rotate(360deg); } }
 
+	.pty-status-bar {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 4px 10px;
+		background: #181825;
+		border-top: 1px solid #313244;
+		font-size: 11px;
+		font-family: ui-monospace, Menlo, Consolas, monospace;
+		color: #a6adc8;
+		flex-wrap: wrap;
+	}
+	.pty-status-bar.pty-thinking { color: #cba6f7; }
+	.pty-status-bar.pty-thinking .status-text { font-style: italic; }
+	.pty-status-bar.pty-ready { color: #a6e3a1; }
+	.pty-status-bar.pty-no-pty { color: #f38ba8; }
+	.pty-status-bar .status-text { font-style: normal; font-weight: 600; }
+	.pty-meta {
+		color: #6c7086;
+		padding-left: 8px;
+		border-left: 1px solid #313244;
+	}
+	.pty-meta:first-of-type { border-left: none; padding-left: 0; }
+	.status-dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+	}
+	.dot-green { background: #a6e3a1; box-shadow: 0 0 6px #a6e3a1; }
+	.dot-red { background: #f38ba8; box-shadow: 0 0 6px #f38ba8; }
+
 	.approval-bar {
 		display: flex;
 		align-items: center;
@@ -4419,6 +4885,28 @@
 		flex-direction: column;
 		gap: 8px;
 		min-width: 0;
+	}
+
+	.chat-turn { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+	.chat-speaker {
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.3px;
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+	}
+	.chat-speaker-user { color: #89b4fa; align-self: flex-end; }
+	.chat-speaker-assistant { color: #fab387; align-self: flex-start; }
+	.chat-model {
+		color: #cba6f7;
+		font-size: 9px;
+		font-weight: 500;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 3px;
+		padding: 0 4px;
+		font-family: ui-monospace, monospace;
 	}
 
 	.chat-bubble {
@@ -4689,7 +5177,59 @@
 		margin-top: 4px;
 	}
 	.term-container :global(.t-tool) {
-		padding-left: 2px;
+		padding-left: 2em;  /* ~1 tab indent for visibility */
+	}
+
+	/* Turn grouping: each speaker run is a block with a left gutter bar,
+	   a small header (name · time), and visible spacing between turns.
+	   This is the readability pass — distinct visual chunks per speaker. */
+	.term-container :global(.turn) {
+		display: block;
+		margin: 10px 0 12px 0;
+		padding: 2px 0 2px 10px;
+		border-left: 3px solid #313244;
+	}
+	.term-container :global(.turn + .turn) {
+		border-top: 1px solid #1e1e2e;
+		padding-top: 6px;
+	}
+	.term-container :global(.turn-user) { border-left-color: #89b4fa; }
+	.term-container :global(.turn-assistant) { border-left-color: #fab387; }
+	.term-container :global(.turn-tool) {
+		border-left-color: #45475a;
+		opacity: 0.62;  /* dim tool/system noise so it doesn't fight prompts */
+	}
+	.term-container :global(.turn-head) {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		font-size: 11px;
+		margin-bottom: 2px;
+		list-style: none;
+		cursor: pointer;
+	}
+	.term-container :global(.turn-head::-webkit-details-marker) { display: none; }
+	.term-container :global(.turn-name) {
+		color: #cdd6f4;
+		font-weight: 700;
+		letter-spacing: 0.3px;
+	}
+	.term-container :global(.turn-user .turn-name) { color: #89b4fa; }
+	.term-container :global(.turn-assistant .turn-name) { color: #fab387; }
+	.term-container :global(.turn-time) { color: #585b70; font-size: 10px; }
+	.term-container :global(.turn-model) {
+		color: #cba6f7;
+		font-size: 9.5px;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 3px;
+		padding: 0 5px;
+		font-family: ui-monospace, monospace;
+	}
+	.term-container :global(.turn-collapsed[open]) { opacity: 1; }
+	.term-container :global(.turn-collapsed:not([open]) .t-line) { display: none; }
+	.term-container :global(.t-pending-echo) {
+		opacity: 0.75;  /* dim until the transcript confirms it landed */
 	}
 
 	.term-empty {

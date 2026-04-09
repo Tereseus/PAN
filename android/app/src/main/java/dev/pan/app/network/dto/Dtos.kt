@@ -1,5 +1,34 @@
 package dev.pan.app.network.dto
 
+// Tier 0: /api/v1/auth/me response
+data class OrgInfo(
+    val id: String,
+    val slug: String,
+    val name: String,
+    val color_primary: String? = null,
+    val color_secondary: String? = null,
+    val logo_url: String? = null,
+)
+
+data class MeResponse(
+    val id: Int,
+    val email: String,
+    val display_name: String,
+    val display_nickname: String? = null,
+    val role: String? = null,
+    val org: OrgInfo? = null,
+)
+
+// Tier 0 Phase 4: /api/v1/org/policy response
+data class OrgPolicyResponse(
+    val org_id: String,
+    val org_slug: String,
+    val org_name: String,
+    val incognito_allowed: Boolean = true,
+    val blackout_allowed: Boolean = true,
+    val data_retention_days: Int? = null,
+)
+
 data class AudioUpload(
     val transcript: String,
     val timestamp: Long,

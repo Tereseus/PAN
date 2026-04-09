@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { insert, all, get, run, logEvent, anonymize, anonymizeEventData } from '../db.js';
+import { logEventScoped } from '../events.js';
+import { getActiveOrg, isIncognitoAllowed } from '../org-policy.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -36,10 +38,45 @@ router.post('/chat', async (req, res) => {
   }
 });
 
-// Centralized event logging — delegates to logEvent() in db.js (insert + FTS in one call)
-function insertEvent(sid, eventType, dataStr, userId) {
-  return logEvent(sid, eventType, dataStr, userId);
+// Centralized event logging — scope-aware. Reads X-PAN-Scope from the request
+// (set by the phone when in incognito mode) and routes the write to the
+// matching SQLCipher file. 'main' is the canonical pan.db. Anything else is a
+// sibling DB lazily created by db-registry. The scope/req-aware overload is
+// the preferred form; the legacy 4-arg form keeps existing call sites working.
+function insertEvent(sidOrReq, eventType, dataStr, userId) {
+  // Overload: insertEvent(req, type, data, userId)
+  if (sidOrReq && typeof sidOrReq === 'object' && sidOrReq.headers) {
+    const req = sidOrReq;
+    const scope = req.panScope || 'main';
+    const sid = req.headers['x-session-id'] || `phone-${(req.headers['x-device-name'] || 'unknown').toString().toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+    return logEventScoped(scope, sid, eventType, dataStr, userId);
+  }
+  // Legacy form: insertEvent(sid, type, data, userId) → main scope
+  return logEvent(sidOrReq, eventType, dataStr, userId);
 }
+
+// Scope middleware: read X-PAN-Scope into req.panScope so downstream
+// handlers can pass it through to logEventScoped / searchMemory. Defaults
+// to 'main' so anything that doesn't set the header keeps working.
+//
+// Tier 0 Phase 4: enforce org policy. If the active org disallows incognito
+// (policy_incognito_allowed = 0), downgrade the scope to 'main' and surface
+// the denial via the X-PAN-Scope-Denied response header so the phone can
+// grey out the toggle and show "Disabled by your organization".
+router.use((req, res, next) => {
+  const raw = (req.headers['x-pan-scope'] || 'main').toString().trim();
+  // Whitelist: lowercase letters, digits, hyphen. Prevent header injection
+  // from creating arbitrary file paths via the lazy-create DB code path.
+  let scope = /^[a-z0-9-]{1,32}$/.test(raw) ? raw : 'main';
+
+  if (scope === 'incognito' && !isIncognitoAllowed(req)) {
+    res.setHeader('X-PAN-Scope-Denied', 'incognito');
+    scope = 'main';
+  }
+
+  req.panScope = scope;
+  next();
+});
 
 // Auto-register phone when it connects
 // Uses device name as stable identifier (not IP, which changes with WiFi/Tailscale)

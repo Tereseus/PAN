@@ -389,6 +389,9 @@ const transcriptCache = new Map(); // path -> { mtime, messages }
 // GET /api/transcript — read full conversation from JSONL transcript file
 // Returns user prompts, full assistant text responses, and tool call summaries
 router.get('/api/transcript', (req, res) => {
+  // Never let browsers cache transcript responses — they update constantly
+  res.setHeader('Cache-Control', 'no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   const sessionId = req.query.session_id;
   if (!sessionId) return res.json({ error: 'session_id required', messages: [] });
 
@@ -471,9 +474,10 @@ router.get('/api/transcript', (req, res) => {
 
       // Assistant messages
       if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+        const model = obj.message?.model || null;
         for (const block of obj.message.content) {
           if (block.type === 'text' && block.text) {
-            messages.push({ role: 'assistant', type: 'text', text: block.text, ts: obj.timestamp });
+            messages.push({ role: 'assistant', type: 'text', text: block.text, ts: obj.timestamp, model });
           } else if (block.type === 'tool_use') {
             // Summarize tool calls — just name and key info
             const name = block.name || 'unknown';
@@ -526,7 +530,42 @@ router.get('/api/stats', (req, res) => {
 
   const eventTypes = all(`SELECT event_type, COUNT(*) as count FROM events GROUP BY event_type ORDER BY count DESC`);
 
-  res.json({ ...stats, db_size_bytes: dbSize, event_types: eventTypes });
+  // Restart friction metric — total times the user has uttered the word
+  // "restart" in a prompt event. This is a per-application data category
+  // because it measures dev-loop friction (how often we have to break flow).
+  // Per-project breakdown joins via the session → project path heuristic
+  // already used by other dashboard queries.
+  let totalRestarts = 0;
+  let restartsByProject = [];
+  try {
+    totalRestarts = get(`
+      SELECT COUNT(*) AS c FROM events
+      WHERE event_type IN ('UserPromptSubmit','user','user_prompt')
+        AND lower(data) LIKE '%restart%'
+    `).c || 0;
+    restartsByProject = all(`
+      SELECT
+        COALESCE(p.name, 'unscoped') AS project,
+        COUNT(*) AS count
+      FROM events e
+      LEFT JOIN sessions s ON s.id = e.session_id
+      LEFT JOIN projects p ON p.id = s.project_id
+      WHERE e.event_type IN ('UserPromptSubmit','user','user_prompt')
+        AND lower(e.data) LIKE '%restart%'
+      GROUP BY project
+      ORDER BY count DESC
+    `);
+  } catch (err) {
+    console.warn('[stats] restart count failed:', err.message);
+  }
+
+  res.json({
+    ...stats,
+    db_size_bytes: dbSize,
+    event_types: eventTypes,
+    total_restarts: totalRestarts,
+    restarts_by_project: restartsByProject,
+  });
 });
 
 // GET /dashboard/api/memory — reads actual Claude Code memory files from ~/.claude/projects/*/memory/

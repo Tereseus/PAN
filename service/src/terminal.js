@@ -8,11 +8,48 @@ const pty = require('node-pty');
 import { WebSocketServer, WebSocket } from 'ws';
 import { hostname } from 'os';
 import { existsSync } from 'fs';
-import { all } from './db.js';
+import { all, insert } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
+import { subscribeToTranscript } from './transcript-watcher.js';
 
 // Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
 const sessions = new Map();
+
+// In-flight tool tracker — keyed by normalized cwd. Updated by the
+// PreToolUse / PostToolUse / SubagentStart / SubagentStop hooks so the
+// dashboard status bar can show the user what Claude is actually doing
+// instead of staring at a dead "thinking" spinner. Replaces the 30-min
+// black hole where a long Bash or Explore subagent looks identical to a
+// crash.
+//   key = cwd (forward-slashed, lowercased on Windows)
+//   value = { tool, summary, startedAt, claudeSessionId, isSubagent }
+const inFlightTools = new Map();
+
+function _cwdKey(cwd) {
+  if (!cwd) return '';
+  return cwd.replace(/\\/g, '/').toLowerCase();
+}
+
+function setInFlightTool(cwd, info) {
+  const key = _cwdKey(cwd);
+  if (!key) return;
+  inFlightTools.set(key, { ...info, startedAt: Date.now() });
+}
+
+function clearInFlightTool(cwd, claudeSessionId) {
+  const key = _cwdKey(cwd);
+  if (!key) return;
+  const cur = inFlightTools.get(key);
+  // Only clear if this PostToolUse matches the in-flight session — prevents
+  // a stale Post from a different agent wiping the active tool.
+  if (!cur) return;
+  if (claudeSessionId && cur.claudeSessionId && cur.claudeSessionId !== claudeSessionId) return;
+  inFlightTools.delete(key);
+}
+
+function getInFlightTool(cwd) {
+  return inFlightTools.get(_cwdKey(cwd)) || null;
+}
 
 // Default shell
 const SHELL = existsSync('C:\\Program Files\\Git\\bin\\bash.exe')
@@ -86,11 +123,17 @@ async function startTerminalServer(httpServer) {
           createdAt: Date.now(),
           renderTimer: null,
           lastRendered: '',
+          // Liveness tracking — used by listSessions() so the dashboard can
+          // derive a real "thinking" state from input-vs-output recency,
+          // not local UI state that desyncs across refreshes/tabs.
+          lastInputTs: 0,
+          lastOutputTs: Date.now(),
         };
         sessions.set(sessionId, session);
 
         // PTY output -> append-only log (raw) + ScreenBuffer (VT100) -> HTML to clients
         ptyProcess.onData((data) => {
+          session.lastOutputTs = Date.now();
           term.write(data);
           // Debounce rendering — batch rapid output into single screen update
           if (!session.renderTimer) {
@@ -102,9 +145,35 @@ async function startTerminalServer(httpServer) {
         });
 
         ptyProcess.onExit(({ exitCode }) => {
+          const uptimeMs = Date.now() - (session.createdAt || Date.now());
+          // Log to events DB so the crash is permanent + recoverable after refresh.
+          // This is the signal the dashboard renders as a red banner.
+          try {
+            insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+              ':sid': sessionId,
+              ':type': 'PtyExit',
+              ':data': JSON.stringify({
+                session_id: sessionId,
+                project: session.project,
+                cwd: session.cwd,
+                exit_code: exitCode,
+                uptime_ms: uptimeMs,
+                pid: ptyProcess.pid,
+                timestamp: Date.now(),
+              }),
+            });
+          } catch (err) {
+            console.error(`[PAN Terminal] Failed to log PtyExit:`, err.message);
+          }
+          console.log(`[PAN Terminal] PTY exited: ${sessionId} code=${exitCode} uptime=${Math.round(uptimeMs/1000)}s`);
           for (const client of session.clients) {
             if (client.readyState === 1) {
-              client.send(JSON.stringify({ type: 'exit', code: exitCode }));
+              client.send(JSON.stringify({
+                type: 'exit',
+                code: exitCode,
+                uptime_ms: uptimeMs,
+                project: session.project,
+              }));
             }
           }
           sessions.delete(sessionId);
@@ -121,6 +190,21 @@ async function startTerminalServer(httpServer) {
         }
 
         console.log(`[PAN Terminal] New session: ${sessionId} (${projectName || 'shell'}) in ${cwd}`);
+
+        // Auto-launch Claude Code in the new PTY. Without this, the user sees
+        // a bare bash prompt and their messages get fed to bash (which fails),
+        // never reaching a Claude session and never producing a JSONL transcript.
+        // Wait briefly for bash to finish initializing before sending the command.
+        setTimeout(() => {
+          try {
+            if (sessions.get(sessionId)?.pty) {
+              ptyProcess.write('claude\r');
+              console.log(`[PAN Terminal] Auto-launched claude in ${sessionId}`);
+            }
+          } catch (err) {
+            console.error(`[PAN Terminal] Failed to auto-launch claude:`, err.message);
+          }
+        }, 800);
       } catch (err) {
         console.error(`[PAN Terminal] Failed to spawn PTY:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to create terminal: ' + err.message }));
@@ -144,6 +228,23 @@ async function startTerminalServer(httpServer) {
     // Send current screen state immediately (for new/reconnecting clients)
     broadcastRenderedScreen(session, ws);
 
+    // Subscribe this WebSocket to JSONL transcript file changes for the project's
+    // cwd. The watcher uses fs.watch to detect any change to .jsonl files in the
+    // Claude Code projects dir for this cwd, parses them, and pushes the full
+    // message list as `transcript_messages`. Replaces the broken polling model.
+    if (cwd) {
+      const unsubscribe = subscribeToTranscript(cwd, (messages) => {
+        if (ws.readyState === 1) {
+          try {
+            ws.send(JSON.stringify({ type: 'transcript_messages', messages }));
+          } catch (err) {
+            console.error('[PAN Terminal] transcript push failed:', err.message);
+          }
+        }
+      });
+      ws._unsubscribeTranscript = unsubscribe;
+    }
+
     // Handle incoming messages from client
     ws.on('message', (msg) => {
       try {
@@ -151,7 +252,10 @@ async function startTerminalServer(httpServer) {
 
         switch (parsed.type) {
           case 'input':
-            if (session.pty) session.pty.write(parsed.data);
+            if (session.pty) {
+              session.lastInputTs = Date.now();
+              session.pty.write(parsed.data);
+            }
             break;
 
           case 'resize':
@@ -178,6 +282,11 @@ async function startTerminalServer(httpServer) {
       if (session) {
         session.clients.delete(ws);
         // Don't kill the PTY when last client disconnects — keep it alive
+      }
+      // Tear down the transcript subscription so the watcher can free its fd
+      if (ws._unsubscribeTranscript) {
+        try { ws._unsubscribeTranscript(); } catch {}
+        ws._unsubscribeTranscript = null;
       }
     });
   });
@@ -266,16 +375,66 @@ function broadcastRenderedScreen(session, singleClient) {
 // List active terminal sessions (for dashboard UI)
 function listSessions() {
   const result = [];
+  const now = Date.now();
   for (const [id, session] of sessions) {
+    // Derive a real "thinking" signal: input was last AND no output for >300ms.
+    // The 300ms grace prevents flicker from echo. The dashboard should bind
+    // its "Claude is thinking" indicator to this, not local WS state.
+    const lastIn = session.lastInputTs || 0;
+    const lastOut = session.lastOutputTs || 0;
+    // "Working" = user sent input AND we haven't been idle long enough to call it done.
+    // Two signals merged:
+    //   (a) classic "thinking": input is newer than output, and >300ms since last output
+    //       (the 300ms grace prevents flicker from echo).
+    //   (b) "still working": input happened, and output is still streaming within 2s
+    //       (covers long tool calls — output bytes flow continuously, but we're not idle).
+    // Either signal flips the indicator on. It only goes false when output has been
+    // quiet for >2s AND input is older than output (i.e. genuinely waiting on the user).
+    const inputNewer = lastIn > lastOut && now - lastOut > 300;
+    const stillStreaming = lastIn > 0 && now - lastOut < 2000 && lastIn > lastOut - 60000;
+    const thinking = inputNewer || stillStreaming;
+    const inFlight = getInFlightTool(session.cwd);
     result.push({
       id,
       project: session.project,
       cwd: session.cwd,
       clients: session.clients.size,
       createdAt: session.createdAt,
+      pid: session.pty?.pid,
+      lastInputTs: lastIn,
+      lastOutputTs: lastOut,
+      thinking,
+      currentTool: inFlight ? {
+        tool: inFlight.tool,
+        summary: inFlight.summary,
+        startedAt: inFlight.startedAt,
+        isSubagent: !!inFlight.isSubagent,
+      } : null,
     });
   }
   return result;
+}
+
+// Return live PTY pids for the orphan reaper's protect set.
+function getActivePtyPids() {
+  const pids = [];
+  for (const [, session] of sessions) {
+    if (session.pty?.pid) pids.push(session.pty.pid);
+  }
+  return pids;
+}
+
+// Kill every tracked PTY (called on graceful shutdown so children don't orphan)
+function killAllSessions() {
+  let n = 0;
+  for (const [id, session] of sessions) {
+    try {
+      session.pty?.kill();
+      n++;
+    } catch {}
+    sessions.delete(id);
+  }
+  return n;
 }
 
 // Kill a specific session
@@ -314,6 +473,7 @@ function sendToSession(sessionId, text, label) {
   }
 
   if (session && session.pty) {
+    session.lastInputTs = Date.now();
     session.pty.write(text);
     return true;
   }
@@ -401,4 +561,4 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool };

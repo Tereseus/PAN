@@ -55,6 +55,19 @@ Commands:
   }
 }
 
+// Top-level safety net — log and continue instead of dying. node-pty's
+// conpty_console_list_agent.js can throw "AttachConsole failed" when PAN
+// runs without a real console (e.g. as a Windows service in Session 0),
+// and that uncaught error was killing the entire server. Logging keeps PAN
+// alive so the dashboard, API, and background services don't go down because
+// of one PTY spawn helper crashing.
+process.on('uncaughtException', (err) => {
+  console.error('[PAN] uncaughtException:', err && err.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[PAN] unhandledRejection:', reason && reason.stack || reason);
+});
+
 main().catch(err => {
   console.error('[PAN] Fatal:', err.message);
   process.exit(1);
