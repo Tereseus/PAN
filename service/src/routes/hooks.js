@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
 import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool } from '../terminal.js';
+import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
@@ -378,6 +379,14 @@ router.post('/:eventType', (req, res) => {
           timestamp: new Date().toISOString(),
         });
       } catch {}
+      // Proactively nudge the transcript watcher to re-read JSONL files NOW.
+      // The file poller (500ms) can miss changes on Windows when Claude holds
+      // the file handle open and statSync returns cached metadata. Hooks are
+      // the authoritative signal that new data exists, so trigger immediately.
+      if (cwd) {
+        setTimeout(() => nudgeTranscript(cwd), 150);  // quick nudge after JSONL flush
+        setTimeout(() => nudgeTranscript(cwd), 600);  // safety net if first was too early
+      }
     }
 
     res.status(200).json({ ok: true });
