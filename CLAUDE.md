@@ -89,7 +89,7 @@ PAN never forgets. Every conversation, decision, and session is preserved across
 Work autonomously — don't ask for permission, just do it.
 
 ## Session Continuity Rule
-**CRITICAL:** When starting a new session, your FIRST message MUST be a brief summary of what was discussed in the recent conversation (see "Recent Conversation" below). Start with "Last time we were working on..." and list the key topics. The user should NEVER have to ask what they were working on — you tell them immediately, every single time.
+**CRITICAL:** When starting a new session, your FIRST message MUST be a brief summary of what was discussed in the recent conversation (see "Recent Conversation" below). Start with "ΠΑΝ Remembers:" and list the key topics. The user should NEVER have to ask what they were working on — you tell them immediately, every single time.
 
 <!-- PAN-CONTEXT-START -->
 ## PAN Session Context
@@ -97,101 +97,152 @@ Work autonomously — don't ask for permission, just do it.
 This is a fresh session for the "PAN" project.
 IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.
 
-**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with something like "Last time we were working on..." and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
+**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
-# PAN State — Updated 2026-04-08 (19:38)
+### Recent Conversation
+**Claude** (2026-04-05 12:29:02): Killed. Now double-click `Voice.ahk` on your Desktop, or type `! start "" "C:/Users/tzuri/Desktop/PAN/service/bin/AutoHotkey64.exe" "C:/Users/tzuri/Desktop/Voice.ahk"` in this terminal.
+**User** (2026-04-05 14:15:59): <task-notification>
+<task-id>bgpk4iskl</task-id>
+<tool-use-id>toolu_01JZCisyxjbCh3kemF8C2V1V</tool-use-id>
+<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-Desktop-PAN\5ba81714-3221-4087-a880-27118e
+**User** (2026-04-06 12:36:30): your last git merge also caused this problem
 
-## What Works
-- Claude auto-launches in dashboard terminal with "ΠΑΝ remembers..." briefing
-- Terminal rendering with colored bars, timestamps, tool call display
-- Transcript scroll position preserved on refresh
-- Phone features: incognito mode (separate SQLCipher DB per scope), force restart, personality toggles
-- Atlas edges (health/error/dependencies) with overlap auto-fix, project nodes with task progress
-- Hybrid memory search (FTS5 + vector + RRF)
-- SQLite/SQLCipher encryption (AES-256-CBC) verified working, backups accessible
-- Tailscale remote access working
-- MCP server with 15 tools
-- Dream cycle running every 6h
-- Tier 0 org foundation schema (migration 001 complete, all 6 new tables + 29 ALTERs live)
-- Design docs viewer (markdown → window with TOC sidebar, proper formatting)
-- Phone top bar org display (Π · Personal · Tereseus)
-- Mute state snapshot/restore (save enabled sensors, restore on unmute)
-- Service naming convention (friendly names on tiles, technical names on cards)
-- Single PAN Start Menu shortcut with icon
-- Test suite with group dropdown and screenshot validation
-- Windows system files verified clean (sfc /scannow)
-- **PTY exit detection** — `PtyExit` events logged to DB, red crash banner in dashboard, thinking state clears
-- **Claude thinking indicator** — Status bar now correctly shows "Claude is thinking" when input pending
-- **Orphan reaper system** — `reap-orphans.js` kills stale Claude/node processes on startup with safe ancestor filtering
-- **AHK respawn loop fixed** — Exponential backoff (1m → 2m → 4m → 8m → 16m) with 5-failure hard stop
-- **PTY status bar** — Shows uptime, time since last output, client count, and activity state
+❯ pan dashboard is not loading just a black page
+
+● Let me check the server and dashboard status.
+
+● Bash(powershell -Command "Get-Process | Where-Object 
+**User** (2026-04-06 12:37:09): ❯ pan dashboard is not loading just a black page
+
+● Let me check the server and dashboard status.
+
+● Bash(powershell -Command "Get-Process | Where-Object { \$_.ProcessName -match 'node|electron|pan' }
+**User** (2026-04-07 15:54:28): OK so now I can talk to Claude they are there I don't understand what is going on Let me just send you everything just in case something weird is happening I want you to I want you to read it  Tereseu
+**Claude** (2026-04-07 15:57:30): Yes — totally different sessions. To be precise:
+
+**This conversation (me, in WezTerm):**
+- Started by you directly in WezTerm
+- cwd: `C:\Users\tzuri\OneDrive\Desktop\PAN`
+- Writes to: `~/.claude/projects/C--Users-tzuri-OneDrive-Desktop-PAN/<my-session-id>.jsonl`
+
+**PAN dashboard's terminal tab:**
+-
+**Claude** (2026-04-07 16:36:26): ```json
+{
+  "episodes": [
+    {
+      "summary": "Claude not launching in dashboard terminal despite briefing working",
+      "detail": "User reported blank bash prompt in PAN dashboard terminal. Briefing displays correctly but Claude process never starts. This blocks the core chat functionality ins
+**User** (2026-04-09 09:23:31): Well actually what I wanna fix because it's fucking stupid and I think this is this is what's causing it there's a random I'll wait to answer my question did Pan remembers actually work this time righ
+**User** (2026-04-09 11:03:34): You are PAN's self-assessment system. Review these observations and critique PAN's current behavior.
+
+CURRENT CONFIG:
+### CLAUDE.md
+
 
 ## Known Issues
-- Chat input broken: Enter key, copy-paste, persistence regression from dashboard changes
-- Memory consolidation not running — completed tasks stuck in open issues
-- Terminal transcript losing/dropping messages
-- Device status showing stale or incorrect state
-- Approvals UI needs redesign (separate alerts panel, not dropdown)
-- AutoHotkey fails to start outside PAN (only works inside dashboard)
-- Android build failure blocking phone personality production
-- Atlas missing stack-scanner node in Processing sector
-- Atlas missing toggleable external apps overlay
-- Watchdog.ps1 pointing to deleted OneDrive paths
-- Missing `insert` imports in orchestrator.js and evolution/engine.js
+- Copy-paste into terminal input still broken (Ctr
+**User** (2026-04-09 11:28:43): Can you look at what's happening with Pan the I'm trying to send a message it says it's ready it says it's up but it keeps failing [PAN Terminal] PTY exited: dash-pan-1775613066893 code=-1073741510 up
+**User** (2026-04-09 11:48:10): You are PAN's self-assessment system. Review these observations and critique PAN's current behavior.
+
+CURRENT CONFIG:
+### CLAUDE.md
+
+
+## Known Issues
+- Copy-paste into terminal input still broken (Ctr
+**User** (2026-04-09 12:09:08): You are PAN's self-assessment system. Review these observations and critique PAN's current behavior.
+
+CURRENT CONFIG:
+### CLAUDE.md
+
+
+## Known Issues
+- Copy-paste into terminal input still broken (Ctr
+**User** (2026-04-09 14:01:54): So whatever you're doing there to Panjs you're restarting what what did you not did you not actually end up fixing what you were trying to fix there OK, full picture. Here's what I found:
+
+## Process 
+**User** (2026-04-09 14:04:41): OK so you just restarted where is the ΠΑΝ remembers where is that Look at the context of everything we were saying
+
+OK, full picture. Here's what I found:
+
+## Process Tree (clean, no orphans)
+```
+cmd.
+**User** (2026-04-09 14:19:36): All right just look at how bugged out this shit is look at all the pictures and everything that I listed up before of what we were trying to fix:
+
+Claude
+14:03
+Claude$ Now restarting via the proper MC
+
+# PAN State — Updated 2026-04-09
+
+## What Works
+- PAN server running in user session (Session 1) with visible cmd window and respawn loop
+- Dual-mode detection verified — `/health` reports mode:"user", all user features enabled
+- Voice hotkey migration to Tauri complete — XButton1 (Win+H) and XButton2 (Whisper) both functional
+- ΠΑΝ Remembers briefing system with restart banner — displays on new session start
+- Escape key interruption — now sends proper `\x1b` signal to stop Claude thinking
+- Steward reaper fixed — walks full ancestor chain, won't kill legitimate Claude processes
+- Transcript dedup — ghost messages from locked-out sessions no longer bleed into current transcript
+- PTY exit detection and red crash banner
+- Orphan cleanup and AHK respawn with exponential backoff
+- Library widget endpoint scanning docs/ and memory files recursively
+- Remote access via Tailscale
+
+## Known Issues
+- Copy-paste (Ctrl+V) crashes PTY — terminal freezes on text injection
+- Message queue invisibility — messages sent while Claude thinking don't appear in transcript until Claude responds
+- Hard refresh (Ctrl+Shift+R) shows white screen — requires second hard refresh
+- Device status showing stale or incorrect connection state
+- LaTeX/`.tex` files won't render in markdown viewer
 
 ## Current Priorities
-1. Phase 4: Make Incognito write to new `incognito_events` table (scope migration)
-2. Resume Settings screen.kt work (org policy toggle greying + phase completion)
-3. Forget/Danger Zone deletion features (time-range, keyword, smart delete with preview)
-4. Fix chat input regression (Enter key, copy-paste)
-5. Fix memory consolidation loop
-6. Fix terminal transcript message loss
+1. **Carrier/Lifeboat/Craft phases 4-7** — PTY handoff, Claude handoff, Shadow Traffic, Crucible (phases 1-3 done)
+2. **Fix copy-paste PTY crash** — blocks dashboard terminal text injection
+3. **Solve message queue visibility during tool execution** — messages must appear immediately
+4. **Locate and rebuild efficiency reports** — format: 15,000-20,000% multiplier comparisons
 
 ## Key Decisions
-- Federated multi-org: each org runs its own PAN server on its own tailnet
-- Personal org = username (Tereseus), other orgs are separate memberships
-- Incognito uses separate SQLCipher DB per scope, not shared table
-- Multi-phase tier 0: Phase 5 (top bar) complete, Phase 7 (geofencing) deferred
-- Design docs open in new windows via markdown viewer, not terminal
-- Restart count is north-star metric
-- Conversation is source-of-truth, not memory files
-- Orphan reaper runs on every server startup (no manual intervention needed)
+- Federated multi-org: each org runs own PAN server on own tailnet
+- Library widget unified (not split docs/reports), shows all `.md` and `.pan` files
+- Reports and design docs open in new windows via markdown viewer (not terminal)
+- Restart count is north-star metric driving architecture (Carrier/Lifeboat/Craft)
+- Conversation is source-of-truth; memory files are supporting cache
+- ΠΑΝ Remembers branding for session continuity system
 
 ## User Preferences
-- Work autonomously, never ask permission
-- No manual CLI commands — execute from dashboard
-- All tests via UI screenshots only
-- Move dev → prod after visual verification
-- Never restart without explicit permission
+- Work autonomously through PAN dashboard, not WezTerm terminal
+- Never restart PAN without explicit permission (cmd window is visible kill switch)
+- All docs must display with proper styling/formatting in windows
+- Surface critical docs prominently in Library
 - Capitalize all UI labels and titles
-- Only memory items verified in current session are trusted
-- IPs never shown in phone UI or app settings
-- Hard Off should be quick-access on main page (defer until org phase)
-- Always show Claude activity state in PTY status bar (critical for debugging)
+- Don't spam "claude" or any random text into the terminal
 
 ## Known Facts
+- **briefing text** new canonical format ΠΑΝ Remembers: — Session greeting changed from 'Last time we were working on...' to 'ΠΑΝ Remembers:'. Affects all future session briefings. (user_preference, confidence: 0.95)
 - **PAN server process context** must run in Session 1 (tzuri user), not Session 0 (SYSTEM) — Session 0 lacks proper PTY/console support. node-pty conpty agent fails in SYSTEM context. Session 1 (interactive user) works correctly. (domain_knowledge, confidence: 0.94)
+- **transcript-watcher.js** cause of contamination loading last 5 JSONL files simultaneously — System was merging messages from multiple session files (last 5) causing cross-session message leakage. Dedup logic added as fix. (codebase, confidence: 0.95)
+- **PAN server process context** required session Session 1 (user context, not Session 0/SYSTEM) — Server must run in interactive user session, not SYSTEM session. Session 0 causes node-pty conpty agent failures and PTY crashes. (domain_knowledge, confidence: 0.94)
+- **efficiency reports** quantity generated approximately 5 — User referenced 'my last efficiency reports' (plural) with context on format/styling. Exact count unknown but ~5 mentioned. (domain_knowledge, confidence: 0.6)
+- **transcript-watcher.js** loads last 5 JSONL session files for same directory — transcript-watcher.js merges messages from last 5 JSONL files, causing cross-session message contamination (codebase, confidence: 0.95)
 - **user** wants clarity about session state (new vs continuing) — User immediately asks for confirmation when tools load or context is injected, concerned about whether session is new or continuing (user_preference, confidence: 0.85)
+- **user** prefers Pan remembers phrasing — User wants session briefing to say 'Pan remembers' instead of 'Last time we were working on' to signal restart + retention (user_preference, confidence: 0.9)
 
 ## Recent Memory
+- [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages from locked-out/old sessions into current terminal. Dedup logic added. PTY crashes were caused by server r
 - [2026-04-08 20:54:52] PAN server running in Session 0 (SYSTEM) causing conpty crashes: Server was running in Windows Session 0 (system context), causing node-pty's conpty agent to fail. Moved to Session 1 (tzuri user context). Requires uncaughtException handler in pan.js to catch conpty
+- [2026-04-09 12:30:31] Transcript dedup fixed to prevent cross-session contamination: `transcript-watcher.js` was loading last 5 JSONL session files and merging them, causing ghost messages from locked-out sessions to bleed into current terminal. Dedup logic added to filter out message
+- [2026-04-09 12:04:27] Ghost 'Claude' messages from locked-out session bleeding into current transcript: User discovered spurious 'Claude' messages appearing in terminal during voice input. Root cause: transcript-watcher.js loads the last 5 JSONL session files for the same project directory and merges th
+- [2026-04-08 22:35:47] PAN server now running in user mode with visible console: Server moved from SYSTEM session (Session 0) to interactive user session (Session 1). Runs with visible cmd window on desktop showing live logs, can be closed to kill PAN cleanly.
+- [2026-04-09 14:42:21] Transcript data loss on page refresh after server restart [failure]: User performed hard refresh after server restart. Terminal transcript lost most content. JSONL session file only contains 3 actual user messages, but many more were sent. Messages disappearing from di
 - [2026-04-08 18:11:09] Memory consolidation system completely broken [failure]: Completed tasks marked solved weeks ago still showing as open issues. Chat input fixes, terminal fixes implemented but never marked complete, causing false repetition. No mechanism to archive/remove c
-- [2026-04-08 18:11:09] AHK service respawn loop discovered and fixed: StewardAction events showed AHK flapping (running → down → restart) every minute nonstop. Root cause: steward.js healthCheck was restarting too aggressively. Implemented exponential backoff (1m → 2m →
-- [2026-04-08 19:05:57] Reap-orphans system implemented to clean up on startup: Built service/src/reap-orphans.js with wmic enumeration + ancestor chain walking to safely kill only orphaned bash/claude/node processes. Integrated into server.js boot sequence. Also added graceful P
-- [2026-04-08 20:54:52] PTY 'Claude is thinking' state never rendered — visibility bug: User asked multiple times: 'How do I know when you're actually working?' Status bar had `lastInputTs` tracking but sendToSession() wasn't updating it, so thinking flag stayed false forever. Fixed by e
-- [2026-04-08 20:54:52] Memory consolidation system broken — completed tasks stuck in open issues [failure]: User repeatedly stated that chat fixes, terminal fixes, and other completed work are re-appearing as open issues, causing false repetition. Memory files (project_status.md, CLAUDE.md Known Issues) not
-- [2026-04-08 19:05:57] Critical memory leak discovered — 9 orphaned Claude processes + 11 Node processes consuming ~2.7GB total [partial]: User reported continuous lockouts after restarts with computer running out of memory. Investigation found PIDs accumulating since April 6, with runaway CLI instances holding 493MB each. Machine was so
-- [2026-04-08 20:54:52] Orphaned Claude/Node processes consuming 2.7GB RAM from April 6 [partial]: Found 9 claude.exe + 11 node.exe still running from 2 days prior. Not immediately visible in Task Manager as separate entries. reap-orphans.js deployed but user reported unclear if cleanup actually wo
-- [2026-04-08 18:16:21] Session continuity verified: User asked 'So we restarted is this a new session'. Claude confirmed fresh session with no memory of previous conversation beyond CLAUDE.md and memory files.
-- [2026-04-08 20:54:52] Critical process leak discovered: whisper-server.py accumulating without cleanup [partial]: Found 3 python processes (whisper-server.py) consuming 2335MB, 1980MB, 1951MB each. Each time user clicks voice button, new whisper instance spawns without killing the old one. Root cause: service/src
-- [2026-04-08 16:31:13] Discovered and quantified restart friction metric: Found 426 explicit 'restart' mentions in 16 days (~27/day). User estimates real number ~2× = ~850 including crashes and auto-restarts. Added to Data → Overview stats
-- [2026-04-08 16:31:13] Designed Carrier/Loom zero-downtime server architecture [partial]: Carrier = supervisor that launches/swaps Craft (running versions). Loom = persistent overlay with rollback UI. Lifeboat = tiny rollback listener. Three-layer safety: 60s timeout auto-revert, persisten
-- [2026-04-08 16:31:12] Built hybrid memory search system (FTS5 + vector): Created db-registry.js for multi-DB registry. Verified SQLite 3.51.3 has FTS5 compiled in. Set up FTS5 mirror table + sync triggers on events table. Vector search deferred for later phases. Confirmed:
-- [2026-04-08 17:53:24] Breaking bugs introduced: orchestrator.js and evolution/engine.js missing `insert` import [failure]: Both files firing `insert is not defined` errors repeatedly. These are blocking orchestrator analysis and evolution pipeline. Unknown when or how these were introduced.
-- [2026-04-08 17:53:24] Crash visibility gap: Session 43c52168 died silently mid-tool-call [failure]: PTY session crashed at 20:13:06 UTC while reading SettingsScreen.kt. Last transcript shows tool request but no tool_result — CLI process died before completion. User sat waiting 30+ minutes with no no
-- [2026-04-08 16:31:13] User frustrated with message delivery visibility issues [failure]: Messages sometimes appear to send (shows 'thinking') but Claude disappears for 5 minutes, then reappears. Some old messages not rendering in terminal. Issue is messages going to 'invisible input box' 
-- [2026-04-08 17:53:24] Fixed PTY exit detection: added PtyExit events to database: Added `ptyProcess.onExit()` handler in terminal.js (lines 105-138) that logs exit code, uptime, pid to DB and broadcasts richer WS message to clients. Steward can now watch for unexpected exits.
-- [2026-04-08 20:54:52] Client connection count climbs on dashboard navigation: Every time user navigates terminal → automation → projects, client count incremented. Mult
+- [2026-04-09 14:22:33] Critical transcript data loss on page refresh after restart [failure]: User performed hard page refresh (via dashboard button) to restart PAN after Claude's build. Upon reconnection, entire terminal transcript lost all content - messages sent during session, screenshots 
+- [2026-04-09 11:43:44] Session continuity (PAN Remembers) working correctly: After server restart, user confirmed that memory system survived and provided proper context briefing about what was being worked on.
+- [2026-04-09 12:09:33] User requested full Carrier/Lifeboat/Craft plan visibility [partial]: User asked to see 'the whole plan and where we are now' for the 7-phase hot-restart architecture. High-priority context request to review multi-phase system design.
+- [2026-04-09 13:52:43] Transcript file content doesn't match terminal display [failure]: User discovered critical mismatch: JSONL session file content differs from what's shown in the terminal. Messages are being written to disk but not appearing in terminal view, or vice versa. Restart m
+- [2026-04-09 12:58:06] Sent message missing from transcript after restart [failure]: User reported test message sent during session is not showing up in the transcript. Both chat input and transcript render read from the same session file, so the issue is either: (1) message not writt
+- [2026-04-09 
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

@@ -23,7 +23,7 @@ import { startStackScanner, stopStackScanner } from './stack-scanner.js';
 import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
 import { consolidate as consolidateMemory } from './memory/consolidation.js';
 import { evolve as runEvolution } from './evolution/engine.js';
-import { listSessions } from './terminal.js';
+import { listSessions, sendToSession } from './terminal.js';
 import { hostname } from 'os';
 import http from 'http';
 import { spawn, execSync } from 'child_process';
@@ -134,57 +134,23 @@ const services = [
     _lastError: null,
     _lastRun: null,
   },
+  // AHK RETIRED — voice hotkeys now handled natively by Tauri shell (rdev mouse listener + SendInput).
+  // Tauri shell registers XButton1→Win+H and XButton2→dictate-vad.py directly.
+  // Keeping entry for Atlas visibility but with no startFn (won't boot).
   {
     id: 'ahk',
-    name: 'Voice Hotkeys (AHK)',
-    description: 'AutoHotkey voice dictation trigger (mouse side button)',
+    name: 'Voice Hotkeys (Tauri)',
+    description: 'Mouse side-button voice triggers — now native in PAN Shell (was AHK)',
     modelTier: 'none',
     modelMinSize: 'N/A',
     modelCurrent: 'N/A',
     port: null,
-    healthCheck: 'process',
-    processName: 'AutoHotkey64.exe',
-    // Verify the running AHK process is OUR Voice.ahk, not a stale manual one
-    processCmdLineMatch: 'service\\\\bin\\\\Voice.ahk',
-    // AHK needs an interactive desktop session — skip in service/Session 0 mode
+    healthCheck: 'self', // Tauri shell owns this — always "running" if shell is up
     userOnly: true,
     bootOrder: 4,
     dependsOn: ['whisper'],
     interval: null,
-    startFn: () => {
-      const ahkScript = join(__dirname, '..', 'bin', 'Voice.ahk');
-      const ahkExe = 'C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe';
-      // PAN often runs in Windows Session 0 (SYSTEM) when launched via the
-      // pan.exe daemon. Mouse/keyboard hooks in Session 0 cannot see input
-      // from the user's interactive Session 1, so XButton1/XButton2 in
-      // Voice.ahk never fire. Use schtasks with /IT /RU to launch AHK in
-      // the user's interactive session. Avoid nested-quoting hell by writing
-      // a tiny launcher .bat to %TEMP% first and pointing /TR at it.
-      try {
-        const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
-        const launcherBat = join(tmpDir, 'pan-ahk-launch.bat');
-        const batContent = `@echo off\r\nstart "" "${ahkExe}" /restart /script "${ahkScript}"\r\n`;
-        writeFileSync(launcherBat, batContent);
-
-        const taskName = 'PAN_AHK_Launch';
-        // Quietly delete any prior task
-        try { execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'ignore' }); } catch {}
-        // Create as interactive task running as the current user. /IT requires
-        // the user to be logged on (which they are, since AHK only matters then).
-        execSync(
-          `schtasks /Create /TN "${taskName}" /TR "\\"${launcherBat}\\"" /SC ONCE /ST 23:59 /F /RU "${process.env.USERNAME || 'tzuri'}" /IT`,
-          { stdio: 'ignore' }
-        );
-        execSync(`schtasks /Run /TN "${taskName}"`, { stdio: 'ignore' });
-        // Clean the task entry up after launch (the AHK process keeps running)
-        setTimeout(() => {
-          try { execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'ignore' }); } catch {}
-        }, 5000);
-        console.log('[Steward] Launched Voice.ahk in user session via schtasks:', ahkScript);
-      } catch (err) {
-        console.error('[Steward] Failed to launch Voice.ahk:', err.message);
-      }
-    },
+    startFn: null, // No separate process needed — Tauri shell handles it
     stopFn: null,
     _status: 'unknown',
     _lastCheck: null,
@@ -696,6 +662,11 @@ async function healthCheck() {
   // claude cli.js kept running, accumulating CPU forever.
   reapOrphanClaudeProcesses();
 
+  // DISABLED — ensureClaudeInSessions() ancestor walk was broken,
+  // kept spamming 'claude\r' into the PTY every health cycle.
+  // terminal.js already auto-launches claude on new PTY sessions.
+  // ensureClaudeInSessions();
+
   // Log a heartbeat event
   try {
     const summary = services.map(s => `${s.id}:${s._status}`).join(',');
@@ -727,9 +698,9 @@ function cleanZombieSessions() {
   } catch {}
 }
 
-// Find Claude CLI (cli.js) processes whose parent PID is NOT one of our
-// tracked PTY pids and is older than 30 minutes — those are orphans left
-// behind by a crashed PTY. Kill them. Windows-only via PowerShell CIM.
+// Find Claude CLI (cli.js) processes whose ancestor chain does NOT include
+// any of our tracked PTY pids and is older than 30 minutes — those are
+// orphans left behind by a crashed PTY. Kill them. Windows-only via PowerShell CIM.
 function reapOrphanClaudeProcesses() {
   if (process.platform !== 'win32') return;
   try {
@@ -738,23 +709,45 @@ function reapOrphanClaudeProcesses() {
     ourPtyPids.add(process.pid);
     if (process.ppid) ourPtyPids.add(process.ppid);
 
-    // Write the PS script to a temp .ps1 file to dodge cmd/powershell
-    // double-quote nesting hell. The previous inline `-Command "...Name='node.exe'..."`
-    // had the inner double-quotes terminate the outer string and cmd would
-    // pass an invalid -Filter, making the reaper throw on every health tick.
-    const ps = `$procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*@anthropic-ai/claude-code/cli.js*' } | Select-Object ProcessId, ParentProcessId, CreationDate
-if ($procs) { $procs | ConvertTo-Json -Compress }`;
+    // Get ALL processes so we can walk ancestor chains, plus filter Claude CLI procs.
+    const ps = `$all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CreationDate, @{N='Cmd';E={$_.CommandLine}}
+$claude = $all | Where-Object { $_.Cmd -like '*@anthropic-ai/claude-code/cli.js*' }
+$map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProcessId }
+$result = @{ claude = $claude; pidmap = $map }
+$result | ConvertTo-Json -Compress -Depth 3`;
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
     const psFile = join(tmpDir, 'pan-reap-orphans.ps1');
     writeFileSync(psFile, ps);
-    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 10000 }).trim();
+    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 15000 }).trim();
     if (!out) return;
     const parsed = JSON.parse(out);
-    const procs = Array.isArray(parsed) ? parsed : [parsed];
+    const claudeProcs = parsed.claude ? (Array.isArray(parsed.claude) ? parsed.claude : [parsed.claude]) : [];
+    if (!claudeProcs.length) return;
+
+    // Build pid→ppid map for ancestor walking
+    const pidMap = new Map();
+    if (parsed.pidmap) {
+      for (const [k, v] of Object.entries(parsed.pidmap)) {
+        pidMap.set(parseInt(k, 10), parseInt(v, 10) || 0);
+      }
+    }
+
+    // Walk up to 12 ancestors to check if any is a tracked PTY
+    function hasTrackedAncestor(pid) {
+      let current = pid;
+      for (let i = 0; i < 12; i++) {
+        const parent = pidMap.get(current);
+        if (!parent || parent === current) break;
+        if (ourPtyPids.has(parent)) return true;
+        current = parent;
+      }
+      return false;
+    }
+
     const now = Date.now();
     const MIN_AGE_MS = 30 * 60 * 1000; // 30 min — don't touch fresh hook callbacks
 
-    for (const p of procs) {
+    for (const p of claudeProcs) {
       const pid = p.ProcessId;
       const ppid = p.ParentProcessId;
       // Parse Windows CIM date "/Date(1775681352482)/"
@@ -762,7 +755,8 @@ if ($procs) { $procs | ConvertTo-Json -Compress }`;
       const startedAt = m ? parseInt(m[1], 10) : 0;
       const ageMs = startedAt ? (now - startedAt) : 0;
 
-      if (ourPtyPids.has(ppid)) continue;       // child of a live PTY → keep
+      if (ourPtyPids.has(ppid)) continue;       // direct child of a live PTY → keep
+      if (hasTrackedAncestor(pid)) continue;     // descendant of a live PTY → keep
       if (ageMs < MIN_AGE_MS) continue;          // too young → probably hook callback
 
       try {
@@ -778,6 +772,77 @@ if ($procs) { $procs | ConvertTo-Json -Compress }`;
     console.error(`[Steward] reapOrphanClaudeProcesses error: ${err.message}`);
   }
 }
+
+// Check if active terminal sessions have a live Claude process. If not,
+// relaunch claude in the PTY. This catches cases where Claude exits
+// (crash, user Ctrl+C, reaper kill) but the bash session stays alive.
+function ensureClaudeInSessions() {
+  if (process.platform !== 'win32') return;
+  try {
+    // Get all Claude CLI pids AND full process tree for ancestor walking
+    const ps = `$claude = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -like '*@anthropic-ai/claude-code/cli.js*' } | Select-Object ProcessId, ParentProcessId
+$all = Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId
+$map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProcessId }
+@{ claude = $claude; pidmap = $map } | ConvertTo-Json -Compress -Depth 3`;
+    const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
+    const psFile = join(tmpDir, 'pan-check-claude.ps1');
+    writeFileSync(psFile, ps);
+    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 10000 }).trim();
+
+    if (!out) return; // Can't enumerate — don't blindly relaunch
+
+    const parsed = JSON.parse(out);
+    const claudeProcs = parsed.claude ? (Array.isArray(parsed.claude) ? parsed.claude : [parsed.claude]) : [];
+
+    // Build pid→ppid map for ancestor walking
+    const pidMap = new Map();
+    if (parsed.pidmap) {
+      for (const [k, v] of Object.entries(parsed.pidmap)) {
+        pidMap.set(parseInt(k, 10), parseInt(v, 10) || 0);
+      }
+    }
+
+    // Walk up to 12 ancestors from a Claude process to see if ptyPid is in its chain
+    function hasAncestor(pid, target) {
+      let cur = pid;
+      for (let i = 0; i < 12; i++) {
+        const parent = pidMap.get(cur);
+        if (!parent || parent === cur) return false;
+        if (parent === target) return true;
+        cur = parent;
+      }
+      return false;
+    }
+
+    // For each active session, check if its PTY pid is an ancestor of any Claude process
+    const activeSessions = listSessions();
+    for (const s of activeSessions) {
+      if (!s.pid) continue;
+
+      // Walk full ancestor chain — handles conpty → bash → node (claude)
+      const hasClaudeDescendant = claudeProcs.some(p =>
+        p.ParentProcessId === s.pid || hasAncestor(p.ProcessId, s.pid)
+      );
+      if (hasClaudeDescendant) continue; // Claude is running in this session
+
+      // No Claude found — check if we recently sent a relaunch (debounce 5 min)
+      const lastRelaunch = _claudeRelaunchTimes.get(s.id) || 0;
+      if (Date.now() - lastRelaunch < 300_000) continue;
+
+      console.log(`[Steward] No Claude process in session ${s.id} (pty=${s.pid}) — relaunching`);
+      try {
+        sendToSession(s.id, 'claude\r');
+        _claudeRelaunchTimes.set(s.id, Date.now());
+        logServiceEvent('claude-relaunch', 'auto_relaunch', { session: s.id, pty_pid: s.pid });
+      } catch (err) {
+        console.error(`[Steward] Failed to relaunch claude in ${s.id}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[Steward] ensureClaudeInSessions error: ${err.message}`);
+  }
+}
+const _claudeRelaunchTimes = new Map();
 
 // ==================== ATLAS DATA ====================
 // Returns the full service registry with live status for Atlas rendering

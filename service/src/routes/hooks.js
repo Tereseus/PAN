@@ -149,40 +149,14 @@ async function injectSessionContext(cwd) {
       );
     }
 
-    // Build the briefing
+    // Build the briefing — Recent Conversation FIRST (highest priority, drives "PAN remembers"),
+    // then state dump and memory (can be truncated without breaking continuity).
     let briefing = `## PAN Session Context\n\n`;
     briefing += `This is a fresh session for the "${project?.name || 'PAN'}" project.\n`;
     briefing += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
-    briefing += `**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with something like "Last time we were working on..." and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.\n\n`;
+    briefing += `**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "\u03A0\u0391\u039D Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.\n\n`;
 
-    // Read .pan-state.md for living state context (written by dream cycle)
-    const statePath = join(cwd, '.pan-state.md');
-    if (existsSync(statePath)) {
-      try {
-        let stateContent = readFileSync(statePath, 'utf8').trim();
-        stateContent = stateContent.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
-        briefing += stateContent + '\n\n';
-      } catch {}
-    }
-
-    // Vector memory — small budget, only high-quality matches
-    try {
-      const memResult = await buildMemoryContext('session context', { tokenBudget: 2000 });
-      if (memResult.context) {
-        briefing += memResult.context + '\n\n';
-      }
-    } catch {}
-
-    // Open tasks
-    if (tasks.length > 0) {
-      briefing += `### Open Tasks\n`;
-      for (const t of tasks) {
-        briefing += `- [${t.status}${t.priority > 0 ? ' P' + t.priority : ''}] ${t.title}\n`;
-      }
-      briefing += '\n';
-    }
-
-    // Recent conversation summary
+    // PRIORITY 1: Recent conversation — this drives the "PAN remembers" briefing
     if (recentEvents.length > 0) {
       briefing += `### Recent Conversation\n`;
       const chatItems = [...recentEvents].reverse();
@@ -197,30 +171,41 @@ async function injectSessionContext(cwd) {
         } catch {}
       }
       briefing += '\n';
+    }
 
-      // Last 2 messages at moderate length for immediate context
-      const lastMessages = chatItems.slice(-4); // last 4 messages (2 exchanges)
-      if (lastMessages.length > 0) {
-        briefing += `### Last Messages (Full)\n`;
-        for (const e of lastMessages) {
-          try {
-            const d = JSON.parse(e.data);
-            if (e.event_type === 'UserPromptSubmit' && d.prompt) {
-              briefing += `**User** (${e.created_at}):\n${d.prompt.substring(0, 1000)}\n\n`;
-            } else if (e.event_type === 'Stop' && d.last_assistant_message) {
-              briefing += `**Claude** (${e.created_at}):\n${d.last_assistant_message.substring(0, 1000)}\n\n`;
-            }
-          } catch {}
-        }
+    // PRIORITY 2: State dump from dream cycle
+    const statePath = join(cwd, '.pan-state.md');
+    if (existsSync(statePath)) {
+      try {
+        let stateContent = readFileSync(statePath, 'utf8').trim();
+        stateContent = stateContent.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
+        briefing += stateContent + '\n\n';
+      } catch {}
+    }
+
+    // PRIORITY 3: Vector memory
+    try {
+      const memResult = await buildMemoryContext('session context', { tokenBudget: 2000 });
+      if (memResult.context) {
+        briefing += memResult.context + '\n\n';
       }
+    } catch {}
+
+    // PRIORITY 4: Open tasks
+    if (tasks.length > 0) {
+      briefing += `### Open Tasks\n`;
+      for (const t of tasks) {
+        briefing += `- [${t.status}${t.priority > 0 ? ' P' + t.priority : ''}] ${t.title}\n`;
+      }
+      briefing += '\n';
     }
 
     // Sanitize — strip any literal PAN-CONTEXT markers from injected content
     briefing = briefing.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
 
-    // Cap injection to ~10000 chars to avoid bloating CLAUDE.md
-    if (briefing.length > 10000) {
-      briefing = briefing.substring(0, 10000) + '\n\n[... context trimmed ...]\n';
+    // Cap injection to ~12000 chars (increased from 10k to accommodate conversation + state)
+    if (briefing.length > 12000) {
+      briefing = briefing.substring(0, 12000) + '\n\n[... context trimmed ...]\n';
     }
 
     // Write to CLAUDE.md

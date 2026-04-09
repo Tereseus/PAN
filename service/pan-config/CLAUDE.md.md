@@ -13,3 +13,10 @@
 - Device section separation (now shows devices separately from core services) ✓
 - AHK startup on reboot (fixed via PAN.bat + Steward launch) ✓
 - Alt+D hotkey for terminal/chat toggle ✓
+
+
+## Verification Status
+- Items in Known Issues must be verified reproducible in current conversation before next session
+- 'Recently Fixed' items require explicit user confirmation and timestamp before moving to 'What Works'
+- If memory contradicts conversation, conversation is source-of-truth
+- Task re-appears as open issue = memory consolidation failure, not task incompleteness

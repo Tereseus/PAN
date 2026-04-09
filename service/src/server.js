@@ -15,7 +15,7 @@
 //   /health         - Health check
 
 import express from 'express';
-import { join, dirname } from 'path';
+import { join, dirname, resolve as pathResolve, basename } from 'path';
 import { fileURLToPath } from 'url';
 import hooksRouter, { injectSessionContext } from './routes/hooks.js';
 import apiRouter from './routes/api.js';
@@ -37,9 +37,9 @@ import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
 import { reapOrphans } from './reap-orphans.js';
-import { hostname } from 'os';
+import { hostname, homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -318,6 +318,11 @@ app.get('/dashboard/api/processes', (req, res) => {
 app.post('/dashboard/api/processes/kill', (req, res) => {
   const { pid } = req.body;
   if (!pid) return res.status(400).json({ ok: false, error: 'No PID' });
+  // Protect PTY pids — never let dashboard kill a terminal session process
+  const ptyPids = new Set(getActivePtyPids());
+  if (ptyPids.has(pid)) {
+    return res.status(403).json({ ok: false, error: 'Cannot kill active PTY process — use session kill instead' });
+  }
   try { process.kill(pid, 'SIGTERM'); res.json({ ok: true, killed: pid }); }
   catch (err) { res.json({ ok: false, error: err.message }); }
 });
@@ -1182,6 +1187,21 @@ app.post('/api/v1/terminal/send', (req, res) => {
   const toSend = raw ? text : text + '\r';
   const sent = sendToSession(session_id || null, toSend);
 
+  // Immediate echo — broadcast user message to all WS clients for this session
+  // so it appears in the transcript instantly, without waiting for Claude Code
+  // to write it to the JSONL file (which can take seconds if Claude is busy).
+  // The transcript watcher's dedup will handle the overlap when JSONL catches up.
+  // Echo when: non-raw sends (legacy), OR raw sends that contain actual text
+  // (not just control chars like \r). The dashboard splits sends into text+\r,
+  // both with raw:true, so we need to echo the text part.
+  const echoText = (text || '').trim();
+  if (sent && echoText && !/^[\r\n\x03\x1b]/.test(echoText)) {
+    broadcastToSession(session_id || null, 'user_echo', {
+      text: echoText,
+      ts: new Date().toISOString(),
+    });
+  }
+
   // Derive the real client source. Priority:
   //   1) explicit body.source (caller knows best)
   //   2) X-PAN-Source header
@@ -1595,33 +1615,71 @@ app.post('/api/v1/dictate', async (req, res) => {
   }
 });
 
+// Voice trigger — mouse button actions routed from dashboard JS
+// action: "winh" (Win+H system voice) or "dictate" (PAN whisper)
+app.post('/api/v1/voice/trigger', async (req, res) => {
+  const { action } = req.body || {};
+  console.log(`[PAN Voice] trigger: ${action}`);
+  if (action === 'winh') {
+    // Send Win+H via Tauri shell
+    try {
+      await fetch('http://127.0.0.1:7790/winh', { method: 'POST', signal: AbortSignal.timeout(2000) });
+      res.json({ ok: true, action: 'winh' });
+    } catch {
+      // Fallback: PowerShell keybd_event if Tauri is down
+      const { exec } = await import('child_process');
+      exec('powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\' -Name W -Namespace K; [K.W]::keybd_event(0x5B,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x48,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x48,0,2,[UIntPtr]::Zero); [K.W]::keybd_event(0x5B,0,2,[UIntPtr]::Zero)"');
+      res.json({ ok: true, action: 'winh', via: 'powershell-fallback' });
+    }
+  } else if (action === 'dictate') {
+    // Forward to existing dictate endpoint logic
+    try {
+      const resp = await fetch('http://127.0.0.1:7790/dictate', { method: 'POST', signal: AbortSignal.timeout(2000) });
+      const data = await resp.json();
+      res.json({ ok: true, action: 'dictate', result: data });
+    } catch {
+      res.json({ ok: false, error: 'Tauri shell not reachable' });
+    }
+  } else {
+    res.status(400).json({ error: 'action must be winh or dictate' });
+  }
+});
+
 // Voice toggle — AHK or other clients can trigger dashboard mic streaming
 app.post('/api/v1/voice/toggle', (req, res) => {
   broadcastNotification('voice_toggle', {});
   res.json({ ok: true });
 });
 
-// Voice dictate — triggers AHK to run dictate-vad.py in user session (Session 0 has no audio)
-// Hardcode user temp path — process.env.TEMP is C:\WINDOWS\TEMP in Session 0, but AHK runs in Session 1
+// Voice dictate — forwards to Tauri shell's /dictate endpoint (Tauri owns mouse buttons + audio session)
+// Fallback: if Tauri shell is down, spawn dictate-vad.py directly from server
 let _dictateActive = false;
-app.post('/api/v1/voice/dictate', (req, res) => {
-  const triggerFile = join('C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan_voice_trigger');
-  const stopFile = join('C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan_dictate.wav.stop');
-  if (_dictateActive) {
-    // Signal AHK's dictate-vad.py to stop
-    try { writeFileSync(stopFile, 'stop'); } catch {}
-    _dictateActive = false;
-    res.json({ ok: true, action: 'stopping' });
-    return;
+app.post('/api/v1/voice/dictate', async (req, res) => {
+  try {
+    // Try Tauri shell first (has user session audio access + mouse button hooks)
+    const resp = await fetch('http://127.0.0.1:7790/dictate', { method: 'POST', signal: AbortSignal.timeout(2000) });
+    const data = await resp.json();
+    _dictateActive = data.action === 'started';
+    res.json({ ok: true, action: data.action, via: 'tauri' });
+  } catch {
+    // Tauri shell not running — fall back to direct spawn
+    const stopFile = join('C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan_dictate.wav.stop');
+    if (_dictateActive) {
+      try { writeFileSync(stopFile, 'stop'); } catch {}
+      _dictateActive = false;
+      res.json({ ok: true, action: 'stopping', via: 'direct' });
+      return;
+    }
+    try {
+      const { spawn: spawnProc } = await import('child_process');
+      spawnProc('python.exe', [join(__dirname, 'dictate-vad.py'), '--no-sounds'], { stdio: 'ignore', detached: true }).unref();
+      _dictateActive = true;
+      setTimeout(() => { _dictateActive = false; }, 300000);
+      res.json({ ok: true, action: 'started', via: 'direct' });
+    } catch (err) {
+      res.json({ ok: false, error: err.message });
+    }
   }
-  // Write trigger file that AHK polls every 250ms
-  try { writeFileSync(triggerFile, 'dictate'); } catch (err) {
-    return res.json({ ok: false, error: err.message });
-  }
-  _dictateActive = true;
-  // Auto-reset after 5 minutes (max recording duration) in case stop signal is missed
-  setTimeout(() => { _dictateActive = false; }, 300000);
-  res.json({ ok: true, action: 'started' });
 });
 
 // Voice result — receives partial/final transcription from dictate-vad.py and pushes to dashboard
@@ -1734,6 +1792,88 @@ app.get('/health', (req, res) => {
 // Detailed deployment-mode info for debugging which features are gated.
 app.get('/api/v1/mode', (req, res) => {
   res.json({ ...MODE_INFO, features: { pty: IS_USER_MODE, ahk: IS_USER_MODE, screenshots: IS_USER_MODE, hooks: true, api: true, db: true } });
+});
+
+// Library: unified browsable list of docs, memory, .pan files, reports
+app.get('/api/v1/library', (req, res) => {
+  try {
+    const ROOT = pathResolve(__dirname, '..', '..');
+    const items = [];
+
+    function walk(dir, type, baseRel) {
+      let entries;
+      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.name.startsWith('.') && e.name !== '.pan') continue;
+        if (e.name === 'node_modules') continue;
+        const full = join(dir, e.name);
+        const rel = baseRel ? join(baseRel, e.name) : e.name;
+        if (e.isDirectory()) {
+          walk(full, type, rel);
+        } else if (/\.(md|pan)$/i.test(e.name) || e.name === '.pan') {
+          let stat; try { stat = statSync(full); } catch { continue; }
+          let snippet = '';
+          try {
+            const buf = readFileSync(full, 'utf8');
+            snippet = buf.replace(/^---[\s\S]*?---/, '').replace(/[#>*`_\-]/g, '').trim().split('\n').find(l => l.trim()) || '';
+            if (snippet.length > 120) snippet = snippet.slice(0, 117) + '...';
+          } catch {}
+          items.push({
+            type,
+            title: e.name.replace(/\.(md|pan)$/i, '').replace(/[-_]/g, ' '),
+            path: full.replace(/\\/g, '/'),
+            rel: rel.replace(/\\/g, '/'),
+            modified: stat.mtimeMs,
+            snippet,
+          });
+        }
+      }
+    }
+
+    walk(join(ROOT, 'docs'), 'doc');
+    walk(join(homedir(), '.claude', 'projects', 'C--Users-tzuri-Desktop-PAN', 'memory'), 'memory');
+    // .pan project files
+    try {
+      const panFiles = ['.pan', 'service/.pan', 'CLAUDE.md'];
+      for (const f of panFiles) {
+        const full = join(ROOT, f);
+        if (existsSync(full)) {
+          const stat = statSync(full);
+          items.push({ type: 'pan', title: f, path: full.replace(/\\/g, '/'), rel: f, modified: stat.mtimeMs, snippet: '' });
+        }
+      }
+    } catch {}
+
+    items.sort((a, b) => b.modified - a.modified);
+    res.json({ items, count: items.length });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get('/api/v1/library/view', (req, res) => {
+  try {
+    const p = req.query.path;
+    if (!p || typeof p !== 'string') return res.status(400).send('missing path');
+    // Safety: only serve files under PAN root or claude memory dir
+    const ROOT = pathResolve(__dirname, '..', '..').replace(/\\/g, '/');
+    const MEM = join(homedir(), '.claude', 'projects', 'C--Users-tzuri-Desktop-PAN').replace(/\\/g, '/');
+    const norm = pathResolve(p).replace(/\\/g, '/');
+    if (!norm.startsWith(ROOT) && !norm.startsWith(MEM)) return res.status(403).send('forbidden');
+    if (!existsSync(norm)) return res.status(404).send('not found');
+    const content = readFileSync(norm, 'utf8');
+    const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const title = basename(norm);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>
+body{background:#0a0e14;color:#cdd6f4;font-family:ui-monospace,Consolas,monospace;font-size:13px;line-height:1.55;margin:0;padding:24px 32px;}
+h1{font-size:14px;color:#89b4fa;border-bottom:1px solid #313244;padding-bottom:8px;margin-top:0;}
+pre{white-space:pre-wrap;word-wrap:break-word;margin:0;}
+</style></head><body><h1>${title}</h1><pre>${escaped}</pre></body></html>`);
+  } catch (e) {
+    res.status(500).send(String(e));
+  }
 });
 
 // Auto-detect local model providers (Ollama, LM Studio)
@@ -1936,10 +2076,14 @@ function start() {
   });
 }
 
-function stop() {
-  // Kill every tracked PTY child first so bash/claude don't orphan
+async function stop() {
+  // Kill every tracked PTY child first so bash/claude don't orphan.
+  // Two-phase: broadcast server_restarting FIRST, wait 200ms for WS
+  // delivery, THEN kill PTYs. This ensures the frontend receives the
+  // flag before the connection drops — without it, wasServerRestart is
+  // false and Claude never auto-relaunches after restart.
   try {
-    const n = killAllSessions();
+    const n = await killAllSessions();
     if (n) console.log(`[PAN] Killed ${n} tracked PTY session(s) on shutdown`);
   } catch (e) {
     console.warn(`[PAN] killAllSessions failed: ${e.message}`);

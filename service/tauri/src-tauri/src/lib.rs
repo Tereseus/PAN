@@ -1,17 +1,63 @@
 use base64::Engine;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const PAN_SERVER: &str = "http://127.0.0.1:7777";
 const SHELL_PORT: u16 = 7790;
+const DICTATE_SCRIPT: &str = r"C:\Users\tzuri\Desktop\PAN\service\src\dictate-vad.py";
+const VOICE_START_SND: &str = r"C:\Users\tzuri\Desktop\PAN\service\bin\sounds\voice-start.wav";
+const VOICE_STOP_SND: &str = r"C:\Users\tzuri\Desktop\PAN\service\bin\sounds\voice-stop.wav";
+
+static DICTATE_BUSY: AtomicBool = AtomicBool::new(false);
+
+// Configurable mouse button actions — fetched from PAN settings at startup.
+// "winh" = trigger Win+H voice typing, "dictate" = run dictate-vad.py, "none" = disabled
+use std::sync::OnceLock;
+static XBUTTON1_ACTION: OnceLock<String> = OnceLock::new();
+static XBUTTON2_ACTION: OnceLock<String> = OnceLock::new();
+
+/// Fetch voice button config from PAN server settings.
+/// Keys: voice_xbutton1 and voice_xbutton2, values: "winh" | "dictate" | "none"
+fn load_voice_button_config() {
+    let (mut action1, mut action2) = ("winh".to_string(), "dictate".to_string());
+    if let Ok(resp) = ureq::get(&format!("{}/api/v1/settings", PAN_SERVER)).call() {
+        if let Ok(json) = resp.into_json::<serde_json::Value>() {
+            if let Some(v) = json.get("voice_xbutton1").and_then(|v| v.as_str()) {
+                action1 = v.to_string();
+            }
+            if let Some(v) = json.get("voice_xbutton2").and_then(|v| v.as_str()) {
+                action2 = v.to_string();
+            }
+        }
+    }
+    println!("[PAN Shell] Voice buttons: XButton1={}, XButton2={}", action1, action2);
+    let _ = XBUTTON1_ACTION.set(action1);
+    let _ = XBUTTON2_ACTION.set(action2);
+}
+
+fn execute_voice_action(action: &str) {
+    match action {
+        "winh" => {
+            println!("[PAN Shell] → Win+H");
+            #[cfg(target_os = "windows")]
+            send_win_h();
+        }
+        "dictate" => {
+            println!("[PAN Shell] → Dictate");
+            start_dictation();
+        }
+        _ => {} // "none" or unknown — do nothing
+    }
+}
 
 // ==================== Window Registry ====================
 #[derive(Debug, Clone, Serialize)]
@@ -364,6 +410,20 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                     }
                 }
 
+                ("POST", "/dictate") => {
+                    // Trigger or stop dictation — replaces the AHK file-trigger mechanism
+                    start_dictation();
+                    (200, serde_json::json!({"ok": true, "action": if DICTATE_BUSY.load(Ordering::SeqCst) { "started" } else { "stopped" }}).to_string())
+                }
+
+                ("POST", "/winh") => {
+                    // Trigger Win+H system voice typing
+                    #[cfg(target_os = "windows")]
+                    send_win_h();
+                    println!("[PAN Shell] Win+H triggered via HTTP");
+                    (200, serde_json::json!({"ok": true, "action": "winh"}).to_string())
+                }
+
                 ("POST", "/close") => {
                     let mut body_str = String::new();
                     let _ = request.as_reader().read_to_string(&mut body_str);
@@ -398,6 +458,117 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
     });
 }
 
+// ==================== Voice Hotkeys (replaces AHK) ====================
+
+/// Send Win+H to the OS via Windows SendInput API
+#[cfg(target_os = "windows")]
+fn send_win_h() {
+    unsafe {
+        use std::mem::size_of;
+        // INPUT struct on x64 is 40 bytes: u32 type + 4-byte padding + 32-byte union.
+        // KEYBDINPUT sits inside the union with tail padding to match MOUSEINPUT size.
+        #[repr(C)]
+        struct Input {
+            r#type: u32,    // INPUT_KEYBOARD = 1
+            _pad0: u32,     // padding to align union to 8 bytes
+            vk: u16,        // wVk
+            scan: u16,      // wScan
+            flags: u32,     // dwFlags (0 = down, 2 = KEYEVENTF_KEYUP)
+            time: u32,      // dwTime
+            _pad1: u32,     // alignment padding before dwExtraInfo
+            extra: usize,   // dwExtraInfo
+            _pad2: [u8; 8], // union tail padding (MOUSEINPUT is 32 bytes, KEYBDINPUT is 24)
+        }
+        extern "system" { fn SendInput(count: u32, inputs: *const Input, size: i32) -> u32; }
+        let inputs = [
+            Input { r#type: 1, _pad0: 0, vk: 0x5B, scan: 0, flags: 0, time: 0, _pad1: 0, extra: 0, _pad2: [0; 8] }, // LWin down
+            Input { r#type: 1, _pad0: 0, vk: 0x48, scan: 0, flags: 0, time: 0, _pad1: 0, extra: 0, _pad2: [0; 8] }, // H down
+            Input { r#type: 1, _pad0: 0, vk: 0x48, scan: 0, flags: 2, time: 0, _pad1: 0, extra: 0, _pad2: [0; 8] }, // H up
+            Input { r#type: 1, _pad0: 0, vk: 0x5B, scan: 0, flags: 2, time: 0, _pad1: 0, extra: 0, _pad2: [0; 8] }, // LWin up
+        ];
+        SendInput(4, inputs.as_ptr(), size_of::<Input>() as i32);
+    }
+}
+
+/// Run dictate-vad.py (PAN's whisper dictation)
+fn start_dictation() {
+    if DICTATE_BUSY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        // Already recording — signal stop
+        let stop_file = std::env::temp_dir().join("pan_dictate.wav.stop");
+        let _ = std::fs::write(&stop_file, "stop");
+        println!("[PAN Shell] Dictation stop signal sent");
+        return;
+    }
+    println!("[PAN Shell] Starting dictation...");
+    std::thread::spawn(|| {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        // Play start sound
+        {
+            use std::process::Command;
+            let _ = Command::new("powershell")
+                .args(["-NoProfile", "-Command",
+                    &format!("(New-Object Media.SoundPlayer '{}').PlaySync()", VOICE_START_SND)])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
+
+        let result = std::process::Command::new("python.exe")
+            .args([DICTATE_SCRIPT, "--no-sounds"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+
+        match result {
+            Ok(status) => println!("[PAN Shell] Dictation finished: {}", status),
+            Err(e) => eprintln!("[PAN Shell] Dictation failed: {}", e),
+        }
+
+        // Play stop sound
+        {
+            use std::process::Command;
+            let _ = Command::new("powershell")
+                .args(["-NoProfile", "-Command",
+                    &format!("(New-Object Media.SoundPlayer '{}').PlaySync()", VOICE_STOP_SND)])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
+
+        DICTATE_BUSY.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Listen for mouse XButton1/XButton2 globally via rdev.
+/// XButton codes are OS-specific — we match broadly and log unknowns for debugging.
+fn start_mouse_listener() {
+    std::thread::spawn(|| {
+        println!("[PAN Shell] Mouse button listener started (XButton1=Win+H, XButton2=Dictate)");
+        let action1 = XBUTTON1_ACTION.get().map(|s| s.as_str()).unwrap_or("winh");
+        let action2 = XBUTTON2_ACTION.get().map(|s| s.as_str()).unwrap_or("dictate");
+        let a1 = action1.to_string();
+        let a2 = action2.to_string();
+        if let Err(e) = rdev::listen(move |event| {
+            if let rdev::EventType::ButtonPress(button) = event.event_type {
+                match button {
+                    rdev::Button::Unknown(code) => {
+                        println!("[PAN Shell] Mouse Unknown({}) pressed", code);
+                        match code {
+                            1 | 5 | 8 => execute_voice_action(&a1),
+                            2 | 6 | 9 => execute_voice_action(&a2),
+                            _ => println!("[PAN Shell] Unmapped mouse code {} — add to match if needed", code),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }) {
+            eprintln!("[PAN Shell] Mouse listener error: {:?}", e);
+        }
+    });
+}
+
 // ==================== App Setup ====================
 
 fn chrono_now() -> String {
@@ -420,30 +591,14 @@ pub fn run() {
                 if event.state() == ShortcutState::Pressed {
                     let win_h = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
                     if shortcut == &win_h {
-                        // DO NOT blur. Previously we blurred the active element so the
-                        // webview released keyboard focus, but that left Windows Voice
-                        // Typing with no target for the dictated characters. Keeping the
-                        // textarea focused means voice-typed text lands in the input box.
-                        // Unregister, send real Win+H to OS, re-register
+                        // Unregister, send real Win+H to OS, re-register.
+                        // Keep textarea focused so voice-typed text lands in the input box.
                         let handle = app.clone();
                         std::thread::spawn(move || {
                             let _ = handle.global_shortcut().unregister(win_h);
                             std::thread::sleep(std::time::Duration::from_millis(50));
-                            // Send real Win+H via Windows API
                             #[cfg(target_os = "windows")]
-                            unsafe {
-                                use std::mem::size_of;
-                                #[repr(C)]
-                                struct KeybdInput { r#type: u32, vk: u16, scan: u16, flags: u32, time: u32, extra: usize }
-                                extern "system" { fn SendInput(count: u32, inputs: *const KeybdInput, size: i32) -> u32; }
-                                let inputs = [
-                                    KeybdInput { r#type: 1, vk: 0x5B, scan: 0, flags: 0, time: 0, extra: 0 }, // LWin down
-                                    KeybdInput { r#type: 1, vk: 0x48, scan: 0, flags: 0, time: 0, extra: 0 }, // H down
-                                    KeybdInput { r#type: 1, vk: 0x48, scan: 0, flags: 2, time: 0, extra: 0 }, // H up
-                                    KeybdInput { r#type: 1, vk: 0x5B, scan: 0, flags: 2, time: 0, extra: 0 }, // LWin up
-                                ];
-                                SendInput(4, inputs.as_ptr(), size_of::<KeybdInput>() as i32);
-                            }
+                            send_win_h();
                             std::thread::sleep(std::time::Duration::from_millis(200));
                             let _ = handle.global_shortcut().register(win_h);
                         });
@@ -512,6 +667,10 @@ pub fn run() {
             if let Err(e) = app.global_shortcut().register(win_h) {
                 eprintln!("[PAN Shell] Win+H global shortcut not registered (OS owns it): {e}");
             }
+
+            // ---- Load voice button config from PAN settings, then start listener ----
+            load_voice_button_config();
+            start_mouse_listener();
 
             // ---- Start HTTP API so PAN server can call us directly ----
             let handle = app.handle().clone();

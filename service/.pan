@@ -1,47 +1,51 @@
 {
   "project_name": "service",
-  "last_session_id": "38bc82a1-ee81-4386-81b3-261525869b3e",
-  "last_session_time": "2026-04-09T00:54:54.148Z",
+  "last_session_id": "45ac3d40-8a19-4d69-b3d6-be36a1c084eb",
+  "last_session_time": "2026-04-09T18:42:00.138Z",
   "session_history": [
     {
-      "id": "38bc82a1-ee81-4386-81b3-261525869b3e",
-      "time": "2026-04-09T00:54:54.148Z"
+      "id": "45ac3d40-8a19-4d69-b3d6-be36a1c084eb",
+      "time": "2026-04-09T18:42:00.139Z"
     },
     {
-      "id": "95781f88-d50d-4a65-a4d9-9ceae5727fc7",
-      "time": "2026-04-09T00:54:15.043Z"
+      "id": "d736b2d4-bb09-4522-9f9d-14d81203d9c9",
+      "time": "2026-04-09T18:26:46.721Z"
     },
     {
-      "id": "816aaa76-939e-4f2c-86f8-cfe5589e93be",
-      "time": "2026-04-09T00:53:38.899Z"
+      "id": "8fc9fbb6-3312-4f1b-ad4b-f958647c8a6b",
+      "time": "2026-04-09T18:21:56.316Z"
     },
     {
-      "id": "864c09da-4008-40aa-b4ce-75164b2095be",
-      "time": "2026-04-09T00:48:57.544Z"
+      "id": "67fbcc80-b2a7-4057-9d6a-b4711dfe577b",
+      "time": "2026-04-09T18:14:00.458Z"
     },
     {
-      "id": "2119e7f4-70aa-4a43-8962-fc3d02046feb",
-      "time": "2026-04-08T23:09:55.918Z"
+      "id": "71e0c6c8-d027-4dee-a75e-fe0eb85325fc",
+      "time": "2026-04-09T18:08:52.644Z"
     },
     {
-      "id": "0b7df5a4-82c6-4725-9d15-cd5f39072e03",
-      "time": "2026-04-08T23:05:32.965Z"
+      "id": "da710b3d-65a0-43e5-867c-6bf11153c549",
+      "time": "2026-04-09T18:03:33.408Z"
     },
     {
-      "id": "827970b8-3923-46d2-a574-4db5054ac1e8",
-      "time": "2026-04-08T22:16:03.433Z"
+      "id": "f6b75d11-32d9-452a-a45d-932faf716284",
+      "time": "2026-04-09T17:52:22.754Z"
     },
     {
-      "id": "76ae57ca-c7d8-42e9-8c00-d75a7e06e22c",
-      "time": "2026-04-08T22:15:17.937Z"
+      "id": "9447971a-ffa8-4865-bcaa-7048ecba164a",
+      "time": "2026-04-09T17:52:01.608Z"
     },
     {
-      "id": "1e6195f1-613f-4c15-b2bc-03ac06fdf0d2",
-      "time": "2026-04-08T22:10:50.585Z"
+      "id": "3c762d37-f17f-4b33-9567-27bbe7a11cbe",
+      "time": "2026-04-09T17:47:12.810Z"
     },
     {
-      "id": "a2f19210-79fa-48aa-b188-fc196d61499e",
-      "time": "2026-04-08T22:07:17.524Z"
+      "id": "ae1c0236-89b6-4704-89c3-9d6362fbb9e0",
+      "time": "2026-04-09T17:40:51.581Z"
     }
+  ],
+  "claude_project_dir": "C:\\Users\\tzuri\\.claude\\projects\\C--Users-tzuri-Desktop-PAN-service",
+  "all_session_dirs": [
+    "C--Users-tzuri-Desktop-PAN-service"
   ]
 }
