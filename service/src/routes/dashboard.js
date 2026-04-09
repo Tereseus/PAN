@@ -105,7 +105,7 @@ router.get('/api/jobs', async (req, res) => {
     // Get PAN scheduled tasks
     const taskOutput = execSync(
       'schtasks /query /tn "PAN-VoiceTraining" /fo CSV /nh 2>nul || echo "not found"',
-      { encoding: 'utf-8', timeout: 5000 }
+      { encoding: 'utf-8', timeout: 5000, windowsHide: true }
     ).trim();
 
     if (!taskOutput.includes('not found')) {
@@ -134,7 +134,7 @@ router.get('/api/jobs', async (req, res) => {
   try {
     const { execSync } = await import('child_process');
     const procs = execSync('tasklist /fi "IMAGENAME eq python.exe" /fo CSV /nh 2>nul', {
-      encoding: 'utf-8', timeout: 5000
+      encoding: 'utf-8', timeout: 5000, windowsHide: true
     });
     const recorderRunning = procs.includes('python.exe');
     jobs.push({
@@ -157,7 +157,7 @@ router.get('/api/jobs', async (req, res) => {
   try {
     const { execSync } = await import('child_process');
     const procs = execSync('tasklist /fi "IMAGENAME eq electron.exe" /fo CSV /nh 2>nul', {
-      encoding: 'utf-8', timeout: 5000
+      encoding: 'utf-8', timeout: 5000, windowsHide: true
     });
     jobs.push({
       name: 'Desktop Agent (Electron)',
@@ -220,7 +220,7 @@ router.get('/api/jobs', async (req, res) => {
   try {
     const { execSync } = await import('child_process');
     const stats = execSync('python src/voice-recorder.py --stats 2>nul', {
-      encoding: 'utf-8', timeout: 5000,
+      encoding: 'utf-8', timeout: 5000, windowsHide: true,
       cwd: join(__dirname2, '..', '..')
     });
     const parsed = JSON.parse(stats);
@@ -236,8 +236,8 @@ router.get('/api/jobs', async (req, res) => {
   // Docker status
   try {
     const { execSync } = await import('child_process');
-    const dockerVersion = execSync('docker --version 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim();
-    const dockerRunning = execSync('docker info --format "{{.ContainersRunning}}" 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim();
+    const dockerVersion = execSync('docker --version 2>nul', { encoding: 'utf-8', timeout: 5000, windowsHide: true }).trim();
+    const dockerRunning = execSync('docker info --format "{{.ContainersRunning}}" 2>nul', { encoding: 'utf-8', timeout: 5000, windowsHide: true }).trim();
     jobs.push({
       name: 'Docker',
       description: dockerVersion,
@@ -384,7 +384,7 @@ router.get('/api/events', (req, res) => {
 });
 
 // Transcript cache — avoids re-parsing huge JSONL files on every poll
-const transcriptCache = new Map(); // path -> { mtime, messages }
+const transcriptCache = new Map(); // path -> { mtime, size, messages }
 
 // GET /api/transcript — read full conversation from JSONL transcript file
 // Returns user prompts, full assistant text responses, and tool call summaries
@@ -411,10 +411,12 @@ router.get('/api/transcript', (req, res) => {
   }
 
   try {
-    // Check cache — skip re-parsing if file hasn't changed
+    // Check cache — skip re-parsing if file hasn't changed.
+    // Compare BOTH mtime AND size: on Windows, mtime can be stale when Claude
+    // holds the file handle open and appends data. Size always reflects appends.
     const fileStat = statSync(transcriptPath);
     const cached = transcriptCache.get(transcriptPath);
-    if (cached && cached.mtime >= fileStat.mtimeMs) {
+    if (cached && cached.mtime >= fileStat.mtimeMs && cached.size >= fileStat.size) {
       const limit = parseInt(req.query.limit) || 200;
       return res.json({ messages: cached.messages.slice(-limit) });
     }
@@ -497,7 +499,7 @@ router.get('/api/transcript', (req, res) => {
     }
 
     // Cache the parsed result
-    transcriptCache.set(transcriptPath, { mtime: fileStat.mtimeMs, messages });
+    transcriptCache.set(transcriptPath, { mtime: fileStat.mtimeMs, size: fileStat.size, messages });
     // Limit cache size to 20 entries
     if (transcriptCache.size > 20) {
       const oldest = transcriptCache.keys().next().value;

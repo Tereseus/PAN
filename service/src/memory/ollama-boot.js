@@ -33,7 +33,7 @@ async function hasModel() {
 
 function isOllamaInstalled() {
   try {
-    execSync('ollama --version', { stdio: 'pipe', timeout: 3000 });
+    execSync('ollama --version', { stdio: 'pipe', timeout: 3000, windowsHide: true });
     return true;
   } catch {
     return false;

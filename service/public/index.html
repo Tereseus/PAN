@@ -3725,9 +3725,9 @@ function switchLeftTab(tab) {
     if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
   } else {
     loadChatHistory();
-    // Auto-refresh chat every 10 seconds
+    // Auto-refresh chat every 3 seconds
     if (chatRefreshInterval) clearInterval(chatRefreshInterval);
-    chatRefreshInterval = setInterval(loadChatHistory, 10000);
+    chatRefreshInterval = setInterval(loadChatHistory, 3000);
   }
 }
 
@@ -4218,7 +4218,7 @@ function initTerminal() {
   // Load chat immediately on first terminal page init
   if (currentLeftTab === 'chat') loadChatHistory();
   if (!chatRefreshInterval) {
-    chatRefreshInterval = setInterval(loadChatHistory, 10000);
+    chatRefreshInterval = setInterval(loadChatHistory, 3000);
   }
 
   // Auto-connect: check for existing server sessions, reconnect them as tabs

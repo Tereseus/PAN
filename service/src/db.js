@@ -16,7 +16,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, 'schema.sql');
 
 // Database lives OUTSIDE OneDrive to prevent SQLite WAL corruption from cloud sync.
-const DATA_DIR = join(process.env.LOCALAPPDATA || join(process.env.USERPROFILE || 'C:\\Users\\user', 'AppData', 'Local'), 'PAN', 'data');
+// Dev server sets PAN_DATA_DIR to a separate directory for full isolation.
+import { getDataDir } from './platform.js';
+const DATA_DIR = getDataDir();
 const DB_PATH = join(DATA_DIR, 'pan.db');
 const KEY_PATH = join(DATA_DIR, 'pan.key');
 

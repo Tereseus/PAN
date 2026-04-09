@@ -3,12 +3,11 @@
 // Start/stop via API or voice command, frames extractable for analysis
 
 import { spawn } from 'child_process';
-import { mkdirSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { mkdirSync, existsSync, readdirSync, statSync } from 'fs';
+import { getRecordingsDir } from './platform.js';
 
-const RECORDINGS_DIR = process.env.LOCALAPPDATA
-  ? join(process.env.LOCALAPPDATA, 'PAN', 'recordings')
-  : join(process.env.HOME || '/tmp', '.pan', 'recordings');
+const RECORDINGS_DIR = getRecordingsDir();
 
 let ffmpegProcess = null;
 let currentFile = null;
