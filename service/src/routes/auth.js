@@ -151,6 +151,7 @@ router.post('/logout', (req, res) => {
 });
 
 // GET /api/v1/auth/me — current user info
+// Includes Tier 0 fields: display_nickname, active org slug + name + colors.
 router.get('/me', (req, res) => {
   if (!req.user) {
     return res.status(401).json({ error: 'Not authenticated' });
@@ -161,14 +162,29 @@ router.get('/me', (req, res) => {
 
   const providers = get("SELECT provider FROM user_oauth WHERE user_id = :uid", { ':uid': user.id });
 
+  // Tier 0: resolve the active org. last_active_org_id is set by the migration
+  // to 'org_personal' for existing users; if anything is null, fall back to it.
+  const activeOrgId = user.last_active_org_id || 'org_personal';
+  const org = get("SELECT id, slug, name, color_primary, color_secondary, logo_url FROM orgs WHERE id = :id", { ':id': activeOrgId })
+            || { id: 'org_personal', slug: 'personal', name: 'Personal', color_primary: '#f5c2e7', color_secondary: null, logo_url: null };
+
   res.json({
     id: user.id,
     email: user.email,
     display_name: user.display_name,
+    display_nickname: user.display_nickname || user.display_name,
     avatar_url: user.avatar_url,
     role: user.role,
     created_at: user.created_at,
-    last_login: user.last_login
+    last_login: user.last_login,
+    org: {
+      id: org.id,
+      slug: org.slug,
+      name: org.name,
+      color_primary: org.color_primary,
+      color_secondary: org.color_secondary,
+      logo_url: org.logo_url,
+    },
   });
 });
 

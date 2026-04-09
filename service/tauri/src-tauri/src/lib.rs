@@ -420,10 +420,10 @@ pub fn run() {
                 if event.state() == ShortcutState::Pressed {
                     let win_h = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
                     if shortcut == &win_h {
-                        // Blur active element so webview releases keyboard focus
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.eval("document.activeElement && document.activeElement.blur()");
-                        }
+                        // DO NOT blur. Previously we blurred the active element so the
+                        // webview released keyboard focus, but that left Windows Voice
+                        // Typing with no target for the dictated characters. Keeping the
+                        // textarea focused means voice-typed text lands in the input box.
                         // Unregister, send real Win+H to OS, re-register
                         let handle = app.clone();
                         std::thread::spawn(move || {
@@ -502,8 +502,16 @@ pub fn run() {
                 .build(app)?;
 
             // ---- Register Win+H global shortcut to bypass WebView2 interception ----
+            // Win11 reserves Win+H natively for system voice typing and refuses
+            // to let any app register it as a global hotkey. The registration
+            // call panics on Win11. Make it tolerant: try to register, log on
+            // failure, continue. Voice typing still works via the OS-native
+            // Win+H handler — the dashboard textarea stays focused as the input
+            // sink. Don't `?` the result.
             let win_h = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
-            app.global_shortcut().register(win_h)?;
+            if let Err(e) = app.global_shortcut().register(win_h) {
+                eprintln!("[PAN Shell] Win+H global shortcut not registered (OS owns it): {e}");
+            }
 
             // ---- Start HTTP API so PAN server can call us directly ----
             let handle = app.handle().clone();

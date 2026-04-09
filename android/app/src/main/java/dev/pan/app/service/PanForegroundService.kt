@@ -48,6 +48,9 @@ class PanForegroundService : Service() {
         private const val TAG = "PanService"
         val lastAction = MutableStateFlow("")
         val micEnabled = MutableStateFlow(false) // Start muted — user unmutes when ready
+        // STT engine status surface — read by MainViewModel for the UI badge.
+        // Updated by the streaming STT loop with strings like "idle" / "listening" / "error: ...".
+        val sttStatus = MutableStateFlow("idle")
     }
 
     @Inject lateinit var serverClient: PanServerClient

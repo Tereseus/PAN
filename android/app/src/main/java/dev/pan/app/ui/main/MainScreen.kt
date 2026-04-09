@@ -56,12 +56,25 @@ fun MainScreen(
     val remoteAccessStatus by viewModel.remoteAccessStatus.collectAsState()
     val remoteAccessIp by viewModel.remoteAccessIp.collectAsState()
     val remoteAccessOrg by viewModel.remoteAccessOrg.collectAsState()
+    val displayNickname by viewModel.displayNickname.collectAsState()
+    val activeOrgName by viewModel.activeOrgName.collectAsState()
     var targetExpanded by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("ΠΑΝ") },
+                title = {
+                    // Tier 0 Phase 5: Π · <orgName> · <displayNickname>
+                    // Π is the universal brand mark; org tells you WHERE you are;
+                    // nickname tells you WHO. Middle-dot separators look more
+                    // designed than dashes or @ signs.
+                    val parts = buildList {
+                        add("Π")
+                        if (activeOrgName.isNotBlank()) add(activeOrgName)
+                        if (displayNickname.isNotBlank()) add(displayNickname)
+                    }
+                    Text(parts.joinToString(" · "))
+                },
                 actions = {
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -143,12 +156,13 @@ fun MainScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Connection", style = MaterialTheme.typography.titleMedium)
-                    // Server / PAN Hub
+                    // Server / org hub — labeled by the active org name (Tier 0 Phase 5)
+                    val hubLabel = if (activeOrgName.isNotBlank()) "$activeOrgName Hub" else "PAN Hub"
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusDot(isActive = isServerConnected)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            if (isServerConnected) "Connected - PAN Hub" else "Disconnected - PAN Hub",
+                            if (isServerConnected) "Connected — $hubLabel" else "Disconnected — $hubLabel",
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (isServerConnected) MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.error
@@ -180,11 +194,9 @@ fun MainScreen(
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    if (remoteAccessIp.isNotEmpty()) {
-                        Text("Tailscale IP: $remoteAccessIp",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    // Tailscale IP intentionally hidden from the main view per
+                    // Tier 0 Phase 5 design. It's still visible from the
+                    // Settings → Diagnostics screen for troubleshooting.
                 }
             }
 

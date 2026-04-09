@@ -443,7 +443,19 @@ function logEvent(sessionId, eventType, data, userId = null) {
     );
   }
   indexEventFTS(eventId, eventType, dataStr);
+  // Hybrid memory search: also queue this event for vector embedding so it
+  // becomes semantically searchable. Lazy import to avoid a circular ESM
+  // dependency between db.js and memory-search.js (which imports db-registry,
+  // which imports db.js). The dynamic import is cached after first call.
+  import('./memory-search.js').then(m => m.indexEventForSearch('main', eventId)).catch(() => {});
   return eventId;
 }
 
-export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, anonymize, anonymizeEventData };
+// Helper used by extractEventText so scoped writes can produce the same
+// FTS5 text content as main writes. Kept here so external scope-aware
+// callers (events.js) can reuse it without duplication.
+function _extractEventText(eventType, dataStr) {
+  return extractEventText(eventType, dataStr);
+}
+
+export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, anonymize, anonymizeEventData, _extractEventText };

@@ -2,16 +2,19 @@
 :: PAN Launcher — starts server and opens dashboard
 :: Double-click this or type "PAN" from Start Menu
 
+set "PAN_SHELL=%~dp0service\tauri\src-tauri\target\release\pan-shell.exe"
+set "PAN_SHELL_WD=%~dp0service\tauri"
+
 cd /d "%~dp0service"
 
-:: Check if PAN is already running
+:: Check if PAN server is already running
 curl -s -o NUL -w "%%{http_code}" http://127.0.0.1:7777/health > "%TEMP%\pan-health.txt" 2>NUL
 set /p HEALTH=<"%TEMP%\pan-health.txt"
 del "%TEMP%\pan-health.txt" 2>NUL
 
 if "%HEALTH%"=="200" (
-    echo [PAN] Already running — opening dashboard
-    start "" "%~dp0service\node_modules\electron\dist\electron.exe" "%~dp0service\electron\main.cjs"
+    echo [PAN] Server already running — opening dashboard
+    start "" /D "%PAN_SHELL_WD%" "%PAN_SHELL%"
     exit /b 0
 )
 
@@ -33,4 +36,4 @@ goto WAIT
 
 :READY
 echo [PAN] Server running — opening dashboard
-start "" "%~dp0service\node_modules\electron\dist\electron.exe" "%~dp0service\electron\main.cjs"
+start "" /D "%PAN_SHELL_WD%" "%PAN_SHELL%"
