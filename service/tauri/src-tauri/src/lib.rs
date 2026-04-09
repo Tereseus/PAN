@@ -619,11 +619,12 @@ pub fn run() {
         .setup(move |app| {
             // ---- System Tray ----
             let show_i = MenuItem::with_id(app, "show", "Show Dashboard", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "Quit PAN Shell", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit PAN", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
 
             let _tray = TrayIconBuilder::new()
-                .tooltip("PAN Shell")
+                .icon(app.default_window_icon().cloned().unwrap())
+                .tooltip("PAN")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {

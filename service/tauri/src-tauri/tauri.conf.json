@@ -21,11 +21,6 @@
     ],
     "security": {
       "csp": null
-    },
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "tooltip": "PAN Shell",
-      "id": "main"
     }
   },
   "bundle": {
