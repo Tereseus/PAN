@@ -100,18 +100,6 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**Claude** (2026-04-05 12:29:02): Killed. Now double-click `Voice.ahk` on your Desktop, or type `! start "" "C:/Users/tzuri/Desktop/PAN/service/bin/AutoHotkey64.exe" "C:/Users/tzuri/Desktop/Voice.ahk"` in this terminal.
-**User** (2026-04-05 14:15:59): <task-notification>
-<task-id>bgpk4iskl</task-id>
-<tool-use-id>toolu_01JZCisyxjbCh3kemF8C2V1V</tool-use-id>
-<output-file>C:\WINDOWS\TEMP\claude\C--Users-tzuri-Desktop-PAN\5ba81714-3221-4087-a880-27118e
-**User** (2026-04-06 12:36:30): your last git merge also caused this problem
-
-❯ pan dashboard is not loading just a black page
-
-● Let me check the server and dashboard status.
-
-● Bash(powershell -Command "Get-Process | Where-Object 
 **User** (2026-04-06 12:37:09): ❯ pan dashboard is not loading just a black page
 
 ● Let me check the server and dashboard status.
@@ -174,6 +162,21 @@ cmd.
 Claude
 14:03
 Claude$ Now restarting via the proper MC
+**Claude** (2026-04-09 15:14:46): **Root cause found and fixed.** The watchers Map was keyed by raw cwd strings — the terminal registered with `C:/Users/tzuri/Desktop/PAN` (forward slashes) but the hooks called `nudgeTranscript` with `C:\Users\tzuri\Desktop\PAN` (backslashes). Different Map keys = nudge silently did nothing.
+
+Added 
+**User** (2026-04-09 15:16:10): You are PAN's memory consolidation system. Extract structured memories from these recent events.
+
+EVENTS:
+[2026-04-09 15:03:57] Claude: Server starts clean, no import errors. Here's the fix:
+
+**Root c
+**Claude** (2026-04-09 15:16:24): ```json
+{
+  "episodes": [
+    {
+      "summary": "Transcript visibility bug — path separator mismatch in watchers Map",
+      "detail": "Messages were written to JSONL correctly but not appearing in dashboard terminal. Root cause: watchers Map keyed by raw cwd strings with inconsistent path separato
 
 # PAN State — Updated 2026-04-09
 
@@ -241,8 +244,7 @@ Claude$ Now restarting via the proper MC
 - [2026-04-09 11:43:44] Session continuity (PAN Remembers) working correctly: After server restart, user confirmed that memory system survived and provided proper context briefing about what was being worked on.
 - [2026-04-09 12:09:33] User requested full Carrier/Lifeboat/Craft plan visibility [partial]: User asked to see 'the whole plan and where we are now' for the 7-phase hot-restart architecture. High-priority context request to review multi-phase system design.
 - [2026-04-09 13:52:43] Transcript file content doesn't match terminal display [failure]: User discovered critical mismatch: JSONL session file content differs from what's shown in the terminal. Messages are being written to disk but not appearing in terminal view, or vice versa. Restart m
-- [2026-04-09 12:58:06] Sent message missing from transcript after restart [failure]: User reported test message sent during session is not showing up in the transcript. Both chat input and transcript render read from the same session file, so the issue is either: (1) message not writt
-- [2026-04-09 
+- [2026-04-09 12:58:06] Sent message missing from transcript after restart [failure]
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

@@ -14,6 +14,13 @@ import { homedir } from 'os';
 // cwd → { watcher, subscribers: Set<callback>, lastEmitted: Map<filepath, mtime> }
 const watchers = new Map();
 
+// Normalize cwd so backslash and forward-slash variants resolve to the same Map key.
+// Without this, hooks (which send backslash cwds from Claude Code on Windows) can't
+// find the watcher registered by the terminal (which uses forward-slash cwds).
+function normalizeCwd(cwd) {
+  return cwd.replace(/\\/g, '/').replace(/\/$/, '');
+}
+
 // Convert a project cwd to the Claude Code projects directory format.
 // Claude Code stores transcripts under ~/.claude/projects/<slug>/<sessionId>.jsonl
 // where the slug is the cwd with separators replaced by dashes.
@@ -28,6 +35,7 @@ function cwdToClaudeDir(cwd) {
 // persist across server restarts and appear in the transcript view permanently.
 // Event format: { type: 'system', event: 'pty_exit'|'restart'|'disconnect'|..., text: '...', timestamp: ISO }
 export function writeSystemEvent(cwd, event, text, meta = {}) {
+  cwd = normalizeCwd(cwd);
   const dir = cwdToClaudeDir(cwd);
   if (!existsSync(dir)) return false;
   try {
@@ -161,6 +169,7 @@ function readAllForCwd(cwd) {
 // current state on subscribe, then on every file change in that project's dir.
 export function subscribeToTranscript(cwd, callback) {
   if (!cwd || !callback) return () => {};
+  cwd = normalizeCwd(cwd);
   let entry = watchers.get(cwd);
   if (!entry) {
     const dir = cwdToClaudeDir(cwd);
@@ -220,7 +229,7 @@ export function subscribeToTranscript(cwd, callback) {
       } catch {}
     }, 500);
 
-    entry = { watcher, poller, subscribers: new Set(), dir };
+    entry = { watcher, poller, subscribers: new Set(), dir, emit };
     watchers.set(cwd, entry);
   }
   entry.subscribers.add(callback);
@@ -241,4 +250,18 @@ export function subscribeToTranscript(cwd, callback) {
       watchers.delete(cwd);
     }
   };
+}
+
+// Force a re-read and push of transcript data for a given cwd.
+// Called by hooks when we KNOW new data exists (UserPromptSubmit, AssistantMessage, Stop)
+// instead of waiting for the file poller to detect the change. This eliminates the
+// race condition where Windows file metadata caching prevents the poller from seeing
+// newly-written JSONL data while Claude holds the file handle open.
+export function nudgeTranscript(cwd) {
+  if (!cwd) return;
+  cwd = normalizeCwd(cwd);
+  const entry = watchers.get(cwd);
+  if (!entry) return;
+  // Use the watcher's emit (which debounces and reads fresh data)
+  if (entry.emit) entry.emit();
 }
