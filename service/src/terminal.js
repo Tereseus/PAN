@@ -68,6 +68,69 @@ function getProcessRegistry() {
   return result;
 }
 
+// Discover the LLM CLI process running inside a PTY and register it.
+// Walks the process tree down from the bash PID to find node/python processes
+// running CLI tools (Claude, OpenCode, any LLM CLI). LLM-agnostic.
+async function discoverAndRegisterCliProcess(session, sessionId, bashPid) {
+  try {
+    const { execSync } = await import('child_process');
+    // Get all descendants of the bash process
+    const out = execSync(
+      `wmic process get ProcessId,ParentProcessId,CommandLine /FORMAT:CSV`,
+      { encoding: 'utf-8', timeout: 5000, windowsHide: true }
+    ).trim();
+
+    // Build parent→children map from all processes
+    const lines = out.split('\n').filter(l => l.trim() && !l.startsWith('Node,'));
+    const procs = [];
+    for (const line of lines) {
+      const cols = line.trim().split(',');
+      if (cols.length < 3) continue;
+      const cmd = cols.slice(1, -2).join(','); // CommandLine may contain commas
+      const ppid = parseInt(cols[cols.length - 2], 10);
+      const pid = parseInt(cols[cols.length - 1], 10);
+      if (pid && ppid) procs.push({ pid, ppid, cmd });
+    }
+
+    // BFS from bash PID to find all descendants
+    const descendants = new Set();
+    const queue = [bashPid];
+    while (queue.length) {
+      const parent = queue.shift();
+      for (const p of procs) {
+        if (p.ppid === parent && !descendants.has(p.pid)) {
+          descendants.add(p.pid);
+          queue.push(p.pid);
+        }
+      }
+    }
+
+    // Find the CLI process among descendants — look for known LLM CLI patterns
+    const cliPatterns = ['claude-code/cli.js', 'claude-code\\cli.js', 'opencode', 'aider', 'continue'];
+    for (const p of procs) {
+      if (!descendants.has(p.pid)) continue;
+      const matchedPattern = cliPatterns.find(pat => p.cmd.includes(pat));
+      if (matchedPattern) {
+        session._claudeCliPid = p.pid;
+        const type = matchedPattern.includes('claude') ? 'claude_cli' : 'llm_cli';
+        registerProcess({ pid: p.pid, type, sessionId, command: p.cmd.slice(0, 200), parentPid: bashPid });
+        return;
+      }
+    }
+    // Fallback: register the first node.exe descendant that isn't the bash itself
+    for (const p of procs) {
+      if (!descendants.has(p.pid)) continue;
+      if (p.cmd.includes('node') && !p.cmd.includes('bash')) {
+        session._claudeCliPid = p.pid;
+        registerProcess({ pid: p.pid, type: 'llm_cli', sessionId, command: p.cmd.slice(0, 200), parentPid: bashPid });
+        return;
+      }
+    }
+  } catch (e) {
+    console.error(`[PAN Terminal] Failed to discover CLI PID:`, e.message);
+  }
+}
+
 // ==================== Reconnect Token Registry ====================
 // Phase 3: tokens survive server restarts via disk persistence.
 // token → { sessionId, project, cwd, claudeSessionIds, issuedAt }
@@ -290,6 +353,10 @@ async function startTerminalServer(httpServer) {
           if (!session.claudeRunning && data.includes('\u276F')) {
             session.claudeRunning = true;
             session.claudeExited = false;
+            // Discover and register the LLM CLI PID running inside this PTY
+            if (!session._claudeCliPid && process.platform === 'win32') {
+              discoverAndRegisterCliProcess(session, sessionId, ptyProcess.pid);
+            }
           }
           // Detect Claude CLI exit: bash prompt returns after Claude was running.
           // Bash prompt pattern: ends with "$ " after MINGW/user@ prefix, or just "$ ".
@@ -341,12 +408,12 @@ async function startTerminalServer(httpServer) {
 
         ptyProcess.onExit(({ exitCode }) => {
           const uptimeMs = Date.now() - (session.createdAt || Date.now());
-          // Log to events DB so the crash is permanent + recoverable after refresh.
-          // This is the signal the dashboard renders as a red banner.
+          // Log to events DB so the exit is permanent + recoverable after refresh.
+          const planned = !!session._plannedShutdown;
           try {
             insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
               ':sid': sessionId,
-              ':type': 'PtyExit',
+              ':type': planned ? 'PtyShutdown' : 'PtyExit',
               ':data': JSON.stringify({
                 session_id: sessionId,
                 project: session.project,
@@ -354,25 +421,30 @@ async function startTerminalServer(httpServer) {
                 exit_code: exitCode,
                 uptime_ms: uptimeMs,
                 pid: ptyProcess.pid,
+                planned,
                 timestamp: Date.now(),
               }),
             });
           } catch (err) {
             console.error(`[PAN Terminal] Failed to log PtyExit:`, err.message);
           }
-          console.log(`[PAN Terminal] PTY exited: ${sessionId} code=${exitCode} uptime=${Math.round(uptimeMs/1000)}s`);
+          console.log(`[PAN Terminal] PTY ${planned ? 'shutdown' : 'exited'}: ${sessionId} code=${exitCode} uptime=${Math.round(uptimeMs/1000)}s`);
           // Deregister PTY and any child Claude CLI from process registry
           deregisterProcess(ptyProcess.pid, exitCode);
           if (session._claudeCliPid) deregisterProcess(session._claudeCliPid, exitCode);
-          // Fire a persistent alert so the user knows Claude died
-          try {
-            createAlert({
-              alert_type: 'pty_crash',
-              severity: 'critical',
-              title: `PTY crashed: ${session.project || sessionId}`,
-              detail: `Exit code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s, PID ${ptyProcess.pid}`,
-            });
-          } catch {}
+          // Fire a persistent alert only for unexpected crashes, not planned shutdowns
+          if (!session._plannedShutdown) {
+            try {
+              createAlert({
+                alert_type: 'pty_crash',
+                severity: 'critical',
+                title: `PTY crashed: ${session.project || sessionId}`,
+                detail: `Exit code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s, PID ${ptyProcess.pid}`,
+              });
+            } catch {}
+          } else {
+            console.log(`[PAN Terminal] Planned shutdown — skipping crash alert for ${sessionId}`);
+          }
           // Persist PTY exit to JSONL transcript so it survives server restarts
           writeSystemEvent(session.cwd, 'pty_exit', `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`, {
             exit_code: exitCode,
@@ -534,7 +606,7 @@ async function startTerminalServer(httpServer) {
             break;
 
           case 'set_claude_sessions':
-            // Client discovered new Claude session IDs — update transcript filter + token
+            // Client discovered new Claude session IDs — update Claude transcript filter + token
             if (Array.isArray(parsed.sessions)) {
               if (ws._transcriptSubscription) {
                 ws._transcriptSubscription.setClaudeSessions(parsed.sessions);
@@ -753,6 +825,7 @@ async function killAllSessions() {
       console.error(`[PAN Terminal] Failed to flush log for ${id}:`, err.message);
     }
     try {
+      session._plannedShutdown = true;  // suppress crash alert in onExit handler
       session.pty?.kill();
       n++;
     } catch {}
@@ -765,6 +838,7 @@ async function killAllSessions() {
 function killSession(sessionId) {
   const session = sessions.get(sessionId);
   if (session) {
+    session._plannedShutdown = true;  // suppress crash alert in onExit handler
     session.pty.kill();
     sessions.delete(sessionId);
     return true;

@@ -53,6 +53,36 @@ const IS_DEV = process.env.PAN_DEV === '1' || process.env.PAN_DEV === 'true';
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// ==================== API Performance Tracking ====================
+// Tracks request latency per route for the /dashboard/api/perf endpoint.
+const _perfStats = { requests: 0, slowRequests: 0, totalMs: 0, slowest: [] };
+const _perfByRoute = new Map(); // route → { count, totalMs, maxMs }
+app.use((req, res, next) => {
+  const start = performance.now();
+  const original = res.end;
+  res.end = function (...args) {
+    const ms = +(performance.now() - start).toFixed(1);
+    const route = req.route?.path || req.path;
+    _perfStats.requests++;
+    _perfStats.totalMs += ms;
+    if (ms > 2000) _perfStats.slowRequests++;
+    // Track per-route stats
+    let r = _perfByRoute.get(route);
+    if (!r) { r = { count: 0, totalMs: 0, maxMs: 0 }; _perfByRoute.set(route, r); }
+    r.count++;
+    r.totalMs += ms;
+    if (ms > r.maxMs) r.maxMs = ms;
+    // Keep top 10 slowest requests (rolling)
+    if (_perfStats.slowest.length < 10 || ms > _perfStats.slowest[_perfStats.slowest.length - 1].ms) {
+      _perfStats.slowest.push({ route, ms, ts: Date.now() });
+      _perfStats.slowest.sort((a, b) => b.ms - a.ms);
+      if (_perfStats.slowest.length > 10) _perfStats.slowest.length = 10;
+    }
+    return original.apply(this, args);
+  };
+  next();
+});
+
 // Auto-register/update phone device from any route (phone sends X-Device-Name header)
 app.use((req, res, next) => {
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
@@ -200,6 +230,38 @@ const PAN_SIGNATURES = [
   { pattern: 'vite', name: 'Vite Dev', vital: false },
   { pattern: 'wrapper.js', name: 'Service Wrapper', vital: true },
 ];
+
+// Performance metrics endpoint — API latency, heap, DB, connections
+app.get('/dashboard/api/perf', async (req, res) => {
+  const mem = process.memoryUsage();
+  const avgMs = _perfStats.requests ? +( _perfStats.totalMs / _perfStats.requests).toFixed(1) : 0;
+  // Top 10 slowest routes by max latency
+  const topRoutes = [..._perfByRoute.entries()]
+    .map(([route, s]) => ({ route, count: s.count, avgMs: +(s.totalMs / s.count).toFixed(1), maxMs: +s.maxMs.toFixed(1) }))
+    .sort((a, b) => b.maxMs - a.maxMs)
+    .slice(0, 10);
+  // WebSocket connection count
+  let wsConnections = 0;
+  try {
+    const sessions = await listSessions();
+    wsConnections = sessions.reduce((sum, s) => sum + (s.clients || 0), 0);
+  } catch {}
+  res.json({
+    total_requests: _perfStats.requests,
+    slow_requests: _perfStats.slowRequests,
+    avg_ms: avgMs,
+    slowest: _perfStats.slowest,
+    top_routes: topRoutes,
+    heap_mb: Math.round(mem.heapUsed / 1048576),
+    heap_total_mb: Math.round(mem.heapTotal / 1048576),
+    rss_mb: Math.round(mem.rss / 1048576),
+    external_mb: Math.round((mem.external || 0) / 1048576),
+    ws_connections: wsConnections,
+    uptime_s: Math.round(process.uptime()),
+    event_loop_lag_ms: null, // placeholder for future event loop monitoring
+    scanned_at: new Date().toISOString(),
+  });
+});
 
 app.get('/dashboard/api/processes', (req, res) => {
   // Single source of truth: the steward service registry. Each registered
@@ -1800,7 +1862,7 @@ app.get('/api/v1/library', (req, res) => {
         const rel = baseRel ? join(baseRel, e.name) : e.name;
         if (e.isDirectory()) {
           walk(full, type, rel);
-        } else if (/\.(md|pan)$/i.test(e.name) || e.name === '.pan') {
+        } else if (/\.(md|pan|tex)$/i.test(e.name) || e.name === '.pan') {
           let stat; try { stat = statSync(full); } catch { continue; }
           let snippet = '';
           try {
@@ -1810,7 +1872,7 @@ app.get('/api/v1/library', (req, res) => {
           } catch {}
           items.push({
             type,
-            title: e.name.replace(/\.(md|pan)$/i, '').replace(/[-_]/g, ' '),
+            title: e.name.replace(/\.(md|pan|tex)$/i, '').replace(/[-_]/g, ' '),
             path: full.replace(/\\/g, '/'),
             rel: rel.replace(/\\/g, '/'),
             modified: stat.mtimeMs,

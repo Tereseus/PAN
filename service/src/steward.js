@@ -23,7 +23,7 @@ import { startStackScanner, stopStackScanner } from './stack-scanner.js';
 import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
 import { consolidate as consolidateMemory } from './memory/consolidation.js';
 import { evolve as runEvolution } from './evolution/engine.js';
-import { listSessions, sendToSession, broadcastToSession, broadcastNotification } from './terminal-bridge.js';
+import { listSessions, sendToSession, broadcastToSession, broadcastNotification, getProcessRegistry } from './terminal-bridge.js';
 import { createAlert } from './routes/dashboard.js';
 import { hostname } from 'os';
 import http from 'http';
@@ -744,6 +744,16 @@ $result | ConvertTo-Json -Compress -Depth 3`;
       }
     }
 
+    // Check process registry for known PIDs (LLM-agnostic — covers Claude, OpenCode, etc.)
+    const registryPids = new Set();
+    try {
+      const registry = await getProcessRegistry();
+      for (const entry of registry) {
+        if (entry.alive) registryPids.add(entry.pid);
+      }
+    } catch {}
+
+    // Walk UP from pid through living ancestors (fallback if registry misses it)
     function hasTrackedAncestor(pid) {
       let current = pid;
       for (let i = 0; i < 12; i++) {
@@ -766,8 +776,9 @@ $result | ConvertTo-Json -Compress -Depth 3`;
       const startedAt = m ? parseInt(m[1], 10) : 0;
       const ageMs = startedAt ? (now - startedAt) : 0;
 
-      if (ourPtyPids.has(ppid)) continue;
-      if (hasTrackedAncestor(pid)) continue;
+      if (registryPids.has(pid)) continue;      // in process registry — it's ours
+      if (ourPtyPids.has(ppid)) continue;        // direct child of a PTY
+      if (hasTrackedAncestor(pid)) continue;     // ancestor walk (fallback)
       if (ageMs < MIN_AGE_MS) continue;
 
       orphans.push({ pid, ppid, ageMin: Math.round(ageMs / 60000) });
@@ -779,7 +790,7 @@ $result | ConvertTo-Json -Compress -Depth 3`;
       logServiceEvent('orphan-detection', 'orphans_detected', { count: orphans.length, orphans });
 
       // Only create a new alert if there isn't already an open one for orphan_processes
-      const existingOpen = get("SELECT id FROM alerts WHERE alert_type = 'orphan_processes' AND status = 'open' LIMIT 1");
+      const existingOpen = get("SELECT id FROM alerts WHERE alert_type = 'orphan_processes' AND status IN ('open', 'acknowledged') LIMIT 1");
       if (!existingOpen) {
         createAlert({
           alert_type: 'orphan_processes',
