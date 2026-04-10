@@ -31,6 +31,14 @@
 	// Users
 	let usersData = $state([]);
 
+	// Alerts
+	let alertsData = $state([]);
+	let alertTypes = $state([]);
+	let alertFilterType = $state('all');
+	let alertFilterStatus = $state('open');
+	let alertOpenCount = $state(0);
+	let alertFlash = $state(false); // true when new alert arrives, flashes the indicator
+
 	// Tests
 	let testSuites = $state([]);
 	let selectedSuite = $state('');
@@ -108,16 +116,18 @@
 		const lines = html.split('\n');
 		let tableStart = -1;
 		for (let i = 0; i <= lines.length; i++) {
-			const isTableLine = i < lines.length && /^\|.+\|$/.test(lines[i].trim());
+			const trimmed = i < lines.length ? lines[i].trim() : '';
+			const isTableLine = trimmed.startsWith('|') && trimmed.includes('|', 1);
 			if (isTableLine && tableStart === -1) tableStart = i;
 			if (!isTableLine && tableStart !== -1) {
 				const tableLines = lines.slice(tableStart, i).map(l => l.trim());
 				if (tableLines.length >= 2) {
-					const isSep = /^[\s\-:|]+$/.test(tableLines[1].replace(/\|/g, '|').split('|').slice(1, -1).join(''));
+					const sepCells = tableLines[1].split('|').slice(1).map(c => c.trim()).filter(c => c);
+					const isSep = sepCells.length > 0 && sepCells.every(c => /^[\s\-:]+$/.test(c));
 					const dataRows = isSep ? [tableLines[0], ...tableLines.slice(2)] : tableLines;
 					let table = '<table class="md-table">';
 					dataRows.forEach((row, ri) => {
-						const cells = row.split('|').slice(1, -1).map(c => c.trim());
+						const cells = row.split('|').slice(1).map(c => c.trim()).filter((c, ci, arr) => ci < arr.length - 1 || c !== '');
 						const tag = (ri === 0 && isSep) ? 'th' : 'td';
 						table += '<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>';
 					});
@@ -454,14 +464,15 @@
 			return;
 		}
 
-		// Check if tab already exists for this project (match by project name, not session ID)
+		// If a tab already exists for this project, switch to it.
+		// Use the + button or newTerminalTab() to create additional tabs for the same project.
 		const existing = tabs.find(t => t.project === projectName);
 		if (existing) {
 			switchToTab(existing.id);
 			return;
 		}
 
-		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
+		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
 		await createTab(sessionId, projectName, cwd, projectId, false, null);
 		if (projectId) loadAllProjectTabs(projectId);
 	}
@@ -518,6 +529,7 @@
 			host: '',
 			_closing: false,
 			claudeSessionIds: savedClaudeSessionIds || [],
+			reconnectToken: sessionStorage.getItem('pan_reconnect_token:' + sessionId) || null,
 			userScrolledUp: false,
 			logLines: [],       // Append-only log from server (immune to corruption)
 		};
@@ -555,7 +567,8 @@
 			const containerWidth = termContainerEl ? termContainerEl.clientWidth - 24 : 900; // 24px padding
 			const calcCols = Math.max(80, Math.floor(containerWidth / charWidth));
 			const calcRows = termContainerEl ? Math.max(20, Math.floor(termContainerEl.clientHeight / 21)) : 30; // line-height ~21px
-			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}`);
+			const csidsParam = tabData.claudeSessionIds.length > 0 ? '&claude_sessions=' + encodeURIComponent(JSON.stringify(tabData.claudeSessionIds)) : '';
+			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}${csidsParam}`);
 
 			const ws = new WebSocket(wsUrlStr);
 			tabData.ws = ws;
@@ -725,6 +738,20 @@
 						case 'info':
 							tabData.host = msg.host || '';
 							if (msg.claudeLaunched) tabData.claudeStarted = true;
+							// Phase 3: Store reconnect token for seamless reconnection
+							if (msg.reconnectToken) {
+								tabData.reconnectToken = msg.reconnectToken;
+								sessionStorage.setItem('pan_reconnect_token:' + sessionId, msg.reconnectToken);
+							}
+							if (msg.restoredFromToken) {
+								console.log(`[PAN] Session restored from reconnect token: ${sessionId}`);
+							}
+							if (msg.tokenExpired) {
+								console.warn(`[PAN] Reconnect token expired — session context may be incomplete`);
+								tabData.systemMessages = [...(tabData.systemMessages || []),
+									{ role: 'system', type: 'banner', text: 'Reconnect token expired — started fresh session', ts: new Date().toISOString() }
+								];
+							}
 							if (activeTabId === tabId) {
 								hostLabel = `${msg.host} \u2014 ${msg.project || 'shell'}`;
 							}
@@ -759,6 +786,10 @@
 									if (activeTab) {
 										activeTab.claudeSessionIds = [...new Set([...activeTab.claudeSessionIds, updateSid])];
 										tabs = [...tabs];
+										// Tell the backend about the new Claude session so it filters transcripts correctly
+										if (activeTab.ws && activeTab.ws.readyState === 1) {
+											activeTab.ws.send(JSON.stringify({ type: 'set_claude_sessions', sessions: activeTab.claudeSessionIds }));
+										}
 									}
 								}
 							}
@@ -774,8 +805,33 @@
 						case 'server_restarting':
 							serverRestarting = true;
 							reconnectAttempts = 0;
+							// Phase 3: Capture latest token for reconnection
+							if (msg.reconnectToken) {
+								tabData.reconnectToken = msg.reconnectToken;
+								sessionStorage.setItem('pan_reconnect_token:' + sessionId, msg.reconnectToken);
+							}
 							scrollbackDiv.innerHTML += '\n<span style="color:#f9e2af">[Server restarting \u2014 will reconnect automatically...]</span>';
 							break;
+						case 'widget_update': {
+							// Server pushed a change notification — refetch the affected widget
+							const w = msg.widget;
+							if (w === 'alerts') {
+								loadAlertCount();
+								if (leftSection === 'alerts' || rightSection === 'alerts') loadAlerts();
+							} else if (w === 'services') {
+								// Services data is global (devices widget also reads it)
+								api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
+							} else if (w === 'approvals') {
+								loadApprovals();
+							} else if (w === 'library') {
+								if (leftSection === 'library' || rightSection === 'library') loadLibrary();
+							} else if (w === 'users') {
+								if (leftSection === 'users' || rightSection === 'users') loadUsers();
+							} else if (w === 'tests') {
+								if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
+							}
+							break;
+						}
 						case 'voice_toggle':
 							// Only handle ONCE — use a global flag to prevent multiple tabs from recording
 							if (!window._panVoiceHandled) {
@@ -839,7 +895,10 @@
 					if (tabData._closing) return;
 					if (tabData.ws && tabData.ws.readyState <= 1) return;
 
-					const newWs = new WebSocket(wsUrlStr);
+					// Phase 3: Include reconnect token if available
+					const savedToken = tabData.reconnectToken || sessionStorage.getItem('pan_reconnect_token:' + sessionId);
+					const tokenParam = savedToken ? '&token=' + encodeURIComponent(savedToken) : '';
+					const newWs = new WebSocket(wsUrlStr + tokenParam);
 					newWs.onopen = () => {
 						const wasServerRestart = serverRestarting;
 						reconnectAttempts = 0;
@@ -2533,6 +2592,49 @@
 		} catch {}
 	}
 
+	async function loadAlerts() {
+		try {
+			const params = new URLSearchParams();
+			if (alertFilterStatus !== 'all') params.set('status', alertFilterStatus);
+			if (alertFilterType !== 'all') params.set('type', alertFilterType);
+			params.set('limit', '50');
+			const resp = await api(`/dashboard/api/alerts?${params}`);
+			alertsData = Array.isArray(resp) ? resp : [];
+		} catch { alertsData = []; }
+	}
+
+	async function loadAlertCount() {
+		try {
+			const resp = await api('/dashboard/api/alerts/count');
+			const newCount = resp?.count || 0;
+			if (newCount > alertOpenCount && alertOpenCount >= 0) {
+				// New alert arrived — flash the indicator
+				alertFlash = true;
+				setTimeout(() => { alertFlash = false; }, 3000);
+			}
+			alertOpenCount = newCount;
+		} catch {}
+	}
+
+	async function loadAlertTypes() {
+		try {
+			const resp = await api('/dashboard/api/alerts/types');
+			alertTypes = Array.isArray(resp) ? resp : [];
+		} catch { alertTypes = []; }
+	}
+
+	async function updateAlertStatus(alertId, status, resolution = '') {
+		try {
+			await fetch(`/dashboard/api/alerts/${alertId}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ status, resolution, resolved_by: 'user' })
+			});
+			await loadAlerts();
+			await loadAlertCount();
+		} catch {}
+	}
+
 	async function loadApprovals() {
 		try {
 			const resp = await fetch('/api/v1/terminal/permissions');
@@ -2947,9 +3049,12 @@
 		loadVoiceSettings();
 		loadTestSuites();
 
-		// Load services and approvals immediately
+		// Load services, approvals, alerts immediately
 		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 		loadApprovals();
+		loadAlertCount();
+		loadAlerts();
+		loadAlertTypes();
 
 		// Start chat refresh
 		chatRefreshInterval = setInterval(() => {
@@ -2961,6 +3066,7 @@
 			api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 		}, 30000);
 		const approvalInterval = setInterval(loadApprovals, 5000);
+		const alertCountInterval = setInterval(loadAlertCount, 10000); // poll alert count every 10s
 
 		// Poll live PTY status for the active tab every 1.5s. The server now
 		// returns a real `thinking` flag derived from input-vs-output recency,
@@ -4039,7 +4145,8 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
@@ -4059,9 +4166,97 @@
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
 			</select>
+			{#if alertOpenCount > 0 && rightSection !== 'alerts'}
+				<button class="alert-indicator" class:flash={alertFlash} onclick={() => { rightSection = 'alerts'; loadAlerts(); loadAlertTypes(); }} title="{alertOpenCount} open alert(s)">
+					{alertOpenCount}
+				</button>
+			{/if}
 		</div>
 		<div class="right-content">
-			{#if rightSection === 'services'}
+			{#if rightSection === 'alerts'}
+				<div class="alerts-panel">
+					<div class="alerts-filters">
+						<select class="alert-filter-select" bind:value={alertFilterStatus} onchange={loadAlerts}>
+							<option value="open">Open</option>
+							<option value="acknowledged">Acknowledged</option>
+							<option value="resolved">Resolved</option>
+							<option value="dismissed">Dismissed</option>
+							<option value="all">All</option>
+						</select>
+						<select class="alert-filter-select" bind:value={alertFilterType} onchange={loadAlerts}>
+							<option value="all">All Types</option>
+							{#each alertTypes as t}
+								<option value={t.id}>{t.label}</option>
+							{/each}
+						</select>
+					</div>
+					{#if alertsData.length === 0}
+						<div class="empty-state">No {alertFilterStatus === 'all' ? '' : alertFilterStatus} alerts</div>
+					{:else}
+						{#each alertsData as alert}
+							<div class="alert-card" class:critical={alert.severity === 'critical'} class:warning={alert.severity === 'warning'} class:info={alert.severity === 'info'}>
+								<div class="alert-header">
+									<span class="alert-severity-dot {alert.severity}"></span>
+									<span class="alert-type-badge">{alert.alert_type.replace(/_/g, ' ')}</span>
+									<span class="alert-time">{new Date(alert.created_at).toLocaleTimeString()}</span>
+								</div>
+								<div class="alert-title">{alert.title}</div>
+								{#if alert.detail}
+									{@const parsed = (() => { try { return JSON.parse(alert.detail); } catch { return null; } })()}
+									{#if parsed}
+										<div class="alert-detail">
+											{#if parsed.orphans}
+												{#each parsed.orphans as o}
+													<div class="alert-detail-line">PID {o.pid} — {o.ageMin}min old</div>
+												{/each}
+											{/if}
+											{#if parsed.hint}
+												<div class="alert-hint">{parsed.hint}</div>
+											{/if}
+											{#if parsed.message}
+												<div class="alert-detail-line">{parsed.message}</div>
+											{/if}
+											{#if parsed.stack}
+												<details class="alert-stack"><summary>Stack trace</summary><pre>{parsed.stack}</pre></details>
+											{/if}
+										</div>
+									{:else}
+										<div class="alert-detail"><div class="alert-detail-line">{alert.detail}</div></div>
+									{/if}
+								{/if}
+								{#if alert.resolution}
+									<div class="alert-resolution">Resolution: {alert.resolution}</div>
+								{/if}
+								{#if alert.status === 'open'}
+									<div class="alert-actions">
+										<button class="alert-btn ack" onclick={() => updateAlertStatus(alert.id, 'acknowledged')}>Acknowledge</button>
+										<button class="alert-btn resolve" onclick={() => {
+											const res = prompt('Resolution notes (optional):');
+											if (res !== null) updateAlertStatus(alert.id, 'resolved', res);
+										}}>Resolve</button>
+										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
+									</div>
+								{:else if alert.status === 'acknowledged'}
+									<div class="alert-actions">
+										<button class="alert-btn resolve" onclick={() => {
+											const res = prompt('Resolution notes (optional):');
+											if (res !== null) updateAlertStatus(alert.id, 'resolved', res);
+										}}>Resolve</button>
+										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
+									</div>
+								{:else if alert.status === 'resolved' || alert.status === 'dismissed'}
+									<div class="alert-actions">
+										<button class="alert-btn reopen" onclick={() => updateAlertStatus(alert.id, 'open')}>Reopen</button>
+									</div>
+								{/if}
+								<div class="alert-meta">
+									{alert.status}{#if alert.resolved_at} — resolved {new Date(alert.resolved_at).toLocaleString()}{/if}{#if alert.resolved_by} by {alert.resolved_by}{/if}
+								</div>
+							</div>
+						{/each}
+					{/if}
+				</div>
+			{:else if rightSection === 'services'}
 				{@const coreServices = servicesData.filter(s => s.category === 'PAN Core')}
 				{@const deviceServices = servicesData.filter(s => s.category === 'Devices')}
 				{#if coreServices.length > 0}
@@ -6191,4 +6386,87 @@
 		font-size: 10px;
 		margin-top: 2px;
 	}
+
+	/* ==================== Alerts ==================== */
+	.alert-indicator {
+		min-width: 20px; height: 20px;
+		border-radius: 10px;
+		background: #f38ba8;
+		color: #11111b;
+		font-size: 11px; font-weight: 700;
+		border: none; cursor: pointer;
+		display: flex; align-items: center; justify-content: center;
+		padding: 0 5px;
+		flex-shrink: 0;
+		transition: transform 0.15s ease;
+	}
+	.alert-indicator:hover { transform: scale(1.15); }
+	.alert-indicator.flash {
+		animation: alert-pulse 0.6s ease-in-out 3;
+	}
+	@keyframes alert-pulse {
+		0%, 100% { background: #f38ba8; transform: scale(1); }
+		50% { background: #fab387; transform: scale(1.25); }
+	}
+
+	.alerts-panel { display: flex; flex-direction: column; gap: 8px; }
+	.alerts-filters { display: flex; gap: 4px; margin-bottom: 4px; }
+	.alert-filter-select {
+		flex: 1;
+		background: #0a0a0f; color: #cdd6f4;
+		border: 1px solid #1e1e2e; border-radius: 4px;
+		padding: 3px 4px; font-size: 11px; outline: none;
+	}
+	.alert-filter-select:focus { border-color: #89b4fa; }
+
+	.alert-card {
+		background: #1a1a2e; border-radius: 6px;
+		padding: 8px; border-left: 3px solid #6c7086;
+	}
+	.alert-card.critical { border-left-color: #f38ba8; }
+	.alert-card.warning { border-left-color: #fab387; }
+	.alert-card.info { border-left-color: #89b4fa; }
+
+	.alert-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+	.alert-severity-dot {
+		width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+	}
+	.alert-severity-dot.critical { background: #f38ba8; }
+	.alert-severity-dot.warning { background: #fab387; }
+	.alert-severity-dot.info { background: #89b4fa; }
+
+	.alert-type-badge {
+		font-size: 10px; font-weight: 600; text-transform: uppercase;
+		color: #a6adc8; letter-spacing: 0.5px;
+	}
+	.alert-time { font-size: 10px; color: #585b70; margin-left: auto; }
+
+	.alert-title { font-size: 12px; color: #cdd6f4; font-weight: 500; margin-bottom: 4px; }
+
+	.alert-detail { font-size: 11px; color: #a6adc8; margin-bottom: 4px; }
+	.alert-detail-line { margin-bottom: 2px; }
+	.alert-hint { color: #89b4fa; font-style: italic; margin-top: 2px; }
+	.alert-resolution { font-size: 11px; color: #a6e3a1; margin-bottom: 4px; }
+
+	.alert-stack summary { font-size: 10px; color: #6c7086; cursor: pointer; }
+	.alert-stack pre {
+		font-size: 10px; color: #6c7086; white-space: pre-wrap;
+		max-height: 120px; overflow-y: auto; margin: 4px 0 0 0;
+	}
+
+	.alert-actions { display: flex; gap: 4px; margin-bottom: 4px; }
+	.alert-btn {
+		padding: 3px 8px; border-radius: 4px; border: none;
+		font-size: 10px; font-weight: 600; cursor: pointer;
+	}
+	.alert-btn.ack { background: #313244; color: #cdd6f4; }
+	.alert-btn.ack:hover { background: #45475a; }
+	.alert-btn.resolve { background: #1e4620; color: #a6e3a1; }
+	.alert-btn.resolve:hover { background: #2a6030; }
+	.alert-btn.dismiss { background: #302020; color: #6c7086; }
+	.alert-btn.dismiss:hover { background: #453030; }
+	.alert-btn.reopen { background: #302820; color: #fab387; }
+	.alert-btn.reopen:hover { background: #453820; }
+
+	.alert-meta { font-size: 10px; color: #585b70; }
 </style>

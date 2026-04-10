@@ -8,11 +8,13 @@ const pty = require('node-pty');
 import { WebSocketServer, WebSocket } from 'ws';
 import { hostname } from 'os';
 import { join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { all, insert } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
 import { subscribeToTranscript, writeSystemEvent } from './transcript-watcher.js';
-import { getTerminalLogDir, getShell } from './platform.js';
+import { getTerminalLogDir, getShell, getDataDir } from './platform.js';
+import { createAlert } from './routes/dashboard.js';
 
 // Terminal log directory — persists ScreenBuffer logs across server restarts
 const TERMINAL_LOG_DIR = getTerminalLogDir();
@@ -20,6 +22,113 @@ try { mkdirSync(TERMINAL_LOG_DIR, { recursive: true }); } catch {}
 
 // Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
 const sessions = new Map();
+
+// ==================== Process Registry ====================
+// Tracks ALL PIDs spawned by PAN: PTY shells, Claude CLI inside PTY, agent-sdk calls.
+// Keyed by PID. Each entry: { pid, type, sessionId, command, spawnedAt, exitedAt?, exitCode?, parentPid? }
+// Types: 'pty' (shell), 'claude_cli' (Claude inside PTY), 'agent_sdk' (agent-sdk calls)
+const processRegistry = new Map();
+
+function registerProcess({ pid, type, sessionId, command, parentPid }) {
+  if (!pid) return;
+  processRegistry.set(pid, {
+    pid,
+    type,
+    sessionId: sessionId || null,
+    command: command || '',
+    parentPid: parentPid || null,
+    spawnedAt: Date.now(),
+    exitedAt: null,
+    exitCode: null,
+  });
+  console.log(`[PAN Registry] Registered ${type} PID ${pid} (session: ${sessionId || 'none'})`);
+}
+
+function deregisterProcess(pid, exitCode) {
+  const entry = processRegistry.get(pid);
+  if (entry) {
+    entry.exitedAt = Date.now();
+    entry.exitCode = exitCode ?? null;
+    console.log(`[PAN Registry] Deregistered PID ${pid} (exit: ${exitCode})`);
+    // Keep dead entries for 10 minutes for post-mortem, then prune
+    setTimeout(() => processRegistry.delete(pid), 10 * 60 * 1000);
+  }
+}
+
+function getProcessRegistry() {
+  const result = [];
+  for (const [pid, entry] of processRegistry) {
+    const alive = entry.exitedAt === null;
+    result.push({
+      ...entry,
+      alive,
+      uptimeMs: alive ? Date.now() - entry.spawnedAt : entry.exitedAt - entry.spawnedAt,
+    });
+  }
+  return result;
+}
+
+// ==================== Reconnect Token Registry ====================
+// Phase 3: tokens survive server restarts via disk persistence.
+// token → { sessionId, project, cwd, claudeSessionIds, issuedAt }
+const reconnectTokens = new Map();
+const TOKENS_FILE = join(getDataDir(), 'reconnect-tokens.json');
+
+function loadTokens() {
+  try {
+    if (existsSync(TOKENS_FILE)) {
+      const data = JSON.parse(readFileSync(TOKENS_FILE, 'utf-8'));
+      for (const [token, entry] of Object.entries(data)) {
+        reconnectTokens.set(token, entry);
+      }
+      console.log(`[PAN Terminal] Loaded ${reconnectTokens.size} reconnect tokens`);
+    }
+  } catch (err) {
+    console.error('[PAN Terminal] Failed to load reconnect tokens:', err.message);
+  }
+}
+
+function saveTokens() {
+  try {
+    const obj = Object.fromEntries(reconnectTokens);
+    writeFileSync(TOKENS_FILE, JSON.stringify(obj, null, 2));
+  } catch (err) {
+    console.error('[PAN Terminal] Failed to save reconnect tokens:', err.message);
+  }
+}
+
+function issueToken(sessionId, project, cwd, claudeSessionIds) {
+  const token = randomUUID();
+  reconnectTokens.set(token, {
+    sessionId,
+    project,
+    cwd,
+    claudeSessionIds: claudeSessionIds || [],
+    issuedAt: Date.now(),
+  });
+  // Prune tokens older than 24h
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [t, entry] of reconnectTokens) {
+    if (entry.issuedAt < cutoff) reconnectTokens.delete(t);
+  }
+  saveTokens();
+  return token;
+}
+
+function resolveToken(token) {
+  return reconnectTokens.get(token) || null;
+}
+
+function updateTokenClaudeSessions(token, claudeSessionIds) {
+  const entry = reconnectTokens.get(token);
+  if (entry) {
+    entry.claudeSessionIds = claudeSessionIds;
+    saveTokens();
+  }
+}
+
+// Load tokens on module init
+loadTokens();
 
 // In-flight tool tracker — keyed by normalized cwd. Updated by the
 // PreToolUse / PostToolUse / SubagentStart / SubagentStop hooks so the
@@ -97,9 +206,15 @@ async function startTerminalServer(httpServer) {
     const isDev = url.pathname === '/ws/terminal-dev';
     ws._panDev = true;  // All clients get screen-v2 with append-only log
     ws._logPosition = 0;  // Track log cursor for incremental sync
-    const sessionId = url.searchParams.get('session') || 'default';
-    const projectName = url.searchParams.get('project') || '';
-    const cwd = url.searchParams.get('cwd') || 'C:\\Users\\tzuri\\Desktop';
+
+    // Phase 3: Check for reconnect token first
+    const reconnectToken = url.searchParams.get('token');
+    let tokenEntry = reconnectToken ? resolveToken(reconnectToken) : null;
+    const tokenExpired = reconnectToken && !tokenEntry; // client sent a token but it was expired/invalid
+
+    const sessionId = tokenEntry?.sessionId || url.searchParams.get('session') || 'default';
+    const projectName = tokenEntry?.project || url.searchParams.get('project') || '';
+    const cwd = tokenEntry?.cwd || url.searchParams.get('cwd') || 'C:\\Users\\tzuri\\Desktop';
     const cols = parseInt(url.searchParams.get('cols')) || 120;
     const rows = parseInt(url.searchParams.get('rows')) || 30;
 
@@ -156,8 +271,17 @@ async function startTerminalServer(httpServer) {
           lastInputTs: 0,
           lastOutputTs: Date.now(),
           claudeRunning: false, // true once Claude's ❯ prompt is detected in PTY output
+          claudeExited: false, // set true when Claude CLI exits inside the PTY
         };
         sessions.set(sessionId, session);
+
+        // Register PTY shell in process registry
+        registerProcess({
+          pid: ptyProcess.pid,
+          type: 'pty',
+          sessionId,
+          command: `${SHELL} ${SHELL_ARGS.join(' ')}`,
+        });
 
         // PTY output -> append-only log (raw) + ScreenBuffer (VT100) -> HTML to clients
         ptyProcess.onData((data) => {
@@ -165,6 +289,45 @@ async function startTerminalServer(httpServer) {
           // Detect Claude's ❯ prompt to know Claude is actually running
           if (!session.claudeRunning && data.includes('\u276F')) {
             session.claudeRunning = true;
+            session.claudeExited = false;
+          }
+          // Detect Claude CLI exit: bash prompt returns after Claude was running.
+          // Bash prompt pattern: ends with "$ " after MINGW/user@ prefix, or just "$ ".
+          // Only fire once per exit (claudeExited flag prevents spam).
+          if (session.claudeRunning && !session.claudeExited) {
+            // Match typical Git Bash prompt: "user@host MINGW64 ~/path\n$ "
+            // or simple "$ " after Claude exits
+            const bashPromptReturned = /\$\s*$/.test(data) && !data.includes('\u276F');
+            if (bashPromptReturned) {
+              session.claudeExited = true;
+              session.claudeRunning = false;
+              console.log(`[PAN Terminal] Claude CLI exited in session ${sessionId} — bash prompt returned`);
+              // Deregister Claude CLI from registry if tracked
+              if (session._claudeCliPid) {
+                deregisterProcess(session._claudeCliPid, -1);
+                session._claudeCliPid = null;
+              }
+              try {
+                createAlert({
+                  alert_type: 'claude_cli_exit',
+                  severity: 'warning',
+                  title: `Claude exited: ${session.project || sessionId}`,
+                  detail: `Claude CLI process exited inside PTY. Shell still alive (PID ${ptyProcess.pid}). Session: ${sessionId}`,
+                });
+              } catch {}
+              // Notify connected clients
+              for (const client of session.clients) {
+                if (client.readyState === 1) {
+                  try {
+                    client.send(JSON.stringify({
+                      type: 'claude_exited',
+                      session: sessionId,
+                      project: session.project,
+                    }));
+                  } catch {}
+                }
+              }
+            }
           }
           term.write(data);
           // Debounce rendering — batch rapid output into single screen update
@@ -198,6 +361,18 @@ async function startTerminalServer(httpServer) {
             console.error(`[PAN Terminal] Failed to log PtyExit:`, err.message);
           }
           console.log(`[PAN Terminal] PTY exited: ${sessionId} code=${exitCode} uptime=${Math.round(uptimeMs/1000)}s`);
+          // Deregister PTY and any child Claude CLI from process registry
+          deregisterProcess(ptyProcess.pid, exitCode);
+          if (session._claudeCliPid) deregisterProcess(session._claudeCliPid, exitCode);
+          // Fire a persistent alert so the user knows Claude died
+          try {
+            createAlert({
+              alert_type: 'pty_crash',
+              severity: 'critical',
+              title: `PTY crashed: ${session.project || sessionId}`,
+              detail: `Exit code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s, PID ${ptyProcess.pid}`,
+            });
+          } catch {}
           // Persist PTY exit to JSONL transcript so it survives server restarts
           writeSystemEvent(session.cwd, 'pty_exit', `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`, {
             exit_code: exitCode,
@@ -258,14 +433,27 @@ async function startTerminalServer(httpServer) {
     // Add this client to the session
     session.clients.add(ws);
 
-    // Send session info
+    // Phase 3: Issue reconnect token for this client
+    // If reconnecting with a valid token, reuse claude session IDs from it
+    let claudeSessionIdsFromToken = tokenEntry?.claudeSessionIds || [];
+    const newToken = issueToken(sessionId, projectName, cwd, claudeSessionIdsFromToken);
+    ws._reconnectToken = newToken;
+
+    // Send session info + reconnect token
     ws.send(JSON.stringify({
       type: 'info',
       session: sessionId,
       project: session.project,
       cwd: session.cwd,
       host: hostname(),
+      reconnectToken: newToken,
+      restoredFromToken: !!tokenEntry,
+      tokenExpired,
     }));
+
+    if (tokenExpired) {
+      console.log(`[PAN Terminal] Reconnect token expired/invalid for session ${sessionId} — falling back to fresh params`);
+    }
 
     // Send current screen state immediately (for new/reconnecting clients)
     broadcastRenderedScreen(session, ws);
@@ -280,7 +468,16 @@ async function startTerminalServer(httpServer) {
     // message list as `transcript_messages`. Merges system messages (banners,
     // PTY events) so they persist across refreshes.
     if (cwd) {
-      const unsubscribe = subscribeToTranscript(cwd, (messages) => {
+      // Parse Claude session IDs — prefer token (survived restart), fall back to query param
+      let claudeSessionIds = claudeSessionIdsFromToken.length > 0 ? claudeSessionIdsFromToken : [];
+      if (claudeSessionIds.length === 0) {
+        try {
+          const csidsParam = url.searchParams.get('claude_sessions');
+          if (csidsParam) claudeSessionIds = JSON.parse(csidsParam);
+        } catch {}
+      }
+
+      const subscription = subscribeToTranscript(cwd, (messages) => {
         if (ws.readyState === 1) {
           try {
             // Cache raw transcript messages for later merges (PTY exit, etc.)
@@ -293,8 +490,9 @@ async function startTerminalServer(httpServer) {
             console.error('[PAN Terminal] transcript push failed:', err.message);
           }
         }
-      });
-      ws._unsubscribeTranscript = unsubscribe;
+      }, claudeSessionIds);
+      ws._unsubscribeTranscript = subscription.unsubscribe;
+      ws._transcriptSubscription = subscription;
     }
 
     // Handle incoming messages from client
@@ -332,6 +530,18 @@ async function startTerminalServer(httpServer) {
             if (parsed.cols && parsed.rows) {
               if (session.pty) session.pty.resize(parsed.cols, parsed.rows);
               session.term.resize(parsed.cols, parsed.rows);
+            }
+            break;
+
+          case 'set_claude_sessions':
+            // Client discovered new Claude session IDs — update transcript filter + token
+            if (Array.isArray(parsed.sessions)) {
+              if (ws._transcriptSubscription) {
+                ws._transcriptSubscription.setClaudeSessions(parsed.sessions);
+              }
+              if (ws._reconnectToken) {
+                updateTokenClaudeSessions(ws._reconnectToken, parsed.sessions);
+              }
             }
             break;
 
@@ -486,7 +696,7 @@ function listSessions() {
   return result;
 }
 
-// Return live PTY pids for the orphan reaper's protect set.
+// Return live PTY pids (used by process kill protection + diagnostics).
 function getActivePtyPids() {
   const pids = [];
   for (const [, session] of sessions) {
@@ -495,7 +705,7 @@ function getActivePtyPids() {
   return pids;
 }
 
-// Kill every tracked PTY (called on graceful shutdown so children don't orphan)
+// Kill every tracked PTY (called on graceful shutdown)
 // Returns a Promise — caller must await to ensure WS broadcast lands before kill.
 async function killAllSessions() {
   // Notify ALL connected WebSocket clients that the server is restarting
@@ -505,7 +715,10 @@ async function killAllSessions() {
     for (const ws of session.clients) {
       try {
         if (ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'server_restarting' }));
+          ws.send(JSON.stringify({
+            type: 'server_restarting',
+            reconnectToken: ws._reconnectToken || null,
+          }));
         }
       } catch {}
     }
@@ -696,4 +909,4 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry };

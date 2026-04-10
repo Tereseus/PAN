@@ -2,6 +2,11 @@
 
 // PAN MCP Server — exposes PAN's API as native Claude Code tools
 // Transport: stdio (Claude Code spawns this as a child process)
+//
+// Architecture: 6 core tools + 1 router + resources
+// - Core tools: always in context, high-frequency or safety-critical
+// - Router (pan): single dispatch tool for 18+ actions, saves ~4000 tokens/turn
+// - Resources: pull-based, zero cost until referenced with @
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -28,14 +33,14 @@ function err(e) {
   return { content: [{ type: 'text', text: msg }], isError: true };
 }
 
-const server = new McpServer({ name: 'pan', version: '1.0.0' });
+const server = new McpServer({ name: 'pan', version: '2.0.0' });
 
-// ==================== HIGH PRIORITY ====================
+// ==================== CORE TOOLS (always in context) ====================
 
 server.tool(
   'pan_search',
-  'Full-text search across all PAN events (conversations, commands, voice transcripts, system events). Returns matching events ranked by relevance.',
-  { q: z.string().describe('Search query'), limit: z.number().optional().describe('Max results (default 50)'), type: z.string().optional().describe('Filter by event type (e.g. UserPromptSubmit, AssistantMessage, RouterCommand)') },
+  'Full-text search across all PAN events (conversations, commands, voice, system). Returns ranked results.',
+  { q: z.string(), limit: z.number().optional(), type: z.string().optional() },
   async ({ q, limit, type }) => {
     try {
       let path = `/dashboard/api/events?q=${encodeURIComponent(q)}&limit=${limit || 50}`;
@@ -47,7 +52,7 @@ server.tool(
 
 server.tool(
   'pan_memory',
-  'Read classified memory items from PAN database. Memory items include tasks, decisions, design decisions, feature requests, facts, insights, and preferences.',
+  'Read classified memory items (tasks, decisions, facts, preferences) from PAN database.',
   {},
   async () => {
     try { return ok(await panFetch('/dashboard/api/memory')); }
@@ -56,158 +61,38 @@ server.tool(
 );
 
 server.tool(
-  'pan_conversations',
-  'Search past conversations and interactions. Supports full-text search and filtering by type.',
-  { q: z.string().optional().describe('Search query'), filter: z.string().optional().describe('Filter: all, voice, commands, photos, sensors, system'), limit: z.number().optional().describe('Max results (default 50)') },
-  async ({ q, filter, limit }) => {
-    try {
-      let path = `/dashboard/api/conversations?limit=${limit || 50}`;
-      if (q) path += `&q=${encodeURIComponent(q)}`;
-      if (filter) path += `&filter=${encodeURIComponent(filter)}`;
-      return ok(await panFetch(path));
-    } catch (e) { return err(e); }
-  }
-);
-
-server.tool(
-  'pan_projects',
-  'List all PAN projects with task completion percentages, milestones, and session counts.',
+  'pan_restart',
+  'Restart PAN server. ONLY safe way to restart — never use Bash to run node pan.js or server.js.',
   {},
   async () => {
-    try { return ok(await panFetch('/dashboard/api/progress')); }
+    try { return ok(await panFetch('/api/admin/restart', { method: 'POST' })); }
     catch (e) { return err(e); }
   }
 );
 
 server.tool(
-  'pan_tasks',
-  'List, create, or update tasks for a PAN project.',
-  {
-    action: z.enum(['list', 'create', 'update']).describe('Action to perform'),
-    project_id: z.number().describe('Project ID'),
-    title: z.string().optional().describe('Task title (for create)'),
-    description: z.string().optional().describe('Task description (for create/update)'),
-    status: z.enum(['todo', 'in_progress', 'done', 'backlog']).optional().describe('Task status'),
-    milestone_id: z.number().optional().describe('Milestone ID'),
-    task_id: z.number().optional().describe('Task ID (required for update)'),
-    priority: z.number().optional().describe('Priority (0=normal, 1+=bug/important)')
-  },
-  async ({ action, project_id, title, description, status, milestone_id, task_id, priority }) => {
+  'pan_dev',
+  'Start dev server on port 7781 and open it in a new window. Safe alongside production.',
+  { action: z.enum(['status', 'sessions', 'start']).optional() },
+  async ({ action }) => {
     try {
-      if (action === 'list') {
-        return ok(await panFetch(`/dashboard/api/projects/${project_id}/tasks`));
-      } else if (action === 'create') {
-        return ok(await panFetch(`/dashboard/api/projects/${project_id}/tasks`, {
-          method: 'POST', body: { title, description, milestone_id, status: status || 'todo', priority: priority || 0 }
-        }));
-      } else if (action === 'update') {
-        if (!task_id) return err(new Error('task_id required for update'));
-        const body = {};
-        if (title !== undefined) body.title = title;
-        if (description !== undefined) body.description = description;
-        if (status !== undefined) body.status = status;
-        if (milestone_id !== undefined) body.milestone_id = milestone_id;
-        if (priority !== undefined) body.priority = priority;
-        return ok(await panFetch(`/dashboard/api/tasks/${task_id}`, { method: 'PUT', body }));
+      if (action === 'sessions') return ok(await panFetch('/api/v1/terminal/sessions'));
+      if (action === 'start') {
+        const dev = await panFetch('/api/v1/dev/start', { method: 'POST' });
+        const devPort = dev.port || 7781;
+        try { await panFetch('/api/v1/ui-commands', { method: 'POST', body: { type: 'open_window', url: `http://localhost:${devPort}/v2/terminal` } }); } catch {}
+        return ok({ devServer: `http://localhost:${devPort}/v2/terminal`, port: devPort });
       }
+      const sessions = await panFetch('/api/v1/terminal/sessions');
+      return ok({ sessions: sessions.sessions });
     } catch (e) { return err(e); }
   }
 );
-
-server.tool(
-  'pan_services',
-  'Get status of all PAN services (server, steward, dream, scout, intuition) and connected devices (PC, phone, pendant). Shows green/red status and last-seen times.',
-  {},
-  async () => {
-    try { return ok(await panFetch('/dashboard/api/services')); }
-    catch (e) { return err(e); }
-  }
-);
-
-server.tool(
-  'pan_devices',
-  'List registered devices or send a command to a device.',
-  {
-    action: z.enum(['list', 'command']).optional().describe('Action (default: list)'),
-    target_device: z.string().optional().describe('Device hostname (for command)'),
-    command_type: z.string().optional().describe('Command type: terminal, command, ui_automation'),
-    command: z.string().optional().describe('Command to execute'),
-    text: z.string().optional().describe('Text to send')
-  },
-  async ({ action, target_device, command_type, command, text }) => {
-    try {
-      if (!action || action === 'list') {
-        return ok(await panFetch('/api/v1/devices/list'));
-      } else {
-        return ok(await panFetch('/api/v1/devices/command', {
-          method: 'POST', body: { target_device, type: command_type, command, text }
-        }));
-      }
-    } catch (e) { return err(e); }
-  }
-);
-
-// ==================== MEDIUM PRIORITY ====================
-
-server.tool(
-  'pan_stats',
-  'Get PAN database statistics: total events, memory items, sessions, projects, devices, DB size, and event type breakdown.',
-  {},
-  async () => {
-    try { return ok(await panFetch('/dashboard/api/stats')); }
-    catch (e) { return err(e); }
-  }
-);
-
-server.tool(
-  'pan_sessions',
-  'List active terminal sessions managed by PAN (Claude Code sessions, project terminals).',
-  {},
-  async () => {
-    try { return ok(await panFetch('/api/v1/terminal/sessions')); }
-    catch (e) { return err(e); }
-  }
-);
-
-server.tool(
-  'pan_sensors',
-  'Get all 22 PAN sensor definitions across phone, PC, and pendant devices (microphone, camera, GPS, thermal, gas, etc.).',
-  {},
-  async () => {
-    try { return ok(await panFetch('/api/sensors/')); }
-    catch (e) { return err(e); }
-  }
-);
-
-server.tool(
-  'pan_photos',
-  'List photos captured by PAN devices with AI-generated descriptions, timestamps, and file sizes.',
-  {},
-  async () => {
-    try { return ok(await panFetch('/dashboard/api/photos')); }
-    catch (e) { return err(e); }
-  }
-);
-
-server.tool(
-  'pan_scout',
-  'Get Tool Scout findings — AI tools and CLIs discovered by automated scanning.',
-  { status: z.string().optional().describe('Filter: new, reviewed, installed, dismissed') },
-  async ({ status }) => {
-    try {
-      let path = '/dashboard/api/scout';
-      if (status) path += `?status=${encodeURIComponent(status)}`;
-      return ok(await panFetch(path));
-    } catch (e) { return err(e); }
-  }
-);
-
-// ==================== LOW PRIORITY ====================
 
 server.tool(
   'pan_terminal_send',
-  'Send text to an active terminal session. Types commands or messages into a running Claude Code session.',
-  { text: z.string().describe('Text to send'), session_id: z.string().optional().describe('Target session ID') },
+  'Send text to an active terminal session.',
+  { text: z.string(), session_id: z.string().optional() },
   async ({ text, session_id }) => {
     try {
       const body = { text };
@@ -219,101 +104,262 @@ server.tool(
 
 server.tool(
   'pan_browser',
-  'Control browser via PAN. Actions: list_tabs, navigate, click, type, screenshot.',
-  { action: z.string().describe('Browser action'), url: z.string().optional(), query: z.string().optional(), text: z.string().optional() },
+  'Control browser: list_tabs, navigate, click, type, screenshot.',
+  { action: z.string(), url: z.string().optional(), query: z.string().optional(), text: z.string().optional() },
   async (params) => {
-    try {
-      return ok(await panFetch('/api/v1/browser', { method: 'POST', body: params }));
-    } catch (e) { return err(e); }
-  }
-);
-
-server.tool(
-  'pan_restart',
-  `Restart PAN server — full process restart that reloads all code from disk. The wrapper automatically revives the process. This will briefly kill all connections (including this MCP session).
-
-⚠️ CRITICAL: This is the ONLY safe way to restart PAN. NEVER run "node pan.js start", "node server.js", or any PAN startup command via Bash/shell. Doing so spawns a second PAN instance whose orphan-reaper will KILL your Claude session. Use this tool or the user's visible cmd window — nothing else.`,
-  {},
-  async () => {
-    try { return ok(await panFetch('/api/admin/restart', { method: 'POST' })); }
+    try { return ok(await panFetch('/api/v1/browser', { method: 'POST', body: params })); }
     catch (e) { return err(e); }
   }
 );
 
-// ==================== DEVELOPMENT & TESTING ====================
+// ==================== ROUTER (single tool for 18+ actions) ====================
+// This replaces 18 separate tool definitions, saving ~4000 tokens/turn.
+// Use @pan://actions resource to see all available actions and their parameters.
 
 server.tool(
-  'pan_dev',
-  `Dashboard development & testing. Use this tool to start a dev server and open it in a new window.
+  'pan',
+  `PAN router — single dispatch for all PAN actions. Use @pan://actions to see full action list with parameters.
 
-⚠️ CRITICAL SAFETY RULES:
-- NEVER run "node pan.js start", "node server.js", or ANY PAN startup command via Bash/shell
-- Doing so spawns a second PAN instance whose orphan-reaper KILLS your Claude session
-- ALWAYS use this tool with action:"start" to launch dev — it starts an isolated server on a separate port and opens it in a new browser window automatically
-- To restart production, use pan_restart tool — NEVER Bash
-
-HOW TO TEST CODE CHANGES:
-1. Edit server code in service/src/ (or Svelte in service/dashboard/src/)
-2. Call pan_dev with action:"start" — starts dev server on port 7781 and opens it in a new window
-3. Dev server runs isolated: separate port, separate session IDs (dev-dash-*), shared DB (read-safe WAL)
-4. Dev server skips steward, orphan-reaper, device registration — safe alongside production
-5. Test your changes in the dev window, verify visually
-6. When satisfied: use pan_restart to reload production with the new code
-
-KEY FILES:
-- Terminal page: dashboard/src/routes/terminal/+page.svelte
-- API helper: dashboard/src/lib/api.js
-- Server terminal mgmt: src/terminal.js
-- Server routes: src/server.js
-- Test suites: src/routes/tests.js
-
-SESSION LIFECYCLE:
-- Session IDs are deterministic: dash-<project> (prod) or dev-dash-<project> (dev)
-- PTY stays alive when WebSocket disconnects
-- Auto-launch Claude: ONLY if PTY has no existing buffer (hasExistingBuffer check)
-
-TESTING CHECKLIST:
-- [ ] Check /api/v1/terminal/sessions before and after refresh
-- [ ] Verify session count doesn't increase on refresh
-- [ ] Verify chat messages persist in localStorage
-- [ ] Verify Claude doesn't re-launch on reconnect`,
-  { action: z.enum(['status', 'sessions', 'start']).optional().describe('status: check dev server, sessions: list all terminal sessions, start: start dev server + open in new window') },
-  async ({ action }) => {
+Actions: conversations, projects, tasks, services, devices, stats, sessions, sensors, photos, scout, alerts, recording, windows, settings, logs, runner, library, context, processes`,
+  {
+    action: z.string().describe('Action name (see @pan://actions for full list)'),
+    params: z.record(z.any()).optional().describe('Action parameters as key-value pairs')
+  },
+  async ({ action, params = {} }) => {
     try {
-      if (action === 'sessions') {
-        return ok(await panFetch('/api/v1/terminal/sessions'));
+      switch (action) {
+        // --- Data queries ---
+        case 'conversations': {
+          let path = `/dashboard/api/conversations?limit=${params.limit || 50}`;
+          if (params.q) path += `&q=${encodeURIComponent(params.q)}`;
+          if (params.filter) path += `&filter=${encodeURIComponent(params.filter)}`;
+          return ok(await panFetch(path));
+        }
+        case 'projects':
+          return ok(await panFetch('/dashboard/api/progress'));
+        case 'tasks': {
+          if (params.task_action === 'create') {
+            return ok(await panFetch(`/dashboard/api/projects/${params.project_id}/tasks`, {
+              method: 'POST', body: { title: params.title, description: params.description, milestone_id: params.milestone_id, status: params.status || 'todo', priority: params.priority || 0 }
+            }));
+          }
+          if (params.task_action === 'update') {
+            const body = {};
+            if (params.title !== undefined) body.title = params.title;
+            if (params.description !== undefined) body.description = params.description;
+            if (params.status !== undefined) body.status = params.status;
+            if (params.milestone_id !== undefined) body.milestone_id = params.milestone_id;
+            if (params.priority !== undefined) body.priority = params.priority;
+            return ok(await panFetch(`/dashboard/api/tasks/${params.task_id}`, { method: 'PUT', body }));
+          }
+          return ok(await panFetch(`/dashboard/api/projects/${params.project_id}/tasks`));
+        }
+        case 'services':
+          return ok(await panFetch('/dashboard/api/services'));
+        case 'devices': {
+          if (params.device_action === 'command') {
+            return ok(await panFetch('/api/v1/devices/command', {
+              method: 'POST', body: { target_device: params.target_device, type: params.command_type, command: params.command, text: params.text }
+            }));
+          }
+          return ok(await panFetch('/api/v1/devices/list'));
+        }
+        case 'stats':
+          return ok(await panFetch('/dashboard/api/stats'));
+        case 'sessions':
+          return ok(await panFetch('/api/v1/terminal/sessions'));
+        case 'sensors':
+          return ok(await panFetch('/api/sensors/'));
+        case 'photos':
+          return ok(await panFetch('/dashboard/api/photos'));
+        case 'scout': {
+          let path = '/dashboard/api/scout';
+          if (params.status) path += `?status=${encodeURIComponent(params.status)}`;
+          return ok(await panFetch(path));
+        }
+
+        // --- Alerts ---
+        case 'alerts': {
+          const sub = params.alert_action || 'list';
+          if (sub === 'types') return ok(await panFetch('/dashboard/api/alerts/types'));
+          if (sub === 'count') return ok(await panFetch('/dashboard/api/alerts/count'));
+          if (sub === 'get') return ok(await panFetch(`/dashboard/api/alerts/${params.id}`));
+          if (sub === 'acknowledge') return ok(await panFetch(`/dashboard/api/alerts/${params.id}`, { method: 'PATCH', body: { status: 'acknowledged' } }));
+          if (sub === 'resolve') return ok(await panFetch(`/dashboard/api/alerts/${params.id}`, { method: 'PATCH', body: { status: 'resolved', resolution: params.resolution || '', resolved_by: 'claude' } }));
+          if (sub === 'dismiss') return ok(await panFetch(`/dashboard/api/alerts/${params.id}`, { method: 'PATCH', body: { status: 'dismissed' } }));
+          if (sub === 'reopen') return ok(await panFetch(`/dashboard/api/alerts/${params.id}`, { method: 'PATCH', body: { status: 'open' } }));
+          // list
+          let path = `/dashboard/api/alerts?limit=${params.limit || 50}`;
+          if (params.status) path += `&status=${encodeURIComponent(params.status)}`;
+          if (params.type) path += `&type=${encodeURIComponent(params.type)}`;
+          return ok(await panFetch(path));
+        }
+
+        // --- Recording ---
+        case 'recording': {
+          const sub = params.recording_action || 'status';
+          if (sub === 'start') return ok(await panFetch('/api/v1/recording/start', { method: 'POST' }));
+          if (sub === 'stop') return ok(await panFetch('/api/v1/recording/stop', { method: 'POST' }));
+          if (sub === 'list') return ok(await panFetch('/api/v1/recording/list'));
+          return ok(await panFetch('/api/v1/recording/status'));
+        }
+
+        // --- Windows ---
+        case 'windows': {
+          const sub = params.window_action || 'list';
+          if (sub === 'open') return ok(await panFetch('/api/v1/windows/open', { method: 'POST', body: { url: params.url, label: params.label } }));
+          if (sub === 'focus') return ok(await panFetch('/api/v1/windows/focus', { method: 'POST', body: { title: params.title, label: params.label } }));
+          if (sub === 'close') return ok(await panFetch('/api/v1/windows/close', { method: 'POST', body: { title: params.title, label: params.label } }));
+          return ok(await panFetch('/api/v1/windows'));
+        }
+
+        // --- Settings ---
+        case 'settings': {
+          if (params.settings_action === 'set') return ok(await panFetch('/api/v1/settings', { method: 'PUT', body: params.values }));
+          return ok(await panFetch('/api/v1/settings'));
+        }
+
+        // --- Logs ---
+        case 'logs': {
+          if (params.log_action === 'summary') return ok(await panFetch('/api/v1/logs/summary'));
+          let path = `/api/v1/logs?limit=${params.limit || 50}`;
+          if (params.device_id) path += `&device_id=${encodeURIComponent(params.device_id)}`;
+          if (params.level) path += `&level=${encodeURIComponent(params.level)}`;
+          if (params.source) path += `&source=${encodeURIComponent(params.source)}`;
+          return ok(await panFetch(path));
+        }
+
+        // --- Runner ---
+        case 'runner': {
+          const sub = params.runner_action || 'projects';
+          if (sub === 'projects') return ok(await panFetch('/api/v1/runner/projects'));
+          if (sub === 'running') return ok(await panFetch('/api/v1/runner/running'));
+          if (sub === 'status') return ok(await panFetch(`/api/v1/runner/project?path=${encodeURIComponent(params.path)}`));
+          if (sub === 'start') return ok(await panFetch('/api/v1/runner/start', { method: 'POST', body: { path: params.path, service: params.service } }));
+          if (sub === 'stop') return ok(await panFetch('/api/v1/runner/stop', { method: 'POST', body: { path: params.path, service: params.service } }));
+          if (sub === 'stop_all') return ok(await panFetch('/api/v1/runner/stop-all', { method: 'POST', body: { path: params.path } }));
+          if (sub === 'logs') {
+            let p = `/api/v1/runner/logs?path=${encodeURIComponent(params.path)}`;
+            if (params.service) p += `&service=${encodeURIComponent(params.service)}`;
+            return ok(await panFetch(p));
+          }
+          return ok(await panFetch('/api/v1/runner/projects'));
+        }
+
+        // --- Library ---
+        case 'library': {
+          if (params.file) return ok(await panFetch(`/api/v1/library/view?file=${encodeURIComponent(params.file)}`));
+          return ok(await panFetch('/api/v1/library'));
+        }
+
+        // --- Processes ---
+        case 'processes':
+          return ok(await panFetch('/api/v1/processes'));
+
+        // --- Context ---
+        case 'context': {
+          if (params.context_action === 'inject') return ok(await panFetch('/api/v1/inject-context', { method: 'POST', body: { cwd: params.cwd || 'C:\\Users\\tzuri\\Desktop\\PAN' } }));
+          return ok(await panFetch('/api/v1/context-briefing'));
+        }
+
+        default:
+          return err(new Error(`Unknown action: "${action}". Use @pan://actions to see all available actions.`));
       }
-      if (action === 'start') {
-        // Start dev server
-        const dev = await panFetch('/api/v1/dev/start', { method: 'POST' });
-        const devPort = dev.port || 7781;
-        const devUrl = `http://localhost:${devPort}/v2/terminal`;
-        // Open dev dashboard in a new window via ui-commands
-        try {
-          await panFetch('/api/v1/ui-commands', {
-            method: 'POST',
-            body: { type: 'open_window', url: devUrl }
-          });
-        } catch {}
-        return ok({
-          devServer: devUrl,
-          port: devPort,
-          message: `Dev server started on port ${devPort}. Window opening via ui-commands.`
-        });
-      }
-      // Default: status overview
-      const sessions = await panFetch('/api/v1/terminal/sessions');
-      let devPort = null;
-      try {
-        const dev = await panFetch('/api/v1/dev/start', { method: 'POST' });
-        devPort = dev.port || null;
-      } catch {}
-      return ok({
-        sessions: sessions.sessions,
-        devServer: devPort ? `http://localhost:${devPort}/v2/terminal` : 'Not running',
-        testingGuide: 'Call pan_dev with action:"start" to launch dev server + open window'
-      });
     } catch (e) { return err(e); }
+  }
+);
+
+// ==================== RESOURCES (pull-based, zero cost until referenced) ====================
+
+server.resource(
+  'actions',
+  'pan://actions',
+  { mimeType: 'text/markdown' },
+  async () => ({
+    contents: [{
+      uri: 'pan://actions',
+      mimeType: 'text/markdown',
+      text: `# PAN Router Actions
+
+Use with: \`pan\` tool, \`action\` parameter + \`params\` object.
+
+## Data Queries
+| Action | Description | Params |
+|--------|-------------|--------|
+| conversations | Search past conversations | q?, filter?(all/voice/commands/photos/sensors/system), limit? |
+| projects | List projects with progress/milestones | (none) |
+| tasks | List/create/update project tasks | project_id, task_action?(list/create/update), task_id?, title?, description?, status?(todo/in_progress/done/backlog), milestone_id?, priority? |
+| services | Service status (steward, devices) | (none) |
+| devices | List devices or send command | device_action?(list/command), target_device?, command_type?, command?, text? |
+| stats | Database statistics | (none) |
+| sessions | Active terminal sessions | (none) |
+| sensors | 22 sensor definitions | (none) |
+| photos | Photo library | (none) |
+| scout | Tool Scout findings | status?(new/reviewed/installed/dismissed) |
+
+## Alerts
+| Action | Description | Params |
+|--------|-------------|--------|
+| alerts | Manage system alerts | alert_action?(list/count/types/get/acknowledge/resolve/dismiss/reopen), id?, status?, type?, resolution?, limit? |
+
+Alert types: orphan_processes, service_crash, uncaught_exception, unhandled_rejection, pty_crash, claude_cli_exit, health_check_fail, startup_error, transcript_error
+Status lifecycle: open → acknowledged → resolved (with notes) or dismissed
+
+## System Control
+| Action | Description | Params |
+|--------|-------------|--------|
+| recording | Screen recording | recording_action?(start/stop/status/list) |
+| windows | Desktop window control | window_action?(list/open/focus/close), url?, title?, label? |
+| settings | Read/write PAN config | settings_action?(get/set), values?(object for set) |
+| logs | System logs | log_action?(query/summary), device_id?, level?, source?, limit? |
+| runner | Project service management | runner_action?(projects/running/status/start/stop/stop_all/logs), path?, service? |
+| library | Docs and knowledge files | file?(path to view specific file) |
+| context | Session context/briefing | context_action?(briefing/inject), cwd? |
+| processes | All PIDs spawned by PAN (PTY, Claude CLI, agent-sdk) | (none) — returns alive/dead with uptime, type, session |
+`
+    }]
+  })
+);
+
+server.resource(
+  'alert-types',
+  'pan://alert-types',
+  { mimeType: 'application/json' },
+  async () => {
+    try {
+      const types = await panFetch('/dashboard/api/alerts/types');
+      return { contents: [{ uri: 'pan://alert-types', mimeType: 'application/json', text: JSON.stringify(types, null, 2) }] };
+    } catch {
+      return { contents: [{ uri: 'pan://alert-types', mimeType: 'text/plain', text: 'PAN server not reachable' }] };
+    }
+  }
+);
+
+server.resource(
+  'services',
+  'pan://services',
+  { mimeType: 'application/json' },
+  async () => {
+    try {
+      const data = await panFetch('/dashboard/api/services');
+      return { contents: [{ uri: 'pan://services', mimeType: 'application/json', text: JSON.stringify(data, null, 2) }] };
+    } catch {
+      return { contents: [{ uri: 'pan://services', mimeType: 'text/plain', text: 'PAN server not reachable' }] };
+    }
+  }
+);
+
+server.resource(
+  'stats',
+  'pan://stats',
+  { mimeType: 'application/json' },
+  async () => {
+    try {
+      const data = await panFetch('/dashboard/api/stats');
+      return { contents: [{ uri: 'pan://stats', mimeType: 'application/json', text: JSON.stringify(data, null, 2) }] };
+    } catch {
+      return { contents: [{ uri: 'pan://stats', mimeType: 'text/plain', text: 'PAN server not reachable' }] };
+    }
   }
 );
 
@@ -321,4 +367,4 @@ TESTING CHECKLIST:
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error('[PAN MCP] Server started');
+console.error('[PAN MCP] Server started (v2 — 7 tools + router + resources)');

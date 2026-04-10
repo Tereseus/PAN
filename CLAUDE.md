@@ -292,21 +292,22 @@ CURRENT STATE DOCUMENT:
 - **PAN server process context** required session Session 1 (user context, not Session 0/SYSTEM) — Server must run in interactive user session, not SYSTEM session. Session 0 causes node-pty conpty agent failures and PTY crashes. (domain_knowledge, confidence: 0.94)
 - **efficiency reports** quantity generated approximately 5 — User referenced 'my last efficiency reports' (plural) with context on format/styling. Exact count unknown but ~5 mentioned. (domain_knowledge, confidence: 0.6)
 - **transcript-watcher.js** loads last 5 JSONL session files for same directory — transcript-watcher.js merges messages from last 5 JSONL files, causing cross-session message contamination (codebase, confidence: 0.95)
-- **user** wants clarity about session state (new vs continuing) — User immediately asks for confirmation when tools load or context is injected, concerned about whether session is new or continuing (user_preference, confidence: 0.85)
+- **user_correction** stated in context):** (user_preference, confidence: 0.9)
 - **user** prefers Pan remembers phrasing — User wants session briefing to say 'Pan remembers' instead of 'Last time we were working on' to signal restart + retention (user_preference, confidence: 0.9)
 
 ## Recent Memory
 - [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages from locked-out/old sessions into current terminal. Dedup logic added. PTY crashes were caused by server r
+- [2026-04-09 20:53:38] User explicitly blocked auto-restart on core module changes [partial]: User expressed strong frustration ('really retarded') about steward.js triggering force-crash/restart when edited. Requested preventing this behavior so development doesn't lose session context.
 - [2026-04-08 20:54:52] PAN server running in Session 0 (SYSTEM) causing conpty crashes: Server was running in Windows Session 0 (system context), causing node-pty's conpty agent to fail. Moved to Session 1 (tzuri user context). Requires uncaughtException handler in pan.js to catch conpty
 - [2026-04-09 12:30:31] Transcript dedup fixed to prevent cross-session contamination: `transcript-watcher.js` was loading last 5 JSONL session files and merging them, causing ghost messages from locked-out sessions to bleed into current terminal. Dedup logic added to filter out message
 - [2026-04-09 12:04:27] Ghost 'Claude' messages from locked-out session bleeding into current transcript: User discovered spurious 'Claude' messages appearing in terminal during voice input. Root cause: transcript-watcher.js loads the last 5 JSONL session files for the same project directory and merges th
+- [2026-04-09 20:17:18] User clarified session naming and persistence requirements: Users already have ability to change session names — system just needs to save changes. Names should be displayed/changeable, not PIDs.
 - [2026-04-08 22:35:47] PAN server now running in user mode with visible console: Server moved from SYSTEM session (Session 0) to interactive user session (Session 1). Runs with visible cmd window on desktop showing live logs, can be closed to kill PAN cleanly.
+- [2026-04-09 20:53:38] Claude crashed when editing steward.js during phase planning [failure]: PTY exited while Claude was working on phase plan. File watcher or change detection on steward.js triggered server restart/reload, killing the PTY session. Code changes were saved to disk but session 
+- [2026-04-09 22:15:37] Claude crashed multiple times — alerts not capturing crashes [failure]: At least 3 crashes during session (21:36, 22:10:45, post-MCP rewrite). No uncaughtException handlers wired to create alerts. User explicitly wants crash tracing to be alerted like other system events.
+- [2026-04-09 20:17:18] User identified PID-based session matching is unreliable: PIDs change frequently, so matching transcripts by PID won't work. Sessions should use user-customizable names like 'Pan 1', 'Pan 2' instead.
 - [2026-04-09 19:15:56] Dev/prod resource isolation crisis identified and fixed: User discovered dev instance was sharing database (pan.db), terminal logs, JSONL transcripts, and recordings with prod. This prevented safe dev testing. Claude modified db.js to respect PAN_DATA_DIR e
-- [2026-04-08 18:11:09] Memory consolidation system completely broken [failure]: Completed tasks marked solved weeks ago still showing as open issues. Chat input fixes, terminal fixes implemented but never marked complete, causing false repetition. No mechanism to archive/remove c
-- [2026-04-09 14:42:21] Transcript data loss on page refresh after server restart [failure]: User performed hard refresh after server restart. Terminal transcript lost most content. JSONL session file only contains 3 actual user messages, but many more were sent. Messages disappearing from di
-- [2026-04-09 18:27:14] Critical architecture problem — dev and prod sharing same terminal, transcript, and database [failure]: User discovered that dev instance is not a true separate copy. Both share same terminal PTY, same JSONL transcript files, and same database. Dev should be completely isolated from prod to allow safe t
-- [2026-04-09 11:43:44] Session continuity (PAN Remembers) working correctly: After server restart, user confirmed that memory system survived and provided proper context briefing about what was being worked on.
-- [2026-04-09 14:22:33] Critical transcript data loss on page refresh after restart [failure]: User performed hard page 
+- [2026-04-08 18:11:09] Memory consolidation system completely br
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
