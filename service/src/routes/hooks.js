@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
-import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool } from '../terminal.js';
+import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool } from '../terminal-bridge.js';
 import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';

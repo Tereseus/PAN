@@ -23,7 +23,8 @@ import { startStackScanner, stopStackScanner } from './stack-scanner.js';
 import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
 import { consolidate as consolidateMemory } from './memory/consolidation.js';
 import { evolve as runEvolution } from './evolution/engine.js';
-import { listSessions, sendToSession } from './terminal.js';
+import { listSessions, sendToSession, broadcastToSession, broadcastNotification } from './terminal-bridge.js';
+import { createAlert } from './routes/dashboard.js';
 import { hostname } from 'os';
 import http from 'http';
 import { spawn, execSync } from 'child_process';
@@ -608,6 +609,7 @@ async function healthCheck() {
         to: svc._status,
         error: svc._lastError,
       });
+      try { broadcastNotification('widget_update', { widget: 'services' }); } catch {}
     }
 
     // Auto-restart services that have a startFn and are down — with backoff.
@@ -625,6 +627,18 @@ async function healthCheck() {
         if (!svc._restartGaveUp) {
           console.error(`[Steward] ${svc.name} failed ${svc._restartFailures} restart cycles — giving up. Manual restart required.`);
           logServiceEvent(svc.id, 'restart_giveup', { failures: svc._restartFailures });
+          createAlert({
+            alert_type: 'service_crash',
+            severity: 'critical',
+            title: `${svc.name} failed ${svc._restartFailures} restart cycles — gave up`,
+            detail: JSON.stringify({
+              service: svc.id,
+              name: svc.name,
+              failures: svc._restartFailures,
+              lastError: svc._lastError,
+              hint: 'Manual restart required. Check logs for root cause.'
+            })
+          });
           svc._restartGaveUp = true;
         }
       } else {
@@ -655,12 +669,11 @@ async function healthCheck() {
   }
 
   // Clean zombie PTY sessions (connected but no activity for 2 hours)
-  cleanZombieSessions();
+  await cleanZombieSessions();
 
-  // Reap orphaned Claude CLI processes (parent PTY gone, still alive).
-  // Catches the April-6-style zombies where the PTY died but the child
-  // claude cli.js kept running, accumulating CPU forever.
-  reapOrphanClaudeProcesses();
+  // Detect orphaned Claude CLI processes (parent PTY gone, still alive).
+  // ALERT ONLY — never kills. User investigates and handles manually.
+  await detectOrphanClaudeProcesses();
 
   // DISABLED — ensureClaudeInSessions() ancestor walk was broken,
   // kept spamming 'claude\r' into the PTY every health cycle.
@@ -684,9 +697,9 @@ async function healthCheck() {
   } catch {}
 }
 
-function cleanZombieSessions() {
+async function cleanZombieSessions() {
   try {
-    const sessions = listSessions();
+    const sessions = await listSessions();
     const now = Date.now();
     for (const s of sessions) {
       // Sessions with 0 clients and no activity for 2 hours are zombies
@@ -698,25 +711,25 @@ function cleanZombieSessions() {
   } catch {}
 }
 
-// Find Claude CLI (cli.js) processes whose ancestor chain does NOT include
-// any of our tracked PTY pids and is older than 30 minutes — those are
-// orphans left behind by a crashed PTY. Kill them. Windows-only via PowerShell CIM.
-function reapOrphanClaudeProcesses() {
+// Detect Claude CLI (cli.js) processes whose ancestor chain does NOT include
+// any of our tracked PTY pids and is older than 30 minutes.
+// ALERT ONLY — never kill. User investigates orphans manually.
+// NOTE: "Reaper" name is reserved for the Portal data collection system.
+async function detectOrphanClaudeProcesses() {
   if (process.platform !== 'win32') return;
   try {
-    const ourPtyPids = new Set(listSessions().map(s => s.pid).filter(Boolean));
-    // Also exempt our own pid + ppid (server.js + steward) just in case.
+    const sessions = await listSessions();
+    const ourPtyPids = new Set(sessions.map(s => s.pid).filter(Boolean));
     ourPtyPids.add(process.pid);
     if (process.ppid) ourPtyPids.add(process.ppid);
 
-    // Get ALL processes so we can walk ancestor chains, plus filter Claude CLI procs.
     const ps = `$all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CreationDate, @{N='Cmd';E={$_.CommandLine}}
 $claude = $all | Where-Object { $_.Cmd -like '*@anthropic-ai/claude-code/cli.js*' }
 $map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProcessId }
 $result = @{ claude = $claude; pidmap = $map }
 $result | ConvertTo-Json -Compress -Depth 3`;
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
-    const psFile = join(tmpDir, 'pan-reap-orphans.ps1');
+    const psFile = join(tmpDir, 'pan-detect-orphans.ps1');
     writeFileSync(psFile, ps);
     const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true }).trim();
     if (!out) return;
@@ -724,7 +737,6 @@ $result | ConvertTo-Json -Compress -Depth 3`;
     const claudeProcs = parsed.claude ? (Array.isArray(parsed.claude) ? parsed.claude : [parsed.claude]) : [];
     if (!claudeProcs.length) return;
 
-    // Build pid→ppid map for ancestor walking
     const pidMap = new Map();
     if (parsed.pidmap) {
       for (const [k, v] of Object.entries(parsed.pidmap)) {
@@ -732,7 +744,6 @@ $result | ConvertTo-Json -Compress -Depth 3`;
       }
     }
 
-    // Walk up to 12 ancestors to check if any is a tracked PTY
     function hasTrackedAncestor(pid) {
       let current = pid;
       for (let i = 0; i < 12; i++) {
@@ -745,38 +756,61 @@ $result | ConvertTo-Json -Compress -Depth 3`;
     }
 
     const now = Date.now();
-    const MIN_AGE_MS = 30 * 60 * 1000; // 30 min — don't touch fresh hook callbacks
+    const MIN_AGE_MS = 30 * 60 * 1000;
+    const orphans = [];
 
     for (const p of claudeProcs) {
       const pid = p.ProcessId;
       const ppid = p.ParentProcessId;
-      // Parse Windows CIM date "/Date(1775681352482)/"
       const m = /\((\d+)\)/.exec(p.CreationDate || '');
       const startedAt = m ? parseInt(m[1], 10) : 0;
       const ageMs = startedAt ? (now - startedAt) : 0;
 
-      if (ourPtyPids.has(ppid)) continue;       // direct child of a live PTY → keep
-      if (hasTrackedAncestor(pid)) continue;     // descendant of a live PTY → keep
-      if (ageMs < MIN_AGE_MS) continue;          // too young → probably hook callback
+      if (ourPtyPids.has(ppid)) continue;
+      if (hasTrackedAncestor(pid)) continue;
+      if (ageMs < MIN_AGE_MS) continue;
 
-      try {
-        process.kill(pid);
-        console.log(`[Steward] Reaped orphan claude cli.js pid=${pid} ppid=${ppid} age=${Math.round(ageMs/60000)}min`);
-        logServiceEvent('claude-reaper', 'orphan_killed', { pid, ppid, age_ms: ageMs });
-      } catch (err) {
-        console.error(`[Steward] Failed to reap pid ${pid}: ${err.message}`);
+      orphans.push({ pid, ppid, ageMin: Math.round(ageMs / 60000) });
+    }
+
+    if (orphans.length > 0) {
+      const summary = orphans.map(o => `pid=${o.pid} (${o.ageMin}min)`).join(', ');
+      console.log(`[Steward] Detected ${orphans.length} possible orphan Claude process(es): ${summary}`);
+      logServiceEvent('orphan-detection', 'orphans_detected', { count: orphans.length, orphans });
+
+      // Only create a new alert if there isn't already an open one for orphan_processes
+      const existingOpen = get("SELECT id FROM alerts WHERE alert_type = 'orphan_processes' AND status = 'open' LIMIT 1");
+      if (!existingOpen) {
+        createAlert({
+          alert_type: 'orphan_processes',
+          severity: 'warning',
+          title: `${orphans.length} possible orphan Claude process(es) detected`,
+          detail: JSON.stringify({
+            orphans,
+            tracked_pty_pids: [...ourPtyPids],
+            detected_at: new Date().toISOString(),
+            hint: 'Kill manually via Task Manager or taskkill /PID <pid> if confirmed orphans'
+          })
+        });
+      }
+
+      // Also broadcast to terminal so user sees it live
+      for (const s of sessions) {
+        broadcastToSession(s.id, 'system_message', {
+          text: `⚠ ${orphans.length} possible orphan Claude process(es): ${summary}. Check Alerts for details.`,
+          level: 'warning'
+        });
       }
     }
   } catch (err) {
-    // Reaper failures are non-fatal — log and continue
-    console.error(`[Steward] reapOrphanClaudeProcesses error: ${err.message}`);
+    console.error(`[Steward] detectOrphanClaudeProcesses error: ${err.message}`);
   }
 }
 
 // Check if active terminal sessions have a live Claude process. If not,
 // relaunch claude in the PTY. This catches cases where Claude exits
-// (crash, user Ctrl+C, reaper kill) but the bash session stays alive.
-function ensureClaudeInSessions() {
+// (crash, user Ctrl+C, orphan cleanup kill) but the bash session stays alive.
+async function ensureClaudeInSessions() {
   if (process.platform !== 'win32') return;
   try {
     // Get all Claude CLI pids AND full process tree for ancestor walking
@@ -815,7 +849,7 @@ $map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProces
     }
 
     // For each active session, check if its PTY pid is an ancestor of any Claude process
-    const activeSessions = listSessions();
+    const activeSessions = await listSessions();
     for (const s of activeSessions) {
       if (!s.pid) continue;
 

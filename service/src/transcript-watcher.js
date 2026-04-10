@@ -130,19 +130,33 @@ function parseJsonlFile(filepath) {
 }
 
 // Read all JSONL files in the project directory and return a sorted message list.
-function readAllForCwd(cwd) {
+// If claudeSessionIds is provided (non-empty array), only read those specific session files.
+// Otherwise falls back to reading the most recent session file.
+function readAllForCwd(cwd, claudeSessionIds) {
   const dir = cwdToClaudeDir(cwd);
   if (!existsSync(dir)) return [];
   let allMessages = [];
   try {
     const files = readdirSync(dir).filter(f => f.endsWith('.jsonl'));
-    // Sort by file mtime descending — most recent session first. Take last 5 sessions.
-    const filesWithMtime = files.map(f => {
-      const full = join(dir, f);
-      try { return { full, mtime: statSync(full).mtimeMs }; }
-      catch { return { full, mtime: 0 }; }
-    }).sort((a, b) => b.mtime - a.mtime).slice(0, 5);
-    for (const { full } of filesWithMtime) {
+
+    let filesToRead;
+    if (claudeSessionIds && claudeSessionIds.length > 0) {
+      // Filter to only the JSONL files matching this tab's known Claude sessions
+      const sessionSet = new Set(claudeSessionIds);
+      filesToRead = files
+        .filter(f => sessionSet.has(f.replace('.jsonl', '')))
+        .map(f => join(dir, f));
+    } else {
+      // No known sessions yet — show only the most recent file (new tab)
+      const filesWithMtime = files.map(f => {
+        const full = join(dir, f);
+        try { return { full, mtime: statSync(full).mtimeMs }; }
+        catch { return { full, mtime: 0 }; }
+      }).sort((a, b) => b.mtime - a.mtime).slice(0, 1);
+      filesToRead = filesWithMtime.map(f => f.full);
+    }
+
+    for (const full of filesToRead) {
       allMessages.push(...parseJsonlFile(full));
     }
     // Sort merged messages by timestamp ascending
@@ -164,12 +178,27 @@ function readAllForCwd(cwd) {
   }
 }
 
-// Subscribe a callback to changes for a project cwd. Returns an unsubscribe fn.
+// Subscribe a callback to changes for a project cwd. Returns an object with
+// unsubscribe() and setClaudeSessions(ids) to update the session filter.
 // Callback signature: (messages: Message[]) => void. Called immediately with
 // current state on subscribe, then on every file change in that project's dir.
-export function subscribeToTranscript(cwd, callback) {
-  if (!cwd || !callback) return () => {};
+// claudeSessionIds: optional array of Claude session IDs to filter transcripts to.
+export function subscribeToTranscript(cwd, callback, claudeSessionIds) {
+  if (!cwd || !callback) return { unsubscribe: () => {}, setClaudeSessions: () => {} };
   cwd = normalizeCwd(cwd);
+
+  // Each subscriber has its own session filter — wrap the callback
+  const subscriber = {
+    claudeSessionIds: claudeSessionIds || [],
+    callback,
+    fire() {
+      try {
+        const messages = readAllForCwd(cwd, this.claudeSessionIds.length > 0 ? this.claudeSessionIds : null);
+        this.callback(messages);
+      } catch (err) { console.error('[transcript-watcher] subscriber error:', err.message); }
+    }
+  };
+
   let entry = watchers.get(cwd);
   if (!entry) {
     const dir = cwdToClaudeDir(cwd);
@@ -178,11 +207,10 @@ export function subscribeToTranscript(cwd, callback) {
     const emit = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        const messages = readAllForCwd(cwd);
         const e = watchers.get(cwd);
         if (!e) return;
-        for (const cb of e.subscribers) {
-          try { cb(messages); } catch (err) { console.error('[transcript-watcher] subscriber error:', err.message); }
+        for (const sub of e.subscribers) {
+          sub.fire();
         }
       }, 100); // 100ms debounce — coalesce rapid file writes
     };
@@ -232,22 +260,25 @@ export function subscribeToTranscript(cwd, callback) {
     entry = { watcher, poller, subscribers: new Set(), dir, emit };
     watchers.set(cwd, entry);
   }
-  entry.subscribers.add(callback);
+  entry.subscribers.add(subscriber);
 
   // Immediate fire with current state
-  try {
-    const messages = readAllForCwd(cwd);
-    callback(messages);
-  } catch {}
+  subscriber.fire();
 
-  return () => {
-    const e = watchers.get(cwd);
-    if (!e) return;
-    e.subscribers.delete(callback);
-    if (e.subscribers.size === 0) {
-      try { e.watcher?.close(); } catch {}
-      try { if (e.poller) clearInterval(e.poller); } catch {}
-      watchers.delete(cwd);
+  return {
+    unsubscribe: () => {
+      const e = watchers.get(cwd);
+      if (!e) return;
+      e.subscribers.delete(subscriber);
+      if (e.subscribers.size === 0) {
+        try { e.watcher?.close(); } catch {}
+        try { if (e.poller) clearInterval(e.poller); } catch {}
+        watchers.delete(cwd);
+      }
+    },
+    setClaudeSessions: (ids) => {
+      subscriber.claudeSessionIds = ids || [];
+      subscriber.fire(); // Re-read with new filter immediately
     }
   };
 }
