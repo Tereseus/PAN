@@ -21,7 +21,7 @@ import hooksRouter, { injectSessionContext } from './routes/hooks.js';
 import apiRouter from './routes/api.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
-import dashboardRouter from './routes/dashboard.js';
+import dashboardRouter, { createAlert } from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
 import runnerRouter from './routes/runner.js';
 import { extractUser } from './middleware/auth.js';
@@ -37,8 +37,8 @@ import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission } from './terminal.js';
-import { reapOrphans } from './reap-orphans.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry } from './terminal-bridge.js';
+const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,7 +46,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PAN_PORT) || 7777;
 const HOST = '0.0.0.0'; // Listen on all interfaces (phone needs LAN access)
 // Dev mode: PAN_DEV=1 runs server on a separate port with no side-effects.
-// Skips steward, orphan reaping, device registration, service boots — just
+// Skips steward, device registration, service boots — just
 // Express + API + DB (read-safe via WAL) + test runner. Safe to run alongside prod.
 const IS_DEV = process.env.PAN_DEV === '1' || process.env.PAN_DEV === 'true';
 
@@ -319,11 +319,11 @@ app.get('/dashboard/api/processes', (req, res) => {
   }
 });
 
-app.post('/dashboard/api/processes/kill', (req, res) => {
+app.post('/dashboard/api/processes/kill', async (req, res) => {
   const { pid } = req.body;
   if (!pid) return res.status(400).json({ ok: false, error: 'No PID' });
   // Protect PTY pids — never let dashboard kill a terminal session process
-  const ptyPids = new Set(getActivePtyPids());
+  const ptyPids = new Set(await getActivePtyPids());
   if (ptyPids.has(pid)) {
     return res.status(403).json({ ok: false, error: 'Cannot kill active PTY process — use session kill instead' });
   }
@@ -1141,8 +1141,8 @@ app.all('/api/v1/dev/proxy/*proxyPath', async (req, res) => {
 });
 
 // Terminal API — list sessions, projects for terminal
-app.get('/api/v1/terminal/sessions', (req, res) => {
-  res.json({ sessions: listSessions() });
+app.get('/api/v1/terminal/sessions', async (req, res) => {
+  res.json({ sessions: await listSessions() });
 });
 app.get('/api/v1/terminal/projects', (req, res) => {
   res.json({ projects: getTerminalProjects() });
@@ -1152,17 +1152,14 @@ app.delete('/api/v1/terminal/sessions/:id', (req, res) => {
   res.json({ ok: killed });
 });
 
-// Manually reap orphan PAN-spawned bash/claude processes from prior runs.
-// POST { dryRun: true } to preview without killing.
-app.post('/api/v1/admin/reap-orphans', async (req, res) => {
-  try {
-    const dryRun = !!(req.body && req.body.dryRun);
-    const result = await reapOrphans({ activeChildPids: getActivePtyPids(), dryRun });
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
+// Process registry — all PIDs spawned by PAN (PTY, Claude CLI, agent-sdk)
+app.get('/api/v1/processes', async (req, res) => {
+  const processes = await getProcessRegistry();
+  const alive = processes.filter(p => p.alive);
+  const dead = processes.filter(p => !p.alive);
+  res.json({ processes, summary: { total: processes.length, alive: alive.length, dead: dead.length } });
 });
+
 // Permission prompts — mobile polls this to show Allow/Deny buttons
 app.get('/api/v1/terminal/permissions', (req, res) => {
   res.json({ permissions: getPendingPermissions() });
@@ -1173,7 +1170,7 @@ app.delete('/api/v1/terminal/permissions/:id', (req, res) => {
 });
 // Send text to active terminal (phone voice commands → terminal, or
 // the desktop dashboard's own input — same endpoint, different source).
-app.post('/api/v1/terminal/send', (req, res) => {
+app.post('/api/v1/terminal/send', async (req, res) => {
   const { text, session_id, raw, source: bodySource } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
   // raw=true sends without appending \r (for single-keypress responses like permission prompts)
@@ -1225,7 +1222,7 @@ app.post('/api/v1/terminal/send', (req, res) => {
   });
   indexEventFTS(eventId, eventType, dataStr);
 
-  const sessInfo = listSessions();
+  const sessInfo = await listSessions();
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
 });
 
@@ -1971,15 +1968,18 @@ function start() {
 
       // ── SHARED BOOT (prod + dev) ─────────────────────────────────
       // Dev is an exact copy of prod on a different port + database.
-      // Only system-wide singletons (steward, orphan reaper, device
-      // heartbeat) are skipped in dev — they're one-per-machine and
-      // would conflict with the running prod server.
+      // Only system-wide singletons (steward, device heartbeat) are
+      // skipped in dev — they're one-per-machine and would conflict
+      // with the running prod server.
 
       // Start WebSocket terminal server (PTY sessions).
       // Gated to user-session mode only — node-pty's ConPTY backend
       // crashes with "AttachConsole failed" when there's no real
       // console (Session 0 services).
-      if (IS_USER_MODE) {
+      // When running as Craft under Carrier, terminal is owned by Carrier — skip here.
+      if (IS_CRAFT) {
+        console.log('[PAN Craft] Terminal server SKIPPED — owned by Carrier');
+      } else if (IS_USER_MODE) {
         (IS_DEV ? startDevTerminalServer(server) : startTerminalServer(server))
           .catch(e => console.error('[PAN] Terminal init error:', e));
       } else {
@@ -2003,27 +2003,10 @@ function start() {
         // Full server copy — terminal, dashboard, all routes — just no
         // system-wide singletons that would fight with prod.
         console.log('[PAN DEV] Full server on port ' + PORT + ' (terminal + dashboard + API)');
-        console.log('[PAN DEV] Skipping: steward, orphan reaper, device heartbeat');
+        console.log('[PAN DEV] Skipping: steward, device heartbeat');
         console.log(`[PAN DEV] Dashboard: http://localhost:${PORT}`);
       } else {
         // ── PROD-ONLY ─────────────────────────────────────────────────
-
-        // Reap orphan bash/claude processes left over from prior PAN runs.
-        setImmediate(async () => {
-          try {
-            const result = await reapOrphans({ activeChildPids: getActivePtyPids() });
-            if (result.ok) {
-              console.log(`[PAN Reap] Killed ${result.killed.length} orphan(s) (scanned ${result.scanned}, errors ${result.errors?.length || 0})`);
-              if (result.killed.length) {
-                console.log(`[PAN Reap] Pids: ${result.killed.map(k => `${k.name}#${k.pid}`).join(', ')}`);
-              }
-            } else {
-              console.warn(`[PAN Reap] Skipped: ${result.error}`);
-            }
-          } catch (e) {
-            console.warn(`[PAN Reap] Failed: ${e.message}`);
-          }
-        });
 
         // Hybrid memory search: backfill embeddings
         setImmediate(() => {
@@ -2081,7 +2064,7 @@ function start() {
 }
 
 async function stop() {
-  // Kill every tracked PTY child first so bash/claude don't orphan.
+  // Kill every tracked PTY child first on graceful shutdown.
   // Two-phase: broadcast server_restarting FIRST, wait 200ms for WS
   // delivery, THEN kill PTYs. This ensures the frontend receives the
   // flag before the connection drops — without it, wasServerRestart is
@@ -2119,6 +2102,30 @@ async function gracefulShutdown(signal) {
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+
+// Catch unhandled errors so the server doesn't crash and kill all PTY sessions
+process.on('uncaughtException', (err) => {
+  console.error(`[PAN] Uncaught exception (server kept alive):`, err);
+  try {
+    createAlert({
+      alert_type: 'uncaught_exception',
+      severity: 'critical',
+      title: `Uncaught exception: ${err.message?.slice(0, 100)}`,
+      detail: JSON.stringify({ message: err.message, stack: err.stack, time: new Date().toISOString() })
+    });
+  } catch {}
+});
+process.on('unhandledRejection', (reason) => {
+  console.error(`[PAN] Unhandled rejection (server kept alive):`, reason);
+  try {
+    createAlert({
+      alert_type: 'unhandled_rejection',
+      severity: 'warning',
+      title: `Unhandled rejection: ${String(reason)?.slice(0, 100)}`,
+      detail: JSON.stringify({ reason: String(reason), stack: reason?.stack, time: new Date().toISOString() })
+    });
+  } catch {}
+});
 
 // ==================== UI Commands (dashboard frontend polls this, not Electron main) ====================
 const uiCommandQueue = [];
@@ -2320,6 +2327,19 @@ app.get('/api/v1/logs/summary', (req, res) => {
 // Restart endpoint — always does a full process restart that reloads all code from disk.
 // The node-windows wrapper automatically revives the process after exit.
 app.post('/api/admin/restart', async (req, res) => {
+  if (IS_CRAFT) {
+    // Running under Carrier — request a hot swap instead of process.exit
+    // Carrier will spawn a new Craft, health-check it, switch proxy, kill us
+    res.json({ ok: true, message: 'Hot swap requested — Carrier will deploy new Craft...' });
+    console.log('[PAN Craft] Restart requested — notifying Carrier for hot swap');
+    try {
+      const http = await import('http');
+      const swapReq = http.default.request({ hostname: '127.0.0.1', port: parseInt(process.env.PAN_PORT) || 7777, path: '/api/carrier/swap', method: 'POST', timeout: 5000 });
+      swapReq.on('error', () => {});
+      swapReq.end();
+    } catch {}
+    return;
+  }
   res.json({ ok: true, message: 'Restarting — process will exit and reload all code...' });
   console.log('[PAN] Restart requested');
   setTimeout(async () => {

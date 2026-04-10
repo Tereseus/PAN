@@ -3,6 +3,7 @@ import { all, get, run, insert, DB_PATH } from '../db.js';
 import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { broadcastNotification } from '../terminal-bridge.js';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
@@ -1408,5 +1409,117 @@ router.post('/api/open-tabs/:id/reopen', (req, res) => {
   run("UPDATE open_tabs SET closed_at = NULL, last_active = datetime('now','localtime') WHERE id = :id", { ':id': id });
   res.json({ ok: true, tab });
 });
+
+// ==================== ALERTS ====================
+
+// Alert type registry — single source of truth for all alert types in the system.
+// Every createAlert() call must use a type from this registry.
+// Frontend uses this to populate filter dropdowns and show type metadata.
+const ALERT_TYPES = {
+  orphan_processes:     { label: 'Orphan Processes',     category: 'process',   defaultSeverity: 'warning',  source: 'steward',  description: 'Claude CLI processes detected without a tracked PTY parent' },
+  service_crash:        { label: 'Service Crash',        category: 'service',   defaultSeverity: 'critical', source: 'steward',  description: 'A service failed too many restart cycles and gave up' },
+  uncaught_exception:   { label: 'Uncaught Exception',   category: 'server',    defaultSeverity: 'critical', source: 'server',   description: 'Unhandled JS error caught by process handler' },
+  unhandled_rejection:  { label: 'Unhandled Rejection',  category: 'server',    defaultSeverity: 'warning',  source: 'server',   description: 'Unhandled Promise rejection caught by process handler' },
+  pty_crash:            { label: 'PTY Crash',            category: 'terminal',  defaultSeverity: 'critical', source: 'terminal', description: 'A PTY process exited unexpectedly' },
+  health_check_fail:    { label: 'Health Check Failed',  category: 'service',   defaultSeverity: 'warning',  source: 'steward',  description: 'A service health check failed' },
+  startup_error:        { label: 'Startup Error',        category: 'server',    defaultSeverity: 'critical', source: 'server',   description: 'Error during server boot sequence' },
+  transcript_error:     { label: 'Transcript Error',     category: 'terminal',  defaultSeverity: 'warning',  source: 'terminal', description: 'Transcript read/write or watcher failure' },
+  claude_cli_exit:      { label: 'Claude CLI Exit',      category: 'terminal',  defaultSeverity: 'warning',  source: 'terminal', description: 'Claude CLI process exited inside PTY (shell still alive)' },
+};
+
+// GET /dashboard/api/alerts/types — registry of all known alert types (for dropdowns)
+router.get('/api/alerts/types', (req, res) => {
+  const types = Object.entries(ALERT_TYPES).map(([id, meta]) => ({ id, ...meta }));
+  res.json(types);
+});
+
+// GET /dashboard/api/alerts — list alerts (default: open only)
+// Query params: status (open|acknowledged|resolved|dismissed|all), type (alert_type filter), limit
+router.get('/api/alerts', (req, res) => {
+  const status = req.query.status || 'open';
+  const type = req.query.type || null;
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+  const conditions = [];
+  const params = {};
+  if (status !== 'all') { conditions.push('status = :status'); params[':status'] = status; }
+  if (type) { conditions.push('alert_type = :type'); params[':type'] = type; }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const alerts = all(`SELECT * FROM alerts ${where} ORDER BY created_at DESC LIMIT ${limit}`, params);
+  res.json(alerts);
+});
+
+// GET /dashboard/api/alerts/count — count open alerts (for badge)
+router.get('/api/alerts/count', (req, res) => {
+  const row = get("SELECT COUNT(*) as count FROM alerts WHERE status = 'open'");
+  res.json({ count: row?.count || 0 });
+});
+
+// GET /dashboard/api/alerts/:id — single alert detail
+router.get('/api/alerts/:id', (req, res) => {
+  const alert = get("SELECT * FROM alerts WHERE id = :id", { ':id': parseInt(req.params.id) });
+  if (!alert) return res.status(404).json({ error: 'alert not found' });
+  res.json(alert);
+});
+
+// POST /dashboard/api/alerts — create a new alert
+router.post('/api/alerts', (req, res) => {
+  const { alert_type, severity, title, detail } = req.body;
+  if (!alert_type || !title) return res.status(400).json({ error: 'alert_type and title required' });
+  const id = insert(
+    `INSERT INTO alerts (alert_type, severity, title, detail) VALUES (:type, :sev, :title, :detail)`,
+    { ':type': alert_type, ':sev': severity || 'warning', ':title': title, ':detail': detail || '' }
+  );
+  try { broadcastNotification('widget_update', { widget: 'alerts' }); } catch {}
+  res.json({ ok: true, id });
+});
+
+// PATCH /dashboard/api/alerts/:id — update alert status (acknowledge, resolve, dismiss)
+router.patch('/api/alerts/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const alert = get("SELECT * FROM alerts WHERE id = :id", { ':id': id });
+  if (!alert) return res.status(404).json({ error: 'alert not found' });
+
+  const { status, resolution, resolved_by } = req.body;
+  if (!status) return res.status(400).json({ error: 'status required' });
+
+  const validStatuses = ['open', 'acknowledged', 'resolved', 'dismissed'];
+  if (!validStatuses.includes(status)) return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
+
+  const resolvedAt = (status === 'resolved' || status === 'dismissed') ? "datetime('now','localtime')" : 'NULL';
+  run(
+    `UPDATE alerts SET status = :status, resolution = :resolution, resolved_by = :resolved_by,
+     updated_at = datetime('now','localtime'), resolved_at = ${resolvedAt} WHERE id = :id`,
+    { ':id': id, ':status': status, ':resolution': resolution || null, ':resolved_by': resolved_by || 'user' }
+  );
+  try { broadcastNotification('widget_update', { widget: 'alerts' }); } catch {}
+  res.json({ ok: true });
+});
+
+// Helper: create alert from server code (exported for use by steward, terminal, etc.)
+// Uses ALERT_TYPES registry for validation and default severity.
+export function createAlert({ alert_type, severity, title, detail = '' }) {
+  const typeMeta = ALERT_TYPES[alert_type];
+  if (!typeMeta) {
+    console.warn(`[Alerts] Unknown alert_type "${alert_type}" — add it to ALERT_TYPES in dashboard.js`);
+  }
+  const sev = severity || typeMeta?.defaultSeverity || 'warning';
+  const result = insert(
+    `INSERT INTO alerts (alert_type, severity, title, detail) VALUES (:type, :sev, :title, :detail)`,
+    { ':type': alert_type, ':sev': sev, ':title': title, ':detail': detail }
+  );
+  // Push to all connected dashboard clients so alerts panel updates instantly
+  try { broadcastNotification('widget_update', { widget: 'alerts' }); } catch {}
+  return result;
+}
+
+// Generic widget update broadcast — call from any subsystem when data changes.
+// The dashboard client listens for these and refetches only the affected widget.
+export function broadcastWidgetUpdate(widget) {
+  try { broadcastNotification('widget_update', { widget }); } catch {}
+}
+
+export { ALERT_TYPES };
 
 export default router;

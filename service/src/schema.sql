@@ -361,6 +361,26 @@ CREATE INDEX IF NOT EXISTS idx_client_logs_level ON client_logs(level);
 CREATE INDEX IF NOT EXISTS idx_client_logs_created ON client_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_client_logs_device_type ON client_logs(device_type);
 
+-- Alerts — system alerts with lifecycle (open → acknowledged → resolved / dismissed)
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_type TEXT NOT NULL,                      -- 'orphan_processes', 'service_crash', 'pty_exit', etc.
+    severity TEXT NOT NULL DEFAULT 'warning',       -- 'info', 'warning', 'critical'
+    title TEXT NOT NULL,
+    detail TEXT DEFAULT '',                         -- full context: what happened, PIDs, timestamps
+    status TEXT NOT NULL DEFAULT 'open',            -- 'open', 'acknowledged', 'resolved', 'dismissed'
+    resolution TEXT,                                -- how it was fixed (filled on resolve)
+    resolved_by TEXT,                               -- 'user', 'system', 'auto'
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
+CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+
 -- Full-text search index for events — enables instant ranked search across all history
 -- content_text stores the clean extracted text, synced on insert via application code
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(

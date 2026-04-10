@@ -184,6 +184,49 @@ export async function killProcessOnPort(port) {
 }
 
 /**
+ * Fetch a complete pid→ppid map for ALL processes on the system.
+ * Lightweight — only fetches pid and ppid, no cmdline.
+ * Used by orphan detection to walk full ancestor chains through
+ * intermediate processes (conhost, conpty, etc.) that aren't in the
+ * filtered process list.
+ */
+export async function listAllPidPpid() {
+  const map = new Map();
+  try {
+    if (isWindows) {
+      const script =
+        'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId -ErrorAction Stop | ' +
+        "ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ParentProcessId }";
+      const r = await pexec(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        { timeout: 12000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }
+      );
+      for (const raw of r.stdout.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;
+        const parts = line.split('|');
+        const pid = parseInt(parts[0], 10);
+        const ppid = parseInt(parts[1], 10);
+        if (pid && !Number.isNaN(pid)) map.set(pid, ppid);
+      }
+    } else {
+      const r = await pexec(
+        'ps', ['ax', '-o', 'pid,ppid', '--no-headers'],
+        { timeout: 8000, maxBuffer: 8 * 1024 * 1024 }
+      );
+      for (const raw of r.stdout.split('\n')) {
+        const match = raw.trim().match(/^(\d+)\s+(\d+)/);
+        if (match) map.set(parseInt(match[1], 10), parseInt(match[2], 10));
+      }
+    }
+  } catch (err) {
+    console.warn('[platform] listAllPidPpid failed:', err.message);
+  }
+  return map;
+}
+
+/**
  * Enumerate processes matching given names.
  * Returns array of { pid, ppid, name, cmdline }.
  */
