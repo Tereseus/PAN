@@ -235,79 +235,78 @@ CURRENT STATE DOCUMENT:
 ## What Works
 - PAN server 
 
-# PAN State — Updated 2026-04-09
+# PAN State — Updated 2026-04-10
 
 ## What Works
 - PAN server running in user session (Session 1) with visible cmd window
 - Dual-mode detection (mode:"user" confirmed working)
 - ΠΑΝ Remembers briefing system with restart banner
 - Escape key interruption (sends `\x1b` signal to stop Claude)
-- Steward reaper fixed (walks full ancestor chain)
 - Transcript dedup working (no cross-session message contamination)
 - PTY exit detection and red crash banner
-- Orphan cleanup with AHK respawn and exponential backoff
+- Orphan detection via alerts (no more auto-kill)
 - Library widget scanning docs/ and memory files
 - Remote access via Tailscale
 - Path separator normalization in watchers Map (fixed transcript visibility)
-- Status bar reconnect logic (resets claudeReady/claudeRunning on reconnect)
-- Server broadcast of `server_restarting` message before shutdown
-- Transcript file polling with fsWatcher fallback for Windows
+- Dev/prod resource isolation (separate databases/logs/transcripts via PAN_DATA_DIR)
+- Markdown table rendering with styled `<table>` elements
+- Multiple terminal tabs per project with independent PTY sessions
+- Unique session IDs with Date.now() timestamps
+- Reconnect tokens for WebSocket continuity across server restarts (Phase 3)
+- Alerts system with status tracking (open/acknowledged/resolved/dismissed)
+- Uncaught exception handlers creating alerts instead of silent crashes
+- Process Registry: processRegistry Map tracking all PIDs, spawn/exit times, type, session, command
 
 ## Known Issues
-- Copy-paste (Ctrl+V) crashes PTY — terminal freezes on text injection
-- Message queue invisibility — messages sent while Claude thinking don't appear until Claude responds
-- Hard refresh (Ctrl+Shift+R) shows white screen — requires second hard refresh
+- Hard refresh (Ctrl+Shift+R) shows white screen — requires second hard refresh to recover
 - Device status showing stale or incorrect connection state
 - LaTeX/`.tex` files won't render in markdown viewer
-- **Transcript real-time updates broken after restart** — manual refresh required to see new messages, nudge mechanism still not firing
-- **FTS backfill blocking server startup** — Full-Text Search indexes 6081 events synchronously, blocks `listen()` call
+- Dashboard widgets not live-updating when terminal activity occurs — requires manual page refresh
 
 ## Current Priorities
-1. **Fix FTS backfill blocking server startup** — async backfill or defer indexing
-2. **Fix transcript real-time updates after restart** — nudge mechanism not firing despite path fix
-3. **Fix copy-paste PTY crash** — blocks dashboard terminal text injection
-4. **Platform.js cross-platform support** — wire cross-platform paths into all modules, test in dev
-5. **Carrier/Lifeboat/Craft phases 4-7** — PTY handoff, Claude handoff, Shadow Traffic, Crucible
+1. **Process Registry in MCP tools** — expose active/dead process list via `list_processes` tool
+2. **Widget live-update lag** — dashboard widgets not reflecting terminal changes in real-time
+3. **Phase 4 — PTY Handoff** — ensure PTY survives Craft swap, zero scrollback loss
+4. **Phase 5 — Claude Session Handoff** — CLI export/import for session migration
+5. **Hard refresh white screen** — identify and fix page reset bug
 
 ## Key Decisions
 - Federated multi-org: each org runs own PAN server on own tailnet
 - Library widget unified (not split docs/reports), shows all `.md` and `.pan` files
-- Reports and design docs open in new windows via markdown viewer
 - Restart count is north-star metric driving architecture
-- Conversation is source-of-truth; memory files are supporting cache
-- ΠΑΝ Remembers branding for session continuity
+- Sessions use user-customizable names (Pan 1, Pan 2), not PIDs
+- Alerts for orphan processes instead of auto-kill
+- Steward does NOT auto-restart on file edits (lazy-load terminal modules)
 
 ## User Preferences
 - Work autonomously through PAN dashboard, not WezTerm
 - Never restart PAN without explicit permission
-- All docs must display with proper styling in windows
-- Surface critical docs in Library
+- Alert instead of auto-kill for orphan processes
+- Don't force-restart when editing steward/core modules during dev
+- Multiple independent terminal sessions per project should work without interference
 - Test in dev via Electron UI screenshots (not curl/API)
-- Do NOT restart production just to test dev changes
 
 ## Known Facts
-- **briefing text** new canonical format ΠΑΝ Remembers: — Session greeting changed from 'Last time we were working on...' to 'ΠΑΝ Remembers:'. Affects all future session briefings. (user_preference, confidence: 0.95)
-- **PAN server process context** must run in Session 1 (tzuri user), not Session 0 (SYSTEM) — Session 0 lacks proper PTY/console support. node-pty conpty agent fails in SYSTEM context. Session 1 (interactive user) works correctly. (domain_knowledge, confidence: 0.94)
-- **transcript-watcher.js** cause of contamination loading last 5 JSONL files simultaneously — System was merging messages from multiple session files (last 5) causing cross-session message leakage. Dedup logic added as fix. (codebase, confidence: 0.95)
-- **PAN server process context** required session Session 1 (user context, not Session 0/SYSTEM) — Server must run in interactive user session, not SYSTEM session. Session 0 causes node-pty conpty agent failures and PTY crashes. (domain_knowledge, confidence: 0.94)
-- **efficiency reports** quantity generated approximately 5 — User referenced 'my last efficiency reports' (plural) with context on format/styling. Exact count unknown but ~5 mentioned. (domain_knowledge, confidence: 0.6)
-- **transcript-watcher.js** loads last 5 JSONL session files for same directory — transcript-watcher.js merges messages from last 5 JSONL files, causing cross-session message contamination (codebase, confidence: 0.95)
 - **user_correction** stated in context):** (user_preference, confidence: 0.9)
-- **user** prefers Pan remembers phrasing — User wants session briefing to say 'Pan remembers' instead of 'Last time we were working on' to signal restart + retention (user_preference, confidence: 0.9)
 
 ## Recent Memory
 - [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages from locked-out/old sessions into current terminal. Dedup logic added. PTY crashes were caused by server r
-- [2026-04-09 20:53:38] User explicitly blocked auto-restart on core module changes [partial]: User expressed strong frustration ('really retarded') about steward.js triggering force-crash/restart when edited. Requested preventing this behavior so development doesn't lose session context.
+- [2026-04-10 12:57:43] Transcript data loss on page refresh — messages disappear after Claude restart [failure]: User tested message capture (TRANSCRIPT_TEST_123, PINEAPPLE) in pan-main terminal. Messages appeared in real-time but completely disappeared after page refresh. Root cause: system tied transcript to C
+- [2026-04-10 13:19:54] Cross-tab message leaking root cause identified [partial]: broadcastNotification('chat_update', ...) sends to ALL terminal sessions. First tab to process message greedily claims the Claude context, causing subsequent tabs to receive stale/cross-contaminated o
+- [2026-04-10 13:02:53] Transcript data catastrophically lost after recent changes [failure]: User reports unable to see any terminal content from previous session. After commit abbb539 (Apr 9, 10:59 PM), 35 files changed. Largest changes in terminal/+page.svelte (343 lines) and terminal.js (1
 - [2026-04-08 20:54:52] PAN server running in Session 0 (SYSTEM) causing conpty crashes: Server was running in Windows Session 0 (system context), causing node-pty's conpty agent to fail. Moved to Session 1 (tzuri user context). Requires uncaughtException handler in pan.js to catch conpty
+- [2026-04-09 20:53:38] User explicitly blocked auto-restart on core module changes [partial]: User expressed strong frustration ('really retarded') about steward.js triggering force-crash/restart when edited. Requested preventing this behavior so development doesn't lose session context.
+- [2026-04-10 12:04:25] User corrected LLM-agnostic requirement: User emphasized that the transcript system must work for ANY LLM (OpenCode, aider, etc.), not just Claude. Solutions tying to Claude session IDs or JSONL files break for other tools.
 - [2026-04-09 12:30:31] Transcript dedup fixed to prevent cross-session contamination: `transcript-watcher.js` was loading last 5 JSONL session files and merging them, causing ghost messages from locked-out sessions to bleed into current terminal. Dedup logic added to filter out message
 - [2026-04-09 12:04:27] Ghost 'Claude' messages from locked-out session bleeding into current transcript: User discovered spurious 'Claude' messages appearing in terminal during voice input. Root cause: transcript-watcher.js loads the last 5 JSONL session files for the same project directory and merges th
-- [2026-04-09 20:17:18] User clarified session naming and persistence requirements: Users already have ability to change session names — system just needs to save changes. Names should be displayed/changeable, not PIDs.
+- [2026-04-10 08:53:01] Process Registry implementation completed: Terminal.js enhanced with processRegistry Map tracking PIDs, session ID, command, spawn/exit times. Provides infrastructure for session management and process tracking. Code pushed to git master (comm
 - [2026-04-08 22:35:47] PAN server now running in user mode with visible console: Server moved from SYSTEM session (Session 0) to interactive user session (Session 1). Runs with visible cmd window on desktop showing live logs, can be closed to kill PAN cleanly.
-- [2026-04-09 20:53:38] Claude crashed when editing steward.js during phase planning [failure]: PTY exited while Claude was working on phase plan. File watcher or change detection on steward.js triggered server restart/reload, killing the PTY session. Code changes were saved to disk but session 
-- [2026-04-09 22:15:37] Claude crashed multiple times — alerts not capturing crashes [failure]: At least 3 crashes during session (21:36, 22:10:45, post-MCP rewrite). No uncaughtException handlers wired to create alerts. User explicitly wants crash tracing to be alerted like other system events.
-- [2026-04-09 20:17:18] User identified PID-based session matching is unreliable: PIDs change frequently, so matching transcripts by PID won't work. Sessions should use user-customizable names like 'Pan 1', 'Pan 2' instead.
-- [2026-04-09 19:15:56] Dev/prod resource isolation crisis identified and fixed: User discovered dev instance was sharing database (pan.db), terminal logs, JSONL transcripts, and recordings with prod. This prevented safe dev testing. Claude modified db.js to respect PAN_DATA_DIR e
-- [2026-04-08 18:11:09] Memory consolidation system completely br
+- [2026-04-09 22:52:16] Claude crashed during alert testing session — cause unknown [failure]: While sending test alerts and discussing orphan processes, Claude crashed mid-response. User immediately requested orphan process investigation and kill of PID 22852. No error context captured at cras
+- [2026-04-09 20:17:18] User clarified session naming and persistence requirements: Users already have ability to change session names — system just needs to save changes. Names should be displayed/changeable, not PIDs.
+- [2026-04-10 12:57:43] PTY garbage being captured as transcript — fundamental design flaw [failure]: User discovered that PTY raw terminal stream captures TUI garbage (spinners, status bars, mangled text) from Claude's rendering. This noise is useless for any LLM and makes filtering impossible. User 
+- [2026-04-10 13:02:53] Git diff strategy for root cause isolation [partial]: User and Claude examined full diff between last known-good commit (abbb539) and current state to identify which file changes caused transcript visibility bug. All 35 changed files listed and categoriz
+- [2026-04-10 13:19:54] Selective surgical reverts chosen over full git revert: Instead of `git revert abbb539`, Claude agreed to map diffs line-by-line, keeping safe improvements (loading screen, scroll position persistence, input drafts, markdown rendering) while removing only 
+- [2026-04-09 20:53:38] Claude crashed when editing steward.js during phase planning [failure]: PTY exited while Claude was working on phase plan. File watcher or change detection on steward.js triggered se
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

@@ -44,6 +44,15 @@ router.get('/list', (req, res) => {
   res.json(devices);
 });
 
+// Delete a device by ID
+router.delete('/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const device = get("SELECT * FROM devices WHERE id = :id", { ':id': id });
+  if (!device) return res.status(404).json({ ok: false, error: 'Device not found' });
+  run("DELETE FROM devices WHERE id = :id", { ':id': id });
+  res.json({ ok: true, deleted: device.name });
+});
+
 // Command queue — phone sends commands, devices poll for them
 router.post('/command', (req, res) => {
   const { target_device, command_type, command, text } = req.body;
