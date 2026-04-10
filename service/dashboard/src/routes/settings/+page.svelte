@@ -55,11 +55,46 @@
 		bgColor: 'pan_term_bg_color',
 	};
 	let termSettings = $state({ ...TERM_DEFAULTS });
+	// Branding — logo image (data URL) or text, shown in sidebar + loading screen
+	let brandingLogo = $state('ΠΑΝ');
+	let brandingImage = $state('');
 	if (typeof localStorage !== 'undefined') {
 		for (const [field, key] of Object.entries(TERM_KEY_MAP)) {
 			const v = localStorage.getItem(key);
 			if (v) termSettings[field] = v;
 		}
+		const bl = localStorage.getItem('pan_branding_logo');
+		if (bl) brandingLogo = bl;
+		const bi = localStorage.getItem('pan_branding_image');
+		if (bi) brandingImage = bi;
+	}
+	function updateBrandingLogo(value) {
+		brandingLogo = value;
+		localStorage.setItem('pan_branding_logo', value);
+		fireBrandingChange();
+	}
+	function updateBrandingImage(dataUrl) {
+		brandingImage = dataUrl;
+		if (dataUrl) {
+			localStorage.setItem('pan_branding_image', dataUrl);
+		} else {
+			localStorage.removeItem('pan_branding_image');
+		}
+		fireBrandingChange();
+	}
+	function fireBrandingChange() {
+		window.dispatchEvent(new CustomEvent('pan-branding-changed', { detail: { logo: brandingLogo, image: brandingImage } }));
+	}
+	function handleLogoUpload(e) {
+		const file = e.target.files?.[0];
+		if (!file) return;
+		if (file.size > 512 * 1024) { statusMsg = 'Logo too large (max 512KB)'; return; }
+		const reader = new FileReader();
+		reader.onload = () => updateBrandingImage(reader.result);
+		reader.readAsDataURL(file);
+	}
+	function clearLogoImage() {
+		updateBrandingImage('');
 	}
 	function updateTermSetting(key, value) {
 		localStorage.setItem(key, value);
@@ -81,6 +116,10 @@
 	// Rename device
 	let renameDeviceId = $state(null);
 	let renameDeviceName = $state('');
+
+	// Device expand/remove
+	let expandedDeviceId = $state(null);
+	let confirmRemoveDeviceId = $state(null);
 
 	const tabs = [
 		{ id: 'general', label: 'General' },
@@ -303,6 +342,16 @@
 		} catch { flash('Rename failed'); }
 	}
 
+	async function removeDevice(deviceId) {
+		try {
+			await api(`/api/v1/devices/${deviceId}`, { method: 'DELETE' });
+			flash('Device removed');
+			confirmRemoveDeviceId = null;
+			expandedDeviceId = null;
+			await loadDevices();
+		} catch { flash('Remove failed'); }
+	}
+
 	async function toggleDeviceRemoteAccess(deviceId, enabled) {
 		try {
 			await api(`/api/v1/devices/${deviceId}/settings`, {
@@ -502,6 +551,34 @@
 					statusMsg = 'Personality saved';
 					setTimeout(() => statusMsg = '', 2000);
 				}}>Save Personality</button>
+			</section>
+
+			<section class="section">
+				<h3>Branding</h3>
+				<p class="hint">Upload a logo image, or set text. Image takes priority — clear the image to use text instead.</p>
+				<div class="row">
+					<span class="label">Logo Image</span>
+					<div style="display:flex; align-items:center; gap:8px;">
+						<input type="file" accept="image/*" onchange={handleLogoUpload} style="font-size:12px; color:#cdd6f4;" />
+						{#if brandingImage}
+							<button class="btn warn" style="font-size:11px; padding:3px 8px;" onclick={clearLogoImage}>Clear</button>
+						{/if}
+					</div>
+				</div>
+				<div class="row">
+					<span class="label">Logo Text (Fallback)</span>
+					<input type="text" class="term-input" value={brandingLogo} oninput={(e) => updateBrandingLogo(e.target.value)} placeholder="ΠΑΝ" />
+				</div>
+				<div class="row">
+					<span class="label">Preview</span>
+					<div style="display:flex; align-items:center; gap:12px; background:#0a0a0f; padding:12px 20px; border-radius:8px;">
+						{#if brandingImage}
+							<img src={brandingImage} alt="Logo" style="max-height:48px; max-width:120px; object-fit:contain;" />
+						{:else}
+							<span style="font-family: serif; font-size: 32px; font-weight: 700; color: #89b4fa;">{brandingLogo || 'ΠΑΝ'}</span>
+						{/if}
+					</div>
+				</div>
 			</section>
 
 			<section class="section">
@@ -776,26 +853,51 @@
 				<h3>Connected Devices</h3>
 				{#if devices.length}
 					{#each devices as d}
-						<div class="device-row">
-							<div style="flex:1">
-								<div class="fw500">
-									{d.name || d.device_name || 'Unknown'}
-									<span class="small muted">({d.hostname || ''})</span>
+						<div class="device-card" class:expanded={expandedDeviceId === d.id}>
+							<div class="device-row">
+								<div style="flex:1">
+									<div class="fw500">
+										{d.name || d.device_name || 'Unknown'}
+										<span class="small muted">({d.hostname || ''})</span>
+									</div>
+									<div class="small muted">Type: {d.device_type || d.type || '--'} | Last seen: {fmtTime(d.last_seen)}</div>
 								</div>
-								<div class="small muted">Type: {d.device_type || d.type || '--'} | Last seen: {fmtTime(d.last_seen)}</div>
+								<div style="display:flex;align-items:center;gap:10px">
+									<span class="small muted">Remote Access</span>
+									<label class="toggle">
+										<input
+											type="checkbox"
+											checked={deviceSettings[d.id]?.remote_access_enabled || false}
+											onchange={(e) => toggleDeviceRemoteAccess(d.id, e.target.checked)}
+										/>
+										<span class="slider"></span>
+									</label>
+									<span class="dot" class:online={isRecent(d.last_seen)} class:stale={!isRecent(d.last_seen)}></span>
+									<button class="btn-icon" onclick={() => expandedDeviceId = expandedDeviceId === d.id ? null : d.id} title="More options">
+										<span class="chevron" class:rotated={expandedDeviceId === d.id}>&#9656;</span>
+									</button>
+								</div>
 							</div>
-							<div style="display:flex;align-items:center;gap:10px">
-								<span class="small muted">Remote Access</span>
-								<label class="toggle">
-									<input
-										type="checkbox"
-										checked={deviceSettings[d.id]?.remote_access_enabled || false}
-										onchange={(e) => toggleDeviceRemoteAccess(d.id, e.target.checked)}
-									/>
-									<span class="slider"></span>
-								</label>
-								<span class="dot" class:online={isRecent(d.last_seen)} class:stale={!isRecent(d.last_seen)}></span>
-							</div>
+							{#if expandedDeviceId === d.id}
+								<div class="device-options">
+									<div class="device-option">
+										<span class="small muted">ID: {d.id} | Hostname: {d.hostname}</span>
+									</div>
+									{#if confirmRemoveDeviceId === d.id}
+										<div class="device-option danger-zone">
+											<span class="small">Remove <strong>{d.name || d.hostname}</strong>? This revokes access and the device must re-register.</span>
+											<div style="display:flex;gap:8px;margin-top:6px">
+												<button class="btn danger" onclick={() => removeDevice(d.id)}>Confirm Remove</button>
+												<button class="btn" onclick={() => confirmRemoveDeviceId = null}>Cancel</button>
+											</div>
+										</div>
+									{:else}
+										<div class="device-option">
+											<button class="btn danger-outline" onclick={() => confirmRemoveDeviceId = d.id}>Remove Device</button>
+										</div>
+									{/if}
+								</div>
+							{/if}
 						</div>
 					{/each}
 				{:else}
@@ -1457,15 +1559,68 @@
 		margin-top: 4px;
 	}
 
+	.device-card {
+		background: #0a0a0f;
+		border: 1px solid #1e1e2e;
+		border-radius: 8px;
+		margin-bottom: 8px;
+		overflow: hidden;
+	}
+	.device-card.expanded {
+		border-color: #2a2a3e;
+	}
 	.device-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		padding: 12px;
-		background: #0a0a0f;
-		border: 1px solid #1e1e2e;
-		border-radius: 8px;
-		margin-bottom: 8px;
+	}
+	.btn-icon {
+		background: none;
+		border: none;
+		color: #888;
+		cursor: pointer;
+		padding: 4px 6px;
+		font-size: 14px;
+		transition: color 0.15s;
+	}
+	.btn-icon:hover { color: #ccc; }
+	.chevron {
+		display: inline-block;
+		transition: transform 0.2s;
+	}
+	.chevron.rotated { transform: rotate(90deg); }
+	.device-options {
+		border-top: 1px solid #1e1e2e;
+		padding: 8px 12px;
+	}
+	.device-option {
+		padding: 6px 0;
+	}
+	.device-option + .device-option {
+		border-top: 1px solid #141420;
+	}
+	.danger-zone {
+		background: rgba(220, 50, 50, 0.06);
+		border-radius: 6px;
+		padding: 10px;
+		margin: 4px 0;
+	}
+	.btn.danger-outline {
+		background: transparent;
+		border: 1px solid #c0392b;
+		color: #e74c3c;
+	}
+	.btn.danger-outline:hover {
+		background: rgba(220, 50, 50, 0.1);
+	}
+	.btn.danger {
+		background: #c0392b;
+		color: #fff;
+		border: none;
+	}
+	.btn.danger:hover {
+		background: #e74c3c;
 	}
 
 	.oauth-grid {

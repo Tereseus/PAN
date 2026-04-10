@@ -160,16 +160,9 @@ let activeProject = null;
 let chatPollTimer = null;
 let lastSentTime = 0; // prevent auto-refresh from wiping sent messages
 
-// Override fetch to always include auth headers
-const _rawFetch = window.fetch;
-window.fetch = function(url, opts = {}) {
-  opts.headers = opts.headers || {};
-  if (typeof opts.headers === 'object' && !Array.isArray(opts.headers)) {
-    opts.headers['X-Device-Name'] = 'PAN-Mobile';
-    opts.headers['X-Device-Id'] = 'pan-mobile-webview';
-  }
-  return _rawFetch(url, opts);
-};
+// NOTE: Previously overrode fetch to inject X-Device-Name/X-Device-Id headers,
+// but that caused a duplicate "PAN-Mobile" ghost device. The Android app already
+// registers the phone — the mobile web page is just a dashboard viewer.
 
 // Tab switching
 document.getElementById('tab-bar').addEventListener('click', e => {

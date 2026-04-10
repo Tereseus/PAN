@@ -7,20 +7,105 @@
 		<link rel="preconnect" href="https://fonts.googleapis.com">
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-		<link href="/v2/_app/immutable/entry/start.Bgk1wIRK.js" rel="modulepreload">
-		<link href="/v2/_app/immutable/chunks/C6WEjHru.js" rel="modulepreload">
+		<link href="/v2/_app/immutable/entry/start.D0mKg18Z.js" rel="modulepreload">
+		<link href="/v2/_app/immutable/chunks/DSg8zLk_.js" rel="modulepreload">
 		<link href="/v2/_app/immutable/chunks/h4uNlz6f.js" rel="modulepreload">
 		<link href="/v2/_app/immutable/chunks/C-yGe6rG.js" rel="modulepreload">
-		<link href="/v2/_app/immutable/entry/app.II3wIc8S.js" rel="modulepreload">
+		<link href="/v2/_app/immutable/entry/app.k2zR-jJQ.js" rel="modulepreload">
 		<link href="/v2/_app/immutable/chunks/BklU7505.js" rel="modulepreload">
 		<link href="/v2/_app/immutable/chunks/COnKXhzS.js" rel="modulepreload">
 		<link href="/v2/_app/immutable/chunks/DT-1JOoH.js" rel="modulepreload">
 		<link href="/v2/_app/immutable/chunks/BLOLcWPB.js" rel="modulepreload">
 		<link href="/v2/_app/immutable/chunks/D8tl3smS.js" rel="modulepreload">
 		
+		<style>
+			/* Loading screen — visible before SvelteKit hydrates, then fades out */
+			#pan-loading {
+				position: fixed;
+				inset: 0;
+				z-index: 99999;
+				background: #0a0a0f;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				transition: opacity 0.3s ease;
+			}
+			#pan-loading.fade-out {
+				opacity: 0;
+				pointer-events: none;
+			}
+			#pan-loading .logo-mark {
+				font-family: serif;
+				font-size: 64px;
+				font-weight: 700;
+				color: #89b4fa;
+				letter-spacing: 4px;
+				user-select: none;
+				animation: pan-pulse 2s ease-in-out infinite;
+			}
+			#pan-loading .loading-sub {
+				margin-top: 12px;
+				font-family: 'Inter', -apple-system, sans-serif;
+				font-size: 13px;
+				color: #6c7086;
+				letter-spacing: 1px;
+			}
+			@keyframes pan-pulse {
+				0%, 100% { opacity: 0.7; }
+				50% { opacity: 1; }
+			}
+		</style>
 	</head>
 	<body data-sveltekit-preload-data="hover">
+		<!-- Loading screen: shows immediately, removed after SvelteKit hydrates -->
+		<div id="pan-loading">
+			<div class="logo-mark" id="pan-loading-logo">ΠΑΝ</div>
+			<div class="loading-sub"></div>
+		</div>
 		<script>
+			// Show custom branding — image takes priority over text
+			(function() {
+				try {
+					var img = localStorage.getItem('pan_branding_image');
+					var el = document.getElementById('pan-loading-logo');
+					if (img) {
+						var imgEl = document.createElement('img');
+						imgEl.src = img;
+						imgEl.alt = 'Logo';
+						imgEl.style.cssText = 'max-height:80px;max-width:200px;object-fit:contain;';
+						el.textContent = '';
+						el.appendChild(imgEl);
+					} else {
+						var custom = localStorage.getItem('pan_branding_logo');
+						if (custom) el.textContent = custom;
+					}
+				} catch(e) {}
+			})();
+			// Remove loading screen once SvelteKit has mounted
+			(function() {
+				var el = document.getElementById('pan-loading');
+				if (!el) return;
+				// SvelteKit replaces the body placeholder on hydrate.
+				// Use a MutationObserver on the body to detect when the app shell appears.
+				var observer = new MutationObserver(function() {
+					// Check if the Svelte app has rendered (sidebar/shell exists)
+					if (document.querySelector('.shell') || document.querySelector('[data-sveltekit-hydrate]') || document.querySelector('nav.sidebar')) {
+						el.classList.add('fade-out');
+						setTimeout(function() { el.remove(); }, 350);
+						observer.disconnect();
+					}
+				});
+				observer.observe(document.body, { childList: true, subtree: true });
+				// Fallback: remove after 5s no matter what (prevents stuck loading screen)
+				setTimeout(function() {
+					if (el && el.parentNode) {
+						el.classList.add('fade-out');
+						setTimeout(function() { if (el.parentNode) el.remove(); }, 350);
+					}
+				}, 5000);
+			})();
+
 			// Block mouse back/forward buttons from navigating — PAN uses them for voice hotkeys
 			// XButton1 (button 3) = back = Win+H voice typing
 			// XButton2 (button 4) = forward = PAN whisper dictation
@@ -49,7 +134,7 @@
 		<div style="display: contents">
 			<script>
 				{
-					__sveltekit_mbadx7 = {
+					__sveltekit_mxl9u9 = {
 						base: "/v2",
 						assets: "/v2"
 					};
@@ -57,8 +142,8 @@
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("/v2/_app/immutable/entry/start.Bgk1wIRK.js"),
-						import("/v2/_app/immutable/entry/app.II3wIc8S.js")
+						import("/v2/_app/immutable/entry/start.D0mKg18Z.js"),
+						import("/v2/_app/immutable/entry/app.k2zR-jJQ.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});

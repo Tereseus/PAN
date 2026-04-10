@@ -4,6 +4,7 @@ import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { broadcastNotification } from '../terminal-bridge.js';
+import { readTranscript as readPtyTranscript } from '../pty-transcript.js';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
@@ -508,6 +509,21 @@ router.get('/api/transcript', (req, res) => {
     }
 
     // Only return the last N messages to keep payload reasonable
+    const limit = parseInt(req.query.limit) || 200;
+    res.json({ messages: messages.slice(-limit), total: messages.length });
+  } catch (err) {
+    res.json({ error: err.message, messages: [] });
+  }
+});
+
+// GET /api/pty-transcript — read PTY transcript by tab session ID.
+// LLM-agnostic: keyed by tab session ID, persists across Claude restarts.
+router.get('/api/pty-transcript', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, must-revalidate');
+  const sessionId = req.query.session_id;
+  if (!sessionId) return res.json({ error: 'session_id required', messages: [] });
+  try {
+    const messages = readPtyTranscript(sessionId);
     const limit = parseInt(req.query.limit) || 200;
     res.json({ messages: messages.slice(-limit), total: messages.length });
   } catch (err) {

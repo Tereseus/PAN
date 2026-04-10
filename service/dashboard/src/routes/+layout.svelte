@@ -27,6 +27,23 @@
 	let collapsed = $derived(isSidebarCollapsed());
 	let mobileMenuOpen = $state(false);
 
+	// Branding — customizable logo image or text (cached in localStorage)
+	let brandingLogo = $state('Π');
+	let brandingImage = $state('');
+	if (typeof window !== 'undefined') {
+		const bl = localStorage.getItem('pan_branding_logo');
+		if (bl) brandingLogo = bl.charAt(0);
+		const bi = localStorage.getItem('pan_branding_image');
+		if (bi) brandingImage = bi;
+	}
+
+	function handleBrandingChange(e) {
+		const logo = e.detail?.logo;
+		const image = e.detail?.image;
+		if (logo) brandingLogo = logo.charAt(0);
+		brandingImage = image || '';
+	}
+
 	function closeMobileMenu() {
 		mobileMenuOpen = false;
 	}
@@ -87,7 +104,11 @@
 		checkHealth();
 		loadUser();
 		const iv = setInterval(checkHealth, 10000);
-		return () => clearInterval(iv);
+		window.addEventListener('pan-branding-changed', handleBrandingChange);
+		return () => {
+			clearInterval(iv);
+			window.removeEventListener('pan-branding-changed', handleBrandingChange);
+		};
 	});
 </script>
 
@@ -103,7 +124,11 @@
 <div class="shell">
 	<nav class="sidebar" class:collapsed class:mobile-open={mobileMenuOpen}>
 		<div class="logo">
-			<span class="logo-pi">Π</span>
+			{#if brandingImage}
+				<img class="logo-img" src={brandingImage} alt="Logo" />
+			{:else}
+				<span class="logo-pi">{brandingLogo}</span>
+			{/if}
 			<span
 				class="status"
 				class:online={serverStatus === 'online'}
@@ -243,6 +268,17 @@
 		font-weight: 700;
 		color: #89b4fa;
 		flex-shrink: 0;
+	}
+
+	.logo-img {
+		max-height: 28px;
+		max-width: 120px;
+		object-fit: contain;
+		flex-shrink: 0;
+	}
+
+	.sidebar.collapsed .logo-img {
+		max-width: 28px;
 	}
 
 	.logo-refresh {

@@ -376,22 +376,26 @@
 	// New panel data: canonical PAN services from steward + outside-PAN noise.
 	let perfServices = $state([]);
 	let perfOther = $state([]);
+	let perfServer = $state({ heap_mb: 0, rss_mb: 0, avg_ms: 0, total_requests: 0, slow_requests: 0, ws_connections: 0, uptime_s: 0, top_routes: [] });
 	let perfProcessTimer = null;
 	let perfFrames = 0;
 	let perfLastFpsTime = Date.now();
 
 	async function loadPerfProcesses() {
 		try {
-			const data = await api('/dashboard/api/processes');
-			// New endpoint returns { services, other, processes }. Prefer the
-			// canonical `services` list (steward registry → real PIDs); fall
-			// back to legacy `processes` so an old server build still works.
-			if (data?.services) {
-				perfServices = data.services;
-				perfOther = data.other || [];
-				perfProcesses = data.processes || [];
-			} else if (data?.processes) {
-				perfProcesses = data.processes;
+			const [procData, serverData] = await Promise.all([
+				api('/dashboard/api/processes').catch(() => null),
+				api('/dashboard/api/perf').catch(() => null),
+			]);
+			if (procData?.services) {
+				perfServices = procData.services;
+				perfOther = procData.other || [];
+				perfProcesses = procData.processes || [];
+			} else if (procData?.processes) {
+				perfProcesses = procData.processes;
+			}
+			if (serverData) {
+				perfServer = serverData;
 			}
 		} catch {}
 	}
@@ -532,13 +536,27 @@
 			reconnectToken: sessionStorage.getItem('pan_reconnect_token:' + sessionId) || null,
 			userScrolledUp: false,
 			logLines: [],       // Append-only log from server (immune to corruption)
+			draft: sessionStorage.getItem('pan_tab_draft:' + sessionId) || '',
+			pastedImages: [],   // Per-tab image attachments
 		};
 
 		// Track if user has scrolled up (don't auto-scroll if so)
+		// Persist to sessionStorage so scroll position survives page refresh.
 		tabContainer.addEventListener('scroll', () => {
 			const atBottom = tabContainer.scrollHeight - tabContainer.scrollTop - tabContainer.clientHeight < 40;
 			tabData.userScrolledUp = !atBottom;
+			try {
+				sessionStorage.setItem('pan_scrolled_up:' + tabData.sessionId, tabData.userScrolledUp ? '1' : '0');
+				if (tabData.userScrolledUp) {
+					sessionStorage.setItem('pan_scroll_pos:' + tabData.sessionId, String(tabContainer.scrollTop));
+				}
+			} catch {}
 		});
+		// Restore scroll state from sessionStorage (survives refresh)
+		try {
+			const wasUp = sessionStorage.getItem('pan_scrolled_up:' + sessionId);
+			if (wasUp === '1') tabData.userScrolledUp = true;
+		} catch {}
 
 		// Show only this tab's container
 		tabs.forEach(t => { if (t.container) t.container.style.display = 'none'; });
@@ -547,9 +565,22 @@
 		tabs = [...tabs, tabData];
 		activeTabId = tabId;
 		sessionsCount = tabs.length;
+		// Restore input draft for this tab
+		terminalInputText = tabData.draft || '';
+		setTerminalInput(terminalInputText);
 
-		// Initial transcript render — populate from clean message data
-		setTimeout(() => renderTranscriptToTerminal(tabData), 100);
+		// Initial transcript render — populate from clean message data,
+		// then restore scroll position if user was scrolled up before refresh.
+		setTimeout(() => {
+			renderTranscriptToTerminal(tabData);
+			// Restore scroll position after first render
+			try {
+				const savedPos = sessionStorage.getItem('pan_scroll_pos:' + tabData.sessionId);
+				if (tabData.userScrolledUp && savedPos != null) {
+					tabData.container.scrollTop = parseFloat(savedPos);
+				}
+			} catch {}
+		}, 100);
 
 		// (REMOVED) HTTP polling. The server now pushes parsed transcript
 		// messages via the `transcript_messages` WebSocket event whenever
@@ -1070,25 +1101,43 @@
 		const tab = tabs.find(t => t.id === tabId);
 		if (!tab) return;
 
+		// Save current tab's input draft and images before switching
+		const prevTab = getActiveTab();
+		if (prevTab) {
+			prevTab.draft = terminalInputText || '';
+			prevTab.pastedImages = pastedImages || [];
+			try { sessionStorage.setItem('pan_tab_draft:' + prevTab.sessionId, prevTab.draft); } catch {}
+		}
+
 		tabs.forEach(t => {
 			if (t.container) t.container.style.display = t.id === tabId ? 'block' : 'none';
 		});
 
 		activeTabId = tabId;
+		// Restore new tab's input draft and images
+		terminalInputText = tab.draft || '';
+		setTerminalInput(terminalInputText);
+		pastedImages = tab.pastedImages || [];
 		hostLabel = tab.host ? `${tab.host} \u2014 ${tab.project || 'shell'}` : '';
 		// Sync thinking indicator to the tab we just switched to. Without this,
 		// a top-level `claudeReady=false` from a prior send on a different tab
 		// would leak across tabs and pin "Claude is thinking…" forever.
 		claudeReady = tab.claudeReady !== false;
 
-		// Scroll to bottom on tab switch
+		// Scroll to bottom on tab switch (respect saved scroll state)
 		setTimeout(() => {
-			if (tab.container && !tab.userScrolledUp) {
-				tab.container.scrollTop = tab.container.scrollHeight;
+			if (tab.container) {
+				const savedPos = sessionStorage.getItem('pan_scroll_pos:' + tab.sessionId);
+				if (tab.userScrolledUp && savedPos != null) {
+					tab.container.scrollTop = parseFloat(savedPos);
+				} else if (!tab.userScrolledUp) {
+					tab.container.scrollTop = tab.container.scrollHeight;
+				}
 			}
 		}, 50);
-		// Reload sidebar
+		// Reload sidebar — including transcript for the new active tab
 		loadTerminalSidebar(tab.projectId, tab.project);
+		if (leftSection === 'transcript') loadChatHistory();
 	}
 
 	function closeTab(tabId) {
@@ -1128,16 +1177,26 @@
 		if (tab === 'transcript') {
 			loadChatHistory();
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
-			chatRefreshInterval = setInterval(loadChatHistory, 30000);
+			chatRefreshInterval = setInterval(loadChatHistory, 5000);
 		} else {
 			if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
 		}
+	}
+
+	function handleTranscriptScroll() {
+		if (!chatSidebarEl) return;
+		const atBottom = chatSidebarEl.scrollHeight - chatSidebarEl.scrollTop - chatSidebarEl.clientHeight < 30;
+		try {
+			sessionStorage.setItem('pan_transcript_scrolled_up', atBottom ? '0' : '1');
+			if (!atBottom) sessionStorage.setItem('pan_transcript_scroll_pos', String(chatSidebarEl.scrollTop));
+		} catch {}
 	}
 
 	function escapeHtml(str) {
 		if (!str) return '';
 		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 	}
+
 
 	// Listen for terminal settings changes — wipe cached renders so colors apply immediately
 	if (typeof window !== 'undefined') {
@@ -1223,7 +1282,7 @@
 			if (tabData.scrollbackDiv) tabData.scrollbackDiv.style.background = bgColor;
 
 			function buildLineHtml(msg) {
-				if (msg.role === 'user' && msg.type === 'prompt') {
+				if (msg.role === 'user' && (msg.type === 'prompt' || msg.type === 'input')) {
 					let raw = (msg.text || '').trim();
 					// Strip Claude Code's "[Pasted text #N +M lines]" prefix that gets
 					// added to long multi-line pasted prompts. The actual user text
@@ -1247,12 +1306,14 @@
 						`<span style="color:${userTextColor};">${text}</span>` +
 						`</div>`
 					);
-				} else if (msg.role === 'assistant' && msg.type === 'text') {
+				} else if (msg.role === 'assistant' && (msg.type === 'text' || msg.type === 'output')) {
+					let assistantText = msg.text || '';
+					if (!assistantText.trim()) return null;
 					return (
 						`<div class="t-line t-assistant">` +
 						`<span style="color:${llmColor};font-weight:bold;">${escapeHtml(llmName)}</span>` +
 						`<span style="color:#89b4fa;">$ </span>` +
-						`<span style="color:${llmTextColor};">${escapeHtml(msg.text || '')}</span>` +
+						`<span style="color:${llmTextColor};">${renderMarkdown(assistantText)}</span>` +
 						`</div>`
 					);
 				} else if (msg.role === 'assistant' && msg.type === 'tool') {
@@ -1263,7 +1324,7 @@
 						`</div>`
 					);
 				} else if (msg.role === 'system') {
-					const isError = msg.type === 'pty_exit' || msg.type === 'banner';
+					const isError = msg.type === 'pty_exit' || msg.type === 'banner' || msg.type === 'interrupt';
 					const isRestart = msg.type === 'server_restart';
 					const bg = isRestart ? '#1a2332' : '#3c1f24';
 					const border = isRestart ? '#89b4fa' : '#f38ba8';
@@ -1316,8 +1377,8 @@
 				if (!lineHtml) continue;
 
 				let kind = null;
-				if (m.role === 'user' && m.type === 'prompt') kind = 'user';
-				else if (m.role === 'assistant' && m.type === 'text') kind = 'assistant';
+				if (m.role === 'user' && (m.type === 'prompt' || m.type === 'input')) kind = 'user';
+				else if (m.role === 'assistant' && (m.type === 'text' || m.type === 'output')) kind = 'assistant';
 				else if (m.role === 'assistant' && m.type === 'tool') kind = 'tool';
 				else if (m.role === 'system') kind = 'system';
 				if (!kind) continue;
@@ -1475,19 +1536,21 @@
 
 	let chatServerLoaded = false; // true once server data has been received
 	let chatLoadInProgress = false;
+	let chatLoadDirty = false; // true if an update arrived while load was in progress
 	let chatLoadDebounceTimer = null;
 
-	function debouncedLoadChatHistory() {
+	function debouncedLoadChatHistory(delayMs = 300) {
 		if (chatLoadDebounceTimer) clearTimeout(chatLoadDebounceTimer);
 		chatLoadDebounceTimer = setTimeout(() => {
 			chatLoadDebounceTimer = null;
 			loadChatHistory();
-		}, 3000);
+		}, delayMs);
 	}
 
 	async function loadChatHistory() {
-		if (chatLoadInProgress) return; // prevent concurrent loads
+		if (chatLoadInProgress) { chatLoadDirty = true; return; } // queue re-run
 		chatLoadInProgress = true;
+		chatLoadDirty = false;
 		const active = getActiveTab();
 		if (!active) {
 			if (chatServerLoaded) chatBubbles = [];
@@ -1500,6 +1563,12 @@
 			// file watcher (WebSocket), use those directly instead of round-tripping
 			// through the HTTP API (which requires a DB lookup that may not have the
 			// session yet). Both parse the same JSONL files.
+			//
+			// Per-tab isolation: if this tab has no claudeSessionIds yet AND other
+			// tabs share the same cwd (= same project), the server falls back to
+			// reading the most recent JSONL file — which belongs to the other tab.
+			// In that case, don't show pushed messages; wait for this tab's own
+			// Claude session to start.
 			const pushed = active._pushedMessages || [];
 			const echoes = active._echoMessages || [];
 			let allMessages;
@@ -1545,6 +1614,8 @@
 
 				if (sessionIds.length === 0) {
 					if (chatServerLoaded) chatBubbles = [];
+					chatLoadInProgress = false;
+					if (chatLoadDirty) setTimeout(loadChatHistory, 100);
 					return;
 				}
 
@@ -1618,9 +1689,21 @@
 				}
 			}
 
-			// Smart scroll — only auto-scroll if user is already at the bottom
-			const wasAtBottom = chatSidebarEl ? (chatSidebarEl.scrollHeight - chatSidebarEl.scrollTop - chatSidebarEl.clientHeight < 30) : true;
-			const savedPos = chatSidebarEl?.scrollTop;
+			// Smart scroll — only auto-scroll if user is already at the bottom.
+			// On first load after refresh, check sessionStorage for saved position.
+			let wasAtBottom = chatSidebarEl ? (chatSidebarEl.scrollHeight - chatSidebarEl.scrollTop - chatSidebarEl.clientHeight < 30) : true;
+			let savedPos = chatSidebarEl?.scrollTop || 0;
+			const isFirstLoad = !chatServerLoaded;
+			if (isFirstLoad) {
+				try {
+					const storedUp = sessionStorage.getItem('pan_transcript_scrolled_up');
+					const storedPos = sessionStorage.getItem('pan_transcript_scroll_pos');
+					if (storedUp === '1' && storedPos != null) {
+						wasAtBottom = false;
+						savedPos = parseFloat(storedPos);
+					}
+				} catch {}
+			}
 
 			chatBubbles = newBubbles;
 			chatServerLoaded = true;
@@ -1638,6 +1721,11 @@
 			console.error('[PAN Chat] loadChatHistory error:', err);
 		} finally {
 			chatLoadInProgress = false;
+			// If an update arrived while we were loading, run again
+			if (chatLoadDirty) {
+				chatLoadDirty = false;
+				loadChatHistory();
+			}
 		}
 	}
 
@@ -1858,6 +1946,11 @@
 		// Only clear AFTER successful send
 		terminalInputText = '';
 		setTerminalInput('');
+		if (active) {
+			active.draft = '';
+			active.pastedImages = [];
+			try { sessionStorage.setItem('pan_tab_draft:' + active.sessionId, ''); } catch {}
+		}
 		pastedImages = [];
 		if (terminalInputEl) terminalInputEl.style.height = 'auto';
 		// Mark Claude as busy. The poll loop watches the rendered HTML and clears
@@ -1978,6 +2071,12 @@
 		const maxLines = 10;
 		const maxHeight = lineHeight * maxLines;
 		el.style.height = Math.min(el.scrollHeight, maxHeight) + 'px';
+		// Persist draft for active tab
+		const tab = getActiveTab();
+		if (tab) {
+			tab.draft = terminalInputText || '';
+			try { sessionStorage.setItem('pan_tab_draft:' + tab.sessionId, tab.draft); } catch {}
+		}
 	}
 
 	async function handleInputPaste(e) {
@@ -3219,6 +3318,12 @@
 		const handleBeforeUnload = () => {
 			saveSessionState();
 			saveChatToStorage();
+			// Save active tab's input draft so it survives refresh
+			const tab = getActiveTab();
+			if (tab) {
+				tab.draft = terminalInputText || '';
+				try { sessionStorage.setItem('pan_tab_draft:' + tab.sessionId, tab.draft); } catch {}
+			}
 		};
 		window.addEventListener('beforeunload', handleBeforeUnload);
 
@@ -3405,7 +3510,7 @@
 				{/each}
 			</select>
 		</div>
-		<div class="left-content" bind:this={chatSidebarEl}>
+		<div class="left-content" bind:this={chatSidebarEl} onscroll={handleTranscriptScroll}>
 			{#if leftSection === 'transcript'}
 				{#if chatBubbles.length === 0}
 					<div class="empty-state">No conversation yet</div>
@@ -3590,6 +3695,37 @@
 						<span class="perf-label">FPS / Lines</span>
 						<span class="perf-value">{perfData.fps} / {perfData.linesChanged}</span>
 					</div>
+
+					<div class="perf-section-title" style="margin-top:12px">Server Health</div>
+					<div class="perf-metric">
+						<span class="perf-label">Heap</span>
+						<span class="perf-value" class:perf-warn={perfServer.heap_mb > 200} class:perf-bad={perfServer.heap_mb > 500}>{perfServer.heap_mb}MB / {perfServer.rss_mb}MB RSS</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Avg API</span>
+						<span class="perf-value" class:perf-warn={perfServer.avg_ms > 100} class:perf-bad={perfServer.avg_ms > 500}>{perfServer.avg_ms}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Requests</span>
+						<span class="perf-value">{perfServer.total_requests}{perfServer.slow_requests > 0 ? ` (${perfServer.slow_requests} slow)` : ''}</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">WS Clients</span>
+						<span class="perf-value">{perfServer.ws_connections}</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Uptime</span>
+						<span class="perf-value">{perfServer.uptime_s > 3600 ? (perfServer.uptime_s/3600).toFixed(1)+'h' : perfServer.uptime_s > 60 ? Math.round(perfServer.uptime_s/60)+'m' : perfServer.uptime_s+'s'}</span>
+					</div>
+					{#if perfServer.top_routes?.length > 0}
+						<div class="perf-section-title" style="margin-top:8px;font-size:9px">Slowest Routes</div>
+						{#each perfServer.top_routes.slice(0, 3) as r}
+							<div class="perf-metric" style="font-size:9px">
+								<span class="perf-label" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={r.route}>{r.route}</span>
+								<span class="perf-value" class:perf-warn={r.maxMs > 500} class:perf-bad={r.maxMs > 2000}>{r.maxMs}ms max</span>
+							</div>
+						{/each}
+					{/if}
 
 					<div class="perf-section-title" style="margin-top:12px">PAN Services</div>
 					{#if perfServices.length === 0}
@@ -4480,6 +4616,37 @@
 						<span class="perf-label">FPS / Lines</span>
 						<span class="perf-value">{perfData.fps} / {perfData.linesChanged}</span>
 					</div>
+
+					<div class="perf-section-title" style="margin-top:12px">Server Health</div>
+					<div class="perf-metric">
+						<span class="perf-label">Heap</span>
+						<span class="perf-value" class:perf-warn={perfServer.heap_mb > 200} class:perf-bad={perfServer.heap_mb > 500}>{perfServer.heap_mb}MB / {perfServer.rss_mb}MB RSS</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Avg API</span>
+						<span class="perf-value" class:perf-warn={perfServer.avg_ms > 100} class:perf-bad={perfServer.avg_ms > 500}>{perfServer.avg_ms}ms</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Requests</span>
+						<span class="perf-value">{perfServer.total_requests}{perfServer.slow_requests > 0 ? ` (${perfServer.slow_requests} slow)` : ''}</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">WS Clients</span>
+						<span class="perf-value">{perfServer.ws_connections}</span>
+					</div>
+					<div class="perf-metric">
+						<span class="perf-label">Uptime</span>
+						<span class="perf-value">{perfServer.uptime_s > 3600 ? (perfServer.uptime_s/3600).toFixed(1)+'h' : perfServer.uptime_s > 60 ? Math.round(perfServer.uptime_s/60)+'m' : perfServer.uptime_s+'s'}</span>
+					</div>
+					{#if perfServer.top_routes?.length > 0}
+						<div class="perf-section-title" style="margin-top:8px;font-size:9px">Slowest Routes</div>
+						{#each perfServer.top_routes.slice(0, 3) as r}
+							<div class="perf-metric" style="font-size:9px">
+								<span class="perf-label" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={r.route}>{r.route}</span>
+								<span class="perf-value" class:perf-warn={r.maxMs > 500} class:perf-bad={r.maxMs > 2000}>{r.maxMs}ms max</span>
+							</div>
+						{/each}
+					{/if}
 
 					<div class="perf-section-title" style="margin-top:12px">PAN Services</div>
 					{#if perfServices.length === 0}

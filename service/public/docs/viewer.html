@@ -7,6 +7,8 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <style>
   :root {
     --bg: #11111b;
@@ -234,11 +236,77 @@
 <script>
   const params = new URLSearchParams(location.search);
   const file = params.get('file') || 'project_tier0_org_foundation.md';
+  const isTeX = file.endsWith('.tex');
   document.getElementById('meta').textContent = file;
   document.title = 'PAN — ' + file;
 
   // Capitalize first letter of frontmatter keys
   function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  // Render LaTeX math expressions using KaTeX.
+  // Processes $$...$$ (display) and $...$ (inline) in markdown text.
+  function renderMath(text) {
+    if (typeof katex === 'undefined') return text;
+    // Display math: $$...$$ (can span lines)
+    text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => {
+      try { return katex.renderToString(expr.trim(), { displayMode: true, throwOnError: false }); }
+      catch { return '$$' + expr + '$$'; }
+    });
+    // Inline math: $...$ (single line, not greedy, avoid $$)
+    text = text.replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_, expr) => {
+      try { return katex.renderToString(expr.trim(), { displayMode: false, throwOnError: false }); }
+      catch { return '$' + expr + '$'; }
+    });
+    return text;
+  }
+
+  // For .tex files: render the entire content as a LaTeX document
+  function renderTeXDocument(texSource) {
+    if (typeof katex === 'undefined') return '<p style="color:var(--red)">KaTeX not loaded</p>';
+    // Strip LaTeX preamble/document commands, extract body
+    let body = texSource;
+    const bodyMatch = texSource.match(/\\begin\{document\}([\s\S]*?)\\end\{document\}/);
+    if (bodyMatch) body = bodyMatch[1];
+    // Split into paragraphs and render each math environment
+    const blocks = body.split(/\n\n+/);
+    return blocks.map(block => {
+      block = block.trim();
+      if (!block) return '';
+      // Render equation environments
+      const envMatch = block.match(/\\begin\{(equation|align|gather|multline)\*?\}([\s\S]*?)\\end\{\1\*?\}/);
+      if (envMatch) {
+        try { return '<div class="katex-display">' + katex.renderToString(envMatch[2].trim(), { displayMode: true, throwOnError: false }) + '</div>'; }
+        catch { return '<pre>' + block + '</pre>'; }
+      }
+      // Standalone math with \[ ... \]
+      const displayMatch = block.match(/\\\[([\s\S]*?)\\\]/);
+      if (displayMatch) {
+        try { return '<div class="katex-display">' + katex.renderToString(displayMatch[1].trim(), { displayMode: true, throwOnError: false }) + '</div>'; }
+        catch { return '<pre>' + block + '</pre>'; }
+      }
+      // Section/subsection headings
+      const secMatch = block.match(/\\(sub)*section\*?\{(.+?)\}/);
+      if (secMatch) {
+        const level = secMatch[1] ? (secMatch[1] === 'subsub' ? 4 : 3) : 2;
+        return `<h${level}>${secMatch[2]}</h${level}>`;
+      }
+      // Title
+      const titleMatch = block.match(/\\title\{(.+?)\}/);
+      if (titleMatch) return `<h1>${titleMatch[1]}</h1>`;
+      // Author/date
+      if (block.match(/\\(author|date|maketitle)/)) return '';
+      // Strip remaining simple commands and render inline math
+      let html = block
+        .replace(/\\textbf\{(.+?)\}/g, '<strong>$1</strong>')
+        .replace(/\\textit\{(.+?)\}/g, '<em>$1</em>')
+        .replace(/\\emph\{(.+?)\}/g, '<em>$1</em>')
+        .replace(/\\href\{(.+?)\}\{(.+?)\}/g, '<a href="$1">$2</a>')
+        .replace(/\\\\$/gm, '<br>')
+        .replace(/\\item\s*/g, '• ');
+      html = renderMath(html);
+      return `<p>${html}</p>`;
+    }).join('\n');
+  }
 
   function slugify(text) {
     return text.toLowerCase().trim()
@@ -297,7 +365,14 @@
       };
       marked.setOptions({ renderer });
 
-      const html = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['id'] });
+      let html;
+      if (isTeX) {
+        html = renderTeXDocument(md);
+      } else {
+        // Render math expressions before markdown parsing
+        md = renderMath(md);
+        html = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['id', 'class', 'style'], ADD_TAGS: ['span', 'math', 'semantics', 'mrow', 'mi', 'mn', 'mo', 'msup', 'msub', 'mfrac', 'mover', 'munder', 'annotation'] });
+      }
       document.getElementById('content').innerHTML = frontmatter + html;
       document.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
 
