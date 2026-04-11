@@ -759,6 +759,171 @@ const suites = {
     ]
   },
 
+  'tab-isolation': {
+    name: 'Tab Isolation',
+    description: 'Two tabs open on same project get separate PTYs, separate transcripts, no cross-tab contamination',
+    dependsOn: ['pan-remembers'],
+    tests: [
+      {
+        id: 'iso-two-sessions', name: 'Two tabs get separate PTYs',
+        description: 'Connect two WebSockets with different session IDs to the same cwd, verify separate PIDs',
+        run: async (ctx) => {
+          const cwd = 'C:\\Users\\tzuri\\Desktop\\PAN';
+          const sidA = 'test-iso-tab-a-' + Date.now();
+          const sidB = 'test-iso-tab-b-' + Date.now();
+
+          const connA = await connectWs({ session: sidA, project: 'PAN', cwd, cols: 80, rows: 24 });
+          const connB = await connectWs({ session: sidB, project: 'PAN', cwd, cols: 80, rows: 24 });
+          ctx.wsA = connA.ws; ctx.msgsA = connA.messages;
+          ctx.wsB = connB.ws; ctx.msgsB = connB.messages;
+          ctx.sidA = sidA; ctx.sidB = sidB;
+
+          await wait(1500);
+
+          const sessions = await apiGet('/api/v1/terminal/sessions');
+          const sA = sessions.sessions?.find(s => s.id === sidA);
+          const sB = sessions.sessions?.find(s => s.id === sidB);
+          if (!sA) throw new Error('Tab A session not found in API');
+          if (!sB) throw new Error('Tab B session not found in API');
+          if (sA.pid === sB.pid) throw new Error(`Same PID ${sA.pid} for both tabs — PTY not isolated!`);
+          return `Tab A PID=${sA.pid}, Tab B PID=${sB.pid} — separate PTYs confirmed`;
+        }
+      },
+      {
+        id: 'iso-pty-output', name: 'PTY output isolated between tabs',
+        description: 'Send unique marker to Tab A, verify it does NOT appear in Tab B screen',
+        run: async (ctx) => {
+          const markerA = 'ISOLATION_A_' + Date.now();
+          ctx.wsA.send(JSON.stringify({ type: 'input', data: `echo ${markerA}\r` }));
+          await wait(2000);
+
+          // Check Tab A has the marker
+          let foundInA = false;
+          for (const m of ctx.msgsA) {
+            if (m.type === 'screen' || m.type === 'screen-v2') {
+              const text = [...(m.lines || []), ...(m.logLines || [])].join(' ').replace(/<[^>]*>/g, '');
+              if (text.includes(markerA)) { foundInA = true; break; }
+            }
+          }
+          if (!foundInA) throw new Error('Marker not found in Tab A output');
+
+          // Check Tab B does NOT have the marker
+          let foundInB = false;
+          for (const m of ctx.msgsB) {
+            if (m.type === 'screen' || m.type === 'screen-v2') {
+              const text = [...(m.lines || []), ...(m.logLines || [])].join(' ').replace(/<[^>]*>/g, '');
+              if (text.includes(markerA)) { foundInB = true; break; }
+            }
+          }
+          if (foundInB) throw new Error('Tab A marker leaked into Tab B screen — PTY output not isolated!');
+          return 'Tab A marker visible in A, absent from B — PTY output isolated';
+        }
+      },
+      {
+        id: 'iso-claude-session-claim', name: 'Claude session claimed by correct tab',
+        description: 'Tab A registers a Claude session ID, verify server maps it to Tab A only',
+        run: async (ctx) => {
+          const fakeClaudeIdA = 'test-claude-session-A-' + Date.now();
+          ctx.fakeClaudeIdA = fakeClaudeIdA;
+
+          // Tab A claims a Claude session
+          ctx.wsA.send(JSON.stringify({ type: 'set_claude_sessions', sessions: [fakeClaudeIdA] }));
+          await wait(500);
+
+          // Check sessions API — Tab A should have the Claude session, Tab B should not
+          const sessions = await apiGet('/api/v1/terminal/sessions');
+          const sA = sessions.sessions?.find(s => s.id === ctx.sidA);
+          const sB = sessions.sessions?.find(s => s.id === ctx.sidB);
+
+          // The sessions API doesn't expose claudeSessionIds directly, but we can
+          // verify via the terminal module by checking in-flight tool targeting.
+          // Set an in-flight tool for Tab A's Claude session
+          await apiPost('/hooks/PreToolUse', {
+            session_id: fakeClaudeIdA,
+            cwd: 'C:/Users/tzuri/Desktop/PAN',
+            tool_name: 'Bash',
+            tool_input: { command: 'echo test' }
+          });
+          await wait(300);
+
+          // Tab A's session should show the in-flight tool, Tab B should not
+          const sessions2 = await apiGet('/api/v1/terminal/sessions');
+          const sA2 = sessions2.sessions?.find(s => s.id === ctx.sidA);
+          const sB2 = sessions2.sessions?.find(s => s.id === ctx.sidB);
+
+          const aHasTool = sA2?.currentTool?.tool === 'Bash';
+          const bHasTool = sB2?.currentTool?.tool === 'Bash';
+
+          // Clear the in-flight tool
+          await apiPost('/hooks/PostToolUse', {
+            session_id: fakeClaudeIdA,
+            cwd: 'C:/Users/tzuri/Desktop/PAN',
+            tool_name: 'Bash',
+            tool_input: {}
+          });
+
+          if (!aHasTool) throw new Error('Tab A should show in-flight Bash tool but does not');
+          if (bHasTool) throw new Error('Tab B shows Tab A in-flight tool — tool status leaked across tabs!');
+          return 'In-flight tool visible on Tab A only — per-tab tool tracking works';
+        }
+      },
+      {
+        id: 'iso-chat-update-targeted', name: 'chat_update targeted to owning tab',
+        description: 'Fire a chat_update hook for Tab A Claude session, verify only Tab A WebSocket receives it',
+        run: async (ctx) => {
+          // Clear message buffers (track only new messages)
+          const prevCountA = ctx.msgsA.length;
+          const prevCountB = ctx.msgsB.length;
+
+          // Fire a UserPromptSubmit hook with Tab A's Claude session
+          await apiPost('/hooks/UserPromptSubmit', {
+            session_id: ctx.fakeClaudeIdA,
+            cwd: 'C:/Users/tzuri/Desktop/PAN',
+            prompt: 'test isolation message'
+          });
+          await wait(1000);
+
+          // Check new messages on each tab
+          const newA = ctx.msgsA.slice(prevCountA);
+          const newB = ctx.msgsB.slice(prevCountB);
+          const chatUpdateA = newA.find(m => m.type === 'chat_update');
+          const chatUpdateB = newB.find(m => m.type === 'chat_update');
+
+          if (!chatUpdateA) throw new Error('Tab A did not receive chat_update — targeting broken');
+          if (chatUpdateB) throw new Error('Tab B received chat_update meant for Tab A — cross-tab contamination!');
+          return 'chat_update delivered to Tab A only — targeted broadcast works';
+        }
+      },
+      {
+        id: 'iso-transcript-empty', name: 'Empty Claude sessions = empty transcript',
+        description: 'Tab B has no Claude sessions — transcript should be empty, not reading Tab A files',
+        run: async (ctx) => {
+          // Tab B has no Claude session IDs set — check if it received any transcript_messages
+          const transcriptMsgs = ctx.msgsB.filter(m => m.type === 'transcript_messages');
+          for (const tm of transcriptMsgs) {
+            if (tm.messages && tm.messages.length > 0) {
+              // Check if any messages are from Tab A's session (contamination)
+              throw new Error(`Tab B got ${tm.messages.length} transcript messages with no Claude sessions — cross-tab leak!`);
+            }
+          }
+          return 'Tab B transcript empty (no Claude sessions) — no cross-tab transcript contamination';
+        }
+      },
+      {
+        id: 'iso-cleanup', name: 'Cleanup',
+        description: 'Close both test tab connections and kill sessions',
+        run: async (ctx) => {
+          if (ctx.wsA) try { ctx.wsA.close(); } catch {}
+          if (ctx.wsB) try { ctx.wsB.close(); } catch {}
+          // Kill the test sessions so they don't linger
+          try { await apiDelete(`/api/v1/terminal/sessions/${ctx.sidA}`); } catch {}
+          try { await apiDelete(`/api/v1/terminal/sessions/${ctx.sidB}`); } catch {}
+          return 'Both test tabs disconnected and sessions cleaned up';
+        }
+      }
+    ]
+  },
+
   'usage': {
     name: 'Usage Widget',
     description: 'Claude usage endpoint returns real rate limit data from Anthropic API headers',

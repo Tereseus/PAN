@@ -156,157 +156,119 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**Claude** (2026-04-07 16:36:26): ```json
-{
-  "episodes": [
-    {
-      "summary": "Claude not launching in dashboard terminal despite briefing working",
-      "detail": "User reported blank bash prompt in PAN dashboard terminal. Briefing displays correctly but Claude process never starts. This blocks the core chat functionality ins
-**User** (2026-04-09 09:23:31): Well actually what I wanna fix because it's fucking stupid and I think this is this is what's causing it there's a random I'll wait to answer my question did Pan remembers actually work this time righ
-**User** (2026-04-09 11:03:34): You are PAN's self-assessment system. Review these observations and critique PAN's current behavior.
+**User** (2026-04-10 23:07:54): Say MANGO
+**Claude** (2026-04-10 23:07:56): MANGO
+**User** (2026-04-10 23:09:55): What is the capital of France? One word.
+**Claude** (2026-04-10 23:09:57): Paris.
+**User** (2026-04-10 23:11:40): What is 2+2? One word answer.
+**Claude** (2026-04-10 23:11:41): Four.
+**User** (2026-04-10 23:12:17): <task-notification>
+<task-id>bjkwcjkop</task-id>
+<tool-use-id>toolu_01FLYwjs67e1aZSWh6iB8x4k</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop\74b0c8eb-b207-4a
+**Claude** (2026-04-10 23:12:17): **IT WORKS END-TO-END!**
 
-CURRENT CONFIG:
-### CLAUDE.md
+- WebSocket connected ✓
+- HTTP pipe sent "What is 2+2?" ✓
+- Transcript update: user message appeared instantly ✓
+- Transcript update: "Four." — correct answer ✓
+- Clean structured data, no TUI garbage ✓
+- No 10-second startup — Agent SDK runs in-process ✓
+- Streamed via Web
+**Claude** (2026-04-10 23:12:23): Background test confirmed it. The Agent SDK adapter is working. Hard refresh the dashboard and type a full question — the backend is ready. "Four." came through clean and instant.
+**User** (2026-04-10 23:13:22): hey
+**Claude** (2026-04-10 23:13:24): Hey! What's up?
+**User** (2026-04-10 23:13:29): yo
+**Claude** (2026-04-10 23:13:31): Yo! What's going on?
+**User** (2026-04-10 23:13:33): The Desktop session just switched PAN to pipe mode. Here's what changed:
 
+  Claude now launches as claude -p --output-format stream-json --verbose --permission-mode auto via child_process.spawn — NOT 
+**Claude** (2026-04-10 23:14:28): Alright, I've got the full picture. Here's the summary:
 
-## Known Issues
-- Copy-paste into terminal input still broken (Ctr
-**User** (2026-04-09 11:28:43): Can you look at what's happening with Pan the I'm trying to send a message it says it's ready it says it's up but it keeps failing [PAN Terminal] PTY exited: dash-pan-1775613066893 code=-1073741510 up
-**User** (2026-04-09 11:48:10): You are PAN's self-assessment system. Review these observations and critique PAN's current behavior.
+**The pipe mode setup looks solid.** Here's what's wired up:
 
-CURRENT CONFIG:
-### CLAUDE.md
-
-
-## Known Issues
-- Copy-paste into terminal input still broken (Ctr
-**User** (2026-04-09 12:09:08): You are PAN's self-assessment system. Review these observations and critique PAN's current behavior.
-
-CURRENT CONFIG:
-### CLAUDE.md
-
-
-## Known Issues
-- Copy-paste into terminal input still broken (Ctr
-**User** (2026-04-09 14:01:54): So whatever you're doing there to Panjs you're restarting what what did you not did you not actually end up fixing what you were trying to fix there OK, full picture. Here's what I found:
-
-## Process 
-**User** (2026-04-09 14:04:41): OK so you just restarted where is the ΠΑΝ remembers where is that Look at the context of everything we were saying
-
-OK, full picture. Here's what I found:
-
-## Process Tree (clean, no orphans)
-```
-cmd.
-**User** (2026-04-09 14:19:36): All right just look at how bugged out this shit is look at all the pictures and everything that I listed up before of what we were trying to fix:
-
-Claude
-14:03
-Claude$ Now restarting via the proper MC
-**Claude** (2026-04-09 15:14:46): **Root cause found and fixed.** The watchers Map was keyed by raw cwd strings — the terminal registered with `C:/Users/tzuri/Desktop/PAN` (forward slashes) but the hooks called `nudgeTranscript` with `C:\Users\tzuri\Desktop\PAN` (backslashes). Different Map keys = nudge silently did nothing.
-
-Added 
-**User** (2026-04-09 15:16:10): You are PAN's memory consolidation system. Extract structured memories from these recent events.
-
-EVENTS:
-[2026-04-09 15:03:57] Claude: Server starts clean, no import errors. Here's the fix:
-
-**Root c
-**Claude** (2026-04-09 15:16:24): ```json
-{
-  "episodes": [
-    {
-      "summary": "Transcript visibility bug — path separator mismatch in watchers Map",
-      "detail": "Messages were written to JSONL correctly but not appearing in dashboard terminal. Root cause: watchers Map keyed by raw cwd strings with inconsistent path separato
-**User** (2026-04-09 15:46:23): Tereseus
-15:19
-Tereseus$ Oh actually that's not actually correct I think it's still showing old data Let me send you this message you reply and then I'll show you what it shows in the transcript I had
-**Claude** (2026-04-09 18:27:13): ```json
-{
-  "episodes": [
-    {
-      "summary": "Transcript visibility bug fixed — path separator mismatch in watchers Map",
-      "detail": "Terminal was registered with forward slashes (C:/Users/tzuri/Desktop/PAN) but hooks called nudgeTranscript with backslashes (C:\\Users\\tzuri\\Desktop\\PAN).
-**User** (2026-04-09 18:27:19): You are PAN's memory system. You maintain a LIVING STATE DOCUMENT that tracks what's going on across the project.
-
-CURRENT STATE DOCUMENT:
-# PAN State — Updated 2026-04-09
-
-## What Works
-- PAN server 
+1. **Backend (`llm-adapter-claude.js`)** — Uses the Agent SDK directly (`@anthropic-ai/claude-agent-sdk`'s `query()`) — no PTY, no shell, no `claude -p` CLI subprocess. It streams s
 
 # PAN State — Updated 2026-04-10
 
 ## What Works
 - PAN server running in user session (Session 1) with visible cmd window
-- Dual-mode detection (mode:"user" confirmed working)
 - ΠΑΝ Remembers briefing system with restart banner
-- Escape key interruption (sends `\x1b` signal to stop Claude)
-- Transcript dedup working (no cross-session message contamination)
-- PTY exit detection and red crash banner
-- Orphan detection via alerts (no more auto-kill)
-- Library widget scanning docs/ and memory files
-- Remote access via Tailscale
+- Per-tab independent PTY sessions (separate processes, PIDs work)
 - Path separator normalization in watchers Map (fixed transcript visibility)
-- Dev/prod resource isolation (separate databases/logs/transcripts via PAN_DATA_DIR)
-- Markdown table rendering with styled `<table>` elements
-- Multiple terminal tabs per project with independent PTY sessions
-- Unique session IDs with Date.now() timestamps
-- Reconnect tokens for WebSocket continuity across server restarts (Phase 3)
-- Alerts system with status tracking (open/acknowledged/resolved/dismissed)
-- Uncaught exception handlers creating alerts instead of silent crashes
-- Process Registry: processRegistry Map tracking all PIDs, spawn/exit times, type, session, command
+- Dev/prod resource isolation (separate databases/logs/transcripts via `PAN_DATA_DIR`)
+- Orphan detection via Steward alerts (Reaper disabled, alerts only)
+- Reconnect tokens for WebSocket continuity across server restarts
+- JSONL tail read optimization (large files only read last 512KB)
+- 200 message cap per JSONL read (prevents lag on large sessions)
 
 ## Known Issues
-- Hard refresh (Ctrl+Shift+R) shows white screen — requires second hard refresh to recover
-- Device status showing stale or incorrect connection state
-- LaTeX/`.tex` files won't render in markdown viewer
-- Dashboard widgets not live-updating when terminal activity occurs — requires manual page refresh
+- **Claude not launching in dev terminal** — keeps saying "Claude is thinking", never replies; dev entirely broken
+- **Claude dies in PAN MAIN tab** — launches once at PTY creation, but crashes/exits and doesn't relaunch; bare bash remains
+- **Transcript in PAN MAIN tab not updating live** — only the last-opened tab gets real-time updates
+- **Data loss on page refresh** — messages disappear after hard refresh; `claudeSessionIds` stored in memory only, wiped on reload
+- **DB vs live PTY session ID mismatch** — session IDs use random timestamps, change on every server restart, don't match DB records
+- **LaTeX/`.tex` files won't render** in markdown viewer
 
 ## Current Priorities
-1. **Process Registry in MCP tools** — expose active/dead process list via `list_processes` tool
-2. **Widget live-update lag** — dashboard widgets not reflecting terminal changes in real-time
-3. **Phase 4 — PTY Handoff** — ensure PTY survives Craft swap, zero scrollback loss
-4. **Phase 5 — Claude Session Handoff** — CLI export/import for session migration
-5. **Hard refresh white screen** — identify and fix page reset bug
+1. **Replace timestamp-based session IDs with stable tab-name IDs** — change from `dash-pan[PHONE]040` (ephemeral) to `dash-pan-main` (stable); survives restarts and page refreshes
+2. Fix Claude auto-relaunch mechanism in PAN MAIN tab (missing recovery if Claude exits after initial launch)
+3. Fix transcript live updates in PAN MAIN tab
+4. Persist `claudeSessionIds` across page refreshes (reconnect token mechanism exists but not fully wired)
 
 ## Key Decisions
-- Federated multi-org: each org runs own PAN server on own tailnet
-- Library widget unified (not split docs/reports), shows all `.md` and `.pan` files
+- Federated multi-org: each org runs own PAN server on tailnet
 - Restart count is north-star metric driving architecture
-- Sessions use user-customizable names (Pan 1, Pan 2), not PIDs
-- Alerts for orphan processes instead of auto-kill
-- Steward does NOT auto-restart on file edits (lazy-load terminal modules)
+- PTY transcript is primary source (LLM-agnostic); Claude JSONL is supplementary
+- Per-tab isolation: input, images, transcripts are session-specific
+- Session IDs MUST be derived from tab names (not random timestamps)
+- Steward (not Reaper) handles orphan alerts; Reaper disabled, no killing
+- `broadcastNotification('chat_update')` must filter by tab/session to prevent cross-tab leaking
 
 ## User Preferences
-- Work autonomously through PAN dashboard, not WezTerm
-- Never restart PAN without explicit permission
-- Alert instead of auto-kill for orphan processes
-- Don't force-restart when editing steward/core modules during dev
-- Multiple independent terminal sessions per project should work without interference
+- Work autonomously through PAN dashboard, not WezTerm/CLI
+- Never restart without explicit permission
 - Test in dev via Electron UI screenshots (not curl/API)
+- Transcript system must work for ANY LLM (not just Claude)
+- No blind changes — explain architecture first before implementing
+- Tab system must be rock-solid with zero cross-contamination
 
 ## Known Facts
-- **user_correction** stated in context):** (user_preference, confidence: 0.9)
+- **Two active Claude sessions** revert changes made by each other on shared PAN codebase — Desktop Claude session and dashboard Claude session simultaneously modifying same files. One session makes pipe mode + briefing fixes, other session reverts them. Creates perpetual conflict loop preventing convergence. (codebase, confidence: 0.95)
+- **two Claude sessions** conflict same PAN codebase — Desktop session and dashboard session simultaneously editing same files, creating revert loops. One session must be stopped or isolated to prevent constant overwrites. (codebase, confidence: 0.95)
+- **Two Claude sessions** actively conflicting same PAN codebase files — Desktop Claude session and dashboard Claude session simultaneously editing/reverting same files, creating revert loops. One session must be stopped before further development. (codebase, confidence: 0.95)
+- **Claude pipe mode with --session-id --resume** successfully handles multi-turn conversation and message resumption — When briefing is not involved, Claude pipe mode correctly receives user messages, maintains session context, and generates proper responses across multiple turns. (domain_knowledge, confidence: 0.95)
+- **Pipe mode message handling** is independent from briefing context injection mechanism — Pipe mode correctly handles multi-turn conversations, --session-id, and --resume flags. Briefing system's context injection is separate vector that breaks pipe mode. Not a pipe mode bug but cross-system interaction failure. (domain_knowledge, confidence: 0.9)
+- **ΠΑΝ Remembers briefing message** triggers CLAUDE.md context injection into session continuity mode — The briefing system that injects session context is causing Claude to enter a problematic state. This is distinct from the pipe mode message handling which works correctly. (codebase, confidence: 0.95)
+- **broadcastNotification('chat_update')** sends to ALL WebSocket clients regardless of tab/session — In terminal.js:376, every user prompt, stop, and assistant message broadcasts to every connected terminal session across every tab without filtering by pty_session_id. This is the primary vector for cross-tab contamination. (codebase, confidence: 0.95)
 
 ## Recent Memory
+- [2026-04-10 22:47:34] Briefing context injection remains problematic even in pipe mode [failure]: ΠΑΝ Remembers briefing still triggers CLAUDE.md context injection that puts Claude in hang/mode shift state. Pipe mode message handling works correctly (multi-turn, --session-id, --resume all function
+- [2026-04-10 16:14:44] Cross-tab message contamination confirmed and temporarily fixed, then reverted [partial]: User reported PTY exits and messages from PAN 1 tab bleeding into PAN Main despite separate PTY processes. Root cause identified: broadcastNotification('chat_update') in terminal.js sends to ALL WebSo
+- [2026-04-10 21:57:03] Two Claude sessions actively conflicting on codebase [failure]: Desktop Claude session reverting changes that dashboard Claude session was making, creating perpetual revert loop. One session makes changes, other immediately reverts them, preventing convergence.
+- [2026-04-10 22:37:51] Briefing context injection causing Claude hang, not actual process failure [partial]: User reported 'Claude is not running' and messages not arriving, but Claude was actually replying to subsequent questions. Root cause identified: the ΠΑΝ Remembers briefing message triggers CLAUDE.md 
 - [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages from locked-out/old sessions into current terminal. Dedup logic added. PTY crashes were caused by server r
-- [2026-04-10 12:57:43] Transcript data loss on page refresh — messages disappear after Claude restart [failure]: User tested message capture (TRANSCRIPT_TEST_123, PINEAPPLE) in pan-main terminal. Messages appeared in real-time but completely disappeared after page refresh. Root cause: system tied transcript to C
-- [2026-04-10 13:19:54] Cross-tab message leaking root cause identified [partial]: broadcastNotification('chat_update', ...) sends to ALL terminal sessions. First tab to process message greedily claims the Claude context, causing subsequent tabs to receive stale/cross-contaminated o
-- [2026-04-10 13:02:53] Transcript data catastrophically lost after recent changes [failure]: User reports unable to see any terminal content from previous session. After commit abbb539 (Apr 9, 10:59 PM), 35 files changed. Largest changes in terminal/+page.svelte (343 lines) and terminal.js (1
-- [2026-04-08 20:54:52] PAN server running in Session 0 (SYSTEM) causing conpty crashes: Server was running in Windows Session 0 (system context), causing node-pty's conpty agent to fail. Moved to Session 1 (tzuri user context). Requires uncaughtException handler in pan.js to catch conpty
-- [2026-04-09 20:53:38] User explicitly blocked auto-restart on core module changes [partial]: User expressed strong frustration ('really retarded') about steward.js triggering force-crash/restart when edited. Requested preventing this behavior so development doesn't lose session context.
-- [2026-04-10 12:04:25] User corrected LLM-agnostic requirement: User emphasized that the transcript system must work for ANY LLM (OpenCode, aider, etc.), not just Claude. Solutions tying to Claude session IDs or JSONL files break for other tools.
-- [2026-04-09 12:30:31] Transcript dedup fixed to prevent cross-session contamination: `transcript-watcher.js` was loading last 5 JSONL session files and merging them, causing ghost messages from locked-out sessions to bleed into current terminal. Dedup logic added to filter out message
-- [2026-04-09 12:04:27] Ghost 'Claude' messages from locked-out session bleeding into current transcript: User discovered spurious 'Claude' messages appearing in terminal during voice input. Root cause: transcript-watcher.js loads the last 5 JSONL session files for the same project directory and merges th
-- [2026-04-10 08:53:01] Process Registry implementation completed: Terminal.js enhanced with processRegistry Map tracking PIDs, session ID, command, spawn/exit times. Provides infrastructure for session management and process tracking. Code pushed to git master (comm
-- [2026-04-08 22:35:47] PAN server now running in user mode with visible console: Server moved from SYSTEM session (Session 0) to interactive user session (Session 1). Runs with visible cmd window on desktop showing live logs, can be closed to kill PAN cleanly.
-- [2026-04-09 22:52:16] Claude crashed during alert testing session — cause unknown [failure]: While sending test alerts and discussing orphan processes, Claude crashed mid-response. User immediately requested orphan process investigation and kill of PID 22852. No error context captured at cras
-- [2026-04-09 20:17:18] User clarified session naming and persistence requirements: Users already have ability to change session names — system just needs to save changes. Names should be displayed/changeable, not PIDs.
-- [2026-04-10 12:57:43] PTY garbage being captured as transcript — fundamental design flaw [failure]: User discovered that PTY raw terminal stream captures TUI garbage (spinners, status bars, mangled text) from Claude's rendering. This noise is useless for any LLM and makes filtering impossible. User 
-- [2026-04-10 13:02:53] Git diff strategy for root cause isolation [partial]: User and Claude examined full diff between last known-good commit (abbb539) and current state to identify which file changes caused transcript visibility bug. All 35 changed files listed and categoriz
-- [2026-04-10 13:19:54] Selective surgical reverts chosen over full git revert: Instead of `git revert abbb539`, Claude agreed to map diffs line-by-line, keeping safe improvements (loading screen, scroll position persistence, input drafts, markdown rendering) while removing only 
-- [2026-04-09 20:53:38] Claude crashed when editing steward.js during phase planning [failure]: PTY exited while Claude was working on phase plan. File watcher or change detection on steward.js triggered se
+- [2026-04-10 21:39:51] Two Claude sessions actively conflicting on same codebase [failure]: Desktop Claude session was reverting changes that dashboard Claude session was making, creating perpetual revert loop. One session would make changes, the other would revert them, preventing convergen
+- [2026-04-10 16:14:44] Transcript data loss on hard refresh after session activity [failure]: Messages sent during session appear in real-time terminal but completely disappear after browser hard refresh. JSONL session files contain the content but dashboard doesn't restore them on reconnect. 
+- [2026-04-10 17:16:26] Cross-tab message contamination root causes identified and documented: Two separate contamination vectors found: (1) broadcastNotification('chat_update') broadcasts to ALL WebSocket clients without session filtering, (2) PAN_SESSION_ID and PAN_TAB env vars not passed to 
+- [2026-04-10 13:22:50] Data loss on page refresh — transcript messages disappear after hard refresh/restart [failure]: User testing revealed that messages (TRANSCRIPT_TEST_123, PINEAPPLE) sent during session appear in real-time but completely disappear after page refresh. Symptom: JSONL session file only contains 3 me
+- [2026-04-10 13:52:11] DB vs live PTY session ID mismatch discovered — critical data persistence issue [partial]: Session IDs stored in DB don't match live PTY session IDs. DB has dash-pan[PHONE]040 and dash-pan[PHONE]980, but live sessions have dash-pan[PHONE]755 etc. Indicates tabs/transcripts not syncing prope
+- [2026-04-10 19:54:26] Critical discovery: two Claude sessions actively conflicting on same codebase [failure]: One Claude session (desktop/external) is reverting changes. Simultaneously, another Claude session running inside PAN dashboard is making new changes to the same files. Creates perpetual conflict loop
+- [2026-04-10 22:47:34] Stale pipe mode session state persists after hard browser refresh [failure]: Hard refresh expected to clear `_pipeHasRun` and `_pipeSessionId`, create fresh subprocess with new --session-id UUID. Instead, stale state persisted—subsequent messages showed cached 'What's up' resp
+- [2026-04-10 19:51:57] Dev and prod sharing JSONL transcript files — root cause of 4+ days of debugging [failure]: Despite separate Node processes (ports 7777/7781), databases, and in-memory state, dev and prod both read/write the same JSONL transcript files at filesystem level. User pointed out this invalidates a
+
+## Known Procedures
+- **Archive completed memory items**: Remove solved tasks and closed issues from active session context
+  1. Identify completed tasks in open issues list
+  2. Move to archived/solved section with completion timestamp
+  3. Clear from active session briefing
+  4. Run Dream Cycle to rewrite pan-state.md with only active items
+  5. Verify next session doesn't list solved items as open
+- **Session Briefing Injection Update**: How to change the greeting text that appears at session start. Text is injected by hooks.js and rendered in terminal system message.
+  1. Edit greeting text in hooks.js:157 (injects future sessions)
+  2. Update CLAUDE.md with new format (reference for users)
+  3. Update .pan-briefing.md template
+  4. No resta
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

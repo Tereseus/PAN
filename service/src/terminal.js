@@ -8,13 +8,16 @@ const pty = require('node-pty');
 import { WebSocketServer, WebSocket } from 'ws';
 import { hostname } from 'os';
 import { join } from 'path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { spawn } from 'child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { all, insert } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
 import { subscribeToTranscript, writeSystemEvent } from './transcript-watcher.js';
+import { captureInput, captureOutput, subscribeToSession, writeSystemMessage, flushSession, destroySession, readTranscript, setSessionName, renameTranscript } from './pty-transcript.js';
 import { getTerminalLogDir, getShell, getDataDir } from './platform.js';
 import { createAlert } from './routes/dashboard.js';
+import { ClaudeAdapter } from './llm-adapter-claude.js';
 
 // Terminal log directory — persists ScreenBuffer logs across server restarts
 const TERMINAL_LOG_DIR = getTerminalLogDir();
@@ -22,6 +25,60 @@ try { mkdirSync(TERMINAL_LOG_DIR, { recursive: true }); } catch {}
 
 // Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
 const sessions = new Map();
+
+// Send a message to a session's LLM adapter.
+// Uses the Agent SDK (no PTY, no subprocess, no TUI).
+function pipeSend(sessionId, userText) {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    console.error(`[PAN LLM] Session not found: ${sessionId}`);
+    return false;
+  }
+  userText = (userText || '').trim();
+  if (!userText) return false;
+
+  // Create adapter on first use
+  if (!session._llmAdapter) {
+    session._llmAdapter = new ClaudeAdapter(sessionId, session.cwd, (messages) => {
+      // Push transcript to all connected WebSocket clients
+      session.lastOutputTs = Date.now();
+      session.claudeRunning = session._llmAdapter?.busy || false;
+      for (const client of session.clients) {
+        if (client.readyState === 1) {
+          try {
+            client.send(JSON.stringify({ type: 'transcript_messages', messages }));
+          } catch {}
+        }
+      }
+    });
+    console.log(`[PAN LLM] Created Claude adapter for session ${sessionId} cwd=${session.cwd}`);
+  }
+
+  session.claudeRunning = true;
+  session._llmAdapter.send(userText).then(() => {
+    session.claudeRunning = false;
+    // Notify ready
+    for (const c of session.clients) {
+      if (c.readyState === 1) {
+        try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
+      }
+    }
+  });
+  return true;
+}
+
+// Push stream transcript messages to all connected clients for a session
+function _pushStreamTranscript(sess) {
+  const messages = [...(sess.systemMessages || []), ...(sess._streamMessages || [])];
+  messages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+  for (const client of sess.clients) {
+    if (client.readyState === 1) {
+      try {
+        client.send(JSON.stringify({ type: 'transcript_messages', messages }));
+      } catch {}
+    }
+  }
+}
 
 // ==================== Process Registry ====================
 // Tracks ALL PIDs spawned by PAN: PTY shells, Claude CLI inside PTY, agent-sdk calls.
@@ -193,14 +250,11 @@ function updateTokenClaudeSessions(token, claudeSessionIds) {
 // Load tokens on module init
 loadTokens();
 
-// In-flight tool tracker — keyed by normalized cwd. Updated by the
-// PreToolUse / PostToolUse / SubagentStart / SubagentStop hooks so the
-// dashboard status bar can show the user what Claude is actually doing
-// instead of staring at a dead "thinking" spinner. Replaces the 30-min
-// black hole where a long Bash or Explore subagent looks identical to a
-// crash.
-//   key = cwd (forward-slashed, lowercased on Windows)
-//   value = { tool, summary, startedAt, claudeSessionId, isSubagent }
+// In-flight tool tracker — keyed by Claude session ID so multiple tabs
+// on the same cwd each track their own tool status independently.
+// Updated by PreToolUse / PostToolUse / SubagentStart / SubagentStop hooks.
+//   key = claudeSessionId (unique per Claude CLI instance)
+//   value = { tool, summary, startedAt, claudeSessionId, isSubagent, cwd }
 const inFlightTools = new Map();
 
 function _cwdKey(cwd) {
@@ -209,24 +263,44 @@ function _cwdKey(cwd) {
 }
 
 function setInFlightTool(cwd, info) {
-  const key = _cwdKey(cwd);
+  // Key by claudeSessionId if available, fall back to cwd for backwards compat
+  const key = info?.claudeSessionId || _cwdKey(cwd);
   if (!key) return;
-  inFlightTools.set(key, { ...info, startedAt: Date.now() });
+  inFlightTools.set(key, { ...info, cwd, startedAt: Date.now() });
 }
 
 function clearInFlightTool(cwd, claudeSessionId) {
-  const key = _cwdKey(cwd);
-  if (!key) return;
-  const cur = inFlightTools.get(key);
-  // Only clear if this PostToolUse matches the in-flight session — prevents
-  // a stale Post from a different agent wiping the active tool.
-  if (!cur) return;
-  if (claudeSessionId && cur.claudeSessionId && cur.claudeSessionId !== claudeSessionId) return;
-  inFlightTools.delete(key);
+  // Clear by claudeSessionId (preferred) or by cwd (fallback)
+  if (claudeSessionId && inFlightTools.has(claudeSessionId)) {
+    inFlightTools.delete(claudeSessionId);
+    return;
+  }
+  // Fallback: find entry matching this cwd + claudeSessionId
+  const cwdNorm = _cwdKey(cwd);
+  for (const [key, cur] of inFlightTools) {
+    if (claudeSessionId && cur.claudeSessionId && cur.claudeSessionId !== claudeSessionId) continue;
+    if (_cwdKey(cur.cwd) === cwdNorm || key === cwdNorm) {
+      inFlightTools.delete(key);
+      return;
+    }
+  }
 }
 
-function getInFlightTool(cwd) {
-  return inFlightTools.get(_cwdKey(cwd)) || null;
+function getInFlightTool(cwd, claudeSessionIds) {
+  // If we have specific Claude session IDs (from a tab), look those up first
+  if (claudeSessionIds && claudeSessionIds.length > 0) {
+    for (const csid of claudeSessionIds) {
+      const tool = inFlightTools.get(csid);
+      if (tool) return tool;
+    }
+    return null;
+  }
+  // Fallback: find any entry matching this cwd
+  const cwdNorm = _cwdKey(cwd);
+  for (const [, cur] of inFlightTools) {
+    if (_cwdKey(cur.cwd) === cwdNorm) return cur;
+  }
+  return null;
 }
 
 // Default shell — platform.js handles Git Bash detection + Linux/Mac
@@ -278,8 +352,14 @@ async function startTerminalServer(httpServer) {
     const sessionId = tokenEntry?.sessionId || url.searchParams.get('session') || 'default';
     const projectName = tokenEntry?.project || url.searchParams.get('project') || '';
     const cwd = tokenEntry?.cwd || url.searchParams.get('cwd') || 'C:\\Users\\tzuri\\Desktop';
+    const tabName = url.searchParams.get('tab_name') || '';
     const cols = parseInt(url.searchParams.get('cols')) || 120;
     const rows = parseInt(url.searchParams.get('rows')) || 30;
+
+    // Register tab name for per-tab transcript file naming
+    if (tabName) {
+      setSessionName(sessionId, tabName);
+    }
 
     let session = sessions.get(sessionId);
 
@@ -293,12 +373,8 @@ async function startTerminalServer(httpServer) {
       const restored = term.loadLogFile();
       if (restored > 0) {
         console.log(`[PAN Terminal] Restored ${restored} log entries from prior session: ${sessionId}`);
-        // Persist restart marker to JSONL transcript so it appears in transcript view
-        writeSystemEvent(cwd, 'server_restart', `Server restarted — restored ${restored} log entries from prior session`, {
-          session_id: sessionId,
-          project: projectName,
-          restored_entries: restored,
-        });
+        // Persist restart marker to per-tab transcript
+        writeSystemMessage(sessionId, 'server_restart', `Server restarted — restored ${restored} log entries from prior session`);
       }
 
       // Spawn new PTY
@@ -335,6 +411,7 @@ async function startTerminalServer(httpServer) {
           lastOutputTs: Date.now(),
           claudeRunning: false, // true once Claude's ❯ prompt is detected in PTY output
           claudeExited: false, // set true when Claude CLI exits inside the PTY
+          claudeSessionIds: [], // Claude session IDs belonging to this tab (updated via set_claude_sessions)
         };
         sessions.set(sessionId, session);
 
@@ -346,65 +423,140 @@ async function startTerminalServer(httpServer) {
           command: `${SHELL} ${SHELL_ARGS.join(' ')}`,
         });
 
-        // PTY output -> append-only log (raw) + ScreenBuffer (VT100) -> HTML to clients
+        // PTY output → parse stream-json events from Claude pipe mode.
+        // In pipe mode, Claude outputs one JSON event per line on stdout.
+        // PTY wraps long lines at column width and adds ANSI cursor sequences,
+        // so we strip ANSI first, then buffer, then extract JSON objects.
+        let _jsonBuf = '';
+        session._streamMessages = []; // Parsed transcript messages for this session
+        session._claudeSessionId = null; // Claude session UUID from stream init
+
+        // Strip ALL ANSI escape sequences from raw PTY data
+        function _stripAnsi(s) {
+          return s
+            .replace(/\x1b\[[\x20-\x3f]*[\x30-\x3f]*[\x40-\x7e]/g, '')
+            .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+            .replace(/\x1b[^[\]P\x1b]/g, '')
+            .replace(/\x1bP[^\x1b]*\x1b\\/g, '')
+            .replace(/\x1b/g, '')
+            .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+            .replace(/\x07/g, '');
+        }
+
         ptyProcess.onData((data) => {
           session.lastOutputTs = Date.now();
-          // Detect Claude's ❯ prompt to know Claude is actually running
-          if (!session.claudeRunning && data.includes('\u276F')) {
-            session.claudeRunning = true;
-            session.claudeExited = false;
-            // Discover and register the LLM CLI PID running inside this PTY
-            if (!session._claudeCliPid && process.platform === 'win32') {
-              discoverAndRegisterCliProcess(session, sessionId, ptyProcess.pid);
+          term.write(data);
+
+          // Strip ANSI, buffer, and extract complete JSON objects
+          const clean = _stripAnsi(data);
+          _jsonBuf += clean;
+
+          // Try to extract JSON objects — they start with { and end with }
+          // followed by a newline or end of buffer
+          const extracted = [];
+          let searchFrom = 0;
+          while (searchFrom < _jsonBuf.length) {
+            const start = _jsonBuf.indexOf('{', searchFrom);
+            if (start < 0) break;
+            // Find matching closing brace (simple depth tracking)
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+            let end = -1;
+            for (let i = start; i < _jsonBuf.length; i++) {
+              const ch = _jsonBuf[i];
+              if (escaped) { escaped = false; continue; }
+              if (ch === '\\' && inString) { escaped = true; continue; }
+              if (ch === '"') { inString = !inString; continue; }
+              if (inString) continue;
+              if (ch === '{') depth++;
+              if (ch === '}') { depth--; if (depth === 0) { end = i; break; } }
             }
+            if (end < 0) break; // Incomplete JSON — wait for more data
+            const candidate = _jsonBuf.substring(start, end + 1);
+            try {
+              const obj = JSON.parse(candidate);
+              extracted.push(obj);
+            } catch { /* not valid JSON, skip */ }
+            searchFrom = end + 1;
           }
-          // Detect Claude CLI exit: bash prompt returns after Claude was running.
-          // Bash prompt pattern: ends with "$ " after MINGW/user@ prefix, or just "$ ".
-          // Only fire once per exit (claudeExited flag prevents spam).
-          if (session.claudeRunning && !session.claudeExited) {
-            // Match typical Git Bash prompt: "user@host MINGW64 ~/path\n$ "
-            // or simple "$ " after Claude exits
-            const bashPromptReturned = /\$\s*$/.test(data) && !data.includes('\u276F');
-            if (bashPromptReturned) {
-              session.claudeExited = true;
-              session.claudeRunning = false;
-              console.log(`[PAN Terminal] Claude CLI exited in session ${sessionId} — bash prompt returned`);
-              // Deregister Claude CLI from registry if tracked
-              if (session._claudeCliPid) {
-                deregisterProcess(session._claudeCliPid, -1);
-                session._claudeCliPid = null;
-              }
-              try {
-                createAlert({
-                  alert_type: 'claude_cli_exit',
-                  severity: 'warning',
-                  title: `Claude exited: ${session.project || sessionId}`,
-                  detail: `Claude CLI process exited inside PTY. Shell still alive (PID ${ptyProcess.pid}). Session: ${sessionId}`,
-                });
-              } catch {}
-              // Notify connected clients
-              for (const client of session.clients) {
-                if (client.readyState === 1) {
-                  try {
-                    client.send(JSON.stringify({
-                      type: 'claude_exited',
-                      session: sessionId,
-                      project: session.project,
-                    }));
-                  } catch {}
+          // Keep only unprocessed data in buffer (after last extracted object)
+          if (searchFrom > 0) _jsonBuf = _jsonBuf.substring(searchFrom);
+          // Prevent buffer from growing unbounded
+          if (_jsonBuf.length > 100000) _jsonBuf = _jsonBuf.substring(_jsonBuf.length - 10000);
+
+          if (extracted.length > 0) {
+            console.log(`[PAN Terminal] Extracted ${extracted.length} JSON events from PTY: ${extracted.map(e => e.type + (e.subtype ? ':' + e.subtype : '')).join(', ')}`);
+          }
+          for (const evt of extracted) {
+
+            // Parse stream-json event types
+            if (evt.type === 'system' && evt.subtype === 'init') {
+              // Session init — capture Claude session ID + mark as running
+              session._claudeSessionId = evt.session_id;
+              session.claudeRunning = true;
+              session.claudeExited = false;
+              console.log(`[PAN Terminal] Stream init: claude_session=${evt.session_id} in ${sessionId}`);
+
+            } else if (evt.type === 'assistant' && evt.message?.content) {
+              // Assistant message — extract clean text and tool use
+              for (const block of evt.message.content) {
+                if (block.type === 'text' && block.text?.trim()) {
+                  session._streamMessages.push({
+                    role: 'assistant', type: 'text',
+                    text: block.text,
+                    ts: new Date().toISOString(),
+                    model: evt.message.model || null,
+                  });
+                } else if (block.type === 'tool_use') {
+                  const name = block.name || 'unknown';
+                  const input = block.input || {};
+                  let summary = name;
+                  if (name === 'Bash' && input.command) summary = `Bash: ${input.command.substring(0, 120)}`;
+                  else if (name === 'Edit' && input.file_path) summary = `Edit: ${input.file_path.split(/[/\\]/).pop()}`;
+                  else if (name === 'Read' && input.file_path) summary = `Read: ${input.file_path.split(/[/\\]/).pop()}`;
+                  else if (name === 'Write' && input.file_path) summary = `Write: ${input.file_path.split(/[/\\]/).pop()}`;
+                  else if (name === 'Grep' && input.pattern) summary = `Grep: ${input.pattern.substring(0, 60)}`;
+                  else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
+                  else if (name === 'Agent' && (input.description || input.prompt)) summary = `Agent: ${(input.description || input.prompt).substring(0, 80)}`;
+                  session._streamMessages.push({
+                    role: 'assistant', type: 'tool',
+                    text: summary,
+                    ts: new Date().toISOString(),
+                  });
                 }
               }
+              // Push updated transcript to all clients
+              _pushStreamTranscript(session);
+
+            } else if (evt.type === 'result') {
+              // Turn complete — Claude exited back to bash
+              session.claudeRunning = false;
+              console.log(`[PAN Terminal] Stream result: turns=${evt.num_turns} cost=$${evt.total_cost_usd?.toFixed(4)} in ${sessionId}`);
+              // Final push
+              _pushStreamTranscript(session);
             }
           }
-          term.write(data);
-          // Debounce rendering — batch rapid output into single screen update
+
+          // Detect bash prompt return ($ at end without JSON)
+          // This catches the case between claude -p invocations
+          const rawStripped = data.replace(/[\r\n]/g, '').trim();
+          if (/\$\s*$/.test(rawStripped) && !rawStripped.startsWith('{')) {
+            if (session.claudeRunning) {
+              session.claudeRunning = false;
+            }
+          }
+
+          // Debounce screen rendering (for raw terminal view)
           if (!session.renderTimer) {
             session.renderTimer = setTimeout(() => {
               session.renderTimer = null;
               broadcastRenderedScreen(session);
-            }, 33); // ~30fps — sufficient for terminal output
+            }, 33);
           }
         });
+
+        // Push is handled by module-level _pushStreamTranscript
 
         ptyProcess.onExit(({ exitCode }) => {
           const uptimeMs = Date.now() - (session.createdAt || Date.now());
@@ -445,7 +597,10 @@ async function startTerminalServer(httpServer) {
           } else {
             console.log(`[PAN Terminal] Planned shutdown — skipping crash alert for ${sessionId}`);
           }
-          // Persist PTY exit to JSONL transcript so it survives server restarts
+          // Persist PTY exit to per-tab transcript file
+          flushSession(sessionId);
+          writeSystemMessage(sessionId, 'pty_exit', `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`);
+          // Also write to old Claude JSONL transcript (for backwards compat)
           writeSystemEvent(session.cwd, 'pty_exit', `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`, {
             exit_code: exitCode,
             uptime_ms: uptimeMs,
@@ -534,37 +689,14 @@ async function startTerminalServer(httpServer) {
     // (triggered by the dashboard auto-launch) IS the briefing. A separate system
     // banner was rendering as a red warning box which looked wrong.
 
-    // Subscribe this WebSocket to JSONL transcript file changes for the project's
-    // cwd. The watcher uses fs.watch to detect any change to .jsonl files in the
-    // Claude Code projects dir for this cwd, parses them, and pushes the full
-    // message list as `transcript_messages`. Merges system messages (banners,
-    // PTY events) so they persist across refreshes.
-    if (cwd) {
-      // Parse Claude session IDs — prefer token (survived restart), fall back to query param
-      let claudeSessionIds = claudeSessionIdsFromToken.length > 0 ? claudeSessionIdsFromToken : [];
-      if (claudeSessionIds.length === 0) {
-        try {
-          const csidsParam = url.searchParams.get('claude_sessions');
-          if (csidsParam) claudeSessionIds = JSON.parse(csidsParam);
-        } catch {}
-      }
-
-      const subscription = subscribeToTranscript(cwd, (messages) => {
-        if (ws.readyState === 1) {
-          try {
-            // Cache raw transcript messages for later merges (PTY exit, etc.)
-            session._lastTranscriptMessages = messages;
-            // Merge system messages with transcript
-            const merged = [...(session.systemMessages || []), ...messages];
-            merged.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-            ws.send(JSON.stringify({ type: 'transcript_messages', messages: merged }));
-          } catch (err) {
-            console.error('[PAN Terminal] transcript push failed:', err.message);
-          }
-        }
-      }, claudeSessionIds);
-      ws._unsubscribeTranscript = subscription.unsubscribe;
-      ws._transcriptSubscription = subscription;
+    // Transcript is now parsed directly from the stream-json PTY output
+    // (see onData handler above). On reconnect, send existing messages immediately.
+    if (session._streamMessages?.length > 0) {
+      const messages = [...(session.systemMessages || []), ...session._streamMessages];
+      messages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+      try {
+        ws.send(JSON.stringify({ type: 'transcript_messages', messages }));
+      } catch {}
     }
 
     // Handle incoming messages from client
@@ -577,24 +709,30 @@ async function startTerminalServer(httpServer) {
             if (session.pty) {
               session.lastInputTs = Date.now();
               session.pty.write(parsed.data);
+              // Detect pipe-mode commands and extract user message for transcript
+              const pipeMatch = parsed.data.match(/claude\s+-p\s+--continue\s+.*--permission-mode\s+\w+\s+'((?:[^'\\]|\\.)*)'/);
+              if (pipeMatch) {
+                const userText = pipeMatch[1].replace(/'\\''/g, "'");
+                if (userText.trim() && !/ΠΑΝ remembers/i.test(userText)) {
+                  session._streamMessages = session._streamMessages || [];
+                  session._streamMessages.push({
+                    role: 'user', type: 'prompt',
+                    text: userText.trim(),
+                    ts: new Date().toISOString(),
+                  });
+                  _pushStreamTranscript(session);
+                }
+              }
             }
             break;
 
           case 'interrupt':
-            // User pressed Escape — send Ctrl+C AND log it as system message
+            // User pressed Escape — send ESC char to interrupt Claude Code
             if (session.pty) {
               session.lastInputTs = Date.now();
-              session.pty.write('\x03');
-              const intMsg = { role: 'system', type: 'banner', text: 'Interrupted (Escape)', ts: new Date().toISOString() };
-              if (session.systemMessages) session.systemMessages.push(intMsg);
-              // Push to all clients immediately
-              const merged = [...(session.systemMessages || []), ...(session._lastTranscriptMessages || [])];
-              merged.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-              for (const client of session.clients) {
-                if (client.readyState === 1) {
-                  try { client.send(JSON.stringify({ type: 'transcript_messages', messages: merged })); } catch {}
-                }
-              }
+              session.pty.write('\x1b');
+              // Write interrupt to per-tab transcript (subscribers auto-notified)
+              writeSystemMessage(sessionId, 'interrupt', 'Interrupted (Escape)');
             }
             break;
 
@@ -606,15 +744,24 @@ async function startTerminalServer(httpServer) {
             break;
 
           case 'set_claude_sessions':
-            // Client discovered new Claude session IDs — update Claude transcript filter + token
+            // Client discovered new Claude session IDs — update transcript filter + token
             if (Array.isArray(parsed.sessions)) {
+              // Update the JSONL watcher filter so it reads only this tab's files
               if (ws._transcriptSubscription) {
                 ws._transcriptSubscription.setClaudeSessions(parsed.sessions);
               }
               if (ws._reconnectToken) {
                 updateTokenClaudeSessions(ws._reconnectToken, parsed.sessions);
               }
+              if (session) {
+                const merged = new Set([...(session.claudeSessionIds || []), ...parsed.sessions]);
+                session.claudeSessionIds = [...merged];
+              }
             }
+            break;
+
+          case 'pipe_send':
+            pipeSend(sessionId, parsed.text);
             break;
 
           case 'ping':
@@ -745,7 +892,7 @@ function listSessions() {
     const inputNewer = lastIn > lastOut && now - lastOut > 300;
     const stillStreaming = lastIn > 0 && now - lastOut < 2000 && lastIn > lastOut - 60000;
     const thinking = inputNewer || stillStreaming;
-    const inFlight = getInFlightTool(session.cwd);
+    const inFlight = getInFlightTool(session.cwd, session.claudeSessionIds);
     result.push({
       id,
       project: session.project,
@@ -804,15 +951,11 @@ async function killAllSessions() {
 
   let n = 0;
   for (const [id, session] of sessions) {
-    // Persist shutdown event to JSONL transcript BEFORE killing anything
+    // Persist shutdown event to per-tab transcript BEFORE killing anything
     try {
       const uptimeMs = Date.now() - (session.createdAt || Date.now());
-      writeSystemEvent(session.cwd, 'server_shutdown', `Server shutting down — session ${id} killed (uptime ${Math.round(uptimeMs/1000)}s)`, {
-        session_id: id,
-        project: session.project,
-        pid: session.pty?.pid,
-        uptime_ms: uptimeMs,
-      });
+      flushSession(id);
+      writeSystemMessage(id, 'server_shutdown', `Server shutting down — session ${id} killed (uptime ${Math.round(uptimeMs/1000)}s)`);
     } catch {}
     // Flush current screen content to disk BEFORE killing the PTY.
     // This ensures anything visible in the terminal at shutdown time
@@ -929,6 +1072,34 @@ function broadcastNotification(type, data) {
   }
 }
 
+// Find the PTY session that owns a given Claude session ID.
+// Returns the PTY sessionId string, or null if no match.
+function findSessionByClaudeId(claudeSessionId) {
+  if (!claudeSessionId) return null;
+  for (const [id, session] of sessions) {
+    if (session.claudeSessionIds && session.claudeSessionIds.includes(claudeSessionId)) {
+      return id;
+    }
+  }
+  return null;
+}
+
+// Broadcast a chat_update to ONLY the tab that owns this Claude session.
+// Falls back to broadcastNotification if no owning tab is found (e.g. new session
+// not yet discovered). This prevents cross-tab contamination.
+function broadcastChatUpdate(data) {
+  const claudeSessionId = data?.session_id;
+  const ownerSessionId = findSessionByClaudeId(claudeSessionId);
+  if (ownerSessionId) {
+    // Targeted: only send to the owning tab's clients
+    broadcastToSession(ownerSessionId, 'chat_update', data);
+  } else {
+    // No owner found yet — broadcast to all so the first tab can claim it.
+    // This only happens for the very first message of a new Claude session.
+    broadcastNotification('chat_update', data);
+  }
+}
+
 // Broadcast to a SPECIFIC session's WebSocket clients
 function broadcastToSession(sessionId, type, data) {
   let session = sessionId ? sessions.get(sessionId) : null;
@@ -983,4 +1154,4 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend };

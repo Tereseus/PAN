@@ -982,7 +982,7 @@
 									});
 									await new Promise(r => setTimeout(r, 300));
 								} catch {}
-								newWs.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+								/* pipe mode: no auto-launch — user's first message triggers Claude */;
 							}, 2000);
 						} else if (projectName && projectName !== 'Shell') {
 							// FALLBACK: server_restarting message may have been lost (race
@@ -1009,7 +1009,7 @@
 											});
 											await new Promise(r => setTimeout(r, 300));
 										} catch {}
-										newWs.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
+										/* pipe mode: no auto-launch — user's first message triggers Claude */;
 									}
 								} catch {}
 							}, 5000);
@@ -1072,11 +1072,7 @@
 							await new Promise(r => setTimeout(r, 300));
 						} catch {}
 
-						if (briefingReady) {
-							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto "\u03A0\u0391\u039D remembers..."\n' }));
-						} else {
-							ws.send(JSON.stringify({ type: 'input', data: 'claude --permission-mode auto\n' }));
-						}
+						/* pipe mode: no auto-launch — user's first message triggers Claude */
 					}, 1500);
 				}
 			};
@@ -1281,9 +1277,72 @@
 			if (tabData.container) tabData.container.style.background = bgColor;
 			if (tabData.scrollbackDiv) tabData.scrollbackDiv.style.background = bgColor;
 
+			// Filter applied to msg.text when the message came from the PTY
+			// transcript (type === 'input' / 'output'). Claude's JSONL path
+			// (type === 'prompt' / 'text' / 'tool') is already clean and does
+			// not need this. Single source of truth for "what TUI garbage
+			// should never reach the rendered transcript/terminal."
+			function isNoisyTerminalLine(line) {
+				const t = line.trim();
+				if (!t) return true;
+				// TUI noise chars (spinners, box drawing, block chars)
+				const TUI = /[✻✶✽✢●·▐▛▜▘▝█▀▄░▒▓─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬…]/g;
+				const meaningful = t.replace(TUI, '').replace(/\s+/g, '').trim();
+				if (meaningful.length < 2) return true;
+				// Repeated capitalized spinner words ("Cooking…", "CookingSmooshing", etc.)
+				if (/^[A-Z][a-z]+[.\s…]*([A-Z][a-z]+[.\s…]*)*$/m.test(meaningful) && meaningful.length < 80) return true;
+				// Spinner status with stats parenthetical: "Cooking… (5s · ↑ 25 tokens)"
+				if (/^[A-Z][a-z]+[….]*\s*\(.*(tokens|interrupt|esc).*\)\s*$/i.test(t)) return true;
+				// {thinking} / (thinking) tags, solo or repeated
+				if (/^(?:[\{\(]?thinking[\}\)]?)+$/i.test(meaningful)) return true;
+				{
+					const noThink = meaningful.replace(/[\{\(]?thinking[\}\)]?/gi, '');
+					if (/thinking/i.test(meaningful) && noThink.replace(/[^a-z0-9]/gi, '').length === 0) return true;
+				}
+				// Claude Code prompt marker
+				if (/^❯/.test(t)) return true;
+				// Horizontal rule / box drawing only
+				if (/^[─═┄┈╌]+$/.test(t)) return true;
+				// Claude Code banner rows (▐▛███▜▌ etc.)
+				if (/^[▐▛▜▘▝█\s]*$/.test(t)) return true;
+				if (/ClaudeCode\s*v[\d.]+/i.test(meaningful)) return true;
+				if (/Opus.*context.*ClaudeMax/i.test(meaningful)) return true;
+				// Status bar lines
+				if (/^\??\s*for\s*shortcuts/i.test(meaningful)) return true;
+				if (/^esc\s*to\s*interrupt/i.test(meaningful)) return true;
+				if (/session\s*limit.*resets/i.test(meaningful)) return true;
+				if (/Found\s*\d+\s*keybinding\s*error/i.test(meaningful)) return true;
+				if (/\/doctor\s*for\s*details/i.test(meaningful)) return true;
+				if (/\/upgrade\s*to\s*keep/i.test(meaningful)) return true;
+				if (/running\s*stop\s*hook/i.test(meaningful)) return true;
+				// Bash / MINGW prompt
+				if (/^[a-z][\w-]*@\S+\s+MINGW\d+.*\$?\s*$/.test(t)) return true;
+				// CLI launch echo
+				if (/^claude\s+(--|\S)/.test(t)) return true;
+				return false;
+			}
+			function cleanPtyOutput(text) {
+				if (!text) return '';
+				// Carriage-return semantics: anything before \r on the same line
+				// is overwritten. Do this BEFORE splitting on \n so we don't
+				// fragment spinner frames into many lines.
+				const collapsed = text
+					.replace(/\r\n/g, '\n')
+					.replace(/[^\n]*\r(?=[^\n])/g, '')
+					.replace(/\r/g, '');
+				const lines = collapsed.split('\n').filter(l => !isNoisyTerminalLine(l));
+				return lines.join('\n').trim();
+			}
+
 			function buildLineHtml(msg) {
 				if (msg.role === 'user' && (msg.type === 'prompt' || msg.type === 'input')) {
 					let raw = (msg.text || '').trim();
+					// PTY-sourced input may carry leftover TUI noise; the JSONL
+					// `prompt` path is already clean.
+					if (msg.type === 'input') {
+						raw = cleanPtyOutput(raw);
+						if (!raw) return null;
+					}
 					// Strip Claude Code's "[Pasted text #N +M lines]" prefix that gets
 					// added to long multi-line pasted prompts. The actual user text
 					// follows immediately after the placeholder in the same string.
@@ -1308,6 +1367,12 @@
 					);
 				} else if (msg.role === 'assistant' && (msg.type === 'text' || msg.type === 'output')) {
 					let assistantText = msg.text || '';
+					// PTY-sourced assistant output carries Claude Code TUI noise
+					// (spinners, {thinking}, banner, status bar). The JSONL `text`
+					// path is already clean.
+					if (msg.type === 'output') {
+						assistantText = cleanPtyOutput(assistantText);
+					}
 					if (!assistantText.trim()) return null;
 					return (
 						`<div class="t-line t-assistant">` +
@@ -1874,7 +1939,11 @@
 		const explicit = (typeof explicitValue === 'string' ? explicitValue : '').trim();
 		const domValue = (terminalInputEl?.value || '').trim();
 		const stateValue = terminalInputText.trim();
-		let text = explicit || domValue || stateValue;
+		// Take the LONGEST value — Tauri/voice input can cause partial reads
+		// where explicit (e.target.value) only has part of the text
+		let text = explicit;
+		if (domValue.length > text.length) text = domValue;
+		if (stateValue.length > text.length) text = stateValue;
 		const imgPaths = pastedImages.filter(img => img.path).map(img => img.path.replace(/\\\\/g, '/').replace(/\\/g, '/'));
 		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
 
@@ -1891,47 +1960,22 @@
 			return;
 		}
 
-		// Use HTTP POST to /api/v1/terminal/send instead of WebSocket. The WebSocket
-		// silently queues sends to a possibly-dead socket; HTTP gives us a clear
-		// success/failure response. This is the same endpoint the mobile page uses
-		// and it has been proven reliable. We still keep the WebSocket connection
-		// for RECEIVING screen updates and chat_update events.
+		// PIPE MODE: send message via HTTP POST. Server spawns claude -p
+		// as a child_process — clean JSON stream, no PTY, no TUI.
 		console.log('[PAN DIAG] SEND → session_id =', active.sessionId, '| text =', JSON.stringify(text.substring(0, 60)));
 
-		// ALWAYS split the send into two HTTP POSTs: text first, then \r separately.
-		// This prevents Claude Code's "[Pasted text +N lines]" buffer from
-		// concatenating multiple sends into one prompt. Each send is its own
-		// complete paste-then-submit cycle. Empty input (just Enter for prompts)
-		// only does the second step.
-		const httpSend = async (payload) => {
-			const res = await fetch('/api/v1/terminal/send', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'X-PAN-Source': 'dashboard' },
-				body: JSON.stringify({ session_id: active.sessionId, text: payload, raw: true, source: 'dashboard' }),
-			});
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const data = await res.json();
-			if (!data.ok) throw new Error(data.error || 'send failed');
-		};
 		try {
-			if (text) {
-				// Phase 1: send text only (no \r)
-				await httpSend(text);
-				// Delay so the REPL finishes paste-detection before the Enter
-				await new Promise(r => setTimeout(r, 150));
-			}
-			// Phase 2: send the Enter to submit
-			await httpSend('\r');
-			// Phase 3: belt-and-suspenders second Enter. Sometimes the first \r
-			// gets eaten by Claude Code's paste-detection buffer or never makes
-			// it past the input-box "commit" step, leaving the message stuck.
-			// A second Enter after a short delay reliably commits it. If Claude
-			// is already processing, a stray Enter on the busy state is a no-op.
-			await new Promise(r => setTimeout(r, 120));
-			await httpSend('\r');
-			console.log('[PAN Terminal] HTTP send ok (split, double-enter)');
+			if (!text) return;
+			const res = await fetch('/api/v1/terminal/pipe', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ session_id: active.sessionId, text }),
+			});
+			const data = await res.json();
+			if (!data.ok) throw new Error(data.error || 'pipe send failed');
+			console.log('[PAN Terminal] Pipe send OK');
 		} catch (err) {
-			console.error('[PAN Terminal] HTTP send failed:', err);
+			console.error('[PAN Terminal] pipe send failed:', err);
 			if (terminalInputEl) {
 				terminalInputEl.style.outline = '2px solid #f38ba8';
 				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 1500);
@@ -1980,8 +2024,12 @@
 
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			// Pass the textarea's CURRENT value directly — bypasses any Svelte state lag
-			sendTerminalInput(e.target?.value);
+			// Delay 50ms to let Svelte state and DOM value fully sync before reading
+			const el = e.target;
+			setTimeout(() => {
+				const val = el?.value || terminalInputText || '';
+				sendTerminalInput(val);
+			}, 50);
 			return;
 		}
 		// Escape → interrupt Claude (sends Ctrl+C + logs system message)

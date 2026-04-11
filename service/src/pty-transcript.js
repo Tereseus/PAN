@@ -12,7 +12,7 @@
 //   - Each session gets its own file: {dataDir}/transcripts/{sessionId}.jsonl
 //   - Subscribers get notified on every write (for real-time push to dashboard)
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, renameSync } from 'fs';
 import { join } from 'path';
 import { getDataDir } from './platform.js';
 
@@ -21,6 +21,34 @@ try { mkdirSync(TRANSCRIPT_DIR, { recursive: true }); } catch {}
 
 // sessionId → { subscribers: Set<callback>, inputBuffer, outputBuffer, flushTimer }
 const sessions = new Map();
+
+// sessionId → tab name slug (for human-readable filenames)
+// File is named after tab name: "PAN Main" → "pan-main.jsonl"
+const sessionNames = new Map();
+
+// Set the display name for a session (used as filename)
+export function setSessionName(sessionId, tabName) {
+  const oldSlug = sessionNames.get(sessionId);
+  const newSlug = slugify(tabName);
+  if (oldSlug && oldSlug !== newSlug) {
+    // Rename the file on disk
+    const oldPath = join(TRANSCRIPT_DIR, oldSlug + '.jsonl');
+    const newPath = join(TRANSCRIPT_DIR, newSlug + '.jsonl');
+    if (existsSync(oldPath) && !existsSync(newPath)) {
+      try {
+        renameSync(oldPath, newPath);
+        console.log(`[pty-transcript] Renamed: ${oldSlug}.jsonl → ${newSlug}.jsonl`);
+      } catch (err) {
+        console.error('[pty-transcript] rename error:', err.message);
+      }
+    }
+  }
+  sessionNames.set(sessionId, newSlug);
+}
+
+function slugify(name) {
+  return (name || 'unnamed').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unnamed';
+}
 
 // Strip ALL ANSI/VT100 escape sequences from raw PTY output
 function stripAnsi(str) {
@@ -43,14 +71,20 @@ function stripAnsi(str) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
     // Bell
     .replace(/\x07/g, '')
-    // Normalize line endings
+    // Normalize line endings, then honor carriage returns:
+    // \r means "go back to start of line", so anything before the last \r
+    // on a line gets overwritten. This matters for Claude Code's spinner,
+    // which rewrites a status line many times per second — treating each
+    // frame as a new \n produced a wall of fragments like "{thinking}".
     .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n');
+    .replace(/[^\n]*\r(?=[^\n])/g, '')
+    .replace(/\r/g, '');
 }
 
 function getTranscriptPath(sessionId) {
-  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return join(TRANSCRIPT_DIR, safe + '.jsonl');
+  // Use tab name slug if set, otherwise fall back to session ID
+  const slug = sessionNames.get(sessionId) || sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return join(TRANSCRIPT_DIR, slug + '.jsonl');
 }
 
 function appendMessage(sessionId, message) {
@@ -165,11 +199,22 @@ function isNoiseLine(line) {
   const meaningful = t.replace(TUI_NOISE_CHARS, '').replace(/\s+/g, '').trim();
   if (meaningful.length < 2) return true;
   // Spinner status words (with or without repetition/concatenation)
-  // Spinner status words — Claude Code uses many (Cooking, Smooshing, Bootstrapping, etc.)
-  // Match any single word or repeated words optionally followed by …/./ellipsis
+  // Claude Code uses many spinner labels (Cooking, Smooshing, Bootstrapping, etc.)
+  // Match repeated CapitalizedWords optionally followed by …/./ellipsis
   if (/^[A-Z][a-z]+[.\s…]*([A-Z][a-z]+[.\s…]*)*$/m.test(meaningful) && meaningful.length < 80) return true;
-  // {thinking} tags
-  if (/^\{?thinking\}?$/i.test(meaningful)) return true;
+  // Spinner status line WITH a trailing stats parenthetical:
+  //   "Cooking… (5s · ↑ 25 tokens · esc to interrupt)"
+  //   "Smooshing… (12s · ↓ 1.2k tokens)"
+  if (/^[A-Z][a-z]+[….]*\s*\(.*(tokens|interrupt|esc).*\)\s*$/i.test(t)) return true;
+  // {thinking} / (thinking) tags, possibly repeated back-to-back
+  //   "thinking", "{thinking}", "{thinking}{thinking}{thinking}", "(thinking)(thinking)"
+  if (/^(?:[\{\(]?thinking[\}\)]?)+$/i.test(meaningful)) return true;
+  // After removing every "thinking" occurrence and punctuation, if nothing
+  // meaningful remains, it was a wall of thinking fragments.
+  {
+    const noThink = meaningful.replace(/[\{\(]?thinking[\}\)]?/gi, '');
+    if (/thinking/i.test(meaningful) && noThink.replace(/[^a-z0-9]/gi, '').length === 0) return true;
+  }
   // Claude Code prompt line: ❯ (empty or with text that duplicates user input)
   if (/^❯/.test(t)) return true;
   // Horizontal rule (box-drawing only)
@@ -265,6 +310,32 @@ export function flushSession(sessionId) {
     entry.inputBuffer = '';
     if (text) appendMessage(sessionId, { role: 'user', type: 'input', text });
   }
+}
+
+// Rename a session's transcript file (e.g. when tab is renamed).
+// Moves the old file to the new name and updates in-memory session key.
+export function renameTranscript(oldSessionId, newSessionId) {
+  const oldPath = getTranscriptPath(oldSessionId);
+  const newPath = getTranscriptPath(newSessionId);
+  if (existsSync(oldPath) && oldPath !== newPath) {
+    try {
+      renameSync(oldPath, newPath);
+      console.log(`[pty-transcript] Renamed transcript: ${oldSessionId} → ${newSessionId}`);
+    } catch (err) {
+      console.error('[pty-transcript] rename error:', err.message);
+    }
+  }
+  // Move in-memory session entry
+  const entry = sessions.get(oldSessionId);
+  if (entry) {
+    sessions.delete(oldSessionId);
+    sessions.set(newSessionId, entry);
+  }
+}
+
+// Get the transcript directory path (for external use)
+export function getTranscriptDir() {
+  return TRANSCRIPT_DIR;
 }
 
 // Clean up a session's in-memory state (call on PTY exit)
