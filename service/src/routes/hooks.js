@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
-import { broadcastNotification, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool } from '../terminal-bridge.js';
+import { broadcastNotification, broadcastChatUpdate, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool, findSessionByClaudeId } from '../terminal-bridge.js';
 import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
@@ -370,23 +370,15 @@ router.post('/:eventType', (req, res) => {
       }
     }
 
-    // Notify dashboard clients of new events so chat updates instantly
+    // Notify dashboard clients of new events so chat updates instantly.
     if (eventType === 'UserPromptSubmit' || eventType === 'Stop' || eventType === 'AssistantMessage') {
       try {
-        broadcastNotification('chat_update', {
+        broadcastChatUpdate({
           event_type: eventType,
           session_id: sessionId,
           timestamp: new Date().toISOString(),
         });
       } catch {}
-      // Proactively nudge the transcript watcher to re-read JSONL files NOW.
-      // The file poller (500ms) can miss changes on Windows when Claude holds
-      // the file handle open and statSync returns cached metadata. Hooks are
-      // the authoritative signal that new data exists, so trigger immediately.
-      if (cwd) {
-        setTimeout(() => nudgeTranscript(cwd), 150);  // quick nudge after JSONL flush
-        setTimeout(() => nudgeTranscript(cwd), 600);  // safety net if first was too early
-      }
     }
 
     res.status(200).json({ ok: true });
