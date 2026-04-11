@@ -982,7 +982,20 @@
 									});
 									await new Promise(r => setTimeout(r, 300));
 								} catch {}
-								/* pipe mode: no auto-launch — user's first message triggers Claude */;
+								// Pipe mode: auto-launch Claude on reconnect
+								try {
+									const pipeRes = await fetch('/api/v1/terminal/pipe', {
+										method: 'POST',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ session_id: sessionId, text: 'ΠΑΝ Remembers: summarize recent session context briefly.' }),
+									});
+									const pipeData = await pipeRes.json();
+									if (pipeData.ok) console.log('[PAN Terminal] Claude auto-launched on reconnect');
+								} catch (e) {
+									console.warn('[PAN Terminal] Pipe reconnect launch error:', e);
+								}
+								tabData._claudeLoading = false;
+								renderTranscriptToTerminal(tabData);
 							}, 2000);
 						} else if (projectName && projectName !== 'Shell') {
 							// FALLBACK: server_restarting message may have been lost (race
@@ -1009,7 +1022,20 @@
 											});
 											await new Promise(r => setTimeout(r, 300));
 										} catch {}
-										/* pipe mode: no auto-launch — user's first message triggers Claude */;
+										// Pipe mode: fallback auto-launch
+										try {
+											const pipeRes = await fetch('/api/v1/terminal/pipe', {
+												method: 'POST',
+												headers: { 'Content-Type': 'application/json' },
+												body: JSON.stringify({ session_id: sessionId, text: 'ΠΑΝ Remembers: summarize recent session context briefly.' }),
+											});
+											const pipeData = await pipeRes.json();
+											if (pipeData.ok) console.log('[PAN Terminal] Claude fallback auto-launched');
+										} catch (e) {
+											console.warn('[PAN Terminal] Pipe fallback launch error:', e);
+										}
+										tabData._claudeLoading = false;
+										renderTranscriptToTerminal(tabData);
 									}
 								} catch {}
 							}, 5000);
@@ -1072,7 +1098,27 @@
 							await new Promise(r => setTimeout(r, 300));
 						} catch {}
 
-						/* pipe mode: no auto-launch — user's first message triggers Claude */
+						// Pipe mode: auto-launch Claude via HTTP pipe endpoint
+						try {
+							const launchText = briefingReady
+								? 'ΠΑΝ Remembers: summarize recent session context briefly.'
+								: 'Hello — new session starting.';
+							const pipeRes = await fetch('/api/v1/terminal/pipe', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ session_id: sessionId, text: launchText }),
+							});
+							const pipeData = await pipeRes.json();
+							if (pipeData.ok) {
+								console.log('[PAN Terminal] Claude auto-launched via pipe mode');
+							} else {
+								console.warn('[PAN Terminal] Pipe auto-launch failed:', pipeData.error);
+							}
+						} catch (pipeErr) {
+							console.warn('[PAN Terminal] Pipe auto-launch error:', pipeErr);
+						}
+						tabData._claudeLoading = false;
+						renderTranscriptToTerminal(tabData);
 					}, 1500);
 				}
 			};
