@@ -4,7 +4,7 @@ import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { broadcastNotification } from '../terminal-bridge.js';
-import { readTranscript as readPtyTranscript } from '../pty-transcript.js';
+import { readTranscript as readPtyTranscript, renameTranscript, setSessionName } from '../pty-transcript.js';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
@@ -1306,6 +1306,8 @@ router.patch('/api/open-tabs/:sessionId/rename', (req, res) => {
   if (name === undefined) return res.status(400).json({ error: 'name required' });
   run("UPDATE open_tabs SET tab_name = :name, last_active = datetime('now','localtime') WHERE session_id = :sid",
     { ':name': name, ':sid': req.params.sessionId });
+  // Rename the per-tab transcript file to match the new tab name
+  try { setSessionName(req.params.sessionId, name); } catch {}
   res.json({ ok: true });
 });
 

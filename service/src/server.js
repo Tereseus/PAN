@@ -37,7 +37,7 @@ import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry } from './terminal-bridge.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend } from './terminal-bridge.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
 
@@ -1187,7 +1187,7 @@ app.post('/api/v1/dev/restart', async (req, res) => {
 // Dev proxy — forwards test API calls to dev server (avoids CORS issues with browser-to-dev)
 app.all('/api/v1/dev/proxy/*proxyPath', async (req, res) => {
   const devPort = 7781;
-  const targetPath = req.params.proxyPath; // everything after /proxy/
+  const targetPath = Array.isArray(req.params.proxyPath) ? req.params.proxyPath.join('/') : req.params.proxyPath; // Express 5 returns array for wildcard params
   const url = `http://127.0.0.1:${devPort}/${targetPath}`;
   try {
     const opts = { method: req.method, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(120000) };
@@ -1286,6 +1286,16 @@ app.post('/api/v1/terminal/send', async (req, res) => {
 
   const sessInfo = await listSessions();
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
+});
+
+// PIPE MODE: send user message to a terminal session via pipe_send.
+// Spawns claude -p as a child process, returns clean JSON responses.
+app.post('/api/v1/terminal/pipe', async (req, res) => {
+  const { text, session_id } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  if (!session_id) return res.status(400).json({ error: 'session_id required' });
+  const ok = await pipeSend(session_id, text);
+  res.json({ ok: !!ok, session: session_id });
 });
 
 // Permission response — mobile user tapped Allow or Deny
@@ -2050,6 +2060,23 @@ function start() {
 
       // Sync projects with disk reality on startup
       syncProjects();
+
+      // Migrate timestamp-based tab session IDs to stable name-based IDs.
+      // e.g. "dash-pan-1775843785916" → "dash-pan-main" (derived from tab_name).
+      // This runs once — stable IDs don't change, so future boots are no-ops.
+      try {
+        const openTabs = all("SELECT id, session_id, tab_name, project_name FROM open_tabs WHERE closed_at IS NULL");
+        for (const t of openTabs) {
+          if (t.session_id && /^dash-.*\d{10,}$/.test(t.session_id)) {
+            const name = (t.tab_name || t.project_name || 'shell').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+            const stableId = 'dash-' + name;
+            run("UPDATE open_tabs SET session_id = :newId WHERE id = :tabId", { ':newId': stableId, ':tabId': t.id });
+            console.log(`[PAN] Migrated tab "${t.tab_name}" session: ${t.session_id} → ${stableId}`);
+          }
+        }
+      } catch (err) {
+        console.error('[PAN] Tab migration error:', err.message);
+      }
 
       // Seed sensor definitions (22 sensors)
       seedSensors();

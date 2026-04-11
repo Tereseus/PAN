@@ -97,6 +97,14 @@ export async function broadcastNotification(notificationType, data) {
   return t.broadcastNotification(notificationType, data);
 }
 
+// Targeted chat_update: sends only to the tab that owns this Claude session.
+// Falls back to broadcast-all if no owner found yet.
+export async function broadcastChatUpdate(data) {
+  if (IS_CRAFT) return ipcFire('terminal:broadcastChatUpdate', { data });
+  const t = await getTerminal();
+  return t.broadcastChatUpdate(data);
+}
+
 export function killSession(sessionId) {
   if (IS_CRAFT) return ipcFire('terminal:killSession', { sessionId });
   return directTerminal?.killSession(sessionId);
@@ -171,4 +179,17 @@ export function registerProcess(info) {
 export function deregisterProcess(pid, exitCode) {
   if (IS_CRAFT) return ipcFire('terminal:deregisterProcess', { pid, exitCode });
   return directTerminal?.deregisterProcess(pid, exitCode);
+}
+
+// Find which PTY session owns a given Claude session ID
+export function findSessionByClaudeId(claudeSessionId) {
+  if (IS_CRAFT) return ipcRequest('terminal:findSessionByClaudeId', { claudeSessionId });
+  return directTerminal?.findSessionByClaudeId(claudeSessionId) || null;
+}
+
+// Pipe mode: send message to session's LLM adapter
+export async function pipeSend(sessionId, text) {
+  if (IS_CRAFT) return ipcFire('terminal:pipeSend', { sessionId, text });
+  const t = await getTerminal();
+  return t.pipeSend(sessionId, text);
 }

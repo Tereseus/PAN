@@ -34,6 +34,11 @@ function cwdToClaudeDir(cwd) {
 // most recent JSONL session file for a project cwd. This makes system events
 // persist across server restarts and appear in the transcript view permanently.
 // Event format: { type: 'system', event: 'pty_exit'|'restart'|'disconnect'|..., text: '...', timestamp: ISO }
+// Write a system event to the correct JSONL session file.
+// If meta.session_id is provided AND matches a known .jsonl filename, write to that
+// specific file. Otherwise falls back to the most recent .jsonl file.
+// This prevents PTY exit events from one tab being written to another tab's file
+// when both tabs share the same cwd.
 export function writeSystemEvent(cwd, event, text, meta = {}) {
   cwd = normalizeCwd(cwd);
   const dir = cwdToClaudeDir(cwd);
@@ -41,13 +46,27 @@ export function writeSystemEvent(cwd, event, text, meta = {}) {
   try {
     const files = readdirSync(dir).filter(f => f.endsWith('.jsonl'));
     if (files.length === 0) return false;
-    // Find the most recent JSONL file
-    const filesWithMtime = files.map(f => {
-      const full = join(dir, f);
-      try { return { full, mtime: statSync(full).mtimeMs }; }
-      catch { return { full, mtime: 0 }; }
-    }).sort((a, b) => b.mtime - a.mtime);
-    const target = filesWithMtime[0].full;
+
+    let target = null;
+
+    // Try to target a specific Claude session file if session_id is provided
+    if (meta.session_id) {
+      const exactFile = meta.session_id + '.jsonl';
+      if (files.includes(exactFile)) {
+        target = join(dir, exactFile);
+      }
+    }
+
+    // Fallback: most recent JSONL file
+    if (!target) {
+      const filesWithMtime = files.map(f => {
+        const full = join(dir, f);
+        try { return { full, mtime: statSync(full).mtimeMs }; }
+        catch { return { full, mtime: 0 }; }
+      }).sort((a, b) => b.mtime - a.mtime);
+      target = filesWithMtime[0].full;
+    }
+
     const record = JSON.stringify({
       type: 'system',
       event,
@@ -129,9 +148,11 @@ function parseJsonlFile(filepath) {
   }
 }
 
-// Read all JSONL files in the project directory and return a sorted message list.
+// Read JSONL files in the project directory and return a sorted message list.
 // If claudeSessionIds is provided (non-empty array), only read those specific session files.
-// Otherwise falls back to reading the most recent session file.
+// If empty/null, returns nothing — prevents cross-tab contamination where a tab
+// with no known sessions would read the most recent file (which might belong to
+// another tab). Tabs must discover their Claude session ID first via chat_update.
 function readAllForCwd(cwd, claudeSessionIds) {
   const dir = cwdToClaudeDir(cwd);
   if (!existsSync(dir)) return [];
@@ -147,13 +168,11 @@ function readAllForCwd(cwd, claudeSessionIds) {
         .filter(f => sessionSet.has(f.replace('.jsonl', '')))
         .map(f => join(dir, f));
     } else {
-      // No known sessions yet — show only the most recent file (new tab)
-      const filesWithMtime = files.map(f => {
-        const full = join(dir, f);
-        try { return { full, mtime: statSync(full).mtimeMs }; }
-        catch { return { full, mtime: 0 }; }
-      }).sort((a, b) => b.mtime - a.mtime).slice(0, 1);
-      filesToRead = filesWithMtime.map(f => f.full);
+      // No known sessions — return empty. The tab will get data once it
+      // discovers its Claude session ID via chat_update → set_claude_sessions.
+      // Previously this read the most-recent file, which caused cross-tab
+      // contamination when multiple tabs shared the same cwd.
+      return [];
     }
 
     for (const full of filesToRead) {
