@@ -8,9 +8,12 @@
 	let tabs = $state([]);
 	let activeTabId = $state(null);
 	let allProjectTabs = $state([]); // All tabs (open + closed) for current project dropdown
-	let leftSection = $state('transcript'); // same widget options as right panel
+	let leftSection = $state(typeof window !== 'undefined' && localStorage.getItem('pan_left_section') || 'transcript');
 	let centerView = $state('terminal'); // 'terminal' | 'chat'
-	let rightSection = $state('services'); // alphabetized panel widgets
+	let rightSection = $state(typeof window !== 'undefined' && localStorage.getItem('pan_right_section') || 'services');
+	// Persist panel selections on change
+	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_left_section', leftSection); });
+	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_right_section', rightSection); });
 	// Terminal input bar — persisted across tab switches
 	let terminalInputText = $state(getTerminalInput());
 	let terminalInputEl;
@@ -3542,18 +3545,27 @@
 		function handleGlobalKeydown(e) {
 			// Let Win+H pass through to Windows for voice typing
 			if (e.key === 'h' && e.metaKey) return;
+
+			// Escape is ALWAYS handled — even if focused elsewhere or WS is wobbly
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				e.stopPropagation();
+				const active = getActiveTab();
+				if (active?.ws) {
+					try { active.ws.send(JSON.stringify({ type: 'interrupt' })); } catch {}
+				}
+				// Also try via HTTP fallback in case WS is dead
+				fetch(`/api/v1/terminal/interrupt?session=${active?.sessionId || ''}`, { method: 'POST' }).catch(() => {});
+				console.log('[PAN] Escape pressed — interrupt sent');
+				return;
+			}
+
 			// Skip if user is typing in a non-terminal input (e.g. rename, search)
 			const tag = e.target?.tagName;
 			if ((tag === 'INPUT' || tag === 'TEXTAREA') && e.target !== terminalInputEl) return;
 
 			const active = getActiveTab();
 			if (!active?.ws || active.ws.readyState !== 1) return;
-
-			if (e.key === 'Escape') {
-				e.preventDefault();
-				active.ws.send(JSON.stringify({ type: 'interrupt' }));
-				return;
-			}
 			// Number keys 1-3 when input is empty AND there's a pending approval
 			if (/^[1-3]$/.test(e.key) && !terminalInputEl?.value?.trim() && approvalsData.length > 0) {
 				e.preventDefault();
@@ -5898,7 +5910,7 @@
 		min-width: 0;
 	}
 
-	.chat-turn { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+	.chat-turn { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin-bottom: 6px; }
 	.chat-speaker {
 		font-size: 10px;
 		font-weight: 700;
