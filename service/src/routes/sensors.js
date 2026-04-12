@@ -224,7 +224,7 @@ router.get('/toggles', (req, res) => {
 
   // Get all devices for this user to provide defaults from device_sensors
   const devices = all(
-    `SELECT d.id, d.name, d.device_type FROM devices WHERE user_id = :uid`,
+    `SELECT id, name, device_type FROM devices WHERE user_id = :uid`,
     { ':uid': userId }
   );
 
