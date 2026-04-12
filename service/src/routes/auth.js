@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { get, all, insert, run } from '../db.js';
 import { randomBytes } from 'crypto';
 import { requireRole, getRoleLevels } from '../middleware/auth.js';
+import { auditLog } from '../middleware/org-context.js';
 
 const router = Router();
 
@@ -123,6 +124,12 @@ router.post('/oauth', async (req, res) => {
       { ':uid': user.id, ':token': apiToken, ':name': token_name || 'default' }
     );
 
+    // Audit the login
+    try {
+      const auditReq = { user: { id: user.id }, org_id: 'org_personal' };
+      auditLog(auditReq, 'auth.login', provider, { email: user.email, ip: req.ip });
+    } catch {}
+
     res.json({
       user: {
         id: user.id,
@@ -145,6 +152,12 @@ router.post('/logout', (req, res) => {
   if (!req.user || !req.user.token_id) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
+
+  // Audit the logout before revoking the token
+  try {
+    const auditReq = { user: { id: req.user.id }, org_id: req.org_id || 'org_personal' };
+    auditLog(auditReq, 'auth.logout', null, { ip: req.ip });
+  } catch {}
 
   run("DELETE FROM api_tokens WHERE id = :id", { ':id': req.user.token_id });
   res.json({ ok: true });
@@ -317,6 +330,12 @@ router.post('/github-callback', async (req, res) => {
     insert(`INSERT INTO api_tokens (user_id, token, name) VALUES (:uid, :token, 'dashboard')`,
       { ':uid': user.id, ':token': apiToken });
 
+    // Audit the login
+    try {
+      const auditReq = { user: { id: user.id }, org_id: 'org_personal' };
+      auditLog(auditReq, 'auth.login', 'github', { email: user.email, ip: req.ip });
+    } catch {}
+
     res.json({
       user: { id: user.id, email: user.email, display_name: user.display_name || providerUser.name, avatar_url: user.avatar_url || providerUser.avatar, role: user.role },
       token: apiToken
@@ -385,6 +404,12 @@ router.post('/google-callback', async (req, res) => {
     const apiToken = generateToken();
     insert(`INSERT INTO api_tokens (user_id, token, name) VALUES (:uid, :token, 'dashboard')`,
       { ':uid': user.id, ':token': apiToken });
+
+    // Audit the login
+    try {
+      const auditReq = { user: { id: user.id }, org_id: 'org_personal' };
+      auditLog(auditReq, 'auth.login', 'google', { email: user.email, ip: req.ip });
+    } catch {}
 
     res.json({
       user: { id: user.id, email: user.email, display_name: user.display_name || providerUser.name, avatar_url: user.avatar_url || providerUser.avatar, role: user.role },

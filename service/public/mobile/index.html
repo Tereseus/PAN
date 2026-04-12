@@ -103,16 +103,52 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 
 .muted { color:var(--text2); text-align:center; padding:30px 20px; font-size:14px; }
 .section-title { font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; padding:12px 12px 4px; }
+
+/* Org indicator in top bar */
+.org-indicator { display:flex; align-items:center; gap:4px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:4px 8px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; -webkit-user-select:none; user-select:none; }
+.org-indicator:active { background:var(--bg3); }
+.org-indicator .org-lock { font-size:11px; margin-left:2px; }
+.org-indicator .org-name { color:var(--accent); font-weight:500; }
+
+/* Org switcher modal */
+.org-modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center; }
+.org-modal-overlay.visible { display:flex; }
+.org-modal { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:16px; width:85%; max-width:320px; max-height:70vh; overflow-y:auto; }
+.org-modal h3 { font-size:15px; color:var(--accent); margin-bottom:12px; }
+.org-modal-item { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; cursor:pointer; }
+.org-modal-item:active { background:var(--bg3); }
+.org-modal-item.active { border-color:var(--accent); background:rgba(137,180,250,0.1); }
+.org-modal-item .org-item-name { font-size:14px; font-weight:500; }
+.org-modal-item .org-item-role { font-size:11px; color:var(--text2); }
+.org-modal-close { display:block; width:100%; margin-top:8px; padding:10px; background:var(--bg3); color:var(--text); border:none; border-radius:var(--radius); font-size:14px; cursor:pointer; }
+
+/* Incognito toggle button */
+.incognito-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:var(--radius); border:1px solid var(--border); font-size:13px; font-weight:500; cursor:pointer; }
+.incognito-btn.off { background:var(--bg3); color:var(--text); }
+.incognito-btn.on { background:var(--accent); color:#000; }
 </style>
 </head>
 <body>
 
-<!-- Top bar with project selector -->
-<div class="topbar">
-  <h1>Π</h1>
+<!-- Top bar with org name + project selector -->
+<div class="topbar" id="topbar">
+  <h1 id="topbar-title" onclick="showOrgSwitcher()" style="cursor:pointer">Π</h1>
+  <div class="org-indicator" id="org-indicator" onclick="showOrgSwitcher()">
+    <span id="org-badge-lock" class="org-lock" style="display:none"></span>
+    <span id="org-badge-text" class="org-name">Personal</span>
+  </div>
   <select id="project-select" onchange="onProjectChange()">
     <option value="">Select project...</option>
   </select>
+</div>
+
+<!-- Org switcher modal -->
+<div class="org-modal-overlay" id="org-modal" onclick="if(event.target===this)hideOrgSwitcher()">
+  <div class="org-modal">
+    <h3>Organizations</h3>
+    <div id="org-modal-list"><div class="muted">Loading...</div></div>
+    <button class="org-modal-close" onclick="hideOrgSwitcher()">Close</button>
+  </div>
 </div>
 
 <!-- Tabs -->
@@ -285,6 +321,7 @@ async function init() {
     const pan = projects.find(p => p.name === 'PAN');
     if (pan) { sel.value = pan.path; activeProject = pan; }
   } catch(e) { console.error('init error:', e); document.body.innerHTML += '<div style="color:red;padding:20px">INIT ERROR: '+e.message+'</div>'; }
+  loadOrgContext();
   loadChat();
   // Auto-refresh active tab every 3 seconds
   setInterval(() => {
@@ -678,6 +715,38 @@ async function loadSettings() {
   const el = document.getElementById('settings');
   let html = '';
 
+  // Organization
+  html += '<div class="section-title">Organization</div><div class="card">';
+  if (_orgContext) {
+    html += '<div class="setting-row"><span class="setting-label">Current Org</span><span class="setting-val">' + esc(_orgContext.org_name || 'Personal') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Role</span><span class="setting-val">' + esc((_orgContext.role || 'owner').charAt(0).toUpperCase() + (_orgContext.role || 'owner').slice(1)) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Display Name</span><span class="setting-val">' + esc(_orgContext.user_nickname || _orgContext.user_display_name || 'User') + '</span></div>';
+  } else {
+    html += '<div class="setting-row"><span class="setting-label">Current Org</span><span class="setting-val">Personal</span></div>';
+  }
+  html += '</div>';
+
+  // Incognito
+  html += '<div class="section-title">Privacy</div><div class="card">';
+  html += '<div class="setting-row"><span class="setting-label">Incognito Mode</span>';
+  html += '<button class="incognito-btn ' + (_incognitoActive ? 'on' : 'off') + '" onclick="toggleIncognito()">';
+  html += (_incognitoActive ? '\uD83D\uDD12 Active' : '\uD83D\uDD13 Off');
+  html += '</button></div>';
+  html += '<div style="padding:4px 12px 8px;font-size:11px;color:var(--text2)">When active, events are temporary and auto-expire.</div>';
+  html += '</div>';
+
+  // Orgs list
+  if (_orgContext && _orgContext.orgs && _orgContext.orgs.length > 0) {
+    html += '<div class="section-title">Your Organizations</div><div class="card">';
+    for (const o of _orgContext.orgs) {
+      const isActive = o.org_id === _orgContext.org_id;
+      html += '<div class="setting-row"><span class="setting-label">' + esc(o.name);
+      if (isActive) html += ' <span style="color:var(--green);font-size:11px">(active)</span>';
+      html += '</span><span class="setting-val">' + esc(o.role_name || 'member') + '</span></div>';
+    }
+    html += '</div>';
+  }
+
   // Connection
   html += '<div class="section-title">Connection</div><div class="card">';
   try {
@@ -693,18 +762,28 @@ async function loadSettings() {
   }
   html += '</div>';
 
-  // AI
+  // AI — fetch actual configured model from settings
   html += '<div class="section-title">AI</div><div class="card">';
   try {
-    const res = await fetch(API + '/api/v1/auth/providers');
-    const auth = await res.json();
+    const [authRes, settingsRes] = await Promise.all([
+      fetch(API + '/api/v1/auth/providers'),
+      fetch(API + '/api/v1/settings')
+    ]);
+    const auth = await authRes.json();
+    const settings = await settingsRes.json();
     const mode = (auth.auth_mode || 'none').charAt(0).toUpperCase() + (auth.auth_mode || 'none').slice(1);
     html += '<div class="setting-row"><span class="setting-label">Auth Mode</span><span class="setting-val">' + mode + '</span></div>';
-  } catch {}
-  html += '<div class="setting-row"><span class="setting-label">Backend</span><span class="setting-val">Cerebras</span></div>';
-  html += '<div class="setting-row"><span class="setting-label">Model</span><span class="setting-val">Qwen 3 235B</span></div>';
-  html += '<div class="setting-row"><span class="setting-label">Speed</span><span class="setting-val">~580ms</span></div>';
-  html += '<div class="setting-row"><span class="setting-label">Free Tier</span><span class="setting-val">1M tokens/day</span></div>';
+    // Parse the ai_model setting (format: "cerebras:qwen-3-235b" or "claude-sonnet-4-20250514")
+    const aiModel = settings.ai_model || 'cerebras:qwen-3-235b';
+    const parts = aiModel.split(':');
+    const backend = parts.length > 1 ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : 'Claude';
+    const modelName = (parts.length > 1 ? parts[1] : parts[0]).replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    html += '<div class="setting-row"><span class="setting-label">Backend</span><span class="setting-val">' + esc(backend) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Model</span><span class="setting-val">' + esc(modelName) + '</span></div>';
+  } catch {
+    html += '<div class="setting-row"><span class="setting-label">Backend</span><span class="setting-val">Unknown</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Model</span><span class="setting-val">Unknown</span></div>';
+  }
   html += '</div>';
 
   // Devices
@@ -726,11 +805,155 @@ async function loadSettings() {
   html += '<div class="setting-row"><span class="setting-label">WebView</span><span class="setting-val">' + (navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || '?') + '</span></div>';
   html += '</div>';
 
+  // Diagnostics — IP, Tailscale, server PID, uptime, memory
+  html += '<div class="section-title">Diagnostics</div><div class="card">';
+  try {
+    const res = await fetch(API + '/api/v1/diagnostics');
+    const d = await res.json();
+    html += '<div class="setting-row"><span class="setting-label">Server PID</span><span class="setting-val">' + (d.server_pid || '?') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Uptime</span><span class="setting-val">' + esc(d.uptime || '?') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Memory</span><span class="setting-val">' + (d.memory_mb || '?') + ' MB</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Node</span><span class="setting-val">' + esc(d.node_version || '?') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Mode</span><span class="setting-val">' + esc(d.mode || '?') + '</span></div>';
+    if (d.craft_id) html += '<div class="setting-row"><span class="setting-label">Craft ID</span><span class="setting-val">' + esc(d.craft_id) + '</span></div>';
+    const tsColor = d.tailscale_status === 'connected' ? 'var(--green)' : 'var(--red)';
+    html += '<div class="setting-row"><span class="setting-label">Tailscale</span><span class="setting-val" style="color:' + tsColor + '">' + (d.tailscale_status === 'connected' ? 'Connected' : 'Disconnected') + '</span></div>';
+    if (d.tailscale_ip) html += '<div class="setting-row"><span class="setting-label">Tailscale IP</span><span class="setting-val">' + esc(d.tailscale_ip) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Client IP</span><span class="setting-val">' + esc(window.location.hostname) + ':' + esc(window.location.port || '80') + '</span></div>';
+  } catch (e) {
+    html += '<div class="setting-row"><span class="setting-label">Status</span><span class="setting-val" style="color:var(--red)">Unavailable</span></div>';
+  }
+  html += '</div>';
+
   el.innerHTML = html;
 }
 
 
 function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+// ========== ORG CONTEXT + INCOGNITO ==========
+let _orgContext = null;
+let _incognitoActive = false;
+
+async function loadOrgContext() {
+  try {
+    const [orgRes, incRes] = await Promise.all([
+      fetch(API + '/api/v1/org/current'),
+      fetch(API + '/api/v1/incognito/status')
+    ]);
+    _orgContext = await orgRes.json();
+    const incData = await incRes.json();
+    _incognitoActive = !!(incData.active);
+  } catch (e) {
+    console.error('[PAN Mobile] org context error:', e);
+    _orgContext = { org_id: 'org_personal', org_name: 'Personal', org_slug: 'personal', user_nickname: 'User', role: 'owner', orgs: [] };
+    _incognitoActive = false;
+  }
+  updateOrgBadge();
+}
+
+function updateOrgBadge() {
+  const textEl = document.getElementById('org-badge-text');
+  const lockEl = document.getElementById('org-badge-lock');
+  const titleEl = document.getElementById('topbar-title');
+  const topbar = document.getElementById('topbar');
+  if (!_orgContext) return;
+  const nick = _orgContext.user_nickname || _orgContext.user_display_name || 'User';
+  const orgName = _orgContext.org_name || 'Personal';
+  textEl.textContent = nick + '@' + orgName;
+  // Show org name next to Pi in the title
+  titleEl.textContent = '\u03A0 ' + orgName;
+  // Apply org color to top bar background (subtle — darkened for dark theme)
+  if (_orgContext.org_color && _orgContext.org_id !== 'org_personal') {
+    topbar.style.background = hexToRgba(_orgContext.org_color, 0.15);
+    topbar.style.borderBottomColor = hexToRgba(_orgContext.org_color, 0.3);
+  } else {
+    topbar.style.background = '';
+    topbar.style.borderBottomColor = '';
+  }
+  if (_incognitoActive) {
+    lockEl.textContent = '\uD83D\uDD12';
+    lockEl.style.display = 'inline';
+  } else {
+    lockEl.style.display = 'none';
+  }
+}
+
+// Convert hex color to rgba for subtle dark-theme overlay
+function hexToRgba(hex, alpha) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+}
+
+function showOrgSwitcher() {
+  const modal = document.getElementById('org-modal');
+  const list = document.getElementById('org-modal-list');
+  modal.classList.add('visible');
+  if (!_orgContext || !_orgContext.orgs || _orgContext.orgs.length === 0) {
+    list.innerHTML = '<div class="muted">No organizations found</div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const o of _orgContext.orgs) {
+    const isActive = o.org_id === _orgContext.org_id;
+    const div = document.createElement('div');
+    div.className = 'org-modal-item' + (isActive ? ' active' : '');
+    div.innerHTML = '<div><div class="org-item-name">' + esc(o.name) + '</div>' +
+      '<div class="org-item-role">' + esc(o.role_name || 'member') + '</div></div>' +
+      (isActive ? '<span style="color:var(--accent);font-size:13px">Active</span>' : '');
+    if (!isActive) {
+      div.addEventListener('click', () => switchOrg(o.org_id));
+    }
+    list.appendChild(div);
+  }
+}
+
+async function switchOrg(orgId) {
+  try {
+    const res = await fetch(API + '/api/v1/orgs/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ org_id: orgId })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || 'Failed to switch org');
+      return;
+    }
+    // Refresh org context and close modal
+    hideOrgSwitcher();
+    await loadOrgContext();
+    // Reload active tab to reflect new org
+    const active = document.querySelector('.page.active');
+    if (active) loadTab(active.id);
+  } catch (e) {
+    alert('Error switching org: ' + e.message);
+  }
+}
+
+function hideOrgSwitcher() {
+  document.getElementById('org-modal').classList.remove('visible');
+}
+
+async function toggleIncognito() {
+  try {
+    const endpoint = _incognitoActive ? '/api/v1/incognito/stop' : '/api/v1/incognito/start';
+    const res = await fetch(API + endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    const data = await res.json();
+    if (res.ok) {
+      _incognitoActive = !_incognitoActive;
+      updateOrgBadge();
+      loadSettings();
+    } else {
+      alert(data.error || 'Failed to toggle incognito');
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
 
 init();
 document.title = 'PAN v3.' + Date.now();
