@@ -377,9 +377,11 @@ function getBackend(model) {
 }
 
 // Public API — text completion
-export async function claude(rawPrompt, { model, timeout = 15000, maxTokens = 300, caller = 'unknown' } = {}) {
+export async function claude(rawPrompt, { model, timeout = 15000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false } = {}) {
   // Anonymize PII before sending to any cloud AI provider
-  const prompt = anonymizeForAI(rawPrompt);
+  // _skipAnonymize: caller already handled anonymization selectively (e.g. router
+  // anonymizes user text but preserves sensor data like GPS for location queries)
+  const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
   const backend = getBackend(model);
 
