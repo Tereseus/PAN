@@ -156,71 +156,33 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**Claude** (2026-04-11 19:57:10): Craft-4 is live, Craft-3 is in the rollback window. Everything's working.
+**User** (2026-04-11 22:40:37): npx ccusage
+**User** (2026-04-11 22:48:12): Hey I'm back I use I upgraded to Max 20 to 20XI might as well i'm going to be doing autodev Can you actually look at my usage
+**User** (2026-04-11 22:48:45): claude
+**User** (2026-04-11 22:49:37): hello
+**User** (2026-04-11 22:51:29): Can you look at what's happening in my terminal for some reason I reach my usage limit and I just upgraded now but I like PAN won't come back II even restarted the server restarted the carrier
+**User** (2026-04-11 22:52:14): claude
+**User** (2026-04-11 23:31:59): ΠΑΝ Remembers: summarize recent session context briefly.
+**Claude** (2026-04-11 23:32:10): ΠΑΝ Remembers:
 
-So here's what's fixed:
-
-1. **Hot swap already auto-reloads the page** — it was already coded (line 860: `window.location.reload()`). You just had to trigger the swap. The dashboard rebuild alone doesn't do anything — the swa
-**User** (2026-04-11 19:57:57): You are PAN's memory consolidation system. Extract structured memories from these recent events.
+- **Carrier/Craft architecture (Phase 6) is deployed and running** — hot-swap, Lifeboat rollback widget, and auto-cleanup all working
+- **Terminal blank-after-refresh** — still the #1 frustration bug. Transcript messages don't render until a new message arrives after page refresh
+- *
+**User** (2026-04-11 23:36:24): You are PAN's memory consolidation system. Extract structured memories from these recent events.
 
 EVENTS:
-[2026-04-11 19:24:38] Claude: Done. Here's what changed:
-
-**Before:** Settings restart button 
-**Claude** (2026-04-11 19:58:16): ```json
+[2026-04-11 23:16:59] User: Pan Bat is still opening two CMD lines though But yeah I'm back in
+**Claude** (2026-04-11 23:36:39): ```json
 {
   "episodes": [
     {
-      "summary": "Settings restart button redesigned for full process replacement",
-      "detail": "Before: restart button triggered Craft to tell Carrier to hot-swap (only replaced server.js, Carrier code stayed old). After: restart button spawns new 'node pan.js st
-**User** (2026-04-11 19:58:21): You are PAN's memory system. You maintain a LIVING STATE DOCUMENT that tracks what's going on across the project.
-
-CURRENT STATE DOCUMENT:
-# PAN State — Updated 2026-04-11
-
-## What Works
-- PAN server 
-**Claude** (2026-04-11 19:58:44): # PAN State — Updated 2026-04-11
-
-## What Works
-- PAN server running via Carrier/Craft (Phase 6 ✅ deployed)
-- ΠΑΝ Remembers briefing system with restart banner
-- Pipe mode with `child_process.spawn` — clean JSON output
-- Per-tab PTY sessions (bash shell for terminal UI)
-- Dev/prod resource isolation
-**User** (2026-04-11 20:01:28): OK yeah the Crucible isn't you know a new page It doesn't need to have the sidebar the terminal automation projects it doesn't need to have that II guess or should or shouldn't Why would you want term
-**Claude** (2026-04-11 20:03:13): OK that'll deploy. Now close the old Crucible window and reopen it — or the main dashboard will auto-reload and you can click Open Crucible again from Lifeboat. The sidebar will be gone.
-
-Now to your actual question — **what is AutoDev/Forge actually used for?**
-
-You're right that it's hard to conce
-**User** (2026-04-11 20:11:24): Oh and when you say things like fix the transcript loads and messages so autodad doesn't really even become a section in automation It's happening all the time It's it's always happening so it's alway
-**Claude** (2026-04-11 20:12:12): You're touching on something real here. Let me try to untangle it.
-
-**AutoDev isn't a feature, it's a mode.** You're right — it's not a page in the sidebar. It's always on. Every time I make a change, I could be doing it through the Forge path: shadow → compare → promote. The fact that right now I j
-**User** (2026-04-11 20:13:23): You are PAN's memory consolidation system. Extract structured memories from these recent events.
-
-EVENTS:
-[2026-04-11 19:58:21] User: You are PAN's memory system. You maintain a LIVING STATE DOCUMENT 
-**Claude** (2026-04-11 20:13:44): ```json
-{
-  "episodes": [
-    {
-      "summary": "Crucible window UI design clarification",
-      "detail": "User questioned whether Crucible needs sidebar, terminal access, and automation sections. Claude confirmed Crucible is a simpler window — sidebar removed, no terminal access. Deployment appro
-**User** (2026-04-11 20:17:48): Speed of response should always be determined by not by the time by the amount of messages because I let me go away for 30 minutes and I choose the the first the first choice anyway Yeah so all those 
-**Claude** (2026-04-11 20:18:07): Yeah, that's exactly what the flywheel is. Every interaction makes the next one better:
-
-**You use PAN → PAN captures data → classifies it → updates your personality model → Forge generates better variants → you approve faster → that approval is more data → model gets sharper → even better variants 
-**User** (2026-04-11 20:23:29): OK where are we at brother
-**Claude** (2026-04-11 20:23:42): We just knocked out all 7 phases of the Carrier plan:
-
-| Phase | Status | What we did this session |
-|-------|--------|------------------------|
-| 1 | ✅ | Already done |
-| 2 | ✅ | Already done |
-| 3 | ✅ | Confirmed already complete (reconnect tokens persist, frontend auto-reconnects) |
-| 4 | ✅ | Alr
+      "summary": "Pan.bat still opening duplicate CMD windows despite fixes",
+      "detail": "User reports Pan.bat creating multiple CMD windows when restarting via Settings. PAN is operational (Carrier running, Craft-1 healthy) but startup behavior needs hardening",
+**User** (2026-04-11 23:46:10): 82 alerts can you mass close those
+**Claude** (2026-04-11 23:46:36): No GitHub notifications found. What alerts are you referring to — Dependabot/security alerts on a specific repo, or something else?
+**User** (2026-04-11 23:47:22): Im talking about the pan alert widget
+**User** (2026-04-11 23:48:14): Push to git
+**Claude** (2026-04-11 23:48:40): Done — all **82 alerts dismissed**. Your alerts widget should show 0 now.
 
 # PAN State — Updated 2026-04-11
 
@@ -282,9 +244,30 @@ EVENTS:
 - [2026-04-11 19:24:33] Carrier/Craft restart architecture validated end-to-end: User confirmed understanding of complete flow: Settings button → restart Carrier → Lifeboat hot-swap → next Craft transition, all with session context preserved. User was on 'Craft One' during session
 - [2026-04-11 09:50:15] Phase 4 implementation begun: Claude Session Handoff (Pipe Mode) [partial]: ClaudeAdapter now accepts `resumeClaudeSessionId` parameter. On first query with this param, sets `opts.resume` flag to allow Claude to maintain session context across server restarts. Three changes e
 - [2026-04-11 09:50:12] Phase 4 (Claude Session Handoff) initiated [partial]: Started implementing Phase 4 of 7-phase plan. ClaudeAdapter now accepts resumeClaudeSessionId parameter. On first query, sets opts.resume flag so Claude survives server restart with session context.
+- [2026-04-11 23:36:40] Session briefing (ΠΑΝ Remembers) delivered successfully after restart: User requested briefing, Claude delivered context about Carrier/Craft Phase 6 deployment and terminal blank-after-refresh bug. Session continuity working correctly
 - [2026-04-11 18:27:36] Phase 4 (Claude Session Handoff) confirmed working end-to-end: Carrier/Craft system running (PIDs confirmed), reconnect tokens + session resumption survive dev restart. 'The matrix' test passed. User is actively running on Carrier/Craft.
 - [2026-04-10 16:14:44] Cross-tab message contamination confirmed and temporarily fixed, then reverted [partial]: User reported PTY exits and messages from PAN 1 tab bleeding into PAN Main despite separate PTY processes. Root cause identified: broadcastNotification('chat_update') in terminal.js sends to ALL WebSo
-- [2026-04-10 22:47:34] Briefing context injection remains problematic even in pipe mode [failure]: ΠΑΝ Remembers briefing still triggers CLAUDE.md context injection that puts Claude in hang/mode shift state. Pipe mode message handling works correctly (multi-turn, --session-
+- [2026-04-10 22:47:34] Briefing context injection remains problematic even in pipe mode [failure]: ΠΑΝ Remembers briefing still triggers CLAUDE.md context injection that puts Claude in hang/mode shift state. Pipe mode message handling works correctly (multi-turn, --session-id, --resume all function
+- [2026-04-10 21:57:03] Two Claude sessions actively conflicting on codebase [failure]: Desktop Claude session reverting changes that dashboard Claude session was making, creating perpetual revert loop. One session makes changes, other immediately reverts them, preventing convergence.
+- [2026-04-10 22:37:51] Briefing context injection causing Claude hang, not actual process failure [partial]: User reported 'Claude is not running' and messages not arriving, but Claude was actually replying to subsequent questions. Root cause identified: the ΠΑΝ Remembers briefing message triggers CLAUDE.md 
+
+## Known Procedures
+- **Archive completed memory items**: Remove solved tasks and closed issues from active session context
+  1. Identify completed tasks in open issues list
+  2. Move to archived/solved section with completion timestamp
+  3. Clear from active session briefing
+  4. Run Dream Cycle to rewrite pan-state.md with only active items
+  5. Verify next session doesn't list solved items as open
+- **Session Briefing Injection Update**: How to change the greeting text that appears at session start. Text is injected by hooks.js and rendered in terminal system message.
+  1. Edit greeting text in hooks.js:157 (injects future sessions)
+  2. Update CLAUDE.md with new format (reference for users)
+  3. Update .pan-briefing.md template
+  4. No restart needed — changes take effect on next session start
+- **Debug transcript message contamination**: When user reports unexpected messages appearing in transcript across sessions, check transcript-watcher.js for session file merging logic and inspect the last 5 JSONL files being loaded
+  1. Check transcript-watcher.js load logic
+  2. Verify which JSONL files are being merged
+  3. Inspect last 5 session files for same project directory
+  4. Filter to current session only if cross-session contamination conf
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { insert, all, get, run, logEvent, anonymize, anonymizeEventData } from '../db.js';
+import { insert, all, get, run, db, logEvent, anonymize, anonymizeEventData } from '../db.js';
 import { logEventScoped } from '../events.js';
 import { getActiveOrg, isIncognitoAllowed } from '../org-policy.js';
+import { requireOrg } from '../middleware/org-context.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -20,6 +21,44 @@ const UI_SCRIPT = join(__dirname, '..', 'ui-automation.py');
 const pendingActions = [];
 
 const router = Router();
+
+// Tier 0 Phase 2: Apply org context to all API routes.
+// Attaches req.org_id and req.membership. Falls back to org_personal.
+router.use(requireOrg);
+
+// Org management endpoints (under /api/v1/orgs — no auth gate needed, requireOrg handles it)
+router.get('/orgs', (req, res) => {
+  // List all orgs the current user is a member of
+  try {
+    const userId = req.user?.id || 1;
+    const rows = all(`SELECT o.*, m.role_id, m.permissions_json FROM memberships m
+      JOIN orgs o ON o.id = m.org_id
+      WHERE m.user_id = :uid AND m.left_at IS NULL`, { ':uid': userId });
+    res.json({ orgs: rows, active: req.org_id });
+  } catch (e) {
+    res.json({ orgs: [{ id: 'org_personal', slug: 'personal', name: 'Personal' }], active: 'org_personal' });
+  }
+});
+
+router.post('/orgs/switch', (req, res) => {
+  // Switch active org
+  const { org_id } = req.body;
+  if (!org_id) return res.status(400).json({ error: 'org_id required' });
+  const userId = req.user?.id || 1;
+
+  // Verify membership
+  try {
+    const membership = get(`SELECT * FROM memberships WHERE user_id = :uid AND org_id = :oid AND left_at IS NULL`,
+      { ':uid': userId, ':oid': org_id });
+    if (!membership) return res.status(403).json({ error: 'not a member of this org' });
+
+    run(`UPDATE users SET last_active_org_id = :oid WHERE id = :uid`, { ':uid': userId, ':oid': org_id });
+    const org = get(`SELECT * FROM orgs WHERE id = :oid`, { ':oid': org_id });
+    res.json({ ok: true, org });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Dashboard chat — routes through AI router with dashboard source tag
 router.post('/chat', async (req, res) => {

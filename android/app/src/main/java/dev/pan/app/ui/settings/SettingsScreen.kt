@@ -46,8 +46,18 @@ fun SettingsScreen(
     val personality by viewModel.personality.collectAsState()
     val incognitoMode by viewModel.incognitoMode.collectAsState()
     val incognitoAllowed by viewModel.incognitoAllowed.collectAsState()
+    val toastMessage by viewModel.toastMessage.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Show toast messages from ViewModel
+    LaunchedEffect(toastMessage) {
+        toastMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearToast()
+        }
+    }
 
     // VPN consent launcher
     val vpnLauncher = rememberLauncherForActivityResult(
@@ -59,6 +69,7 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },

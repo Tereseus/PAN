@@ -4,18 +4,38 @@
 
 set "PAN_SHELL=%~dp0service\tauri\src-tauri\target\release\pan-shell.exe"
 set "PAN_SHELL_WD=%~dp0service\tauri"
+set "PAN_LOCK=%~dp0service\.pan-server.lock"
 
 cd /d "%~dp0service"
 
-:: Check if PAN server is already running. Use --fail so curl returns non-zero
-:: on any non-2xx response (or no connection), -o NUL discards the body. This
-:: avoids the brittle "parse the http_code from a temp file" approach which
-:: was failing intermittently and causing the bat to spawn a duplicate server.
+:: ─── Guard 1: Is /health already responding? ───
 curl -sf -o NUL --max-time 2 http://127.0.0.1:7777/health
 if %ERRORLEVEL% EQU 0 (
     echo [PAN] Server already running — opening dashboard
     start "" /D "%PAN_SHELL_WD%" "%PAN_SHELL%"
     exit /b 0
+)
+
+:: ─── Guard 2: Is port 7777 already bound? (catches boot-in-progress) ───
+netstat -ano | findstr ":7777 " | findstr "LISTENING" >NUL 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo [PAN] Port 7777 already in use — server is booting, opening dashboard
+    goto WAIT
+)
+
+:: ─── Guard 3: Lock file prevents concurrent PAN.bat invocations ───
+:: Lock is deleted by the respawn loop on exit, or stale after reboot
+if exist "%PAN_LOCK%" (
+    :: Lock exists — check if the PID in the lock is still alive
+    set /p LOCK_PID=<"%PAN_LOCK%"
+    tasklist /FI "PID eq %LOCK_PID%" 2>NUL | findstr /I "cmd.exe" >NUL 2>&1
+    if %ERRORLEVEL% EQU 0 (
+        echo [PAN] Another launcher is running (PID %LOCK_PID%) — opening dashboard
+        goto WAIT
+    ) else (
+        echo [PAN] Stale lock file (PID %LOCK_PID% dead) — removing
+        del /f "%PAN_LOCK%" >NUL 2>&1
+    )
 )
 
 echo [PAN] Starting server...
@@ -27,11 +47,22 @@ echo [PAN] Starting server...
 :: The window respawns node every time it exits — replaces the WinSW wrapper
 :: we used to have. Lets the in-app Restart button (which calls process.exit)
 :: work transparently. Closing the window kills the loop and stops PAN.
-start "PAN Server" cmd /k "cd /d %~dp0service && (for /l %%i in (1,0,2) do @(echo [PAN Server] starting node... & node pan.js start & echo [PAN Server] exited, restarting in 2s... & timeout /t 2 /nobreak >NUL))"
+::
+:: The lock file is written with the cmd PID and deleted on exit to prevent
+:: duplicate launchers (the root cause of the Carrier/Craft conflict bug).
+start "PAN Server" cmd /k "cd /d %~dp0service && (echo %%PID%% > .pan-server.lock & for /l %%i in (1,0,2) do @(echo [PAN Server] starting node... & node pan.js start & echo [PAN Server] exited, restarting in 2s... & timeout /t 2 /nobreak >NUL)) & del /f .pan-server.lock >NUL 2>&1"
+
+:: Write lock with the new cmd's PID (best-effort — the cmd itself also writes one)
+:: We find it by looking for the newest cmd.exe with our window title
+timeout /t 1 /nobreak >NUL
+for /f "tokens=2" %%a in ('tasklist /FI "WINDOWTITLE eq PAN Server" /FO TABLE /NH 2^>NUL ^| findstr "cmd.exe"') do (
+    echo %%a > "%PAN_LOCK%"
+)
 
 :: Wait for server to come up (max 15 seconds)
-set ATTEMPTS=0
 :WAIT
+set ATTEMPTS=0
+:WAITLOOP
 set /a ATTEMPTS+=1
 if %ATTEMPTS% GTR 15 (
     echo [PAN] Server did not start in time — check terminal
@@ -40,7 +71,7 @@ if %ATTEMPTS% GTR 15 (
 )
 timeout /t 1 /nobreak >NUL
 curl -sf -o NUL --max-time 2 http://127.0.0.1:7777/health && goto READY
-goto WAIT
+goto WAITLOOP
 
 :READY
 echo [PAN] Server running — opening dashboard

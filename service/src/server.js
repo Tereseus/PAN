@@ -791,16 +791,103 @@ app.get('/api/v1/settings', (req, res) => {
 app.put('/api/v1/settings', (req, res) => {
   try {
     const updates = req.body;
+    const keys = Object.keys(updates);
     for (const [key, value] of Object.entries(updates)) {
       const valStr = typeof value === 'string' ? value : JSON.stringify(value);
       run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (:key, :val, datetime('now','localtime'))", {
         ':key': key, ':val': valStr
       });
     }
-    res.json({ ok: true });
+    console.log(`[PAN Settings] Updated: ${keys.join(', ')} (from ${req.headers['x-device-name'] || req.ip})`);
+    // Return the saved values so clients can confirm the write succeeded
+    const saved = {};
+    for (const key of keys) {
+      const row = get("SELECT value FROM settings WHERE key = :k", { ':k': key });
+      if (row) { try { saved[key] = JSON.parse(row.value); } catch { saved[key] = row.value; } }
+    }
+    res.json({ ok: true, saved });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ==================== TTS / Voice Profiles ====================
+// Lazy-load TTS module (heavy imports, only load when needed)
+let ttsModule = null;
+async function getTTS() {
+  if (!ttsModule) ttsModule = await import('./tts.js');
+  return ttsModule;
+}
+
+// List voice profiles
+app.get('/api/v1/voice/profiles', async (req, res) => {
+  try {
+    const tts = await getTTS();
+    res.json({ profiles: tts.listVoiceProfiles() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Upload reference audio for a voice profile
+app.post('/api/v1/voice/profile/:name', async (req, res) => {
+  try {
+    const tts = await getTTS();
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      const buf = Buffer.concat(chunks);
+      if (buf.length < 1000) return res.status(400).json({ error: 'Audio too short (need 10-15 seconds)' });
+      tts.saveReference(req.params.name, buf);
+      res.json({ ok: true, voice: req.params.name, bytes: buf.length });
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Synthesize speech (returns WAV audio)
+app.post('/api/v1/voice/speak', async (req, res) => {
+  try {
+    const tts = await getTTS();
+    const { text, voice } = req.body;
+    if (!text) return res.status(400).json({ error: 'text required' });
+    if (!voice) return res.status(400).json({ error: 'voice required' });
+
+    const result = await tts.synthesize(text, voice);
+    res.set('Content-Type', 'audio/wav');
+    res.set('X-TTS-Cached', result.cached ? '1' : '0');
+    tts.streamWav(result.path).pipe(res);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Pre-generate common phrases for a voice (background task)
+app.post('/api/v1/voice/pregenerate/:name', async (req, res) => {
+  try {
+    const tts = await getTTS();
+    if (!tts.hasVoiceProfile(req.params.name)) {
+      return res.status(404).json({ error: `Voice "${req.params.name}" has no reference audio` });
+    }
+    res.json({ ok: true, message: `Pre-generating phrases for "${req.params.name}"...` });
+    // Run in background — don't block the response
+    tts.pregenerate(req.params.name, (progress) => {
+      console.log(`[TTS] ${req.params.name}: ${progress.done}/${progress.total} phrases (${progress.errors} errors)`);
+    }).then(r => {
+      console.log(`[TTS] Pre-generation complete for "${req.params.name}": ${r.done}/${r.total} (${r.errors} errors)`);
+    }).catch(e => {
+      console.error(`[TTS] Pre-generation failed for "${req.params.name}": ${e.message}`);
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Download voice pack (reference + cached phrases as ZIP)
+app.get('/api/v1/voice/pack/:name', async (req, res) => {
+  try {
+    const tts = await getTTS();
+    if (!tts.hasVoiceProfile(req.params.name)) {
+      return res.status(404).json({ error: `Voice "${req.params.name}" not found` });
+    }
+    // For now just return profile info — ZIP packaging is a TODO
+    const profiles = tts.listVoiceProfiles();
+    const profile = profiles.find(p => p.name === req.params.name.toLowerCase().replace(/[^a-z0-9_-]/g, '_'));
+    res.json({ profile: profile || null, downloadUrl: 'TODO: ZIP packaging' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Dashboard (web UI + API)
@@ -1295,6 +1382,26 @@ app.get('/api/v1/terminal/messages/:session_id', async (req, res) => {
     res.json({ ok: true, messages: messages || [] });
   } catch (err) {
     res.json({ ok: false, messages: [], error: err.message });
+  }
+});
+
+// HTTP interrupt fallback — for when WebSocket is dead but user presses Escape
+app.post('/api/v1/terminal/interrupt', (req, res) => {
+  const sessionId = req.query.session || req.body?.session_id;
+  if (sessionId) {
+    const ok = pipeInterrupt(sessionId);
+    res.json({ ok, session: sessionId });
+  } else {
+    // No session specified — interrupt all active sessions
+    const sessions = listSessions();
+    let interrupted = 0;
+    for (const s of sessions) {
+      if (s.claudeRunning) {
+        pipeInterrupt(s.id);
+        interrupted++;
+      }
+    }
+    res.json({ ok: true, interrupted });
   }
 });
 

@@ -276,6 +276,15 @@ Actions: conversations, projects, tasks, services, devices, stats, sessions, sen
           return err(new Error(`Unknown carrier_action: "${sub}". Options: status, swap, shadow_start, shadow_stop, shadow_promote, shadow_stats, crucible, open_crucible, rollback, confirm, lifeboat`));
         }
 
+        // --- Voice / TTS ---
+        case 'voice': {
+          const sub = params.voice_action || 'profiles';
+          if (sub === 'profiles') return ok(await panFetch('/api/v1/voice/profiles'));
+          if (sub === 'pregenerate') return ok(await panFetch(`/api/v1/voice/pregenerate/${encodeURIComponent(params.name)}`, { method: 'POST' }));
+          if (sub === 'pack') return ok(await panFetch(`/api/v1/voice/pack/${encodeURIComponent(params.name)}`));
+          return err(new Error(`Unknown voice_action: "${sub}". Options: profiles, pregenerate, pack`));
+        }
+
         // --- Context ---
         case 'context': {
           if (params.context_action === 'inject') return ok(await panFetch('/api/v1/inject-context', { method: 'POST', body: { cwd: params.cwd || 'C:\\Users\\tzuri\\Desktop\\PAN' } }));
