@@ -12,15 +12,20 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'crypto';
 
 export class ClaudeAdapter {
-  constructor(sessionId, cwd, onMessage) {
+  constructor(sessionId, cwd, onMessage, resumeClaudeSessionId = null) {
     this.sessionId = sessionId;           // PAN tab session ID (e.g., "dash-pan-main")
     this.cwd = cwd;                       // Working directory
     this.onMessage = onMessage;           // Callback: (messages: Message[]) => void
     this.messages = [];                   // Transcript: [{role, type, text, ts, model?}]
-    this.claudeSessionId = null;          // Claude's internal session UUID
+    this.claudeSessionId = resumeClaudeSessionId; // Claude's internal session UUID (restored from token on restart)
     this.busy = false;                    // True while a query is running
     this.abortController = null;          // For interrupting
     this._queryCount = 0;
+    if (resumeClaudeSessionId) {
+      // Pre-set query count so the resume logic kicks in on first send
+      this._queryCount = 1;
+      console.log(`[Claude Adapter] Resuming session: ${resumeClaudeSessionId}`);
+    }
   }
 
   // Send a message to Claude. Responses stream via onMessage callback.
@@ -44,8 +49,8 @@ export class ClaudeAdapter {
       cwd: this.cwd,
     };
 
-    // Resume previous session for multi-turn
-    if (this.claudeSessionId && !isFirst) {
+    // Resume previous session for multi-turn (or after server restart)
+    if (this.claudeSessionId) {
       opts.resume = this.claudeSessionId;
     }
 
@@ -110,6 +115,13 @@ export class ClaudeAdapter {
           ts: new Date().toISOString(),
         });
         this._push();
+      } else if (opts.resume && (err.message?.includes('session') || err.message?.includes('resume') || err.message?.includes('not found'))) {
+        // Resume failed — session expired or invalid. Retry as fresh session.
+        console.warn(`[Claude Adapter] Resume failed (${err.message}), retrying as fresh session`);
+        this.claudeSessionId = null;
+        this._queryCount = 1;
+        this.busy = false;
+        return this.send(text);
       } else {
         console.error(`[Claude Adapter] Query error:`, err.message);
         this.messages.push({

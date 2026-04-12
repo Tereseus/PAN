@@ -37,8 +37,9 @@ function pipeSend(sessionId, userText) {
   userText = (userText || '').trim();
   if (!userText) return false;
 
-  // Create adapter on first use
+  // Create adapter on first use — pass stored Claude session ID for resume after restart
   if (!session._llmAdapter) {
+    const resumeId = session.claudeSessionIds?.[session.claudeSessionIds.length - 1] || null;
     session._llmAdapter = new ClaudeAdapter(sessionId, session.cwd, (messages) => {
       // Push transcript to all connected WebSocket clients
       session.lastOutputTs = Date.now();
@@ -50,11 +51,24 @@ function pipeSend(sessionId, userText) {
           } catch {}
         }
       }
-    });
-    console.log(`[PAN LLM] Created Claude adapter for session ${sessionId} cwd=${session.cwd}`);
+      // Persist the Claude session ID back to the session + token
+      const csid = session._llmAdapter?.getSessionId?.();
+      if (csid && !(session.claudeSessionIds || []).includes(csid)) {
+        session.claudeSessionIds = [...(session.claudeSessionIds || []), csid];
+        // Update all connected clients' tokens
+        for (const c of session.clients) {
+          if (c._reconnectToken) {
+            updateTokenClaudeSessions(c._reconnectToken, session.claudeSessionIds);
+          }
+        }
+      }
+    }, resumeId);
+    console.log(`[PAN LLM] Created Claude adapter for session ${sessionId} cwd=${session.cwd}` +
+      (resumeId ? ` (resuming Claude session ${resumeId})` : ' (fresh session)'));
   }
 
   session.claudeRunning = true;
+  session.pipeMode = true; // Mark that this session uses pipe mode (Claude always available)
   session._llmAdapter.send(userText).then(() => {
     session.claudeRunning = false;
     // Notify ready
@@ -65,6 +79,28 @@ function pipeSend(sessionId, userText) {
     }
   });
   return true;
+}
+
+// Interrupt a session's LLM adapter (Escape key in pipe mode)
+function pipeInterrupt(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session?._llmAdapter) return false;
+  session._llmAdapter.interrupt();
+  session.claudeRunning = false;
+  writeSystemMessage(sessionId, 'interrupt', 'Interrupted (Escape)');
+  return true;
+}
+
+// Get all transcript messages for a session (for HTTP fallback on page load)
+function getSessionMessages(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return [];
+  const stream = session._streamMessages || [];
+  const adapter = session._llmAdapter?.getMessages?.() || [];
+  const system = session.systemMessages || [];
+  const all = [...system, ...stream, ...adapter];
+  all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+  return all;
 }
 
 // Push stream transcript messages to all connected clients for a session
@@ -409,8 +445,9 @@ async function startTerminalServer(httpServer) {
           // not local UI state that desyncs across refreshes/tabs.
           lastInputTs: 0,
           lastOutputTs: Date.now(),
-          claudeRunning: false, // true once Claude's ❯ prompt is detected in PTY output
+          claudeRunning: false, // true while a query is actively processing
           claudeExited: false, // set true when Claude CLI exits inside the PTY
+          pipeMode: true, // always true — pipe mode means Claude is available on-demand
           claudeSessionIds: [], // Claude session IDs belonging to this tab (updated via set_claude_sessions)
         };
         sessions.set(sessionId, session);
@@ -663,6 +700,12 @@ async function startTerminalServer(httpServer) {
     // Phase 3: Issue reconnect token for this client
     // If reconnecting with a valid token, reuse claude session IDs from it
     let claudeSessionIdsFromToken = tokenEntry?.claudeSessionIds || [];
+    // Phase 4: Restore Claude session IDs onto the session so pipeSend() can resume
+    if (claudeSessionIdsFromToken.length > 0 && session) {
+      const merged = new Set([...(session.claudeSessionIds || []), ...claudeSessionIdsFromToken]);
+      session.claudeSessionIds = [...merged];
+      console.log(`[PAN Terminal] Restored Claude session IDs from token: ${claudeSessionIdsFromToken.join(', ')}`);
+    }
     const newToken = issueToken(sessionId, projectName, cwd, claudeSessionIdsFromToken);
     ws._reconnectToken = newToken;
 
@@ -689,14 +732,19 @@ async function startTerminalServer(httpServer) {
     // (triggered by the dashboard auto-launch) IS the briefing. A separate system
     // banner was rendering as a red warning box which looked wrong.
 
-    // Transcript is now parsed directly from the stream-json PTY output
-    // (see onData handler above). On reconnect, send existing messages immediately.
-    if (session._streamMessages?.length > 0) {
-      const messages = [...(session.systemMessages || []), ...session._streamMessages];
-      messages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-      try {
-        ws.send(JSON.stringify({ type: 'transcript_messages', messages }));
-      } catch {}
+    // On connect/reconnect, push all transcript messages immediately.
+    // Merge: system messages + PTY stream messages + pipe mode adapter messages.
+    {
+      const stream = session._streamMessages || [];
+      const adapter = session._llmAdapter?.getMessages?.() || [];
+      const system = session.systemMessages || [];
+      const all = [...system, ...stream, ...adapter];
+      if (all.length > 0) {
+        all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+        try {
+          ws.send(JSON.stringify({ type: 'transcript_messages', messages: all }));
+        } catch {}
+      }
     }
 
     // Handle incoming messages from client
@@ -727,11 +775,14 @@ async function startTerminalServer(httpServer) {
             break;
 
           case 'interrupt':
-            // User pressed Escape — send ESC char to interrupt Claude Code
-            if (session.pty) {
-              session.lastInputTs = Date.now();
+            // User pressed Escape — interrupt Claude
+            session.lastInputTs = Date.now();
+            if (session._llmAdapter && session._llmAdapter.busy) {
+              // Pipe mode: abort the active SDK query
+              pipeInterrupt(sessionId);
+            } else if (session.pty) {
+              // Legacy PTY mode: send ESC char
               session.pty.write('\x1b');
-              // Write interrupt to per-tab transcript (subscribers auto-notified)
               writeSystemMessage(sessionId, 'interrupt', 'Interrupted (Escape)');
             }
             break;
@@ -904,6 +955,7 @@ function listSessions() {
       lastOutputTs: lastOut,
       thinking,
       claudeRunning: !!session.claudeRunning,
+      pipeMode: !!session.pipeMode,
       currentTool: inFlight ? {
         tool: inFlight.tool,
         summary: inFlight.summary,
@@ -1154,4 +1206,4 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, getSessionMessages };

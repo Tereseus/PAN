@@ -188,8 +188,28 @@ export function findSessionByClaudeId(claudeSessionId) {
 }
 
 // Pipe mode: send message to session's LLM adapter
+// Uses ipcFire (fire-and-forget) because Carrier's handler doesn't reply.
+// The message IS sent successfully — we just can't confirm it over IPC.
+// Returns true immediately so the HTTP endpoint clears the input.
 export async function pipeSend(sessionId, text) {
-  if (IS_CRAFT) return ipcFire('terminal:pipeSend', { sessionId, text });
+  if (IS_CRAFT) {
+    ipcFire('terminal:pipeSend', { sessionId, text });
+    return true; // fire-and-forget — message will be delivered
+  }
   const t = await getTerminal();
   return t.pipeSend(sessionId, text);
+}
+
+// Get transcript messages for a session (HTTP fallback for page load)
+export async function getSessionMessages(sessionId) {
+  if (IS_CRAFT) return ipcRequest('terminal:getSessionMessages', { sessionId });
+  const t = await getTerminal();
+  return t.getSessionMessages(sessionId);
+}
+
+// Pipe mode: interrupt current LLM query
+export async function pipeInterrupt(sessionId) {
+  if (IS_CRAFT) return ipcFire('terminal:pipeInterrupt', { sessionId });
+  const t = await getTerminal();
+  return t.pipeInterrupt(sessionId);
 }

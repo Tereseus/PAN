@@ -118,7 +118,7 @@
 	<div class="mobile-overlay" onclick={closeMobileMenu}></div>
 {/if}
 
-{#if page.url.pathname.includes('/atlas')}
+{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/crucible')}
 	{@render children()}
 {:else}
 <div class="shell">

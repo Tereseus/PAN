@@ -120,7 +120,7 @@ server.tool(
   'pan',
   `PAN router — single dispatch for all PAN actions. Use @pan://actions to see full action list with parameters.
 
-Actions: conversations, projects, tasks, services, devices, stats, sessions, sensors, photos, scout, alerts, recording, windows, settings, logs, runner, library, context, processes`,
+Actions: conversations, projects, tasks, services, devices, stats, sessions, sensors, photos, scout, alerts, recording, windows, settings, logs, runner, library, context, processes, carrier`,
   {
     action: z.string().describe('Action name (see @pan://actions for full list)'),
     params: z.record(z.any()).optional().describe('Action parameters as key-value pairs')
@@ -256,6 +256,26 @@ Actions: conversations, projects, tasks, services, devices, stats, sessions, sen
         case 'processes':
           return ok(await panFetch('/api/v1/processes'));
 
+        // --- Carrier / Crucible ---
+        case 'carrier': {
+          const sub = params.carrier_action || 'status';
+          if (sub === 'status') return ok(await panFetch('/api/carrier/status'));
+          if (sub === 'swap') return ok(await panFetch('/api/carrier/swap', { method: 'POST' }));
+          if (sub === 'shadow_start') return ok(await panFetch('/api/carrier/shadow', { method: 'POST' }));
+          if (sub === 'shadow_stop') return ok(await panFetch('/api/carrier/shadow', { method: 'DELETE' }));
+          if (sub === 'shadow_promote') return ok(await panFetch('/api/carrier/shadow/promote', { method: 'POST' }));
+          if (sub === 'shadow_stats') return ok(await panFetch('/api/carrier/shadow/stats'));
+          if (sub === 'crucible') return ok(await panFetch(`/api/carrier/crucible?limit=${params.limit || 100}${params.mismatches ? '&mismatches=1' : ''}`));
+          if (sub === 'open_crucible') {
+            await panFetch('/api/v1/ui-commands', { method: 'POST', body: { type: 'open_window', url: 'http://localhost:7777/v2/crucible', title: 'Crucible', width: 1200, height: 800 } });
+            return ok({ opened: 'crucible' });
+          }
+          if (sub === 'rollback') return ok(await panFetch('/lifeboat/rollback', { method: 'POST' }));
+          if (sub === 'confirm') return ok(await panFetch('/lifeboat/confirm', { method: 'POST' }));
+          if (sub === 'lifeboat') return ok(await panFetch('/lifeboat/status'));
+          return err(new Error(`Unknown carrier_action: "${sub}". Options: status, swap, shadow_start, shadow_stop, shadow_promote, shadow_stats, crucible, open_crucible, rollback, confirm, lifeboat`));
+        }
+
         // --- Context ---
         case 'context': {
           if (params.context_action === 'inject') return ok(await panFetch('/api/v1/inject-context', { method: 'POST', body: { cwd: params.cwd || 'C:\\Users\\tzuri\\Desktop\\PAN' } }));
@@ -316,6 +336,24 @@ Status lifecycle: open → acknowledged → resolved (with notes) or dismissed
 | library | Docs and knowledge files | file?(path to view specific file) |
 | context | Session context/briefing | context_action?(briefing/inject), cwd? |
 | processes | All PIDs spawned by PAN (PTY, Claude CLI, agent-sdk) | (none) — returns alive/dead with uptime, type, session |
+
+## Carrier / Crucible (AutoDev)
+| Action | Description | Params |
+|--------|-------------|--------|
+| carrier | Carrier runtime control + shadow traffic + crucible | carrier_action?(status/swap/shadow_start/shadow_stop/shadow_promote/shadow_stats/crucible/open_crucible/rollback/confirm/lifeboat), limit?, mismatches? |
+
+Carrier actions:
+- **status** — Carrier + Craft health, shadow status
+- **swap** — Hot-swap: spawn new Craft, health-check, switch proxy
+- **shadow_start** — Launch shadow Craft for canary testing (mirrors traffic)
+- **shadow_stop** — Kill shadow Craft (reject variant)
+- **shadow_promote** — Promote shadow to primary (with 30s rollback)
+- **shadow_stats** — Mirrored count, error rate, match rate, latency comparison
+- **crucible** — Get comparison results (primary vs shadow). limit?, mismatches?(bool, filter to mismatches only)
+- **open_crucible** — Open Crucible dashboard in Tauri window
+- **rollback** — Rollback to previous Craft (during 30s window)
+- **confirm** — Confirm current swap (kill old Craft)
+- **lifeboat** — Lifeboat status (minimal, always works even if Craft is hung)|
 `
     }]
   })

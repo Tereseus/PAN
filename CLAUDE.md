@@ -156,119 +156,135 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**User** (2026-04-10 23:07:54): Say MANGO
-**Claude** (2026-04-10 23:07:56): MANGO
-**User** (2026-04-10 23:09:55): What is the capital of France? One word.
-**Claude** (2026-04-10 23:09:57): Paris.
-**User** (2026-04-10 23:11:40): What is 2+2? One word answer.
-**Claude** (2026-04-10 23:11:41): Four.
-**User** (2026-04-10 23:12:17): <task-notification>
-<task-id>bjkwcjkop</task-id>
-<tool-use-id>toolu_01FLYwjs67e1aZSWh6iB8x4k</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop\74b0c8eb-b207-4a
-**Claude** (2026-04-10 23:12:17): **IT WORKS END-TO-END!**
+**Claude** (2026-04-11 19:57:10): Craft-4 is live, Craft-3 is in the rollback window. Everything's working.
 
-- WebSocket connected ✓
-- HTTP pipe sent "What is 2+2?" ✓
-- Transcript update: user message appeared instantly ✓
-- Transcript update: "Four." — correct answer ✓
-- Clean structured data, no TUI garbage ✓
-- No 10-second startup — Agent SDK runs in-process ✓
-- Streamed via Web
-**Claude** (2026-04-10 23:12:23): Background test confirmed it. The Agent SDK adapter is working. Hard refresh the dashboard and type a full question — the backend is ready. "Four." came through clean and instant.
-**User** (2026-04-10 23:13:22): hey
-**Claude** (2026-04-10 23:13:24): Hey! What's up?
-**User** (2026-04-10 23:13:29): yo
-**Claude** (2026-04-10 23:13:31): Yo! What's going on?
-**User** (2026-04-10 23:13:33): The Desktop session just switched PAN to pipe mode. Here's what changed:
+So here's what's fixed:
 
-  Claude now launches as claude -p --output-format stream-json --verbose --permission-mode auto via child_process.spawn — NOT 
-**Claude** (2026-04-10 23:14:28): Alright, I've got the full picture. Here's the summary:
+1. **Hot swap already auto-reloads the page** — it was already coded (line 860: `window.location.reload()`). You just had to trigger the swap. The dashboard rebuild alone doesn't do anything — the swa
+**User** (2026-04-11 19:57:57): You are PAN's memory consolidation system. Extract structured memories from these recent events.
 
-**The pipe mode setup looks solid.** Here's what's wired up:
+EVENTS:
+[2026-04-11 19:24:38] Claude: Done. Here's what changed:
 
-1. **Backend (`llm-adapter-claude.js`)** — Uses the Agent SDK directly (`@anthropic-ai/claude-agent-sdk`'s `query()`) — no PTY, no shell, no `claude -p` CLI subprocess. It streams s
+**Before:** Settings restart button 
+**Claude** (2026-04-11 19:58:16): ```json
+{
+  "episodes": [
+    {
+      "summary": "Settings restart button redesigned for full process replacement",
+      "detail": "Before: restart button triggered Craft to tell Carrier to hot-swap (only replaced server.js, Carrier code stayed old). After: restart button spawns new 'node pan.js st
+**User** (2026-04-11 19:58:21): You are PAN's memory system. You maintain a LIVING STATE DOCUMENT that tracks what's going on across the project.
 
-# PAN State — Updated 2026-04-10
+CURRENT STATE DOCUMENT:
+# PAN State — Updated 2026-04-11
 
 ## What Works
-- PAN server running in user session (Session 1) with visible cmd window
+- PAN server 
+**Claude** (2026-04-11 19:58:44): # PAN State — Updated 2026-04-11
+
+## What Works
+- PAN server running via Carrier/Craft (Phase 6 ✅ deployed)
 - ΠΑΝ Remembers briefing system with restart banner
-- Per-tab independent PTY sessions (separate processes, PIDs work)
-- Path separator normalization in watchers Map (fixed transcript visibility)
-- Dev/prod resource isolation (separate databases/logs/transcripts via `PAN_DATA_DIR`)
-- Orphan detection via Steward alerts (Reaper disabled, alerts only)
-- Reconnect tokens for WebSocket continuity across server restarts
-- JSONL tail read optimization (large files only read last 512KB)
-- 200 message cap per JSONL read (prevents lag on large sessions)
+- Pipe mode with `child_process.spawn` — clean JSON output
+- Per-tab PTY sessions (bash shell for terminal UI)
+- Dev/prod resource isolation
+**User** (2026-04-11 20:01:28): OK yeah the Crucible isn't you know a new page It doesn't need to have the sidebar the terminal automation projects it doesn't need to have that II guess or should or shouldn't Why would you want term
+**Claude** (2026-04-11 20:03:13): OK that'll deploy. Now close the old Crucible window and reopen it — or the main dashboard will auto-reload and you can click Open Crucible again from Lifeboat. The sidebar will be gone.
+
+Now to your actual question — **what is AutoDev/Forge actually used for?**
+
+You're right that it's hard to conce
+**User** (2026-04-11 20:11:24): Oh and when you say things like fix the transcript loads and messages so autodad doesn't really even become a section in automation It's happening all the time It's it's always happening so it's alway
+**Claude** (2026-04-11 20:12:12): You're touching on something real here. Let me try to untangle it.
+
+**AutoDev isn't a feature, it's a mode.** You're right — it's not a page in the sidebar. It's always on. Every time I make a change, I could be doing it through the Forge path: shadow → compare → promote. The fact that right now I j
+**User** (2026-04-11 20:13:23): You are PAN's memory consolidation system. Extract structured memories from these recent events.
+
+EVENTS:
+[2026-04-11 19:58:21] User: You are PAN's memory system. You maintain a LIVING STATE DOCUMENT 
+**Claude** (2026-04-11 20:13:44): ```json
+{
+  "episodes": [
+    {
+      "summary": "Crucible window UI design clarification",
+      "detail": "User questioned whether Crucible needs sidebar, terminal access, and automation sections. Claude confirmed Crucible is a simpler window — sidebar removed, no terminal access. Deployment appro
+**User** (2026-04-11 20:17:48): Speed of response should always be determined by not by the time by the amount of messages because I let me go away for 30 minutes and I choose the the first the first choice anyway Yeah so all those 
+**Claude** (2026-04-11 20:18:07): Yeah, that's exactly what the flywheel is. Every interaction makes the next one better:
+
+**You use PAN → PAN captures data → classifies it → updates your personality model → Forge generates better variants → you approve faster → that approval is more data → model gets sharper → even better variants 
+**User** (2026-04-11 20:23:29): OK where are we at brother
+**Claude** (2026-04-11 20:23:42): We just knocked out all 7 phases of the Carrier plan:
+
+| Phase | Status | What we did this session |
+|-------|--------|------------------------|
+| 1 | ✅ | Already done |
+| 2 | ✅ | Already done |
+| 3 | ✅ | Confirmed already complete (reconnect tokens persist, frontend auto-reconnects) |
+| 4 | ✅ | Alr
+
+# PAN State — Updated 2026-04-11
+
+## What Works
+- PAN server running via Carrier/Craft (Phase 6 ✅ deployed)
+- ΠΑΝ Remembers briefing system with restart banner
+- Pipe mode with `child_process.spawn` — clean JSON output
+- Per-tab PTY sessions (bash shell for terminal UI)
+- Dev/prod resource isolation via `PAN_DATA_DIR`
+- Claude session handoff across restart (Phase 4 ✅)
+- Message input clears after send (no red highlight)
+- Lifeboat widget showing Carrier/Craft status, rollback window, hot-swap button
+- Dashboard auto-reloads on hot-swap
+- Craft auto-cleanup via SIGTERM after 30s rollback window
+- Lifeboat countdown timer ticks smoothly
 
 ## Known Issues
-- **Claude not launching in dev terminal** — keeps saying "Claude is thinking", never replies; dev entirely broken
-- **Claude dies in PAN MAIN tab** — launches once at PTY creation, but crashes/exits and doesn't relaunch; bare bash remains
-- **Transcript in PAN MAIN tab not updating live** — only the last-opened tab gets real-time updates
-- **Data loss on page refresh** — messages disappear after hard refresh; `claudeSessionIds` stored in memory only, wiped on reload
-- **DB vs live PTY session ID mismatch** — session IDs use random timestamps, change on every server restart, don't match DB records
-- **LaTeX/`.tex` files won't render** in markdown viewer
+- **Terminal blank after page refresh** — transcript messages don't render until first new message arrives (user frustrated: "just fucking fix the refresh")
+- HTTP fallback for messages pending (needs Carrier restart to activate `getSessionMessages` IPC handler)
+- Copy-paste broken (Windows PTY limitation, permanent)
+- LaTeX files won't render in markdown viewer
 
 ## Current Priorities
-1. **Replace timestamp-based session IDs with stable tab-name IDs** — change from `dash-pan[PHONE]040` (ephemeral) to `dash-pan-main` (stable); survives restarts and page refreshes
-2. Fix Claude auto-relaunch mechanism in PAN MAIN tab (missing recovery if Claude exits after initial launch)
-3. Fix transcript live updates in PAN MAIN tab
-4. Persist `claudeSessionIds` across page refreshes (reconnect token mechanism exists but not fully wired)
+1. Fix terminal blank-after-refresh render bug (critical frustration point)
+2. Update settings restart button to restart Carrier (not just hot-swap Craft)
+3. Verify HTTP fallback (`/api/v1/terminal/messages`) works after Carrier restart
+4. Build Phase 7 Forge widget (AutoDev spawn N variant Crafts)
 
 ## Key Decisions
-- Federated multi-org: each org runs own PAN server on tailnet
-- Restart count is north-star metric driving architecture
-- PTY transcript is primary source (LLM-agnostic); Claude JSONL is supplementary
-- Per-tab isolation: input, images, transcripts are session-specific
-- Session IDs MUST be derived from tab names (not random timestamps)
-- Steward (not Reaper) handles orphan alerts; Reaper disabled, no killing
-- `broadcastNotification('chat_update')` must filter by tab/session to prevent cross-tab leaking
+- Carrier never restarts, owns PTY/WebSocket permanently
+- Settings restart should trigger full Carrier restart (user clarified: needed for Carrier's new IPC handlers)
+- Pipe mode is primary Claude interface
+- Focus Claude + Llama only; skip Gemini/Apple/Meta
+- Free tier + ATC demo + data marketplace as initial product
 
 ## User Preferences
-- Work autonomously through PAN dashboard, not WezTerm/CLI
-- Never restart without explicit permission
-- Test in dev via Electron UI screenshots (not curl/API)
-- Transcript system must work for ANY LLM (not just Claude)
-- No blind changes — explain architecture first before implementing
-- Tab system must be rock-solid with zero cross-contamination
+- Work autonomously through PAN dashboard
+- Fix bugs without asking (user: "just do it")
+- Test via Tauri UI screenshots only
+- Transcript system must work for ANY LLM
+- Never ask for permission to restart (just do it)
 
 ## Known Facts
 - **Two active Claude sessions** revert changes made by each other on shared PAN codebase — Desktop Claude session and dashboard Claude session simultaneously modifying same files. One session makes pipe mode + briefing fixes, other session reverts them. Creates perpetual conflict loop preventing convergence. (codebase, confidence: 0.95)
 - **two Claude sessions** conflict same PAN codebase — Desktop session and dashboard session simultaneously editing same files, creating revert loops. One session must be stopped or isolated to prevent constant overwrites. (codebase, confidence: 0.95)
 - **Two Claude sessions** actively conflicting same PAN codebase files — Desktop Claude session and dashboard Claude session simultaneously editing/reverting same files, creating revert loops. One session must be stopped before further development. (codebase, confidence: 0.95)
+- **ClaudeAdapter** now supports session resumption across restarts — ClaudeAdapter accepts resumeClaudeSessionId parameter and sets opts.resume flag on first query to maintain session context (codebase, confidence: 0.9)
 - **Claude pipe mode with --session-id --resume** successfully handles multi-turn conversation and message resumption — When briefing is not involved, Claude pipe mode correctly receives user messages, maintains session context, and generates proper responses across multiple turns. (domain_knowledge, confidence: 0.95)
 - **Pipe mode message handling** is independent from briefing context injection mechanism — Pipe mode correctly handles multi-turn conversations, --session-id, and --resume flags. Briefing system's context injection is separate vector that breaks pipe mode. Not a pipe mode bug but cross-system interaction failure. (domain_knowledge, confidence: 0.9)
+- **user** wants to test Pan Remembers briefing system across server restart — User prioritizes verifying session continuity works after restart — checking that briefing loads and Claude resumes context (user_preference, confidence: 0.85)
 - **ΠΑΝ Remembers briefing message** triggers CLAUDE.md context injection into session continuity mode — The briefing system that injects session context is causing Claude to enter a problematic state. This is distinct from the pipe mode message handling which works correctly. (codebase, confidence: 0.95)
+- **Phase 4** status confirmed working — Claude session handoff (reconnect tokens + session resumption) survives dev restart. 'The matrix' test passed. (domain_knowledge, confidence: 0.95)
 - **broadcastNotification('chat_update')** sends to ALL WebSocket clients regardless of tab/session — In terminal.js:376, every user prompt, stop, and assistant message broadcasts to every connected terminal session across every tab without filtering by pty_session_id. This is the primary vector for cross-tab contamination. (codebase, confidence: 0.95)
+- **two Claude sessions** were desktop and dashboard simultaneously editing PAN codebase, creating revert loops — Desktop Claude session and dashboard Claude session simultaneously modifying same files, one reverting the other's changes. (codebase, confidence: 0.95)
 
 ## Recent Memory
-- [2026-04-10 22:47:34] Briefing context injection remains problematic even in pipe mode [failure]: ΠΑΝ Remembers briefing still triggers CLAUDE.md context injection that puts Claude in hang/mode shift state. Pipe mode message handling works correctly (multi-turn, --session-id, --resume all function
+- [2026-04-11 15:50:30] Phase 4 (Claude session handoff) confirmed working across dev restart: User sent message 'the matrix', restarted dev instance, and Claude correctly remembered the context in new session. Proves reconnect tokens and session resumption are functioning.
+- [2026-04-11 15:50:23] Phase 4 (Claude Session Handoff) confirmed working across dev restart: User sent 'the secret word is the matrix', received reply, then restarted dev dashboard. Opened new dev session and Claude still remembered 'the matrix'. Reconnect token persisted Claude session ID to
+- [2026-04-11 19:24:33] Carrier/Craft restart architecture validated end-to-end: User confirmed understanding of complete flow: Settings button → restart Carrier → Lifeboat hot-swap → next Craft transition, all with session context preserved. User was on 'Craft One' during session
+- [2026-04-11 09:50:15] Phase 4 implementation begun: Claude Session Handoff (Pipe Mode) [partial]: ClaudeAdapter now accepts `resumeClaudeSessionId` parameter. On first query with this param, sets `opts.resume` flag to allow Claude to maintain session context across server restarts. Three changes e
+- [2026-04-11 09:50:12] Phase 4 (Claude Session Handoff) initiated [partial]: Started implementing Phase 4 of 7-phase plan. ClaudeAdapter now accepts resumeClaudeSessionId parameter. On first query, sets opts.resume flag so Claude survives server restart with session context.
+- [2026-04-11 18:27:36] Phase 4 (Claude Session Handoff) confirmed working end-to-end: Carrier/Craft system running (PIDs confirmed), reconnect tokens + session resumption survive dev restart. 'The matrix' test passed. User is actively running on Carrier/Craft.
 - [2026-04-10 16:14:44] Cross-tab message contamination confirmed and temporarily fixed, then reverted [partial]: User reported PTY exits and messages from PAN 1 tab bleeding into PAN Main despite separate PTY processes. Root cause identified: broadcastNotification('chat_update') in terminal.js sends to ALL WebSo
-- [2026-04-10 21:57:03] Two Claude sessions actively conflicting on codebase [failure]: Desktop Claude session reverting changes that dashboard Claude session was making, creating perpetual revert loop. One session makes changes, other immediately reverts them, preventing convergence.
-- [2026-04-10 22:37:51] Briefing context injection causing Claude hang, not actual process failure [partial]: User reported 'Claude is not running' and messages not arriving, but Claude was actually replying to subsequent questions. Root cause identified: the ΠΑΝ Remembers briefing message triggers CLAUDE.md 
-- [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages from locked-out/old sessions into current terminal. Dedup logic added. PTY crashes were caused by server r
-- [2026-04-10 21:39:51] Two Claude sessions actively conflicting on same codebase [failure]: Desktop Claude session was reverting changes that dashboard Claude session was making, creating perpetual revert loop. One session would make changes, the other would revert them, preventing convergen
-- [2026-04-10 16:14:44] Transcript data loss on hard refresh after session activity [failure]: Messages sent during session appear in real-time terminal but completely disappear after browser hard refresh. JSONL session files contain the content but dashboard doesn't restore them on reconnect. 
-- [2026-04-10 17:16:26] Cross-tab message contamination root causes identified and documented: Two separate contamination vectors found: (1) broadcastNotification('chat_update') broadcasts to ALL WebSocket clients without session filtering, (2) PAN_SESSION_ID and PAN_TAB env vars not passed to 
-- [2026-04-10 13:22:50] Data loss on page refresh — transcript messages disappear after hard refresh/restart [failure]: User testing revealed that messages (TRANSCRIPT_TEST_123, PINEAPPLE) sent during session appear in real-time but completely disappear after page refresh. Symptom: JSONL session file only contains 3 me
-- [2026-04-10 13:52:11] DB vs live PTY session ID mismatch discovered — critical data persistence issue [partial]: Session IDs stored in DB don't match live PTY session IDs. DB has dash-pan[PHONE]040 and dash-pan[PHONE]980, but live sessions have dash-pan[PHONE]755 etc. Indicates tabs/transcripts not syncing prope
-- [2026-04-10 19:54:26] Critical discovery: two Claude sessions actively conflicting on same codebase [failure]: One Claude session (desktop/external) is reverting changes. Simultaneously, another Claude session running inside PAN dashboard is making new changes to the same files. Creates perpetual conflict loop
-- [2026-04-10 22:47:34] Stale pipe mode session state persists after hard browser refresh [failure]: Hard refresh expected to clear `_pipeHasRun` and `_pipeSessionId`, create fresh subprocess with new --session-id UUID. Instead, stale state persisted—subsequent messages showed cached 'What's up' resp
-- [2026-04-10 19:51:57] Dev and prod sharing JSONL transcript files — root cause of 4+ days of debugging [failure]: Despite separate Node processes (ports 7777/7781), databases, and in-memory state, dev and prod both read/write the same JSONL transcript files at filesystem level. User pointed out this invalidates a
-
-## Known Procedures
-- **Archive completed memory items**: Remove solved tasks and closed issues from active session context
-  1. Identify completed tasks in open issues list
-  2. Move to archived/solved section with completion timestamp
-  3. Clear from active session briefing
-  4. Run Dream Cycle to rewrite pan-state.md with only active items
-  5. Verify next session doesn't list solved items as open
-- **Session Briefing Injection Update**: How to change the greeting text that appears at session start. Text is injected by hooks.js and rendered in terminal system message.
-  1. Edit greeting text in hooks.js:157 (injects future sessions)
-  2. Update CLAUDE.md with new format (reference for users)
-  3. Update .pan-briefing.md template
-  4. No resta
+- [2026-04-10 22:47:34] Briefing context injection remains problematic even in pipe mode [failure]: ΠΑΝ Remembers briefing still triggers CLAUDE.md context injection that puts Claude in hang/mode shift state. Pipe mode message handling works correctly (multi-turn, --session-
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
