@@ -145,7 +145,41 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 | `service/src/routes/dashboard.js` | Dashboard API (events, projects, jobs, conversations) |
 | `service/src/routes/tests.js` | Test runner — sequential suites with screenshot verification |
 | `service/src/mcp-server.js` | MCP server — 15 tools for Claude to interact with PAN |
+| `service/src/router.js` | Unified voice command router — classifies + handles in one Claude/Cerebras call |
+| `service/src/claude.js` | AI backend selector — routes to Cerebras/Claude/custom based on settings |
+| `service/src/carrier.js` | Carrier runtime — owns port 7777, WebSocket, PTY; spawns Craft on 17700 |
+| `service/pan-loop.bat` | Windows respawn loop — restarts node on crash, stops on clean exit (code 0) |
+| `service/public/mobile/index.html` | Phone dashboard — static HTML, no build step, served at /mobile/ |
 | `dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (6000+ lines, both prod and dev) |
+
+### Phone Dashboard Architecture
+The phone opens the dashboard via **Android WebView** (not a browser — no address bar).
+- **WebView source**: `android/app/src/main/java/dev/pan/app/ui/dashboard/DashboardScreen.kt`
+- **Loads**: `http://127.0.0.1:<proxyPort>/mobile/?t=<timestamp>` via local Tailscale proxy
+- **Cache**: WebView nukes all cache on every load (`LOAD_NO_CACHE` + `clearCache(true)` + timestamp bust)
+- **Console logs**: `WebChromeClient` captures JS `console.log` → Android logcat as `PAN-DASH JS:`
+- **Static HTML**: `service/public/mobile/index.html` — no build step, changes are live immediately
+- **Auth**: Requests go through Tailscale proxy → arrive at server as Tailscale IP (100.x.x.x) → auto-authenticated
+- **Sending messages**: Uses `/api/v1/terminal/pipe` (pipe mode) with session ID resolved from `/api/v1/terminal/sessions`
+- **Receiving messages**: Polls `/api/v1/terminal/messages/<session_id>` every 3 seconds, fingerprint-based re-render
+- **NOT the desktop dashboard**: Desktop uses SvelteKit (`/v2/terminal`), phone uses static HTML (`/mobile/`)
+
+### Phone Voice Pipeline
+Phone mic → Google STT (on-device) → text → server `/api/v1/terminal/send` or router
+- **AI routing**: `service/src/claude.js` `getModelForCaller(caller)` checks `job_models` setting, falls back to `ai_model` setting
+- **Current config**: `ai_model = cerebras:qwen-3-235b` → all router calls go to Cerebras (free, ~580ms)
+- **Backend selection**: `getBackend()` in `claude.js` checks model prefix: `cerebras:` → Cerebras, Anthropic models → SDK or API key, other → custom
+- **Usage tracking**: `ai_usage` table logs every call with caller, model, tokens, cost. Query via `/api/automation/usage`
+- **Phone logs**: `LogShipper.kt` batches every 5s → `POST /api/v1/logs`. Pull with `curl /api/v1/logs?device_type=phone`
+- **Browser telemetry**: Ship from mobile page JS via `fetch('/api/v1/logs', { body: { device_id: 'phone-dashboard', ... } })`
+
+### Carrier/Craft Architecture
+- **Carrier** (long-lived): owns port 7777, WebSocket, PTY sessions, reconnect tokens. Never restarts for code changes.
+- **Craft** (replaceable): `server.js` running on internal port (17700+). Carrier proxies HTTP to Craft.
+- **Swap**: `POST /api/carrier/swap` → new Craft spawns, health-checked, proxy switches, 30s rollback window
+- **Port cleanup**: Carrier kills stale processes on port 17700 before spawning new Craft (prevents crash loops)
+- **PAN.bat**: Launches `pan-loop.bat` in visible CMD window. Loop restarts on crash (exit code ≠ 0), stops on clean exit (code 0)
+- **Sleep/wake**: After system sleep, old Craft may hold port 17700. Carrier cleanup + PAN.bat exit-on-healthy prevents infinite crash loop
 
 <!-- PAN-CONTEXT-START -->
 ## PAN Session Context
@@ -156,36 +190,93 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**Claude** (2026-04-12 15:43:26): Fixed. The old code only appended when `recent.length > _renderedMsgIds.length`, but with a 50-message sliding window, the count never changes — new messages push old ones out, count stays 50, nothing renders.
+**Claude** (2026-04-12 18:17:53): You're right, I apologize — shadow traffic IS done (Phase 6 ✅). And this P2P architecture is a major new design that needs to be tracked.
 
-Now it fingerprints the actual message content and does a full re-render when anything ch
-**Claude** (2026-04-12 15:43:27): ```json
-{
-  "episodes": [
-    {
-      "summary": "Phone message sending confirmed working via pipe mode",
-      "detail": "User tested phone messaging. Message successfully routed to dash-pan-1 via pipe endpoint with response {\"ok\":true,\"session\":\"dash-pan-1\"}. Pipe mode endpoint /api/v1/termi
-**Claude** (2026-04-12 15:44:05): Now try sending from the phone again. The console logs will ship to the server via the WebChromeClient and I can see if `loadChat` is even running and whether the fingerprint is changing. After you send, give it 10 seconds then tell me.
-**User** (2026-04-12 15:44:52): Test from the phone at 3:44
-**User** (2026-04-12 15:45:18): OK it is poiling correctly I see it
-**Claude** (2026-04-12 15:45:28): Nice! So the messages are showing up now without leaving the dashboard? The polling and fingerprint re-render are working?
-**Claude** (2026-04-12 15:45:35): Try sending another message from the phone. Wait about 10 seconds, then tell me. I'll check what `loadChat` is doing.
-**User** (2026-04-12 15:48:01): I just told you that send messages and it can see your messages So it's working what are you trying to get me to do
-**Claude** (2026-04-12 15:48:08): Got it — it's working! Phone sends messages, you can see replies. We're good.
+Let me organize by what's actually NEXT — major features that need design and implementation:
 
-What did you want to work on next? You mentioned something about security earlier.
-**User** (2026-04-12 15:49:08): Can you cash the state of the of the chat the scroll bar to always make it go to the bottom when you load in on the phone Also the on the phone they're not showing the correct data it's just showing t
-**Claude** (2026-04-12 15:50:35): Now go back in to the dashboard on the phone. The settings page should show "PAN Server: Connected / Carrier: ✓ Active / Craft: ✓ Healthy" instead of "PAN Hub: undef", and the chat should scroll to the bottom on load. Try the Data tab too — if it still shows zeros, tell me.
-**User** (2026-04-12 15:52:03): Sometimes when I go into the dashboard it just shows black I had to go back out and then go back in for it to load and I just went back in and did the scroll bar that didn't start at the top let me do
-**Claude** (2026-04-12 15:53:46): Fixed three things:
-1. **Chat scroll** — always scrolls to bottom using `requestAnimationFrame` so DOM is ready
-2. **Settings page** — shows "PAN Server: Connected / Carrier: ✓ Active / Craft: ✓ Healthy" instead of "PAN Hub: undef", and capitalizes auth mode
-3. **Projects page** — shows "7 projects 
-**User** (2026-04-12 16:29:37): So you're telling me my pan project has no goals has no No bugs no tasks then what do I see when I go to the Bugs widget or the Task widget what are you talking about
-**Claude** (2026-04-12 16:31:29): Now go back into the dashboard on the phone. You should see:
-- **Chat** scrolls to bottom automatically
-- **Projects** shows 13 milestones with actual task counts
-- **Settings** shows "PAN Server: Connected / Carrier: ✓ Active / Craft: ✓ Healthy" and "Auth Mode: None" (capitalized)
+**Major Features — What's Next:**
+
+1. **P2P Messaging (Signal + QR
+**User** (2026-04-12 18:27:56): What do we need to do infrastructure first for the organizations before we do messaging
+**Claude** (2026-04-12 18:28:13): This is thorough. So the infrastructure order before P2P messaging is:
+
+**Tier 0 Org Foundation — 8 phases, ~12 days:**
+
+| Phase | What | Why before messaging |
+|-------|------|---------------------|
+| **1** | Schema + middleware | `org_id` on every table. Messaging needs to know WHO is in WHICH org
+**User** (2026-04-12 18:34:45): Yes go ahead
+**Claude** (2026-04-12 18:35:30): Building Phase 1 now — the migration script, middleware, and runner. It's writing the code in the background. I'll show you the files when it's done so you can review before we run it live.
+
+This creates:
+- `service/src/migrations/tier0-org-foundation.js` — the actual migration (schema + backfill + 
+**User** (2026-04-12 18:38:29): <task-notification>
+<task-id>a0d5f95268ffd2b82</task-id>
+<tool-use-id>toolu_01KM2gza4dSrA3NwtxQ56JqN</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\a3af
+**Claude** (2026-04-12 18:39:29): Phase 1 is already done — the schema was migrated in a previous session. The dry run confirms `orgs`, `memberships`, and `org_id` columns all exist on every table.
+
+**Phase 1 status: ✅ Complete**
+- Schema: 6 new tables (orgs, memberships, zones, audit_log, incognito_events, sensor_toggles)
+- 28+ exi
+**User** (2026-04-12 18:40:22): Let's just do everything for org first everything for the organization first
+**Claude** (2026-04-12 18:41:28): Phase 2 is building in the background. Here's the full org rollout plan — all 8 phases:
+
+| Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ Done (migrated, verified) |
+| **2** | Route wiring (`requireOrg` on all `/api/` routes) | 🔄 Building now |
+| **3** | Sensor 
+**User** (2026-04-12 18:45:11): Alerts are spamming
+
+
+uncaught exception
+6:44:51 PM
+Uncaught exception: EPIPE: broken pipe, write
+EPIPE: broken pipe, write
+Stack trace
+Acknowledge
+Resolve
+Dismiss
+open
+uncaught exception
+6:44:51 PM
+U
+**User** (2026-04-12 18:45:19): <task-notification>
+<task-id>acfdcd0c10f8f868f</task-id>
+<tool-use-id>toolu_013bSWdwjVK1W5KvCCd692gC</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
+**Claude** (2026-04-12 18:46:12): Phase 3 building. Updated status:
+
+| Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ Done |
+| **2** | Route wiring | ✅ Done |
+| **3** | Sensor toggles + Hard Off | 🔄 Building now |
+| **4** | Incognito mode | Next |
+| **5** | Phone top bar + org switcher | Todo |
+
+**User** (2026-04-12 18:48:24): <task-notification>
+<task-id>a0efe63f9e65d2e35</task-id>
+<tool-use-id>toolu_01RHnUfLwkaSNQSfrvB6hGnn</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
+**Claude** (2026-04-12 18:49:02): Phase 4 building. Current status:
+
+| Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ Done |
+| **2** | Route wiring | ✅ Done |
+| **3** | Sensor toggles + Hard Off | ✅ Done |
+| **4** | Incognito mode | 🔄 Building |
+| **5** | Phone top bar + org switcher | Next |
+| 
+**Claude** (2026-04-12 18:50:59): All 1390 alerts dismissed. Fixed the root cause:
+
+- **EPIPE errors now silently ignored** — they're just broken pipes from writing to dead processes, harmless
+- **All other uncaught exceptions debounced** — max 1 alert per error type per 60 seconds, prevents spam
+- Alert count back to 0
+
+Phase 2 is 
 
 # PAN State — Updated 2026-04-12
 
@@ -256,11 +347,8 @@ What did you want to work on next? You mentioned something about security earlie
 - [2026-04-11 09:50:15] Phase 4 implementation begun: Claude Session Handoff (Pipe Mode) [partial]: ClaudeAdapter now accepts `resumeClaudeSessionId` parameter. On first query with this param, sets `opts.resume` flag to allow Claude to maintain session context across server restarts. Three changes e
 - [2026-04-11 09:50:12] Phase 4 (Claude Session Handoff) initiated [partial]: Started implementing Phase 4 of 7-phase plan. ClaudeAdapter now accepts resumeClaudeSessionId parameter. On first query, sets opts.resume flag so Claude survives server restart with session context.
 - [2026-04-11 19:24:33] Carrier/Craft restart architecture validated end-to-end: User confirmed understanding of complete flow: Settings button → restart Carrier → Lifeboat hot-swap → next Craft transition, all with session context preserved. User was on 'Craft One' during session
-- [2026-04-10 16:14:44] Cross-tab message contamination confirmed and temporarily fixed, then reverted [partial]: User reported PTY exits and messages from PAN 1 tab bleeding into PAN Main despite separate PTY processes. Root cause identified: broadcastNotification('chat_update') in terminal.js sends to ALL WebSo
 - [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages from locked-out/old sessions into current terminal. Dedup logic added. PTY crashes were caused by server r
-- [2026-04-11 23:36:40] Session briefing (ΠΑΝ Remembers) delivered successfully after restart: User requested briefing, Claude delivered context about Carrier/Craft Phase 6 deployment and terminal blank-after-refresh bug. Session continuity working correctly
-
-## Known Procedures
+- [2026-04-10 16:14:44] Cross-tab message contamination 
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

@@ -13,12 +13,10 @@
 //   - Personal org allows everything by default (you own it)
 
 import { db } from '../db.js';
+import { getDataDir } from '../platform.js';
 import { createHmac, randomBytes } from 'crypto';
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { join } from 'path';
 
 // Single-user fallback: assume user_id = 1 (Owner) if no auth attached.
 // Lets the middleware be enabled before refactoring every route.
@@ -26,9 +24,10 @@ const FALLBACK_USER_ID = 1;
 const PERSONAL_ORG_ID = 'org_personal';
 
 // ============================================================
-// Audit signing key
+// Audit signing key — stored alongside DB in the data directory,
+// NOT in the source tree. Respects PAN_DATA_DIR for dev isolation.
 // ============================================================
-const KEY_DIR = join(__dirname, '..', '..', 'data');
+const KEY_DIR = getDataDir();
 const KEY_PATH = join(KEY_DIR, 'audit.key');
 
 function getOrCreateAuditKey() {
@@ -194,4 +193,25 @@ export function verifyAuditChain(orgId) {
     prevSig = r.signature;
   }
   return { ok: true, broken_at: null, count: rows.length };
+}
+
+// ============================================================
+// verifyAllAuditChains — verifies every org's chain in one call
+// ============================================================
+export function verifyAllAuditChains() {
+  let orgIds;
+  try {
+    orgIds = db.prepare(`SELECT DISTINCT org_id FROM audit_log`).all().map(r => r.org_id);
+  } catch {
+    return { valid: true, entries_checked: 0, orgs_checked: 0 };
+  }
+  let totalEntries = 0;
+  for (const orgId of orgIds) {
+    const result = verifyAuditChain(orgId);
+    totalEntries += result.count || 0;
+    if (!result.ok) {
+      return { valid: false, broken_at: result.broken_at, reason: result.reason, org_id: orgId, entries_checked: totalEntries };
+    }
+  }
+  return { valid: true, entries_checked: totalEntries, orgs_checked: orgIds.length };
 }
