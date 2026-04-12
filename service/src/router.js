@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { insert, all, get, logEvent } from './db.js';
 import { claude } from './claude.js';
+import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
 import { findSkill, getSkillPrompt, listSkills } from './skills.js';
@@ -127,10 +128,15 @@ async function handleUnified(text, context) {
       if (row) personality = row.value.replace(/^"|"$/g, '').trim();
     } catch {}
     const personalityBlock = personality ? `\nPersonality: ${personality}\nAlways stay in character.` : '';
+    // Anonymize user text ONLY — sensor data (GPS, etc.) must pass through
+    // so location-aware queries work. The sensor block is structured data the
+    // user consented to share; the text may contain unintentional PII.
+    const safeText = anonymizeForAI(text);
+
     const raw = await claude(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
 ${historyBlock}${skillBlock}${sensorBlock}
-${isDash ? `User typed: "${text}"` : `Mic heard: "${text}"`}
+${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
 
 ${isDash ? 'Always respond.' : 'If ambient speech (not directed at you): {"intent":"ambient","response":"[AMBIENT]"}'}
 ${isDash ? '' : 'Directed at you if: says Pan/Pam, asks a question, continues recent convo.'}
@@ -146,7 +152,7 @@ Response formats:
 
 Projects: ${projectList}
 ${memoryContext}`,
-      { caller: 'router' }
+      { caller: 'router', _skipAnonymize: true }
     );
 
     logStep(cmdId, 'unified_response', raw.slice(0, 200));
