@@ -190,93 +190,99 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**Claude** (2026-04-12 18:17:53): You're right, I apologize — shadow traffic IS done (Phase 6 ✅). And this P2P architecture is a major new design that needs to be tracked.
-
-Let me organize by what's actually NEXT — major features that need design and implementation:
-
-**Major Features — What's Next:**
-
-1. **P2P Messaging (Signal + QR
-**User** (2026-04-12 18:27:56): What do we need to do infrastructure first for the organizations before we do messaging
-**Claude** (2026-04-12 18:28:13): This is thorough. So the infrastructure order before P2P messaging is:
-
-**Tier 0 Org Foundation — 8 phases, ~12 days:**
-
-| Phase | What | Why before messaging |
-|-------|------|---------------------|
-| **1** | Schema + middleware | `org_id` on every table. Messaging needs to know WHO is in WHICH org
-**User** (2026-04-12 18:34:45): Yes go ahead
-**Claude** (2026-04-12 18:35:30): Building Phase 1 now — the migration script, middleware, and runner. It's writing the code in the background. I'll show you the files when it's done so you can review before we run it live.
-
-This creates:
-- `service/src/migrations/tier0-org-foundation.js` — the actual migration (schema + backfill + 
-**User** (2026-04-12 18:38:29): <task-notification>
-<task-id>a0d5f95268ffd2b82</task-id>
-<tool-use-id>toolu_01KM2gza4dSrA3NwtxQ56JqN</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\a3af
-**Claude** (2026-04-12 18:39:29): Phase 1 is already done — the schema was migrated in a previous session. The dry run confirms `orgs`, `memberships`, and `org_id` columns all exist on every table.
-
-**Phase 1 status: ✅ Complete**
-- Schema: 6 new tables (orgs, memberships, zones, audit_log, incognito_events, sensor_toggles)
-- 28+ exi
-**User** (2026-04-12 18:40:22): Let's just do everything for org first everything for the organization first
-**Claude** (2026-04-12 18:41:28): Phase 2 is building in the background. Here's the full org rollout plan — all 8 phases:
-
-| Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ Done (migrated, verified) |
-| **2** | Route wiring (`requireOrg` on all `/api/` routes) | 🔄 Building now |
-| **3** | Sensor 
-**User** (2026-04-12 18:45:11): Alerts are spamming
-
-
-uncaught exception
-6:44:51 PM
-Uncaught exception: EPIPE: broken pipe, write
-EPIPE: broken pipe, write
-Stack trace
-Acknowledge
-Resolve
-Dismiss
-open
-uncaught exception
-6:44:51 PM
-U
-**User** (2026-04-12 18:45:19): <task-notification>
-<task-id>acfdcd0c10f8f868f</task-id>
-<tool-use-id>toolu_013bSWdwjVK1W5KvCCd692gC</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
-**Claude** (2026-04-12 18:46:12): Phase 3 building. Updated status:
-
-| Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ Done |
-| **2** | Route wiring | ✅ Done |
-| **3** | Sensor toggles + Hard Off | 🔄 Building now |
-| **4** | Incognito mode | Next |
-| **5** | Phone top bar + org switcher | Todo |
-
-**User** (2026-04-12 18:48:24): <task-notification>
-<task-id>a0efe63f9e65d2e35</task-id>
-<tool-use-id>toolu_01RHnUfLwkaSNQSfrvB6hGnn</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
-**Claude** (2026-04-12 18:49:02): Phase 4 building. Current status:
+**Claude** (2026-04-12 19:03:41): Phases 7 and 8 are building in parallel. Status:
 
 | Phase | What | Status |
 |-------|------|--------|
 | **1** | Schema + middleware | ✅ Done |
 | **2** | Route wiring | ✅ Done |
 | **3** | Sensor toggles + Hard Off | ✅ Done |
-| **4** | Incognito mode | 🔄 Building |
-| **5** | Phone top bar + org switcher | Next |
+| **4** | Incognito mode | ✅ Done |
+| **5** | Phone top bar + org name | ✅ D
+**User** (2026-04-12 19:03:48): <task-notification>
+<task-id>a9fca41802592f270</task-id>
+<tool-use-id>toolu_01DdRbLvctJWeGfci4R8PZuu</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
+**Claude** (2026-04-12 19:04:22): | Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ Done |
+| **2** | Route wiring | ✅ Done |
+| **3** | Sensor toggles + Hard Off | ✅ Done |
+| **4** | Incognito mode | ✅ Done |
+| **5** | Phone top bar + org switcher | ✅ Done |
+| **6** | Replication + audit chain | ✅ 
+**User** (2026-04-12 19:04:23): <task-notification>
+<task-id>a69d5c5d8bcbb11af</task-id>
+<tool-use-id>toolu_01LLi5JMoFrNr3PsKJ7i8Ade</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\ab2b
+**Claude** (2026-04-12 19:05:12): Both building in parallel. Status:
+
+| Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ Done |
+| **2** | Route wiring | ✅ Done |
+| **3** | Sensor toggles + Hard Off | ✅ Done |
+| **4** | Incognito mode | ✅ Done |
+| **5** | Phone top bar + org switcher | ✅ Done |
+| **
+**User** (2026-04-12 19:05:15): <task-notification>
+<task-id>a081c9e7dcb1f2c8a</task-id>
+<tool-use-id>toolu_018pUGkyGCGvompyhkopFkve</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\78af
+**Claude** (2026-04-12 19:05:20): Phase 7 done. Waiting on Phase 8...
+**User** (2026-04-12 19:05:57): <task-notification>
+<task-id>ab1790d77c82155d0</task-id>
+<tool-use-id>toolu_01QEY2CcUF4uJn93kwW9Jq87</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\78af
+**User** (2026-04-12 19:06:18): <task-notification>
+<task-id>aacfca5ab93ec6e07</task-id>
+<tool-use-id>toolu_01BsF7GqW3xzkdjeg17Psoej</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\ab2b
+**Claude** (2026-04-12 19:06:25): Phase 7 done. Waiting on Phase 8 (personal data sync) to finish — that's the last one.
+
+| Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ Done |
+| **2** | Route wiring | ✅ Done |
+| **3** | Sensor toggles + Hard Off | ✅ Done |
+| **4** | Incognito mode | ✅ Done |
 | 
-**Claude** (2026-04-12 18:50:59): All 1390 alerts dismissed. Fixed the root cause:
+**Claude** (2026-04-12 19:06:56): **Tier 0 Org Foundation — ALL 8 PHASES COMPLETE. ✅**
 
-- **EPIPE errors now silently ignored** — they're just broken pipes from writing to dead processes, harmless
-- **All other uncaught exceptions debounced** — max 1 alert per error type per 60 seconds, prevents spam
-- Alert count back to 0
+| Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ |
+| **2** | Route wiring | ✅ |
+| **3** | Sensor toggles + Hard Off | ✅ |
+| **4** | Incognito mode | ✅ |
+| **5** | Phone top bar + org name | ✅ |
+| **6** | Repli
+**User** (2026-04-12 19:07:47): <task-notification>
+<task-id>aae20862d64610b5f</task-id>
+<tool-use-id>toolu_01TQKvHnYfpNCpo1WJGoCTfq</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
+**Claude** (2026-04-12 19:08:24): | Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ Done |
+| **2** | Route wiring | ✅ Done |
+| **3** | Sensor toggles + Hard Off | ✅ Done |
+| **4** | Incognito mode | ✅ Done |
+| **5** | Phone top bar + org switcher | ✅ Done |
+| **6** | Replication + audit chain | ✅ 
+**User** (2026-04-12 19:08:58): <task-notification>
+<task-id>a469077917467421b</task-id>
+<tool-use-id>toolu_011vRNdjWRqFE65KhmYxhu8K</tool-use-id>
+<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\ab2b
+**Claude** (2026-04-12 19:09:08): **Tier 0 Org Foundation — ALL 8 PHASES COMPLETE. ✅**
 
-Phase 2 is 
+| Phase | What | Status |
+|-------|------|--------|
+| **1** | Schema + middleware | ✅ |
+| **2** | Route wiring | ✅ |
+| **3** | Sensor toggles + Hard Off | ✅ |
+| **4** | Incognito mode | ✅ |
+| **5** | Phone top bar + org name | ✅ |
+| **6** | Repli
 
 # PAN State — Updated 2026-04-12
 
@@ -347,8 +353,7 @@ Phase 2 is
 - [2026-04-11 09:50:15] Phase 4 implementation begun: Claude Session Handoff (Pipe Mode) [partial]: ClaudeAdapter now accepts `resumeClaudeSessionId` parameter. On first query with this param, sets `opts.resume` flag to allow Claude to maintain session context across server restarts. Three changes e
 - [2026-04-11 09:50:12] Phase 4 (Claude Session Handoff) initiated [partial]: Started implementing Phase 4 of 7-phase plan. ClaudeAdapter now accepts resumeClaudeSessionId parameter. On first query, sets opts.resume flag so Claude survives server restart with session context.
 - [2026-04-11 19:24:33] Carrier/Craft restart architecture validated end-to-end: User confirmed understanding of complete flow: Settings button → restart Carrier → Lifeboat hot-swap → next Craft transition, all with session context preserved. User was on 'Craft One' during session
-- [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages from locked-out/old sessions into current terminal. Dedup logic added. PTY crashes were caused by server r
-- [2026-04-10 16:14:44] Cross-tab message contamination 
+- [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages fro
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
