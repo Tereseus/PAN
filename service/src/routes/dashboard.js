@@ -1443,6 +1443,7 @@ const ALERT_TYPES = {
   startup_error:        { label: 'Startup Error',        category: 'server',    defaultSeverity: 'critical', source: 'server',   description: 'Error during server boot sequence' },
   transcript_error:     { label: 'Transcript Error',     category: 'terminal',  defaultSeverity: 'warning',  source: 'terminal', description: 'Transcript read/write or watcher failure' },
   claude_cli_exit:      { label: 'Claude CLI Exit',      category: 'terminal',  defaultSeverity: 'warning',  source: 'terminal', description: 'Claude CLI process exited inside PTY (shell still alive)' },
+  audit_chain_broken:   { label: 'Audit Chain Broken',   category: 'security',  defaultSeverity: 'critical', source: 'server',   description: 'HMAC audit chain verification failed — potential tampering detected' },
 };
 
 // GET /dashboard/api/alerts/types — registry of all known alert types (for dropdowns)

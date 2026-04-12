@@ -430,18 +430,47 @@ try { backfillFTS(); } catch (err) { console.error('[PAN FTS] Backfill error:', 
 // Handles: insert + FTS indexing. Anonymization is available on export (raw data stays in encrypted DB).
 import { anonymize, anonymizeEventData } from './anonymizer.js';
 
-function logEvent(sessionId, eventType, data, userId = null) {
+// --- Incognito state check ---
+// Lazy-loaded to avoid circular imports (incognito.js imports from db.js).
+// Returns the incognito state object if active, null otherwise.
+function _checkIncognito(userId) {
+  if (!userId) return null;
+  try {
+    const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(`incognito_active_${userId}`);
+    if (!row) return null;
+    const state = JSON.parse(row.value);
+    return state.active ? state : null;
+  } catch { return null; }
+}
+
+function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_personal') {
   const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
+
+  // If incognito is active for this user, route to incognito_events instead
+  const incognitoState = _checkIncognito(userId);
+  if (incognitoState) {
+    const now = Date.now();
+    const ttlMs = (incognitoState.ttl_minutes || 60) * 60 * 1000;
+    const expiresAt = now + ttlMs;
+    const payload = JSON.stringify({ event_type: eventType, data: dataStr, session_id: sessionId });
+    const incognitoId = insert(
+      `INSERT INTO incognito_events (user_id, payload, created_at, expires_at) VALUES (:uid, :payload, :now, :expires)`,
+      { ':uid': userId, ':payload': payload, ':now': now, ':expires': expiresAt }
+    );
+    // No FTS indexing, no vector embedding — incognito events are ephemeral
+    return incognitoId;
+  }
+
   let eventId;
   if (userId) {
     eventId = insert(
-      `INSERT INTO events (session_id, event_type, data, user_id) VALUES (:sid, :type, :data, :uid)`,
-      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':uid': userId }
+      `INSERT INTO events (session_id, event_type, data, user_id, org_id) VALUES (:sid, :type, :data, :uid, :oid)`,
+      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':uid': userId, ':oid': orgId }
     );
   } else {
     eventId = insert(
-      `INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`,
-      { ':sid': sessionId, ':type': eventType, ':data': dataStr }
+      `INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, :type, :data, :oid)`,
+      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':oid': orgId }
     );
   }
   indexEventFTS(eventId, eventType, dataStr);

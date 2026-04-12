@@ -24,17 +24,24 @@ import devicesRouter from './routes/devices.js';
 import dashboardRouter, { createAlert } from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
 import runnerRouter from './routes/runner.js';
+import incognitoRouter, { cleanupExpiredIncognito } from './routes/incognito.js';
+import auditRouter from './routes/audit.js';
+import replicationRouter from './routes/replication.js';
+import zonesRouter, { getActiveZones } from './routes/zones.js';
+import syncRouter, { startPersonalSync } from './routes/sync.js';
 import { extractUser } from './middleware/auth.js';
+import { requireOrg, auditLog, verifyAllAuditChains } from './middleware/org-context.js';
 import { evolve } from './evolution/engine.js';
 import { buildContext as buildMemoryContext } from './memory/index.js';
 import { getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { bootAll, shutdownAll, getAtlasData, getServiceStatus, reportServiceRun } from './steward.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
+import { getDataDir } from './platform.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db } from './db.js';
 import { searchMemory, backfillEmbeddings } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
 import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, getSessionMessages } from './terminal-bridge.js';
@@ -216,6 +223,9 @@ app.use('/api', (req, res, next) => {
   }
   extractUser(req, res, next);
 });
+
+// Tier 0 — attach org context to every /api request (after auth sets req.user)
+app.use('/api', requireOrg);
 
 // Hook events from Claude Code
 app.use('/hooks', hooksRouter);
@@ -406,6 +416,19 @@ app.use('/api/sensors', sensorsRouter);
 
 // Project Runner — start/stop/monitor project services
 app.use('/api/v1/runner', runnerRouter);
+
+// Incognito mode (Tier 0 Phase 4)
+app.use('/api/v1/incognito', incognitoRouter);
+
+// Audit chain + Replication (Tier 0 Phase 6)
+app.use('/api/v1/audit', auditRouter);
+app.use('/api/v1/replication', replicationRouter);
+
+// Geofencing + Zones (Tier 0 Phase 7)
+app.use('/api/v1/zones', zonesRouter);
+
+// Personal Data Sync (Tier 0 Phase 8)
+app.use('/api/v1/sync', syncRouter);
 
 // Feature registry — maps feature names to Steward services for toggle API
 // Import start/stop directly for the toggle endpoint (Steward handles boot, this handles runtime toggles)
@@ -801,6 +824,11 @@ app.put('/api/v1/settings', (req, res) => {
       });
     }
     console.log(`[PAN Settings] Updated: ${keys.join(', ')} (from ${req.headers['x-device-name'] || req.ip})`);
+    // Audit log for settings changes (security-sensitive)
+    try {
+      const auditReq = { user: { id: req.user?.id || 1 }, org_id: req.org_id || 'org_personal' };
+      auditLog(auditReq, 'settings.update', keys.join(','), { keys, source: req.headers['x-device-name'] || req.ip });
+    } catch {}
     // Return the saved values so clients can confirm the write succeeded
     const saved = {};
     for (const key of keys) {
@@ -1386,8 +1414,8 @@ app.post('/api/v1/terminal/send', async (req, res) => {
     text, session_id: session_id || 'auto', sent, raw: !!raw,
     source, user_agent: ua.substring(0, 120), timestamp: Date.now()
   });
-  const eventId = insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-    ':sid': session_id || (isMobile ? 'mobile-send' : 'desktop-send'), ':type': eventType, ':data': dataStr
+  const eventId = insert(`INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, :type, :data, :oid)`, {
+    ':sid': session_id || (isMobile ? 'mobile-send' : 'desktop-send'), ':type': eventType, ':data': dataStr, ':oid': req.org_id || 'org_personal'
   });
   indexEventFTS(eventId, eventType, dataStr);
 
@@ -1598,6 +1626,185 @@ app.get('/api/v1/org/policy', async (req, res) => {
   }
 });
 
+// Tier 0 Phase 5: org current context for the phone top bar.
+// Returns the active org info + user display name + role + list of all orgs.
+app.get('/api/v1/org/current', async (req, res) => {
+  try {
+    const { getActiveOrg } = await import('./org-policy.js');
+    const org = getActiveOrg(req);
+    const userId = req?.user?.id || 1;
+
+    // Get user info
+    let user = { display_name: 'User', display_nickname: null, role: 'owner' };
+    try {
+      const u = db.prepare(`SELECT display_name, display_nickname, role FROM users WHERE id = ?`).get(userId);
+      if (u) user = u;
+    } catch {}
+
+    // Get membership role for this org
+    let membershipRole = null;
+    try {
+      const m = db.prepare(`
+        SELECT m.role_id, r.name AS role_name
+        FROM memberships m
+        LEFT JOIN roles r ON r.id = m.role_id
+        WHERE m.user_id = ? AND m.org_id = ? AND m.left_at IS NULL
+      `).get(userId, org.id);
+      if (m) membershipRole = m.role_name || null;
+    } catch {}
+
+    // Get all orgs this user belongs to
+    let orgs = [];
+    try {
+      orgs = db.prepare(`
+        SELECT o.id AS org_id, o.slug, o.name, o.color_primary, o.logo_url,
+               m.role_id, r.name AS role_name
+        FROM memberships m
+        JOIN orgs o ON o.id = m.org_id
+        LEFT JOIN roles r ON r.id = m.role_id
+        WHERE m.user_id = ? AND m.left_at IS NULL
+        ORDER BY o.name
+      `).all(userId);
+    } catch {}
+
+    res.json({
+      org_id: org.id,
+      org_name: org.name,
+      org_slug: org.slug,
+      org_color: org.color_primary || null,
+      user_display_name: user.display_name,
+      user_nickname: user.display_nickname || user.display_name,
+      role: membershipRole || user.role || 'owner',
+      orgs: orgs,
+    });
+  } catch (err) {
+    // Fallback for pre-migration state
+    res.json({
+      org_id: 'org_personal',
+      org_name: 'Personal',
+      org_slug: 'personal',
+      org_color: null,
+      user_display_name: 'User',
+      user_nickname: 'User',
+      role: 'owner',
+      orgs: [{ org_id: 'org_personal', slug: 'personal', name: 'Personal', role_name: 'owner' }],
+    });
+  }
+});
+
+// Tier 0 Phase 5: list all orgs the current user belongs to.
+app.get('/api/v1/orgs', (req, res) => {
+  try {
+    const userId = req?.user?.id || 1;
+    let lastActiveOrgId = 'org_personal';
+    try {
+      const u = db.prepare(`SELECT last_active_org_id FROM users WHERE id = ?`).get(userId);
+      if (u?.last_active_org_id) lastActiveOrgId = u.last_active_org_id;
+    } catch {}
+
+    let orgs = [];
+    try {
+      orgs = db.prepare(`
+        SELECT o.id, o.slug, o.name, o.color_primary, o.logo_url,
+               m.role_id, r.name AS role_name
+        FROM memberships m
+        JOIN orgs o ON o.id = m.org_id
+        LEFT JOIN roles r ON r.id = m.role_id
+        WHERE m.user_id = ? AND m.left_at IS NULL
+        ORDER BY o.name
+      `).all(userId);
+    } catch {}
+
+    res.json({
+      orgs,
+      active_org_id: lastActiveOrgId,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Tier 0 Phase 5: switch the active org for the current user.
+app.post('/api/v1/orgs/switch', async (req, res) => {
+  try {
+    const userId = req?.user?.id || 1;
+    const { org_id } = req.body || {};
+    if (!org_id) return res.status(400).json({ error: 'org_id required' });
+
+    // Verify user is a member
+    let membership = null;
+    try {
+      membership = db.prepare(`
+        SELECT m.id, m.role_id, r.name AS role_name
+        FROM memberships m
+        LEFT JOIN roles r ON r.id = m.role_id
+        WHERE m.user_id = ? AND m.org_id = ? AND m.left_at IS NULL
+      `).get(userId, org_id);
+    } catch {}
+
+    if (!membership) {
+      return res.status(403).json({ error: 'not a member of this org' });
+    }
+
+    // Update last_active_org_id
+    try {
+      db.prepare(`UPDATE users SET last_active_org_id = ? WHERE id = ?`).run(org_id, userId);
+    } catch (e) {
+      return res.status(500).json({ error: 'failed to switch org: ' + e.message });
+    }
+
+    // Audit the switch (skip for personal org — privacy)
+    if (org_id !== 'org_personal') {
+      try {
+        const { auditLog } = await import('./middleware/org-context.js');
+        auditLog({ user: { id: userId }, org_id }, 'org.switch', org_id);
+      } catch {}
+    }
+
+    res.json({ ok: true, org_id, role: membership.role_name || 'owner' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Tier 0 Phase 5: diagnostics endpoint for phone settings.
+// Returns server PID, uptime, Tailscale status, and connection info.
+app.get('/api/v1/diagnostics', (req, res) => {
+  const uptimeMs = Date.now() - _serverStartedAt;
+  const secs = Math.floor(uptimeMs / 1000);
+  const mins = Math.floor(secs / 60);
+  const hrs = Math.floor(mins / 60);
+  const uptime = hrs > 0 ? `${hrs}h ${mins % 60}m` : mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
+
+  let tailscaleIp = null;
+  let tailscaleStatus = 'unknown';
+  try {
+    tailscaleIp = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
+    tailscaleStatus = 'connected';
+  } catch {
+    try {
+      tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
+      tailscaleStatus = 'connected';
+    } catch {
+      tailscaleStatus = 'disconnected';
+    }
+  }
+
+  res.json({
+    server_pid: process.pid,
+    uptime,
+    uptime_ms: uptimeMs,
+    started_at: _serverStartedAt,
+    tailscale_ip: tailscaleIp,
+    tailscale_status: tailscaleStatus,
+    node_version: process.version,
+    platform: process.platform,
+    mode: PAN_MODE,
+    craft_id: process.env.PAN_CRAFT_ID || null,
+    memory_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+  });
+});
+
 // Wipe a non-main scope (close + delete its SQLCipher file). Used by the
 // phone when toggling incognito OFF — true "forget everything" semantics.
 // Refuses to wipe `main`.
@@ -1636,6 +1843,107 @@ app.get('/api/v1/atlas/service/:id', (req, res) => {
   const svc = getServiceStatus(req.params.id);
   if (!svc) return res.status(404).json({ error: 'Service not found' });
   res.json(svc);
+});
+
+// ==================== Tier 0 Phase 6: Audit Chain + Backup ====================
+
+// GET /api/v1/audit/verify — verify HMAC chain integrity across all orgs
+app.get('/api/v1/audit/verify', (req, res) => {
+  try {
+    const result = verifyAllAuditChains();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/audit/log — paginated audit log viewer
+app.get('/api/v1/audit/log', (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+    const orgFilter = req.query.org_id || null;
+    const actionFilter = req.query.action || null;
+
+    const conditions = [];
+    const params = {};
+    if (orgFilter) { conditions.push('org_id = :org_id'); params[':org_id'] = orgFilter; }
+    if (actionFilter) { conditions.push('action = :action'); params[':action'] = actionFilter; }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = all(
+      `SELECT * FROM audit_log ${where} ORDER BY id DESC LIMIT ${limit} OFFSET ${offset}`,
+      params
+    );
+
+    // Parse metadata_json for each row
+    const entries = rows.map(r => ({
+      ...r,
+      metadata: r.metadata_json ? (() => { try { return JSON.parse(r.metadata_json); } catch { return r.metadata_json; } })() : null,
+    }));
+
+    const countRow = get(`SELECT COUNT(*) as total FROM audit_log ${where}`, params);
+    res.json({ entries, total: countRow?.total || 0, limit, offset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/backup/create — create a backup of pan.db via SQLite backup API
+app.post('/api/v1/backup/create', async (req, res) => {
+  try {
+    const backupDir = join(getDataDir(), 'backups');
+    mkdirSync(backupDir, { recursive: true });
+
+    const now = new Date();
+    const ts = now.toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19);
+    const backupPath = join(backupDir, `pan-${ts}.db`);
+
+    // Use better-sqlite3's .backup() — works with encrypted DBs
+    await db.backup(backupPath);
+
+    const stats = statSync(backupPath);
+
+    // Audit the backup
+    try {
+      const auditReq = { user: { id: req.user?.id || 1 }, org_id: req.org_id || 'org_personal' };
+      auditLog(auditReq, 'backup.create', backupPath, { size_bytes: stats.size });
+    } catch {}
+
+    console.log(`[PAN Backup] Created: ${backupPath} (${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
+    res.json({ ok: true, path: backupPath, size_bytes: stats.size });
+  } catch (err) {
+    console.error('[PAN Backup] Failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/backup/list — list available backups with dates and sizes
+app.get('/api/v1/backup/list', (req, res) => {
+  try {
+    const backupDir = join(getDataDir(), 'backups');
+    let files = [];
+    try {
+      files = readdirSync(backupDir)
+        .filter(f => f.startsWith('pan-') && f.endsWith('.db'))
+        .map(f => {
+          const fullPath = join(backupDir, f);
+          const stats = statSync(fullPath);
+          return {
+            filename: f,
+            path: fullPath,
+            size_bytes: stats.size,
+            created_at: stats.mtime.toISOString(),
+          };
+        })
+        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    } catch {
+      // backups dir doesn't exist yet
+    }
+    res.json({ backups: files, backup_dir: backupDir });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Inject context into CLAUDE.md — called by frontend before launching Claude
@@ -2201,6 +2509,27 @@ function start() {
       // Sync projects with disk reality on startup
       syncProjects();
 
+      // Incognito TTL cleanup — purge expired incognito events on startup and every 5 minutes
+      cleanupExpiredIncognito();
+      _startupIntervals.push(setInterval(cleanupExpiredIncognito, 5 * 60 * 1000));
+
+      // Tier 0 Phase 6 — Verify audit chain integrity on startup and every 1 hour
+      function _verifyAuditChains() {
+        try {
+          const chainResult = verifyAllAuditChains();
+          if (chainResult.valid) {
+            console.log(`[PAN Audit] Chain OK — ${chainResult.entries_checked} entries across ${chainResult.orgs_checked} org(s)`);
+          } else {
+            console.warn(`[PAN Audit] CHAIN BROKEN at entry ${chainResult.broken_at} (${chainResult.reason}) in org ${chainResult.org_id}`);
+            try { createAlert({ alert_type: 'audit_chain_broken', severity: 'critical', title: 'Audit chain integrity broken', detail: `Entry ${chainResult.broken_at}: ${chainResult.reason} in org ${chainResult.org_id}` }); } catch {}
+          }
+        } catch (e) {
+          console.error('[PAN Audit] Chain verification failed:', e.message);
+        }
+      }
+      _verifyAuditChains();
+      _startupIntervals.push(setInterval(_verifyAuditChains, 60 * 60 * 1000)); // every 1 hour
+
       // Migrate timestamp-based tab session IDs to stable name-based IDs.
       // e.g. "dash-pan-1775843785916" → "dash-pan-main" (derived from tab_name).
       // This runs once — stable IDs don't change, so future boots are no-ops.
@@ -2248,8 +2577,8 @@ function start() {
         const pcHost = hostname();
         const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
         if (!existing) {
-          insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
-            VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'))`, {
+          insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen, org_id)
+            VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'), 'org_personal')`, {
             ':h': pcHost, ':name': pcHost
           });
           console.log(`[PAN] Registered PC: ${pcHost}`);
@@ -2333,26 +2662,40 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
 
 // Catch unhandled errors so the server doesn't crash and kill all PTY sessions
+// Debounce alerts for repeated errors (EPIPE, etc.) — max 1 alert per error type per 60s
+const _alertDebounce = new Map();
+function debouncedAlert(alertType, severity, title, detail) {
+  const key = alertType + ':' + title;
+  const now = Date.now();
+  const last = _alertDebounce.get(key) || 0;
+  if (now - last < 60000) return; // skip if same alert fired <60s ago
+  _alertDebounce.set(key, now);
+  // Cleanup old keys every 100 entries
+  if (_alertDebounce.size > 100) {
+    for (const [k, t] of _alertDebounce) { if (now - t > 120000) _alertDebounce.delete(k); }
+  }
+  try { createAlert({ alert_type: alertType, severity, title, detail }); } catch {}
+}
+
 process.on('uncaughtException', (err) => {
+  // EPIPE = broken pipe (writing to dead process) — harmless, don't spam alerts
+  if (err.code === 'EPIPE') return;
   console.error(`[PAN] Uncaught exception (server kept alive):`, err);
-  try {
-    createAlert({
-      alert_type: 'uncaught_exception',
-      severity: 'critical',
-      title: `Uncaught exception: ${err.message?.slice(0, 100)}`,
-      detail: JSON.stringify({ message: err.message, stack: err.stack, time: new Date().toISOString() })
-    });
-  } catch {}
+  debouncedAlert('uncaught_exception', 'critical',
+    `Uncaught exception: ${err.message?.slice(0, 100)}`,
+    JSON.stringify({ message: err.message, stack: err.stack, time: new Date().toISOString() })
+  );
 });
 process.on('unhandledRejection', (reason) => {
-  console.error(`[PAN] Unhandled rejection (server kept alive):`, reason);
   try {
-    createAlert({
-      alert_type: 'unhandled_rejection',
-      severity: 'warning',
-      title: `Unhandled rejection: ${String(reason)?.slice(0, 100)}`,
-      detail: JSON.stringify({ reason: String(reason), stack: reason?.stack, time: new Date().toISOString() })
-    });
+  const msg = String(reason);
+  // EPIPE in rejections too
+  if (msg.includes('EPIPE')) return;
+  console.error(`[PAN] Unhandled rejection (server kept alive):`, reason);
+  debouncedAlert('unhandled_rejection', 'warning',
+    `Unhandled rejection: ${msg?.slice(0, 100)}`,
+    JSON.stringify({ reason: msg, stack: reason?.stack, time: new Date().toISOString() })
+  );
   } catch {}
 });
 
