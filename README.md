@@ -93,21 +93,69 @@ Your name, home address, and personal identifiers are permanently removed at eve
 
 ```
 Phone (Android)                    PC (Windows)
-├── Google Streaming STT           ├── PAN Service (port 7777)
-├── On-device AI (MediaPipe GPU)   ├── Claude Code (via subscription)
-├── Gemma 3n (conversation + classify) ├── SvelteKit Dashboard (v2)
-├── Camera + Vision                ├── Browser Extension (full DOM control)
-├── Tailscale (encrypted tunnel)   ├── Electron Desktop App
-├── Voice commands                 ├── SQLite + FTS5 Search
-└── BLE ↔ Pendant                  ├── Data Anonymization Layer
-                                   ├── Tailscale Auto-Auth
-Pendant (ESP32-S3)                 └── Windows Service (auto-start)
-├── Camera (OV2640)
-├── Microphone
+├── Google Streaming STT           ├── Carrier (port 7777) ─── owns HTTP, WebSocket, PTY
+├── On-device AI (MediaPipe GPU)   │   ├── Craft (server.js) ─── swappable, zero-downtime
+├── Gemma 3n (classify + chat)     │   ├── Lifeboat ─── rollback safety (30s auto-revert)
+├── Camera + Vision                │   └── Crucible ─── variant comparison (shadow traffic)
+├── Tailscale (encrypted tunnel)   ├── Claude Code (via Agent SDK, pipe mode)
+├── Voice commands                 ├── SvelteKit Dashboard (11 pages)
+└── BLE ↔ Pendant                  ├── MCP Server (7 tools + 1 router, 20+ actions)
+                                   ├── SQLite + FTS5 Search
+Pendant (ESP32-S3)                 ├── Data Anonymization Layer
+├── Camera (OV2640)                ├── Tailscale Auto-Auth
+├── Microphone                     └── Dream Cycle (memory consolidation)
 ├── Screen (ST7789V)
-├── Speaker + Amplifier
-└── 22 sensor slots (see below)
+├── Speaker + Amplifier            Desktop Shell (Tauri)
+└── 22 sensor slots (see below)    ├── Global hotkeys (voice trigger)
+                                   ├── Multi-window manager (Atlas, Crucible, ATC)
+                                   └── PTY terminal sessions
 ```
+
+### Carrier/Craft Runtime
+
+PAN runs on a **zero-downtime hot-swap architecture**. The system never goes down for code changes.
+
+| Component | Role |
+|-----------|------|
+| **Carrier** | Long-lived process. Owns HTTP listener (:7777), WebSocket server, PTY terminals. Never restarts for code changes. |
+| **Craft** | The running PAN version (server.js). Swappable — Carrier spawns new Craft, health-checks it, switches proxy, keeps old Craft for 30s rollback. |
+| **Lifeboat** | Embedded rollback handler inside Carrier (~50 lines, no dependencies). Works even when Craft is hung. Three rollback layers: auto-timer, dashboard overlay, phone button. |
+| **Crucible** | Variant comparison system. Launch a shadow Craft, mirror real traffic to both, compare responses side-by-side. Promote winners, reject failures. |
+
+**Implementation phases (all complete):**
+1. ✅ Foundations — orphan reaping, PTY exit detection, db-registry
+2. ✅ Carrier + Lifeboat + 30s auto-rollback
+3. ✅ Reconnect tokens — persist to disk, frontend auto-reconnects with token
+4. ✅ PTY handoff — terminals live in Carrier, survive Craft swaps
+5. ✅ Claude session handoff — context preserved across restarts
+6. ✅ Shadow traffic — mirror requests to shadow Craft, compare responses
+7. ✅ Crucible — dashboard UI for variant comparison, promote/reject controls
+
+### Dashboard Pages
+
+| Page | Description |
+|------|-------------|
+| Terminal | Main interface — Claude chat, PTY shell, multi-tab, sidebar widgets |
+| Chat | Standalone conversation view |
+| Atlas | Visual system map — services, processes, connections |
+| Crucible | Shadow traffic comparison — launch/promote/reject variants |
+| Automation | Automation rules and triggers |
+| Projects | Task tracking with milestones, drag-and-drop |
+| Conversations | Search and browse all past conversations |
+| Sensors | 22 sensor categories with per-sensor toggles |
+| Data | Event log, activity feed, data overview |
+| Settings | Server config, voice settings, branding, restart |
+
+### MCP Server (Claude Code Integration)
+
+PAN exposes itself as an MCP server so Claude Code can interact with it natively:
+
+**Core tools:** `pan_search`, `pan_memory`, `pan_restart`, `pan_dev`, `pan_terminal_send`, `pan_browser`
+
+**Router tool (`pan`)** — single dispatch for 20+ actions:
+`conversations`, `projects`, `tasks`, `services`, `devices`, `stats`, `sessions`, `sensors`, `photos`, `scout`, `alerts`, `recording`, `windows`, `settings`, `logs`, `runner`, `library`, `context`, `processes`, `carrier`
+
+**Carrier actions:** `status`, `swap`, `shadow_start`, `shadow_stop`, `shadow_promote`, `shadow_stats`, `crucible`, `open_crucible`, `rollback`, `confirm`, `lifeboat`
 
 ### Security
 
@@ -138,7 +186,7 @@ Size of a Zippo lighter. €155 total cost. 22 sensor slots — use all or just 
 | Accelerometer + Gyro (BMI270) | Fall detection, step counting |
 | + 14 more | UV, magnetometer, air quality, color, distance, EMF, radiation... |
 
-Full sensor specifications: [SENSOR-ARRAY.md](SENSOR-ARRAY.md)
+Full sensor specifications: [docs/SENSOR-ARRAY.md](docs/SENSOR-ARRAY.md)
 
 **Build it yourself** — full parts list, 3D printable case, assembly guide, firmware. All open source.
 
@@ -151,26 +199,36 @@ Full sensor specifications: [SENSOR-ARRAY.md](SENSOR-ARRAY.md)
 git clone https://github.com/Tereseus/PAN.git
 cd PAN/service
 npm install
-node pan.js start                  # Start the service
-node install-service.js            # Auto-start on boot
+node pan.js start                  # Start via Carrier (hot-swap enabled)
+node pan.js start --no-carrier     # Start directly (no hot-swap)
+node pan.js start -d               # Start detached (background)
 ```
 
-Dashboard opens at `http://localhost:7777/v2/`
+Dashboard opens at `http://localhost:7777/v2/terminal`
+
+### Dev Server
+```bash
+# From production (opens in separate window on port 7781)
+curl -s http://127.0.0.1:7777/api/v1/dev/start -X POST
+
+# Or manually
+PAN_DEV=1 PAN_PORT=7781 node pan.js start --no-carrier
+```
 
 ### Phone (Android)
 1. Build APK from `android/` in Android Studio
 2. Install on phone
 3. Set server URL → your PC's IP, port 7777
 4. Grant microphone + camera permissions
-5. Start talking — on-device AI responds in ~5 seconds, server queries in ~7 seconds
+5. Start talking — on-device AI responds in ~5s, server queries in ~7s
 
 ### Browser Extension
 1. `chrome://extensions/` → Developer Mode → Load unpacked → select `browser-extension/`
 2. PAN can now read and control all browser tabs
 
-### Desktop App
+### Desktop App (Tauri)
 ```bash
-cd service && npx electron electron/main.cjs
+cd desktop && cargo tauri dev
 ```
 
 ---
@@ -180,14 +238,16 @@ cd service && npx electron electron/main.cjs
 | Layer | Technology |
 |-------|-----------|
 | Phone | Kotlin, Jetpack Compose, MediaPipe GPU, Gemma 3n, Google STT, Hilt DI, Tailscale (tsnet) |
-| Server | Node.js, Express, SQLite (better-sqlite3 + SQLCipher), Claude Agent SDK |
-| Dashboard | SvelteKit 2, Svelte 5, xterm.js, WebSocket terminals |
-| Desktop | Electron, system tray, Windows Service |
+| Server | Node.js, Express, SQLite (better-sqlite3 + SQLCipher), Claude Agent SDK, MCP Server |
+| Runtime | Carrier/Craft hot-swap architecture, Lifeboat rollback, Crucible variant comparison |
+| Dashboard | SvelteKit 2, Svelte 5, WebSocket terminals, 11 pages |
+| Desktop | Tauri, multi-window manager, global hotkeys |
 | Browser | WebExtension API (Manifest V3) — Chrome, Edge, Brave |
-| AI | Claude Code (terminal), Gemma 3n (phone, on-device), MediaPipe (GPU inference) |
+| AI | Claude Code (terminal, pipe mode), Gemma 3n (phone, on-device), MediaPipe (GPU inference) |
+| Memory | Dream Cycle (6h consolidation), ΠΑΝ Remembers (session continuity), reconnect tokens |
 | Security | Tailscale (WireGuard), auto-auth keys, data anonymization, SQLCipher |
 | Pendant | ESP32-S3, I2C/SPI sensors, BLE 5.0 |
-| Voice | Google Streaming STT, Android TTS, Piper (voice clone, in progress) |
+| Voice | Google Streaming STT, Android TTS, Whisper (streaming) |
 
 ## System Requirements
 
@@ -205,11 +265,33 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 
 ---
 
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `service/src/carrier.js` | Carrier runtime — owns HTTP, PTY, WebSocket. Hot-swap orchestrator. |
+| `service/src/server.js` | Craft (swappable server) — routes, API, boot sequence |
+| `service/src/terminal.js` | PTY sessions, WebSocket server, reconnect tokens, pipe mode |
+| `service/src/mcp-server.js` | MCP server — 7 tools + router for Claude Code integration |
+| `service/src/steward.js` | Service orchestrator — health checks every 60s, auto-restart |
+| `service/src/platform.js` | Cross-platform abstractions (paths, shell, process management) |
+| `service/src/reap-orphans.js` | Kills orphaned bash/claude processes from prior runs |
+| `service/src/llm-adapter-claude.js` | Claude Agent SDK adapter — pipe mode, session resumption |
+| `service/dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (6000+ lines) |
+| `service/dashboard/src/routes/crucible/+page.svelte` | Crucible variant comparison UI |
+
+---
+
 ## Status
 
 ### Working
 - Voice conversation across phone + PC (on-device + server)
-- SvelteKit dashboard with terminal, chat, projects, sensors, data, settings
+- SvelteKit dashboard with 11 pages (terminal, atlas, crucible, projects, sensors, data, settings, automation, conversations, chat)
+- Carrier/Craft zero-downtime hot-swap with 30s auto-rollback
+- Lifeboat rollback system (dashboard overlay, API, phone button)
+- Crucible shadow traffic comparison (launch shadow, mirror traffic, promote/reject)
+- Claude pipe mode via Agent SDK (session resumption across restarts)
+- ΠΑΝ Remembers session continuity (briefing injection, reconnect tokens)
 - Cross-device command routing (phone → PC → browser)
 - Remote access via Tailscale with auto-authentication
 - On-device AI (Gemma 3n via MediaPipe GPU, ~5s responses)
@@ -217,25 +299,27 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 - Data anonymization (PII stripping before cloud AI calls)
 - Project tracking with milestones, tasks, drag-and-drop
 - Phone sensor control from dashboard
-- Claude Code hooks integration (SessionStart, Stop, UserPromptSubmit)
+- MCP server integration (Claude Code tools for all PAN operations)
 - Browser extension (read/control tabs, click elements, type text)
-- Windows Service (auto-start, auto-restart)
-- Dream cycle (consolidates events into structured memory)
-- GitHub issue monitoring
+- Dream cycle (consolidates events into structured memory every 6h)
+- Dev/prod resource isolation (separate databases, ports, session IDs)
+- Multi-tab terminal with persistent transcripts
 
 ### In Progress
 - Pendant firmware (ESP32-S3 — camera, BLE, screen driver)
 - Voice fingerprinting (Piper training with user audio)
 - Data dividend / treasury system (Cardano staking)
 - Installer (one-click setup)
-- Real-time contextual awareness (proactive conversation jumping)
+- AutoDev/Forge (autonomous development with Crucible variant comparison)
+- Intuition engine (user personality model from interaction patterns)
 
 ### Planned
 - Headscale (self-hosted coordination for enterprise)
 - Cross-user messaging relay
 - Duress detection (stress analysis, silent emergency alerts)
 - File access across devices via Tailscale (no USB needed)
-- OpenRouter integration (Cerebras/Groq, sub-1s responses)
+- Voice emotion classification (sentiment tagging from audio waveform)
+- Visual comparison funnel (pHash → CLIP → vision LLM → human approval)
 
 ---
 
@@ -245,4 +329,3 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 
 **License:** Open Source
 **Created by:** [Tereseus](https://github.com/Tereseus)
-
