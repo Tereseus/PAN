@@ -37,7 +37,7 @@ import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend } from './terminal-bridge.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, getSessionMessages } from './terminal-bridge.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
 
@@ -1288,6 +1288,16 @@ app.post('/api/v1/terminal/send', async (req, res) => {
   res.json({ ok: sent, session: session_id || 'auto', active_sessions: sessInfo.map(s => s.id + '(' + s.clients + ')') });
 });
 
+// Get transcript messages for a session (fallback for page load when WebSocket push hasn't arrived)
+app.get('/api/v1/terminal/messages/:session_id', async (req, res) => {
+  try {
+    const messages = await getSessionMessages(req.params.session_id);
+    res.json({ ok: true, messages: messages || [] });
+  } catch (err) {
+    res.json({ ok: false, messages: [], error: err.message });
+  }
+});
+
 // PIPE MODE: send user message to a terminal session via pipe_send.
 // Spawns claude -p as a child process, returns clean JSON responses.
 app.post('/api/v1/terminal/pipe', async (req, res) => {
@@ -1848,7 +1858,7 @@ app.get('/health', (req, res) => {
       tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
     } catch {}
   }
-  res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime, tailscaleIp, mode: PAN_MODE });
+  res.json({ status: 'running', timestamp: new Date().toISOString(), startedAt: _serverStartedAt, uptime, tailscaleIp, mode: PAN_MODE, craftId: process.env.PAN_CRAFT_ID || null, craftVersion: 'A' });
 });
 
 // Detailed deployment-mode info for debugging which features are gated.
@@ -2065,7 +2075,7 @@ function start() {
       // e.g. "dash-pan-1775843785916" → "dash-pan-main" (derived from tab_name).
       // This runs once — stable IDs don't change, so future boots are no-ops.
       try {
-        const openTabs = all("SELECT id, session_id, tab_name, project_name FROM open_tabs WHERE closed_at IS NULL");
+        const openTabs = all("SELECT ot.id, ot.session_id, ot.tab_name, p.name as project_name FROM open_tabs ot LEFT JOIN projects p ON p.id = ot.project_id WHERE ot.closed_at IS NULL");
         for (const t of openTabs) {
           if (t.session_id && /^dash-.*\d{10,}$/.test(t.session_id)) {
             const name = (t.tab_name || t.project_name || 'shell').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -2417,16 +2427,29 @@ app.get('/api/v1/logs/summary', (req, res) => {
 // The node-windows wrapper automatically revives the process after exit.
 app.post('/api/admin/restart', async (req, res) => {
   if (IS_CRAFT) {
-    // Running under Carrier — request a hot swap instead of process.exit
-    // Carrier will spawn a new Craft, health-check it, switch proxy, kill us
-    res.json({ ok: true, message: 'Hot swap requested — Carrier will deploy new Craft...' });
-    console.log('[PAN Craft] Restart requested — notifying Carrier for hot swap');
-    try {
-      const http = await import('http');
-      const swapReq = http.default.request({ hostname: '127.0.0.1', port: parseInt(process.env.PAN_PORT) || 7777, path: '/api/carrier/swap', method: 'POST', timeout: 5000 });
-      swapReq.on('error', () => {});
-      swapReq.end();
-    } catch {}
+    // Running under Carrier — restart the WHOLE Carrier (not just hot-swap Craft).
+    // Hot-swap only replaces Craft (server.js). To pick up Carrier code changes,
+    // we need to kill the old Carrier and spawn a fresh `node pan.js start`.
+    // The new Carrier will kill whatever is on port 7777 (via killProcessOnPort)
+    // and boot a brand new Carrier + Craft from disk.
+    res.json({ ok: true, message: 'Carrier restart initiated — spawning fresh Carrier...' });
+    console.log('[PAN Craft] Full Carrier restart requested — spawning new Carrier process');
+    setTimeout(async () => {
+      try {
+        const { spawn } = await import('child_process');
+        const child = spawn(process.execPath, ['pan.js', 'start'], {
+          cwd: join(__dirname, '..'),
+          stdio: 'ignore',
+          detached: true,
+          windowsHide: true,
+          env: { ...process.env, PAN_CRAFT: undefined }
+        });
+        child.unref();
+        console.log(`[PAN Craft] New Carrier spawned (PID ${child.pid}) — old Carrier will be killed on port bind`);
+      } catch (err) {
+        console.error('[PAN Craft] Failed to spawn new Carrier:', err.message);
+      }
+    }, 500);
     return;
   }
   res.json({ ok: true, message: 'Restarting — process will exit and reload all code...' });
@@ -2456,3 +2479,12 @@ app.post('/api/admin/restart', async (req, res) => {
 });
 
 export { start, stop, app };
+
+// Auto-start when forked by Carrier (PAN_CRAFT=1).
+// Carrier forks this file as a child process — it doesn't call start() itself.
+if (process.env.PAN_CRAFT === '1') {
+  start().catch(err => {
+    console.error('[PAN Craft] Failed to start:', err.message);
+    process.exit(1);
+  });
+}

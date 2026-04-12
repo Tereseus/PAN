@@ -63,6 +63,13 @@
 	let servicesData = $state([]);
 	let approvalsData = $state([]);
 
+	// Lifeboat state
+	let lifeboatData = $state(null); // /api/carrier/status response
+	let lifeboatCountdown = $state(0); // seconds remaining in rollback window
+	let lifeboatSwapping = $state(false); // true while swap in progress
+	let lifeboatSwapStarted = 0; // timestamp when swap was detected
+	let lifeboatRollbackMs = 0; // total rollback window from server
+
 	// Atlas state
 	let atlasData = $state(null);
 	let atlasLoading = $state(false);
@@ -569,10 +576,24 @@
 		terminalInputText = tabData.draft || '';
 		setTerminalInput(terminalInputText);
 
-		// Initial transcript render — populate from clean message data,
-		// then restore scroll position if user was scrolled up before refresh.
-		setTimeout(() => {
+		// Initial transcript render — fetch messages via HTTP if WebSocket push
+		// hasn't arrived yet (common after page reload / hot swap).
+		setTimeout(async () => {
 			renderTranscriptToTerminal(tabData);
+			// If still no messages after 100ms (WebSocket push didn't arrive),
+			// fetch from HTTP endpoint as fallback
+			if (!(tabData._pushedMessages?.length > 0)) {
+				try {
+					const ctrl = new AbortController();
+					setTimeout(() => ctrl.abort(), 2000);
+					const r = await fetch(`/api/v1/terminal/messages/${encodeURIComponent(sessionId)}`, { signal: ctrl.signal });
+					const d = await r.json();
+					if (d.ok && d.messages?.length > 0) {
+						tabData._pushedMessages = d.messages;
+						renderTranscriptToTerminal(tabData);
+					}
+				} catch {}
+			}
 			// Restore scroll position after first render
 			try {
 				const savedPos = sessionStorage.getItem('pan_scroll_pos:' + tabData.sessionId);
@@ -832,6 +853,11 @@
 							break;
 						}
 						case 'permission_prompt':
+							break;
+						case 'server_swap':
+							// Carrier hot-swapped a new Craft — reload to pick up new frontend
+							console.log('[PAN] Craft swapped — reloading frontend...');
+							setTimeout(() => window.location.reload(), 500);
 							break;
 						case 'server_restarting':
 							serverRestarting = true;
@@ -2828,6 +2854,74 @@
 		} catch {}
 	}
 
+	async function loadLifeboat() {
+		try {
+			const r = await fetch('/api/carrier/status');
+			if (r.ok) {
+				const d = await r.json();
+				lifeboatData = d;
+				// Update countdown from server — computed from server timestamp each poll
+				// The existing 1s ptyStatusNow ticker drives re-renders so countdown
+				// decrements visually every second without a separate interval.
+				if (d.swapPending && d.rollbackAvailable) {
+					// Only snapshot start time ONCE when we first detect a pending swap.
+					// rollbackTimeoutMs is the TOTAL window (30s), not remaining.
+					if (!lifeboatSwapStarted) {
+						try {
+							const lb = await fetch('/lifeboat/status');
+							if (lb.ok) {
+								const lbd = await lb.json();
+								lifeboatRollbackMs = lbd.rollbackTimeoutMs || 0;
+								lifeboatSwapStarted = Date.now();
+							}
+						} catch {}
+					}
+				} else {
+					lifeboatRollbackMs = 0;
+					lifeboatSwapStarted = 0;
+					lifeboatCountdown = 0;
+				}
+			}
+		} catch {}
+		// Recompute countdown from snapshot (smooth between polls)
+		if (lifeboatSwapStarted > 0 && lifeboatRollbackMs > 0) {
+			const elapsed = Date.now() - lifeboatSwapStarted;
+			lifeboatCountdown = Math.max(0, Math.ceil((lifeboatRollbackMs - elapsed) / 1000));
+		}
+	}
+
+	async function lifeboatRollback() {
+		try {
+			await fetch('/lifeboat/rollback', { method: 'POST' });
+			await loadLifeboat();
+		} catch {}
+	}
+
+	async function lifeboatConfirm() {
+		try {
+			await fetch('/lifeboat/confirm', { method: 'POST' });
+			await loadLifeboat();
+		} catch {}
+	}
+
+	async function lifeboatSwap() {
+		lifeboatSwapping = true;
+		try {
+			await fetch('/api/carrier/swap', { method: 'POST' });
+			await loadLifeboat();
+		} catch {}
+		lifeboatSwapping = false;
+	}
+
+	function formatUptime(seconds) {
+		if (!seconds && seconds !== 0) return '--';
+		if (seconds < 60) return `${Math.floor(seconds)}s`;
+		if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+		const h = Math.floor(seconds / 3600);
+		const m = Math.floor((seconds % 3600) / 60);
+		return `${h}h ${m}m`;
+	}
+
 	async function loadApprovals() {
 		try {
 			const resp = await fetch('/api/v1/terminal/permissions');
@@ -3242,23 +3336,25 @@
 		loadVoiceSettings();
 		loadTestSuites();
 
-		// Load services, approvals, alerts immediately
+		// Load services, approvals, alerts, lifeboat immediately
 		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 		loadApprovals();
 		loadAlertCount();
 		loadAlerts();
 		loadAlertTypes();
+		loadLifeboat();
 
 		// Start chat refresh
 		chatRefreshInterval = setInterval(() => {
 			if (leftSection === 'transcript') loadChatHistory();
 		}, 10000);
 
-		// Refresh services every 30s, approvals every 5s
+		// Refresh services every 30s, approvals every 5s, lifeboat every 3s
 		const svcInterval = setInterval(() => {
 			api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 		}, 30000);
 		const approvalInterval = setInterval(loadApprovals, 5000);
+		const lifeboatInterval = setInterval(loadLifeboat, 3000);
 		const alertCountInterval = setInterval(loadAlertCount, 10000); // poll alert count every 10s
 
 		// Poll live PTY status for the active tab every 1.5s. The server now
@@ -3279,15 +3375,10 @@
 					// Only show "Ready" if Claude is actually running in this PTY.
 					// Without this, a bare bash prompt shows "Ready" because
 					// thinking=false when idle — that's a lie.
-					if (match.claudeRunning) {
-						const realReady = !match.thinking;
-						if (claudeReady !== realReady) claudeReady = realReady;
-						if (tab.claudeReady !== realReady) tab.claudeReady = realReady;
-					} else {
-						// Claude not running — force NOT ready
-						if (claudeReady) claudeReady = false;
-						if (tab.claudeReady) tab.claudeReady = false;
-					}
+					// Pipe mode is always on — Claude is always available on-demand
+					const realReady = !match.thinking;
+					if (claudeReady !== realReady) claudeReady = realReady;
+					if (tab.claudeReady !== realReady) tab.claudeReady = realReady;
 				}
 			} catch {}
 		}, 1500);
@@ -3589,6 +3680,7 @@
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
 				<option value="perf">Performance</option>
 				<option value="project">Project</option>
@@ -3983,7 +4075,7 @@
 									fetch('/api/v1/ui-commands', {
 										method: 'POST',
 										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
+										body: JSON.stringify({ type: 'focus_window', url: `http://localhost:${port}/v2/terminal` })
 									});
 								}
 							}}>Restart</button>
@@ -3996,6 +4088,74 @@
 							<div class="svc-detail">Coming Soon</div>
 						</div>
 					</div>
+				</div>
+			{:else if leftSection === 'lifeboat'}
+				<div class="lifeboat-panel">
+					{#if !lifeboatData}
+						<div class="empty-state">Connecting to Carrier...</div>
+					{:else}
+						<div class="svc-category">Carrier</div>
+						<div class="svc-row">
+							<span class="svc-dot up"></span>
+							<div class="svc-info">
+								<div class="svc-name">PID {lifeboatData.carrier?.pid || '--'}</div>
+								<div class="svc-detail">Uptime: {formatUptime(lifeboatData.carrier?.uptime)}</div>
+							</div>
+						</div>
+						<div class="svc-category">Active Craft</div>
+						{#if lifeboatData.primaryCraft}
+							<div class="svc-row">
+								<span class="svc-dot" class:up={lifeboatData.primaryCraft.healthy} class:down={!lifeboatData.primaryCraft.healthy}></span>
+								<div class="svc-info">
+									<div class="svc-name">Craft-{lifeboatData.primaryCraft.id}</div>
+									<div class="svc-detail">{lifeboatData.primaryCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.primaryCraft.port} | Up {formatUptime(lifeboatData.primaryCraft.uptime / 1000)}</div>
+								</div>
+							</div>
+						{:else}
+							<div class="empty-state">No active Craft</div>
+						{/if}
+						{#if lifeboatData.swapPending && lifeboatData.previousCraft}
+							<div class="svc-category">Rollback Window</div>
+							<div class="svc-row">
+								<span class="svc-dot" class:up={lifeboatData.previousCraft.healthy} class:down={!lifeboatData.previousCraft.healthy}></span>
+								<div class="svc-info">
+									<div class="svc-name">Craft-{lifeboatData.previousCraft.id} (previous)</div>
+									<div class="svc-detail">{lifeboatData.previousCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.previousCraft.port}</div>
+								</div>
+							</div>
+							{@const _rollbackLeft = lifeboatSwapStarted > 0 ? Math.max(0, Math.ceil((lifeboatRollbackMs - (ptyStatusNow - lifeboatSwapStarted)) / 1000)) : 0}
+							{#if _rollbackLeft > 0}
+								<div class="lifeboat-countdown">Rollback expires in {_rollbackLeft}s</div>
+							{/if}
+							<div class="lifeboat-actions">
+								<button class="lifeboat-btn rollback" onclick={lifeboatRollback}>Rollback</button>
+								<button class="lifeboat-btn confirm" onclick={lifeboatConfirm}>Confirm</button>
+							</div>
+						{/if}
+						{#if lifeboatData.shadowCraft}
+							<div class="svc-category">Shadow</div>
+							<div class="svc-row">
+								<span class="svc-dot unknown"></span>
+								<div class="svc-info">
+									<div class="svc-name">Craft-{lifeboatData.shadowCraft.id} (shadow)</div>
+									<div class="svc-detail">Testing...</div>
+								</div>
+							</div>
+						{/if}
+						<div class="svc-category" style="margin-top:12px">Actions</div>
+						<div class="lifeboat-actions">
+							<button class="lifeboat-btn swap" onclick={lifeboatSwap} disabled={lifeboatSwapping}>
+								{lifeboatSwapping ? 'Swapping...' : 'Hot Swap'}
+							</button>
+							<button class="lifeboat-btn" style="background:#cba6f7;color:#1e1e2e" onclick={() => {
+								fetch('/api/v1/ui-commands', {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${location.port || 7777}/v2/crucible`, title: 'Crucible', width: 1200, height: 800 })
+								});
+							}}>Open Crucible</button>
+						</div>
+					{/if}
 				</div>
 			{:else if leftSection === 'tests'}
 				<div class="tests-panel">
@@ -4309,7 +4469,7 @@
 		{#if !approvalOptions || approvalOptions.length === 0}
 			{@const _now = ptyStatusNow}
 			{@const _pty = ptyStatus}
-			{@const _state = !_pty ? 'no-pty' : !_pty.claudeRunning ? 'no-claude' : _pty.thinking ? 'thinking' : 'ready'}
+			{@const _state = !_pty ? 'no-pty' : _pty.thinking ? 'thinking' : 'ready'}
 			{@const _inAgo = _pty?.lastInputTs ? Math.max(0, Math.round((_now - _pty.lastInputTs) / 1000)) : null}
 			{@const _outAgo = _pty?.lastOutputTs ? Math.max(0, Math.round((_now - _pty.lastOutputTs) / 1000)) : null}
 			{@const _upS = _pty?.createdAt ? Math.max(0, Math.round((_now - _pty.createdAt) / 1000)) : null}
@@ -4382,6 +4542,7 @@
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
 				<option value="perf">Performance</option>
 				<option value="project">Project</option>
@@ -4579,7 +4740,7 @@
 									fetch('/api/v1/ui-commands', {
 										method: 'POST',
 										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
+										body: JSON.stringify({ type: 'focus_window', url: `http://localhost:${port}/v2/terminal` })
 									});
 								}
 							}}>Restart</button>
@@ -4587,6 +4748,74 @@
 					</div>
 					{#if isDev}
 						<div class="instance-note">Dev sessions use isolated terminal IDs (dev-dash-*) so they don't interfere with Prod.</div>
+					{/if}
+				</div>
+			{:else if rightSection === 'lifeboat'}
+				<div class="lifeboat-panel">
+					{#if !lifeboatData}
+						<div class="empty-state">Connecting to Carrier...</div>
+					{:else}
+						<div class="svc-category">Carrier</div>
+						<div class="svc-row">
+							<span class="svc-dot up"></span>
+							<div class="svc-info">
+								<div class="svc-name">PID {lifeboatData.carrier?.pid || '--'}</div>
+								<div class="svc-detail">Uptime: {formatUptime(lifeboatData.carrier?.uptime)}</div>
+							</div>
+						</div>
+						<div class="svc-category">Active Craft</div>
+						{#if lifeboatData.primaryCraft}
+							<div class="svc-row">
+								<span class="svc-dot" class:up={lifeboatData.primaryCraft.healthy} class:down={!lifeboatData.primaryCraft.healthy}></span>
+								<div class="svc-info">
+									<div class="svc-name">Craft-{lifeboatData.primaryCraft.id}</div>
+									<div class="svc-detail">{lifeboatData.primaryCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.primaryCraft.port} | Up {formatUptime(lifeboatData.primaryCraft.uptime / 1000)}</div>
+								</div>
+							</div>
+						{:else}
+							<div class="empty-state">No active Craft</div>
+						{/if}
+						{#if lifeboatData.swapPending && lifeboatData.previousCraft}
+							<div class="svc-category">Rollback Window</div>
+							<div class="svc-row">
+								<span class="svc-dot" class:up={lifeboatData.previousCraft.healthy} class:down={!lifeboatData.previousCraft.healthy}></span>
+								<div class="svc-info">
+									<div class="svc-name">Craft-{lifeboatData.previousCraft.id} (previous)</div>
+									<div class="svc-detail">{lifeboatData.previousCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.previousCraft.port}</div>
+								</div>
+							</div>
+							{@const _rollbackLeft = lifeboatSwapStarted > 0 ? Math.max(0, Math.ceil((lifeboatRollbackMs - (ptyStatusNow - lifeboatSwapStarted)) / 1000)) : 0}
+							{#if _rollbackLeft > 0}
+								<div class="lifeboat-countdown">Rollback expires in {_rollbackLeft}s</div>
+							{/if}
+							<div class="lifeboat-actions">
+								<button class="lifeboat-btn rollback" onclick={lifeboatRollback}>Rollback</button>
+								<button class="lifeboat-btn confirm" onclick={lifeboatConfirm}>Confirm</button>
+							</div>
+						{/if}
+						{#if lifeboatData.shadowCraft}
+							<div class="svc-category">Shadow</div>
+							<div class="svc-row">
+								<span class="svc-dot unknown"></span>
+								<div class="svc-info">
+									<div class="svc-name">Craft-{lifeboatData.shadowCraft.id} (shadow)</div>
+									<div class="svc-detail">Testing...</div>
+								</div>
+							</div>
+						{/if}
+						<div class="svc-category" style="margin-top:12px">Actions</div>
+						<div class="lifeboat-actions">
+							<button class="lifeboat-btn swap" onclick={lifeboatSwap} disabled={lifeboatSwapping}>
+								{lifeboatSwapping ? 'Swapping...' : 'Hot Swap'}
+							</button>
+							<button class="lifeboat-btn" style="background:#cba6f7;color:#1e1e2e" onclick={() => {
+								fetch('/api/v1/ui-commands', {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${location.port || 7777}/v2/crucible`, title: 'Crucible', width: 1200, height: 800 })
+								});
+							}}>Open Crucible</button>
+						</div>
 					{/if}
 				</div>
 			{:else if rightSection === 'setup'}
@@ -6614,6 +6843,53 @@
 		padding: 8px; margin-top: 8px; font-size: 11px;
 		color: #a6adc8; background: #181825; border-radius: 6px;
 	}
+
+	/* ==================== Lifeboat ==================== */
+	.lifeboat-panel {
+		padding: 8px;
+	}
+	.lifeboat-countdown {
+		font-size: 12px;
+		color: #fab387;
+		font-weight: 600;
+		padding: 6px 0 2px;
+	}
+	.lifeboat-actions {
+		display: flex;
+		gap: 6px;
+		padding: 6px 0;
+	}
+	.lifeboat-btn {
+		padding: 5px 14px;
+		border-radius: 4px;
+		border: 1px solid #45475a;
+		cursor: pointer;
+		font-size: 12px;
+		font-weight: 500;
+		color: #cdd6f4;
+		background: #313244;
+	}
+	.lifeboat-btn:hover { background: #45475a; }
+	.lifeboat-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.lifeboat-btn.rollback {
+		background: #45475a;
+		border-color: #f38ba8;
+		color: #f38ba8;
+	}
+	.lifeboat-btn.rollback:hover { background: #585b70; }
+	.lifeboat-btn.confirm {
+		background: #313244;
+		border-color: #a6e3a1;
+		color: #a6e3a1;
+	}
+	.lifeboat-btn.confirm:hover { background: #45475a; }
+	.lifeboat-btn.swap {
+		background: #313244;
+		border-color: #89b4fa;
+		color: #89b4fa;
+	}
+	.lifeboat-btn.swap:hover { background: #45475a; }
+
 	.apps-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
