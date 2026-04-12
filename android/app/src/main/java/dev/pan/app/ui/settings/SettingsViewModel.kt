@@ -109,6 +109,10 @@ class SettingsViewModel @Inject constructor(
     private val _personality = MutableStateFlow("")
     val personality: StateFlow<String> = _personality
 
+    private val _toastMessage = MutableStateFlow<String?>(null)
+    val toastMessage: StateFlow<String?> = _toastMessage
+    fun clearToast() { _toastMessage.value = null }
+
     // Incognito mode — when on, the X-PAN-Scope header flips to "incognito"
     // and the server routes ALL phone-originated event writes to a sibling
     // SQLCipher file (pan.incognito.db) that can be wiped with one call when
@@ -361,9 +365,16 @@ class SettingsViewModel @Inject constructor(
             dataRepository.setSetting("personality", text)
             // Push to server so all devices share the same personality
             try {
-                api.updateSettings(mapOf("personality" to text))
+                val response = api.updateSettings(mapOf("personality" to text))
+                if (response.isSuccessful) {
+                    Log.i("Settings", "Personality synced to server")
+                } else {
+                    Log.e("Settings", "Server rejected personality update: ${response.code()}")
+                    _toastMessage.value = "Personality update failed to sync (${response.code()})"
+                }
             } catch (e: Exception) {
-                Log.w("Settings", "Failed to push personality to server: ${e.message}")
+                Log.e("Settings", "Failed to push personality to server: ${e.message}")
+                _toastMessage.value = "Personality not synced — server unreachable"
             }
         }
     }
