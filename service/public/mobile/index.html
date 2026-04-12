@@ -306,6 +306,7 @@ const USERNAME = firstCap(PAN_USER);
 const LLMNAME = firstCap(PAN_LLM);
 
 let _renderedMsgIds = []; // append-only render: track which msgs have been rendered
+let _lastFingerprint = ''; // detect content changes, not just count
 function renderMsgLine(msg) {
   const role = msg.role || '';
   const type = msg.type || '';
@@ -327,55 +328,56 @@ function renderMsgLine(msg) {
 
 async function loadChat() {
   const el = document.getElementById('chat-msgs');
-  // Don't refresh if user sent a message in the last 5 seconds
-  if (Date.now() - lastSentTime < 5000) return;
+  // Don't auto-refresh if user sent a message in the last 5 seconds
+  // (but allow explicit calls from the send polling loop via _forceLoad flag)
+  if (!loadChat._forceLoad && Date.now() - lastSentTime < 5000) return;
+  loadChat._forceLoad = false;
   try {
-    if (activeProject) {
-      const probeRes = await fetch(API + '/dashboard/api/events?limit=10&project_path=' + encodeURIComponent(activeProject.path));
-      const probeData = await probeRes.json();
-      const events = probeData.events || [];
-      // Collect up to 3 unique non-system session IDs
-      const sids = [];
-      const seen = new Set();
-      for (const e of events) {
-        const sid = e.session_id || '';
-        if (sid && !seen.has(sid) && !/^(system|phone|router|dash|mob|dev-dash)-/.test(sid)) {
-          seen.add(sid);
-          sids.push(sid);
-          if (sids.length >= 3) break;
+    // Primary: load from active terminal sessions (pipe mode — where Claude actually lives)
+    const sessRes = await fetch(API + '/api/v1/terminal/sessions');
+    const sessData = await sessRes.json();
+    const sessions = sessData.sessions || [];
+    const projectSlug = activeProject ? activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'pan';
+    const match = sessions.find(s => s.id.startsWith('dash-' + projectSlug)) || sessions[0];
+    if (match) {
+      const msgRes = await fetch(API + '/api/v1/terminal/messages/' + encodeURIComponent(match.id));
+      const msgData = await msgRes.json();
+      const all = (msgData.messages || []).filter(m => m.role === 'user' || m.role === 'assistant');
+      // Only show last 50 messages to keep mobile snappy
+      const recent = all.slice(-50);
+      if (recent.length) {
+        // Fingerprint detects ANY content change — not just count (which stays at 50 in sliding window)
+        const fingerprint = recent.length + ':' + recent.map(m => (m.role||'') + (m.text||m.content||'').slice(0,40)).join('|');
+        const fpChanged = fingerprint !== _lastFingerprint;
+        console.log('[PAN Mobile] loadChat: msgs=' + all.length + ' recent=' + recent.length + ' fp_changed=' + fpChanged);
+        // Ship loadChat status to server for remote debugging
+        if (fpChanged) {
+          fetch(API + '/api/v1/logs', { method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ device_id: 'phone-dashboard', level: 'info', source: 'app',
+              message: 'loadChat: msgs=' + all.length + ' recent=' + recent.length + ' fp_changed=true rendering=' + recent.slice(-2).map(m=>m.role+':'+((m.text||m.content||'').slice(0,40))).join(' | ') })
+          }).catch(() => {});
         }
-      }
-      if (sids.length) {
-        const all = [];
-        await Promise.all(sids.map(async (sid) => {
-          const tRes = await fetch(API + '/dashboard/api/transcript?session_id=' + encodeURIComponent(sid) + '&limit=200');
-          const tData = await tRes.json();
-          if (tData.messages) all.push(...tData.messages);
-        }));
-        all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-        if (all.length) {
-          // Append-only: only add lines we haven't rendered yet (preserve scroll position)
-          if (_renderedMsgIds.length === 0) el.innerHTML = '';
-          const existingCount = _renderedMsgIds.length;
-          if (all.length < existingCount) {
-            // transcript shrunk — full reset
-            el.innerHTML = '';
-            _renderedMsgIds = [];
-          }
-          const wasNearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
-          let added = 0;
-          for (let i = _renderedMsgIds.length; i < all.length; i++) {
-            const html = renderMsgLine(all[i]);
-            if (html) { el.insertAdjacentHTML('beforeend', html); added++; }
-            _renderedMsgIds.push(1);
-          }
-          if (added > 0 && wasNearBottom) el.scrollTop = el.scrollHeight;
-          return;
+        if (!fpChanged) return;
+        _lastFingerprint = fingerprint;
+        const wasNearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
+        el.innerHTML = '';
+        for (const m of recent) {
+          const role = m.role || 'assistant';
+          const text = (m.text || m.content || '').slice(0, 1000);
+          if (!text.trim()) continue;
+          const cls = role === 'user' ? 't-user' : 't-assistant';
+          const name = role === 'user' ? USERNAME : LLMNAME;
+          el.insertAdjacentHTML('beforeend', '<div class="t-line ' + cls + '"><span class="name">' + esc(name) + '</span><span class="sep">$ </span>' + esc(text) + '</div>');
         }
+        _renderedMsgIds = recent.map(() => 1);
+        // Always scroll to bottom — on mobile, latest messages matter most
+        // Use requestAnimationFrame to ensure DOM has rendered before scrolling
+        requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+        return;
       }
     }
-    // Fallback: show events if no transcript
-    if (_renderedMsgIds.length > 0) return; // don't wipe an already-loaded transcript
+    // Fallback: show events if no active terminal session
+    if (_renderedMsgIds.length > 0) return;
     let url = API + '/dashboard/api/events?limit=30&type=RouterCommand';
     const res = await fetch(url);
     const data = await res.json();
@@ -409,25 +411,43 @@ async function sendChat() {
   el.scrollTop = el.scrollHeight;
   if (status) status.style.display = 'flex';
 
-  const sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
+  // Find the best matching session — query active sessions from server
+  let sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
   try {
-    const res = await fetch(API + '/api/v1/terminal/send', {
+    const sessRes = await fetch(API + '/api/v1/terminal/sessions');
+    const sessData = await sessRes.json();
+    const sessions = sessData.sessions || [];
+    console.log('[PAN Mobile] sessions:', sessions.map(s => s.id).join(', '));
+    // Find session matching this project (e.g. dash-pan-1 matches dash-pan)
+    const match = sessions.find(s => s.id.startsWith(sessionId)) || sessions[0];
+    if (match) sessionId = match.id;
+    console.log('[PAN Mobile] resolved sessionId:', sessionId);
+  } catch(sessErr) { console.error('[PAN Mobile] session lookup failed:', sessErr); }
+  try {
+    console.log('[PAN Mobile] sending to', API + '/api/v1/terminal/pipe', 'session:', sessionId);
+    const res = await fetch(API + '/api/v1/terminal/pipe', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ text: text, session_id: sessionId })
     });
+    console.log('[PAN Mobile] pipe response status:', res.status);
     const data = await res.json();
+    console.log('[PAN Mobile] pipe response:', JSON.stringify(data));
+    // Ship debug info to server for remote diagnosis
+    fetch(API + '/api/v1/logs', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ device_id: 'phone-dashboard', level: 'info', source: 'app', message: 'pipe response: ' + JSON.stringify(data) + ' session: ' + sessionId })
+    }).catch(() => {});
     if (!data.ok) {
       const t = document.getElementById('chat-typing');
-      if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>send failed: ' + esc(data.error || ''); t.style.color = 'var(--red)'; t.removeAttribute('id'); }
+      if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>send failed: ' + esc(data.error || JSON.stringify(data)); t.style.color = 'var(--red)'; t.removeAttribute('id'); }
       if (status) status.style.display = 'none';
       return;
     }
     // Poll transcript for Claude's response
     let prevCount = _renderedMsgIds.length;
     for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      lastSentTime = Date.now(); // keep blocking auto-refresh
+      await new Promise(r => setTimeout(r, 3000));
+      loadChat._forceLoad = true;
       await loadChat();
       if (_renderedMsgIds.length > prevCount + 1) {
         const t = document.getElementById('chat-typing');
@@ -438,6 +458,10 @@ async function sendChat() {
     const t = document.getElementById('chat-typing');
     if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>still processing…'; t.removeAttribute('id'); }
   } catch(e) {
+    console.error('[PAN Mobile] send error:', e);
+    fetch(API + '/api/v1/logs', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ device_id: 'phone-dashboard', level: 'error', source: 'app', message: 'send error: ' + e.message + ' session: ' + sessionId })
+    }).catch(() => {});
     const t = document.getElementById('chat-typing');
     if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>error: ' + esc(e.message); t.style.color = 'var(--red)'; t.removeAttribute('id'); }
   }
@@ -468,7 +492,7 @@ function tryDirectQuery(text) {
     });
   }
   if (lower.match(/show.*tasks|how many tasks|task progress|project progress/)) {
-    const pid = activeProject?.id || 2;
+    const pid = activeProject?.id || projects.find(p => p.name === 'PAN')?.id || 791;
     return fetch(API + '/dashboard/api/projects/' + pid + '/tasks').then(r=>r.json()).then(d => {
       const ms = d.milestones || [];
       let total=0, done=0;
@@ -497,33 +521,38 @@ function tryDirectQuery(text) {
 async function loadProjects() {
   const el = document.getElementById('projects');
   try {
-    const pid = activeProject?.id || 2;
+    const pid = activeProject?.id || projects.find(p => p.name === 'PAN')?.id || 791;
     const [projRes, tasksRes] = await Promise.all([
       fetch(API + '/dashboard/api/projects'),
       fetch(API + '/dashboard/api/projects/' + pid + '/tasks')
     ]);
     const projs = await projRes.json();
     const tasksData = await tasksRes.json();
-    const milestones = tasksData.milestones || [];
-    const uncategorized = tasksData.uncategorized || [];
+    const allTasks = tasksData.tasks || [];
+    // Group tasks by milestone
+    const milestones = (tasksData.milestones || []).map(m => ({
+      ...m,
+      tasks: allTasks.filter(t => t.milestone_id === m.id)
+    }));
+    const uncategorized = allTasks.filter(t => !t.milestone_id);
 
     // Overall progress
     let totalDone = 0, totalAll = 0;
-    for (const m of milestones) {
-      const tasks = m.tasks || [];
-      totalAll += tasks.length;
-      totalDone += tasks.filter(t => t.status === 'done').length;
-    }
-    totalAll += uncategorized.length;
-    totalDone += uncategorized.filter(t => t.status === 'done').length;
+    totalAll = allTasks.length;
+    totalDone = allTasks.filter(t => t.status === 'done').length;
     const overallPct = totalAll > 0 ? Math.round(totalDone / totalAll * 100) : 0;
 
     let html = '';
 
     // Overall progress for active project
     html += '<div class="card" style="margin-top:8px"><h3>' + esc(activeProject?.name || 'PAN') + '</h3>';
-    html += '<div style="display:flex;justify-content:space-between;margin:4px 0"><span style="font-size:13px">' + totalDone + '/' + totalAll + ' tasks done</span><span style="font-size:13px;color:var(--accent)">' + overallPct + '%</span></div>';
-    html += '<div class="progress-bg"><div class="progress-fill" style="width:' + overallPct + '%"></div></div></div>';
+    if (totalAll === 0) {
+      html += '<div style="font-size:13px;color:var(--text2);padding:4px 0">' + projs.length + ' projects tracked</div>';
+    } else {
+      html += '<div style="display:flex;justify-content:space-between;margin:4px 0"><span style="font-size:13px">' + totalDone + '/' + totalAll + ' tasks done</span><span style="font-size:13px;color:var(--accent)">' + overallPct + '%</span></div>';
+      html += '<div class="progress-bg"><div class="progress-fill" style="width:' + overallPct + '%"></div></div>';
+    }
+    html += '</div>';
 
     // Milestones
     for (const m of milestones) {
@@ -654,8 +683,9 @@ async function loadSettings() {
   try {
     const res = await fetch(API + '/health');
     const h = await res.json();
-    html += '<div class="setting-row"><span class="setting-label">PAN Hub</span><span class="setting-val" style="color:var(--green)">' + h.status + '</span></div>';
-    html += '<div class="setting-row"><span class="setting-label">Uptime</span><span class="setting-val">' + (h.uptime||'—') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">PAN Server</span><span class="setting-val" style="color:var(--green)">' + (h.ok ? 'Connected' : 'Error') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Carrier</span><span class="setting-val">' + (h.carrier ? '✓ Active' : '✗ Down') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Craft</span><span class="setting-val">' + (h.craftHealthy ? '✓ Healthy' : '✗ Unhealthy') + '</span></div>';
     html += '<div class="setting-row"><span class="setting-label">Proxy</span><span class="setting-val">' + API + '</span></div>';
     if (h.tailscaleIp) html += '<div class="setting-row"><span class="setting-label">Tailscale IP</span><span class="setting-val">' + h.tailscaleIp + '</span></div>';
   } catch(e) {
@@ -668,7 +698,8 @@ async function loadSettings() {
   try {
     const res = await fetch(API + '/api/v1/auth/providers');
     const auth = await res.json();
-    html += '<div class="setting-row"><span class="setting-label">Auth Mode</span><span class="setting-val">' + (auth.auth_mode||'none') + '</span></div>';
+    const mode = (auth.auth_mode || 'none').charAt(0).toUpperCase() + (auth.auth_mode || 'none').slice(1);
+    html += '<div class="setting-row"><span class="setting-label">Auth Mode</span><span class="setting-val">' + mode + '</span></div>';
   } catch {}
   html += '<div class="setting-row"><span class="setting-label">Backend</span><span class="setting-val">Cerebras</span></div>';
   html += '<div class="setting-row"><span class="setting-label">Model</span><span class="setting-val">Qwen 3 235B</span></div>';

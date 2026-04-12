@@ -208,7 +208,9 @@ app.use('/api', (req, res, next) => {
     req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
     return next();
   }
-  if (isLocalhost) {
+  if (isLocalhost || isTailscale) {
+    // Tailscale connections are trusted — already behind WireGuard mesh VPN.
+    // Browser dashboard on phone doesn't send X-Device-Name header.
     req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
     return next();
   }
@@ -1319,10 +1321,28 @@ app.delete('/api/v1/terminal/permissions/:id', (req, res) => {
 });
 // Send text to active terminal (phone voice commands → terminal, or
 // the desktop dashboard's own input — same endpoint, different source).
+// Falls back to pipe mode if PTY send fails (mobile dashboard uses pipe mode now).
 app.post('/api/v1/terminal/send', async (req, res) => {
   const { text, session_id, raw, source: bodySource } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
-  // raw=true sends without appending \r (for single-keypress responses like permission prompts)
+
+  // Try pipe mode first — resolves session ID prefix matches (e.g. dash-pan → dash-pan-1)
+  let resolvedSessionId = session_id || null;
+  if (resolvedSessionId) {
+    const sessions = await listSessions();
+    const exact = sessions.find(s => s.id === resolvedSessionId);
+    if (!exact) {
+      const prefix = sessions.find(s => s.id.startsWith(resolvedSessionId));
+      if (prefix) resolvedSessionId = prefix.id;
+    }
+  }
+  const piped = await pipeSend(resolvedSessionId, text);
+  if (piped) {
+    console.log(`[PAN Send] Routed to pipe mode: "${text.substring(0, 60)}" → ${resolvedSessionId}`);
+    return res.json({ ok: true, session: resolvedSessionId, method: 'pipe' });
+  }
+
+  // Fallback: raw PTY write (legacy)
   const toSend = raw ? text : text + '\r';
   const sent = sendToSession(session_id || null, toSend);
 
@@ -1409,9 +1429,12 @@ app.post('/api/v1/terminal/interrupt', (req, res) => {
 // Spawns claude -p as a child process, returns clean JSON responses.
 app.post('/api/v1/terminal/pipe', async (req, res) => {
   const { text, session_id } = req.body;
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  console.log(`[PAN Pipe] POST /pipe session_id=${session_id} text=${(text||'').slice(0,50)} ip=${ip} user=${req.user?.email || 'NONE'}`);
   if (!text) return res.status(400).json({ error: 'text required' });
   if (!session_id) return res.status(400).json({ error: 'session_id required' });
   const ok = await pipeSend(session_id, text);
+  console.log(`[PAN Pipe] pipeSend result: ok=${ok} session=${session_id}`);
   res.json({ ok: !!ok, session: session_id });
 });
 

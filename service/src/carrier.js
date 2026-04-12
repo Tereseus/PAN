@@ -28,6 +28,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync } from 'fs';
 import { hostname } from 'os';
+import { killProcessOnPort } from './platform.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -725,8 +726,19 @@ async function boot() {
   // Start Claude handoff monitor (Phase 5)
   startClaudeHandoffMonitor();
 
-  // Spawn primary Craft
+  // Kill any stale process holding the Craft port from a prior crash
   const craftPort = CRAFT_PORT_BASE;
+  try {
+    const killed = await killProcessOnPort(craftPort);
+    if (killed.size > 0) {
+      console.log(`[Carrier] Killed stale process(es) on port ${craftPort}: ${[...killed].join(', ')}`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch (e) {
+    console.warn(`[Carrier] Failed to clean port ${craftPort}: ${e.message}`);
+  }
+
+  // Spawn primary Craft
   primaryCraft = spawnCraft(craftPort, 'primary');
 
   // Listen on main port
