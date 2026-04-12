@@ -1,4 +1,4 @@
-// Carrier — Phase 4-7 supervisor process
+// Carrier — The PAN Runtime
 //
 // Carrier owns: HTTP listener (:7777), WebSocket terminal, PTY sessions,
 // reconnect tokens. Spawns Craft (server.js) as a child on an internal port
@@ -6,16 +6,24 @@
 //
 // Carrier NEVER restarts for code changes. To deploy new code:
 //   POST /api/carrier/swap → Carrier spawns a new Craft, health-checks it,
-//   switches the proxy target, kills the old Craft.
+//   switches the proxy target, keeps old Craft alive for 30s rollback window.
+//
+// Components:
+//   Carrier  — long-lived runtime, owns socket + PTY + Lifeboat
+//   Craft    — running PAN version (server.js with PAN_CRAFT=1)
+//   Lifeboat — embedded rollback HTTP handler (~50 lines, no deps, always works)
 //
 // Phases implemented:
-//   4 — PTY Handoff: PTYs live in Carrier, survive Craft swaps
-//   5 — Claude Session Handoff: detect context-near-full, brief + respawn
-//   6 — Shadow Traffic: fork requests to a shadow Craft, compare
-//   7 — Crucible: variant comparison data collection
+//   1 ✅ Foundations (reap-orphans, PTY exit detection, db-registry)
+//   2 ✅ Carrier + Lifeboat + Craft Swap + 30s auto-rollback
+//   3 ✅ Reconnect tokens + WS continuity (tokens persist to disk, frontend auto-reconnects)
+//   4 ✅ PTY Handoff: PTYs live in Carrier, survive Craft swaps
+//   5 ✅ Claude Session Handoff: detect context-near-full, brief + respawn
+//   6 ✅ Shadow Traffic: fork requests to a shadow Craft, compare responses, promote/reject
+//   7 ✅ Crucible: variant comparison data collection + dashboard UI
 
 import http from 'http';
-import { fork } from 'child_process';
+import { fork, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync } from 'fs';
@@ -27,15 +35,36 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CARRIER_PORT = parseInt(process.env.PAN_PORT) || 7777;
 const CRAFT_PORT_BASE = 17700; // Internal ports for Craft instances
 const HOST = '0.0.0.0';
+const ROLLBACK_TIMEOUT_MS = 30_000; // 30s auto-rollback if not confirmed
 
 // ==================== State ====================
-let primaryCraft = null;   // { proc, port, id, startedAt, healthy }
+let primaryCraft = null;   // { proc, port, id, startedAt, healthy, gitCommit }
+let previousCraft = null;  // Kept alive during rollback window (NOT killed immediately)
 let shadowCraft = null;    // Phase 6: shadow Craft for canary deploys
 let craftIdCounter = 0;
 let terminalServer = null; // Loaded async — the terminal module
 
-// Phase 7: Crucible — variant comparison data
-const crucibleResults = []; // { craftId, requestId, path, status, latencyMs, body, ts }
+// Rollback state
+let rollbackTimer = null;  // setTimeout handle for auto-rollback
+let swapPending = false;   // True while rollback window is open
+
+// Phase 6: Shadow traffic stats
+let shadowStats = { mirrored: 0, errors: 0, promoted: 0, rejected: 0, startedAt: null };
+
+// Phase 7: Crucible — variant comparison data (primary vs shadow side-by-side)
+const crucibleResults = []; // { id, path, method, primary: {status, latencyMs}, shadow: {status, latencyMs}, match, ts }
+
+// ==================== Git Snapshot ====================
+function getGitCommit() {
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: join(__dirname, '..'),
+      timeout: 3000,
+      windowsHide: true,
+      encoding: 'utf8',
+    }).trim();
+  } catch { return 'unknown'; }
+}
 
 // ==================== Terminal (Phase 4: Carrier owns PTY) ====================
 async function initTerminal(httpServer) {
@@ -62,7 +91,7 @@ function spawnCraft(port, label = 'primary') {
     windowsHide: true,
   });
 
-  const craft = { proc, port, id, label, startedAt: Date.now(), healthy: false };
+  const craft = { proc, port, id, label, startedAt: Date.now(), healthy: false, gitCommit: getGitCommit() };
 
   // Pipe Craft stdout/stderr to Carrier console with prefix
   proc.stdout.on('data', (d) => process.stdout.write(`[Craft-${id}] ${d}`));
@@ -75,11 +104,17 @@ function spawnCraft(port, label = 'primary') {
     console.log(`[Carrier] Craft-${id} (${label}) exited: code=${code} signal=${signal}`);
     craft.healthy = false;
     if (craft === primaryCraft) {
-      console.log('[Carrier] Primary Craft died — respawning in 2s...');
-      setTimeout(() => {
-        primaryCraft = spawnCraft(port, 'primary');
-        waitForCraftHealth(primaryCraft);
-      }, 2000);
+      // If rollback is available, auto-rollback to previous instead of respawning
+      if (swapPending && previousCraft) {
+        console.log(`[Carrier] 💥 Primary Craft-${id} crashed during rollback window — auto-rolling back!`);
+        performRollback();
+      } else {
+        console.log('[Carrier] Primary Craft died — respawning in 2s...');
+        setTimeout(() => {
+          primaryCraft = spawnCraft(port, 'primary');
+          waitForCraftHealth(primaryCraft);
+        }, 2000);
+      }
     }
     if (craft === shadowCraft) {
       shadowCraft = null;
@@ -187,6 +222,42 @@ function handleCraftIPC(msg, craft) {
       if (terminalServer) terminalServer.respondToPermission(msg.permissionId, msg.response);
       break;
     }
+    case 'terminal:pipeSend': {
+      const result = terminalServer ? terminalServer.pipeSend(msg.sessionId, msg.text) : false;
+      craft.proc.send({ type: 'terminal:pipeSend:reply', id: msg.id, result: !!result });
+      break;
+    }
+    case 'terminal:pipeInterrupt': {
+      if (terminalServer) terminalServer.pipeInterrupt(msg.sessionId);
+      break;
+    }
+    case 'terminal:getSessionMessages': {
+      const result = terminalServer ? terminalServer.getSessionMessages(msg.sessionId) : [];
+      craft.proc.send({ type: 'terminal:getSessionMessages:reply', id: msg.id, result });
+      break;
+    }
+    case 'terminal:getProcessRegistry': {
+      const result = terminalServer ? terminalServer.getProcessRegistry() : [];
+      craft.proc.send({ type: 'terminal:getProcessRegistry:reply', id: msg.id, result });
+      break;
+    }
+    case 'terminal:broadcastChatUpdate': {
+      if (terminalServer) terminalServer.broadcastChatUpdate(msg.data);
+      break;
+    }
+    case 'terminal:registerProcess': {
+      if (terminalServer) terminalServer.registerProcess(msg);
+      break;
+    }
+    case 'terminal:deregisterProcess': {
+      if (terminalServer) terminalServer.deregisterProcess(msg.pid, msg.exitCode);
+      break;
+    }
+    case 'terminal:findSessionByClaudeId': {
+      const result = terminalServer ? terminalServer.findSessionByClaudeId(msg.claudeSessionId) : null;
+      craft.proc.send({ type: 'terminal:findSessionByClaudeId:reply', id: msg.id, result });
+      break;
+    }
     default:
       console.warn(`[Carrier] Unknown IPC message type: ${msg.type}`);
   }
@@ -194,6 +265,13 @@ function handleCraftIPC(msg, craft) {
 
 // ==================== HTTP Proxy ====================
 function proxyRequest(req, res, targetPort) {
+  const primaryStartMs = Date.now();
+  let primaryStatus = 0;
+
+  // Buffer request body so we can replay it to shadow
+  const bodyChunks = [];
+  req.on('data', (chunk) => bodyChunks.push(chunk));
+
   const proxyReq = http.request({
     hostname: '127.0.0.1',
     port: targetPort,
@@ -202,8 +280,18 @@ function proxyRequest(req, res, targetPort) {
     headers: req.headers,
     timeout: 120000,
   }, (proxyRes) => {
+    primaryStatus = proxyRes.statusCode;
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
     proxyRes.pipe(res);
+    proxyRes.on('end', () => {
+      const primaryLatency = Date.now() - primaryStartMs;
+      // If shadow is running, we already fired the shadow request —
+      // the comparison entry will be completed when shadow responds
+      if (req._crucibleEntry) {
+        req._crucibleEntry.primary = { status: primaryStatus, latencyMs: primaryLatency };
+        finalizeCrucibleEntry(req._crucibleEntry);
+      }
+    });
   });
 
   proxyReq.on('error', (err) => {
@@ -217,6 +305,23 @@ function proxyRequest(req, res, targetPort) {
 
   // Phase 6: Shadow traffic — mirror to shadow Craft (fire-and-forget)
   if (shadowCraft?.healthy && req.method !== 'GET') {
+    shadowStats.mirrored++;
+    const shadowStartMs = Date.now();
+    const requestId = `cr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // Create crucible entry that both primary and shadow will fill in
+    req._crucibleEntry = {
+      id: requestId,
+      path: req.url,
+      method: req.method,
+      primaryCraftId: primaryCraft?.id,
+      shadowCraftId: shadowCraft?.id,
+      primary: null,  // filled when primary responds
+      shadow: null,    // filled when shadow responds
+      match: null,     // computed when both done
+      ts: Date.now(),
+    };
+
     const shadowReq = http.request({
       hostname: '127.0.0.1',
       port: shadowCraft.port,
@@ -225,24 +330,47 @@ function proxyRequest(req, res, targetPort) {
       headers: req.headers,
       timeout: 30000,
     }, (shadowRes) => {
-      // Phase 7: Collect comparison data
       let body = '';
       shadowRes.on('data', (c) => body += c);
       shadowRes.on('end', () => {
-        crucibleResults.push({
-          craftId: shadowCraft.id,
-          path: req.url,
-          method: req.method,
-          status: shadowRes.statusCode,
-          latencyMs: Date.now() - Date.now(), // TODO: proper timing
-          ts: Date.now(),
-        });
-        // Keep last 1000 results
-        if (crucibleResults.length > 1000) crucibleResults.splice(0, crucibleResults.length - 1000);
+        if (req._crucibleEntry) {
+          req._crucibleEntry.shadow = {
+            status: shadowRes.statusCode,
+            latencyMs: Date.now() - shadowStartMs,
+            bodyLength: body.length,
+          };
+          finalizeCrucibleEntry(req._crucibleEntry);
+        }
       });
     });
-    shadowReq.on('error', () => {}); // Shadow failures are silent
-    req.pipe(shadowReq);
+    shadowReq.on('error', (err) => {
+      shadowStats.errors++;
+      if (req._crucibleEntry) {
+        req._crucibleEntry.shadow = { status: 0, latencyMs: Date.now() - shadowStartMs, error: err.message };
+        finalizeCrucibleEntry(req._crucibleEntry);
+      }
+    });
+
+    // Replay buffered body to shadow
+    req.on('end', () => {
+      if (bodyChunks.length > 0) {
+        for (const chunk of bodyChunks) shadowReq.write(chunk);
+      }
+      shadowReq.end();
+    });
+  }
+}
+
+// Finalize a crucible comparison entry when both primary and shadow have responded
+function finalizeCrucibleEntry(entry) {
+  if (!entry.primary || !entry.shadow) return; // wait for both
+  entry.match = entry.primary.status === entry.shadow.status;
+  crucibleResults.push(entry);
+  if (crucibleResults.length > 1000) crucibleResults.splice(0, crucibleResults.length - 1000);
+
+  // Log mismatches
+  if (!entry.match) {
+    console.log(`[Carrier] ⚡ Crucible mismatch: ${entry.method} ${entry.path} — primary=${entry.primary.status} shadow=${entry.shadow.status}`);
   }
 }
 
@@ -250,12 +378,20 @@ function proxyRequest(req, res, targetPort) {
 const carrierServer = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
+  // Lifeboat — always checked first (works even when Craft is dead)
+  if (url.pathname.startsWith('/lifeboat/')) {
+    if (handleLifeboat(url, req.method, res)) return;
+  }
+
   // Carrier-owned endpoints
   if (url.pathname === '/api/carrier/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      carrier: { pid: process.pid, uptime: process.uptime(), port: CARRIER_PORT },
-      primaryCraft: primaryCraft ? { id: primaryCraft.id, port: primaryCraft.port, healthy: primaryCraft.healthy, pid: primaryCraft.proc.pid, uptime: Date.now() - primaryCraft.startedAt } : null,
+      carrier: { pid: process.pid, uptime: process.uptime(), port: CARRIER_PORT, gitCommit: getGitCommit() },
+      primaryCraft: primaryCraft ? { id: primaryCraft.id, port: primaryCraft.port, healthy: primaryCraft.healthy, pid: primaryCraft.proc.pid, uptime: Date.now() - primaryCraft.startedAt, gitCommit: primaryCraft.gitCommit } : null,
+      previousCraft: previousCraft ? { id: previousCraft.id, port: previousCraft.port, healthy: previousCraft.healthy, gitCommit: previousCraft.gitCommit } : null,
+      swapPending,
+      rollbackAvailable: swapPending && !!previousCraft,
       shadowCraft: shadowCraft ? { id: shadowCraft.id, port: shadowCraft.port, healthy: shadowCraft.healthy, pid: shadowCraft.proc.pid } : null,
       crucibleResults: crucibleResults.length,
     }));
@@ -279,6 +415,7 @@ const carrierServer = http.createServer((req, res) => {
     }
     const shadowPort = CRAFT_PORT_BASE + 10 + craftIdCounter;
     shadowCraft = spawnCraft(shadowPort, 'shadow');
+    shadowStats = { mirrored: 0, errors: 0, promoted: 0, rejected: 0, startedAt: Date.now() };
     waitForCraftHealth(shadowCraft).then(ok => {
       if (!ok && shadowCraft) {
         shadowCraft.proc.kill();
@@ -291,19 +428,101 @@ const carrierServer = http.createServer((req, res) => {
   }
 
   if (url.pathname === '/api/carrier/shadow' && req.method === 'DELETE') {
+    // Phase 6: Kill shadow (reject)
+    shadowStats.rejected++;
     if (shadowCraft) {
+      console.log(`[Carrier] Shadow Craft-${shadowCraft.id} rejected and killed`);
       shadowCraft.proc.kill();
       shadowCraft = null;
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify({ ok: true, action: 'rejected' }));
+    return;
+  }
+
+  if (url.pathname === '/api/carrier/shadow/promote' && req.method === 'POST') {
+    // Phase 6: Promote shadow → primary (like a hot-swap but using the shadow)
+    if (!shadowCraft?.healthy) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No healthy shadow to promote' }));
+      return;
+    }
+    shadowStats.promoted++;
+    const oldPrimary = primaryCraft;
+    const promoted = shadowCraft;
+    promoted.label = 'primary';
+    previousCraft = oldPrimary;
+    primaryCraft = promoted;
+    shadowCraft = null;
+    swapPending = true;
+
+    console.log(`[Carrier] ═══ SHADOW PROMOTED ═══ Craft-${promoted.id} is now primary`);
+
+    if (terminalServer) {
+      terminalServer.broadcastNotification('server_swap', {
+        oldCraftId: oldPrimary?.id,
+        newCraftId: promoted.id,
+        rollbackAvailable: true,
+        rollbackTimeoutMs: ROLLBACK_TIMEOUT_MS,
+        promoted: true,
+      });
+    }
+
+    // Start rollback timer
+    if (rollbackTimer) clearTimeout(rollbackTimer);
+    rollbackTimer = setTimeout(() => {
+      if (swapPending) {
+        console.log(`[Carrier] ⏱️  Promoted Craft-${primaryCraft.id} auto-confirmed`);
+        confirmSwap();
+      }
+    }, ROLLBACK_TIMEOUT_MS);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, action: 'promoted', newPrimaryId: promoted.id }));
+    return;
+  }
+
+  if (url.pathname === '/api/carrier/shadow/stats') {
+    // Phase 6: Shadow traffic statistics
+    const matchCount = crucibleResults.filter(r => r.match === true).length;
+    const mismatchCount = crucibleResults.filter(r => r.match === false).length;
+    const totalCompared = matchCount + mismatchCount;
+    const avgPrimaryLatency = crucibleResults.length > 0
+      ? crucibleResults.reduce((sum, r) => sum + (r.primary?.latencyMs || 0), 0) / crucibleResults.length : 0;
+    const avgShadowLatency = crucibleResults.length > 0
+      ? crucibleResults.reduce((sum, r) => sum + (r.shadow?.latencyMs || 0), 0) / crucibleResults.length : 0;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      shadow: shadowCraft ? {
+        id: shadowCraft.id,
+        port: shadowCraft.port,
+        healthy: shadowCraft.healthy,
+        pid: shadowCraft.proc.pid,
+        uptime: Date.now() - shadowCraft.startedAt,
+        gitCommit: shadowCraft.gitCommit,
+      } : null,
+      stats: shadowStats,
+      comparison: {
+        total: totalCompared,
+        matches: matchCount,
+        mismatches: mismatchCount,
+        matchRate: totalCompared > 0 ? (matchCount / totalCompared * 100).toFixed(1) + '%' : 'N/A',
+        avgPrimaryLatencyMs: Math.round(avgPrimaryLatency),
+        avgShadowLatencyMs: Math.round(avgShadowLatency),
+      },
+    }));
     return;
   }
 
   if (url.pathname === '/api/carrier/crucible') {
-    // Phase 7: Return comparison data
+    // Phase 7: Return comparison data with filtering
+    const limit = parseInt(url.searchParams?.get('limit')) || 100;
+    const mismatchOnly = url.searchParams?.get('mismatches') === '1';
+    let results = crucibleResults.slice(-limit);
+    if (mismatchOnly) results = results.filter(r => r.match === false);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ results: crucibleResults.slice(-100) }));
+    res.end(JSON.stringify({ results, total: crucibleResults.length }));
     return;
   }
 
@@ -323,11 +542,19 @@ const carrierServer = http.createServer((req, res) => {
   }
 });
 
-// ==================== Hot Swap (Phase 4) ====================
+// ==================== Hot Swap with Rollback Safety ====================
 async function performSwap() {
+  // If a swap is already pending (rollback window open), cancel it first
+  if (swapPending && previousCraft) {
+    console.log('[Carrier] Swap already pending — confirming current Craft first');
+    confirmSwap();
+  }
+
   const oldCraft = primaryCraft;
   const newPort = CRAFT_PORT_BASE + craftIdCounter + 1;
-  console.log(`[Carrier] ═══ HOT SWAP ═══ Starting new Craft on port ${newPort}...`);
+  const oldCommit = oldCraft?.gitCommit || 'unknown';
+  const newCommit = getGitCommit();
+  console.log(`[Carrier] ═══ HOT SWAP ═══ ${oldCommit} → ${newCommit} — starting Craft on port ${newPort}...`);
 
   const newCraft = spawnCraft(newPort, 'primary');
   const healthy = await waitForCraftHealth(newCraft);
@@ -338,26 +565,116 @@ async function performSwap() {
     return;
   }
 
-  // Switch proxy target
+  // Keep old Craft alive as rollback target
+  previousCraft = oldCraft;
   primaryCraft = newCraft;
-  console.log(`[Carrier] ═══ SWAP COMPLETE ═══ Primary is now Craft-${newCraft.id} (port ${newPort})`);
+  swapPending = true;
 
-  // Notify all terminal clients about the swap (so they know Claude needs relaunch)
+  console.log(`[Carrier] ═══ SWAP LIVE ═══ Primary is now Craft-${newCraft.id} (${newCommit})`);
+  console.log(`[Carrier] ⏱️  Rollback window: ${ROLLBACK_TIMEOUT_MS / 1000}s — POST /lifeboat/rollback to revert, POST /lifeboat/confirm to keep`);
+
+  // Notify all terminal clients about the swap
   if (terminalServer) {
     terminalServer.broadcastNotification('server_swap', {
       oldCraftId: oldCraft?.id,
       newCraftId: newCraft.id,
+      rollbackAvailable: true,
+      rollbackTimeoutMs: ROLLBACK_TIMEOUT_MS,
     });
   }
 
-  // Gracefully kill old Craft after a short drain period
-  if (oldCraft) {
-    console.log(`[Carrier] Draining old Craft-${oldCraft.id} (3s)...`);
-    setTimeout(() => {
-      try { oldCraft.proc.kill(); } catch {}
-      console.log(`[Carrier] Old Craft-${oldCraft.id} killed`);
-    }, 3000);
+  // Start auto-rollback timer (Layer 1: auto-revert if not confirmed)
+  if (rollbackTimer) clearTimeout(rollbackTimer);
+  rollbackTimer = setTimeout(() => {
+    if (swapPending) {
+      console.log(`[Carrier] ⏱️  Rollback timeout — auto-confirming Craft-${primaryCraft.id} (no issues detected)`);
+      confirmSwap();
+    }
+  }, ROLLBACK_TIMEOUT_MS);
+}
+
+function confirmSwap() {
+  if (!swapPending) return { ok: false, reason: 'No swap pending' };
+  if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
+  swapPending = false;
+
+  // NOW kill the old Craft
+  if (previousCraft) {
+    console.log(`[Carrier] ✅ Swap confirmed — retiring old Craft-${previousCraft.id} (${previousCraft.gitCommit})`);
+    try { previousCraft.proc.kill(); } catch {}
+    previousCraft = null;
   }
+
+  if (terminalServer) {
+    terminalServer.broadcastNotification('swap_confirmed', { craftId: primaryCraft.id });
+  }
+  return { ok: true, activeCraft: primaryCraft.id, commit: primaryCraft.gitCommit };
+}
+
+function performRollback() {
+  if (!swapPending || !previousCraft) return { ok: false, reason: 'No rollback available' };
+  if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
+  swapPending = false;
+
+  const failedCraft = primaryCraft;
+  primaryCraft = previousCraft;
+  previousCraft = null;
+
+  console.log(`[Carrier] 🔙 ROLLBACK — reverting to Craft-${primaryCraft.id} (${primaryCraft.gitCommit}), killing Craft-${failedCraft.id}`);
+  try { failedCraft.proc.kill(); } catch {}
+
+  if (terminalServer) {
+    terminalServer.broadcastNotification('swap_rollback', {
+      rolledBackTo: primaryCraft.id,
+      killed: failedCraft.id,
+    });
+  }
+  return { ok: true, activeCraft: primaryCraft.id, commit: primaryCraft.gitCommit };
+}
+
+// ==================== Lifeboat ====================
+// Tiny rollback HTTP handler. No dependencies. Almost cannot fail.
+// Works even when every Craft is hung — it's in Carrier's process.
+// Three consumers: rollback UI overlay, AHK hotkey, phone Settings button.
+function handleLifeboat(url, method, res) {
+  const json = (status, data) => {
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    });
+    res.end(JSON.stringify(data));
+  };
+
+  if (method === 'OPTIONS') { json(200, {}); return true; }
+
+  if (url.pathname === '/lifeboat/status') {
+    json(200, {
+      ok: true,
+      swapPending,
+      rollbackAvailable: swapPending && !!previousCraft,
+      rollbackTimeoutMs: ROLLBACK_TIMEOUT_MS,
+      activeCraft: primaryCraft ? { id: primaryCraft.id, port: primaryCraft.port, commit: primaryCraft.gitCommit, healthy: primaryCraft.healthy } : null,
+      previousCraft: previousCraft ? { id: previousCraft.id, port: previousCraft.port, commit: previousCraft.gitCommit, healthy: previousCraft.healthy } : null,
+      carrierPid: process.pid,
+      carrierUptime: process.uptime(),
+    });
+    return true;
+  }
+
+  if (url.pathname === '/lifeboat/rollback' && method === 'POST') {
+    const result = performRollback();
+    json(result.ok ? 200 : 409, result);
+    return true;
+  }
+
+  if (url.pathname === '/lifeboat/confirm' && method === 'POST') {
+    const result = confirmSwap();
+    json(result.ok ? 200 : 409, result);
+    return true;
+  }
+
+  return false; // Not a Lifeboat route
 }
 
 // ==================== Claude Session Handoff (Phase 5) ====================
@@ -417,6 +734,9 @@ async function boot() {
     console.log(`[Carrier] ═══════════════════════════════════════════`);
     console.log(`[Carrier] Carrier listening on port ${CARRIER_PORT}`);
     console.log(`[Carrier] PTY sessions owned by Carrier (PID ${process.pid})`);
+    console.log(`[Carrier] Lifeboat active: /lifeboat/status, /lifeboat/rollback, /lifeboat/confirm`);
+    console.log(`[Carrier] Rollback window: ${ROLLBACK_TIMEOUT_MS / 1000}s after each swap`);
+    console.log(`[Carrier] Git: ${getGitCommit()}`);
     console.log(`[Carrier] Primary Craft starting on port ${craftPort}...`);
     console.log(`[Carrier] ═══════════════════════════════════════════`);
   });
