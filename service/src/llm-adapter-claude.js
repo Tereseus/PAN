@@ -9,6 +9,7 @@
 //   adapter.getSessionId();               // Claude session UUID
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { anonymizeForAI } from './anonymize.js';
 import { randomUUID } from 'crypto';
 
 export class ClaudeAdapter {
@@ -29,9 +30,10 @@ export class ClaudeAdapter {
   }
 
   // Send a message to Claude. Responses stream via onMessage callback.
+  // PII is stripped before sending — emails, phones, SSNs, cards, GPS, addresses.
   async send(text) {
     if (!text?.trim()) return;
-    text = text.trim();
+    text = anonymizeForAI(text.trim());
     const isFirst = this._queryCount === 0;
     this._queryCount++;
 
