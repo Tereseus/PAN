@@ -27,8 +27,8 @@ import runnerRouter from './routes/runner.js';
 import incognitoRouter, { cleanupExpiredIncognito } from './routes/incognito.js';
 import auditRouter from './routes/audit.js';
 import replicationRouter from './routes/replication.js';
-import zonesRouter, { getActiveZones } from './routes/zones.js';
-import syncRouter, { startPersonalSync } from './routes/sync.js';
+import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.js';
+import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
 import { extractUser } from './middleware/auth.js';
 import { requireOrg, auditLog, verifyAllAuditChains } from './middleware/org-context.js';
 import { evolve } from './evolution/engine.js';
@@ -2530,6 +2530,9 @@ function start() {
       _verifyAuditChains();
       _startupIntervals.push(setInterval(_verifyAuditChains, 60 * 60 * 1000)); // every 1 hour
 
+      // Tier 0 Phase 8 — Start background personal data sync (every 1 hour)
+      startPersonalSync(60 * 60 * 1000);
+
       // Migrate timestamp-based tab session IDs to stable name-based IDs.
       // e.g. "dash-pan-1775843785916" → "dash-pan-main" (derived from tab_name).
       // This runs once — stable IDs don't change, so future boots are no-ops.
@@ -2634,6 +2637,7 @@ async function stop() {
     console.warn(`[PAN] killAllSessions failed: ${e.message}`);
   }
   shutdownAll();
+  stopPersonalSync();
   return new Promise((resolve) => {
     if (server) {
       let resolved = false;

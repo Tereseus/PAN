@@ -422,4 +422,151 @@ router.post('/enforce', (req, res) => {
   });
 });
 
+// ============================================================
+// Zone entry/exit tracking
+// In-memory cache of device -> zone state for transition detection
+// ============================================================
+const deviceZoneState = new Map();
+
+// POST /api/v1/zones/report — device reports GPS, triggers zone entry/exit events
+// Body: { lat, lng, device_id }
+// Call this on every GPS update to detect zone transitions and log them.
+router.post('/report', (req, res) => {
+  const orgId = req.org_id || PERSONAL_ORG_ID;
+  const userId = req.user?.id || 1;
+  const { lat, lng, device_id } = req.body;
+
+  if (typeof lat !== 'number' || typeof lng !== 'number') {
+    return res.status(400).json({ error: 'lat and lng (numbers) are required' });
+  }
+
+  const deviceKey = `${orgId}:${device_id || 'unknown'}`;
+  const previousZoneIds = deviceZoneState.get(deviceKey) || new Set();
+
+  const currentZones = getActiveZones(lat, lng, orgId);
+  const currentZoneIds = new Set(currentZones.map(z => z.id));
+
+  const entered = [];
+  const exited = [];
+
+  // Detect zone entries
+  for (const zone of currentZones) {
+    if (!previousZoneIds.has(zone.id)) {
+      entered.push({ id: zone.id, name: zone.name });
+      try {
+        logEvent(null, 'ZoneEntry', {
+          zone_id: zone.id,
+          zone_name: zone.name,
+          org_id: orgId,
+          device_id: device_id || null,
+          user_id: userId,
+          lat, lng,
+          sensor_rules: zone.sensor_rules,
+          tool_rules: zone.tool_rules,
+        }, userId, orgId);
+      } catch {}
+
+      try {
+        auditLog(req, 'zone.entry', zone.name, {
+          zone_id: zone.id,
+          device_id: device_id || null,
+          lat, lng,
+        });
+      } catch {}
+    }
+  }
+
+  // Detect zone exits
+  for (const prevId of previousZoneIds) {
+    if (!currentZoneIds.has(prevId)) {
+      const zone = get(
+        `SELECT id, name FROM zones WHERE id = :id AND org_id = :oid`,
+        { ':id': prevId, ':oid': orgId }
+      );
+      const zoneName = zone?.name || `zone-${prevId}`;
+
+      exited.push({ id: prevId, name: zoneName });
+      try {
+        logEvent(null, 'ZoneExit', {
+          zone_id: prevId,
+          zone_name: zoneName,
+          org_id: orgId,
+          device_id: device_id || null,
+          user_id: userId,
+          lat, lng,
+        }, userId, orgId);
+      } catch {}
+
+      try {
+        auditLog(req, 'zone.exit', zoneName, {
+          zone_id: prevId,
+          device_id: device_id || null,
+          lat, lng,
+        });
+      } catch {}
+    }
+  }
+
+  // Update cached state
+  deviceZoneState.set(deviceKey, currentZoneIds);
+
+  // Compute merged sensor rules for current position
+  const mergedRules = mergeSensorRules(currentZones);
+
+  // Apply zone sensor rules — update sensor_toggles for this device
+  // Zone rules override user toggles but NOT hard-off in personal org
+  if (device_id && currentZones.length > 0 && orgId !== PERSONAL_ORG_ID) {
+    const now = Date.now();
+    for (const [sensor, rule] of Object.entries(mergedRules)) {
+      if (rule === 'forced_on' || rule === 'forced_off') {
+        const enabledInt = rule === 'forced_on' ? 1 : 0;
+        run(
+          `INSERT INTO sensor_toggles (user_id, device_id, org_id, sensor, enabled, cadence_seconds, forced_by_org, updated_at)
+           VALUES (:uid, :did, :oid, :sid, :en, NULL, 1, :now)
+           ON CONFLICT(user_id, device_id, org_id, sensor)
+           DO UPDATE SET enabled = :en, forced_by_org = 1, updated_at = :now`,
+          {
+            ':uid': userId, ':did': device_id, ':oid': orgId,
+            ':sid': sensor, ':en': enabledInt, ':now': now,
+          }
+        );
+      } else if (rule === 'allowed') {
+        run(
+          `UPDATE sensor_toggles SET forced_by_org = 0, updated_at = :now
+           WHERE user_id = :uid AND device_id = :did AND org_id = :oid AND sensor = :sid AND forced_by_org = 1`,
+          {
+            ':uid': userId, ':did': device_id, ':oid': orgId,
+            ':sid': sensor, ':now': now,
+          }
+        );
+      }
+    }
+  }
+
+  // If device left all zones, release all org-forced toggles
+  if (device_id && currentZones.length === 0 && previousZoneIds.size > 0 && orgId !== PERSONAL_ORG_ID) {
+    const now = Date.now();
+    run(
+      `UPDATE sensor_toggles SET forced_by_org = 0, updated_at = :now
+       WHERE user_id = :uid AND device_id = :did AND org_id = :oid AND forced_by_org = 1`,
+      {
+        ':uid': userId, ':did': device_id, ':oid': orgId,
+        ':now': now,
+      }
+    );
+  }
+
+  res.json({
+    org_id: orgId,
+    lat, lng,
+    device_id: device_id || null,
+    in_zones: currentZones.map(z => ({ id: z.id, name: z.name })),
+    entered,
+    exited,
+    sensor_rules: mergedRules,
+    zone_count: currentZones.length,
+  });
+});
+
+export { pointInPolygon, mergeSensorRules };
 export default router;
