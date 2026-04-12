@@ -50,7 +50,7 @@ echo [PAN] Starting server...
 ::
 :: The lock file is written with the cmd PID and deleted on exit to prevent
 :: duplicate launchers (the root cause of the Carrier/Craft conflict bug).
-start "PAN Server" cmd /k "cd /d %~dp0service && (echo %%PID%% > .pan-server.lock & for /l %%i in (1,0,2) do @(echo [PAN Server] starting node... & node pan.js start & echo [PAN Server] exited, restarting in 2s... & timeout /t 2 /nobreak >NUL)) & del /f .pan-server.lock >NUL 2>&1"
+start "PAN Server" cmd /k "%~dp0service\pan-loop.bat"
 
 :: Write lock with the new cmd's PID (best-effort — the cmd itself also writes one)
 :: We find it by looking for the newest cmd.exe with our window title

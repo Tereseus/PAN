@@ -1013,12 +1013,10 @@
 								} catch {}
 								// Pipe mode: auto-launch Claude on reconnect
 								try {
-									const pipeRes = await fetch('/api/v1/terminal/pipe', {
+									const pipeData = await api('/api/v1/terminal/pipe', {
 										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
 										body: JSON.stringify({ session_id: sessionId, text: 'ΠΑΝ Remembers: summarize recent session context briefly.' }),
 									});
-									const pipeData = await pipeRes.json();
 									if (pipeData.ok) console.log('[PAN Terminal] Claude auto-launched on reconnect');
 								} catch (e) {
 									console.warn('[PAN Terminal] Pipe reconnect launch error:', e);
@@ -1132,12 +1130,10 @@
 							const launchText = briefingReady
 								? 'ΠΑΝ Remembers: summarize recent session context briefly.'
 								: 'Hello — new session starting.';
-							const pipeRes = await fetch('/api/v1/terminal/pipe', {
+							const pipeData = await api('/api/v1/terminal/pipe', {
 								method: 'POST',
-								headers: { 'Content-Type': 'application/json' },
 								body: JSON.stringify({ session_id: sessionId, text: launchText }),
 							});
-							const pipeData = await pipeRes.json();
 							if (pipeData.ok) {
 								console.log('[PAN Terminal] Claude auto-launched via pipe mode');
 							} else {
@@ -2041,12 +2037,10 @@
 
 		try {
 			if (!text) return;
-			const res = await fetch('/api/v1/terminal/pipe', {
+			const data = await api('/api/v1/terminal/pipe', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ session_id: active.sessionId, text }),
 			});
-			const data = await res.json();
 			if (!data.ok) throw new Error(data.error || 'pipe send failed');
 			console.log('[PAN Terminal] Pipe send OK');
 		} catch (err) {
