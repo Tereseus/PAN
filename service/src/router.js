@@ -49,6 +49,22 @@ async function tryQuickSystem(text) {
     return { intent: 'system', response: 'PAN paused. Say "PAN wake up" to resume.', action: 'pause' };
   }
 
+  // Incognito status check
+  if (lower.match(/incognito|private\s*mode/)) {
+    try {
+      const row = get("SELECT value FROM settings WHERE key LIKE 'incognito_active_%'");
+      if (row) {
+        const state = JSON.parse(row.value);
+        if (state.active) {
+          return { intent: 'system', response: `Incognito is on. Started ${Math.round((Date.now() - state.started_at) / 60000)} minutes ago. Events are temporary.` };
+        }
+      }
+      return { intent: 'system', response: 'Incognito is off. All events are being recorded normally.' };
+    } catch {
+      return { intent: 'system', response: 'Incognito is off.' };
+    }
+  }
+
   // Screen recording
   if (lower.match(/start\s+(screen\s+)?record/)) {
     const { startRecording } = await import('./screen-recorder.js');
