@@ -190,170 +190,37 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**Claude** (2026-04-12 19:03:41): Phases 7 and 8 are building in parallel. Status:
+**User** (2026-04-12 22:50:20): You are PAN's memory consolidation system. Extract structured memories from these recent events.
 
-| Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ Done |
-| **2** | Route wiring | ✅ Done |
-| **3** | Sensor toggles + Hard Off | ✅ Done |
-| **4** | Incognito mode | ✅ Done |
-| **5** | Phone top bar + org name | ✅ D
-**User** (2026-04-12 19:03:48): <task-notification>
-<task-id>a9fca41802592f270</task-id>
-<tool-use-id>toolu_01DdRbLvctJWeGfci4R8PZuu</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
-**Claude** (2026-04-12 19:04:22): | Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ Done |
-| **2** | Route wiring | ✅ Done |
-| **3** | Sensor toggles + Hard Off | ✅ Done |
-| **4** | Incognito mode | ✅ Done |
-| **5** | Phone top bar + org switcher | ✅ Done |
-| **6** | Replication + audit chain | ✅ 
-**User** (2026-04-12 19:04:23): <task-notification>
-<task-id>a69d5c5d8bcbb11af</task-id>
-<tool-use-id>toolu_01LLi5JMoFrNr3PsKJ7i8Ade</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\ab2b
-**Claude** (2026-04-12 19:05:12): Both building in parallel. Status:
+EVENTS:
+[2026-04-12 15:24:30] User: So there's a couple of things it looks like it's not going to Cere
+**Claude** (2026-04-12 22:50:22): Done. No more hardcoded names anywhere. The flow is:
 
-| Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ Done |
-| **2** | Route wiring | ✅ Done |
-| **3** | Sensor toggles + Hard Off | ✅ Done |
-| **4** | Incognito mode | ✅ Done |
-| **5** | Phone top bar + org switcher | ✅ Done |
-| **
-**User** (2026-04-12 19:05:15): <task-notification>
-<task-id>a081c9e7dcb1f2c8a</task-id>
-<tool-use-id>toolu_018pUGkyGCGvompyhkopFkve</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\78af
-**Claude** (2026-04-12 19:05:20): Phase 7 done. Waiting on Phase 8...
-**User** (2026-04-12 19:05:57): <task-notification>
-<task-id>ab1790d77c82155d0</task-id>
-<tool-use-id>toolu_01QEY2CcUF4uJn93kwW9Jq87</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\78af
-**User** (2026-04-12 19:06:18): <task-notification>
-<task-id>aacfca5ab93ec6e07</task-id>
-<tool-use-id>toolu_01BsF7GqW3xzkdjeg17Psoej</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\ab2b
-**Claude** (2026-04-12 19:06:25): Phase 7 done. Waiting on Phase 8 (personal data sync) to finish — that's the last one.
+1. User sets `display_name` in Settings (phone or API)
+2. `/api/v1/org/current` reads that setti
+**Claude** (2026-04-12 22:50:54): ```json
+{
+  "episodes": [
+    {
+      "summary": "Phone dashboard message receive broken despite working send",
+      "detail": "User could send messa
+**User** (2026-04-12 22:51:16): Get rid of the Tereseus@Tereseus, it has no purpose and make the screenshot endpoint
+**Claude** (2026-04-12 22:53:22): Done. Here's what changed:
 
-| Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ Done |
-| **2** | Route wiring | ✅ Done |
-| **3** | Sensor toggles + Hard Off | ✅ Done |
-| **4** | Incognito mode | ✅ Done |
-| 
-**Claude** (2026-04-12 19:06:56): **Tier 0 Org Foundation — ALL 8 PHASES COMPLETE. ✅**
+**Org badge removed** — no more "Tereseus@Tereseus" in the topbar. Just Π + refresh + project selector. Clean.
 
-| Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ |
-| **2** | Route wiring | ✅ |
-| **3** | Sensor toggles + Hard Off | ✅ |
-| **4** | Incognito mode | ✅ |
-| **5** | Phone top bar + org name | ✅ |
-| **6** | Repli
-**User** (2026-04-12 19:07:47): <task-notification>
-<task-id>aae20862d64610b5f</task-id>
-<tool-use-id>toolu_01TQKvHnYfpNCpo1WJGoCTfq</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\975c
-**Claude** (2026-04-12 19:08:24): | Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ Done |
-| **2** | Route wiring | ✅ Done |
-| **3** | Sensor toggles + Hard Off | ✅ Done |
-| **4** | Incognito mode | ✅ Done |
-| **5** | Phone top bar + org switcher | ✅ Done |
-| **6** | Replication + audit chain | ✅ 
-**User** (2026-04-12 19:08:58): <task-notification>
-<task-id>a469077917467421b</task-id>
-<tool-use-id>toolu_011vRNdjWRqFE65KhmYxhu8K</tool-use-id>
-<output-file>C:\Users\tzuri\AppData\Local\Temp\claude\C--Users-tzuri-Desktop-PAN\ab2b
-**Claude** (2026-04-12 19:09:08): **Tier 0 Org Foundation — ALL 8 PHASES COMPLETE. ✅**
+**Screensh
 
-| Phase | What | Status |
-|-------|------|--------|
-| **1** | Schema + middleware | ✅ |
-| **2** | Route wiring | ✅ |
-| **3** | Sensor toggles + Hard Off | ✅ |
-| **4** | Incognito mode | ✅ |
-| **5** | Phone top bar + org name | ✅ |
-| **6** | Repli
+### Open Tasks
+- [todo P1] Smart device routing — default device (auto/nearest) determines where actions execute
+- [todo P1] Chat shows only bookend events — need intermediate responses visible
+- [todo P1] Terminal scroll still janky — jumps on tool calls
+- [todo P1] mDNS auto-discovery on local network (zero-config device finding)
+- [todo P1] PAN Hub relay server for remote access (HTTPS message broker)
+- [todo P1] Multi-user accounts — user registration, login, session ownership
+- [todo P1] Multi-database — per-team databases with isolated data
+- [todo P1] PAN Hub — central server aggregating multiple PAN instances
+- [todo P1] Smart scroll — remember exact scroll position, restore on every refresh/update/tool call
+- [todo P1] NER anonymization (Presidio/spaCy)
 
-# PAN State — Updated 2026-04-12
-
-## What Works
-- PAN server Carrier/Craft with crash-loop recovery via process cleanup ✅
-- ΠΑΝ Remembers briefing system with restart banner
-- Terminal multi-tab PTY with persistent transcripts
-- Pipe mode with child_process.spawn — clean JSON output
-- Claude session handoff across restart (Phase 4 ✅)
-- Dev/prod resource isolation via PAN_DATA_DIR
-- Lifeboat widget with rollback and hot-swap
-- Voice API endpoints live (profiles, speak, pregenerate)
-- F5-TTS voice cloning on RTX 4070 GPU, XTTS for accents
-- Personality sync with server-side logging ✅
-- Panel caching persists to localStorage ✅
-- System sleep capability ✅
-- Mobile pipe endpoint routing (/api/v1/terminal/pipe) ✅
-- Mobile send endpoint with fallback to dash-pan-1 ✅
-- Tailscale auto-auth for 100.x.x.x IPs ✅
-
-## Known Issues
-- Copy-paste broken (Windows PTY limitation, permanent)
-- F5-TTS accent capture poor (needs XTTS multi-lingual training)
-- Pan.bat duplicate CMD windows on first launch
-- Phone message reception broken — user sends OK, can't see Claude responses until page refresh
-- Mobile browser caching prevents code updates
-
-## Current Priorities
-1. Fix phone message reception real-time updates
-2. Understand mobile device API formats and constraints
-3. Get XTTS accent matching working for voice packs
-4. Build soundboard hybrid system (pre-recorded + XTTS)
-5. Phase 7 Forge widget (AutoDev spawn variants)
-
-## Key Decisions
-- Voice comes from server → phone via pre-downloaded packs
-- Carrier never restarts, owns PTY/WebSocket permanently
-- Pipe mode is primary Claude interface
-- Focus Claude + Llama only; skip Gemini/Apple/Meta
-- Tailscale mesh for remote access
-
-## User Preferences
-- Work autonomously without asking permission
-- Fix bugs without asking
-- Test via Tauri UI screenshots only
-- Never ask for permission to restart
-- Provide MCP-aware context, not generic UI suggestions
-
-## Known Facts
-- **Two active Claude sessions** revert changes made by each other on shared PAN codebase — Desktop Claude session and dashboard Claude session simultaneously modifying same files. One session makes pipe mode + briefing fixes, other session reverts them. Creates perpetual conflict loop preventing convergence. (codebase, confidence: 0.95)
-- **two Claude sessions** conflict same PAN codebase — Desktop session and dashboard session simultaneously editing same files, creating revert loops. One session must be stopped or isolated to prevent constant overwrites. (codebase, confidence: 0.95)
-- **Two Claude sessions** actively conflicting same PAN codebase files — Desktop Claude session and dashboard Claude session simultaneously editing/reverting same files, creating revert loops. One session must be stopped before further development. (codebase, confidence: 0.95)
-- **ClaudeAdapter** now supports session resumption across restarts — ClaudeAdapter accepts resumeClaudeSessionId parameter and sets opts.resume flag on first query to maintain session context (codebase, confidence: 0.9)
-- **Claude pipe mode with --session-id --resume** successfully handles multi-turn conversation and message resumption — When briefing is not involved, Claude pipe mode correctly receives user messages, maintains session context, and generates proper responses across multiple turns. (domain_knowledge, confidence: 0.95)
-- **Pipe mode message handling** is independent from briefing context injection mechanism — Pipe mode correctly handles multi-turn conversations, --session-id, and --resume flags. Briefing system's context injection is separate vector that breaks pipe mode. Not a pipe mode bug but cross-system interaction failure. (domain_knowledge, confidence: 0.9)
-- **user** wants to test Pan Remembers briefing system across server restart — User prioritizes verifying session continuity works after restart — checking that briefing loads and Claude resumes context (user_preference, confidence: 0.85)
-- **ΠΑΝ Remembers briefing message** triggers CLAUDE.md context injection into session continuity mode — The briefing system that injects session context is causing Claude to enter a problematic state. This is distinct from the pipe mode message handling which works correctly. (codebase, confidence: 0.95)
-- **Phase 4** status confirmed working — Claude session handoff (reconnect tokens + session resumption) survives dev restart. 'The matrix' test passed. (domain_knowledge, confidence: 0.95)
-- **two Claude sessions** were desktop and dashboard simultaneously editing PAN codebase, creating revert loops — Desktop Claude session and dashboard Claude session simultaneously modifying same files, one reverting the other's changes. (codebase, confidence: 0.95)
-- **Phone pipe endpoint** is functioning dash-pan-1 session successfully receives messages — User messages from phone successfully route through /api/v1/terminal/pipe to dash-pan-1 Claude session. Pipe mode working correctly. (codebase, confidence: 0.95)
-
-## Recent Memory
-- [2026-04-11 15:50:30] Phase 4 (Claude session handoff) confirmed working across dev restart: User sent message 'the matrix', restarted dev instance, and Claude correctly remembered the context in new session. Proves reconnect tokens and session resumption are functioning.
-- [2026-04-12 15:35:25] Mobile loadChat() filtering out Claude sessions entirely: Mobile page was filtering out `dash-` prefixed sessions where Claude actually lives. Also querying JSONL endpoint instead of in-memory adapter for pipe mode messages. This prevented phone from seeing 
-- [2026-04-12 15:43:28] Phone message sending confirmed working via pipe mode: User tested phone messaging. Message successfully routed to dash-pan-1 via pipe endpoint with response {"ok":true,"session":"dash-pan-1"}. Pipe mode endpoint /api/v1/terminal/pipe is functioning corre
-- [2026-04-12 15:35:25] Fixed phone message routing with endpoint auto-routing and session prefix matching: Made `/api/v1/terminal/send` endpoint auto-route through pipe mode. Added session ID prefix matching so `dash-pan` resolves to `dash-pan-1`. Phone and desktop now share same Craft Claude instance.
-- [2026-04-11 15:50:23] Phase 4 (Claude Session Handoff) confirmed working across dev restart: User sent 'the secret word is the matrix', received reply, then restarted dev dashboard. Opened new dev session and Claude still remembered 'the matrix'. Reconnect token persisted Claude session ID to
-- [2026-04-11 09:50:15] Phase 4 implementation begun: Claude Session Handoff (Pipe Mode) [partial]: ClaudeAdapter now accepts `resumeClaudeSessionId` parameter. On first query with this param, sets `opts.resume` flag to allow Claude to maintain session context across server restarts. Three changes e
-- [2026-04-11 09:50:12] Phase 4 (Claude Session Handoff) initiated [partial]: Started implementing Phase 4 of 7-phase plan. ClaudeAdapter now accepts resumeClaudeSessionId parameter. On first query, sets opts.resume flag so Claude survives server restart with session context.
-- [2026-04-11 19:24:33] Carrier/Craft restart architecture validated end-to-end: User confirmed understanding of complete flow: Settings button → restart Carrier → Lifeboat hot-swap → next Craft transition, all with session context preserved. User was on 'Craft One' during session
-- [2026-04-09 12:36:37] Ghost message contamination and Session 0 PTY crashes fixed [partial]: transcript-watcher.js was loading last 5 JSONL session files simultaneously, merging messages fro
-
-[... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

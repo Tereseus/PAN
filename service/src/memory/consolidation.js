@@ -4,7 +4,7 @@
 // extracts episodic memories, semantic facts, and procedural patterns.
 // Uses LLM for deep extraction, with heuristic fallback.
 
-import { all, get } from '../db.js';
+import { all, get, run as dbRun, logEvent } from '../db.js';
 import { claude } from '../claude.js';
 import * as episodic from './episodic.js';
 import * as semantic from './semantic.js';
@@ -164,8 +164,9 @@ Rules:
 
 // Consolidate — run after session end or periodically
 async function consolidate({ since = null, useLLM = true } = {}) {
-  // Get the last consolidation timestamp
-  const lastConsolidation = get("SELECT MAX(created_at) as t FROM episodic_memories");
+  // Track consolidation window properly — use a dedicated marker, not episodic_memories timestamp
+  // This prevents re-processing the same events when no episodes were stored
+  const lastConsolidation = get("SELECT MAX(created_at) as t FROM events WHERE event_type = 'ConsolidationRun'");
   const sinceTime = since || lastConsolidation?.t || new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
   const events = all(
@@ -229,6 +230,15 @@ async function consolidate({ since = null, useLLM = true } = {}) {
       console.error('[PAN Memory] Procedure store error:', err.message);
     }
   }
+
+  // Log consolidation run so we don't re-process the same events
+  logEvent('system-consolidation', 'ConsolidationRun', {
+    since: sinceTime,
+    events_processed: events.length,
+    episodes: storedEpisodes,
+    facts: storedFacts,
+    procedures: storedProcs,
+  });
 
   console.log(`[PAN Memory] Consolidated: ${storedEpisodes} episodes, ${storedFacts} facts, ${storedProcs} procedures`);
   return { episodes: storedEpisodes, facts: storedFacts, procedures: storedProcs };

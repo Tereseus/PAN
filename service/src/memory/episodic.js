@@ -104,9 +104,42 @@ function getRecent(limit = 20, projectId = null) {
   return all(sql, params);
 }
 
+// Prune old low-importance episodes — call periodically (e.g. from dream cycle)
+function prune({ maxAgeDays = 30, minImportanceToKeep = 0.7, maxTotal = 500 } = {}) {
+  // Delete old low-importance episodes
+  const deleted1 = run(
+    `DELETE FROM episodic_memories
+     WHERE created_at < datetime('now', '-' || :days || ' days')
+     AND importance < :minImp`,
+    { ':days': maxAgeDays, ':minImp': minImportanceToKeep }
+  );
+
+  // If still too many, delete oldest low-access ones
+  const total = count();
+  let deleted2 = 0;
+  if (total > maxTotal) {
+    const excess = total - maxTotal;
+    run(
+      `DELETE FROM episodic_memories WHERE id IN (
+        SELECT id FROM episodic_memories
+        ORDER BY importance ASC, access_count ASC, created_at ASC
+        LIMIT :excess
+      )`,
+      { ':excess': excess }
+    );
+    deleted2 = excess;
+  }
+
+  const pruned = (deleted1?.changes || 0) + deleted2;
+  if (pruned > 0) {
+    console.log(`[PAN Memory] Pruned ${pruned} episodic memories (age>${maxAgeDays}d or excess>`);
+  }
+  return pruned;
+}
+
 // Count episodes
 function count() {
   return get('SELECT COUNT(*) as c FROM episodic_memories')?.c || 0;
 }
 
-export { store, recall, getRecent, count };
+export { store, recall, getRecent, count, prune };

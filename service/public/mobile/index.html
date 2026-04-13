@@ -3,21 +3,24 @@
 <head>
 <meta charset="UTF-8">
 <script src="/v2/pan-telemetry.js"></script>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
 <title>PAN</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 :root { --bg:#0a0a0f; --bg2:#1e1e2e; --bg3:#313244; --text:#cdd6f4; --text2:#6c7086; --accent:#89b4fa; --green:#a6e3a1; --red:#f38ba8; --border:#313244; --radius:8px; }
-body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sans-serif; font-size:14px; }
+body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sans-serif; font-size:14px; height:100vh; height:100dvh; overscroll-behavior-y:contain; }
 
-/* Top bar — sticky */
-.topbar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--bg); position:sticky; top:0; z-index:20; }
+/* Top bar — fixed so it never scrolls away */
+.topbar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--bg); position:fixed; top:0; left:0; right:0; z-index:30; height:42px; }
 .topbar h1 { font-size:16px; color:var(--accent); white-space:nowrap; }
 .topbar select { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; font-size:13px; }
 
-/* Tabs */
-.tabs { display:flex; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--bg); position:sticky; top:42px; z-index:19; }
+/* Tabs — fixed below topbar */
+.tabs { display:flex; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--bg); position:fixed; top:42px; left:0; right:0; z-index:29; }
 .tabs::-webkit-scrollbar { display:none; }
+
+/* Content spacer — push page content below fixed topbar+tabs */
+.content-spacer { height:80px; }
 .tab { padding:10px 14px; color:var(--text2); cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; font-size:13px; font-weight:500; }
 .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
 
@@ -26,23 +29,35 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .page.active { display:block; }
 
 /* Terminal-style chat — matches desktop terminal renderer */
-.messages { display:flex; flex-direction:column; padding:8px 10px; min-height:200px; background:#11111b; font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.4; }
-.t-line { padding:0; margin:0; word-break:break-word; white-space:pre-wrap; }
-.t-user { margin-top:6px; color:#cdd6f4; }
+.messages { display:flex; flex-direction:column; padding:8px 10px 56px; min-height:200px; background:#11111b; font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.4; }
+.t-line { padding:6px 8px; margin:0; word-break:break-word; white-space:pre-wrap; border-radius:6px; }
+.t-user { margin-top:8px; color:#cdd6f4; background:#1e1e2e; border-left:3px solid #a6e3a1; }
 .t-user .name { color:#a6e3a1; font-weight:bold; }
 .t-user .sep { color:#89b4fa; }
-.t-assistant { margin-top:4px; color:#bac2de; }
+.t-assistant { margin-top:4px; color:#bac2de; background:#181825; border-left:3px solid #cba6f7; }
 .t-assistant .name { color:#cba6f7; font-weight:bold; }
 .t-assistant .sep { color:#89b4fa; }
-.t-tool { color:#f9e2af; padding-left:2px; }
+.t-tool { color:#f9e2af; padding-left:10px; background:#1a1a28; border-left:3px solid #f9e2af; margin-top:2px; }
 .t-tool .arrow { color:#6c7086; }
 .t-pending { opacity:0.5; font-style:italic; }
+/* Alert severity badges */
+.alert-card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; margin:6px 12px; }
+.alert-card.sev-critical { border-left:3px solid var(--red); }
+.alert-card.sev-warning { border-left:3px solid #f9e2af; }
+.alert-card.sev-info { border-left:3px solid var(--accent); }
+.alert-title { font-size:13px; font-weight:600; margin-bottom:4px; }
+.alert-meta { font-size:11px; color:var(--text2); display:flex; justify-content:space-between; margin-bottom:4px; }
+.alert-detail { font-size:12px; color:var(--text2); margin-top:4px; word-break:break-word; }
+.alert-actions { display:flex; gap:6px; margin-top:8px; }
+.alert-actions button { flex:1; border:none; border-radius:4px; padding:8px; font-size:12px; font-weight:600; cursor:pointer; }
+.alert-ack { background:#f9e2af; color:#1e1e2e; }
+.alert-dismiss { background:var(--bg3); color:var(--text2); }
 .status-bar { display:flex; align-items:center; gap:8px; padding:5px 10px; background:#181825; border-top:1px solid #313244; font-size:12px; color:#cba6f7; }
 .spinner { display:inline-block; width:10px; height:10px; border:2px solid #313244; border-top-color:#cba6f7; border-radius:50%; animation:spin 0.8s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
 
 /* Approvals banner — sticky at top, visible on every tab */
-.approvals-banner { position:sticky; top:80px; z-index:18; background:#f9e2af; color:#1e1e2e; padding:10px 12px; border-top:1px solid #d4a72c; border-bottom:1px solid #d4a72c; display:none; }
+.approvals-banner { position:fixed; top:80px; left:0; right:0; z-index:28; background:#f9e2af; color:#1e1e2e; padding:10px 12px; border-top:1px solid #d4a72c; border-bottom:1px solid #d4a72c; display:none; }
 .approvals-banner.visible { display:block; animation:pulse 2s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{background:#f9e2af} 50%{background:#fab387} }
 .approvals-banner .hdr { font-weight:700; font-size:13px; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
@@ -54,9 +69,20 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .approvals-item .allow-btn { background:#a6e3a1; color:#1e1e2e; }
 .approvals-item .deny-btn { background:#f38ba8; color:#1e1e2e; }
 .tab .badge { display:inline-block; background:#f38ba8; color:#1e1e2e; border-radius:10px; padding:1px 6px; font-size:10px; font-weight:700; margin-left:4px; }
-.input-bar { display:flex; gap:8px; padding:8px 12px; border-top:1px solid var(--border); background:var(--bg); position:sticky; bottom:0; z-index:5; }
-.input-bar input { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; font-size:14px; outline:none; font-family:inherit; }
-.input-bar button { background:var(--accent); color:#000; border:none; border-radius:var(--radius); padding:10px 16px; font-weight:600; font-size:14px; }
+.input-bar { display:flex; align-items:center; gap:6px; padding:6px 10px; border-top:1px solid var(--border); background:var(--bg); position:fixed; bottom:0; left:0; right:0; z-index:25; transition:bottom 0.15s; }
+.input-bar textarea { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; font-size:14px; outline:none; font-family:inherit; resize:none; height:36px; max-height:80px; line-height:1.3; overflow-y:auto; }
+.input-bar button { background:var(--accent); color:#000; border:none; border-radius:var(--radius); padding:8px 14px; font-weight:600; font-size:14px; }
+/* Alert items on mobile */
+.alert-item { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; margin:6px 12px; }
+.alert-item.critical { border-color:var(--red); }
+.alert-item.warning { border-color:#f9e2af; }
+.alert-title { font-size:13px; font-weight:600; margin-bottom:4px; }
+.alert-detail { font-size:12px; color:var(--text2); margin-bottom:6px; word-break:break-word; }
+.alert-meta { display:flex; justify-content:space-between; font-size:11px; color:var(--text2); }
+.alert-actions { display:flex; gap:6px; margin-top:6px; }
+.alert-actions button { flex:1; border:none; border-radius:4px; padding:6px; font-size:12px; font-weight:600; cursor:pointer; }
+.alert-ack-btn { background:#f9e2af; color:#1e1e2e; }
+.alert-dismiss-btn { background:var(--bg3); color:var(--text2); }
 
 /* Cards */
 .card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:12px; margin:6px 12px; }
@@ -104,6 +130,27 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .muted { color:var(--text2); text-align:center; padding:30px 20px; font-size:14px; }
 .section-title { font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; padding:12px 12px 4px; }
 
+/* Alert cards */
+.alert-card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; margin:6px 12px; }
+.alert-card.sev-critical { border-left:3px solid var(--red); }
+.alert-card.sev-warning { border-left:3px solid #f9e2af; }
+.alert-card.sev-info { border-left:3px solid var(--accent); }
+.alert-sev { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
+.alert-sev.critical { color:var(--red); }
+.alert-sev.warning { color:#f9e2af; }
+.alert-sev.info { color:var(--accent); }
+.alert-title { font-size:13px; font-weight:600; margin:4px 0; }
+.alert-detail { font-size:12px; color:var(--text2); margin:4px 0 6px; word-break:break-word; }
+.alert-time { font-size:11px; color:var(--text2); }
+.alert-actions { display:flex; gap:6px; margin-top:6px; }
+.alert-actions button { flex:1; border:none; border-radius:4px; padding:6px; font-size:12px; font-weight:600; cursor:pointer; }
+.alert-ack { background:var(--bg3); color:var(--text); }
+.alert-resolve { background:var(--green); color:#1e1e2e; }
+.alert-dismiss { background:var(--bg3); color:var(--text2); }
+.alert-filter-bar { display:flex; gap:6px; padding:8px 12px; overflow-x:auto; }
+.alert-filter-bar button { background:var(--bg2); color:var(--text2); border:1px solid var(--border); border-radius:var(--radius); padding:6px 12px; font-size:12px; white-space:nowrap; }
+.alert-filter-bar button.active { background:var(--accent); color:#1e1e2e; border-color:var(--accent); }
+
 /* Org indicator in top bar */
 .org-indicator { display:flex; align-items:center; gap:4px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:4px 8px; font-size:12px; color:var(--text); cursor:pointer; white-space:nowrap; -webkit-user-select:none; user-select:none; }
 .org-indicator:active { background:var(--bg3); }
@@ -133,11 +180,8 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 <!-- Top bar with org name + project selector -->
 <div class="topbar" id="topbar">
   <h1 id="topbar-title" onclick="showOrgSwitcher()" style="cursor:pointer">Π</h1>
-  <div class="org-indicator" id="org-indicator" onclick="showOrgSwitcher()">
-    <span id="org-badge-lock" class="org-lock" style="display:none"></span>
-    <span id="org-badge-text" class="org-name">Personal</span>
-  </div>
-  <select id="project-select" onchange="onProjectChange()">
+  <button id="refresh-btn" onclick="refreshCurrentTab()" style="background:none;border:none;color:var(--accent);padding:0 4px;font-size:18px;cursor:pointer;line-height:1">↻</button>
+  <select id="project-select" onchange="onProjectChange()" style="flex:1">
     <option value="">Select project...</option>
   </select>
 </div>
@@ -151,14 +195,23 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   </div>
 </div>
 
-<!-- Tabs -->
+<!-- Tabs — same widget names as desktop -->
 <div class="tabs" id="tab-bar">
   <div class="tab active" data-tab="chat">Chat</div>
+  <div class="tab" data-tab="status">Usage</div>
+  <div class="tab" data-tab="alerts">Alerts</div>
+  <div class="tab" data-tab="tasks">Tasks</div>
+  <div class="tab" data-tab="devices">Devices</div>
+  <div class="tab" data-tab="services">Services</div>
+  <div class="tab" data-tab="library">Library</div>
   <div class="tab" data-tab="projects">Projects</div>
   <div class="tab" data-tab="sensors">Sensors</div>
   <div class="tab" data-tab="data">Data</div>
   <div class="tab" data-tab="settings">Settings</div>
 </div>
+
+<!-- Spacer for fixed topbar+tabs -->
+<div class="content-spacer"></div>
 
 <!-- Approvals banner — sticky, visible on every tab when something is pending -->
 <div id="approvals-banner" class="approvals-banner">
@@ -170,23 +223,25 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 <div id="chat" class="page active">
   <div class="messages" id="chat-msgs"><div class="muted">Loading conversations...</div></div>
   <div id="chat-status" class="status-bar" style="display:none"><span class="spinner"></span><span>Claude is thinking…</span></div>
-  <div class="input-bar">
-    <input id="chat-input" placeholder="Message PAN..." onkeydown="if(event.key==='Enter')sendChat()">
+  <div class="input-bar" id="input-bar">
+    <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
+    <input type="file" id="screenshot-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
+    <button onclick="document.getElementById('screenshot-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:16px;align-self:flex-end" title="Share screenshot">&#128247;</button>
     <button onclick="sendChat()">Send</button>
   </div>
 </div>
 
 
-<!-- PROJECTS -->
+<!-- Widget pages — match desktop widget names -->
+<div id="status" class="page"></div>
+<div id="alerts" class="page"></div>
+<div id="tasks" class="page"></div>
+<div id="devices" class="page"></div>
+<div id="services" class="page"></div>
+<div id="library" class="page"></div>
 <div id="projects" class="page"></div>
-
-<!-- SENSORS -->
 <div id="sensors" class="page"></div>
-
-<!-- DATA -->
 <div id="data" class="page"></div>
-
-<!-- SETTINGS -->
 <div id="settings" class="page"></div>
 
 <script>
@@ -212,9 +267,18 @@ document.getElementById('tab-bar').addEventListener('click', e => {
   loadTab(name);
 });
 
+let statusPollTimer = null;
 function loadTab(name) {
+  // Stop status polling when leaving status tab
+  if (name !== 'status' && statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
   switch(name) {
     case 'chat': loadChat(); break;
+    case 'status': loadStatus(); if (!statusPollTimer) statusPollTimer = setInterval(loadStatus, 30000); break;
+    case 'alerts': loadAlerts(); break;
+    case 'tasks': loadTasks(); break;
+    case 'devices': loadDevices(); break;
+    case 'services': loadServices(); break;
+    case 'library': loadLibrary_m(); break;
     case 'projects': loadProjects(); break;
     case 'sensors': loadSensors(); break;
     case 'data': loadData(); break;
@@ -332,6 +396,23 @@ async function init() {
   // appears no matter where the user is in the app
   pollApprovals();
   setInterval(pollApprovals, 2000);
+  // Poll alert count every 30s for badge updates on the Alerts tab
+  async function pollAlertBadge() {
+    try {
+      const res = await fetch(API + '/dashboard/api/alerts/count');
+      const data = await res.json();
+      const alertTab = document.querySelector('.tab[data-tab="alerts"]');
+      if (!alertTab) return;
+      const badge = alertTab.querySelector('.badge');
+      const count = data.count || 0;
+      if (count > 0) {
+        if (!badge) alertTab.insertAdjacentHTML('beforeend', ' <span class="badge">' + count + '</span>');
+        else badge.textContent = count;
+      } else if (badge) badge.remove();
+    } catch {}
+  }
+  pollAlertBadge();
+  setInterval(pollAlertBadge, 30000);
 }
 
 // ========== CHAT / TERMINAL ==========
@@ -656,6 +737,415 @@ async function loadSensors() {
 }
 
 // ========== DATA ==========
+// ========== STATUS — burn rate + session health ==========
+async function loadStatus() {
+  const el = document.getElementById('status');
+  try {
+    const [usageRes, healthRes, statsRes] = await Promise.all([
+      fetch(API + '/api/v1/claude-usage'),
+      fetch(API + '/health'),
+      fetch(API + '/dashboard/api/stats'),
+    ]);
+    const usage = usageRes.ok ? await usageRes.json() : {};
+    const health = healthRes.ok ? await healthRes.json() : {};
+    const stats = statsRes.ok ? await statsRes.json() : {};
+    let ctx = { total: 0, static: 0, injected: 0, tokens_approx: 0 };
+    try { const cr = await fetch(API + '/api/v1/context/size'); if (cr.ok) ctx = await cr.json(); } catch {}
+
+    const rl = usage.rateLimits;
+    const sess = usage.session || {};
+    const msgs = sess.messages || 0;
+    const totalTok = (sess.input || 0) + (sess.output || 0);
+    const perMsg = msgs > 0 ? Math.round(totalTok / msgs) : 0;
+    const utilPct = rl?.five_hour?.utilization || 0;
+    const pctPerMsg = msgs > 0 ? (utilPct / msgs) : 0;
+    const remaining = pctPerMsg > 0 ? Math.floor((100 - utilPct) / pctPerMsg) : null;
+
+    let html = '';
+
+    // ── Claude Plan Limits (matches desktop) ──
+    if (rl) {
+      html += '<div class="section-title">Claude Plan Limits</div><div class="card">';
+      html += '<div class="setting-row" style="opacity:0.6;font-size:11px"><span class="setting-label">' + (rl.subscriptionType || 'Plan').toUpperCase() + '</span><span class="setting-val">' + (rl.rateLimitTier || '') + '</span></div>';
+
+      if (rl.five_hour) {
+        const u = rl.five_hour.utilization;
+        const c = u >= 80 ? 'var(--red)' : u >= 50 ? '#f9e2af' : 'var(--green)';
+        const resetMs = rl.five_hour.resets_at ? rl.five_hour.resets_at - Date.now() : 0;
+        const resetH = Math.floor(resetMs / 3600000);
+        const resetM = Math.floor((resetMs % 3600000) / 60000);
+        const resetStr = resetMs > 0 ? resetH + 'h ' + resetM + 'm' : 'now';
+        html += '<div style="font-size:12px;color:var(--text2);margin-top:8px">Session (5hr Window)</div>';
+        html += '<div class="progress-bg"><div class="progress-fill" style="width:' + Math.min(u, 100) + '%;background:' + c + '"></div></div>';
+        html += '<div class="setting-row"><span class="setting-label" style="color:' + c + '">' + Math.round(u) + '% Used</span><span class="setting-val">Resets in ' + resetStr + '</span></div>';
+      }
+
+      if (rl.seven_day) {
+        const u = rl.seven_day.utilization;
+        const c = u >= 80 ? 'var(--red)' : u >= 50 ? '#f9e2af' : 'var(--green)';
+        html += '<div style="font-size:12px;color:var(--text2);margin-top:8px">Weekly Limit</div>';
+        html += '<div class="progress-bg"><div class="progress-fill" style="width:' + Math.min(u, 100) + '%;background:' + c + '"></div></div>';
+        html += '<div class="setting-row"><span class="setting-label" style="color:' + c + '">' + Math.round(u) + '% Used</span><span class="setting-val">Resets in ' + fmtReset(rl.seven_day.resets_at) + '</span></div>';
+      }
+
+      if (rl.extra_usage) {
+        html += '<div style="font-size:12px;color:var(--text2);margin-top:8px">Extra Usage</div>';
+        html += '<div class="progress-bg"><div class="progress-fill" style="width:' + Math.min(rl.extra_usage.utilization, 100) + '%;background:#89b4fa"></div></div>';
+        html += '<div class="setting-row"><span class="setting-label" style="color:#89b4fa">' + Math.round(rl.extra_usage.utilization) + '% Used</span></div>';
+      }
+      html += '</div>';
+    }
+
+    // ── Burn Rate (matches desktop) ──
+    html += '<div class="section-title">Burn Rate</div><div class="card">';
+    if (msgs > 0) {
+      const pc = pctPerMsg > 5 ? 'var(--red)' : pctPerMsg > 2 ? '#f9e2af' : 'var(--green)';
+      const rc = remaining !== null && remaining < 10 ? 'var(--red)' : remaining !== null && remaining < 30 ? '#f9e2af' : 'var(--green)';
+      html += '<div class="setting-row"><span class="setting-label">Per Message</span><span class="setting-val" style="color:#cba6f7;font-weight:600">' + fmtTok(perMsg) + ' tok</span></div>';
+      html += '<div class="setting-row"><span class="setting-label">% Per Message</span><span class="setting-val" style="color:' + pc + ';font-weight:600">' + pctPerMsg.toFixed(1) + '%</span></div>';
+      html += '<div class="setting-row"><span class="setting-label">Messages Left</span><span class="setting-val" style="color:' + rc + ';font-weight:600">' + (remaining !== null ? '~' + remaining : '?') + '</span></div>';
+      html += '<div class="setting-row"><span class="setting-label">Sent</span><span class="setting-val">' + msgs + ' msgs</span></div>';
+      html += '<div class="setting-row"><span class="setting-label">Total Used</span><span class="setting-val">' + fmtTok(totalTok) + '</span></div>';
+      html += '<div class="setting-row"><span class="setting-label">Cache Hits</span><span class="setting-val">' + fmtTok(sess.cache_read) + ' (' + (totalTok > 0 ? Math.round((sess.cache_read || 0) / ((sess.cache_read || 0) + (sess.input || 1)) * 100) : 0) + '%)</span></div>';
+    } else {
+      html += '<div class="setting-row" style="opacity:0.5"><span class="setting-label">No messages yet</span></div>';
+    }
+    html += '</div>';
+
+    // ── Session Tokens (matches desktop) ──
+    html += '<div class="section-title">Session Tokens</div><div class="card">';
+    html += '<div class="setting-row"><span class="setting-label">Model</span><span class="setting-val">' + esc(usage.model || 'unknown') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Active Sessions</span><span class="setting-val">' + (sess.activeSessions || 0) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Output</span><span class="setting-val">' + fmtTok(sess.output) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Input</span><span class="setting-val">' + fmtTok(sess.input) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Cache Read</span><span class="setting-val">' + fmtTok(sess.cache_read) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Messages</span><span class="setting-val">' + msgs + '</span></div>';
+    html += '<div style="font-size:12px;color:var(--text2);margin-top:8px">Today</div>';
+    html += '<div class="setting-row"><span class="setting-label">Output</span><span class="setting-val">' + fmtTok(usage.today?.output) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Messages</span><span class="setting-val">' + (usage.today?.messages || 0) + '</span></div>';
+    html += '</div>';
+
+    // ── Context (phone-only — reset button) ──
+    html += '<div class="section-title">Context</div><div class="card">';
+    const ctxColor = ctx.critical ? 'var(--red)' : ctx.warning ? '#f9e2af' : 'var(--green)';
+    html += '<div class="setting-row"><span class="setting-label">CLAUDE.md</span><span class="setting-val" style="color:' + ctxColor + ';font-weight:600">' + fmtTok(ctx.total) + ' chars (~' + fmtTok(ctx.tokens_approx) + ' tok)</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Static Docs</span><span class="setting-val">' + fmtTok(ctx.static) + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Injected</span><span class="setting-val" style="color:' + (ctx.injected > 4000 ? 'var(--red)' : ctx.injected > 1000 ? '#f9e2af' : 'var(--green)') + '">' + fmtTok(ctx.injected) + '</span></div>';
+    if (ctx.injected > 100) {
+      html += '<div style="padding:8px 0 4px"><button onclick="resetContext()" style="width:100%;background:var(--red);color:#1e1e2e;border:none;border-radius:var(--radius);padding:10px;font-weight:600;font-size:14px">Reset Context (' + fmtTok(ctx.injected) + ' injected)</button></div>';
+    } else {
+      html += '<div style="padding:8px 0 4px;text-align:center;font-size:12px;color:var(--green)">Context is clean</div>';
+    }
+    html += '</div>';
+
+    // ── PAN Stats (matches desktop) ──
+    html += '<div class="section-title">PAN Stats</div><div class="card">';
+    html += '<div class="setting-row"><span class="setting-label">Total Events</span><span class="setting-val">' + (stats.total_events || 0).toLocaleString() + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Total Sessions</span><span class="setting-val">' + (stats.total_sessions || 0).toLocaleString() + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Memory Items</span><span class="setting-val">' + (stats.total_memory || 0).toLocaleString() + '</span></div>';
+    const dbMb = stats.db_size_bytes ? (stats.db_size_bytes / 1048576).toFixed(1) + ' MB' : '--';
+    html += '<div class="setting-row"><span class="setting-label">DB Size</span><span class="setting-val">' + dbMb + '</span></div>';
+    html += '</div>';
+
+    // Bottom padding for input bar
+    html += '<div style="height:60px"></div>';
+
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<div class="muted">Error loading usage: ' + e.message + '</div>';
+  }
+}
+
+function fmtReset(ts) {
+  if (!ts) return '';
+  const diff = ts - Date.now();
+  if (diff <= 0) return 'now';
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+}
+
+async function resetContext() {
+  try {
+    const res = await fetch(API + '/api/v1/context/reset', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      // Refresh the status tab to show new size
+      loadStatus();
+    } else {
+      alert('Reset failed: ' + (data.error || 'unknown'));
+    }
+  } catch(e) { alert('Reset error: ' + e.message); }
+}
+
+function fmtTok(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+// ========== ALERTS ==========
+async function loadAlerts() {
+  const el = document.getElementById('alerts');
+  try {
+    const [alertsRes, countRes] = await Promise.all([
+      fetch(API + '/dashboard/api/alerts?limit=50'),
+      fetch(API + '/dashboard/api/alerts/count'),
+    ]);
+    const alerts = await alertsRes.json();
+    const countData = await countRes.json();
+
+    let html = '';
+
+    // Summary bar
+    const openCount = countData.count || 0;
+    html += '<div style="padding:10px 12px;display:flex;justify-content:space-between;align-items:center">';
+    html += '<span style="font-size:14px;font-weight:600">' + openCount + ' Open Alert' + (openCount !== 1 ? 's' : '') + '</span>';
+    html += '<button onclick="loadAlerts()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:6px 12px;font-size:12px">Refresh</button>';
+    html += '</div>';
+
+    if (!alerts.length) {
+      html += '<div class="muted" style="padding:20px 12px;text-align:center">No alerts</div>';
+    }
+
+    for (const a of alerts) {
+      const sev = a.severity || 'info';
+      const time = a.created_at ? a.created_at.slice(5, 16).replace('T', ' ') : '';
+      const isOpen = a.status === 'open';
+
+      html += '<div class="alert-card sev-' + sev + '" style="' + (isOpen ? '' : 'opacity:0.5') + '">';
+      html += '<div class="alert-meta"><span style="color:' + (sev === 'critical' ? 'var(--red)' : sev === 'warning' ? '#f9e2af' : 'var(--accent)') + ';font-weight:600;text-transform:uppercase">' + sev + '</span><span>' + time + '</span></div>';
+      html += '<div class="alert-title">' + esc(a.title || a.alert_type) + '</div>';
+      if (a.detail) html += '<div class="alert-detail">' + esc(a.detail.slice(0, 200)) + '</div>';
+
+      if (isOpen) {
+        html += '<div class="alert-actions">';
+        html += '<button class="alert-ack" onclick="alertAction(' + a.id + ',\'acknowledged\')">Acknowledge</button>';
+        html += '<button class="alert-dismiss" onclick="alertAction(' + a.id + ',\'dismissed\')">Dismiss</button>';
+        html += '</div>';
+      } else {
+        html += '<div style="font-size:11px;color:var(--text2);margin-top:4px">' + (a.status || 'closed') + '</div>';
+      }
+      html += '</div>';
+    }
+
+    el.innerHTML = html;
+
+    // Update badge on alerts tab
+    const alertTab = document.querySelector('.tab[data-tab="alerts"]');
+    if (alertTab) {
+      const badge = alertTab.querySelector('.badge');
+      if (openCount > 0) {
+        if (!badge) alertTab.insertAdjacentHTML('beforeend', ' <span class="badge">' + openCount + '</span>');
+        else badge.textContent = openCount;
+      } else if (badge) badge.remove();
+    }
+  } catch(e) {
+    el.innerHTML = '<div class="muted">Error: ' + e.message + '</div>';
+  }
+}
+
+async function alertAction(id, status) {
+  try {
+    await fetch(API + '/dashboard/api/alerts/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    });
+    loadAlerts();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ========== TASKS ==========
+async function loadTasks() {
+  const el = document.getElementById('tasks');
+  try {
+    let url = API + '/dashboard/api/tasks';
+    if (activeProject) url += '?project_id=' + activeProject.id;
+    const res = await fetch(url);
+    const tasks = await res.json();
+    const taskList = Array.isArray(tasks) ? tasks : (tasks.tasks || []);
+
+    let html = '';
+    const todo = taskList.filter(t => t.status === 'todo');
+    const inProg = taskList.filter(t => t.status === 'in_progress');
+    const done = taskList.filter(t => t.status === 'done');
+
+    html += '<div class="stat-grid">';
+    html += '<div class="stat-card"><div class="stat-val" style="color:#f9e2af">' + todo.length + '</div><div class="stat-label">Todo</div></div>';
+    html += '<div class="stat-card"><div class="stat-val" style="color:var(--accent)">' + inProg.length + '</div><div class="stat-label">In Progress</div></div>';
+    html += '</div>';
+
+    function taskRow(t) {
+      const icon = t.status === 'done' ? '<span style="color:var(--green)">&#10003;</span>' : t.status === 'in_progress' ? '<span style="color:var(--accent)">&#9654;</span>' : '<span style="color:var(--text2)">&#9675;</span>';
+      const pri = t.priority > 0 ? ' <span style="color:var(--red);font-size:10px">P' + t.priority + '</span>' : '';
+      const op = t.status === 'done' ? 'opacity:0.5;' : '';
+      return '<div class="setting-row" style="' + op + 'cursor:pointer" onclick="cycleTask(' + t.id + ',\'' + t.status + '\')">' +
+        '<span class="setting-label">' + icon + ' ' + esc(t.title) + pri + '</span>' +
+        '<span class="setting-val" style="font-size:11px;color:var(--text2)">' + t.status + '</span></div>';
+    }
+
+    if (inProg.length) { html += '<div class="section-title">In Progress</div><div class="card">'; inProg.forEach(t => { html += taskRow(t); }); html += '</div>'; }
+    if (todo.length) { html += '<div class="section-title">Todo</div><div class="card">'; todo.forEach(t => { html += taskRow(t); }); html += '</div>'; }
+    if (done.length) { html += '<div class="section-title">Done</div><div class="card">'; done.slice(0, 10).forEach(t => { html += taskRow(t); }); if (done.length > 10) html += '<div style="padding:4px 12px;font-size:11px;color:var(--text2)">+' + (done.length - 10) + ' more</div>'; html += '</div>'; }
+    if (!taskList.length) html += '<div class="muted" style="padding:20px;text-align:center">No tasks</div>';
+    html += '<div style="height:60px"></div>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = '<div class="muted">Error: ' + e.message + '</div>'; }
+}
+
+async function cycleTask(taskId, currentStatus) {
+  const next = currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'todo';
+  try {
+    await fetch(API + '/dashboard/api/tasks/' + taskId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: next }) });
+    loadTasks();
+  } catch(e) { console.error('Task cycle failed:', e); }
+}
+
+// ========== DEVICES ==========
+async function loadDevices() {
+  const el = document.getElementById('devices');
+  try {
+    const res = await fetch(API + '/api/v1/devices/list');
+    const devices = Array.isArray(await res.clone().json()) ? await res.json() : [];
+
+    let html = '';
+    const online = devices.filter(d => d.last_seen && (Date.now() - new Date(d.last_seen).getTime()) < 300000);
+    html += '<div class="stat-grid">';
+    html += '<div class="stat-card"><div class="stat-val">' + devices.length + '</div><div class="stat-label">Devices</div></div>';
+    html += '<div class="stat-card"><div class="stat-val" style="color:var(--green)">' + online.length + '</div><div class="stat-label">Online</div></div>';
+    html += '</div>';
+
+    for (const d of devices) {
+      const name = d.name || d.device_name || d.device_id || 'Unknown';
+      const lastSeen = d.last_seen ? new Date(d.last_seen) : null;
+      const isOnline = lastSeen && (Date.now() - lastSeen.getTime()) < 300000;
+      const dot = isOnline ? 'var(--green)' : 'var(--red)';
+      html += '<div class="card">';
+      html += '<div class="setting-row"><span class="setting-label"><span style="color:' + dot + '">&#9679;</span> ' + esc(name) + '</span><span class="setting-val">' + (isOnline ? 'Online' : lastSeen ? fmtAgo(lastSeen) : 'never') + '</span></div>';
+      if (d.device_type) html += '<div class="setting-row"><span class="setting-label" style="color:var(--text2)">Type</span><span class="setting-val">' + esc(d.device_type) + '</span></div>';
+      if (d.ip) html += '<div class="setting-row"><span class="setting-label" style="color:var(--text2)">IP</span><span class="setting-val">' + esc(d.ip) + '</span></div>';
+      html += '</div>';
+    }
+    if (!devices.length) html += '<div class="muted" style="padding:20px;text-align:center">No devices</div>';
+    html += '<div style="height:60px"></div>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = '<div class="muted">Error: ' + e.message + '</div>'; }
+}
+
+function fmtAgo(date) {
+  const ms = Date.now() - date.getTime();
+  if (ms < 60000) return 'just now';
+  if (ms < 3600000) return Math.floor(ms / 60000) + 'm ago';
+  if (ms < 86400000) return Math.floor(ms / 3600000) + 'h ago';
+  return Math.floor(ms / 86400000) + 'd ago';
+}
+
+// ========== SERVICES ==========
+async function loadServices() {
+  const el = document.getElementById('services');
+  try {
+    const res = await fetch(API + '/dashboard/api/services');
+    const data = await res.json();
+    const services = data.services || [];
+
+    let html = '';
+    const running = services.filter(s => s.status === 'running' || s.healthy);
+    const stopped = services.filter(s => s.status !== 'running' && !s.healthy);
+    html += '<div class="stat-grid">';
+    html += '<div class="stat-card"><div class="stat-val" style="color:var(--green)">' + running.length + '</div><div class="stat-label">Running</div></div>';
+    html += '<div class="stat-card"><div class="stat-val" style="color:' + (stopped.length ? 'var(--red)' : 'var(--text2)') + '">' + stopped.length + '</div><div class="stat-label">Stopped</div></div>';
+    html += '</div>';
+
+    for (const s of services) {
+      const isUp = s.status === 'running' || s.healthy;
+      const dot = isUp ? 'var(--green)' : 'var(--red)';
+      html += '<div class="card">';
+      html += '<div class="setting-row"><span class="setting-label"><span style="color:' + dot + '">&#9679;</span> ' + esc(s.name || s.id) + '</span><span class="setting-val" style="color:' + dot + '">' + (s.status || (isUp ? 'running' : 'stopped')) + '</span></div>';
+      if (s.pid) html += '<div class="setting-row"><span class="setting-label" style="color:var(--text2)">PID</span><span class="setting-val">' + s.pid + '</span></div>';
+      if (s.port) html += '<div class="setting-row"><span class="setting-label" style="color:var(--text2)">Port</span><span class="setting-val">' + s.port + '</span></div>';
+      if (s.error) html += '<div style="padding:4px 12px;font-size:11px;color:var(--red)">' + esc(s.error) + '</div>';
+      html += '</div>';
+    }
+    if (!services.length) html += '<div class="muted" style="padding:20px;text-align:center">No services</div>';
+    html += '<div style="height:60px"></div>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = '<div class="muted">Error: ' + e.message + '</div>'; }
+}
+
+// ========== LIBRARY ==========
+let _libraryItems = [];
+let _libraryFilter = 'all';
+
+async function loadLibrary_m() {
+  const el = document.getElementById('library');
+  try {
+    if (!_libraryItems.length) {
+      const res = await fetch(API + '/api/v1/library');
+      const j = await res.json();
+      _libraryItems = j.items || [];
+    }
+
+    let html = '';
+
+    // Search + filter bar
+    html += '<div style="padding:8px 12px;display:flex;gap:8px">';
+    html += '<input type="text" id="lib-search" placeholder="Search library..." oninput="filterLibrary()" style="flex:1;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:13px;outline:none">';
+    html += '<select id="lib-filter" onchange="filterLibrary()" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px;font-size:13px">';
+    html += '<option value="all">All</option><option value="doc">Docs</option><option value="memory">Memory</option><option value="pan">PAN State</option>';
+    html += '</select></div>';
+
+    // Type summary
+    const docs = _libraryItems.filter(i => i.type === 'doc');
+    const mem = _libraryItems.filter(i => i.type === 'memory');
+    const pan = _libraryItems.filter(i => i.type === 'pan');
+    html += '<div class="stat-grid">';
+    html += '<div class="stat-card"><div class="stat-val">' + _libraryItems.length + '</div><div class="stat-label">Total</div></div>';
+    html += '<div class="stat-card"><div class="stat-val" style="color:var(--accent)">' + docs.length + '</div><div class="stat-label">Docs</div></div>';
+    html += '</div>';
+
+    // Items list
+    html += '<div id="lib-list">';
+    html += renderLibraryItems(_libraryItems);
+    html += '</div>';
+
+    html += '<div style="height:60px"></div>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = '<div class="muted">Error: ' + e.message + '</div>'; }
+}
+
+function renderLibraryItems(items) {
+  let html = '';
+  for (const item of items) {
+    const typeColor = item.type === 'doc' ? 'var(--accent)' : item.type === 'memory' ? '#cba6f7' : 'var(--green)';
+    html += '<div class="card" style="cursor:pointer" onclick="openLibItem(\'' + esc(item.path).replace(/'/g, "\\'") + '\')">';
+    html += '<div style="display:flex;align-items:center;gap:8px">';
+    html += '<span style="background:' + typeColor + ';color:#1e1e2e;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase">' + esc(item.type) + '</span>';
+    html += '<span style="font-size:13px;font-weight:500">' + esc(item.title) + '</span>';
+    html += '</div>';
+    if (item.snippet) html += '<div style="font-size:12px;color:var(--text2);margin-top:4px;max-height:40px;overflow:hidden">' + esc(item.snippet) + '</div>';
+    html += '</div>';
+  }
+  return html;
+}
+
+function filterLibrary() {
+  const q = (document.getElementById('lib-search')?.value || '').toLowerCase();
+  const f = document.getElementById('lib-filter')?.value || 'all';
+  const filtered = _libraryItems.filter(i => {
+    if (f !== 'all' && i.type !== f) return false;
+    if (q && !i.title.toLowerCase().includes(q) && !(i.snippet || '').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const listEl = document.getElementById('lib-list');
+  if (listEl) listEl.innerHTML = renderLibraryItems(filtered);
+}
+
+function openLibItem(path) {
+  window.open(API + '/api/v1/library/view?path=' + encodeURIComponent(path), '_blank');
+}
+
 async function loadData() {
   const el = document.getElementById('data');
   try {
@@ -715,14 +1205,26 @@ async function loadSettings() {
   const el = document.getElementById('settings');
   let html = '';
 
+  // Display Name — editable setting
+  html += '<div class="section-title">Identity</div><div class="card">';
+  try {
+    const settingsRes = await fetch(API + '/api/v1/settings');
+    const settings = await settingsRes.json();
+    const currentName = settings.display_name || _orgContext?.user_nickname || 'User';
+    html += '<div class="setting-row"><span class="setting-label">Display Name</span>';
+    html += '<input id="display-name-input" value="' + esc(currentName) + '" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 8px;font-size:13px;width:120px;text-align:right;outline:none" onchange="saveDisplayName(this.value)">';
+    html += '</div>';
+    html += '<div style="padding:2px 12px 8px;font-size:11px;color:var(--text2)">Your name shown on the dashboard and org badge. Tap to edit.</div>';
+  } catch { html += '<div class="setting-row"><span class="setting-label">Display Name</span><span class="setting-val">' + esc(_orgContext?.user_nickname || 'User') + '</span></div>'; }
+  html += '</div>';
+
   // Organization
   html += '<div class="section-title">Organization</div><div class="card">';
   if (_orgContext) {
-    html += '<div class="setting-row"><span class="setting-label">Current Org</span><span class="setting-val">' + esc(_orgContext.org_name || 'Personal') + '</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Current Org</span><span class="setting-val">' + esc(_orgContext.org_name || 'User') + '</span></div>';
     html += '<div class="setting-row"><span class="setting-label">Role</span><span class="setting-val">' + esc((_orgContext.role || 'owner').charAt(0).toUpperCase() + (_orgContext.role || 'owner').slice(1)) + '</span></div>';
-    html += '<div class="setting-row"><span class="setting-label">Display Name</span><span class="setting-val">' + esc(_orgContext.user_nickname || _orgContext.user_display_name || 'User') + '</span></div>';
   } else {
-    html += '<div class="setting-row"><span class="setting-label">Current Org</span><span class="setting-val">Personal</span></div>';
+    html += '<div class="setting-row"><span class="setting-label">Current Org</span><span class="setting-val">' + esc(_orgContext?.org_name || 'User') + '</span></div>';
   }
   html += '</div>';
 
@@ -846,7 +1348,7 @@ async function loadOrgContext() {
     _incognitoActive = !!(incData.active);
   } catch (e) {
     console.error('[PAN Mobile] org context error:', e);
-    _orgContext = { org_id: 'org_personal', org_name: 'Personal', org_slug: 'personal', user_nickname: 'User', role: 'owner', orgs: [] };
+    _orgContext = { org_id: 'org_personal', org_name: 'User', org_slug: 'personal', user_nickname: 'User', role: 'owner', orgs: [] };
     _incognitoActive = false;
   }
   updateOrgBadge();
@@ -938,6 +1440,20 @@ function hideOrgSwitcher() {
   document.getElementById('org-modal').classList.remove('visible');
 }
 
+async function saveDisplayName(name) {
+  if (!name || !name.trim()) return;
+  try {
+    await fetch(API + '/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: name.trim() })
+    });
+    // Refresh org context so badge updates
+    await loadOrgContext();
+    loadSettings();
+  } catch(e) { console.error('Save display name failed:', e); }
+}
+
 async function toggleIncognito() {
   try {
     const endpoint = _incognitoActive ? '/api/v1/incognito/stop' : '/api/v1/incognito/start';
@@ -953,6 +1469,101 @@ async function toggleIncognito() {
   } catch (e) {
     alert('Error: ' + e.message);
   }
+}
+
+// Screenshot upload — reads file, converts to base64, sends to server
+async function uploadScreenshot(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  input.value = ''; // reset so same file can be re-selected
+
+  const el = document.getElementById('chat-msgs');
+  el.insertAdjacentHTML('beforeend', '<div class="t-line t-tool"><span class="arrow">→</span> Uploading screenshot...</div>');
+  el.scrollTop = el.scrollHeight;
+
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]); // strip data:image/...;base64,
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const res = await fetch(API + '/api/v1/screenshot/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: base64, mimeType: file.type, source: 'phone' })
+    });
+    const result = await res.json();
+
+    if (result.ok) {
+      el.insertAdjacentHTML('beforeend', '<div class="t-line t-tool"><span class="arrow">→</span> Screenshot uploaded: ' + esc(result.filename) + '</div>');
+      // Auto-send a message referencing the screenshot so Claude sees it
+      const chatInput = document.getElementById('chat-input');
+      chatInput.value = result.path;
+      sendChat();
+    } else {
+      el.insertAdjacentHTML('beforeend', '<div class="t-line" style="color:var(--red)">Upload failed: ' + esc(result.error || 'unknown') + '</div>');
+    }
+  } catch(e) {
+    el.insertAdjacentHTML('beforeend', '<div class="t-line" style="color:var(--red)">Upload error: ' + esc(e.message) + '</div>');
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+// Textarea auto-grow — expand as user types, up to max-height
+function autoGrowTextarea(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// Keyboard visibility — keep input bar above the soft keyboard on Android
+// Three strategies combined for maximum compatibility:
+(function() {
+  const inputBar = document.getElementById('input-bar');
+  const chatInput = document.getElementById('chat-input');
+  if (!inputBar || !chatInput) return;
+
+  // Strategy 1: visualViewport API (best, but not always reliable)
+  if (window.visualViewport) {
+    function adjustForKeyboard() {
+      const offset = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
+      inputBar.style.bottom = Math.max(0, offset) + 'px';
+    }
+    window.visualViewport.addEventListener('resize', adjustForKeyboard);
+    window.visualViewport.addEventListener('scroll', adjustForKeyboard);
+  }
+
+  // Strategy 2: On focus, scroll the input into view after keyboard animation
+  chatInput.addEventListener('focus', () => {
+    setTimeout(() => {
+      chatInput.scrollIntoView({ block: 'end', behavior: 'smooth' });
+      // Also try the viewport approach again after keyboard settles
+      if (window.visualViewport) {
+        const offset = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
+        inputBar.style.bottom = Math.max(0, offset) + 'px';
+      }
+    }, 300);
+    // Second attempt after keyboard fully open
+    setTimeout(() => {
+      chatInput.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    }, 600);
+  });
+
+  // Strategy 3: Reset on blur (keyboard closes)
+  chatInput.addEventListener('blur', () => {
+    setTimeout(() => { inputBar.style.bottom = '0px'; }, 100);
+  });
+})();
+
+// ========== REFRESH BUTTON ==========
+function refreshCurrentTab() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) { btn.style.transform = 'rotate(360deg)'; btn.style.transition = 'transform 0.5s'; setTimeout(() => { btn.style.transform = ''; btn.style.transition = ''; }, 600); }
+  const active = document.querySelector('.page.active');
+  if (active) loadTab(active.id);
+  // Also re-fetch library items cache
+  _libraryItems = [];
 }
 
 init();
