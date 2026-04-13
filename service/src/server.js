@@ -114,6 +114,74 @@ app.use('/api/v1/auth', (req, res, next) => {
   extractUser(req, res, next);
 }, authRouter);
 
+// Phone screenshot upload — saves image to temp file so Claude Code can view it
+// Phone sends base64 image data. Returns the local file path for Claude to read.
+// Also stores the latest screenshot path in settings so Claude can find it.
+app.post('/api/v1/screenshot/upload', async (req, res) => {
+  try {
+    const { data, mimeType, source } = req.body;
+    if (!data) return res.status(400).json({ ok: false, error: 'No image data' });
+    const ext = (mimeType || 'image/png').split('/')[1] || 'png';
+    const filename = `screenshot_${source || 'phone'}_${Date.now()}.${ext}`;
+    const dir = join(process.env.TEMP || '/tmp', 'pan-screenshots');
+    mkdirSync(dir, { recursive: true });
+    const filePath = join(dir, filename);
+    writeFileSync(filePath, Buffer.from(data, 'base64'));
+    // Store path so Claude can reference it
+    run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('last_screenshot', :path, datetime('now','localtime'))", { ':path': JSON.stringify(filePath) });
+    console.log(`[PAN Screenshot] Saved: ${filePath} (${Math.round(data.length / 1024)}KB base64)`);
+    res.json({ ok: true, path: filePath, filename });
+  } catch (err) {
+    console.error('[PAN Screenshot] Error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/v1/screenshot/latest — returns path to most recent screenshot
+app.get('/api/v1/screenshot/latest', (req, res) => {
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'last_screenshot'");
+    if (!row) return res.json({ ok: false, error: 'No screenshots uploaded yet' });
+    const filePath = row.value.replace(/^"|"$/g, '');
+    if (!existsSync(filePath)) return res.json({ ok: false, error: 'Screenshot file missing', path: filePath });
+    res.json({ ok: true, path: filePath });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/screenshot/view — serve the actual image file
+app.get('/api/v1/screenshot/view', (req, res) => {
+  try {
+    const filePath = req.query.path;
+    if (!filePath || !existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+    // Security: only serve from pan-screenshots dir
+    if (!filePath.includes('pan-screenshots')) return res.status(403).json({ error: 'Forbidden' });
+    const ext = filePath.split('.').pop();
+    const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+    res.setHeader('Content-Type', mimeMap[ext] || 'image/png');
+    res.send(readFileSync(filePath));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List all screenshots
+app.get('/api/v1/screenshot/list', (req, res) => {
+  try {
+    const dir = join(process.env.TEMP || '/tmp', 'pan-screenshots');
+    if (!existsSync(dir)) return res.json({ screenshots: [] });
+    const files = readdirSync(dir)
+      .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
+      .map(f => ({ filename: f, path: join(dir, f), created: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.created - a.created)
+      .slice(0, 50);
+    res.json({ screenshots: files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Clipboard image upload — saves pasted image to temp file, returns path (no auth — local only)
 app.post('/api/v1/clipboard-image', async (req, res) => {
   try {
@@ -567,6 +635,60 @@ app.patch('/dashboard/api/scout/:id', (req, res) => {
     if (!status) return res.status(400).json({ error: 'status required' });
     updateFinding(parseInt(req.params.id), status);
     res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/v1/context/reset — strip injected context from CLAUDE.md, keep static docs only
+app.post('/api/v1/context/reset', (req, res) => {
+  try {
+    // Find all CLAUDE.md files that might have PAN-CONTEXT blocks
+    const panRoot = join(__dirname, '..', '..');
+    const claudeMdPath = join(panRoot, 'CLAUDE.md');
+    if (!existsSync(claudeMdPath)) return res.json({ ok: false, error: 'CLAUDE.md not found' });
+
+    const content = readFileSync(claudeMdPath, 'utf8');
+    const startMarker = '<!-- PAN-CONTEXT-START -->';
+    const endMarker = '<!-- PAN-CONTEXT-END -->';
+    const startIdx = content.indexOf(startMarker);
+    const endIdx = content.lastIndexOf(endMarker);
+
+    if (startIdx === -1 || endIdx === -1) return res.json({ ok: true, before: content.length, after: content.length, message: 'No injected context found' });
+
+    const trimmed = content.substring(0, startIdx) + startMarker + '\n' + endMarker + content.substring(endIdx + endMarker.length);
+    writeFileSync(claudeMdPath, trimmed, 'utf8');
+    console.log(`[Context Reset] CLAUDE.md: ${content.length} → ${trimmed.length} chars (saved ${content.length - trimmed.length})`);
+    res.json({ ok: true, before: content.length, after: trimmed.length, saved: content.length - trimmed.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/context/size — quick check of current CLAUDE.md size
+app.get('/api/v1/context/size', (req, res) => {
+  try {
+    const panRoot = join(__dirname, '..', '..');
+    const claudeMdPath = join(panRoot, 'CLAUDE.md');
+    if (!existsSync(claudeMdPath)) return res.json({ total: 0, static: 0, injected: 0 });
+
+    const content = readFileSync(claudeMdPath, 'utf8');
+    const startMarker = '<!-- PAN-CONTEXT-START -->';
+    const endMarker = '<!-- PAN-CONTEXT-END -->';
+    const startIdx = content.indexOf(startMarker);
+    const endIdx = content.lastIndexOf(endMarker);
+
+    const staticSize = startIdx > 0 ? startIdx : content.length;
+    const injectedSize = (startIdx > 0 && endIdx > 0) ? (endIdx - startIdx) : 0;
+
+    res.json({
+      total: content.length,
+      static: staticSize,
+      injected: injectedSize,
+      tokens_approx: Math.round(content.length / 4),
+      warning: content.length > 15000,
+      critical: content.length > 20000,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1634,6 +1756,20 @@ app.get('/api/v1/org/current', async (req, res) => {
     const org = getActiveOrg(req);
     const userId = req?.user?.id || 1;
 
+    // Sync personal org name from `display_name` setting (user-configurable)
+    try {
+      const nameSetting = get("SELECT value FROM settings WHERE key = 'display_name'");
+      const displayName = nameSetting ? (nameSetting.value || '').replace(/^"|"$/g, '') : null;
+      if (displayName) {
+        const personalOrg = db.prepare(`SELECT name FROM orgs WHERE id = 'org_personal'`).get();
+        if (personalOrg && personalOrg.name !== displayName) {
+          db.prepare(`UPDATE orgs SET name = ? WHERE id = 'org_personal'`).run(displayName);
+          db.prepare(`UPDATE users SET display_name = ?, display_nickname = ? WHERE id = 1`).run(displayName, displayName);
+          console.log(`[Org] Synced personal org name to setting: ${personalOrg.name} → ${displayName}`);
+        }
+      }
+    } catch {}
+
     // Get user info
     let user = { display_name: 'User', display_nickname: null, role: 'owner' };
     try {
@@ -1678,16 +1814,21 @@ app.get('/api/v1/org/current', async (req, res) => {
       orgs: orgs,
     });
   } catch (err) {
-    // Fallback for pre-migration state
+    // Fallback for pre-migration state — read display_name setting if available
+    let fallbackName = 'User';
+    try {
+      const row = get("SELECT value FROM settings WHERE key = 'display_name'");
+      if (row) fallbackName = (row.value || '').replace(/^"|"$/g, '') || 'User';
+    } catch {}
     res.json({
       org_id: 'org_personal',
-      org_name: 'Personal',
+      org_name: fallbackName,
       org_slug: 'personal',
       org_color: null,
-      user_display_name: 'User',
-      user_nickname: 'User',
+      user_display_name: fallbackName,
+      user_nickname: fallbackName,
       role: 'owner',
-      orgs: [{ org_id: 'org_personal', slug: 'personal', name: 'Personal', role_name: 'owner' }],
+      orgs: [{ org_id: 'org_personal', slug: 'personal', name: fallbackName, role_name: 'owner' }],
     });
   }
 });

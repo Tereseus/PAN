@@ -3,8 +3,13 @@ import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
 import { broadcastNotification, broadcastChatUpdate, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool, findSessionByClaudeId } from '../terminal-bridge.js';
 import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { createAlert } from './dashboard.js';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+
+// Context size thresholds (in chars)
+const CLAUDE_MD_WARN_SIZE = 15000;  // ~3,750 tokens — alert if CLAUDE.md exceeds this
+const INJECTED_CONTEXT_WARN = 4000; // ~1,000 tokens — alert if injection alone exceeds this
 
 const router = Router();
 
@@ -130,7 +135,7 @@ async function injectSessionContext(cwd) {
       `SELECT event_type, data, created_at FROM events
        WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
        AND (data LIKE :pp1 OR data LIKE :pp2)
-       ORDER BY created_at DESC LIMIT 15`,
+       ORDER BY created_at DESC LIMIT 5`,
       { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%' }
     );
 
@@ -167,30 +172,20 @@ async function injectSessionContext(cwd) {
           if (e.event_type === 'UserPromptSubmit' && d.prompt) {
             briefing += `**User** (${e.created_at}): ${d.prompt.substring(0, 200)}\n`;
           } else if (e.event_type === 'Stop' && d.last_assistant_message) {
-            briefing += `**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 300)}\n`;
+            briefing += `**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 150)}\n`;
           }
         } catch {}
       }
       briefing += '\n';
     }
 
-    // PRIORITY 2: State dump from dream cycle
-    const statePath = join(cwd, '.pan-state.md');
-    if (existsSync(statePath)) {
-      try {
-        let stateContent = readFileSync(statePath, 'utf8').trim();
-        stateContent = stateContent.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
-        briefing += stateContent + '\n\n';
-      } catch {}
-    }
+    // PRIORITY 2: State dump from dream cycle — SKIP entirely.
+    // .pan-state.md was dumping ~8K of "What Works", "Known Facts", etc. into CLAUDE.md
+    // on every session start. This is redundant — Claude can query MCP for state when needed.
+    // This was the #1 cause of context bloat (12K injected per session).
 
-    // PRIORITY 3: Vector memory
-    try {
-      const memResult = await buildMemoryContext('session context', { tokenBudget: 2000 });
-      if (memResult.context) {
-        briefing += memResult.context + '\n\n';
-      }
-    } catch {}
+    // PRIORITY 3: Vector memory — SKIP.
+    // Memory is available via MCP tools on demand, not bulk-loaded into context.
 
     // PRIORITY 4: Open tasks
     if (tasks.length > 0) {
@@ -204,9 +199,9 @@ async function injectSessionContext(cwd) {
     // Sanitize — strip any literal PAN-CONTEXT markers from injected content
     briefing = briefing.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
 
-    // Cap injection to ~12000 chars (increased from 10k to accommodate conversation + state)
-    if (briefing.length > 12000) {
-      briefing = briefing.substring(0, 12000) + '\n\n[... context trimmed ...]\n';
+    // Cap injection to ~3000 chars — just enough for conversation summary + tasks
+    if (briefing.length > 3000) {
+      briefing = briefing.substring(0, 3000) + '\n\n[... context trimmed ...]\n';
     }
 
     // Write to CLAUDE.md
@@ -214,7 +209,25 @@ async function injectSessionContext(cwd) {
       briefing +
       content.substring(endIdx);
     writeFileSync(claudeMdPath, newContent, 'utf8');
-    console.log(`[PAN Hook] Injected session context into ${claudeMdPath}`);
+    console.log(`[PAN Hook] Injected session context into ${claudeMdPath} (${newContent.length} chars, injection: ${briefing.length} chars)`);
+
+    // Alert if context is bloated
+    if (briefing.length > INJECTED_CONTEXT_WARN) {
+      createAlert({
+        alert_type: 'context_bloat',
+        severity: 'warning',
+        title: `Injected context too large: ${briefing.length} chars (limit: ${INJECTED_CONTEXT_WARN})`,
+        detail: `Session injection for ${cwd} is ${briefing.length} chars (~${Math.round(briefing.length / 4)} tokens). This adds cost to every message. Sources: conversation=${recentEvents.length} exchanges, tasks=${tasks.length}.`,
+      });
+    }
+    if (newContent.length > CLAUDE_MD_WARN_SIZE) {
+      createAlert({
+        alert_type: 'context_bloat',
+        severity: newContent.length > 20000 ? 'critical' : 'warning',
+        title: `CLAUDE.md is ${newContent.length} chars (~${Math.round(newContent.length / 4)} tokens)`,
+        detail: `${claudeMdPath} total size: ${newContent.length} chars. Static docs: ${startIdx} chars, injected: ${briefing.length} chars. Every message pays this cost. Target: <${CLAUDE_MD_WARN_SIZE} chars.`,
+      });
+    }
   } catch (err) {
     console.error(`[PAN Hook] Failed to inject session context:`, err.message);
   }
@@ -367,6 +380,40 @@ router.post('/:eventType', (req, res) => {
         }
       } catch (err) {
         console.error('[PAN] Error extracting assistant messages:', err.message);
+      }
+    }
+
+    // Burn rate alert — check on Stop events if this session is consuming too much per message
+    if (eventType === 'Stop' && payload.transcript_path && existsSync(payload.transcript_path)) {
+      try {
+        const stat = statSync(payload.transcript_path);
+        const raw = readFileSync(payload.transcript_path, 'utf-8');
+        let totalInput = 0, totalOutput = 0, msgCount = 0;
+        for (const line of raw.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const obj = JSON.parse(line);
+            if (obj.message?.usage) {
+              totalInput += obj.message.usage.input_tokens || 0;
+              totalOutput += obj.message.usage.output_tokens || 0;
+              msgCount++;
+            }
+          } catch {}
+        }
+        if (msgCount > 2) {
+          const perMsg = Math.round((totalInput + totalOutput) / msgCount);
+          // Alert if burning >15K tokens per message (aggressive threshold)
+          if (perMsg > 15000) {
+            createAlert({
+              alert_type: 'high_burn_rate',
+              severity: perMsg > 30000 ? 'critical' : 'warning',
+              title: `Burn rate: ${Math.round(perMsg / 1000)}K tokens/msg (${msgCount} msgs)`,
+              detail: `Session ${sessionId}: ${Math.round(totalInput / 1000)}K input + ${Math.round(totalOutput / 1000)}K output across ${msgCount} messages = ${Math.round(perMsg / 1000)}K per message. JSONL: ${payload.transcript_path} (${Math.round(stat.size / 1024)}KB).`,
+            });
+          }
+        }
+      } catch (err) {
+        // Non-fatal — don't block the hook for burn rate checking
       }
     }
 

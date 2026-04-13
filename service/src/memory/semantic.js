@@ -21,25 +21,37 @@ async function store(fact) {
   const text = description || `${subject} ${predicate} ${object}`;
   const embedding = await embed(text);
 
-  // Check for contradictions — same subject, high similarity, different object
-  const existing = all(
-    `SELECT * FROM semantic_facts WHERE subject = :subject AND valid_until IS NULL`,
-    { ':subject': subject }
+  // Check for contradictions AND near-duplicates — similarity-based dedup
+  // Search ALL active facts (not just same subject) for high-similarity matches
+  const allActive = all(
+    `SELECT * FROM semantic_facts WHERE valid_until IS NULL ORDER BY created_at DESC LIMIT 300`
   );
 
-  for (const ex of existing) {
+  for (const ex of allActive) {
     const exEmbedding = fromBlob(ex.embedding);
     const sim = exEmbedding ? cosineSimilarity(embedding, exEmbedding) : 0;
 
-    if (sim > 0.85 && ex.object !== object) {
-      // Contradiction detected — supersede old fact
+    // Near-duplicate (>0.85 similarity) — skip entirely, fact already exists
+    if (sim > 0.85 && ex.subject === subject) {
+      // Exact or near-duplicate of same subject — don't store again
+      console.log(`[PAN Memory] Dedup: skipping near-duplicate of fact #${ex.id} "${ex.subject}" (sim=${sim.toFixed(3)})`);
+      return ex.id;
+    }
+
+    // High similarity across different subjects — still a duplicate
+    if (sim > 0.90) {
+      console.log(`[PAN Memory] Dedup: skipping cross-subject duplicate of fact #${ex.id} (sim=${sim.toFixed(3)})`);
+      return ex.id;
+    }
+
+    // Contradiction — same subject, high similarity, different object
+    if (sim > 0.85 && ex.subject === subject && ex.object !== object) {
       console.log(`[PAN Memory] Contradiction: "${subject} ${ex.predicate} ${ex.object}" superseded by "${subject} ${predicate} ${object}"`);
       run(
         `UPDATE semantic_facts SET valid_until = datetime('now','localtime') WHERE id = :id`,
         { ':id': ex.id }
       );
 
-      // New fact references old one
       return insert(
         `INSERT INTO semantic_facts (subject, predicate, object, description, category, confidence, version, previous_version_id, embedding)
          VALUES (:subject, :predicate, :object, :desc, :category, :confidence, :version, :prev, :embedding)`,
@@ -55,11 +67,6 @@ async function store(fact) {
           ':embedding': toBlob(embedding),
         }
       );
-    }
-
-    // Exact duplicate — skip
-    if (ex.predicate === predicate && ex.object === object) {
-      return ex.id;
     }
   }
 

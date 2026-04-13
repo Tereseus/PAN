@@ -11,6 +11,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebStorage
 import android.webkit.CookieManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,6 +34,9 @@ fun DashboardScreen(
     val baseUrl = if (proxyPort > 0) "http://127.0.0.1:$proxyPort" else ""
     val context = LocalContext.current
     Log.w("PAN-DASH", "Render: proxyPort=$proxyPort baseUrl=$baseUrl")
+
+    // Android back button/gesture always leaves the dashboard — never navigates within WebView
+    BackHandler { onBack() }
 
     Scaffold(
         topBar = {

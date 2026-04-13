@@ -58,6 +58,7 @@
 	let resizeStartWidth = $state(0);
 	let hostLabel = $state('');
 	let sessionsCount = $state(0);
+	let orgData = $state(null); // { org_name, user_nickname, role, orgs }
 
 	// Project/task data for sidebar
 	let projectData = $state(null);
@@ -2690,6 +2691,7 @@
 		if (leftSection === 'transcript') loadChatHistory();
 	}
 
+	let usageRefreshInterval = null;
 	async function loadUsageData() {
 		try {
 			const [claude, stats] = await Promise.all([
@@ -2699,6 +2701,17 @@
 			usageData = { claude, stats };
 		} catch (e) {
 			console.error('Failed to load usage data:', e);
+		}
+		// Auto-refresh every 30s while usage panel is visible
+		if (!usageRefreshInterval && (rightSection === 'usage' || leftSection === 'usage')) {
+			usageRefreshInterval = setInterval(() => {
+				if (rightSection === 'usage' || leftSection === 'usage') {
+					loadUsageData();
+				} else {
+					clearInterval(usageRefreshInterval);
+					usageRefreshInterval = null;
+				}
+			}, 30000);
 		}
 	}
 
@@ -3333,6 +3346,9 @@
 		loadVoiceSettings();
 		loadTestSuites();
 
+		// Load org context
+		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
+
 		// Load services, approvals, alerts, lifeboat immediately
 		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 		loadApprovals();
@@ -3635,6 +3651,11 @@
 	{/if}
 	<span class="host-label">{hostLabel}</span>
 	<div style="flex:1"></div>
+	{#if orgData}
+		<span class="org-badge" title="{orgData.role || 'owner'}">
+			<span class="org-user">{orgData.user_nickname || 'User'}</span><span class="org-at">@</span><span class="org-name">{orgData.org_name || 'Personal'}</span>
+		</span>
+	{/if}
 	<span class="sessions-count">
 		{#if sessionsCount > 0}{sessionsCount} tab{sessionsCount > 1 ? 's' : ''}{/if}
 	</span>
@@ -5119,6 +5140,46 @@
 						</div>
 					{/if}
 					<div class="usage-section">
+						<div class="usage-heading">Burn Rate</div>
+						{#if usageData.claude?.session?.messages > 0}
+							{@const c = usageData.claude}
+							{@const msgs = c.session.messages || 1}
+							{@const totalTok = (c.session.input || 0) + (c.session.output || 0)}
+							{@const perMsg = Math.round(totalTok / msgs)}
+							{@const utilPct = c.rateLimits?.five_hour?.utilization || 0}
+							{@const pctPerMsg = msgs > 0 ? (utilPct / msgs) : 0}
+							{@const remaining = pctPerMsg > 0 ? Math.floor((100 - utilPct) / pctPerMsg) : '?'}
+							<div class="usage-row" style="font-size:13px; font-weight:600;">
+								<span class="usage-label">Per Message</span>
+								<span class="usage-val" style="color:#cba6f7">{formatTokens(perMsg)} tok</span>
+							</div>
+							<div class="usage-row" style="font-size:13px; font-weight:600;">
+								<span class="usage-label">% Per Message</span>
+								<span class="usage-val" style="color:{pctPerMsg > 5 ? '#f38ba8' : pctPerMsg > 2 ? '#f9e2af' : '#a6e3a1'}">{pctPerMsg.toFixed(1)}%</span>
+							</div>
+							<div class="usage-row" style="font-size:13px; font-weight:600;">
+								<span class="usage-label">Messages Left</span>
+								<span class="usage-val" style="color:{remaining !== '?' && remaining < 10 ? '#f38ba8' : remaining !== '?' && remaining < 30 ? '#f9e2af' : '#a6e3a1'}">{remaining === '?' ? '?' : '~' + remaining}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Sent</span>
+								<span class="usage-val">{msgs} msgs</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Total Used</span>
+								<span class="usage-val">{formatTokens(totalTok)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Cache Hits</span>
+								<span class="usage-val">{formatTokens(c.session.cache_read)} ({totalTok > 0 ? Math.round((c.session.cache_read || 0) / ((c.session.cache_read || 0) + (c.session.input || 1)) * 100) : 0}%)</span>
+							</div>
+						{:else}
+							<div class="usage-row" style="opacity:0.5">
+								<span class="usage-label">No messages yet</span>
+							</div>
+						{/if}
+					</div>
+					<div class="usage-section">
 						<div class="usage-heading">Session Tokens</div>
 						{#if usageData.claude}
 							{@const c = usageData.claude}
@@ -5761,6 +5822,21 @@
 		color: #6c7086;
 		font-size: 12px;
 	}
+
+	.org-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 0;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 6px;
+		padding: 3px 8px;
+		font-size: 12px;
+		margin-right: 8px;
+	}
+	.org-user { color: #a6e3a1; font-weight: 500; }
+	.org-at { color: #6c7086; margin: 0 1px; }
+	.org-name { color: #89b4fa; font-weight: 500; }
 
 	/* ==================== Tab Bar ==================== */
 	.tab-bar {
