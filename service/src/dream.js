@@ -44,6 +44,14 @@ async function dream() {
     const evolutionResult = await evolve();
     console.log(`[PAN Dream] Evolution: ${evolutionResult.status}${evolutionResult.applied?.length ? ` (${evolutionResult.applied.join(', ')})` : ''}`);
 
+    // === Phase 1.5: Memory Pruning ===
+    try {
+      const { prune } = await import('./memory/episodic.js');
+      prune({ maxAgeDays: 30, minImportanceToKeep: 0.7, maxTotal: 500 });
+    } catch (err) {
+      console.error('[PAN Dream] Episodic prune error:', err.message);
+    }
+
     // === Phase 2: State Document Update ===
     const { claude } = await import('./claude.js');
 
@@ -147,9 +155,22 @@ Output ONLY the markdown document, nothing else.`,
       return;
     }
 
-    writeFileSync(STATE_FILE, result, 'utf8');
+    // Post-write validation — enforce size cap that the prompt can't guarantee
+    let finalResult = result;
+    const lines = finalResult.split('\n');
+    if (lines.length > 80) {
+      console.log(`[PAN Dream] State too long (${lines.length} lines), truncating to 80`);
+      finalResult = lines.slice(0, 80).join('\n');
+    }
+    const MAX_STATE_CHARS = 4000;
+    if (finalResult.length > MAX_STATE_CHARS) {
+      console.log(`[PAN Dream] State too large (${finalResult.length} chars), truncating to ${MAX_STATE_CHARS}`);
+      finalResult = finalResult.substring(0, MAX_STATE_CHARS);
+    }
+
+    writeFileSync(STATE_FILE, finalResult, 'utf8');
     lastDreamTime = Date.now();
-    console.log(`[PAN Dream] State file updated (${result.length} chars) from ${entries.length} events`);
+    console.log(`[PAN Dream] State file updated (${finalResult.length} chars) from ${entries.length} events`);
 
     logDreamCycle(events.length, entries.length, evolutionResult, result.length);
 
