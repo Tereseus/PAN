@@ -160,7 +160,7 @@ Return a JSON array. Each item:
 {"type": "scout_mission|create_task|notify", "title": "short title", "description": "what and why", "priority": 1-10}
 
 Return [] if nothing actionable. Only return the JSON array.`,
-      { model: 'claude-haiku-4-5-20251001', timeout: 30000, maxTokens: 1000, caller: 'orchestrator' }
+      { timeout: 30000, maxTokens: 1000, caller: 'orchestrator' }
     );
 
     const match = result.match(/\[[\s\S]*\]/);

@@ -1,0 +1,16 @@
+{
+  "name": "pan-hub",
+  "version": "0.1.0",
+  "description": "PAN Hub — Zero-knowledge relay for PAN instance federation",
+  "type": "module",
+  "main": "hub.js",
+  "scripts": {
+    "start": "node hub.js",
+    "dev": "node hub.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "express": "^5.1.0",
+    "ws": "^8.20.0"
+  }
+}

@@ -42,10 +42,11 @@ const PII_PATTERNS = [
       return sum % 10 === 0;
     },
   },
-  // US phone numbers (various formats)
+  // US phone numbers — requires at least one separator (dash, dot, space, parens)
+  // to avoid matching timestamps, filenames, and other long digit sequences
   {
     type: 'PHONE',
-    pattern: /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
+    pattern: /(?<![_/\\\w])(?:\+?1[-.\s])?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?![_\w])/g,
     validate: (match) => {
       const digits = match.replace(/\D/g, '');
       return digits.length >= 10 && digits.length <= 11;

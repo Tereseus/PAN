@@ -55,7 +55,8 @@ function extractUser(req, res, next) {
 
   if (authMode === 'none') {
     // No auth — everyone is the default owner
-    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
+    const u = get("SELECT power_lvl FROM users WHERE id = 1");
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner', power: u?.power_lvl ?? getRoleLevel('owner') };
     return next();
   }
 
@@ -67,7 +68,7 @@ function extractUser(req, res, next) {
 
   const token = authHeader.slice(7);
   const tokenRow = get(
-    "SELECT t.*, u.email, u.display_name, u.role, u.is_active FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = :token",
+    "SELECT t.*, u.email, u.display_name, u.role, u.power_lvl, u.is_active FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = :token",
     { ':token': token }
   );
 
@@ -93,6 +94,7 @@ function extractUser(req, res, next) {
     email: tokenRow.email,
     display_name: tokenRow.display_name,
     role: tokenRow.role,
+    power: tokenRow.power_lvl ?? getRoleLevel(tokenRow.role),
     token_id: tokenRow.id,
     token_name: tokenRow.name
   };
@@ -125,4 +127,25 @@ function requireRole(minRole) {
   };
 }
 
-export { extractUser, requireRole, ROLE_HIERARCHY, getRoleLevel, getRoleHierarchy, getRoleLevels };
+/**
+ * requirePower — checks that req.user has at least the specified power level
+ * Usage: router.post('/sensitive', requirePower(75), handler)
+ * Simpler than requireRole — just a number, no role name lookup.
+ */
+function requirePower(minPower) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    if ((req.user.power ?? 0) < minPower) {
+      return res.status(403).json({
+        error: 'Insufficient power level',
+        required: minPower,
+        current: req.user.power ?? 0
+      });
+    }
+    next();
+  };
+}
+
+export { extractUser, requireRole, requirePower, ROLE_HIERARCHY, getRoleLevel, getRoleHierarchy, getRoleLevels };

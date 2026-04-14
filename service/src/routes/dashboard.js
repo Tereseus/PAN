@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, get, run, insert, DB_PATH } from '../db.js';
+import { all, get, run, insert, DB_PATH, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
 import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -57,7 +57,7 @@ router.get('/api/photos', (req, res) => {
       .map(f => {
         const stat = statSync(join(PHOTOS_DIR, f));
         // Find matching vision event
-        const event = get("SELECT * FROM events WHERE event_type = 'VisionAnalysis' AND data LIKE :f ORDER BY created_at DESC LIMIT 1",
+        const event = getScoped(req, "SELECT * FROM events WHERE event_type = 'VisionAnalysis' AND data LIKE :f AND org_id = :org_id ORDER BY created_at DESC LIMIT 1",
           { ':f': `%${f}%` });
         let description = '';
         let question = '';
@@ -199,8 +199,8 @@ router.get('/api/jobs', async (req, res) => {
 
   // Tool Scout
   try {
-    const newFindings = get(`SELECT COUNT(*) as c FROM scout_findings WHERE status = 'new'`);
-    const totalFindings = get(`SELECT COUNT(*) as c FROM scout_findings`);
+    const newFindings = getScoped(req, `SELECT COUNT(*) as c FROM scout_findings WHERE status = 'new' AND org_id = :org_id`);
+    const totalFindings = getScoped(req, `SELECT COUNT(*) as c FROM scout_findings WHERE org_id = :org_id`);
     jobs.push({
       name: 'Tool Scout',
       description: `Discovers new AI CLIs and tools for PAN — ${newFindings?.c || 0} new, ${totalFindings?.c || 0} total`,
@@ -273,7 +273,7 @@ router.get('/api/jobs', async (req, res) => {
 
   // Local LLM (phone)
   try {
-    const devices = all(`SELECT * FROM devices WHERE device_type = 'phone' AND last_seen > datetime('now','localtime', '-5 minutes')`);
+    const devices = allScoped(req, `SELECT * FROM devices WHERE device_type = 'phone' AND last_seen > datetime('now','localtime', '-5 minutes') AND org_id = :org_id`);
     const phoneOnline = devices.length > 0;
     jobs.push({
       name: 'Local LLM (Phone)',
@@ -286,9 +286,9 @@ router.get('/api/jobs', async (req, res) => {
 
   // Resistance Router stats
   try {
-    const pathCount = get(`SELECT COUNT(*) as c FROM resistance_paths`);
-    const logCount = get(`SELECT COUNT(*) as c FROM resistance_log`);
-    const successRate = get(`SELECT ROUND(100.0 * SUM(success) / COUNT(*), 1) as rate FROM resistance_log`);
+    const pathCount = getScoped(req, `SELECT COUNT(*) as c FROM resistance_paths WHERE org_id = :org_id`);
+    const logCount = getScoped(req, `SELECT COUNT(*) as c FROM resistance_log WHERE org_id = :org_id`);
+    const successRate = getScoped(req, `SELECT ROUND(100.0 * SUM(success) / COUNT(*), 1) as rate FROM resistance_log WHERE org_id = :org_id`);
     jobs.push({
       name: 'Resistance Router',
       description: `${pathCount?.c || 0} paths, ${logCount?.c || 0} attempts, ${successRate?.rate || 0}% success`,
@@ -299,7 +299,7 @@ router.get('/api/jobs', async (req, res) => {
 
   // Device preferences
   try {
-    const prefs = all(`SELECT * FROM resistance_preferences`);
+    const prefs = allScoped(req, `SELECT * FROM resistance_preferences WHERE org_id = :org_id`);
     if (prefs.length > 0) {
       jobs.push({
         name: 'User Preferences',
@@ -312,7 +312,7 @@ router.get('/api/jobs', async (req, res) => {
 
   // Connected devices
   try {
-    const devices = all(`SELECT * FROM devices WHERE last_seen > datetime('now','localtime', '-10 minutes')`);
+    const devices = allScoped(req, `SELECT * FROM devices WHERE last_seen > datetime('now','localtime', '-10 minutes') AND org_id = :org_id`);
     jobs.push({
       name: 'Connected Devices',
       description: devices.map(d => `${d.name} (${d.device_type})`).join(', ') || 'No devices connected',
@@ -329,7 +329,7 @@ router.get('/api/jobs', async (req, res) => {
 router.get('/api/search', (req, res) => {
   const q = req.query.q;
   if (!q) return res.json([]);
-  const results = all(`SELECT * FROM events WHERE data LIKE :q ORDER BY created_at DESC LIMIT 50`, {
+  const results = allScoped(req, `SELECT * FROM events WHERE data LIKE :q AND org_id = :org_id ORDER BY created_at DESC LIMIT 50`, {
     ':q': `%${q}%`
   });
   res.json(results);
@@ -344,7 +344,7 @@ router.get('/api/events', (req, res) => {
   const search = req.query.q || null;
   const sessionId = req.query.session_id || null;
 
-  let where = [];
+  let where = ['org_id = :org_id'];
   let params = {};
 
   if (type) {
@@ -374,10 +374,10 @@ router.get('/api/events', (req, res) => {
     params[':pp2'] = `%${fwd}%`;
   }
 
-  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  const whereClause = `WHERE ${where.join(' AND ')}`;
 
-  const total = get(`SELECT COUNT(*) as count FROM events ${whereClause}`, params);
-  const events = all(
+  const total = getScoped(req, `SELECT COUNT(*) as count FROM events ${whereClause}`, params);
+  const events = allScoped(req,
     `SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT :limit OFFSET :offset`,
     { ...params, ':limit': limit, ':offset': offset }
   );
@@ -398,8 +398,8 @@ router.get('/api/transcript', (req, res) => {
   if (!sessionId) return res.json({ error: 'session_id required', messages: [] });
 
   // Find the transcript path from the most recent event for this session
-  const event = get(
-    "SELECT data FROM events WHERE session_id = :sid AND event_type IN ('Stop', 'UserPromptSubmit') ORDER BY created_at DESC LIMIT 1",
+  const event = getScoped(req,
+    "SELECT data FROM events WHERE session_id = :sid AND event_type IN ('Stop', 'UserPromptSubmit') AND org_id = :org_id ORDER BY created_at DESC LIMIT 1",
     { ':sid': sessionId }
   );
   if (!event) return res.json({ error: 'session not found', messages: [] });
@@ -533,13 +533,13 @@ router.get('/api/pty-transcript', (req, res) => {
 
 // GET /dashboard/api/stats
 router.get('/api/stats', (req, res) => {
-  const stats = get(`SELECT
-    (SELECT COUNT(*) FROM events) as total_events,
-    (SELECT COUNT(*) FROM memory_items) as total_memory,
-    (SELECT COUNT(*) FROM sessions) as total_sessions,
-    (SELECT COUNT(*) FROM projects) as total_projects,
-    (SELECT COUNT(*) FROM devices) as total_devices,
-    (SELECT COUNT(DISTINCT event_type) FROM events) as event_types
+  const stats = getScoped(req, `SELECT
+    (SELECT COUNT(*) FROM events WHERE org_id = :org_id) as total_events,
+    (SELECT COUNT(*) FROM memory_items WHERE org_id = :org_id) as total_memory,
+    (SELECT COUNT(*) FROM sessions WHERE org_id = :org_id) as total_sessions,
+    (SELECT COUNT(*) FROM projects WHERE org_id = :org_id) as total_projects,
+    (SELECT COUNT(*) FROM devices WHERE org_id = :org_id) as total_devices,
+    (SELECT COUNT(DISTINCT event_type) FROM events WHERE org_id = :org_id) as event_types
   `);
 
   let dbSize = 0;
@@ -547,7 +547,7 @@ router.get('/api/stats', (req, res) => {
     dbSize = statSync(DB_PATH).size;
   } catch {}
 
-  const eventTypes = all(`SELECT event_type, COUNT(*) as count FROM events GROUP BY event_type ORDER BY count DESC`);
+  const eventTypes = allScoped(req, `SELECT event_type, COUNT(*) as count FROM events WHERE org_id = :org_id GROUP BY event_type ORDER BY count DESC`);
 
   // Restart friction metric — total times the user has uttered the word
   // "restart" in a prompt event. This is a per-application data category
@@ -557,12 +557,13 @@ router.get('/api/stats', (req, res) => {
   let totalRestarts = 0;
   let restartsByProject = [];
   try {
-    totalRestarts = get(`
+    totalRestarts = getScoped(req, `
       SELECT COUNT(*) AS c FROM events
       WHERE event_type IN ('UserPromptSubmit','user','user_prompt')
         AND lower(data) LIKE '%restart%'
+        AND org_id = :org_id
     `).c || 0;
-    restartsByProject = all(`
+    restartsByProject = allScoped(req, `
       SELECT
         COALESCE(p.name, 'unscoped') AS project,
         COUNT(*) AS count
@@ -571,6 +572,7 @@ router.get('/api/stats', (req, res) => {
       LEFT JOIN projects p ON p.id = s.project_id
       WHERE e.event_type IN ('UserPromptSubmit','user','user_prompt')
         AND lower(e.data) LIKE '%restart%'
+        AND e.org_id = :org_id
       GROUP BY project
       ORDER BY count DESC
     `);
@@ -654,7 +656,7 @@ router.get('/api/conversations', (req, res) => {
   };
   const typeFilter = filterMap[filter] !== undefined ? filterMap[filter] : null;
 
-  let whereClause = typeFilter ? `WHERE event_type IN ${typeFilter}` : '';
+  let whereClause = typeFilter ? `WHERE org_id = :org_id AND event_type IN ${typeFilter}` : 'WHERE org_id = :org_id';
   const params = { ':limit': limit, ':offset': offset };
 
   if (search) {
@@ -666,16 +668,16 @@ router.get('/api/conversations', (req, res) => {
         return `data LIKE :q${i}`;
       });
       const combined = wordClauses.join(' AND ');
-      whereClause += whereClause ? ` AND (${combined})` : `WHERE (${combined})`;
+      whereClause += ` AND (${combined})`;
     }
   }
 
-  const events = all(
+  const events = allScoped(req,
     `SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT :limit OFFSET :offset`,
     params
   );
 
-  const total = get(`SELECT COUNT(*) as count FROM events ${whereClause}`, params);
+  const total = getScoped(req, `SELECT COUNT(*) as count FROM events ${whereClause}`, params);
 
   const conversations = events.map(e => {
     let data = {};
@@ -699,13 +701,13 @@ router.get('/api/conversations', (req, res) => {
 
 // GET /dashboard/api/projects
 router.get('/api/projects', (req, res) => {
-  const projects = all(`SELECT * FROM projects ORDER BY name`);
+  const projects = allScoped(req, `SELECT * FROM projects WHERE org_id = :org_id ORDER BY name`);
   res.json(projects);
 });
 
 // GET /dashboard/api/devices
 router.get('/api/devices', (req, res) => {
-  const devices = all(`SELECT * FROM devices ORDER BY last_seen DESC`);
+  const devices = allScoped(req, `SELECT * FROM devices WHERE org_id = :org_id ORDER BY last_seen DESC`);
   res.json(devices);
 });
 
@@ -723,7 +725,7 @@ router.get('/api/services', (req, res) => {
   });
 
   // Steward
-  const stewardEvent = get(`SELECT created_at FROM events WHERE event_type IN ('StewardHeartbeat','SessionStart') ORDER BY created_at DESC LIMIT 1`);
+  const stewardEvent = getScoped(req, `SELECT created_at FROM events WHERE event_type IN ('StewardHeartbeat','SessionStart') AND org_id = :org_id ORDER BY created_at DESC LIMIT 1`);
   if (stewardEvent) {
     const age = (Date.now() - new Date(stewardEvent.created_at).getTime()) / 1000;
     services.push({ category: 'PAN Core', name: 'Steward', status: age < 600 ? 'up' : 'unknown', detail: age < 600 ? 'Running' : 'No recent events' });
@@ -751,7 +753,7 @@ router.get('/api/services', (req, res) => {
   }
 
   // Devices
-  const devices = all(`SELECT * FROM devices ORDER BY last_seen DESC`);
+  const devices = allScoped(req, `SELECT * FROM devices WHERE org_id = :org_id ORDER BY last_seen DESC`);
   for (const d of devices) {
     const ageSec = d.last_seen ? (Date.now() - new Date(d.last_seen).getTime()) / 1000 : Infinity;
     // PC running this server is ALWAYS online
@@ -771,7 +773,7 @@ router.get('/api/services', (req, res) => {
 // GET /dashboard/api/sessions
 router.get('/api/sessions', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 50, 200);
-  const sessions = all(`SELECT * FROM sessions ORDER BY started_at DESC LIMIT :limit`, { ':limit': limit });
+  const sessions = allScoped(req, `SELECT * FROM sessions WHERE org_id = :org_id ORDER BY started_at DESC LIMIT :limit`, { ':limit': limit });
   res.json(sessions);
 });
 
@@ -780,10 +782,10 @@ router.delete('/api/events/:id', (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ error: 'invalid id' });
 
-  const existing = get(`SELECT id FROM events WHERE id = :id`, { ':id': id });
+  const existing = getScoped(req, `SELECT id FROM events WHERE id = :id AND org_id = :org_id`, { ':id': id });
   if (!existing) return res.status(404).json({ error: 'not found' });
 
-  run(`DELETE FROM events WHERE id = :id`, { ':id': id });
+  runScoped(req, `DELETE FROM events WHERE id = :id AND org_id = :org_id`, { ':id': id });
   res.json({ ok: true, deleted: id });
 });
 
@@ -791,17 +793,17 @@ router.delete('/api/events/:id', (req, res) => {
 router.delete('/api/events/bulk', (req, res) => {
   if (req.query.confirm !== 'yes') return res.status(400).json({ error: 'missing confirm' });
 
-  let where = [];
+  let where = ['org_id = :org_id'];
   let params = {};
   if (req.query.type) { where.push("event_type = :type"); params[':type'] = req.query.type; }
   if (req.query.date) { where.push("date(created_at) = :date"); params[':date'] = req.query.date; }
   if (req.query.q) { where.push("data LIKE :q"); params[':q'] = `%${req.query.q}%`; }
 
-  if (where.length === 0) return res.status(400).json({ error: 'no filters specified' });
+  if (where.length <= 1) return res.status(400).json({ error: 'no filters specified' });
 
   const whereClause = `WHERE ${where.join(' AND ')}`;
-  const count = get(`SELECT COUNT(*) as count FROM events ${whereClause}`, params);
-  run(`DELETE FROM events ${whereClause}`, params);
+  const count = getScoped(req, `SELECT COUNT(*) as count FROM events ${whereClause}`, params);
+  runScoped(req, `DELETE FROM events ${whereClause}`, params);
   res.json({ ok: true, deleted_count: count?.count || 0 });
 });
 
@@ -812,17 +814,17 @@ router.delete('/api/events/day/:date', (req, res) => {
     return res.status(400).json({ error: 'invalid date format, use YYYY-MM-DD' });
   }
 
-  const count = get(`SELECT COUNT(*) as count FROM events WHERE date(created_at) = :date`, { ':date': date });
-  run(`DELETE FROM events WHERE date(created_at) = :date`, { ':date': date });
+  const count = getScoped(req, `SELECT COUNT(*) as count FROM events WHERE date(created_at) = :date AND org_id = :org_id`, { ':date': date });
+  runScoped(req, `DELETE FROM events WHERE date(created_at) = :date AND org_id = :org_id`, { ':date': date });
   res.json({ ok: true, deleted_count: count?.count || 0, date });
 });
 
 // POST /dashboard/api/memory/cleanup — nuke all old memory_items (state file replaces them)
 router.post('/api/memory/cleanup', (req, res) => {
-  const before = get(`SELECT COUNT(*) as count FROM memory_items`);
+  const before = getScoped(req, `SELECT COUNT(*) as count FROM memory_items WHERE org_id = :org_id`);
   // Keep only 'processed' markers (used by classifier to track which events were seen)
-  const result = run(`DELETE FROM memory_items WHERE item_type != 'processed'`);
-  const remaining = get(`SELECT COUNT(*) as count FROM memory_items`);
+  const result = runScoped(req, `DELETE FROM memory_items WHERE item_type != 'processed' AND org_id = :org_id`);
+  const remaining = getScoped(req, `SELECT COUNT(*) as count FROM memory_items WHERE org_id = :org_id`);
   res.json({ ok: true, deleted: result?.changes || 0, before: before?.count || 0, remaining: remaining?.count || 0 });
 });
 
@@ -831,10 +833,10 @@ router.delete('/api/memory/:id', (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ error: 'invalid id' });
 
-  const existing = get(`SELECT id FROM memory_items WHERE id = :id`, { ':id': id });
+  const existing = getScoped(req, `SELECT id FROM memory_items WHERE id = :id AND org_id = :org_id`, { ':id': id });
   if (!existing) return res.status(404).json({ error: 'not found' });
 
-  run(`DELETE FROM memory_items WHERE id = :id`, { ':id': id });
+  runScoped(req, `DELETE FROM memory_items WHERE id = :id AND org_id = :org_id`, { ':id': id });
   res.json({ ok: true, deleted: id });
 });
 
@@ -844,11 +846,11 @@ router.delete('/api/all', (req, res) => {
     return res.status(400).json({ error: 'must pass ?confirm=yes' });
   }
 
-  run(`DELETE FROM events`);
-  run(`DELETE FROM memory_items`);
-  run(`DELETE FROM sessions`);
-  run(`DELETE FROM command_queue`);
-  run(`DELETE FROM command_logs`);
+  runScoped(req, `DELETE FROM events WHERE org_id = :org_id`);
+  runScoped(req, `DELETE FROM memory_items WHERE org_id = :org_id`);
+  runScoped(req, `DELETE FROM sessions WHERE org_id = :org_id`);
+  runScoped(req, `DELETE FROM command_queue WHERE org_id = :org_id`);
+  runScoped(req, `DELETE FROM command_logs WHERE org_id = :org_id`);
 
   res.json({ ok: true, message: 'all data deleted' });
 });
@@ -893,24 +895,24 @@ router.patch('/api/scout/:id', (req, res) => {
 // GET /dashboard/api/progress — project progress for WezTerm sidebar
 // Returns all projects with milestone/task completion percentages
 router.get('/api/progress', (req, res) => {
-  const projects = all("SELECT * FROM projects ORDER BY name");
+  const projects = allScoped(req, "SELECT * FROM projects WHERE org_id = :org_id ORDER BY name");
 
   const result = projects.map(p => {
     // Get milestones for this project
-    const milestones = all(
-      "SELECT * FROM project_milestones WHERE project_id = :pid ORDER BY sort_order, name",
+    const milestones = allScoped(req,
+      "SELECT * FROM project_milestones WHERE project_id = :pid AND org_id = :org_id ORDER BY sort_order, name",
       { ':pid': p.id }
     );
 
     // Get task counts per milestone and overall
-    const totalTasks = get(
-      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid",
+    const totalTasks = getScoped(req,
+      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND org_id = :org_id",
       { ':pid': p.id }
     );
 
     const milestonesWithProgress = milestones.map(m => {
-      const mTasks = get(
-        "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE milestone_id = :mid",
+      const mTasks = getScoped(req,
+        "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE milestone_id = :mid AND org_id = :org_id",
         { ':mid': m.id }
       );
       const total = mTasks?.total || 0;
@@ -928,8 +930,8 @@ router.get('/api/progress', (req, res) => {
     });
 
     // Uncategorized tasks (no milestone)
-    const uncategorized = get(
-      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND milestone_id IS NULL",
+    const uncategorized = getScoped(req,
+      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND milestone_id IS NULL AND org_id = :org_id",
       { ':pid': p.id }
     );
 
@@ -938,7 +940,7 @@ router.get('/api/progress', (req, res) => {
     const inProgress = totalTasks?.in_progress || 0;
 
     // Session count for activity
-    const sessionCount = get("SELECT COUNT(*) as c FROM sessions WHERE project_id = :pid", { ':pid': p.id });
+    const sessionCount = getScoped(req, "SELECT COUNT(*) as c FROM sessions WHERE project_id = :pid AND org_id = :org_id", { ':pid': p.id });
 
     return {
       id: p.id,
@@ -957,8 +959,8 @@ router.get('/api/progress', (req, res) => {
   });
 
   // Activity stats
-  const totalEvents = get("SELECT COUNT(*) as c FROM events")?.c || 0;
-  const deviceCount = get("SELECT COUNT(*) as c FROM devices")?.c || 0;
+  const totalEvents = getScoped(req, "SELECT COUNT(*) as c FROM events WHERE org_id = :org_id")?.c || 0;
+  const deviceCount = getScoped(req, "SELECT COUNT(*) as c FROM devices WHERE org_id = :org_id")?.c || 0;
 
   res.json({
     projects: result,
@@ -970,12 +972,12 @@ router.get('/api/progress', (req, res) => {
 // GET /dashboard/api/projects/:id/tasks — all tasks for a project
 router.get('/api/projects/:id/tasks', (req, res) => {
   const pid = parseInt(req.params.id);
-  const milestones = all(
-    "SELECT * FROM project_milestones WHERE project_id = :pid ORDER BY sort_order, name",
+  const milestones = allScoped(req,
+    "SELECT * FROM project_milestones WHERE project_id = :pid AND org_id = :org_id ORDER BY sort_order, name",
     { ':pid': pid }
   );
-  const tasks = all(
-    "SELECT * FROM project_tasks WHERE project_id = :pid ORDER BY milestone_id, sort_order, title",
+  const tasks = allScoped(req,
+    "SELECT * FROM project_tasks WHERE project_id = :pid AND org_id = :org_id ORDER BY milestone_id, sort_order, title",
     { ':pid': pid }
   );
   res.json({ milestones, tasks });
@@ -986,9 +988,9 @@ router.post('/api/projects/:id/milestones', (req, res) => {
   const pid = parseInt(req.params.id);
   const { name, description } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
-  const maxOrder = get("SELECT MAX(sort_order) as m FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
-  const id = insert(
-    "INSERT INTO project_milestones (project_id, name, description, sort_order) VALUES (:pid, :name, :desc, :order)",
+  const maxOrder = getScoped(req, "SELECT MAX(sort_order) as m FROM project_milestones WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  const id = insertScoped(req,
+    "INSERT INTO project_milestones (project_id, name, description, sort_order, org_id) VALUES (:pid, :name, :desc, :order, :org_id)",
     { ':pid': pid, ':name': name, ':desc': description || null, ':order': (maxOrder?.m || 0) + 1 }
   );
   res.json({ id, name });
@@ -999,9 +1001,9 @@ router.post('/api/projects/:id/tasks', (req, res) => {
   const pid = parseInt(req.params.id);
   const { title, description, milestone_id, status, priority } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
-  const maxOrder = get("SELECT MAX(sort_order) as m FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
-  const id = insert(
-    "INSERT INTO project_tasks (project_id, milestone_id, title, description, status, priority, sort_order) VALUES (:pid, :mid, :title, :desc, :status, :pri, :order)",
+  const maxOrder = getScoped(req, "SELECT MAX(sort_order) as m FROM project_tasks WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  const id = insertScoped(req,
+    "INSERT INTO project_tasks (project_id, milestone_id, title, description, status, priority, sort_order, org_id) VALUES (:pid, :mid, :title, :desc, :status, :pri, :order, :org_id)",
     {
       ':pid': pid,
       ':mid': milestone_id || null,
@@ -1019,7 +1021,7 @@ router.post('/api/projects/:id/tasks', (req, res) => {
 router.put('/api/tasks/:id', (req, res) => {
   const id = parseInt(req.params.id);
   const { title, description, status, priority, milestone_id } = req.body;
-  const existing = get("SELECT * FROM project_tasks WHERE id = :id", { ':id': id });
+  const existing = getScoped(req, "SELECT * FROM project_tasks WHERE id = :id AND org_id = :org_id", { ':id': id });
   if (!existing) return res.status(404).json({ error: 'not found' });
 
   const updates = [];
@@ -1042,22 +1044,22 @@ router.put('/api/tasks/:id', (req, res) => {
 
   if (updates.length === 0) return res.json({ ok: true, unchanged: true });
 
-  run(`UPDATE project_tasks SET ${updates.join(', ')} WHERE id = :id`, params);
+  runScoped(req, `UPDATE project_tasks SET ${updates.join(', ')} WHERE id = :id AND org_id = :org_id`, params);
   res.json({ ok: true });
 });
 
 // DELETE /dashboard/api/tasks/:id
 router.delete('/api/tasks/:id', (req, res) => {
   const id = parseInt(req.params.id);
-  run("DELETE FROM project_tasks WHERE id = :id", { ':id': id });
+  runScoped(req, "DELETE FROM project_tasks WHERE id = :id AND org_id = :org_id", { ':id': id });
   res.json({ ok: true });
 });
 
 // DELETE /dashboard/api/milestones/:id — also deletes child tasks
 router.delete('/api/milestones/:id', (req, res) => {
   const id = parseInt(req.params.id);
-  run("DELETE FROM project_tasks WHERE milestone_id = :id", { ':id': id });
-  run("DELETE FROM project_milestones WHERE id = :id", { ':id': id });
+  runScoped(req, "DELETE FROM project_tasks WHERE milestone_id = :id AND org_id = :org_id", { ':id': id });
+  runScoped(req, "DELETE FROM project_milestones WHERE id = :id AND org_id = :org_id", { ':id': id });
   res.json({ ok: true });
 });
 
@@ -1071,16 +1073,16 @@ router.post('/api/projects/:id/bulk-tasks', (req, res) => {
   let milestoneId = null;
   if (milestone_name) {
     // Find or create milestone
-    const existing = get(
-      "SELECT id FROM project_milestones WHERE project_id = :pid AND name = :name",
+    const existing = getScoped(req,
+      "SELECT id FROM project_milestones WHERE project_id = :pid AND name = :name AND org_id = :org_id",
       { ':pid': pid, ':name': milestone_name }
     );
     if (existing) {
       milestoneId = existing.id;
     } else {
-      const maxOrder = get("SELECT MAX(sort_order) as m FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
-      milestoneId = insert(
-        "INSERT INTO project_milestones (project_id, name, sort_order) VALUES (:pid, :name, :order)",
+      const maxOrder = getScoped(req, "SELECT MAX(sort_order) as m FROM project_milestones WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+      milestoneId = insertScoped(req,
+        "INSERT INTO project_milestones (project_id, name, sort_order, org_id) VALUES (:pid, :name, :order, :org_id)",
         { ':pid': pid, ':name': milestone_name, ':order': (maxOrder?.m || 0) + 1 }
       );
     }
@@ -1091,8 +1093,8 @@ router.post('/api/projects/:id/bulk-tasks', (req, res) => {
     const title = typeof task === 'string' ? task : task.title;
     const status = (typeof task === 'object' && task.status) || 'todo';
     if (!title) continue;
-    insert(
-      "INSERT INTO project_tasks (project_id, milestone_id, title, status, sort_order) VALUES (:pid, :mid, :title, :status, :order)",
+    insertScoped(req,
+      "INSERT INTO project_tasks (project_id, milestone_id, title, status, sort_order, org_id) VALUES (:pid, :mid, :title, :status, :order, :org_id)",
       { ':pid': pid, ':mid': milestoneId, ':title': title, ':status': status, ':order': created }
     );
     created++;
@@ -1117,20 +1119,20 @@ router.put('/api/projects/:id/bulk-tasks', (req, res) => {
       if (task.status) { sets.push('status = :status'); params[':status'] = task.status; }
       if (task.priority != null) { sets.push('priority = :priority'); params[':priority'] = task.priority; }
       if (sets.length > 0) {
-        run(`UPDATE project_tasks SET ${sets.join(', ')} WHERE id = :id`, params);
+        runScoped(req, `UPDATE project_tasks SET ${sets.join(', ')} WHERE id = :id AND org_id = :org_id`, params);
         updated++;
       }
     } else if (task.title) {
       // Create new — find/create milestone if specified
       let mid = task.milestone_id || null;
       if (!mid && task.milestone_name) {
-        const existing = get("SELECT id FROM project_milestones WHERE project_id = :pid AND name = :name",
+        const existing = getScoped(req, "SELECT id FROM project_milestones WHERE project_id = :pid AND name = :name AND org_id = :org_id",
           { ':pid': pid, ':name': task.milestone_name });
         if (existing) mid = existing.id;
-        else mid = insert("INSERT INTO project_milestones (project_id, name) VALUES (:pid, :name)",
+        else mid = insertScoped(req, "INSERT INTO project_milestones (project_id, name, org_id) VALUES (:pid, :name, :org_id)",
           { ':pid': pid, ':name': task.milestone_name });
       }
-      insert("INSERT INTO project_tasks (project_id, milestone_id, title, status, priority) VALUES (:pid, :mid, :title, :status, :pri)",
+      insertScoped(req, "INSERT INTO project_tasks (project_id, milestone_id, title, status, priority, org_id) VALUES (:pid, :mid, :title, :status, :pri, :org_id)",
         { ':pid': pid, ':mid': mid, ':title': task.title, ':status': task.status || 'todo', ':pri': task.priority || 0 });
       created++;
     }
@@ -1142,10 +1144,10 @@ router.put('/api/projects/:id/bulk-tasks', (req, res) => {
 router.delete('/api/projects/:id/all-tasks', (req, res) => {
   const pid = parseInt(req.params.id);
   const deleteMilestones = req.query.milestones === 'true';
-  const taskCount = get("SELECT COUNT(*) as c FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
-  run("DELETE FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
+  const taskCount = getScoped(req, "SELECT COUNT(*) as c FROM project_tasks WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  runScoped(req, "DELETE FROM project_tasks WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
   if (deleteMilestones) {
-    run("DELETE FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
+    runScoped(req, "DELETE FROM project_milestones WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
   }
   res.json({ ok: true, deleted: taskCount?.c || 0, milestones_deleted: deleteMilestones });
 });
@@ -1153,17 +1155,17 @@ router.delete('/api/projects/:id/all-tasks', (req, res) => {
 // DELETE /dashboard/api/projects/:id — unlink a project from PAN (removes DB records + .pan file, does NOT delete project files)
 router.delete('/api/projects/:id', (req, res) => {
   const pid = parseInt(req.params.id);
-  const proj = get("SELECT * FROM projects WHERE id = :pid", { ':pid': pid });
+  const proj = getScoped(req, "SELECT * FROM projects WHERE id = :pid AND org_id = :org_id", { ':pid': pid });
   if (!proj) return res.status(404).json({ error: 'Project not found' });
 
   // Remove all PAN data for this project (nullify session links, don't delete history)
-  run("UPDATE sessions SET project_id = NULL WHERE project_id = :pid", { ':pid': pid });
-  run("DELETE FROM section_items WHERE project_id = :pid", { ':pid': pid });
-  run("DELETE FROM project_tasks WHERE project_id = :pid", { ':pid': pid });
-  run("DELETE FROM project_milestones WHERE project_id = :pid", { ':pid': pid });
-  run("DELETE FROM project_sections WHERE project_id = :pid", { ':pid': pid });
-  run("DELETE FROM open_tabs WHERE project_id = :pid", { ':pid': pid });
-  run("DELETE FROM projects WHERE id = :pid", { ':pid': pid });
+  runScoped(req, "UPDATE sessions SET project_id = NULL WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  runScoped(req, "DELETE FROM section_items WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  runScoped(req, "DELETE FROM project_tasks WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  runScoped(req, "DELETE FROM project_milestones WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  runScoped(req, "DELETE FROM project_sections WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  runScoped(req, "DELETE FROM open_tabs WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  runScoped(req, "DELETE FROM projects WHERE id = :pid AND org_id = :org_id", { ':pid': pid });
 
   // Remove .pan file so sync doesn't re-add it
   try {
@@ -1181,11 +1183,11 @@ router.delete('/api/projects/:id', (req, res) => {
 router.get('/api/tasks/search', (req, res) => {
   const q = req.query.q || '';
   const status = req.query.status || null;
-  let where = ['1=1'];
+  let where = ['t.org_id = :org_id'];
   let params = {};
   if (q) { where.push('t.title LIKE :q'); params[':q'] = `%${q}%`; }
   if (status) { where.push('t.status = :status'); params[':status'] = status; }
-  const tasks = all(`SELECT t.*, p.name as project_name, m.name as milestone_name
+  const tasks = allScoped(req, `SELECT t.*, p.name as project_name, m.name as milestone_name
     FROM project_tasks t
     JOIN projects p ON p.id = t.project_id
     LEFT JOIN project_milestones m ON m.id = t.milestone_id
@@ -1206,46 +1208,46 @@ router.post('/api/open-tabs', (req, res) => {
   if (openIds.length > 0) {
     const params = {};
     const placeholders = openIds.map((id, i) => { params[`:s${i}`] = id; return `:s${i}`; }).join(',');
-    run(`UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE session_id NOT IN (${placeholders}) AND closed_at IS NULL`, params);
+    runScoped(req, `UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE session_id NOT IN (${placeholders}) AND closed_at IS NULL AND org_id = :org_id`, params);
   } else {
-    run("UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE closed_at IS NULL");
+    runScoped(req, "UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE closed_at IS NULL AND org_id = :org_id");
   }
 
   // Upsert each open tab — reuse closed tabs with same name+project instead of creating duplicates
   for (let i = 0; i < tabs.length; i++) {
     const tab = tabs[i];
     if (!tab.session_id) continue;
-    const existing = get("SELECT id FROM open_tabs WHERE session_id = :sid", { ':sid': tab.session_id });
+    const existing = getScoped(req, "SELECT id FROM open_tabs WHERE session_id = :sid AND org_id = :org_id", { ':sid': tab.session_id });
     if (existing) {
-      run(
+      runScoped(req,
         `UPDATE open_tabs SET tab_name = :name, project_id = :pid, cwd = :cwd, tab_index = :idx,
          claude_session_ids = :csids, closed_at = NULL, last_active = datetime('now','localtime')
-         WHERE session_id = :sid`,
+         WHERE session_id = :sid AND org_id = :org_id`,
         { ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null,
           ':cwd': tab.cwd || null, ':idx': i, ':csids': tab.claude_session_ids || '[]' }
       );
     } else {
       // Check for a closed tab with the same name+project — reuse it instead of creating a duplicate
       const closedDupe = tab.project_id
-        ? get("SELECT id FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL ORDER BY last_active DESC LIMIT 1",
+        ? getScoped(req, "SELECT id FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL AND org_id = :org_id ORDER BY last_active DESC LIMIT 1",
             { ':name': tab.tab_name || '', ':pid': tab.project_id })
         : null;
       if (closedDupe) {
         // Reuse the closed row: update session_id and reopen
-        run(
+        runScoped(req,
           `UPDATE open_tabs SET session_id = :sid, tab_name = :name, project_id = :pid, cwd = :cwd, tab_index = :idx,
            claude_session_ids = :csids, closed_at = NULL, last_active = datetime('now','localtime')
-           WHERE id = :id`,
+           WHERE id = :id AND org_id = :org_id`,
           { ':id': closedDupe.id, ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null,
             ':cwd': tab.cwd || null, ':idx': i, ':csids': tab.claude_session_ids || '[]' }
         );
         // Purge any other closed duplicates with same name+project
-        run("DELETE FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL",
+        runScoped(req, "DELETE FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL AND org_id = :org_id",
           { ':name': tab.tab_name || '', ':pid': tab.project_id });
       } else {
-        insert(
-          `INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index, claude_session_ids)
-           VALUES (:sid, :name, :pid, :cwd, :idx, :csids)`,
+        insertScoped(req,
+          `INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index, claude_session_ids, org_id)
+           VALUES (:sid, :name, :pid, :cwd, :idx, :csids, :org_id)`,
           { ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null,
             ':cwd': tab.cwd || null, ':idx': i, ':csids': tab.claude_session_ids || '[]' }
         );
@@ -1259,7 +1261,7 @@ router.post('/api/open-tabs', (req, res) => {
 router.put('/api/open-tabs/:sessionId', (req, res) => {
   const sessionId = req.params.sessionId;
   const { tab_name, project_id, cwd, tab_index, claude_session_ids } = req.body;
-  const existing = get("SELECT * FROM open_tabs WHERE session_id = :sid", { ':sid': sessionId });
+  const existing = getScoped(req, "SELECT * FROM open_tabs WHERE session_id = :sid AND org_id = :org_id", { ':sid': sessionId });
   if (existing) {
     const updates = [];
     const params = { ':sid': sessionId };
@@ -1269,29 +1271,29 @@ router.put('/api/open-tabs/:sessionId', (req, res) => {
     if (tab_index !== undefined) { updates.push("tab_index = :idx"); params[':idx'] = tab_index; }
     if (claude_session_ids !== undefined) { updates.push("claude_session_ids = :csids"); params[':csids'] = JSON.stringify(claude_session_ids); }
     updates.push("last_active = datetime('now','localtime')");
-    if (updates.length > 0) run(`UPDATE open_tabs SET ${updates.join(', ')} WHERE session_id = :sid`, params);
+    if (updates.length > 0) runScoped(req, `UPDATE open_tabs SET ${updates.join(', ')} WHERE session_id = :sid AND org_id = :org_id`, params);
     res.json({ ok: true, action: 'updated' });
   } else {
     // Check for closed tab with same name+project to reuse
     const closedDupe = project_id
-      ? get("SELECT id FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL ORDER BY last_active DESC LIMIT 1",
+      ? getScoped(req, "SELECT id FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL AND org_id = :org_id ORDER BY last_active DESC LIMIT 1",
           { ':name': tab_name || '', ':pid': project_id })
       : null;
     if (closedDupe) {
-      run(
+      runScoped(req,
         `UPDATE open_tabs SET session_id = :sid, tab_name = :name, project_id = :pid, cwd = :cwd, tab_index = :idx,
          claude_session_ids = :csids, closed_at = NULL, last_active = datetime('now','localtime')
-         WHERE id = :id`,
+         WHERE id = :id AND org_id = :org_id`,
         { ':id': closedDupe.id, ':sid': sessionId, ':name': tab_name || '', ':pid': project_id || null,
           ':cwd': cwd || null, ':idx': tab_index || 0, ':csids': JSON.stringify(claude_session_ids || []) }
       );
-      run("DELETE FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL",
+      runScoped(req, "DELETE FROM open_tabs WHERE tab_name = :name AND project_id = :pid AND closed_at IS NOT NULL AND org_id = :org_id",
         { ':name': tab_name || '', ':pid': project_id });
       res.json({ ok: true, action: 'reused' });
     } else {
-      insert(
-        `INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index, claude_session_ids)
-         VALUES (:sid, :name, :pid, :cwd, :idx, :csids)`,
+      insertScoped(req,
+        `INSERT INTO open_tabs (session_id, tab_name, project_id, cwd, tab_index, claude_session_ids, org_id)
+         VALUES (:sid, :name, :pid, :cwd, :idx, :csids, :org_id)`,
         { ':sid': sessionId, ':name': tab_name || '', ':pid': project_id || null, ':cwd': cwd || null,
           ':idx': tab_index || 0, ':csids': JSON.stringify(claude_session_ids || []) }
       );
@@ -1304,7 +1306,7 @@ router.put('/api/open-tabs/:sessionId', (req, res) => {
 router.patch('/api/open-tabs/:sessionId/rename', (req, res) => {
   const { name } = req.body;
   if (name === undefined) return res.status(400).json({ error: 'name required' });
-  run("UPDATE open_tabs SET tab_name = :name, last_active = datetime('now','localtime') WHERE session_id = :sid",
+  runScoped(req, "UPDATE open_tabs SET tab_name = :name, last_active = datetime('now','localtime') WHERE session_id = :sid AND org_id = :org_id",
     { ':name': name, ':sid': req.params.sessionId });
   // Rename the per-tab transcript file to match the new tab name
   try { setSessionName(req.params.sessionId, name); } catch {}
@@ -1313,23 +1315,23 @@ router.patch('/api/open-tabs/:sessionId/rename', (req, res) => {
 
 // DELETE /dashboard/api/open-tabs/:sessionId — mark tab as closed (never delete)
 router.delete('/api/open-tabs/:sessionId', (req, res) => {
-  run("UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE session_id = :sid", { ':sid': req.params.sessionId });
+  runScoped(req, "UPDATE open_tabs SET closed_at = datetime('now','localtime') WHERE session_id = :sid AND org_id = :org_id", { ':sid': req.params.sessionId });
   res.json({ ok: true });
 });
 
 // DELETE /dashboard/api/open-tabs/:id/purge — permanently delete a closed tab
 router.delete('/api/open-tabs/:id/purge', (req, res) => {
   const id = parseInt(req.params.id);
-  run("DELETE FROM open_tabs WHERE id = :id AND closed_at IS NOT NULL", { ':id': id });
+  runScoped(req, "DELETE FROM open_tabs WHERE id = :id AND closed_at IS NOT NULL AND org_id = :org_id", { ':id': id });
   res.json({ ok: true });
 });
 
 // Custom sections per project
 router.get('/api/projects/:id/sections', (req, res) => {
   const pid = parseInt(req.params.id);
-  const sections = all("SELECT * FROM project_sections WHERE project_id = :pid ORDER BY sort_order, name", { ':pid': pid });
+  const sections = allScoped(req, "SELECT * FROM project_sections WHERE project_id = :pid AND org_id = :org_id ORDER BY sort_order, name", { ':pid': pid });
   const result = sections.map(s => {
-    const items = all("SELECT * FROM section_items WHERE section_id = :sid ORDER BY sort_order", { ':sid': s.id });
+    const items = allScoped(req, "SELECT * FROM section_items WHERE section_id = :sid AND org_id = :org_id ORDER BY sort_order", { ':sid': s.id });
     return { ...s, items };
   });
   res.json(result);
@@ -1339,9 +1341,9 @@ router.post('/api/projects/:id/sections', (req, res) => {
   const pid = parseInt(req.params.id);
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
-  const maxOrder = get("SELECT MAX(sort_order) as m FROM project_sections WHERE project_id = :pid", { ':pid': pid });
-  const id = insert(
-    "INSERT INTO project_sections (project_id, name, sort_order) VALUES (:pid, :name, :order)",
+  const maxOrder = getScoped(req, "SELECT MAX(sort_order) as m FROM project_sections WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
+  const id = insertScoped(req,
+    "INSERT INTO project_sections (project_id, name, sort_order, org_id) VALUES (:pid, :name, :order, :org_id)",
     { ':pid': pid, ':name': name, ':order': (maxOrder?.m || 0) + 1 }
   );
   res.json({ id, name });
@@ -1349,19 +1351,19 @@ router.post('/api/projects/:id/sections', (req, res) => {
 
 router.delete('/api/sections/:id', (req, res) => {
   const id = parseInt(req.params.id);
-  run("DELETE FROM section_items WHERE section_id = :id", { ':id': id });
-  run("DELETE FROM project_sections WHERE id = :id", { ':id': id });
+  runScoped(req, "DELETE FROM section_items WHERE section_id = :id AND org_id = :org_id", { ':id': id });
+  runScoped(req, "DELETE FROM project_sections WHERE id = :id AND org_id = :org_id", { ':id': id });
   res.json({ ok: true });
 });
 
 router.post('/api/sections/:id/items', (req, res) => {
   const sid = parseInt(req.params.id);
-  const section = get("SELECT * FROM project_sections WHERE id = :id", { ':id': sid });
+  const section = getScoped(req, "SELECT * FROM project_sections WHERE id = :id AND org_id = :org_id", { ':id': sid });
   if (!section) return res.status(404).json({ error: 'section not found' });
   const { content } = req.body;
   if (!content) return res.status(400).json({ error: 'content required' });
-  const id = insert(
-    "INSERT INTO section_items (section_id, project_id, content) VALUES (:sid, :pid, :content)",
+  const id = insertScoped(req,
+    "INSERT INTO section_items (section_id, project_id, content, org_id) VALUES (:sid, :pid, :content, :org_id)",
     { ':sid': sid, ':pid': section.project_id, ':content': content }
   );
   res.json({ id, content });
@@ -1375,22 +1377,22 @@ router.put('/api/section-items/:id', (req, res) => {
   if (status !== undefined) { updates.push("status = :status"); params[':status'] = status; }
   if (content !== undefined) { updates.push("content = :content"); params[':content'] = content; }
   if (updates.length === 0) return res.json({ ok: true });
-  run(`UPDATE section_items SET ${updates.join(', ')} WHERE id = :id`, params);
+  runScoped(req, `UPDATE section_items SET ${updates.join(', ')} WHERE id = :id AND org_id = :org_id`, params);
   res.json({ ok: true });
 });
 
 router.delete('/api/section-items/:id', (req, res) => {
-  run("DELETE FROM section_items WHERE id = :id", { ':id': parseInt(req.params.id) });
+  runScoped(req, "DELETE FROM section_items WHERE id = :id AND org_id = :org_id", { ':id': parseInt(req.params.id) });
   res.json({ ok: true });
 });
 
 // GET /dashboard/api/open-tabs — get all open (not closed) tabs for session restore
 router.get('/api/open-tabs', (req, res) => {
-  const tabs = all(`
+  const tabs = allScoped(req, `
     SELECT ot.*, p.name as project_name, p.path as project_path
     FROM open_tabs ot
     LEFT JOIN projects p ON p.id = ot.project_id
-    WHERE ot.closed_at IS NULL
+    WHERE ot.closed_at IS NULL AND ot.org_id = :org_id
     ORDER BY ot.tab_index
   `);
   res.json(tabs);
@@ -1401,18 +1403,19 @@ router.get('/api/all-tabs', (req, res) => {
   const projectId = req.query.project_id;
   let tabs;
   if (projectId) {
-    tabs = all(`
+    tabs = allScoped(req, `
       SELECT ot.*, p.name as project_name, p.path as project_path
       FROM open_tabs ot
       LEFT JOIN projects p ON p.id = ot.project_id
-      WHERE ot.project_id = :pid
+      WHERE ot.project_id = :pid AND ot.org_id = :org_id
       ORDER BY ot.closed_at IS NULL DESC, ot.last_active DESC
     `, { ':pid': projectId });
   } else {
-    tabs = all(`
+    tabs = allScoped(req, `
       SELECT ot.*, p.name as project_name, p.path as project_path
       FROM open_tabs ot
       LEFT JOIN projects p ON p.id = ot.project_id
+      WHERE ot.org_id = :org_id
       ORDER BY ot.closed_at IS NULL DESC, ot.last_active DESC
     `);
   }
@@ -1422,9 +1425,9 @@ router.get('/api/all-tabs', (req, res) => {
 // POST /dashboard/api/open-tabs/:id/reopen — reopen a closed tab
 router.post('/api/open-tabs/:id/reopen', (req, res) => {
   const id = parseInt(req.params.id);
-  const tab = get("SELECT * FROM open_tabs WHERE id = :id", { ':id': id });
+  const tab = getScoped(req, "SELECT * FROM open_tabs WHERE id = :id AND org_id = :org_id", { ':id': id });
   if (!tab) return res.status(404).json({ error: 'tab not found' });
-  run("UPDATE open_tabs SET closed_at = NULL, last_active = datetime('now','localtime') WHERE id = :id", { ':id': id });
+  runScoped(req, "UPDATE open_tabs SET closed_at = NULL, last_active = datetime('now','localtime') WHERE id = :id AND org_id = :org_id", { ':id': id });
   res.json({ ok: true, tab });
 });
 
@@ -1461,25 +1464,25 @@ router.get('/api/alerts', (req, res) => {
   const type = req.query.type || null;
   const limit = Math.min(parseInt(req.query.limit) || 50, 200);
 
-  const conditions = [];
+  const conditions = ['org_id = :org_id'];
   const params = {};
   if (status !== 'all') { conditions.push('status = :status'); params[':status'] = status; }
   if (type) { conditions.push('alert_type = :type'); params[':type'] = type; }
 
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const alerts = all(`SELECT * FROM alerts ${where} ORDER BY created_at DESC LIMIT ${limit}`, params);
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const alerts = allScoped(req, `SELECT * FROM alerts ${where} ORDER BY created_at DESC LIMIT ${limit}`, params);
   res.json(alerts);
 });
 
 // GET /dashboard/api/alerts/count — count open alerts (for badge)
 router.get('/api/alerts/count', (req, res) => {
-  const row = get("SELECT COUNT(*) as count FROM alerts WHERE status = 'open'");
+  const row = getScoped(req, "SELECT COUNT(*) as count FROM alerts WHERE status = 'open' AND org_id = :org_id");
   res.json({ count: row?.count || 0 });
 });
 
 // GET /dashboard/api/alerts/:id — single alert detail
 router.get('/api/alerts/:id', (req, res) => {
-  const alert = get("SELECT * FROM alerts WHERE id = :id", { ':id': parseInt(req.params.id) });
+  const alert = getScoped(req, "SELECT * FROM alerts WHERE id = :id AND org_id = :org_id", { ':id': parseInt(req.params.id) });
   if (!alert) return res.status(404).json({ error: 'alert not found' });
   res.json(alert);
 });
@@ -1488,8 +1491,8 @@ router.get('/api/alerts/:id', (req, res) => {
 router.post('/api/alerts', (req, res) => {
   const { alert_type, severity, title, detail } = req.body;
   if (!alert_type || !title) return res.status(400).json({ error: 'alert_type and title required' });
-  const id = insert(
-    `INSERT INTO alerts (alert_type, severity, title, detail) VALUES (:type, :sev, :title, :detail)`,
+  const id = insertScoped(req,
+    `INSERT INTO alerts (alert_type, severity, title, detail, org_id) VALUES (:type, :sev, :title, :detail, :org_id)`,
     { ':type': alert_type, ':sev': severity || 'warning', ':title': title, ':detail': detail || '' }
   );
   try { broadcastNotification('widget_update', { widget: 'alerts' }); } catch {}
@@ -1499,7 +1502,7 @@ router.post('/api/alerts', (req, res) => {
 // PATCH /dashboard/api/alerts/:id — update alert status (acknowledge, resolve, dismiss)
 router.patch('/api/alerts/:id', (req, res) => {
   const id = parseInt(req.params.id);
-  const alert = get("SELECT * FROM alerts WHERE id = :id", { ':id': id });
+  const alert = getScoped(req, "SELECT * FROM alerts WHERE id = :id AND org_id = :org_id", { ':id': id });
   if (!alert) return res.status(404).json({ error: 'alert not found' });
 
   const { status, resolution, resolved_by } = req.body;
@@ -1509,9 +1512,9 @@ router.patch('/api/alerts/:id', (req, res) => {
   if (!validStatuses.includes(status)) return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
 
   const resolvedAt = (status === 'resolved' || status === 'dismissed') ? "datetime('now','localtime')" : 'NULL';
-  run(
+  runScoped(req,
     `UPDATE alerts SET status = :status, resolution = :resolution, resolved_by = :resolved_by,
-     updated_at = datetime('now','localtime'), resolved_at = ${resolvedAt} WHERE id = :id`,
+     updated_at = datetime('now','localtime'), resolved_at = ${resolvedAt} WHERE id = :id AND org_id = :org_id`,
     { ':id': id, ':status': status, ':resolution': resolution || null, ':resolved_by': resolved_by || 'user' }
   );
   try { broadcastNotification('widget_update', { widget: 'alerts' }); } catch {}
@@ -1520,15 +1523,15 @@ router.patch('/api/alerts/:id', (req, res) => {
 
 // Helper: create alert from server code (exported for use by steward, terminal, etc.)
 // Uses ALERT_TYPES registry for validation and default severity.
-export function createAlert({ alert_type, severity, title, detail = '' }) {
+export function createAlert({ alert_type, severity, title, detail = '', org_id = 1 }) {
   const typeMeta = ALERT_TYPES[alert_type];
   if (!typeMeta) {
     console.warn(`[Alerts] Unknown alert_type "${alert_type}" — add it to ALERT_TYPES in dashboard.js`);
   }
   const sev = severity || typeMeta?.defaultSeverity || 'warning';
   const result = insert(
-    `INSERT INTO alerts (alert_type, severity, title, detail) VALUES (:type, :sev, :title, :detail)`,
-    { ':type': alert_type, ':sev': sev, ':title': title, ':detail': detail }
+    `INSERT INTO alerts (alert_type, severity, title, detail, org_id) VALUES (:type, :sev, :title, :detail, :org_id)`,
+    { ':type': alert_type, ':sev': sev, ':title': title, ':detail': detail, ':org_id': org_id }
   );
   // Push to all connected dashboard clients so alerts panel updates instantly
   try { broadcastNotification('widget_update', { widget: 'alerts' }); } catch {}

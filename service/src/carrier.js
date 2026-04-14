@@ -527,6 +527,23 @@ const carrierServer = http.createServer((req, res) => {
     return;
   }
 
+  // Shutdown — kills Carrier and all children (used by PAN.bat quit path)
+  if (url.pathname === '/api/carrier/shutdown' && req.method === 'POST') {
+    res.writeHead(200); res.end('shutting down');
+    setTimeout(() => process.exit(0), 100);
+    return;
+  }
+
+  // Ready check — 200 only when Craft is healthy and proxying (used by PAN.bat)
+  if (url.pathname === '/api/carrier/ready') {
+    if (primaryCraft?.healthy) {
+      res.writeHead(200); res.end('ok');
+    } else {
+      res.writeHead(503); res.end('starting');
+    }
+    return;
+  }
+
   // Health check — Carrier is always healthy if it's responding
   if (url.pathname === '/health' || url.pathname === '/api/carrier/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });

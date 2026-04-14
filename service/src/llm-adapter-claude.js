@@ -22,6 +22,14 @@ export class ClaudeAdapter {
     this.busy = false;                    // True while a query is running
     this.abortController = null;          // For interrupting
     this._queryCount = 0;
+    this.model = null;                    // Override model — null = use CLI default
+    this._turnInputTokens = 0;           // Token counters for current turn
+    this._turnOutputTokens = 0;
+    this._turnCacheRead = 0;
+    this._turnCacheCreate = 0;
+    this.totalInputTokens = 0;           // Session totals
+    this.totalOutputTokens = 0;
+    this.totalCost = 0;
     if (resumeClaudeSessionId) {
       // Pre-set query count so the resume logic kicks in on first send
       this._queryCount = 1;
@@ -37,6 +45,12 @@ export class ClaudeAdapter {
     const isFirst = this._queryCount === 0;
     this._queryCount++;
 
+    // Reset per-turn token counters
+    this._turnInputTokens = 0;
+    this._turnOutputTokens = 0;
+    this._turnCacheRead = 0;
+    this._turnCacheCreate = 0;
+
     // Add user message to transcript
     this.messages.push({
       role: 'user', type: 'prompt',
@@ -49,7 +63,9 @@ export class ClaudeAdapter {
     const opts = {
       permissionMode: 'auto',
       cwd: this.cwd,
+      enableAllProjectMcpServers: true,  // picks up .mcp.json from cwd
     };
+    if (this.model) opts.model = this.model;
 
     // Resume previous session for multi-turn (or after server restart)
     if (this.claudeSessionId) {
@@ -74,15 +90,30 @@ export class ClaudeAdapter {
           console.log(`[Claude Adapter] Init: session=${msg.session_id}`);
 
         } else if (msg.type === 'assistant' && msg.message?.content) {
+          // Track token usage from this assistant response
+          const usage = msg.message.usage;
+          if (usage) {
+            this._turnInputTokens += usage.input_tokens || 0;
+            this._turnOutputTokens += usage.output_tokens || 0;
+            this._turnCacheRead += usage.cache_read_input_tokens || 0;
+            this._turnCacheCreate += usage.cache_creation_input_tokens || 0;
+          }
+          // Collect all text blocks from this assistant event into ONE message.
+          // Previously each text block was pushed separately, causing a single
+          // response to appear multiple times in the transcript when Claude
+          // produced multi-block output.
+          const textParts = [];
+          const ts = new Date().toISOString();
+          const model = msg.message.model || null;
           for (const block of msg.message.content) {
             if (block.type === 'text' && block.text?.trim()) {
-              this.messages.push({
-                role: 'assistant', type: 'text',
-                text: block.text,
-                ts: new Date().toISOString(),
-                model: msg.message.model || null,
-              });
+              textParts.push(block.text);
             } else if (block.type === 'tool_use') {
+              // Flush any accumulated text first so tools appear in order
+              if (textParts.length > 0) {
+                this.messages.push({ role: 'assistant', type: 'text', text: textParts.join('\n\n'), ts, model });
+                textParts.length = 0;
+              }
               const name = block.name || 'unknown';
               const input = block.input || {};
               let summary = name;
@@ -93,17 +124,36 @@ export class ClaudeAdapter {
               else if (name === 'Grep' && input.pattern) summary = `Grep: ${input.pattern.substring(0, 60)}`;
               else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
               else if (name === 'Agent') summary = `Agent: ${(input.description || input.prompt || '').substring(0, 80)}`;
-              this.messages.push({
-                role: 'assistant', type: 'tool',
-                text: summary,
-                ts: new Date().toISOString(),
-              });
+              this.messages.push({ role: 'assistant', type: 'tool', text: summary, ts: new Date().toISOString() });
             }
+          }
+          if (textParts.length > 0) {
+            this.messages.push({ role: 'assistant', type: 'text', text: textParts.join('\n\n'), ts, model });
           }
           this._push();
 
         } else if (msg.type === 'result') {
-          console.log(`[Claude Adapter] Result: turns=${msg.num_turns} cost=$${msg.total_cost_usd?.toFixed(4)} session=${msg.session_id}`);
+          const cost = msg.total_cost_usd || 0;
+          this.totalInputTokens += this._turnInputTokens;
+          this.totalOutputTokens += this._turnOutputTokens;
+          this.totalCost += cost;
+          console.log(`[Claude Adapter] Result: turns=${msg.num_turns} cost=$${cost.toFixed(4)} turn_in=${this._turnInputTokens} turn_out=${this._turnOutputTokens} session_total_in=${this.totalInputTokens} session_total_out=${this.totalOutputTokens} session=${msg.session_id}`);
+          // Inject a turn_stats message so the frontend can display per-message token usage
+          this.messages.push({
+            role: 'system', type: 'turn_stats',
+            text: `↑${this._turnInputTokens} ↓${this._turnOutputTokens}` + (this._turnCacheRead ? ` 📦${this._turnCacheRead}` : '') + ` $${cost.toFixed(4)}`,
+            ts: new Date().toISOString(),
+            tokens: {
+              input: this._turnInputTokens,
+              output: this._turnOutputTokens,
+              cache_read: this._turnCacheRead,
+              cache_create: this._turnCacheCreate,
+              cost,
+              total_input: this.totalInputTokens,
+              total_output: this.totalOutputTokens,
+              total_cost: this.totalCost,
+            },
+          });
           if (msg.session_id) this.claudeSessionId = msg.session_id;
           this._push();
         }
@@ -138,6 +188,21 @@ export class ClaudeAdapter {
       this.abortController = null;
     }
   }
+
+  // Change the model used for subsequent queries (takes effect immediately on next send)
+  setModel(modelId) {
+    this.model = modelId || null;
+    console.log(`[Claude Adapter] Model set to: ${this.model || 'default'}`);
+    // Inject a system message so the transcript shows the switch
+    this.messages.push({
+      role: 'system', type: 'model_switch',
+      text: `Model switched to: ${this.model || 'default'}`,
+      ts: new Date().toISOString(),
+    });
+    this._push();
+  }
+
+  getModel() { return this.model; }
 
   // Interrupt current query
   interrupt() {

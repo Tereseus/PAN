@@ -213,3 +213,9 @@ export async function pipeInterrupt(sessionId) {
   const t = await getTerminal();
   return t.pipeInterrupt(sessionId);
 }
+
+export async function pipeSetModel(sessionId, modelId) {
+  if (IS_CRAFT) return ipcFire('terminal:pipeSetModel', { sessionId, modelId });
+  const t = await getTerminal();
+  return t.pipeSetModel(sessionId, modelId);
+}

@@ -1,0 +1,13 @@
+services:
+  hub:
+    build: .
+    ports:
+      - "8888:8888"
+    volumes:
+      - hub-data:/app/data
+    restart: unless-stopped
+    environment:
+      - HUB_PORT=8888
+
+volumes:
+  hub-data:
