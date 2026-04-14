@@ -14,6 +14,23 @@
 	// Persist panel selections on change
 	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_left_section', leftSection); });
 	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_right_section', rightSection); });
+	
+	// Sync LLM name with provider if not manually customized
+	$effect(() => {
+		if (typeof window !== 'undefined' && voiceSettings.terminal_ai_provider) {
+			const provider = voiceSettings.terminal_ai_provider.toLowerCase();
+			const currentLlmName = localStorage.getItem('pan_llm_name');
+			if (provider === 'gemini' && (!currentLlmName || currentLlmName.toLowerCase() === 'claude')) {
+				localStorage.setItem('pan_llm_name', 'Gemini');
+				// Trigger re-render of existing transcripts
+				window.dispatchEvent(new CustomEvent('pan-terminal-settings-changed'));
+			} else if (provider === 'claude' && (!currentLlmName || currentLlmName.toLowerCase() === 'gemini')) {
+				localStorage.setItem('pan_llm_name', 'Claude');
+				window.dispatchEvent(new CustomEvent('pan-terminal-settings-changed'));
+			}
+		}
+	});
+
 	// Terminal input bar — persisted across tab switches
 	let terminalInputText = $state(getTerminalInput());
 	let terminalInputEl;
@@ -1099,11 +1116,14 @@
 							return;
 						}
 
-						// Check if Claude is already running (❯ prompt visible)
+						// Wait briefly for PTY to settle, then check if there are already
+						// transcript messages — if so, Claude was mid-session and we skip
+						// the greeting (but we still mark launched so it doesn't retry).
+						// Previously this checked for '❯' prompt which fired on EVERY fresh
+						// session before Claude had a chance to respond, eating the greeting.
 						await new Promise(r => setTimeout(r, 500));
-						const screenText = tabData.screenDiv ? tabData.screenDiv.textContent : '';
-						const lastLine = screenText.trim().split('\n').pop() || '';
-						if (lastLine.includes('❯')) {
+						const existingMsgs = (tabData._streamMessages || []).filter(m => m.role !== 'system');
+						if (existingMsgs.length > 0) {
 							tabData.claudeStarted = true;
 							sessionStorage.setItem(launchKey, '1');
 							return;
@@ -1273,6 +1293,19 @@
 				if (t.scrollbackDiv) t.scrollbackDiv.innerHTML = '';
 				t._renderedMsgCount = 0;
 				renderTranscriptToTerminal(t);
+			}
+		});
+
+		// When the AI provider/model changes in Settings, clear all launch guards so
+		// ΠΑΝ Remembers re-fires on the next WS reconnect (or tab reopen).
+		window.addEventListener('storage', (e) => {
+			if (e.key === 'pan_ai_changed') {
+				for (const key of Object.keys(sessionStorage)) {
+					if (key.startsWith('pan_claude_launched:')) {
+						sessionStorage.removeItem(key);
+					}
+				}
+				console.log('[PAN Terminal] AI provider changed — launch guards cleared, ΠΑΝ Remembers will re-fire');
 			}
 		});
 	}
@@ -1569,14 +1602,8 @@
 				else if (turn.kind === 'assistant') {
 					headLabel = llmName;
 					cls = 'turn turn-assistant';
-					// Show the model only when it changes between assistant turns,
-					// so the user can spot which model produced which reply without
-					// repeating the badge on every single turn.
 					const m = shortModel(turn.items.find(i => i.model)?.model);
-					if (m && m !== lastShownModel) {
-						modelLabel = m;
-						lastShownModel = m;
-					}
+					if (m) { modelLabel = m; lastShownModel = m; }
 				}
 				else if (turn.kind === 'system') { headLabel = ''; cls = 'turn turn-system'; }
 				else { headLabel = ''; cls = 'turn turn-tool'; }
@@ -1806,9 +1833,7 @@
 					});
 				} else if (msg.type === 'text') {
 					const modelShort = _shortModel(msg.model);
-					// Same "show on change" rule as the main terminal so the model
-					// label only appears when it actually flips.
-					const modelTag = (modelShort && modelShort !== _lastBubbleModel) ? modelShort : '';
+					const modelTag = modelShort || '';
 					if (modelShort) _lastBubbleModel = modelShort;
 					newBubbles.push({
 						type: 'assistant',
@@ -2694,11 +2719,19 @@
 	let usageRefreshInterval = null;
 	async function loadUsageData() {
 		try {
-			const [claude, stats] = await Promise.all([
-				api('/api/v1/claude-usage'),
+			const provider = (voiceSettings.terminal_ai_provider || '').toLowerCase();
+			const isGemini = provider === 'gemini';
+			
+			const [usage, stats] = await Promise.all([
+				api(isGemini ? '/api/v1/gemini-usage' : '/api/v1/claude-usage'),
 				api('/dashboard/api/stats'),
 			]);
-			usageData = { claude, stats };
+			
+			if (isGemini) {
+				usageData = { gemini: usage, stats };
+			} else {
+				usageData = { claude: usage, stats };
+			}
 		} catch (e) {
 			console.error('Failed to load usage data:', e);
 		}
@@ -2968,9 +3001,8 @@
 
 	async function loadTestSuites() {
 		try {
-			const resp = await devFetch('/api/v1/tests');
-			if (resp.ok) {
-				const data = await resp.json();
+			const data = await api('/api/v1/tests');
+			if (data) {
 				// Server returns {status, suites: [...], tests: [...], ...}
 				// suites have: id, name, description, testCount, dependsOn
 				// Convert server suites to the format the UI expects: {id, name, description, tests: [...]}
@@ -3344,7 +3376,10 @@
 		restoreChatFromStorage(); // Instantly restore chat from before refresh
 		loadTerminalProjects();
 		loadVoiceSettings();
-		loadTestSuites();
+
+		// Load initial panel data based on what's selected
+		if (leftSection === 'usage' || rightSection === 'usage') loadUsageData();
+		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
 
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
@@ -3588,6 +3623,14 @@
 			}
 		}
 		window.addEventListener('keydown', handleGlobalKeydown);
+
+		// Load data for initially selected panels (otherwise they show "loading" forever)
+		if (leftSection === 'usage') loadUsageData();
+		if (rightSection === 'usage') loadUsageData();
+		if (leftSection === 'library') loadLibrary();
+		if (rightSection === 'library') loadLibrary();
+		if (leftSection === 'perf') startPerfPolling();
+		if (rightSection === 'perf') startPerfPolling();
 
 		return () => {
 			saveSessionState(); // Persist session IDs before page unloads
@@ -4541,6 +4584,37 @@
 		{/if}
 		<div class="center-input-bar">
 			<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+			<select
+				class="model-pill-select"
+				title="Switch model — takes effect on new tabs (click + to start new session)"
+				bind:value={voiceSettings.terminal_ai_model}
+				onchange={async (e) => {
+					const model = e.target.value;
+					const sid = getActiveTab()?.sessionId;
+					try {
+						// 1. Switch model live on the running session
+						if (sid) {
+							const r = await api('/api/v1/terminal/set-model', { method: 'POST', body: JSON.stringify({ session_id: sid, model }) });
+							if (!r?.ok) console.warn('[PAN] set-model failed for session', sid, r);
+						}
+						// 2. Save as default for future sessions
+						await api('/api/v1/settings', { method: 'PUT', body: JSON.stringify({ terminal_ai_model: model }) });
+						// 3. Reload voiceSettings so bind reflects confirmed saved value
+						await loadVoiceSettings();
+						// 4. Clear launch guards in this window immediately (localStorage storage
+						//    events don't fire in the same window — do it here too)
+						for (const key of Object.keys(sessionStorage)) {
+							if (key.startsWith('pan_claude_launched:')) sessionStorage.removeItem(key);
+						}
+						localStorage.setItem('pan_ai_changed', Date.now().toString());
+					} catch {}
+				}}
+			>
+				<option value="claude-sonnet-4-5">sonnet-4-5</option>
+				<option value="claude-sonnet-4-6">sonnet-4-6</option>
+				<option value="claude-opus-4-6">opus-4-6</option>
+				<option value="claude-haiku-4-5-20251001">haiku-4-5</option>
+			</select>
 			<textarea
 				bind:this={terminalInputEl}
 				bind:value={terminalInputText}
@@ -5071,9 +5145,41 @@
 				{#if !usageData}
 					<div class="empty-state">Loading usage...</div>
 				{:else}
-					{#if usageData.claude?.rateLimits}
-						{@const rl = usageData.claude.rateLimits}
-						<div class="usage-section">
+					<div class="usage-section">
+						{#if usageData.gemini}
+							<div class="usage-heading">Gemini CLI Usage</div>
+							{@const g = usageData.gemini}
+							<div class="usage-row">
+								<span class="usage-label">Model</span>
+								<span class="usage-val" style="color:#a6e3a1">{g.model || 'gemini-1.5-pro'}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Session Output</span>
+								<span class="usage-val">{formatTokens(g.session?.output)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Session Input</span>
+								<span class="usage-val">{formatTokens(g.session?.input)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Session Msgs</span>
+								<span class="usage-val">{g.session?.messages || 0}</span>
+							</div>
+							<div class="usage-subhead">Today</div>
+							<div class="usage-row">
+								<span class="usage-label">Output</span>
+								<span class="usage-val">{formatTokens(g.today?.output)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Input</span>
+								<span class="usage-val">{formatTokens(g.today?.input)}</span>
+							</div>
+							<div class="usage-row">
+								<span class="usage-label">Messages</span>
+								<span class="usage-val">{g.today?.messages || 0}</span>
+							</div>
+						{:else if usageData.claude?.rateLimits}
+							{@const rl = usageData.claude.rateLimits}
 							<div class="usage-heading">Claude Plan Limits</div>
 							<div class="usage-row" style="opacity:0.6; font-size:11px;">
 								<span class="usage-label">{rl.subscriptionType?.toUpperCase() || 'Plan'}</span>
@@ -5103,64 +5209,37 @@
 									<span class="usage-val">Resets in {formatResetTime(rl.seven_day.resets_at)}</span>
 								</div>
 							{/if}
-							{#if rl.seven_day_opus}
-								<div class="usage-subhead">Opus Weekly</div>
-								<div class="usage-bar-wrap">
-									<div class="usage-bar" style="width:{Math.min(rl.seven_day_opus.utilization, 100)}%; background:{
-										rl.seven_day_opus.utilization >= 80 ? '#f38ba8' : rl.seven_day_opus.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
-									}"></div>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label">{Math.round(rl.seven_day_opus.utilization)}% Used</span>
-									<span class="usage-val">Resets in {formatResetTime(rl.seven_day_opus.resets_at)}</span>
-								</div>
-							{/if}
-							{#if rl.seven_day_sonnet}
-								<div class="usage-subhead">Sonnet Weekly</div>
-								<div class="usage-bar-wrap">
-									<div class="usage-bar" style="width:{Math.min(rl.seven_day_sonnet.utilization, 100)}%; background:{
-										rl.seven_day_sonnet.utilization >= 80 ? '#f38ba8' : rl.seven_day_sonnet.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
-									}"></div>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label">{Math.round(rl.seven_day_sonnet.utilization)}% Used</span>
-									<span class="usage-val">Resets in {formatResetTime(rl.seven_day_sonnet.resets_at)}</span>
-								</div>
-							{/if}
-							{#if rl.extra_usage}
-								<div class="usage-subhead">Extra Usage</div>
-								<div class="usage-bar-wrap">
-									<div class="usage-bar" style="width:{Math.min(rl.extra_usage.utilization, 100)}%; background:#89b4fa"></div>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label">${rl.extra_usage.used_credits?.toFixed(0) || 0} / ${rl.extra_usage.monthly_limit || 0}</span>
-									<span class="usage-val">{rl.extra_usage.utilization?.toFixed(1)}%</span>
-								</div>
-							{/if}
-						</div>
-					{/if}
+						{:else}
+							<div class="usage-heading">Usage</div>
+							<div class="usage-row" style="opacity:0.5">
+								<span class="usage-label">No usage data available</span>
+							</div>
+						{/if}
+					</div>
 					<div class="usage-section">
 						<div class="usage-heading">Burn Rate</div>
-						{#if usageData.claude?.session?.messages > 0}
-							{@const c = usageData.claude}
+						{#if (usageData.claude?.session?.messages || usageData.gemini?.session?.messages) > 0}
+							{@const c = usageData.gemini || usageData.claude}
 							{@const msgs = c.session.messages || 1}
 							{@const totalTok = (c.session.input || 0) + (c.session.output || 0)}
 							{@const perMsg = Math.round(totalTok / msgs)}
-							{@const utilPct = c.rateLimits?.five_hour?.utilization || 0}
-							{@const pctPerMsg = msgs > 0 ? (utilPct / msgs) : 0}
-							{@const remaining = pctPerMsg > 0 ? Math.floor((100 - utilPct) / pctPerMsg) : '?'}
 							<div class="usage-row" style="font-size:13px; font-weight:600;">
 								<span class="usage-label">Per Message</span>
 								<span class="usage-val" style="color:#cba6f7">{formatTokens(perMsg)} tok</span>
 							</div>
-							<div class="usage-row" style="font-size:13px; font-weight:600;">
-								<span class="usage-label">% Per Message</span>
-								<span class="usage-val" style="color:{pctPerMsg > 5 ? '#f38ba8' : pctPerMsg > 2 ? '#f9e2af' : '#a6e3a1'}">{pctPerMsg.toFixed(1)}%</span>
-							</div>
-							<div class="usage-row" style="font-size:13px; font-weight:600;">
-								<span class="usage-label">Messages Left</span>
-								<span class="usage-val" style="color:{remaining !== '?' && remaining < 10 ? '#f38ba8' : remaining !== '?' && remaining < 30 ? '#f9e2af' : '#a6e3a1'}">{remaining === '?' ? '?' : '~' + remaining}</span>
-							</div>
+							{#if usageData.claude?.rateLimits}
+								{@const utilPct = usageData.claude.rateLimits.five_hour?.utilization || 0}
+								{@const pctPerMsg = msgs > 0 ? (utilPct / msgs) : 0}
+								{@const remaining = pctPerMsg > 0 ? Math.floor((100 - utilPct) / pctPerMsg) : '?'}
+								<div class="usage-row" style="font-size:13px; font-weight:600;">
+									<span class="usage-label">% Per Message</span>
+									<span class="usage-val" style="color:{pctPerMsg > 5 ? '#f38ba8' : pctPerMsg > 2 ? '#f9e2af' : '#a6e3a1'}">{pctPerMsg.toFixed(1)}%</span>
+								</div>
+								<div class="usage-row" style="font-size:13px; font-weight:600;">
+									<span class="usage-label">Messages Left</span>
+									<span class="usage-val" style="color:{remaining !== '?' && remaining < 10 ? '#f38ba8' : remaining !== '?' && remaining < 30 ? '#f9e2af' : '#a6e3a1'}">{remaining === '?' ? '?' : '~' + remaining}</span>
+								</div>
+							{/if}
 							<div class="usage-row">
 								<span class="usage-label">Sent</span>
 								<span class="usage-val">{msgs} msgs</span>
@@ -5169,10 +5248,12 @@
 								<span class="usage-label">Total Used</span>
 								<span class="usage-val">{formatTokens(totalTok)}</span>
 							</div>
-							<div class="usage-row">
-								<span class="usage-label">Cache Hits</span>
-								<span class="usage-val">{formatTokens(c.session.cache_read)} ({totalTok > 0 ? Math.round((c.session.cache_read || 0) / ((c.session.cache_read || 0) + (c.session.input || 1)) * 100) : 0}%)</span>
-							</div>
+							{#if c.session.cache_read}
+								<div class="usage-row">
+									<span class="usage-label">Cache Hits</span>
+									<span class="usage-val">{formatTokens(c.session.cache_read)} ({totalTok > 0 ? Math.round((c.session.cache_read || 0) / ((c.session.cache_read || 0) + (c.session.input || 1)) * 100) : 0}%)</span>
+								</div>
+							{/if}
 						{:else}
 							<div class="usage-row" style="opacity:0.5">
 								<span class="usage-label">No messages yet</span>
@@ -5181,16 +5262,18 @@
 					</div>
 					<div class="usage-section">
 						<div class="usage-heading">Session Tokens</div>
-						{#if usageData.claude}
-							{@const c = usageData.claude}
+						{#if usageData.claude || usageData.gemini}
+							{@const c = usageData.gemini || usageData.claude}
 							<div class="usage-row">
 								<span class="usage-label">Model</span>
 								<span class="usage-val">{c.model || 'unknown'}</span>
 							</div>
-							<div class="usage-row">
-								<span class="usage-label">Active Sessions</span>
-								<span class="usage-val">{c.session?.activeSessions || 0}</span>
-							</div>
+							{#if c.session?.activeSessions}
+								<div class="usage-row">
+									<span class="usage-label">Active Sessions</span>
+									<span class="usage-val">{c.session?.activeSessions || 0}</span>
+								</div>
+							{/if}
 							<div class="usage-row">
 								<span class="usage-label">Output</span>
 								<span class="usage-val">{formatTokens(c.session?.output)}</span>
@@ -5199,10 +5282,12 @@
 								<span class="usage-label">Input</span>
 								<span class="usage-val">{formatTokens(c.session?.input)}</span>
 							</div>
-							<div class="usage-row">
-								<span class="usage-label">Cache Read</span>
-								<span class="usage-val">{formatTokens(c.session?.cache_read)}</span>
-							</div>
+							{#if c.session?.cache_read}
+								<div class="usage-row">
+									<span class="usage-label">Cache Read</span>
+									<span class="usage-val">{formatTokens(c.session?.cache_read)}</span>
+								</div>
+							{/if}
 							<div class="usage-row">
 								<span class="usage-label">Messages</span>
 								<span class="usage-val">{c.session?.messages || 0}</span>
@@ -5215,6 +5300,10 @@
 							<div class="usage-row">
 								<span class="usage-label">Messages</span>
 								<span class="usage-val">{c.today?.messages || 0}</span>
+							</div>
+						{:else}
+							<div class="usage-row" style="opacity:0.5">
+								<span class="usage-label">Loading tokens...</span>
 							</div>
 						{/if}
 					</div>
@@ -6001,6 +6090,23 @@
 		padding: 0 4px;
 		font-family: ui-monospace, monospace;
 	}
+
+	.model-pill-select {
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 4px;
+		color: #cba6f7;
+		font-size: 10px;
+		font-family: ui-monospace, monospace;
+		padding: 2px 4px;
+		cursor: pointer;
+		outline: none;
+		flex-shrink: 0;
+		max-width: 85px;
+		text-align: center;
+		height: 36px;
+	}
+	.model-pill-select:hover { border-color: #cba6f7; }
 
 	.chat-bubble {
 		word-break: break-word;
