@@ -124,6 +124,10 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 - **MUST rebuild after editing .svelte files** — prod/dev both serve from `public/v2/`
 - Key pages: `terminal/+page.svelte` (main), `settings/+page.svelte`, `conversations/+page.svelte`
 
+### Desktop Dashboard Behavior
+- **Model switching**: The model selector dropdown saves the chosen model as the default for **new sessions**. To apply a model change, click the **+ button** to create a new tab. Model changes do **not** affect the current running session mid-conversation (the `claude -p` process is already running with a fixed model).
+- **New tabs**: Each tab is a separate PTY session running `claude -p --project <dir> --model <model>`. Closing a tab kills the underlying Claude process.
+
 ### Process Spawning on Windows
 **CRITICAL**: Every `execSync()`, `exec()`, `execFile()`, `spawn()` call MUST include `windowsHide: true` in options. Without it, a visible black CMD window flashes on screen. PAN runs dozens of these per minute (health checks, process enumeration, taskkill) — missing `windowsHide` causes hundreds of CMD windows opening/closing.
 
@@ -190,37 +194,33 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
 
 ### Recent Conversation
-**User** (2026-04-12 22:50:20): You are PAN's memory consolidation system. Extract structured memories from these recent events.
+**Claude** (2026-04-13 19:40:12): Holy shit. Okay, I actually looked at it now. Let me revise my answer:
 
-EVENTS:
-[2026-04-12 15:24:30] User: So there's a couple of things it looks like it's not going to Cere
-**Claude** (2026-04-12 22:50:22): Done. No more hardcoded names anywhere. The flow is:
+**14 services**, multiple AI model tiers, with:
 
-1. User sets `display_name` in Settings (phone or API)
-2. `/api/v1/org/current` reads that setti
-**Claude** (2026-04-12 22:50:54): ```json
-{
-  "episodes": [
-    {
-      "summary": "Phone dashboard message receive broken despite working send",
-      "detail": "User could send messa
-**User** (2026-04-12 22:51:16): Get rid of the Tereseus@Tereseus, it has no purpose and make the screenshot endpoint
-**Claude** (2026-04-12 22:53:22): Done. Here's what changed:
+- **Resonance** (3072D vector embeddings)
+- **Augur** (event classifier, trigge
+**User** (2026-04-13 19:53:40): Decrease the width of the uh model box I know you just changed the height decrease the width it's too wide now Can you do that also how much worse is Sonnet 45 compared to four 6 do you think I can co
+**Claude** (2026-04-13 19:54:28): **Done!** Model selector is now narrower (110px max-width, reduced padding). Hard refresh to see it.
 
-**Org badge removed** — no more "Tereseus@Tereseus" in the topbar. Just Π + refresh + project selector. Clean.
+**Sonnet 4.5 vs 4.6:**
 
-**Screensh
+From what I'm experiencing right now (and what you described):
+
+- **4.6 pr
+**User** (2026-04-13 19:56:32): ΠΑΝ Remembers: summarize recent session context briefly.
+**Claude** (2026-04-13 19:56:42): I don't see a user message here - just system reminders. Waiting for your next question or task.
 
 ### Open Tasks
-- [todo P1] Smart device routing — default device (auto/nearest) determines where actions execute
-- [todo P1] Chat shows only bookend events — need intermediate responses visible
-- [todo P1] Terminal scroll still janky — jumps on tool calls
-- [todo P1] mDNS auto-discovery on local network (zero-config device finding)
-- [todo P1] PAN Hub relay server for remote access (HTTPS message broker)
-- [todo P1] Multi-user accounts — user registration, login, session ownership
-- [todo P1] Multi-database — per-team databases with isolated data
+- [in_progress P1] Smart device routing — default device (auto/nearest) determines where actions execute
+- [in_progress P1] mDNS auto-discovery on local network (zero-config device finding)
+- [in_progress P1] PAN Hub relay server for remote access (HTTPS message broker)
+- [in_progress P1] Multi-user accounts — user registration, login, session ownership
+- [in_progress P1] Multi-database — per-team databases with isolated data
 - [todo P1] PAN Hub — central server aggregating multiple PAN instances
-- [todo P1] Smart scroll — remember exact scroll position, restore on every refresh/update/tool call
-- [todo P1] NER anonymization (Presidio/spaCy)
+- [todo P1] Differential privacy (statistical noise)
+- [todo P1] Compute-to-data pipeline
+- [todo P1] Treasury 3-tier UI on phone
+- [todo P1] Real-time conversation classifier
 
 <!-- PAN-CONTEXT-END -->
