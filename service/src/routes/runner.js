@@ -3,7 +3,7 @@
 
 import { Router } from 'express';
 import { runner } from '../project-runner.js';
-import { all } from '../db.js';
+import { allScoped } from '../db.js';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -13,7 +13,7 @@ const router = Router();
 
 // GET /api/v1/runner/projects — list all projects with their service definitions
 router.get('/projects', (req, res) => {
-  const projects = all('SELECT * FROM projects ORDER BY name');
+  const projects = allScoped(req, 'SELECT * FROM projects WHERE org_id = :org_id ORDER BY name');
   const result = projects.map(p => {
     const panFile = join(p.path, '.pan');
     let pan = null;

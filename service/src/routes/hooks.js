@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { run, get, all, insert, detectProject, indexEventFTS } from '../db.js';
+import { run, get, all, insert, detectProject, indexEventFTS, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
 import { broadcastNotification, broadcastChatUpdate, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool, findSessionByClaudeId } from '../terminal-bridge.js';
 import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
+import { reconcileTasks } from '../memory/consolidation.js';
 import { createAlert } from './dashboard.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
@@ -54,7 +55,7 @@ router.post('/PermissionRequest', async (req, res) => {
 
     // Store the event
     const dataStr = JSON.stringify(payload);
-    const eventId = insert(`INSERT INTO events (session_id, event_type, data, user_id) VALUES (:sid, :type, :data, :uid)`, {
+    const eventId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, user_id, org_id) VALUES (:sid, :type, :data, :uid, :org_id)`, {
       ':sid': sessionId,
       ':type': 'PermissionRequest',
       ':data': dataStr,
@@ -112,7 +113,7 @@ router.post('/PermissionRequest', async (req, res) => {
 });
 
 // Inject readable session context into CLAUDE.md between PAN-CONTEXT markers
-async function injectSessionContext(cwd) {
+async function injectSessionContext(cwd, orgId = 'org_personal') {
   try {
     const claudeMdPath = join(cwd, 'CLAUDE.md');
     if (!existsSync(claudeMdPath)) return;
@@ -135,8 +136,9 @@ async function injectSessionContext(cwd) {
       `SELECT event_type, data, created_at FROM events
        WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
        AND (data LIKE :pp1 OR data LIKE :pp2)
+       AND org_id = :org_id
        ORDER BY created_at DESC LIMIT 5`,
-      { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%' }
+      { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%', ':org_id': orgId }
     );
 
     // 2. Claude's auto-memory files (~/.claude/projects/*/memory/*.md) are loaded
@@ -144,14 +146,15 @@ async function injectSessionContext(cwd) {
     //    inject-context.cjs already noted this. Duplicating wastes context tokens.
 
     // 3. Open tasks for this project
-    const project = get("SELECT id, name FROM projects WHERE path = :p", { ':p': fwd });
+    const project = get("SELECT id, name FROM projects WHERE path = :p AND org_id = :org_id", { ':p': fwd, ':org_id': orgId });
     let tasks = [];
     if (project) {
       tasks = all(
         `SELECT title, status, priority FROM project_tasks
          WHERE project_id = :pid AND status != 'done'
+         AND org_id = :org_id
          ORDER BY priority DESC LIMIT 10`,
-        { ':pid': project.id }
+        { ':pid': project.id, ':org_id': orgId }
       );
     }
 
@@ -160,23 +163,43 @@ async function injectSessionContext(cwd) {
     let briefing = `## PAN Session Context\n\n`;
     briefing += `This is a fresh session for the "${project?.name || 'PAN'}" project.\n`;
     briefing += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
-    briefing += `**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "\u03A0\u0391\u039D Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.\n\n`;
+    briefing += `**Session context** (for the first message of a fresh session only — see Session Continuity Rule above):\n\n`;
 
     // PRIORITY 1: Recent conversation — this drives the "PAN remembers" briefing
+    // Filter out non-human system messages — task notifications, memory agent calls, etc.
+    const isTaskNotification = (prompt) => {
+      if (typeof prompt !== 'string') return true;
+      const p = prompt.trimStart();
+      return p.startsWith('<task-')          // task-notification XML
+          || p.startsWith('<tool-use-id>')   // raw tool receipts
+          || p.startsWith('You are PAN')     // memory/state agent background calls
+          || p.startsWith('CURRENT STATE')   // dream-cycle state dumps
+          || p.length < 2;                   // empty/whitespace
+    };
+
     if (recentEvents.length > 0) {
-      briefing += `### Recent Conversation\n`;
       const chatItems = [...recentEvents].reverse();
+      const lines = [];
       for (const e of chatItems) {
         try {
           const d = JSON.parse(e.data);
-          if (e.event_type === 'UserPromptSubmit' && d.prompt) {
-            briefing += `**User** (${e.created_at}): ${d.prompt.substring(0, 200)}\n`;
+          if (e.event_type === 'UserPromptSubmit' && d.prompt && !isTaskNotification(d.prompt)) {
+            lines.push(`**User** (${e.created_at}): ${d.prompt.substring(0, 200)}`);
           } else if (e.event_type === 'Stop' && d.last_assistant_message) {
-            briefing += `**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 150)}\n`;
+            lines.push(`**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 200)}`);
           }
         } catch {}
       }
-      briefing += '\n';
+
+      if (lines.length > 0) {
+        briefing += `### Recent Conversation\n`;
+        briefing += lines.join('\n') + '\n\n';
+      } else {
+        // Only task-notifications found — tell Claude there's no real conversation to summarize
+        briefing += `### Recent Conversation\nNo recent conversation — background tasks only. Skip the "ΠΑΝ Remembers:" opener and just greet the user normally.\n\n`;
+      }
+    } else {
+      briefing += `### Recent Conversation\nFresh session — no previous conversation on record.\n\n`;
     }
 
     // PRIORITY 2: State dump from dream cycle — SKIP entirely.
@@ -247,10 +270,10 @@ router.post('/:eventType', (req, res) => {
 
     // Ensure session exists — upsert on every event so we never miss a session
     // (SessionStart hook often fails because PAN server isn't running yet when Claude starts)
-    const existingSession = get("SELECT id FROM sessions WHERE id = :id", { ':id': sessionId });
+    const existingSession = getScoped(req, "SELECT id FROM sessions WHERE id = :id AND org_id = :org_id", { ':id': sessionId });
     if (!existingSession) {
-      run(`INSERT INTO sessions (id, cwd, model, source, transcript_path, user_id)
-        VALUES (:id, :cwd, :model, :source, :tp, :uid)`, {
+      runScoped(req, `INSERT INTO sessions (id, cwd, model, source, transcript_path, user_id, org_id)
+        VALUES (:id, :cwd, :model, :source, :tp, :uid, :org_id)`, {
         ':id': sessionId,
         ':cwd': cwd,
         ':model': payload.model || null,
@@ -261,7 +284,7 @@ router.post('/:eventType', (req, res) => {
       // Auto-detect project
       if (cwd) {
         const project = detectProject(cwd);
-        run("UPDATE sessions SET project_id = :pid WHERE id = :id", {
+        runScoped(req, "UPDATE sessions SET project_id = :pid WHERE id = :id AND org_id = :org_id", {
           ':pid': project.id,
           ':id': sessionId
         });
@@ -271,11 +294,11 @@ router.post('/:eventType', (req, res) => {
     if (eventType === 'SessionStart') {
       if (existingSession) {
         // Update existing session with fresh metadata
-        run(`UPDATE sessions SET
+        runScoped(req, `UPDATE sessions SET
           model = COALESCE(:model, model),
           source = COALESCE(:source, source),
           transcript_path = COALESCE(:tp, transcript_path)
-          WHERE id = :id`, {
+          WHERE id = :id AND org_id = :org_id`, {
           ':id': sessionId,
           ':model': payload.model || null,
           ':source': payload.source || null,
@@ -285,7 +308,7 @@ router.post('/:eventType', (req, res) => {
     }
 
     if (eventType === 'SessionEnd') {
-      run(`UPDATE sessions SET ended_at = datetime('now','localtime'), transcript_path = :tp WHERE id = :id`, {
+      runScoped(req, `UPDATE sessions SET ended_at = datetime('now','localtime'), transcript_path = :tp WHERE id = :id AND org_id = :org_id`, {
         ':id': sessionId,
         ':tp': payload.transcript_path || null
       });
@@ -293,10 +316,33 @@ router.post('/:eventType', (req, res) => {
       // Inject context into CLAUDE.md NOW so the NEXT session opens with fresh context
       // (Claude Code reads CLAUDE.md before SessionStart hooks run, so this must happen on SessionEnd)
       if (cwd) {
-        injectSessionContext(cwd).catch(err => {
+        injectSessionContext(cwd, req.org_id || 'org_personal').catch(err => {
           console.error('[PAN Hook] SessionEnd context injection failed:', err.message);
         });
       }
+
+      // Task reconciliation — check if this session completed any open tasks
+      // Runs async in background, non-blocking
+      (async () => {
+        try {
+          const recentEvents = allScoped(req,
+            `SELECT id, session_id, event_type, data, created_at FROM events
+             WHERE session_id = :sid
+             AND event_type IN ('UserPromptSubmit', 'Stop')
+             AND org_id = :org_id
+             ORDER BY created_at ASC LIMIT 100`,
+            { ':sid': sessionId }
+          );
+          if (recentEvents.length >= 2) {
+            const result = await reconcileTasks(recentEvents);
+            if (result.updated > 0) {
+              console.log(`[PAN Hook] SessionEnd: auto-updated ${result.updated} tasks`);
+            }
+          }
+        } catch (err) {
+          console.error('[PAN Hook] SessionEnd task reconciliation failed:', err.message);
+        }
+      })();
     }
 
     // Track in-flight tools so the dashboard status bar can show what
@@ -330,7 +376,7 @@ router.post('/:eventType', (req, res) => {
 
     // Store every event
     const dataStr = JSON.stringify(payload);
-    const eventId = insert(`INSERT INTO events (session_id, event_type, data, user_id) VALUES (:sid, :type, :data, :uid)`, {
+    const eventId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, user_id, org_id) VALUES (:sid, :type, :data, :uid, :org_id)`, {
       ':sid': sessionId,
       ':type': eventType,
       ':data': dataStr,
@@ -370,7 +416,7 @@ router.post('/:eventType', (req, res) => {
         if (assistantTexts.length > 1) {
           for (let i = 0; i < assistantTexts.length - 1; i++) {
             const msgData = JSON.stringify({ text: assistantTexts[i], cwd: cwd });
-            const msgId = insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, 'AssistantMessage', :data)`, {
+            const msgId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, 'AssistantMessage', :data, :org_id)`, {
               ':sid': sessionId,
               ':data': msgData,
               ':uid': req.user?.id || null

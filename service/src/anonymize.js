@@ -3,7 +3,11 @@
 // Runs on-device (server-side) — data never leaves unprotected.
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-const PHONE_REGEX = /(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\+\d{1,3}[-.\s]?\d{4,14})/g;
+// Phone numbers require separators between digit groups (dashes, dots, spaces, parens).
+// This avoids matching timestamps, clipboard filenames, and other long digit sequences.
+// Matches: 555-123-4567, (555) 123-4567, +1 555.123.4567, +44 20 7946 0958
+// Does NOT match: clipboard_1776177892588.png, unix timestamps, etc.
+const PHONE_REGEX = /(?<![_/\\\w])(\+?1?[-.\s]\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}|\+\d{1,3}[-.\s]\d{2,4}[-.\s]\d{3,4}[-.\s]?\d{0,4})(?![_\w])/g;
 const SSN_REGEX = /\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b/g;
 const CREDIT_CARD_REGEX = /\b(?:\d{4}[-\s]?){3}\d{4}\b/g;
 const IP_REGEX = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;

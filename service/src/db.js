@@ -191,6 +191,75 @@ if (dsCols.length > 0 && !dsCols.includes('policy')) {
   console.log('[PAN DB] device_sensors policy columns added.');
 }
 
+// Migration: Tier 0 org foundation — add org_id columns to existing tables
+// This runs the same logic as migrations/tier0-org-foundation.js but inline on startup,
+// so the migration is automatic (no manual CLI step required).
+const ORG_ID_TARGETS = [
+  ['roles', null], ['api_tokens', null], ['devices', 'org_personal'],
+  ['events', 'org_personal'], ['memory_items', 'org_personal'], ['sessions', 'org_personal'],
+  ['command_queue', 'org_personal'], ['command_logs', 'org_personal'], ['ai_usage', 'org_personal'],
+  ['client_logs', 'org_personal'], ['device_sensors', 'org_personal'], ['sensor_attachments', 'org_personal'],
+  ['episodic_memories', 'org_personal'], ['procedural_memories', 'org_personal'],
+  ['semantic_facts', 'org_personal'], ['evolution_versions', 'org_personal'],
+  ['projects', 'org_personal'], ['project_milestones', 'org_personal'],
+  ['project_sections', 'org_personal'], ['project_tasks', 'org_personal'],
+  ['section_items', 'org_personal'], ['open_tabs', 'org_personal'],
+  ['settings', null],
+];
+{
+  let orgMigrated = 0;
+  for (const [table, defaultVal] of ORG_ID_TARGETS) {
+    const cols = db.pragma(`table_info(${table})`).map(c => c.name);
+    if (cols.length > 0 && !cols.includes('org_id')) {
+      const notNull = defaultVal ? ' NOT NULL' : '';
+      const defClause = defaultVal ? ` DEFAULT '${defaultVal}'` : '';
+      db.exec(`ALTER TABLE "${table}" ADD COLUMN org_id TEXT${notNull}${defClause}`);
+      orgMigrated++;
+    }
+  }
+  // Also add users columns if missing
+  const userCols = db.pragma('table_info(users)').map(c => c.name);
+  if (userCols.length > 0 && !userCols.includes('power_lvl')) {
+    // Migration: rename trust_level → power_lvl (or add fresh if neither exists)
+    if (userCols.includes('trust_level')) {
+      console.log('[PAN DB] Renaming trust_level → power_lvl on users...');
+      db.exec(`ALTER TABLE users RENAME COLUMN trust_level TO power_lvl`);
+    } else {
+      console.log('[PAN DB] Adding power_lvl column to users...');
+      db.exec(`ALTER TABLE users ADD COLUMN power_lvl INTEGER`);
+    }
+    db.exec(`UPDATE users SET power_lvl = 100 WHERE role = 'owner' AND power_lvl IS NULL`);
+  }
+  if (userCols.length > 0 && !userCols.includes('display_nickname')) {
+    db.exec(`ALTER TABLE users ADD COLUMN display_nickname TEXT`);
+  }
+  if (userCols.length > 0 && !userCols.includes('last_active_org_id')) {
+    db.exec(`ALTER TABLE users ADD COLUMN last_active_org_id TEXT DEFAULT 'org_personal'`);
+    db.exec(`UPDATE users SET last_active_org_id = 'org_personal' WHERE last_active_org_id IS NULL`);
+  }
+  // Ensure default user has a membership in org_personal
+  const hasOrgs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='orgs'").get();
+  if (hasOrgs) {
+    const ownerRole = db.prepare(`SELECT id FROM roles WHERE name = 'owner'`).get();
+    const membership = db.prepare(`SELECT id, role_id FROM memberships WHERE user_id = 1 AND org_id = 'org_personal'`).get();
+    if (!membership) {
+      db.prepare(`INSERT OR IGNORE INTO memberships (user_id, org_id, role_id) VALUES (1, 'org_personal', ?)`).run(ownerRole?.id || null);
+    } else if (!membership.role_id && ownerRole) {
+      // Fix existing memberships that were created without a role
+      db.prepare(`UPDATE memberships SET role_id = ? WHERE id = ?`).run(ownerRole.id, membership.id);
+    }
+  }
+  if (orgMigrated > 0) console.log(`[PAN DB] Added org_id column to ${orgMigrated} tables`);
+
+  // Migration: add org_id to alerts table (queries expect it but original schema omitted it)
+  const alertCols = db.pragma('table_info(alerts)').map(c => c.name);
+  if (alertCols.length > 0 && !alertCols.includes('org_id')) {
+    console.log('[PAN DB] Adding org_id column to alerts...');
+    db.exec(`ALTER TABLE alerts ADD COLUMN org_id TEXT DEFAULT 'org_personal'`);
+    db.exec(`UPDATE alerts SET org_id = 'org_personal' WHERE org_id IS NULL`);
+  }
+}
+
 // Migration: add user_id columns to existing tables for multi-user support
 const tablesToAddUserId = ['devices', 'sessions', 'events', 'command_queue', 'memory_items'];
 for (const table of tablesToAddUserId) {
@@ -212,6 +281,58 @@ if (!defaultUser) {
     db.prepare(`UPDATE ${table} SET user_id = 1 WHERE user_id IS NULL`).run();
   }
   console.log('[PAN DB] Default owner user created, existing data assigned.');
+}
+
+// Migration: merge duplicate user #2 into owner user #1 (created by OAuth testing)
+{
+  const user2 = db.prepare('SELECT * FROM users WHERE id = 2').get();
+  if (user2) {
+    console.log(`[PAN DB] Merging user #2 "${user2.display_name}" into owner...`);
+    // Reassign all data from user 2 → user 1
+    for (const table of tablesToAddUserId) {
+      try { db.prepare(`UPDATE ${table} SET user_id = 1 WHERE user_id = 2`).run(); } catch {}
+    }
+    // Clean up OAuth links and memberships
+    try { db.prepare('DELETE FROM user_oauth WHERE user_id = 2').run(); } catch {}
+    try { db.prepare('DELETE FROM memberships WHERE user_id = 2').run(); } catch {}
+    try { db.prepare('DELETE FROM api_tokens WHERE user_id = 2').run(); } catch {}
+    db.prepare('DELETE FROM users WHERE id = 2').run();
+    console.log('[PAN DB] User #2 merged and deleted.');
+  }
+}
+
+// Migration: set default user display_name to actual OS username instead of generic "Owner"
+{
+  const user1 = db.prepare('SELECT display_name FROM users WHERE id = 1').get();
+  if (user1 && user1.display_name === 'Owner') {
+    const osUser = process.env.USERNAME || process.env.USER || 'Owner';
+    // Capitalize first letter
+    const displayName = osUser.charAt(0).toUpperCase() + osUser.slice(1);
+    db.prepare('UPDATE users SET display_name = ?, email = ? WHERE id = 1').run(displayName, `${osUser}@localhost`);
+    console.log(`[PAN DB] Updated default user to "${displayName}"`);
+  }
+}
+
+// Migration: add team_id to projects and project_tasks, add assigned_to to project_tasks
+{
+  const projCols = db.pragma('table_info(projects)').map(c => c.name);
+  if (projCols.length > 0 && !projCols.includes('team_id')) {
+    console.log('[PAN DB] Adding team_id to projects...');
+    db.exec(`ALTER TABLE projects ADD COLUMN team_id INTEGER`);
+  }
+  const taskCols = db.pragma('table_info(project_tasks)').map(c => c.name);
+  if (taskCols.length > 0 && !taskCols.includes('team_id')) {
+    console.log('[PAN DB] Adding team_id to project_tasks...');
+    db.exec(`ALTER TABLE project_tasks ADD COLUMN team_id INTEGER`);
+  }
+  if (taskCols.length > 0 && !taskCols.includes('assigned_to')) {
+    console.log('[PAN DB] Adding assigned_to to project_tasks...');
+    db.exec(`ALTER TABLE project_tasks ADD COLUMN assigned_to INTEGER`);
+  }
+  // Create indexes for new columns (safe to run always)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON project_tasks(assigned_to)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_team ON project_tasks(team_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_team ON projects(team_id)`);
 }
 
 // Convert sql.js style params ({':key': val}) to better-sqlite3 style ({key: val})
@@ -400,30 +521,46 @@ function indexEventFTS(eventId, eventType, dataStr) {
   }
 }
 
-// Backfill FTS index from existing events — run once on startup if needed
+// Backfill FTS index for any events newer than the last indexed ID.
+// Only scans new events (not all 67k+) so it's fast even with a large DB.
 function backfillFTS() {
-  const ftsCount = db.prepare('SELECT COUNT(*) as c FROM events_fts').get().c;
-  const eventsCount = db.prepare('SELECT COUNT(*) as c FROM events').get().c;
+  const maxIndexed = db.prepare('SELECT MAX(rowid) as m FROM events_fts').get().m || 0;
+  const maxEvent = db.prepare('SELECT MAX(id) as m FROM events').get().m || 0;
+  if (maxIndexed >= maxEvent) return; // already up to date
 
-  if (ftsCount >= eventsCount * 0.8) return; // already mostly indexed
-
-  console.log(`[PAN FTS] Backfilling: ${ftsCount} indexed / ${eventsCount} events`);
-  const events = db.prepare('SELECT id, event_type, data FROM events ORDER BY id').all();
+  console.log(`[PAN FTS] Backfilling events after id ${maxIndexed} (up to ${maxEvent})...`);
+  // Process in batches of 2000 to avoid loading the entire DB at once
+  const BATCH = 2000;
+  let cursor = maxIndexed;
   let indexed = 0;
-  for (const e of events) {
-    const text = extractEventText(e.event_type, e.data);
-    if (text) {
-      try {
-        db.prepare('INSERT OR IGNORE INTO events_fts(rowid, content_text) VALUES (?, ?)').run(e.id, text.slice(0, 2000));
-        indexed++;
-      } catch {}
+  while (true) {
+    const events = db.prepare(
+      'SELECT id, event_type, data FROM events WHERE id > ? ORDER BY id LIMIT ?'
+    ).all(cursor, BATCH);
+    if (events.length === 0) break;
+    for (const e of events) {
+      const text = extractEventText(e.event_type, e.data);
+      if (text) {
+        try {
+          db.prepare('INSERT OR IGNORE INTO events_fts(rowid, content_text) VALUES (?, ?)').run(e.id, text.slice(0, 2000));
+          indexed++;
+        } catch {}
+      }
+      cursor = e.id;
     }
+    if (events.length < BATCH) break; // last batch
   }
-  console.log(`[PAN FTS] Indexed ${indexed} events`);
+  if (indexed > 0) console.log(`[PAN FTS] Indexed ${indexed} new events`);
 }
 
-// Run backfill on startup
-try { backfillFTS(); } catch (err) { console.error('[PAN FTS] Backfill error:', err.message); }
+// Run backfill asynchronously — do NOT block server startup.
+// With a 600MB+ DB, the SELECT of all events can take 30-60s on a cold disk,
+// which exceeds PAN.bat's health-check timeout and prevents the carrier from
+// ever listening on port 7777. Deferring to setImmediate lets the event loop
+// finish module initialization first, so the server starts before backfill runs.
+setImmediate(() => {
+  try { backfillFTS(); } catch (err) { console.error('[PAN FTS] Backfill error:', err.message); }
+});
 
 // --- Centralized event logging ---
 // All event inserts should go through this function.
@@ -489,4 +626,20 @@ function _extractEventText(eventType, dataStr) {
   return extractEventText(eventType, dataStr);
 }
 
-export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, anonymize, anonymizeEventData, _extractEventText };
+// --- Scoped query helpers ---
+// Auto-inject org_id from Express request object. SQL must use :org_id placeholder.
+// Example: allScoped(req, "SELECT * FROM events WHERE org_id = :org_id", { ':type': 'foo' })
+function allScoped(req, sql, params = {}) {
+  return all(sql, { ...params, ':org_id': req?.org_id || 'org_personal' });
+}
+function getScoped(req, sql, params = {}) {
+  return get(sql, { ...params, ':org_id': req?.org_id || 'org_personal' });
+}
+function runScoped(req, sql, params = {}) {
+  return run(sql, { ...params, ':org_id': req?.org_id || 'org_personal' });
+}
+function insertScoped(req, sql, params = {}) {
+  return insert(sql, { ...params, ':org_id': req?.org_id || 'org_personal' });
+}
+
+export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, anonymize, anonymizeEventData, _extractEventText, allScoped, getScoped, runScoped, insertScoped };

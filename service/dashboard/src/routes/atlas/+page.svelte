@@ -131,7 +131,7 @@
 			return positions;
 		}
 
-		const EC = { core: '#f5c2e7', svc: '#a6e3a1', proc: '#f9e2af', mem: '#cba6f7', intel: '#89b4fa', dev: '#fab387', proj: '#94e2d5' };
+		const EC = { core: '#f5c2e7', svc: '#a6e3a1', proc: '#f9e2af', mem: '#cba6f7', intel: '#89b4fa', dev: '#fab387', proj: '#94e2d5', org: '#f2cdcd' };
 
 		// ===== RING 0: CENTER — PAN Core =====
 		add('pan-server', 'PAN Server', 'core', 'up',
@@ -224,6 +224,37 @@
 		edges.push({ from: 'orchestrator', to: 'autodev', color: EC.intel });
 		edges.push({ from: 'consolidation', to: 'memory-hub', color: EC.proc });
 
+		// Multi-Org sector (bottom-right, 40°-130° on ring 2)
+		const orgItems = [
+			['org-engine', 'Org Engine', 'up', 'Orgs API', 'CRUD, switching, invite tokens, role enforcement.'],
+			['org-roles', 'Roles & ACL', 'up', 'Owner→Viewer', 'Hierarchy: owner(100) > admin(75) > manager(50) > user(25) > viewer(0).'],
+			['org-isolation', 'Data Isolation', 'up', 'org_id scoping', 'Every query filtered by org_id. Scoped helpers: allScoped, getScoped, runScoped.'],
+			['org-db', 'Per-Org DBs', 'up', 'SQLCipher each', 'Separate encrypted DB per org via db-registry. Migrate with /isolate.'],
+			['org-sharing', 'Cross-Org Share', 'up', 'Events/projects', 'Share data between orgs with permission control.'],
+		];
+		const orgPos = arc(CX, CY, r2, 310, 370, orgItems.length);
+		orgItems.forEach(([id, label, status, detail, desc], i) => {
+			add(id, label, 'org', status, detail, 'orgs', orgPos[i].x, orgPos[i].y, desc);
+		});
+		edges.push({ from: 'database', to: 'org-engine', color: EC.org });
+		edges.push({ from: 'org-engine', to: 'org-roles', color: EC.org });
+		edges.push({ from: 'org-engine', to: 'org-isolation', color: EC.org });
+		edges.push({ from: 'org-isolation', to: 'org-db', color: EC.org });
+		edges.push({ from: 'org-engine', to: 'org-sharing', color: EC.org });
+
+		// ===== MEMORY FEEDBACK LOOP =====
+		// The core cycle: Claude session → hooks log events → classifier tags them →
+		// dream/consolidation extracts memories → memory-hub assembles → inject-ctx
+		// writes CLAUDE.md → next Claude session starts with full context.
+		// This is "PAN never forgets" — the loop that makes memory persistent.
+		edges.push({ from: 'claude', to: 'database', color: '#b4befe', label: 'session hooks' });      // sessions generate events
+		edges.push({ from: 'database', to: 'classifier', color: '#b4befe', label: 'raw events' });      // classifier reads events
+		// classifier → dream → consolidation already connected above
+		// consolidation → memory-hub already connected above
+		// memory-hub → inject-ctx already connected above
+		// inject-ctx → claude already connected above
+		// So the loop is: claude → db → classifier → dream → consolidation → memory-hub → inject-ctx → claude
+
 		// ===== RING 3 (r=440): Devices + Projects =====
 		const r3 = 440;
 		rings.push({ r: r3, label: '', color: '#1e1e2e' });
@@ -262,6 +293,7 @@
 			{ text: 'MEMORY', angle: 175, r: r2 + 40, color: EC.mem },
 			{ text: 'PROCESSING', angle: 265, r: r2 + 40, color: EC.proc },
 			{ text: 'INTELLIGENCE', angle: 80, r: r2 + 40, color: EC.intel },
+			{ text: 'ORGS', angle: 340, r: r2 + 40, color: EC.org },
 			{ text: 'DEVICES', angle: 0, r: r3 + 30, color: EC.dev },
 			{ text: 'PROJECTS', angle: 180, r: r3 + 30, color: EC.proj },
 		];
@@ -285,7 +317,7 @@
 	}
 
 	function nodeColor(node) {
-		const c = { core: '#89b4fa', service: '#a6e3a1', device: '#f9e2af', data: '#fab387', project: '#74c7ec', ui: '#89dceb', ai: '#f38ba8', memory: '#f5c2e7', process: '#cba6f7' };
+		const c = { core: '#89b4fa', service: '#a6e3a1', device: '#f9e2af', data: '#fab387', project: '#74c7ec', ui: '#89dceb', ai: '#f38ba8', memory: '#f5c2e7', process: '#cba6f7', org: '#f2cdcd' };
 		return c[node.type] || '#6c7086';
 	}
 

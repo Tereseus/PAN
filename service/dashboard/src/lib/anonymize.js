@@ -8,7 +8,7 @@ export function anonymize(str) {
 		// Emails
 		.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[email]')
 		// Phone numbers
-		.replace(/(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\+\d{1,3}[-.\s]?\d{4,14})/g, '[phone]')
+		.replace(/(?<!\d)(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\+\d{1,3}[-.\s]?\d{4,14})(?!\d)/g, '[phone]')
 		// GPS coordinates (lat/lon with decimals)
 		.replace(/[-+]?\d{1,3}\.\d{4,}/g, '[coord]')
 		// IP addresses

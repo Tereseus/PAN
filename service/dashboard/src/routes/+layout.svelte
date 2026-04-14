@@ -1,6 +1,7 @@
 <script>
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
+	import { onMount } from 'svelte';
 	import { isSidebarCollapsed, toggleSidebar, setPanMode, getPanMode } from '$lib/stores.svelte.js';
 
 	let { children } = $props();
@@ -9,7 +10,6 @@
 		{ label: 'Terminal', href: `${base}/terminal`, icon: '⌨', userOnly: true },
 		{ label: 'Automation', href: `${base}/automation`, icon: '⚡' },
 		{ label: 'Projects', href: `${base}/projects`, icon: '📁' },
-		{ label: 'Conversations', href: `${base}/conversations`, icon: '💬' },
 		{ label: 'Sensors', href: `${base}/sensors`, icon: '📡' },
 		{ label: 'Data', href: `${base}/data`, icon: '🗄' },
 		{ label: 'Settings', href: `${base}/settings`, icon: '⚙' },
@@ -18,9 +18,270 @@
 	// Until /health responds we render all tabs (assume user mode by default).
 	let tabs = $derived(allTabs.filter(t => !(t.userOnly && getPanMode() === 'service')));
 
+	let commsOpen = $state(typeof window !== 'undefined' && localStorage.getItem('pan_comms_open') === '1');
+	let commsView = $state('contacts'); // 'contacts' | 'calendar'
+	let unreadMessages = $state(0);
+	let commsContacts = $state([]);
+	let commsActiveContact = $state(null);   // contact object currently expanded
+	let commsActiveThread = $state(null);    // thread_id for active contact
+	let commsMessages = $state([]);          // messages in the active thread
+	let commsInput = $state('');             // chat input text
+	let commsMessagesEl;                     // scroll container ref
+	let commsSearch = $state('');            // contact search filter
+
+	function toggleComms() {
+		commsOpen = !commsOpen;
+		if (typeof window !== 'undefined') localStorage.setItem('pan_comms_open', commsOpen ? '1' : '0');
+		if (commsOpen) loadCommsContacts();
+	}
+
+	let commsLoading = $state(false);
+	let commsError = $state('');
+
+	async function loadCommsContacts() {
+		commsLoading = true;
+		commsError = '';
+		console.log('[PAN Comms] Loading contacts from', window.location.origin);
+		try {
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 5000);
+			const res = await fetch(`${window.location.origin}/api/v1/chat/contacts`, { signal: controller.signal });
+			clearTimeout(timeout);
+			console.log('[PAN Comms] Response status:', res.status);
+			if (res.ok) {
+				const data = await res.json();
+				console.log('[PAN Comms] Got', data.length, 'contacts');
+				commsContacts = data;
+			} else {
+				commsError = `Failed (${res.status})`;
+			}
+		} catch (e) {
+			commsError = e.name === 'AbortError' ? 'Timeout — server unreachable' : (e.message || 'Network error');
+			console.error('[PAN Comms] loadCommsContacts failed:', e);
+		} finally {
+			commsLoading = false;
+			console.log('[PAN Comms] Done. contacts:', commsContacts.length, 'error:', commsError);
+		}
+	}
+
+	// Load contacts on mount if panel was left open
+	onMount(() => {
+		if (commsOpen) loadCommsContacts();
+	});
+
+	async function commsClickContact(contact) {
+		// Toggle: click same contact again to collapse
+		if (commsActiveContact?.id === contact.id) {
+			commsActiveContact = null;
+			commsActiveThread = null;
+			commsMessages = [];
+			return;
+		}
+		commsActiveContact = contact;
+		// Get or create DM thread
+		try {
+			const res = await fetch('/api/v1/chat/threads/dm', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ contact_id: contact.id })
+			});
+			if (res.ok) {
+				const data = await res.json();
+				commsActiveThread = data.thread_id;
+				await loadCommsMessages(data.thread_id);
+				// Mark as read
+				fetch(`/api/v1/chat/threads/${data.thread_id}/read`, { method: 'POST' });
+				loadCommsContacts(); // refresh unread counts
+			}
+		} catch {}
+	}
+
+	async function loadCommsMessages(threadId) {
+		try {
+			const res = await fetch(`/api/v1/chat/threads/${threadId}/messages?limit=20`);
+			if (res.ok) commsMessages = await res.json();
+			// Scroll to bottom after render
+			setTimeout(() => { if (commsMessagesEl) commsMessagesEl.scrollTop = commsMessagesEl.scrollHeight; }, 50);
+		} catch {}
+	}
+
+	async function commsSendMessage() {
+		if (!commsInput.trim() || !commsActiveThread) return;
+		const body = commsInput.trim();
+		commsInput = '';
+		try {
+			const res = await fetch(`/api/v1/chat/threads/${commsActiveThread}/messages`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ body })
+			});
+			if (res.ok) {
+				const data = await res.json();
+				commsMessages = [...commsMessages, { id: data.id, thread_id: commsActiveThread, sender_id: 'self', body, body_type: 'text', created_at: data.created_at }];
+				setTimeout(() => { if (commsMessagesEl) commsMessagesEl.scrollTop = commsMessagesEl.scrollHeight; }, 50);
+			}
+		} catch {}
+	}
+
+	// Calendar state
+	let calendarEvents = $state([]);
+	let calendarMonth = $state(new Date().getMonth());
+	let calendarYear = $state(new Date().getFullYear());
+	let calendarSelectedDay = $state(null);
+	let calendarAddModal = $state(false);
+	let calendarNewTitle = $state('');
+	let calendarNewTime = $state('12:00');
+	let calendarFlash = $state(false);
+
+	async function loadCalendarEvents() {
+		try {
+			const res = await fetch(`/api/v1/chat/calendar?month=${calendarMonth + 1}&year=${calendarYear}`);
+			if (res.ok) calendarEvents = await res.json();
+		} catch {}
+	}
+
+	async function addCalendarEvent() {
+		if (!calendarNewTitle.trim() || calendarSelectedDay == null) return;
+		const dt = new Date(calendarYear, calendarMonth, calendarSelectedDay);
+		const [h, m] = calendarNewTime.split(':');
+		dt.setHours(parseInt(h) || 12, parseInt(m) || 0);
+		try {
+			await fetch('/api/v1/chat/calendar', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ title: calendarNewTitle.trim(), starts_at: dt.getTime(), notify: true })
+			});
+			calendarNewTitle = '';
+			calendarAddModal = false;
+			loadCalendarEvents();
+		} catch {}
+	}
+
+	function calendarDaysInMonth(y, m) {
+		return new Date(y, m + 1, 0).getDate();
+	}
+
+	function calendarFirstDow(y, m) {
+		return new Date(y, m, 1).getDay();
+	}
+
+	function calendarEventsOnDay(day) {
+		return calendarEvents.filter(e => {
+			const d = new Date(e.starts_at);
+			return d.getDate() === day && d.getMonth() === calendarMonth && d.getFullYear() === calendarYear;
+		});
+	}
+
+	function calendarPrev() {
+		if (calendarMonth === 0) { calendarMonth = 11; calendarYear--; }
+		else calendarMonth--;
+		calendarSelectedDay = null;
+		loadCalendarEvents();
+	}
+
+	function calendarNext() {
+		if (calendarMonth === 11) { calendarMonth = 0; calendarYear++; }
+		else calendarMonth++;
+		calendarSelectedDay = null;
+		loadCalendarEvents();
+	}
+
+	const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+	// Compose modal state
+	let composeOpen = $state(false);
+	let composeText = $state('');
+
+	function openPanWindow(url, opts = {}) {
+		// Always use Tauri shell API — window.open() doesn't create real windows in Tauri
+		fetch('/api/v1/ui-commands', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				type: 'open_window',
+				url,
+				title: opts.title || 'PAN',
+				width: opts.width || 600,
+				height: opts.height || 500
+			})
+		}).catch(() => {});
+	}
+
+	async function toggleFavorite(contact, e) {
+		e.stopPropagation();
+		const newVal = contact.favorited ? 0 : 1;
+		try {
+			await fetch(`/api/v1/chat/contacts/${contact.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ favorited: newVal })
+			});
+			contact.favorited = newVal;
+			commsContacts = [...commsContacts]; // trigger reactivity
+		} catch {}
+	}
+
+	let filteredContacts = $derived(() => {
+		let list = [...commsContacts];
+		if (commsSearch.trim()) {
+			const q = commsSearch.trim().toLowerCase();
+			list = list.filter(c => c.display_name.toLowerCase().includes(q));
+		}
+		// Sort: favorites first, then alphabetical
+		return list.sort((a, b) => {
+			if (a.favorited && !b.favorited) return -1;
+			if (!a.favorited && b.favorited) return 1;
+			return a.display_name.localeCompare(b.display_name);
+		});
+	});
+
+	function commsInitials(name) {
+		if (!name) return '?';
+		const parts = name.trim().split(/\s+/);
+		if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+		return name.substring(0, 2).toUpperCase();
+	}
+
+	// Check for calendar notifications every 30s
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const iv = setInterval(() => {
+			const now = Date.now();
+			for (const evt of calendarEvents) {
+				const diff = evt.starts_at - now;
+				if (diff > 0 && diff < 60000 && evt.notify) {
+					calendarFlash = true;
+					setTimeout(() => { calendarFlash = false; }, 3000);
+				}
+			}
+		}, 30000);
+		return () => clearInterval(iv);
+	});
+
+	function commsFormatTime(ts) {
+		if (!ts) return '';
+		const d = new Date(typeof ts === 'number' ? ts : parseInt(ts));
+		const now = new Date();
+		if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+	}
+
+	async function loadUnread() {
+		try {
+			const res = await fetch('/api/v1/chat/unread');
+			if (res.ok) {
+				const data = await res.json();
+				unreadMessages = data.unread || 0;
+			}
+		} catch {}
+	}
+
 	let serverStatus = $state('connecting');
 	let userName = $state('');
 	let userMenuOpen = $state(false);
+	let orgList = $state([]);
+	let activeOrg = $state(null);
+	let orgSwitcherOpen = $state(false);
 
 	const isDev = typeof window !== 'undefined' && window.location.port !== '7777' && window.location.port !== '';
 
@@ -100,13 +361,42 @@
 		window.location.replace(url.toString());
 	}
 
+	async function loadOrgs() {
+		try {
+			const res = await fetch('/api/v1/orgs');
+			if (res.ok) {
+				const data = await res.json();
+				orgList = data.orgs || [];
+				activeOrg = orgList.find(o => o.id === data.active) || orgList[0] || null;
+			}
+		} catch {}
+	}
+
+	async function switchOrg(orgId) {
+		try {
+			await fetch('/api/v1/orgs/switch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ org_id: orgId })
+			});
+			orgSwitcherOpen = false;
+			await loadOrgs();
+			// Reload page to reflect new org context
+			window.location.reload();
+		} catch {}
+	}
+
 	$effect(() => {
 		checkHealth();
 		loadUser();
+		loadOrgs();
+		loadUnread();
 		const iv = setInterval(checkHealth, 10000);
+		const uiv = setInterval(loadUnread, 15000);
 		window.addEventListener('pan-branding-changed', handleBrandingChange);
 		return () => {
 			clearInterval(iv);
+			clearInterval(uiv);
 			window.removeEventListener('pan-branding-changed', handleBrandingChange);
 		};
 	});
@@ -118,7 +408,7 @@
 	<div class="mobile-overlay" onclick={closeMobileMenu}></div>
 {/if}
 
-{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/crucible')}
+{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/crucible') || page.url.pathname.includes('/compose') || page.url.pathname.includes('/call')}
 	{@render children()}
 {:else}
 <div class="shell">
@@ -159,9 +449,185 @@
 			{/each}
 		</div>
 
+		<!-- Comms — contact list with inline chat -->
+		<div class="comms-section" class:comms-expanded={commsOpen && commsActiveContact}>
+			<button class="comms-header" onclick={toggleComms} title={collapsed ? 'Comms' : ''}>
+				<span class="tab-icon">📻</span>
+				{#if !collapsed}
+					<span class="comms-label">Comms</span>
+					{#if unreadMessages > 0}
+						<span class="comms-badge">{unreadMessages > 99 ? '99+' : unreadMessages}</span>
+					{/if}
+					<span class="comms-chevron">{commsOpen ? '▾' : '▸'}</span>
+				{:else if unreadMessages > 0}
+					<span class="comms-badge-dot"></span>
+				{/if}
+			</button>
+			{#if commsOpen && !collapsed}
+				<div class="comms-body">
+					<!-- Contacts / Calendar toggle -->
+					<div class="comms-view-toggle">
+						<button class="comms-vtab" class:active={commsView === 'contacts'} onclick={() => { commsView = 'contacts'; loadCommsContacts(); }}>👤 Contacts</button>
+						<button class="comms-vtab" class:active={commsView === 'calendar'} class:flash={calendarFlash} onclick={() => { commsView = 'calendar'; commsActiveContact = null; loadCalendarEvents(); }}>📅 Calendar</button>
+					</div>
+
+					{#if commsView === 'calendar'}
+						<div class="comms-calendar">
+							<div class="cal-nav">
+								<button class="cal-nav-btn" onclick={calendarPrev}>◂</button>
+								<span class="cal-month">{monthNames[calendarMonth]} {calendarYear}</span>
+								<button class="cal-nav-btn" onclick={calendarNext}>▸</button>
+							</div>
+							<div class="cal-grid">
+								<span class="cal-dow">Su</span><span class="cal-dow">Mo</span><span class="cal-dow">Tu</span><span class="cal-dow">We</span><span class="cal-dow">Th</span><span class="cal-dow">Fr</span><span class="cal-dow">Sa</span>
+								{#each Array(calendarFirstDow(calendarYear, calendarMonth)) as _}
+									<span class="cal-blank"></span>
+								{/each}
+								{#each Array(calendarDaysInMonth(calendarYear, calendarMonth)) as _, i}
+									{@const day = i + 1}
+									{@const hasEvents = calendarEventsOnDay(day).length > 0}
+									{@const isToday = day === new Date().getDate() && calendarMonth === new Date().getMonth() && calendarYear === new Date().getFullYear()}
+									<button
+										class="cal-day"
+										class:today={isToday}
+										class:has-events={hasEvents}
+										class:selected={calendarSelectedDay === day}
+										onclick={() => { calendarSelectedDay = day; }}
+									>{day}</button>
+								{/each}
+							</div>
+							{#if calendarSelectedDay}
+								<div class="cal-day-detail">
+									<div class="cal-day-header">
+										<span>{monthNames[calendarMonth]} {calendarSelectedDay}</span>
+										<button class="cal-add-btn" onclick={() => { calendarAddModal = true; }}>+ Event</button>
+									</div>
+									{#each calendarEventsOnDay(calendarSelectedDay) as evt}
+										<div class="cal-event">{new Date(evt.starts_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} — {evt.title}</div>
+									{/each}
+									{#if calendarEventsOnDay(calendarSelectedDay).length === 0}
+										<div class="cal-no-events">No events</div>
+									{/if}
+								</div>
+								{#if calendarAddModal}
+									<div class="cal-add-form">
+										<input type="text" class="comms-chat-input" placeholder="Event title" bind:value={calendarNewTitle} />
+										<input type="time" class="comms-chat-input" bind:value={calendarNewTime} />
+										<div class="comms-compose-actions">
+											<button class="comms-compose-send" onclick={addCalendarEvent}>Add</button>
+											<button class="comms-compose-cancel" onclick={() => { calendarAddModal = false; }}>Cancel</button>
+										</div>
+									</div>
+								{/if}
+							{/if}
+						</div>
+					{:else if commsLoading}
+						<div class="comms-empty">Loading...</div>
+					{:else if commsError}
+						<div class="comms-empty">{commsError} <button class="comms-retry-btn" onclick={loadCommsContacts}>Retry</button></div>
+					{:else if commsContacts.length === 0}
+						<div class="comms-empty">No contacts</div>
+					{:else}
+						<div class="comms-search-bar">
+							<input type="text" class="comms-search-input" placeholder="Search contacts..." bind:value={commsSearch} />
+						</div>
+						<div class="comms-list">
+							{#each filteredContacts() as contact}
+								<button
+									class="comms-contact"
+									class:active={commsActiveContact?.id === contact.id}
+									onclick={() => commsClickContact(contact)}
+									title={contact.display_name}
+								>
+									<span class="comms-avatar" class:online={contact.status === 'online'}>{contact.display_name.charAt(0).toUpperCase()}</span>
+									<span class="comms-name">{contact.display_name}</span>
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<!-- svelte-ignore a11y_click_events_have_key_events -->
+									<span class="comms-fav-btn" class:favorited={contact.favorited} onclick={(e) => toggleFavorite(contact, e)} title={contact.favorited ? 'Unfavorite' : 'Favorite'}>
+										{contact.favorited ? '★' : '☆'}
+									</span>
+									{#if contact.unread_count > 0}
+										<span class="comms-unread">{contact.unread_count}</span>
+									{/if}
+								</button>
+
+								<!-- Inline chat: takes over most of the Comms area -->
+								{#if commsActiveContact?.id === contact.id}
+									<div class="comms-chat">
+										<div class="comms-chat-messages" bind:this={commsMessagesEl}>
+											{#if commsMessages.length === 0}
+												<div class="comms-chat-empty">No messages yet — say hi</div>
+											{:else}
+												{#each commsMessages as msg}
+													<div class="comms-msg" class:self={msg.sender_id === 'self'}>
+														<span class="comms-msg-sender" class:self={msg.sender_id === 'self'}>{msg.sender_id === 'self' ? 'You' : commsInitials(contact.display_name)}</span>
+														<span class="comms-msg-text">{msg.body}</span>
+														<span class="comms-msg-time">{commsFormatTime(msg.created_at)}</span>
+													</div>
+												{/each}
+											{/if}
+										</div>
+										<div class="comms-chat-input-row">
+											<input
+												type="text"
+												class="comms-chat-input"
+												placeholder="Message {contact.display_name}..."
+												bind:value={commsInput}
+												onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commsSendMessage(); } }}
+											/>
+										</div>
+										<div class="comms-chat-actions">
+											<button class="comms-action" title="Call / Video / Screen Share" onclick={() => openPanWindow(`${window.location.origin}/v2/call?thread=${commsActiveThread}&name=${encodeURIComponent(contact.display_name)}&contact=${contact.id}`, { width: 500, height: 600, title: `Call — ${contact.display_name}` })}>📞 Call</button>
+											<button class="comms-action" title="Compose rich message" onclick={() => openPanWindow(`${window.location.origin}/v2/compose?thread=${commsActiveThread}&name=${encodeURIComponent(contact.display_name)}&contact=${contact.id}`, { width: 600, height: 500, title: `Compose — ${contact.display_name}` })}>📝 Compose</button>
+										</div>
+									</div>
+								{/if}
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{:else if commsOpen && collapsed}
+				<div class="comms-items collapsed">
+					<button class="comms-item" title="Comms" onclick={() => { toggleSidebar(); }}>
+						<span class="tab-icon">👤</span>
+					</button>
+				</div>
+			{/if}
+		</div>
+
 		<div class="sidebar-spacer"></div>
 
 		<div class="sidebar-bottom">
+			{#if orgList.filter(o => o.id !== 'org_personal').length > 0}
+				<div class="org-switcher" class:collapsed>
+					<button class="org-current" onclick={() => orgSwitcherOpen = !orgSwitcherOpen} title={collapsed ? (activeOrg?.name || 'Org') : ''}>
+						<span class="org-dot" style="background: {activeOrg?.color_primary || '#89b4fa'}"></span>
+						{#if !collapsed}
+							<span class="org-current-name">{activeOrg?.name || 'Personal'}</span>
+							<span class="org-chevron">{orgSwitcherOpen ? '▴' : '▾'}</span>
+						{/if}
+					</button>
+					{#if orgSwitcherOpen}
+						<div class="org-dropdown-backdrop" onclick={() => orgSwitcherOpen = false}></div>
+						<div class="org-dropdown">
+							{#each orgList.filter(o => o.id !== 'org_personal') as org}
+								<button
+									class="org-option"
+									class:active={org.id === activeOrg?.id}
+									onclick={() => switchOrg(org.id)}
+								>
+									<span class="org-dot-sm" style="background: {org.color_primary || '#89b4fa'}"></span>
+									<span class="org-option-name">{org.name}</span>
+									{#if org.role_name}
+										<span class="org-option-role">{org.role_name}</span>
+									{/if}
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
 			{#if userName}
 				<button class="user-area" onclick={() => userMenuOpen = !userMenuOpen}>
 					<div class="user-avatar">{userName.charAt(0).toUpperCase()}</div>
@@ -392,6 +858,610 @@
 		overflow: hidden;
 	}
 
+	/* Comms section */
+	.comms-section {
+		border-top: 1px solid #1e1e2e;
+		padding: 8px 8px 0;
+	}
+
+	.sidebar.collapsed .comms-section {
+		padding: 8px 4px 0;
+	}
+
+	.comms-header {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		padding: 9px 12px;
+		border: none;
+		border-radius: 6px;
+		background: transparent;
+		color: #6c7086;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 13.5px;
+		font-weight: 400;
+		transition: all 0.15s;
+		position: relative;
+	}
+
+	.sidebar.collapsed .comms-header {
+		justify-content: center;
+		padding: 9px 0;
+		gap: 0;
+	}
+
+	.comms-header:hover {
+		color: #cdd6f4;
+		background: #1a1a25;
+	}
+
+	.comms-label {
+		flex: 1;
+		text-align: left;
+		white-space: nowrap;
+	}
+
+	.comms-chevron {
+		font-size: 10px;
+		color: #6c7086;
+		flex-shrink: 0;
+	}
+
+	.comms-badge {
+		background: #f38ba8;
+		color: #0a0a0f;
+		font-size: 10px;
+		font-weight: 700;
+		padding: 1px 5px;
+		border-radius: 8px;
+		min-width: 16px;
+		text-align: center;
+		line-height: 14px;
+	}
+
+	.comms-badge-dot {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: #f38ba8;
+	}
+
+	.comms-items {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		padding: 4px 0 4px 8px;
+	}
+
+	.comms-items.collapsed {
+		padding: 4px 0;
+	}
+
+	.comms-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 7px 12px;
+		border: none;
+		border-radius: 5px;
+		background: transparent;
+		color: #585b70;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 12.5px;
+		transition: all 0.15s;
+		white-space: nowrap;
+	}
+
+	.comms-items.collapsed .comms-item {
+		justify-content: center;
+		padding: 7px 0;
+		gap: 0;
+	}
+
+	.comms-item:hover {
+		color: #cdd6f4;
+		background: #1a1a25;
+	}
+
+	.comms-item .tab-icon {
+		font-size: 13px;
+	}
+
+	/* Comms mini-app */
+	.comms-section.comms-expanded {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	/* When chat is open, kill the spacer so comms eats that space */
+	.comms-section.comms-expanded ~ .sidebar-spacer {
+		flex: 0 !important;
+	}
+
+	.comms-body {
+		padding: 0 6px 6px;
+		overflow-y: auto;
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.comms-section.comms-expanded .comms-body {
+		flex: 1;
+		overflow: hidden;
+	}
+
+	.comms-list {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		flex: 1;
+		min-height: 0;
+	}
+
+	.comms-contact {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 5px 8px;
+		background: none;
+		border: none;
+		color: #cdd6f4;
+		cursor: pointer;
+		border-radius: 4px;
+		font-size: 12px;
+		text-align: left;
+		width: 100%;
+		transition: background 0.1s;
+	}
+
+	.comms-contact:hover { background: rgba(137,180,250,0.08); }
+	.comms-contact.active { background: rgba(137,180,250,0.12); }
+
+	.comms-avatar {
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: #585b70;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 11px;
+		font-weight: 600;
+		color: #cdd6f4;
+		flex-shrink: 0;
+		position: relative;
+	}
+
+	.comms-avatar.online::after {
+		content: '';
+		position: absolute;
+		bottom: -1px;
+		right: -1px;
+		width: 7px;
+		height: 7px;
+		background: #a6e3a1;
+		border-radius: 50%;
+		border: 1.5px solid #181825;
+	}
+
+	.comms-name {
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.comms-fav {
+		color: #f9e2af;
+		font-size: 10px;
+		flex-shrink: 0;
+	}
+
+	.comms-search-bar {
+		padding: 0 0 4px;
+		flex-shrink: 0;
+	}
+
+	.comms-search-input {
+		width: 100%;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 5px;
+		color: #cdd6f4;
+		padding: 5px 8px;
+		font-size: 11px;
+		outline: none;
+		font-family: inherit;
+	}
+
+	.comms-search-input:focus {
+		border-color: #89b4fa;
+	}
+
+	.comms-search-input::placeholder {
+		color: #585b70;
+	}
+
+	.comms-fav-btn {
+		background: none;
+		border: none;
+		color: #585b70;
+		font-size: 12px;
+		cursor: pointer;
+		padding: 0 2px;
+		flex-shrink: 0;
+		line-height: 1;
+		transition: color 0.1s;
+	}
+
+	.comms-fav-btn:hover {
+		color: #f9e2af;
+	}
+
+	.comms-fav-btn.favorited {
+		color: #f9e2af;
+	}
+
+	.comms-unread {
+		background: #89b4fa;
+		color: #11111b;
+		font-size: 9px;
+		font-weight: 700;
+		padding: 1px 5px;
+		border-radius: 8px;
+		flex-shrink: 0;
+	}
+
+	.comms-view-toggle {
+		display: flex;
+		gap: 2px;
+		margin-bottom: 6px;
+		padding: 2px;
+		background: #1e1e2e;
+		border-radius: 5px;
+		flex-shrink: 0;
+	}
+
+	.comms-vtab {
+		flex: 1;
+		background: none;
+		border: none;
+		color: #6c7086;
+		font-size: 10px;
+		padding: 4px 0;
+		cursor: pointer;
+		border-radius: 3px;
+		transition: all 0.12s;
+	}
+
+	.comms-vtab:hover { background: rgba(137,180,250,0.08); }
+	.comms-vtab.active { background: rgba(137,180,250,0.15); color: #89b4fa; }
+
+	.comms-empty {
+		text-align: center;
+		color: #585b70;
+		font-size: 11px;
+		padding: 12px 0;
+	}
+	.comms-retry-btn {
+		background: #313244;
+		color: #cdd6f4;
+		border: 1px solid #45475a;
+		border-radius: 4px;
+		padding: 2px 8px;
+		font-size: 10px;
+		cursor: pointer;
+		margin-left: 4px;
+	}
+	.comms-retry-btn:hover { background: #45475a; }
+
+	/* Inline chat — takes over most of sidebar when open */
+	.comms-chat {
+		display: flex;
+		flex-direction: column;
+		margin: 2px 0 4px 0;
+		border-left: 2px solid #89b4fa;
+		background: #11111b;
+		border-radius: 0 6px 6px 0;
+		overflow: hidden;
+		flex: 1;
+		min-height: 0;
+	}
+
+	.comms-chat-messages {
+		flex: 1;
+		min-height: 80px;
+		overflow-y: auto;
+		padding: 6px 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.comms-chat-empty {
+		color: #585b70;
+		font-size: 10px;
+		text-align: center;
+		padding: 16px 0;
+	}
+
+	.comms-msg {
+		display: flex;
+		gap: 6px;
+		align-items: baseline;
+		font-size: 11px;
+	}
+
+	.comms-msg-sender {
+		font-size: 9px;
+		font-weight: 700;
+		color: #f9e2af;
+		flex-shrink: 0;
+		min-width: 20px;
+	}
+
+	.comms-msg-sender.self {
+		color: #89b4fa;
+	}
+
+	.comms-msg.self .comms-msg-text {
+		color: #89b4fa;
+	}
+
+	.comms-msg-text {
+		color: #bac2de;
+		flex: 1;
+		word-break: break-word;
+	}
+
+	.comms-msg-time {
+		color: #45475a;
+		font-size: 9px;
+		flex-shrink: 0;
+	}
+
+	/* Compose modal */
+	.comms-compose {
+		padding: 6px;
+		border-top: 1px solid #1e1e2e;
+	}
+
+	.comms-compose-input {
+		width: 100%;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 4px;
+		color: #cdd6f4;
+		padding: 6px 8px;
+		font-size: 11px;
+		font-family: inherit;
+		outline: none;
+		resize: vertical;
+		min-height: 60px;
+	}
+
+	.comms-compose-input:focus { border-color: #89b4fa; }
+
+	.comms-compose-actions {
+		display: flex;
+		gap: 4px;
+		margin-top: 4px;
+	}
+
+	.comms-compose-send {
+		background: #89b4fa;
+		color: #11111b;
+		border: none;
+		padding: 4px 12px;
+		border-radius: 4px;
+		font-size: 10px;
+		font-weight: 600;
+		cursor: pointer;
+	}
+
+	.comms-compose-cancel {
+		background: none;
+		color: #6c7086;
+		border: 1px solid #313244;
+		padding: 4px 10px;
+		border-radius: 4px;
+		font-size: 10px;
+		cursor: pointer;
+	}
+
+	.comms-chat-input-row {
+		padding: 4px 6px;
+		border-top: 1px solid #1e1e2e;
+	}
+
+	.comms-chat-input {
+		width: 100%;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 4px;
+		color: #cdd6f4;
+		padding: 5px 8px;
+		font-size: 11px;
+		outline: none;
+	}
+
+	.comms-chat-input:focus {
+		border-color: #89b4fa;
+	}
+
+	.comms-chat-actions {
+		display: flex;
+		gap: 2px;
+		padding: 3px 6px 5px;
+		border-top: 1px solid #1e1e2e;
+	}
+
+	.comms-action {
+		flex: 1;
+		background: none;
+		border: none;
+		color: #6c7086;
+		font-size: 13px;
+		padding: 3px 0;
+		cursor: pointer;
+		border-radius: 4px;
+		transition: all 0.1s;
+	}
+
+	.comms-action:hover {
+		background: rgba(137,180,250,0.1);
+		color: #89b4fa;
+	}
+
+	/* Calendar */
+	.comms-calendar {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow-y: auto;
+	}
+
+	.cal-nav {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 4px 2px;
+		flex-shrink: 0;
+	}
+
+	.cal-nav-btn {
+		background: none;
+		border: none;
+		color: #6c7086;
+		cursor: pointer;
+		padding: 2px 6px;
+		font-size: 12px;
+	}
+
+	.cal-nav-btn:hover { color: #89b4fa; }
+
+	.cal-month {
+		font-size: 11px;
+		font-weight: 600;
+		color: #cdd6f4;
+	}
+
+	.cal-grid {
+		display: grid;
+		grid-template-columns: repeat(7, 1fr);
+		gap: 1px;
+		flex-shrink: 0;
+	}
+
+	.cal-dow {
+		font-size: 8px;
+		color: #585b70;
+		text-align: center;
+		padding: 2px 0;
+	}
+
+	.cal-blank { }
+
+	.cal-day {
+		background: none;
+		border: none;
+		color: #bac2de;
+		font-size: 10px;
+		padding: 3px 0;
+		cursor: pointer;
+		border-radius: 3px;
+		text-align: center;
+		transition: all 0.1s;
+	}
+
+	.cal-day:hover { background: rgba(137,180,250,0.1); }
+	.cal-day.today { color: #89b4fa; font-weight: 700; }
+	.cal-day.selected { background: rgba(137,180,250,0.2); color: #89b4fa; }
+	.cal-day.has-events { position: relative; }
+	.cal-day.has-events::after {
+		content: '';
+		position: absolute;
+		bottom: 1px;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 4px;
+		height: 4px;
+		background: #f9e2af;
+		border-radius: 50%;
+	}
+
+	.cal-day-detail {
+		padding: 6px;
+		border-top: 1px solid #1e1e2e;
+		flex-shrink: 0;
+	}
+
+	.cal-day-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		font-size: 11px;
+		color: #cdd6f4;
+		font-weight: 600;
+		margin-bottom: 4px;
+	}
+
+	.cal-add-btn {
+		background: none;
+		border: 1px solid #313244;
+		color: #89b4fa;
+		font-size: 9px;
+		padding: 2px 6px;
+		border-radius: 3px;
+		cursor: pointer;
+	}
+
+	.cal-add-btn:hover { background: rgba(137,180,250,0.1); }
+
+	.cal-event {
+		font-size: 10px;
+		color: #bac2de;
+		padding: 2px 0;
+		border-left: 2px solid #f9e2af;
+		padding-left: 6px;
+		margin: 2px 0;
+	}
+
+	.cal-no-events {
+		font-size: 10px;
+		color: #585b70;
+	}
+
+	.cal-add-form {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 6px;
+		border-top: 1px solid #1e1e2e;
+	}
+
+	/* Calendar flash notification */
+	.comms-vtab.flash {
+		animation: cal-flash 0.5s ease-in-out 6;
+	}
+
+	@keyframes cal-flash {
+		0%, 100% { background: none; }
+		50% { background: rgba(249,226,175,0.3); color: #f9e2af; }
+	}
+
 	.sidebar-spacer {
 		flex: 1;
 	}
@@ -496,6 +1566,128 @@
 
 	.dropdown-item.danger:hover {
 		background: rgba(243, 139, 168, 0.1);
+	}
+
+	/* Org Switcher */
+	.org-switcher {
+		margin-bottom: 8px;
+		position: relative;
+	}
+
+	.org-current {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 7px 8px;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px;
+		background: transparent;
+		color: #cdd6f4;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 12px;
+		transition: all 0.15s;
+	}
+
+	.org-switcher.collapsed .org-current {
+		justify-content: center;
+		padding: 7px 0;
+	}
+
+	.org-current:hover {
+		background: #1a1a25;
+		border-color: #89b4fa44;
+	}
+
+	.org-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.org-current-name {
+		flex: 1;
+		text-align: left;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-weight: 500;
+	}
+
+	.org-chevron {
+		color: #6c7086;
+		font-size: 10px;
+		flex-shrink: 0;
+	}
+
+	.org-dropdown-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 99;
+	}
+
+	.org-dropdown {
+		position: absolute;
+		bottom: 100%;
+		left: 0;
+		right: 0;
+		background: #1a1a25;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px;
+		padding: 4px;
+		z-index: 100;
+		box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+		margin-bottom: 4px;
+		max-height: 200px;
+		overflow-y: auto;
+	}
+
+	.org-option {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 7px 10px;
+		border: none;
+		border-radius: 4px;
+		background: transparent;
+		color: #cdd6f4;
+		font-size: 12px;
+		font-family: inherit;
+		cursor: pointer;
+		transition: background 0.15s;
+		text-align: left;
+	}
+
+	.org-option:hover {
+		background: rgba(137, 180, 250, 0.1);
+	}
+
+	.org-option.active {
+		background: rgba(137, 180, 250, 0.12);
+		color: #89b4fa;
+	}
+
+	.org-dot-sm {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.org-option-name {
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.org-option-role {
+		font-size: 10px;
+		color: #6c7086;
+		flex-shrink: 0;
 	}
 
 	.server-info {

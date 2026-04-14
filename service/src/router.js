@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { insert, all, get, logEvent } from './db.js';
+import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
 import { claude } from './claude.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
@@ -34,10 +34,10 @@ async function tryQuickSystem(text) {
   const lower = text.toLowerCase();
 
   if (lower.includes('status')) {
-    const stats = get(`SELECT
-      (SELECT COUNT(*) FROM events) as events,
-      (SELECT COUNT(*) FROM memory_items) as memories,
-      (SELECT COUNT(*) FROM projects) as projects
+    const stats = getScoped(null, `SELECT
+      (SELECT COUNT(*) FROM events WHERE org_id = :org_id) as events,
+      (SELECT COUNT(*) FROM memory_items WHERE org_id = :org_id) as memories,
+      (SELECT COUNT(*) FROM projects WHERE org_id = :org_id) as projects
     `);
     return {
       intent: 'system',
@@ -88,12 +88,12 @@ async function handleUnified(text, context) {
   const cmdId = context._commandId || null;
 
   // Build project list for context
-  const projects = all("SELECT name, path FROM projects ORDER BY name");
+  const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
 
   // Pull relevant memories for query context
-  const memories = all(`SELECT content, item_type FROM memory_items
-    WHERE content LIKE :q ORDER BY created_at DESC LIMIT 5`, {
+  const memories = allScoped(null, `SELECT content, item_type FROM memory_items
+    WHERE org_id = :org_id AND content LIKE :q ORDER BY created_at DESC LIMIT 5`, {
     ':q': `%${text.split(' ').slice(0, 3).join('%')}%`
   });
   const memoryContext = memories.length > 0
@@ -362,17 +362,18 @@ async function processUnifiedResult(action, text, context) {
 
     case 'memory': {
       if (action.action === 'save') {
-        insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at)
-          VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'))`, {
+        insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at, org_id)
+          VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'), :org_id)`, {
           ':type': action.item_type || 'note',
           ':content': action.content || text,
-          ':ctx': JSON.stringify({ source: 'voice_command', original: text })
+          ':ctx': JSON.stringify({ source: 'voice_command', original: text }),
+          ':org_id': 'org_personal'
         });
         return { intent: 'memory', response: action.response || `Saved: ${action.content}` };
       }
 
       if (action.action === 'recall' || action.action === 'list') {
-        const items = all(`SELECT * FROM memory_items WHERE item_type = :type OR content LIKE :q ORDER BY created_at DESC LIMIT 10`, {
+        const items = allScoped(null, `SELECT * FROM memory_items WHERE org_id = :org_id AND (item_type = :type OR content LIKE :q) ORDER BY created_at DESC LIMIT 10`, {
           ':type': action.item_type || '',
           ':q': `%${action.content || ''}%`
         });
@@ -387,11 +388,12 @@ async function processUnifiedResult(action, text, context) {
     }
 
     case 'calendar': {
-      insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at)
-        VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'))`, {
+      insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at, org_id)
+        VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'), :org_id)`, {
         ':type': 'calendar_event',
         ':content': text,
-        ':ctx': JSON.stringify({ source: 'voice_command', pending_calendar_sync: true })
+        ':ctx': JSON.stringify({ source: 'voice_command', pending_calendar_sync: true }),
+        ':org_id': 'org_personal'
       });
       return {
         intent: 'calendar',

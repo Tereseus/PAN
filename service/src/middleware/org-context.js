@@ -198,6 +198,34 @@ export function verifyAuditChain(orgId) {
 }
 
 // ============================================================
+// resignAuditChain — re-signs all entries with the current key
+// Used when the signing key was regenerated (e.g. fresh install, key loss)
+// ============================================================
+export function resignAuditChain(orgId) {
+  const rows = db.prepare(`SELECT * FROM audit_log WHERE org_id = ? ORDER BY id ASC`).all(orgId);
+  let prevSig = null;
+  let fixed = 0;
+  for (const r of rows) {
+    const row = {
+      org_id: r.org_id,
+      user_id: r.user_id,
+      action: r.action,
+      target: r.target,
+      metadata_json: r.metadata_json,
+      ts: r.ts,
+      prev_hash: prevSig,
+    };
+    const newSig = hmac(JSON.stringify(row));
+    if (r.prev_hash !== prevSig || r.signature !== newSig) {
+      db.prepare(`UPDATE audit_log SET prev_hash = ?, signature = ? WHERE id = ?`).run(prevSig, newSig, r.id);
+      fixed++;
+    }
+    prevSig = newSig;
+  }
+  return { fixed, total: rows.length };
+}
+
+// ============================================================
 // verifyAllAuditChains — verifies every org's chain in one call
 // ============================================================
 export function verifyAllAuditChains() {

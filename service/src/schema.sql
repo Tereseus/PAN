@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS projects (
     path TEXT NOT NULL,
     description TEXT,
     classification TEXT,
+    team_id INTEGER,                  -- team that owns this project
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -105,6 +106,8 @@ CREATE TABLE IF NOT EXISTS project_tasks (
     status TEXT NOT NULL DEFAULT 'todo',  -- todo, in_progress, done
     priority INTEGER DEFAULT 0,           -- 0=normal, 1=high, 2=critical
     sort_order INTEGER DEFAULT 0,
+    assigned_to INTEGER,              -- user_id
+    team_id INTEGER,                  -- team assignment
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     completed_at TEXT
 );
@@ -227,10 +230,14 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL,
     avatar_url TEXT,
     role TEXT NOT NULL DEFAULT 'user',    -- instance role: 'owner','admin','user','viewer'
+    power_lvl INTEGER,                   -- power level override (0-100). NULL = derive from role.
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now','localtime')),
     last_login TEXT
 );
+
+-- Seed default owner user (idempotent)
+INSERT OR IGNORE INTO users (id, email, display_name, role) VALUES (1, 'owner@localhost', 'Tereseus', 'owner');
 
 -- OAuth provider links (one user can link multiple providers)
 CREATE TABLE IF NOT EXISTS user_oauth (
@@ -371,6 +378,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     status TEXT NOT NULL DEFAULT 'open',            -- 'open', 'acknowledged', 'resolved', 'dismissed'
     resolution TEXT,                                -- how it was fixed (filled on resolve)
     resolved_by TEXT,                               -- 'user', 'system', 'auto'
+    org_id TEXT DEFAULT 'org_personal',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     resolved_at TEXT
@@ -463,3 +471,143 @@ CREATE TABLE IF NOT EXISTS evolution_versions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_evolution_file ON evolution_versions(config_file, version DESC);
+
+-- === MULTI-ORG (Tier 0) ===
+
+CREATE TABLE IF NOT EXISTS orgs (
+  id TEXT PRIMARY KEY,
+  slug TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  logo_url TEXT,
+  color_primary TEXT,
+  color_secondary TEXT,
+  policy_blackout_allowed INTEGER DEFAULT 1,
+  policy_incognito_allowed INTEGER DEFAULT 1,
+  policy_sensor_rules TEXT,
+  policy_export_rules TEXT,
+  policy_data_retention_days INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS memberships (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  org_id TEXT NOT NULL,
+  role_id INTEGER,
+  joined_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+  left_at INTEGER,
+  permissions_json TEXT,
+  UNIQUE(user_id, org_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_memberships_org ON memberships(org_id);
+
+CREATE TABLE IF NOT EXISTS zones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  polygon_geojson TEXT NOT NULL,
+  sensor_rules_json TEXT,
+  tool_rules_json TEXT,
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
+);
+CREATE INDEX IF NOT EXISTS idx_zones_org ON zones(org_id);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL,
+  user_id INTEGER,
+  action TEXT NOT NULL,
+  target TEXT,
+  metadata_json TEXT,
+  ts INTEGER NOT NULL,
+  signature TEXT,
+  prev_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_org_ts ON audit_log(org_id, ts);
+
+CREATE TABLE IF NOT EXISTS incognito_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incognito_expires ON incognito_events(expires_at);
+
+CREATE TABLE IF NOT EXISTS sensor_toggles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  device_id INTEGER NOT NULL,
+  org_id TEXT NOT NULL,
+  sensor TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  cadence_seconds INTEGER,
+  forced_by_org INTEGER DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+  UNIQUE(user_id, device_id, org_id, sensor)
+);
+
+CREATE TABLE IF NOT EXISTS org_invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  role_id INTEGER,                    -- role to assign on join (NULL = default 'user')
+  created_by INTEGER NOT NULL,        -- user_id who created the invite
+  email TEXT,                         -- optional: restrict to specific email
+  max_uses INTEGER DEFAULT 1,         -- how many times this token can be used
+  use_count INTEGER DEFAULT 0,
+  expires_at INTEGER,                 -- NULL = never expires
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
+);
+CREATE INDEX IF NOT EXISTS idx_org_invites_token ON org_invites(token);
+CREATE INDEX IF NOT EXISTS idx_org_invites_org ON org_invites(org_id);
+
+-- Cross-org data sharing — tracks which orgs share data with which
+CREATE TABLE IF NOT EXISTS org_shares (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_org_id TEXT NOT NULL,
+  target_org_id TEXT NOT NULL,
+  share_type TEXT NOT NULL DEFAULT 'readonly',  -- readonly, readwrite
+  tables TEXT NOT NULL DEFAULT '[]',            -- JSON array of table names shared
+  created_by INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+  revoked_at INTEGER,
+  UNIQUE(source_org_id, target_org_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_shares_source ON org_shares(source_org_id);
+CREATE INDEX IF NOT EXISTS idx_org_shares_target ON org_shares(target_org_id);
+
+-- Teams — groups within an org
+CREATE TABLE IF NOT EXISTS teams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  description TEXT,
+  color TEXT DEFAULT '#89b4fa',
+  created_by INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+  UNIQUE(org_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_teams_org ON teams(org_id);
+
+-- Team members — users belong to teams within an org
+CREATE TABLE IF NOT EXISTS team_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member',  -- member, lead
+  joined_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+  UNIQUE(team_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id);
+
+-- Seed personal org (idempotent)
+INSERT OR IGNORE INTO orgs (id, slug, name, color_primary)
+VALUES ('org_personal', 'personal', 'Personal', '#f5c2e7');
+
+-- Seed default owner into personal org
+INSERT OR IGNORE INTO memberships (user_id, org_id, role_id)
+SELECT 1, 'org_personal', r.id FROM roles r WHERE r.name = 'owner';

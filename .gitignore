@@ -64,3 +64,4 @@ service/models/
 __pycache__/
 tmp-eval-claude-bot/
 tmp-eval-opencode-bot/
+service/tauri/src-tauri/target-new/

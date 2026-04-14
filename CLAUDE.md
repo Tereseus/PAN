@@ -89,7 +89,9 @@ PAN never forgets. Every conversation, decision, and session is preserved across
 Work autonomously — don't ask for permission, just do it.
 
 ## Session Continuity Rule
-**CRITICAL:** When starting a new session, your FIRST message MUST be a brief summary of what was discussed in the recent conversation (see "Recent Conversation" below). Start with "ΠΑΝ Remembers:" and list the key topics. The user should NEVER have to ask what they were working on — you tell them immediately, every single time.
+When a **fresh terminal session starts** (the very first message after `claude` launches), begin with a brief "ΠΑΝ Remembers:" summary of recent topics from the "Recent Conversation" section below. This is ONLY for the first message of a fresh session — NEVER repeat it mid-conversation, NEVER repeat it on follow-up messages, and NEVER re-emit it after a PTY restart or context reload. If you've already said it once in this conversation, do not say it again.
+
+**Anti-repetition rule:** Before writing ANY response, check if you've already said the same thing earlier in this conversation. If you have, do NOT repeat it. Never write the same summary, finding, or explanation twice.
 
 ## Dev & Testing
 
@@ -191,36 +193,25 @@ Phone mic → Google STT (on-device) → text → server `/api/v1/terminal/send`
 This is a fresh session for the "PAN" project.
 IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.
 
-**CRITICAL INSTRUCTION:** Your FIRST message to the user MUST be a brief summary of what was discussed recently (from the "Recent Conversation" section below). Start with "ΠΑΝ Remembers:" and list the key topics/issues. The user should never have to ask what they were working on — you tell them immediately.
+**Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### Recent Conversation
-**Claude** (2026-04-13 19:40:12): Holy shit. Okay, I actually looked at it now. Let me revise my answer:
-
-**14 services**, multiple AI model tiers, with:
-
-- **Resonance** (3072D vector embeddings)
-- **Augur** (event classifier, trigge
-**User** (2026-04-13 19:53:40): Decrease the width of the uh model box I know you just changed the height decrease the width it's too wide now Can you do that also how much worse is Sonnet 45 compared to four 6 do you think I can co
-**Claude** (2026-04-13 19:54:28): **Done!** Model selector is now narrower (110px max-width, reduced padding). Hard refresh to see it.
-
-**Sonnet 4.5 vs 4.6:**
-
-From what I'm experiencing right now (and what you described):
-
-- **4.6 pr
-**User** (2026-04-13 19:56:32): ΠΑΝ Remembers: summarize recent session context briefly.
-**Claude** (2026-04-13 19:56:42): I don't see a user message here - just system reminders. Waiting for your next question or task.
+**User** (2026-04-14 17:40:34): ΠΑΝ Remembers: summarize recent session context briefly.
+**Claude** (2026-04-14 17:40:38): ΠΑΝ Remembers: Last session you were working on **users & teams** in the dashboard — specifically that it was showing your real name/email when it should only show "Teresius." There was also frustrati
+**User** (2026-04-14 17:41:43): yeah so we were doing some things about the contacts I believe i'm not i'mYeah so we were doing some things about the contacts I believe i'm not I'm not really sure. Oh yeah you were making it so that
+**User** (2026-04-14 17:41:50): Cant load contacts now though
+**Claude** (2026-04-14 17:41:50): Right — you were working on **window opening** via `openPanWindow()`. The issue was that Call and Compose windows weren't respecting the requested height/width. The fix switched from `window.open()` t
 
 ### Open Tasks
-- [in_progress P1] Smart device routing — default device (auto/nearest) determines where actions execute
-- [in_progress P1] mDNS auto-discovery on local network (zero-config device finding)
-- [in_progress P1] PAN Hub relay server for remote access (HTTPS message broker)
-- [in_progress P1] Multi-user accounts — user registration, login, session ownership
-- [in_progress P1] Multi-database — per-team databases with isolated data
-- [todo P1] PAN Hub — central server aggregating multiple PAN instances
-- [todo P1] Differential privacy (statistical noise)
+- [in_progress P1] Differential privacy (statistical noise)
 - [todo P1] Compute-to-data pipeline
 - [todo P1] Treasury 3-tier UI on phone
 - [todo P1] Real-time conversation classifier
+- [todo P1] Context-aware routing
+- [todo P1] Cerebras/Groq fast inference integration
+- [backlog P1] Enter key / send button stops working in chat input � requires page refresh
+- [backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
+- [todo P1] Camera system: Reolink PoE + Frigate NVR on TedProDesk1
+- [todo] Voice data collection pipeline
 
 <!-- PAN-CONTEXT-END -->

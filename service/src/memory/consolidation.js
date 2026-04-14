@@ -154,11 +154,116 @@ Rules:
 - Return ONLY the JSON object, no other text`;
 
   try {
-    const result = await claude(prompt, { model: 'claude-haiku-4-5-20251001', maxTokens: 2000, timeout: 45000, caller: 'consolidation' });
+    const result = await claude(prompt, { maxTokens: 2000, timeout: 45000, caller: 'consolidation' });
     return JSON.parse(result);
   } catch (err) {
     console.error('[PAN Memory] LLM extraction failed:', err.message);
     return { episodes: [], facts: [], procedures: [] };
+  }
+}
+
+// Task reconciliation — cross-reference session activity against open tasks
+// and auto-mark tasks as done/in_progress when evidence supports it
+async function reconcileTasks(events) {
+  // Build summary of what happened in recent events
+  const entries = [];
+  for (const e of events) {
+    let data = {};
+    try { data = JSON.parse(e.data); } catch { continue; }
+    if (e.event_type === 'UserPromptSubmit' && data.prompt) {
+      entries.push(`User: ${data.prompt.slice(0, 300)}`);
+    } else if (e.event_type === 'Stop' && data.last_assistant_message) {
+      entries.push(`Claude: ${data.last_assistant_message.slice(0, 300)}`);
+    }
+  }
+  if (entries.length < 2) return { updated: 0 };
+
+  // Fetch all open tasks (todo + in_progress) across all projects via DB directly
+  let openTasks;
+  try {
+    openTasks = all(
+      `SELECT t.id, t.title, t.status, t.description, p.name as project_name, m.name as milestone_name
+       FROM project_tasks t
+       JOIN projects p ON p.id = t.project_id
+       LEFT JOIN project_milestones m ON m.id = t.milestone_id
+       WHERE t.status IN ('todo', 'in_progress')
+       ORDER BY t.priority DESC LIMIT 200`
+    );
+  } catch (err) {
+    console.error('[PAN Tasks] Failed to fetch open tasks:', err.message);
+    return { updated: 0 };
+  }
+
+  if (openTasks.length === 0) return { updated: 0 };
+
+  // Build task list for LLM
+  const taskList = openTasks.map(t => `[id=${t.id}] ${t.title} (${t.status})`).join('\n');
+  const sessionSummary = entries.slice(-40).join('\n');
+
+  const prompt = `You are PAN's task tracker. Compare recent session activity against open tasks and identify which tasks were COMPLETED or STARTED.
+
+OPEN TASKS:
+${taskList}
+
+RECENT SESSION ACTIVITY:
+${sessionSummary}
+
+Return a JSON array of task updates. ONLY include tasks where the session activity clearly shows the task was completed or started. Be conservative — don't mark something done unless there's clear evidence.
+
+[
+  {"task_id": 123, "new_status": "done", "reason": "brief evidence"},
+  {"task_id": 456, "new_status": "in_progress", "reason": "brief evidence"}
+]
+
+Rules:
+- "done" = the feature/fix is clearly implemented and working
+- "in_progress" = work clearly started but not finished
+- Do NOT guess — only match when the session activity directly relates to the task
+- Return empty array [] if no tasks match
+- Return ONLY the JSON array, no other text`;
+
+  try {
+    const result = await claude(prompt, { maxTokens: 1000, timeout: 30000, caller: 'task-reconcile' });
+    const updates = JSON.parse(result);
+    if (!Array.isArray(updates)) return { updated: 0 };
+
+    let updated = 0;
+    for (const u of updates) {
+      if (!u.task_id || !u.new_status) continue;
+      if (!['done', 'in_progress'].includes(u.new_status)) continue;
+
+      try {
+        const existing = get("SELECT * FROM project_tasks WHERE id = :id", { ':id': u.task_id });
+        if (!existing) continue;
+        if (existing.status === 'done') continue; // already done, skip
+
+        const updates = ["status = :status"];
+        const params = { ':id': u.task_id, ':status': u.new_status };
+        if (u.new_status === 'done') {
+          updates.push("completed_at = datetime('now','localtime')");
+        }
+        dbRun(`UPDATE project_tasks SET ${updates.join(', ')} WHERE id = :id`, params);
+
+        updated++;
+        console.log(`[PAN Tasks] Auto-updated task ${u.task_id} → ${u.new_status}: ${u.reason}`);
+        logEvent('system-task-reconcile', 'TaskAutoUpdate', {
+          task_id: u.task_id,
+          new_status: u.new_status,
+          reason: u.reason,
+          previous_status: existing.status,
+        });
+      } catch (err) {
+        console.error(`[PAN Tasks] Failed to update task ${u.task_id}:`, err.message);
+      }
+    }
+
+    if (updated > 0) {
+      console.log(`[PAN Tasks] Reconciled ${updated} tasks from session activity`);
+    }
+    return { updated };
+  } catch (err) {
+    console.error('[PAN Tasks] Reconciliation LLM call failed:', err.message);
+    return { updated: 0 };
   }
 }
 
@@ -240,8 +345,19 @@ async function consolidate({ since = null, useLLM = true } = {}) {
     procedures: storedProcs,
   });
 
-  console.log(`[PAN Memory] Consolidated: ${storedEpisodes} episodes, ${storedFacts} facts, ${storedProcs} procedures`);
-  return { episodes: storedEpisodes, facts: storedFacts, procedures: storedProcs };
+  // Task reconciliation — check if any open tasks were completed during this window
+  let tasksUpdated = 0;
+  if (useLLM && events.length >= 3) {
+    try {
+      const taskResult = await reconcileTasks(events);
+      tasksUpdated = taskResult.updated;
+    } catch (err) {
+      console.error('[PAN Memory] Task reconciliation error:', err.message);
+    }
+  }
+
+  console.log(`[PAN Memory] Consolidated: ${storedEpisodes} episodes, ${storedFacts} facts, ${storedProcs} procedures, ${tasksUpdated} tasks updated`);
+  return { episodes: storedEpisodes, facts: storedFacts, procedures: storedProcs, tasksUpdated };
 }
 
-export { consolidate, heuristicExtract, llmExtract };
+export { consolidate, reconcileTasks, heuristicExtract, llmExtract };

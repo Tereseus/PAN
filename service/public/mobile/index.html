@@ -196,6 +196,21 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   </div>
 </div>
 
+<!-- Model picker modal -->
+<div class="org-modal-overlay" id="model-modal" onclick="if(event.target===this)hideModelPicker()">
+  <div class="org-modal">
+    <h3>AI Model</h3>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="org-modal-item" onclick="selectModel('claude-sonnet-4-5')">Sonnet 4.5</button>
+      <button class="org-modal-item" onclick="selectModel('claude-sonnet-4-6')">Sonnet 4.6</button>
+      <button class="org-modal-item" onclick="selectModel('claude-opus-4-6')">Opus 4.6</button>
+      <button class="org-modal-item" onclick="selectModel('claude-haiku-4-5-20251001')">Haiku 4.5</button>
+      <button class="org-modal-item" onclick="selectModel('cerebras:qwen-3-235b')">Qwen 235B</button>
+    </div>
+    <button class="org-modal-close" onclick="hideModelPicker()">Close</button>
+  </div>
+</div>
+
 <!-- Tabs — same widget names as desktop -->
 <div class="tabs" id="tab-bar">
   <div class="tab active" data-tab="chat">Chat</div>
@@ -225,14 +240,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div class="messages" id="chat-msgs"><div class="muted">Loading conversations...</div></div>
   <div id="chat-status" class="status-bar" style="display:none"><span class="spinner"></span><span>Claude is thinking…</span></div>
   <div class="input-bar" id="input-bar">
-    <select id="model-select" onchange="onModelChange()" title="Switch AI model">
-      <option value="">default</option>
-      <option value="claude-sonnet-4-5">sonnet-4-5</option>
-      <option value="claude-sonnet-4-6">sonnet-4-6</option>
-      <option value="claude-opus-4-6">opus-4-6</option>
-      <option value="claude-haiku-4-5-20251001">haiku-4-5</option>
-      <option value="cerebras:qwen-3-235b">qwen-235b</option>
-    </select>
+    <button onclick="showModelPicker()" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:16px;min-width:40px" title="Switch AI model">✨</button>
     <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
     <input type="file" id="screenshot-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
     <button onclick="document.getElementById('screenshot-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:16px;align-self:flex-end" title="Share screenshot">&#128247;</button>
@@ -305,10 +313,30 @@ function onProjectChange() {
 }
 
 // Model change
-async function onModelChange() {
-  const sel = document.getElementById('model-select');
-  const model = sel.value;
-  console.log('[PAN Mobile] changing model to:', model);
+// Load current model setting
+async function loadCurrentModel() {
+  try {
+    const res = await fetch(API + '/api/v1/settings');
+    const settings = await res.json();
+    const model = settings.terminal_ai_model || '';
+    console.log('[PAN Mobile] loaded current model:', model);
+  } catch(err) {
+    console.error('[PAN Mobile] failed to load model setting:', err);
+  }
+}
+
+// Model picker modal
+function showModelPicker() {
+  document.getElementById('model-modal').classList.add('visible');
+}
+
+function hideModelPicker() {
+  document.getElementById('model-modal').classList.remove('visible');
+}
+
+async function selectModel(model) {
+  console.log('[PAN Mobile] selecting model:', model);
+  hideModelPicker();
 
   // Find active session
   let sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
@@ -340,20 +368,6 @@ async function onModelChange() {
     console.log('[PAN Mobile] save settings response:', saveData);
   } catch(err) {
     console.error('[PAN Mobile] model change failed:', err);
-  }
-}
-
-// Load current model setting
-async function loadCurrentModel() {
-  try {
-    const res = await fetch(API + '/api/v1/settings');
-    const settings = await res.json();
-    const model = settings.terminal_ai_model || '';
-    const sel = document.getElementById('model-select');
-    if (sel) sel.value = model;
-    console.log('[PAN Mobile] loaded current model:', model);
-  } catch(err) {
-    console.error('[PAN Mobile] failed to load model setting:', err);
   }
 }
 
@@ -579,10 +593,13 @@ async function loadChat() {
   } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
 }
 
+let _sendingChat = false;
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   if (!text) return;
+  if (_sendingChat) return; // prevent double-send
+  _sendingChat = true;
   input.value = '';
   lastSentTime = Date.now();
   const el = document.getElementById('chat-msgs');
@@ -649,6 +666,7 @@ async function sendChat() {
   }
   if (status) status.style.display = 'none';
   lastSentTime = 0;
+  _sendingChat = false;
   el.scrollTop = el.scrollHeight;
 }
 

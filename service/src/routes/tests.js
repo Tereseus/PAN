@@ -409,6 +409,310 @@ const suites = {
     ]
   },
 
+  'multi-org': {
+    name: 'Multi-Org System',
+    description: 'Organization creation, membership, invites, data isolation, role enforcement',
+    dependsOn: ['database'],
+    tests: [
+      {
+        id: 'org-list', name: 'List orgs (personal exists)',
+        description: 'GET /api/v1/orgs returns at least org_personal',
+        run: async (ctx) => {
+          const data = await apiGet('/api/v1/orgs');
+          const orgs = data.orgs || data || [];
+          if (!Array.isArray(orgs) || orgs.length === 0) throw new Error('No orgs returned');
+          const personal = orgs.find(o => o.id === 'org_personal');
+          if (!personal) throw new Error('org_personal not found in org list');
+          return `${orgs.length} org(s) found, org_personal present`;
+        }
+      },
+      {
+        id: 'org-create', name: 'Create org',
+        description: 'POST /api/v1/orgs with name "Test Org" — verify returns org with org_ prefix ID',
+        run: async (ctx) => {
+          const data = await apiPost('/api/v1/orgs', { name: 'Test Org' });
+          if (!data.ok) throw new Error(`Create org failed: ${data.error || JSON.stringify(data)}`);
+          const org = data.org;
+          if (!org || !org.id) throw new Error('No org returned');
+          if (!org.id.startsWith('org_')) throw new Error(`Org ID doesn't start with org_: ${org.id}`);
+          ctx.testOrgId = org.id;
+          return `Created org "${org.name}" with id ${org.id}`;
+        }
+      },
+      {
+        id: 'org-detail', name: 'Get org detail',
+        description: 'GET /api/v1/orgs/{id} — verify name, slug, member_count = 1',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId — org-create must run first');
+          const data = await apiGet(`/api/v1/orgs/${ctx.testOrgId}`);
+          const org = data.org || data;
+          if (!org || !org.name) throw new Error('Org detail not returned');
+          if (org.member_count !== undefined && org.member_count !== 1) {
+            throw new Error(`Expected member_count=1, got ${org.member_count}`);
+          }
+          return `Org "${org.name}", slug="${org.slug}", members=${org.member_count || 'N/A'}`;
+        }
+      },
+      {
+        id: 'org-members', name: 'List org members',
+        description: 'GET /api/v1/orgs/{id}/members — verify creator is listed as owner',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId');
+          const data = await apiGet(`/api/v1/orgs/${ctx.testOrgId}/members`);
+          const members = data.members || data || [];
+          if (!Array.isArray(members) || members.length === 0) throw new Error('No members returned');
+          const owner = members.find(m => m.role_name === 'owner' || m.role === 'owner');
+          if (!owner) throw new Error('No owner found in members list');
+          return `${members.length} member(s), owner: ${owner.user_id || owner.name || 'found'}`;
+        }
+      },
+      {
+        id: 'org-invite', name: 'Create invite',
+        description: 'POST /api/v1/orgs/{id}/invites with role "user" — verify returns token',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId');
+          const data = await apiPost(`/api/v1/orgs/${ctx.testOrgId}/invites`, { role_name: 'user' });
+          if (!data.ok) throw new Error(`Create invite failed: ${data.error || JSON.stringify(data)}`);
+          const invite = data.invite || data;
+          if (!invite.token && !invite.id) throw new Error('No invite token or id returned');
+          ctx.testInviteId = invite.id;
+          ctx.testInviteToken = invite.token;
+          return `Invite created: id=${invite.id}, token=${invite.token ? invite.token.substring(0, 8) + '...' : 'N/A'}`;
+        }
+      },
+      {
+        id: 'org-invite-list', name: 'List invites',
+        description: 'GET /api/v1/orgs/{id}/invites — verify the invite shows up',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId');
+          const data = await apiGet(`/api/v1/orgs/${ctx.testOrgId}/invites`);
+          const invites = data.invites || data || [];
+          if (!Array.isArray(invites) || invites.length === 0) throw new Error('No invites returned');
+          const found = invites.find(i => i.id === ctx.testInviteId || i.token === ctx.testInviteToken);
+          if (!found) throw new Error('Created invite not found in list');
+          return `${invites.length} invite(s), test invite present`;
+        }
+      },
+      {
+        id: 'org-update', name: 'Update org name',
+        description: 'PUT /api/v1/orgs/{id} with new name "Updated Test Org" — verify ok',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId');
+          const data = await apiPost(`/api/v1/orgs/${ctx.testOrgId}`, { name: 'Updated Test Org', _method: 'PUT' });
+          // Try PUT directly if _method override not supported
+          if (!data.ok) {
+            const data2 = await new Promise((resolve, reject) => {
+              const body = JSON.stringify({ name: 'Updated Test Org' });
+              const req = http.request({
+                hostname: '127.0.0.1', port: getPort(), path: `/api/v1/orgs/${ctx.testOrgId}`,
+                method: 'PUT', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+              }, (res) => {
+                let d = ''; res.on('data', c => d += c);
+                res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve({ ok: false, raw: d }); } });
+              });
+              req.on('error', reject);
+              req.write(body);
+              req.end();
+            });
+            if (!data2.ok) throw new Error(`Update org failed: ${data2.error || JSON.stringify(data2)}`);
+            return 'Org renamed to "Updated Test Org" (via PUT)';
+          }
+          return 'Org renamed to "Updated Test Org"';
+        }
+      },
+      {
+        id: 'org-switch', name: 'Switch to new org',
+        description: 'POST /api/v1/orgs/switch with the new org — verify ok',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId');
+          const data = await apiPost('/api/v1/orgs/switch', { org_id: ctx.testOrgId });
+          if (!data.ok) throw new Error(`Switch org failed: ${data.error || JSON.stringify(data)}`);
+          return `Switched to org ${ctx.testOrgId}`;
+        }
+      },
+      {
+        id: 'org-data-isolation', name: 'Data isolation check',
+        description: 'After switching to new org, events should be empty (no data in new org)',
+        run: async (ctx) => {
+          const data = await apiGet('/dashboard/api/events?limit=50');
+          const events = data.events || [];
+          if (events.length > 0) throw new Error(`Expected 0 events in new org, got ${events.length}`);
+          return '0 events in new org — data isolation confirmed';
+        }
+      },
+      {
+        id: 'org-switch-back', name: 'Switch back to personal',
+        description: 'POST /api/v1/orgs/switch back to org_personal — verify events exist again',
+        run: async (ctx) => {
+          const data = await apiPost('/api/v1/orgs/switch', { org_id: 'org_personal' });
+          if (!data.ok) throw new Error(`Switch back failed: ${data.error || JSON.stringify(data)}`);
+          const events = await apiGet('/dashboard/api/events?limit=5');
+          const evtList = events.events || [];
+          if (evtList.length === 0) throw new Error('No events after switching back to personal org');
+          return `Switched back to org_personal, ${evtList.length} events present`;
+        }
+      },
+      {
+        id: 'org-revoke-invite', name: 'Revoke invite',
+        description: 'DELETE /api/v1/orgs/{id}/invites/{inviteId} — verify ok',
+        run: async (ctx) => {
+          if (!ctx.testOrgId || !ctx.testInviteId) throw new Error('No testOrgId or testInviteId');
+          const data = await apiDelete(`/api/v1/orgs/${ctx.testOrgId}/invites/${ctx.testInviteId}`);
+          if (!data.ok) throw new Error(`Revoke invite failed: ${data.error || JSON.stringify(data)}`);
+          return `Invite ${ctx.testInviteId} revoked`;
+        }
+      },
+      {
+        id: 'org-storage', name: 'Org storage info',
+        description: 'GET /api/v1/orgs/{id}/storage — verify returns scope info',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId');
+          const data = await apiGet(`/api/v1/orgs/${ctx.testOrgId}/storage`);
+          if (!data.ok && !data.scope && !data.storage) throw new Error(`Storage endpoint failed: ${JSON.stringify(data)}`);
+          return `Storage info: ${JSON.stringify(data.scope || data.storage || data).substring(0, 120)}`;
+        }
+      },
+      {
+        id: 'org-cleanup', name: 'Delete test org',
+        description: 'DELETE /api/v1/orgs/{id} — verify deleted, only personal org remains',
+        run: async (ctx) => {
+          if (!ctx.testOrgId) throw new Error('No testOrgId');
+          const data = await apiDelete(`/api/v1/orgs/${ctx.testOrgId}`);
+          if (!data.ok) throw new Error(`Delete org failed: ${data.error || JSON.stringify(data)}`);
+          const orgs = await apiGet('/api/v1/orgs');
+          const orgList = orgs.orgs || orgs || [];
+          const testOrg = orgList.find(o => o.id === ctx.testOrgId);
+          if (testOrg) throw new Error('Test org still exists after deletion');
+          return `Org ${ctx.testOrgId} deleted, ${orgList.length} org(s) remaining`;
+        }
+      }
+    ]
+  },
+
+  'teams': {
+    name: 'Teams & Assignment',
+    description: 'Team CRUD, membership, user-team mapping, assignment columns',
+    dependsOn: ['database'],
+    tests: [
+      {
+        id: 'teams-list-empty', name: 'List teams (initially)',
+        description: 'GET /api/v1/teams returns array',
+        run: async () => {
+          const data = await apiGet('/api/v1/teams');
+          if (!data.ok) throw new Error(`Teams list failed: ${JSON.stringify(data)}`);
+          return `${(data.teams || []).length} team(s) found`;
+        }
+      },
+      {
+        id: 'teams-create', name: 'Create team',
+        description: 'POST /api/v1/teams with name "Test Team" — returns team with id',
+        run: async (ctx) => {
+          const data = await apiPost('/api/v1/teams', { name: 'Test Team', description: 'Automated test team', color: '#a6e3a1' });
+          if (!data.ok) throw new Error(`Create team failed: ${data.error || JSON.stringify(data)}`);
+          if (!data.team || !data.team.id) throw new Error('No team returned');
+          ctx.testTeamId = data.team.id;
+          return `Created team "${data.team.name}" with id ${data.team.id}`;
+        }
+      },
+      {
+        id: 'teams-detail', name: 'Get team detail',
+        description: 'GET /api/v1/teams/{id} — returns team + members',
+        run: async (ctx) => {
+          if (!ctx.testTeamId) throw new Error('No testTeamId — teams-create must run first');
+          const data = await apiGet(`/api/v1/teams/${ctx.testTeamId}`);
+          if (!data.ok) throw new Error(`Team detail failed: ${JSON.stringify(data)}`);
+          if (!data.team) throw new Error('No team in response');
+          const members = data.members || [];
+          return `Team "${data.team.name}", ${members.length} member(s), color=${data.team.color}`;
+        }
+      },
+      {
+        id: 'teams-members', name: 'Creator is auto-added as lead',
+        description: 'GET /api/v1/teams/{id} — creator should be in members with role=lead',
+        run: async (ctx) => {
+          if (!ctx.testTeamId) throw new Error('No testTeamId');
+          const data = await apiGet(`/api/v1/teams/${ctx.testTeamId}`);
+          const members = data.members || [];
+          if (members.length === 0) throw new Error('No members — creator should be auto-added');
+          const lead = members.find(m => m.role === 'lead');
+          if (!lead) throw new Error('No lead found — creator should have role=lead');
+          return `Lead: ${lead.display_name || lead.email || 'user ' + lead.user_id}`;
+        }
+      },
+      {
+        id: 'teams-user-teams', name: 'Get teams for user',
+        description: 'GET /api/v1/teams/user/1 — returns teams the user belongs to',
+        run: async (ctx) => {
+          const data = await apiGet('/api/v1/teams/user/1');
+          if (!data.ok) throw new Error(`User teams failed: ${JSON.stringify(data)}`);
+          const teams = data.teams || [];
+          const hasTestTeam = teams.find(t => t.id === ctx.testTeamId);
+          if (!hasTestTeam) throw new Error('Test team not in user teams list');
+          return `User belongs to ${teams.length} team(s), includes test team`;
+        }
+      },
+      {
+        id: 'teams-update', name: 'Update team',
+        description: 'PUT /api/v1/teams/{id} — change name and color',
+        run: async (ctx) => {
+          if (!ctx.testTeamId) throw new Error('No testTeamId');
+          const port = parseInt(process.env.PAN_DEV ? '7781' : '7777');
+          return new Promise((resolve, reject) => {
+            const body = JSON.stringify({ name: 'Updated Test Team', color: '#f38ba8' });
+            const req = http.request({ hostname: '127.0.0.1', port, path: `/api/v1/teams/${ctx.testTeamId}`, method: 'PUT', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => {
+              let data = '';
+              res.on('data', chunk => data += chunk);
+              res.on('end', () => {
+                try {
+                  const parsed = JSON.parse(data);
+                  if (!parsed.ok) reject(new Error(`Update failed: ${data}`));
+                  resolve('Team updated successfully');
+                } catch { reject(new Error(`Bad response: ${data}`)); }
+              });
+            });
+            req.on('error', reject);
+            req.write(body);
+            req.end();
+          });
+        }
+      },
+      {
+        id: 'teams-projects', name: 'List team projects',
+        description: 'GET /api/v1/teams/{id}/projects — returns array (may be empty)',
+        run: async (ctx) => {
+          if (!ctx.testTeamId) throw new Error('No testTeamId');
+          const data = await apiGet(`/api/v1/teams/${ctx.testTeamId}/projects`);
+          if (!data.ok) throw new Error(`Team projects failed: ${JSON.stringify(data)}`);
+          return `${(data.projects || []).length} project(s) assigned to team`;
+        }
+      },
+      {
+        id: 'teams-tasks', name: 'List team tasks',
+        description: 'GET /api/v1/teams/{id}/tasks — returns array (may be empty)',
+        run: async (ctx) => {
+          if (!ctx.testTeamId) throw new Error('No testTeamId');
+          const data = await apiGet(`/api/v1/teams/${ctx.testTeamId}/tasks`);
+          if (!data.ok) throw new Error(`Team tasks failed: ${JSON.stringify(data)}`);
+          return `${(data.tasks || []).length} task(s) assigned to team`;
+        }
+      },
+      {
+        id: 'teams-cleanup', name: 'Delete test team',
+        description: 'DELETE /api/v1/teams/{id} — verify deleted',
+        run: async (ctx) => {
+          if (!ctx.testTeamId) throw new Error('No testTeamId');
+          const data = JSON.parse(await apiDelete(`/api/v1/teams/${ctx.testTeamId}`));
+          if (!data.ok) throw new Error(`Delete team failed: ${JSON.stringify(data)}`);
+          // Verify it's gone
+          const list = await apiGet('/api/v1/teams');
+          const found = (list.teams || []).find(t => t.id === ctx.testTeamId);
+          if (found) throw new Error('Test team still exists after deletion');
+          return `Team ${ctx.testTeamId} deleted successfully`;
+        }
+      }
+    ]
+  },
+
   'api': {
     name: 'API Endpoints',
     description: 'Core API endpoints respond with valid data, no 500s',
@@ -1567,6 +1871,93 @@ const suites = {
           const data = await apiGet('/api/v1/backup/list');
           if (!Array.isArray(data.backups)) throw new Error('No backups array');
           return `${data.backups.length} backup(s) available`;
+        }
+      }
+    ]
+  },
+
+  // ==================== Power Level System ====================
+  'power': {
+    name: 'Power Levels',
+    description: 'Score-based access control — power levels, widget visibility, per-user overrides',
+    dependsOn: ['database'],
+    tests: [
+      {
+        id: 'power-me', name: 'Current user power level',
+        description: 'GET /api/v1/auth/me returns power level',
+        run: async () => {
+          const data = await apiGet('/api/v1/auth/me');
+          if (data.power === undefined) throw new Error('power field missing from /me response');
+          if (typeof data.power !== 'number') throw new Error(`power should be number, got ${typeof data.power}`);
+          return `User "${data.display_name}" — power=${data.power}, role=${data.role}`;
+        }
+      },
+      {
+        id: 'power-map', name: 'Power map thresholds',
+        description: 'GET /api/v1/auth/power-map returns widget visibility thresholds',
+        run: async () => {
+          const map = await apiGet('/api/v1/auth/power-map');
+          const required = ['terminal', 'contacts', 'messages', 'calendar', 'settings'];
+          const missing = required.filter(k => map[k] === undefined);
+          if (missing.length) throw new Error(`Missing power-map keys: ${missing.join(', ')}`);
+          const invalid = Object.entries(map).filter(([k, v]) => typeof v !== 'number' || v < 0 || v > 100);
+          if (invalid.length) throw new Error(`Invalid power values: ${invalid.map(([k,v]) => `${k}=${v}`).join(', ')}`);
+          return `${Object.keys(map).length} features mapped — terminal=${map.terminal}, contacts=${map.contacts}, calendar=${map.calendar}`;
+        }
+      },
+      {
+        id: 'power-users-list', name: 'Users list includes power',
+        description: 'GET /api/v1/auth/users returns power for each user',
+        run: async () => {
+          const data = await apiGet('/api/v1/auth/users');
+          if (!data.users || !data.users.length) throw new Error('No users returned');
+          const noPower = data.users.filter(u => u.power === undefined);
+          if (noPower.length) throw new Error(`${noPower.length} user(s) missing power field`);
+          return data.users.map(u => `${u.display_name}: power=${u.power} (role=${u.role})`).join(', ');
+        }
+      },
+      {
+        id: 'power-visibility', name: 'Widget visibility check',
+        description: 'Verifies current user power level grants access to expected widgets',
+        run: async () => {
+          const me = await apiGet('/api/v1/auth/me');
+          const map = await apiGet('/api/v1/auth/power-map');
+          const visible = Object.entries(map).filter(([k, v]) => me.power >= v).map(([k]) => k);
+          const hidden = Object.entries(map).filter(([k, v]) => me.power < v).map(([k]) => k);
+          if (me.power >= 100 && hidden.length > 0) throw new Error(`Owner (power=100) should see everything, but ${hidden.join(', ')} are hidden`);
+          return `Power ${me.power} → ${visible.length} visible, ${hidden.length} hidden`;
+        }
+      },
+      {
+        id: 'power-override', name: 'Power level override API',
+        description: 'PUT /api/v1/auth/users/:id/power sets and clears power override',
+        run: async () => {
+          const me = await apiGet('/api/v1/auth/me');
+          const port = getPort();
+          const apiPut = (path, body) => new Promise((resolve, reject) => {
+            const b = JSON.stringify(body);
+            const req = http.request({ hostname: '127.0.0.1', port, path, method: 'PUT', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) } }, (res) => {
+              let data = '';
+              res.on('data', chunk => data += chunk);
+              res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(data); } });
+            });
+            req.on('error', reject);
+            req.write(b);
+            req.end();
+          });
+          // Set explicit power level
+          const set = await apiPut(`/api/v1/auth/users/${me.id}/power`, { power: 85 });
+          if (!set.ok) throw new Error('Failed to set power override');
+          // Verify it stuck
+          const after = await apiGet('/api/v1/auth/users');
+          const user = after.users.find(u => u.id === me.id);
+          if (user.power_lvl !== 85) throw new Error(`Expected power_lvl=85, got ${user.power_lvl}`);
+          // Clear override (revert to role-derived)
+          const clear = await apiPut(`/api/v1/auth/users/${me.id}/power`, { power: null });
+          if (!clear.ok) throw new Error('Failed to clear power override');
+          // Re-set to 100 for owner
+          await apiPut(`/api/v1/auth/users/${me.id}/power`, { power: 100 });
+          return `Override set to 85, verified, cleared, restored to 100`;
         }
       }
     ]

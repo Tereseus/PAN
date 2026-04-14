@@ -8,6 +8,27 @@
 	let tabs = $state([]);
 	let activeTabId = $state(null);
 	let allProjectTabs = $state([]); // All tabs (open + closed) for current project dropdown
+	let restoringTabs = $state(true); // True until auto-connect finishes — blocks manual project selection
+
+	// Derived: the project dropdown value reflecting the active tab's project
+	let selectedProjectValue = $derived.by(() => {
+		const activeTab = tabs.find(t => t.id === activeTabId);
+		if (!activeTab || !activeTab.project) return '';
+		const proj = projects.find(p => p.name === activeTab.project);
+		return proj ? String(proj.id || proj.path) : '';
+	});
+	// Force-sync the <select> DOM after projects load — Svelte may set
+	// the value before the {#each} options exist in the DOM, so the
+	// browser silently ignores it. This effect retries after a tick.
+	$effect(() => {
+		const val = selectedProjectValue;
+		const _projects = projects; // subscribe to projects changes
+		if (typeof window === 'undefined' || !val) return;
+		tick().then(() => {
+			const sel = document.querySelector('.project-select');
+			if (sel && sel.value !== val) sel.value = val;
+		});
+	});
 	let leftSection = $state(typeof window !== 'undefined' && localStorage.getItem('pan_left_section') || 'transcript');
 	let centerView = $state('terminal'); // 'terminal' | 'chat'
 	let rightSection = $state(typeof window !== 'undefined' && localStorage.getItem('pan_right_section') || 'services');
@@ -51,6 +72,11 @@
 	// Users
 	let usersData = $state([]);
 
+	// Teams
+	let teamsData = $state([]);
+	let selectedTeamWidget = $state(null);
+	let teamMembersWidget = $state([]);
+
 	// Alerts
 	let alertsData = $state([]);
 	let alertTypes = $state([]);
@@ -83,6 +109,165 @@
 	let sectionsData = $state([]);
 	let servicesData = $state([]);
 	let approvalsData = $state([]);
+
+	// ─── Chat / Contacts state ───
+	let contactsData = $state([]);
+	let chatThreads = $state([]);
+	let chatMessages = $state([]);
+	let chatActiveThread = $state(null); // thread object currently open
+	let chatInputText = $state('');
+	let chatUnreadTotal = $state(0);
+	let chatSearchQuery = $state('');
+	let addContactModal = $state(false);
+	let newContactName = $state('');
+	let newContactPanId = $state('');
+	let newContactPhone = $state('');
+	let newContactEmail = $state('');
+	let chatCallActive = $state(null); // { call_id, type, thread_id, status }
+	let chatMessagesEl; // scroll container ref
+
+	async function loadContacts() {
+		try {
+			const data = await api('/api/v1/chat/contacts');
+			contactsData = Array.isArray(data) ? data : [];
+			const unread = await api('/api/v1/chat/unread');
+			chatUnreadTotal = unread?.unread || 0;
+		} catch (e) {
+			console.error('Failed to load contacts:', e);
+		}
+	}
+
+	async function loadChatThreads() {
+		try {
+			const data = await api('/api/v1/chat/threads');
+			chatThreads = Array.isArray(data) ? data : [];
+		} catch (e) {
+			console.error('Failed to load threads:', e);
+		}
+	}
+
+	async function openChat(contact) {
+		try {
+			const res = await api('/api/v1/chat/threads/dm', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ contact_id: contact.id })
+			});
+			chatActiveThread = { id: res.thread_id, contact, type: 'dm' };
+			await loadChatMessages(res.thread_id);
+			// Mark as read
+			await api(`/api/v1/chat/threads/${res.thread_id}/read`, { method: 'POST' });
+			loadContacts(); // refresh unread counts
+			centerView = 'chat';
+		} catch (e) {
+			console.error('Failed to open chat:', e);
+		}
+	}
+
+	async function loadChatMessages(threadId) {
+		try {
+			const data = await api(`/api/v1/chat/threads/${threadId}/messages`);
+			chatMessages = Array.isArray(data) ? data : [];
+			await tick();
+			if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+		} catch (e) {
+			console.error('Failed to load messages:', e);
+		}
+	}
+
+	async function sendChatMessage() {
+		if (!chatInputText.trim() || !chatActiveThread) return;
+		const body = chatInputText.trim();
+		chatInputText = '';
+		try {
+			const res = await api(`/api/v1/chat/threads/${chatActiveThread.id}/messages`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ body })
+			});
+			chatMessages = [...chatMessages, { id: res.id, thread_id: chatActiveThread.id, sender_id: 'self', body, body_type: 'text', created_at: res.created_at }];
+			await tick();
+			if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+		} catch (e) {
+			console.error('Failed to send message:', e);
+		}
+	}
+
+	async function addContact() {
+		if (!newContactName.trim()) return;
+		try {
+			await api('/api/v1/chat/contacts', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					display_name: newContactName.trim(),
+					pan_instance_id: newContactPanId.trim() || undefined,
+					phone: newContactPhone.trim() || undefined,
+					email: newContactEmail.trim() || undefined
+				})
+			});
+			newContactName = ''; newContactPanId = ''; newContactPhone = ''; newContactEmail = '';
+			addContactModal = false;
+			loadContacts();
+		} catch (e) {
+			console.error('Failed to add contact:', e);
+		}
+	}
+
+	async function deleteContact(contactId) {
+		try {
+			await api(`/api/v1/chat/contacts/${contactId}`, { method: 'DELETE' });
+			loadContacts();
+		} catch (e) {
+			console.error('Failed to delete contact:', e);
+		}
+	}
+
+	async function toggleFavorite(contact) {
+		try {
+			await api(`/api/v1/chat/contacts/${contact.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ favorited: !contact.favorited })
+			});
+			loadContacts();
+		} catch (e) {
+			console.error('Failed to toggle favorite:', e);
+		}
+	}
+
+	async function startCall(threadId, type) {
+		try {
+			const res = await api('/api/v1/chat/calls/start', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ thread_id: threadId, type })
+			});
+			chatCallActive = { call_id: res.call_id, type, thread_id: threadId, status: 'ringing' };
+		} catch (e) {
+			console.error('Failed to start call:', e);
+		}
+	}
+
+	async function endCall() {
+		if (!chatCallActive) return;
+		try {
+			await api(`/api/v1/chat/calls/${chatCallActive.call_id}/end`, { method: 'POST' });
+			chatCallActive = null;
+			if (chatActiveThread) loadChatMessages(chatActiveThread.id);
+		} catch (e) {
+			console.error('Failed to end call:', e);
+		}
+	}
+
+	function formatChatTime(ts) {
+		if (!ts) return '';
+		const d = new Date(ts);
+		const now = new Date();
+		const isToday = d.toDateString() === now.toDateString();
+		if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+	}
 
 	// Lifeboat state
 	let lifeboatData = $state(null); // /api/carrier/status response
@@ -504,6 +689,24 @@
 			return;
 		}
 
+		// Before creating a new session, check if the server already has a live PTY
+		// for this project. This prevents orphan duplication on hard refresh when the
+		// DB/localStorage restore fails but the server-side PTY is still alive.
+		try {
+			const sessData = await api('/api/v1/terminal/sessions');
+			const liveMatch = (sessData.sessions || []).find(s =>
+				s.project === projectName && s.id.startsWith(sessionPrefix)
+			);
+			if (liveMatch) {
+				console.log(`[PAN Terminal] Reusing live server session for ${projectName}: ${liveMatch.id}`);
+				await createTab(liveMatch.id, projectName, cwd, projectId, true, null);
+				if (projectId) loadAllProjectTabs(projectId);
+				return;
+			}
+		} catch (e) {
+			console.warn('[PAN Terminal] Could not check live sessions:', e.message);
+		}
+
 		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
 		await createTab(sessionId, projectName, cwd, projectId, false, null);
 		if (projectId) loadAllProjectTabs(projectId);
@@ -641,7 +844,8 @@
 			const calcCols = Math.max(80, Math.floor(containerWidth / charWidth));
 			const calcRows = termContainerEl ? Math.max(20, Math.floor(termContainerEl.clientHeight / 21)) : 30; // line-height ~21px
 			const csidsParam = tabData.claudeSessionIds.length > 0 ? '&claude_sessions=' + encodeURIComponent(JSON.stringify(tabData.claudeSessionIds)) : '';
-			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}${csidsParam}`);
+			const tokenParam = tabData.reconnectToken ? '&token=' + encodeURIComponent(tabData.reconnectToken) : '';
+			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}${csidsParam}${tokenParam}`);
 
 			const ws = new WebSocket(wsUrlStr);
 			tabData.ws = ws;
@@ -905,6 +1109,8 @@
 								if (leftSection === 'library' || rightSection === 'library') loadLibrary();
 							} else if (w === 'users') {
 								if (leftSection === 'users' || rightSection === 'users') loadUsers();
+							} else if (w === 'teams') {
+								if (leftSection === 'teams' || rightSection === 'teams') loadTeamsWidget();
 							} else if (w === 'tests') {
 								if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
 							}
@@ -1122,7 +1328,7 @@
 						// Previously this checked for '❯' prompt which fired on EVERY fresh
 						// session before Claude had a chance to respond, eating the greeting.
 						await new Promise(r => setTimeout(r, 500));
-						const existingMsgs = (tabData._streamMessages || []).filter(m => m.role !== 'system');
+						const existingMsgs = (tabData._pushedMessages || []).filter(m => m.role !== 'system');
 						if (existingMsgs.length > 0) {
 							tabData.claudeStarted = true;
 							sessionStorage.setItem(launchKey, '1');
@@ -1313,7 +1519,7 @@
 	// Seed default username/LLM name + terminal colors on first run.
 	// All are overridable from Settings → Terminal. Names are first-cap.
 	if (typeof localStorage !== 'undefined') {
-		if (!localStorage.getItem('pan_username')) localStorage.setItem('pan_username', 'Tereseus');
+		if (!localStorage.getItem('pan_username')) localStorage.setItem('pan_username', 'User');
 		const existingLlm = localStorage.getItem('pan_llm_name');
 		if (!existingLlm || existingLlm === 'claude') localStorage.setItem('pan_llm_name', 'Claude');
 		// Color defaults — blue for user, orange for Claude.
@@ -1452,8 +1658,8 @@
 					// added to long multi-line pasted prompts. The actual user text
 					// follows immediately after the placeholder in the same string.
 					raw = raw.replace(/^\[Pasted text #\d+ \+\d+ lines\]/, '').trimStart();
-					// Skip the ΠΑΝ remembers trigger prompt from the terminal view
-					if (/^\u03A0\u0391\u039D remembers/i.test(raw)) return null;
+					// Skip short auto-generated ΠΑΝ remembers trigger prompts (not real user messages)
+					if (/^\u03A0\u0391\u039D remembers/i.test(raw) && raw.length < 120) return null;
 					if (/claude\s+--permission-mode\s+auto\s+["']\u03A0\u0391\u039D\s*remembers/i.test(raw)) return null;
 					// Skip Claude Code system-injected messages that come in as "user" role
 					// but aren't actually from the user: task-notification, system-reminder,
@@ -1491,6 +1697,22 @@
 						`<div class="t-line t-tool">` +
 						`<span style="color:#6c7086;">\u2192 </span>` +
 						`<span style="color:${toolColor};">${escapeHtml(msg.text || '')}</span>` +
+						`</div>`
+					);
+				} else if (msg.role === 'system' && msg.type === 'turn_stats') {
+					// Per-turn token usage bar — compact, right-aligned
+					const t = msg.tokens || {};
+					const inK = t.input ? (t.input / 1000).toFixed(1) : '0';
+					const outK = t.output ? (t.output / 1000).toFixed(1) : '0';
+					const cacheK = t.cache_read ? (t.cache_read / 1000).toFixed(1) : null;
+					const cost = t.cost != null ? `$${t.cost.toFixed(4)}` : '';
+					const totInK = t.total_input ? (t.total_input / 1000).toFixed(1) : '0';
+					const totOutK = t.total_output ? (t.total_output / 1000).toFixed(1) : '0';
+					const totCost = t.total_cost != null ? `$${t.total_cost.toFixed(4)}` : '';
+					return (
+						`<div style="margin:2px 0;padding:3px 10px;font-size:0.78em;color:#6c7086;display:flex;justify-content:space-between;border-top:1px solid #1e1e2e;">` +
+						`<span>↑${inK}K ↓${outK}K` + (cacheK ? ` 📦${cacheK}K` : '') + ` ${cost}</span>` +
+						`<span style="opacity:0.6">session: ↑${totInK}K ↓${totOutK}K ${totCost}</span>` +
 						`</div>`
 					);
 				} else if (msg.role === 'system') {
@@ -1823,7 +2045,7 @@
 			for (const msg of allMessages) {
 				const accentColor = multiSession ? (sessionColors[msg._sessionIdx] || 'var(--accent)') : 'var(--accent)';
 				if (msg.role === 'user') {
-					if (msg.text && /^\u03A0\u0391\u039D remembers/i.test(msg.text.trim())) continue;
+					if (msg.text && /^\u03A0\u0391\u039D remembers/i.test(msg.text.trim()) && msg.text.trim().length < 120) continue;
 					newBubbles.push({
 						type: 'user',
 						text: msg.text || '',
@@ -1831,7 +2053,7 @@
 						multiSession,
 						speaker: _username,
 					});
-				} else if (msg.type === 'text') {
+				} else if (msg.type === 'text' || msg.type === 'output') {
 					const modelShort = _shortModel(msg.model);
 					const modelTag = modelShort || '';
 					if (modelShort) _lastBubbleModel = modelShort;
@@ -1847,6 +2069,11 @@
 					newBubbles.push({
 						type: 'tool',
 						text: msg.text || '',
+					});
+				} else if (msg.type === 'turn_stats' && msg.tokens) {
+					newBubbles.push({
+						type: 'stats',
+						tokens: msg.tokens,
 					});
 				}
 			}
@@ -2990,8 +3217,35 @@
 	// ==================== Users ====================
 	async function loadUsers() {
 		try {
-			const resp = await fetch('/dashboard/api/users');
-			if (resp.ok) usersData = await resp.json();
+			const token = localStorage.getItem('pan_token');
+			const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+			const resp = await fetch('/api/v1/auth/users', { headers });
+			if (resp.ok) {
+				const d = await resp.json();
+				usersData = d.users || d || [];
+			}
+		} catch {}
+	}
+
+	// ==================== Teams ====================
+	async function loadTeamsWidget() {
+		try {
+			const resp = await fetch('/api/v1/teams');
+			if (resp.ok) {
+				const d = await resp.json();
+				teamsData = d.teams || [];
+			}
+		} catch {}
+	}
+
+	async function loadTeamDetailWidget(teamId) {
+		try {
+			const resp = await fetch(`/api/v1/teams/${teamId}`);
+			if (resp.ok) {
+				const d = await resp.json();
+				selectedTeamWidget = d.team;
+				teamMembersWidget = d.members || [];
+			}
 		} catch {}
 	}
 
@@ -3366,6 +3620,14 @@
 	// ==================== Init ====================
 
 	onMount(() => {
+		// Clear auto-launch guards on page load so Claude greets on refresh.
+		// The "existing messages" check (line ~1319) prevents double-greeting
+		// if Claude is already mid-session.
+		for (let i = sessionStorage.length - 1; i >= 0; i--) {
+			const key = sessionStorage.key(i);
+			if (key?.startsWith('pan_claude_launched:')) sessionStorage.removeItem(key);
+		}
+
 		// Check URL params — apps open in new windows with ?view=atlas etc.
 		const urlParams = new URLSearchParams(window.location.search);
 		const viewParam = urlParams.get('view');
@@ -3384,8 +3646,9 @@
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
 
-		// Load services, approvals, alerts, lifeboat immediately
+		// Load services, approvals, alerts, users, lifeboat immediately
 		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
+		loadUsers();
 		loadApprovals();
 		loadAlertCount();
 		loadAlerts();
@@ -3474,36 +3737,55 @@
 					if (match) tabNameCounter = Math.max(tabNameCounter, parseInt(match[1]));
 				}
 
-				if (sessions.length > 0 && dbTabs.length > 0) {
-					// Only reconnect to sessions that have a matching DB tab record
-					// Kill orphan PTY sessions that aren't in the DB
-					const dbSessionIds = new Set(dbTabs.map(t => t.sessionId));
-					const liveSessions = sessions.filter(s =>
-						(s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')) && dbSessionIds.has(s.id)
-					);
-					// Kill orphans — sessions with no DB tab AND no live clients.
-					// A session with clients > 0 is being held by another window/tab
-					// (or by a tab whose DB write just hasn't landed yet) — killing
-					// it yanks the PTY out from under an active user. Only kill
-					// sessions that nobody is currently watching.
-					for (const s of sessions) {
-						if ((s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')) && !dbSessionIds.has(s.id) && (s.clients || 0) === 0) {
-							fetch(`/api/v1/terminal/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' }).catch(() => {});
+				const dbSessionIds = new Set(dbTabs.map(t => t.sessionId));
+				const dashSessions = sessions.filter(s =>
+					s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')
+				);
+
+				if (dashSessions.length > 0) {
+					// Prefer sessions that match a DB tab (best metadata)
+					const liveSessions = dashSessions.filter(s => dbSessionIds.has(s.id));
+
+					if (liveSessions.length > 0) {
+						// Sort by DB tab index
+						liveSessions.sort((a, b) => {
+							const aTab = dbTabMap.get(a.id);
+							const bTab = dbTabMap.get(b.id);
+							if (aTab && bTab) return (aTab.tabIndex || 0) - (bTab.tabIndex || 0);
+							return (a.createdAt || 0) - (b.createdAt || 0);
+						});
+						for (const s of liveSessions) {
+							const matchedProject = projects.find(p => p.name === s.project);
+							const pid = matchedProject ? matchedProject.id : null;
+							const savedTab = dbTabMap.get(s.id);
+							await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true, savedTab?.tabName || null, savedTab?.claudeSessionIds);
+							reconnected = true;
+						}
+					} else {
+						// DB empty/stale but server has live sessions — reconnect
+						// directly. This happens when DB save didn't land before
+						// refresh (race condition on hard reload).
+						console.log(`[PAN Terminal] No DB match — reconnecting to ${dashSessions.length} live server sessions`);
+						for (const s of dashSessions) {
+							const matchedProject = projects.find(p => p.name === s.project);
+							const pid = matchedProject ? matchedProject.id : null;
+							await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true, null, null);
+							reconnected = true;
 						}
 					}
-					// Sort by DB tab index
-					liveSessions.sort((a, b) => {
-						const aTab = dbTabMap.get(a.id);
-						const bTab = dbTabMap.get(b.id);
-						if (aTab && bTab) return (aTab.tabIndex || 0) - (bTab.tabIndex || 0);
-						return (a.createdAt || 0) - (b.createdAt || 0);
-					});
-					for (const s of liveSessions) {
-						const matchedProject = projects.find(p => p.name === s.project);
-						const pid = matchedProject ? matchedProject.id : null;
-						const savedTab = dbTabMap.get(s.id);
-						await createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\tzuri\\Desktop', pid, true, savedTab?.tabName || null, savedTab?.claudeSessionIds);
-						reconnected = true;
+
+					// Kill orphans — sessions with no DB tab AND no live clients.
+					// Grace period: only kill sessions older than 30s to avoid race
+					// conditions during hard refresh (old WS disconnects, new page
+					// hasn't connected yet — the session briefly has 0 clients).
+					if (dbTabs.length > 0) {
+						const now = Date.now();
+						for (const s of dashSessions) {
+							const age = now - (s.createdAt || 0);
+							if (!dbSessionIds.has(s.id) && (s.clients || 0) === 0 && age > 30000) {
+								fetch(`/api/v1/terminal/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' }).catch(() => {});
+							}
+						}
 					}
 				}
 
@@ -3542,6 +3824,9 @@
 					await switchTerminalProject(target);
 				}
 			}
+
+			// Restore complete — allow manual project selection
+			restoringTabs = false;
 
 			// Save session state periodically
 			setInterval(saveSessionState, 5000);
@@ -3657,8 +3942,13 @@
 
 <!-- TOOLBAR -->
 <div class="toolbar">
-	<select class="project-select" onchange={(e) => {
+	<select class="project-select" value={selectedProjectValue} onchange={(e) => {
 		const val = e.target.value;
+		if (restoringTabs) {
+			// Restore in progress — reset dropdown to current value to prevent duplicate creation
+			e.target.value = selectedProjectValue;
+			return;
+		}
 		if (val === '__shell__') {
 			createTab('dash-shell-' + Date.now(), 'Shell', 'C:\\Users\\tzuri\\Desktop', null, false);
 		} else {
@@ -3694,11 +3984,6 @@
 	{/if}
 	<span class="host-label">{hostLabel}</span>
 	<div style="flex:1"></div>
-	{#if orgData}
-		<span class="org-badge" title="{orgData.role || 'owner'}">
-			<span class="org-user">{orgData.user_nickname || 'User'}</span><span class="org-at">@</span><span class="org-name">{orgData.org_name || 'Personal'}</span>
-		</span>
-	{/if}
 	<span class="sessions-count">
 		{#if sessionsCount > 0}{sessionsCount} tab{sessionsCount > 1 ? 's' : ''}{/if}
 	</span>
@@ -3744,10 +4029,11 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
+				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
 				<option value="lifeboat">Lifeboat</option>
@@ -3757,6 +4043,7 @@
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
 				<option value="tasks">Tasks</option>
+				<option value="teams">Teams</option>
 				<option value="tests">Tests</option>
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
@@ -3795,6 +4082,11 @@
 								</div>
 							{:else if bubble.type === 'tool'}
 								<div class="chat-bubble tool">{bubble.text}</div>
+							{:else if bubble.type === 'stats' && bubble.tokens}
+								<div class="chat-stats-bar">
+									<span>↑{(bubble.tokens.input / 1000).toFixed(1)}K ↓{(bubble.tokens.output / 1000).toFixed(1)}K{bubble.tokens.cache_read ? ` 📦${(bubble.tokens.cache_read / 1000).toFixed(1)}K` : ''} ${bubble.tokens.cost != null ? `$${bubble.tokens.cost.toFixed(4)}` : ''}</span>
+									<span class="chat-stats-total">session: ↑{(bubble.tokens.total_input / 1000).toFixed(1)}K ↓{(bubble.tokens.total_output / 1000).toFixed(1)}K {bubble.tokens.total_cost != null ? `$${bubble.tokens.total_cost.toFixed(4)}` : ''}</span>
+								</div>
 							{/if}
 						{/each}
 					</div>
@@ -4274,18 +4566,146 @@
 					{:else}
 						{@const groups = [...new Set(usersData.map(u => u.role || u.group || 'Default'))]}
 						{#each groups as group}
-							<div class="svc-category">{group}</div>
+							<div class="svc-category">{group.charAt(0).toUpperCase() + group.slice(1)}</div>
 							{#each usersData.filter(u => (u.role || u.group || 'Default') === group) as user}
 								<div class="svc-row">
-									<span class="svc-dot" class:up={user.status === 'active' || user.status === 'online'} class:unknown={!user.status || user.status === 'offline'}></span>
+									<span class="svc-dot" class:up={user.is_active !== 0 || user.status === 'active' || user.status === 'online'} class:unknown={user.is_active === 0 && !user.status}></span>
 									<div class="svc-info">
-										<div class="svc-name">{user.name || user.email || 'Unknown'}</div>
-										<div class="svc-detail">{user.role || 'User'}</div>
+										<div class="svc-name">{user.display_name || user.name || 'Unknown'}</div>
+										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}</div>
 									</div>
 								</div>
 							{/each}
 						{/each}
 					{/if}
+				</div>
+			{:else if leftSection === 'teams'}
+				<div class="teams-panel">
+					{#if teamsData.length === 0}
+						<div class="empty-state">No teams yet</div>
+					{:else}
+						{#each teamsData as team}
+							<div
+								class="svc-row clickable"
+								class:selected={selectedTeamWidget?.id === team.id}
+								onclick={() => loadTeamDetailWidget(team.id)}
+							>
+								<span class="team-dot-widget" style="background: {team.color || '#89b4fa'}"></span>
+								<div class="svc-info">
+									<div class="svc-name">{team.name}</div>
+									<div class="svc-detail">{team.member_count} Member{team.member_count !== 1 ? 's' : ''}</div>
+								</div>
+							</div>
+						{/each}
+					{/if}
+					{#if selectedTeamWidget}
+						<div class="svc-category" style="margin-top:12px">
+							<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{selectedTeamWidget.color || '#89b4fa'};margin-right:6px"></span>
+							{selectedTeamWidget.name}
+						</div>
+						{#each teamMembersWidget as member}
+							<div class="svc-row">
+								<span class="svc-dot up"></span>
+								<div class="svc-info">
+									<div class="svc-name">{member.display_name || member.email || 'Unknown'}</div>
+									<div class="svc-detail">{member.role === 'lead' ? 'Lead' : 'Member'}</div>
+								</div>
+							</div>
+						{/each}
+						{#if teamMembersWidget.length === 0}
+							<div class="empty-state small">No members</div>
+						{/if}
+					{/if}
+				</div>
+			{:else if leftSection === 'contacts'}
+				<div class="contacts-panel">
+					<!-- Search + Add -->
+					<div class="contacts-toolbar">
+						<input type="text" class="contacts-search" placeholder="Search contacts..." bind:value={chatSearchQuery} />
+						<button class="contacts-add-btn" onclick={() => { addContactModal = true; }} title="Add contact">+</button>
+					</div>
+
+					<!-- Add Contact Modal -->
+					{#if addContactModal}
+						<div class="contact-add-form">
+							<input type="text" placeholder="Name *" bind:value={newContactName} class="contact-input" />
+							<input type="text" placeholder="PAN Instance ID (pan_xxxx)" bind:value={newContactPanId} class="contact-input" />
+							<input type="text" placeholder="Phone" bind:value={newContactPhone} class="contact-input" />
+							<input type="text" placeholder="Email" bind:value={newContactEmail} class="contact-input" />
+							<div class="contact-add-actions">
+								<button class="contact-btn-save" onclick={addContact}>Add</button>
+								<button class="contact-btn-cancel" onclick={() => { addContactModal = false; }}>Cancel</button>
+							</div>
+						</div>
+					{/if}
+
+					{#each [contactsData.filter(c => !chatSearchQuery || c.display_name.toLowerCase().includes(chatSearchQuery.toLowerCase()))] as filtered}
+					<!-- Favorites -->
+					{#each [filtered.filter(c => c.favorited)] as favorites}
+						{#if favorites.length > 0}
+							<div class="svc-category">Favorites</div>
+							{#each favorites as contact}
+								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
+									<span class="contact-avatar" style="background: {contact.avatar_url ? 'none' : '#585b70'}">
+										{contact.display_name.charAt(0).toUpperCase()}
+									</span>
+									<div class="svc-info">
+										<div class="svc-name">
+											{contact.display_name}
+											{#if contact.unread_count > 0}
+												<span class="contact-badge">{contact.unread_count}</span>
+											{/if}
+										</div>
+										<div class="svc-detail">
+											{#if contact.pan_instance_id}
+												<span class="contact-status" class:online={contact.status === 'online'} class:away={contact.status === 'away'}></span>
+												{contact.status || 'offline'}
+											{:else}
+												{contact.phone || contact.email || 'No PAN ID'}
+											{/if}
+										</div>
+									</div>
+									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }} title="Unfavorite">&#9733;</button>
+								</div>
+							{/each}
+						{/if}
+					{/each}
+
+					<!-- All contacts -->
+					{#each [filtered.filter(c => !c.favorited)] as others}
+						{#if others.length > 0}
+							<div class="svc-category">Contacts</div>
+							{#each others as contact}
+								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
+									<span class="contact-avatar" style="background: {contact.avatar_url ? 'none' : '#585b70'}">
+										{contact.display_name.charAt(0).toUpperCase()}
+									</span>
+									<div class="svc-info">
+										<div class="svc-name">
+											{contact.display_name}
+											{#if contact.unread_count > 0}
+												<span class="contact-badge">{contact.unread_count}</span>
+											{/if}
+										</div>
+										<div class="svc-detail">
+											{#if contact.pan_instance_id}
+												<span class="contact-status" class:online={contact.status === 'online'} class:away={contact.status === 'away'}></span>
+												{contact.status || 'offline'}
+											{:else}
+												{contact.phone || contact.email || 'No PAN ID'}
+											{/if}
+										</div>
+									</div>
+									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }} title="Favorite">&#9734;</button>
+								</div>
+							{/each}
+						{/if}
+					{/each}
+
+					{#if filtered.length === 0 && !addContactModal}
+						<div class="empty-state">{chatSearchQuery ? 'No matches' : 'No contacts yet — click + to add'}</div>
+					{/if}
+				{/each}
 				</div>
 			{/if}
 		</div>
@@ -4295,11 +4715,10 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="resize-handle" onmousedown={(e) => onResizeStart('left', e)}></div>
 
-	<!-- CENTER: Terminal / Chat -->
+	<!-- CENTER: Terminal -->
 	<div class="center-panel">
 		<div class="center-tabs">
 			<button class="center-tab" class:active={centerView === 'terminal'} onclick={() => switchCenterView('terminal')}>{isDev ? 'Terminal - Dev' : 'Terminal'}</button>
-			<button class="center-tab" class:active={centerView === 'chat'} onclick={() => switchCenterView('chat')}>Chat</button>
 		</div>
 		<div class="term-container" bind:this={termContainerEl} style={centerView === 'terminal' ? '' : 'display:none'}>
 			{#if tabs.length === 0}
@@ -4331,7 +4750,7 @@
 					{#each centerChatMessages as msg}
 						{#if msg.role === 'user'}
 							<div class="cc-bubble cc-user">{msg.text}</div>
-						{:else if msg.type === 'text'}
+						{:else if msg.type === 'text' || msg.type === 'output'}
 							<div class="cc-bubble cc-assistant">{msg.text}</div>
 						{:else if msg.type === 'tool'}
 							<div class="cc-bubble cc-tool">{msg.text}</div>
@@ -4523,6 +4942,22 @@
 				{/if}
 			</div>
 		{/if}
+		<!-- Messages panel removed -->
+		<!-- Call Overlay -->
+		{#if chatCallActive}
+			<div class="call-overlay">
+				<div class="call-card">
+					<div class="call-avatar">{chatActiveThread?.contact?.display_name?.charAt(0) || '?'}</div>
+					<div class="call-name">{chatActiveThread?.contact?.display_name || 'Unknown'}</div>
+					<div class="call-status">{chatCallActive.type === 'video' ? 'Video' : 'Voice'} call — {chatCallActive.status}</div>
+					<div class="call-actions">
+						<button class="call-end-btn" onclick={endCall}>
+							<svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 01-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28a11.27 11.27 0 00-2.67-1.85.996.996 0 01-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
+						</button>
+					</div>
+				</div>
+			</div>
+		{/if}
 		{#if pastedImages.length > 0}
 			<div class="image-preview-bar">
 				{#each pastedImages as img, idx}
@@ -4636,7 +5071,7 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
@@ -4650,6 +5085,7 @@
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
 				<option value="tasks">Tasks</option>
+				<option value="teams">Teams</option>
 				<option value="tests">Tests</option>
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
@@ -5480,22 +5916,73 @@
 				<div class="users-panel">
 					{#if usersData.length === 0}
 						<div class="empty-state">No users registered</div>
-						<div class="empty-state small">Users are added when devices connect or through Settings &gt; Users</div>
+						<div class="empty-state small">Users are added when devices connect or through Settings &gt; Organizations</div>
 					{:else}
-						{@const groups = [...new Set(usersData.map(u => u.role || u.group || 'Default'))]}
+						{@const groups = [...new Set(usersData.map(u => u.role || 'user'))]}
 						{#each groups as group}
-							<div class="svc-category">{group}</div>
-							{#each usersData.filter(u => (u.role || u.group || 'Default') === group) as user}
+							<div class="svc-category">{group.charAt(0).toUpperCase() + group.slice(1)}</div>
+							{#each usersData.filter(u => (u.role || 'user') === group) as user}
 								<div class="svc-row">
-									<span class="svc-dot" class:up={user.status === 'active' || user.status === 'online'} class:unknown={!user.status || user.status === 'offline'}></span>
+									<span class="svc-dot" class:up={user.is_active !== 0} class:unknown={user.is_active === 0}></span>
 									<div class="svc-info">
-										<div class="svc-name">{user.name || user.email || 'Unknown'}</div>
-										<div class="svc-detail">{user.role || 'User'}{user.last_seen ? ` — ${user.last_seen}` : ''}</div>
+										<div class="svc-name">{user.display_name || user.email || 'Unknown'}</div>
+										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.email && !user.email.endsWith('@localhost') ? ` — ${user.email}` : ''}</div>
 									</div>
 								</div>
 							{/each}
 						{/each}
 					{/if}
+				</div>
+			{:else if rightSection === 'teams'}
+				<div class="teams-panel">
+					{#if teamsData.length === 0}
+						<div class="empty-state">No teams yet</div>
+						<div class="empty-state small">Type a name below to create one</div>
+					{:else}
+						{#each teamsData as team}
+							<div
+								class="svc-row clickable"
+								class:selected={selectedTeamWidget?.id === team.id}
+								onclick={() => loadTeamDetailWidget(team.id)}
+							>
+								<span class="team-dot-widget" style="background: {team.color || '#89b4fa'}"></span>
+								<div class="svc-info">
+									<div class="svc-name">{team.name}</div>
+									<div class="svc-detail">{team.member_count} Member{team.member_count !== 1 ? 's' : ''}{team.description ? ` — ${team.description}` : ''}</div>
+								</div>
+							</div>
+						{/each}
+					{/if}
+
+					{#if selectedTeamWidget}
+						<div class="svc-category" style="margin-top:12px">
+							<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{selectedTeamWidget.color || '#89b4fa'};margin-right:6px"></span>
+							{selectedTeamWidget.name} — Members
+						</div>
+						{#each teamMembersWidget as member}
+							<div class="svc-row">
+								<span class="svc-dot up"></span>
+								<div class="svc-info">
+									<div class="svc-name">{member.display_name || member.email || 'Unknown'}</div>
+									<div class="svc-detail">{member.role === 'lead' ? 'Lead' : 'Member'}{member.email && !member.email.endsWith('@localhost') ? ` — ${member.email}` : ''}</div>
+								</div>
+							</div>
+						{/each}
+						{#if teamMembersWidget.length === 0}
+							<div class="empty-state small">No members</div>
+						{/if}
+					{/if}
+
+					<div class="add-row">
+						<input type="text" class="add-input" placeholder="Create team..." onkeydown={(e) => {
+							if (e.key === 'Enter' && e.target.value.trim()) {
+								const name = e.target.value.trim();
+								e.target.value = '';
+								fetch('/api/v1/teams', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
+									.then(() => loadTeamsWidget());
+							}
+						}} />
+					</div>
 				</div>
 			{:else if rightSection.startsWith('custom-')}
 				{@const sectionId = parseInt(rightSection.replace('custom-', ''))}
@@ -6158,6 +6645,18 @@
 		word-break: break-all;
 	}
 
+	.chat-stats-bar {
+		display: flex;
+		justify-content: space-between;
+		padding: 2px 8px;
+		font-size: 9px;
+		color: #585b70;
+		font-family: monospace;
+		border-top: 1px solid #1e1e2e;
+		margin: 1px 0 4px;
+	}
+	.chat-stats-total { opacity: 0.6; }
+
 	/* ==================== Markdown in chat bubbles ==================== */
 	.chat-bubble strong { font-weight: 700; color: #cdd6f4; }
 	.chat-bubble em { font-style: italic; color: #bac2de; }
@@ -6554,6 +7053,16 @@
 		align-items: flex-start;
 		gap: 8px;
 		padding: 6px 0;
+	}
+	.svc-row.clickable { cursor: pointer; border-radius: 4px; padding: 6px 4px; margin: 0 -4px; }
+	.svc-row.clickable:hover { background: rgba(137,180,250,0.08); }
+	.svc-row.selected { background: rgba(137,180,250,0.12); }
+	.team-dot-widget {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		margin-top: 3px;
+		flex-shrink: 0;
 	}
 	.svc-dot {
 		width: 8px;
@@ -7194,4 +7703,142 @@
 	.alert-btn.reopen:hover { background: #453820; }
 
 	.alert-meta { font-size: 10px; color: #585b70; }
+
+	/* ─── Contacts Panel ─── */
+	.contacts-panel { padding: 0; }
+	.contacts-toolbar { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid #313244; }
+	.contacts-search {
+		flex: 1; background: #181825; border: 1px solid #313244; border-radius: 4px;
+		color: #cdd6f4; padding: 4px 8px; font-size: 12px; outline: none;
+	}
+	.contacts-search:focus { border-color: #585b70; }
+	.contacts-add-btn {
+		background: #313244; border: none; color: #a6e3a1; font-size: 16px; width: 28px;
+		border-radius: 4px; cursor: pointer; font-weight: bold;
+	}
+	.contacts-add-btn:hover { background: #45475a; }
+
+	.contact-add-form { padding: 8px; border-bottom: 1px solid #313244; display: flex; flex-direction: column; gap: 4px; }
+	.contact-input {
+		background: #181825; border: 1px solid #313244; border-radius: 4px;
+		color: #cdd6f4; padding: 5px 8px; font-size: 12px; outline: none;
+	}
+	.contact-input:focus { border-color: #585b70; }
+	.contact-add-actions { display: flex; gap: 4px; margin-top: 2px; }
+	.contact-btn-save { background: #1e4620; color: #a6e3a1; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+	.contact-btn-save:hover { background: #2a6030; }
+	.contact-btn-cancel { background: #313244; color: #6c7086; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+	.contact-btn-cancel:hover { background: #45475a; }
+
+	.contact-row { cursor: pointer; padding: 6px 8px !important; transition: background 0.15s; }
+	.contact-row:hover { background: #313244; }
+	.contact-avatar {
+		width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center;
+		justify-content: center; font-size: 14px; font-weight: bold; color: #cdd6f4; flex-shrink: 0;
+	}
+	.contact-badge {
+		background: #f38ba8; color: #1e1e2e; font-size: 10px; padding: 1px 5px;
+		border-radius: 8px; margin-left: 6px; font-weight: bold;
+	}
+	.contact-status { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #585b70; margin-right: 4px; }
+	.contact-status.online { background: #a6e3a1; }
+	.contact-status.away { background: #f9e2af; }
+	.contact-action-btn {
+		background: none; border: none; color: #585b70; cursor: pointer; font-size: 14px; padding: 2px 4px;
+	}
+	.contact-action-btn:hover { color: #f9e2af; }
+
+	/* ─── Messages Panel (Center) ─── */
+	.messages-panel {
+		display: flex; flex-direction: column; height: 100%; background: #1e1e2e;
+	}
+	.msg-header {
+		display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+		border-bottom: 1px solid #313244; background: #181825; flex-shrink: 0;
+	}
+	.msg-back-btn { background: none; border: none; color: #cdd6f4; font-size: 18px; cursor: pointer; padding: 2px 6px; }
+	.msg-back-btn:hover { color: #f5c2e7; }
+	.msg-header-info { flex: 1; }
+	.msg-header-name { font-weight: 600; color: #cdd6f4; font-size: 14px; }
+	.msg-header-status { font-size: 11px; color: #585b70; margin-left: 8px; }
+	.msg-header-status.online { color: #a6e3a1; }
+	.msg-header-actions { display: flex; gap: 4px; }
+	.msg-call-btn {
+		background: #313244; border: none; color: #cdd6f4; padding: 6px 8px;
+		border-radius: 6px; cursor: pointer; display: flex; align-items: center;
+	}
+	.msg-call-btn:hover { background: #45475a; color: #a6e3a1; }
+
+	.msg-messages {
+		flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px;
+	}
+	.msg-empty { color: #585b70; text-align: center; padding: 40px 20px; font-size: 13px; }
+	.msg-system { text-align: center; color: #585b70; font-size: 11px; padding: 4px 0; }
+
+	.msg-bubble {
+		max-width: 75%; padding: 8px 12px; border-radius: 12px; word-wrap: break-word;
+	}
+	.msg-self {
+		align-self: flex-end; background: #45475a; color: #cdd6f4;
+		border-bottom-right-radius: 4px;
+	}
+	.msg-other {
+		align-self: flex-start; background: #313244; color: #cdd6f4;
+		border-bottom-left-radius: 4px;
+	}
+	.msg-text { font-size: 13px; line-height: 1.4; }
+	.msg-time { font-size: 10px; color: #585b70; margin-top: 2px; text-align: right; }
+
+	.msg-input-bar {
+		display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid #313244;
+		background: #181825; flex-shrink: 0;
+	}
+	.msg-input {
+		flex: 1; background: #313244; border: 1px solid #45475a; border-radius: 8px;
+		color: #cdd6f4; padding: 8px 12px; font-size: 13px; outline: none;
+	}
+	.msg-input:focus { border-color: #585b70; }
+	.msg-send-btn {
+		background: #585b70; border: none; color: #cdd6f4; padding: 8px 12px;
+		border-radius: 8px; cursor: pointer; display: flex; align-items: center;
+	}
+	.msg-send-btn:hover:not(:disabled) { background: #a6e3a1; color: #1e1e2e; }
+	.msg-send-btn:disabled { opacity: 0.3; cursor: default; }
+
+	/* Thread list */
+	.msg-thread-list { padding: 0; overflow-y: auto; }
+	.msg-thread-row {
+		display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+		cursor: pointer; transition: background 0.15s; border-bottom: 1px solid #1e1e2e;
+	}
+	.msg-thread-row:hover { background: #313244; }
+	.msg-thread-info { flex: 1; min-width: 0; }
+	.msg-thread-name { font-size: 13px; font-weight: 500; color: #cdd6f4; display: flex; align-items: center; gap: 4px; }
+	.msg-thread-preview { font-size: 11px; color: #585b70; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.msg-thread-time { font-size: 10px; color: #585b70; flex-shrink: 0; }
+
+	/* ─── Call Overlay ─── */
+	.call-overlay {
+		position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+		background: rgba(0,0,0,0.85); z-index: 9999;
+		display: flex; align-items: center; justify-content: center;
+	}
+	.call-card {
+		text-align: center; padding: 40px 60px; background: #1e1e2e;
+		border-radius: 16px; border: 1px solid #313244;
+	}
+	.call-avatar {
+		width: 80px; height: 80px; border-radius: 50%; background: #585b70;
+		display: flex; align-items: center; justify-content: center;
+		font-size: 32px; font-weight: bold; color: #cdd6f4; margin: 0 auto 16px;
+	}
+	.call-name { font-size: 20px; font-weight: 600; color: #cdd6f4; margin-bottom: 8px; }
+	.call-status { font-size: 14px; color: #585b70; margin-bottom: 24px; }
+	.call-actions { display: flex; justify-content: center; }
+	.call-end-btn {
+		width: 56px; height: 56px; border-radius: 50%; background: #f38ba8;
+		border: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
+		transition: transform 0.15s;
+	}
+	.call-end-btn:hover { transform: scale(1.1); background: #e06080; }
 </style>
