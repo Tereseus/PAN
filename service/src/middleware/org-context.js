@@ -75,12 +75,14 @@ export function requireOrg(req, res, next) {
       WHERE user_id = ? AND org_id = ? AND left_at IS NULL
     `).get(req.user.id, orgId);
   } catch {
-    // memberships table may not exist yet — fail open to personal org
-    if (orgId === PERSONAL_ORG_ID) {
-      req.org_id = PERSONAL_ORG_ID;
-      req.membership = { id: 0, user_id: req.user.id, org_id: PERSONAL_ORG_ID, role_id: null };
-      return next();
-    }
+    // memberships table may not exist yet — fall through
+  }
+
+  // Fail open for personal org — user always owns their personal org
+  if (!membership && orgId === PERSONAL_ORG_ID) {
+    req.org_id = PERSONAL_ORG_ID;
+    req.membership = { id: 0, user_id: req.user.id, org_id: PERSONAL_ORG_ID, role_id: null };
+    return next();
   }
 
   if (!membership) {

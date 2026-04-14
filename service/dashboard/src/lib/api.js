@@ -25,7 +25,9 @@ export async function api(path, options = {}) {
 	}
 
 	if (!res.ok) {
-		throw new Error(`API ${path}: ${res.status}`);
+		let detail = '';
+		try { const body = await res.json(); detail = body.error || ''; } catch {}
+		throw new Error(detail || `API ${path}: ${res.status}`);
 	}
 
 	return res.json();
