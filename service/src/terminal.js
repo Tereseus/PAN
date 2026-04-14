@@ -11,13 +11,14 @@ import { join } from 'path';
 import { spawn } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { all, insert } from './db.js';
+import { all, insert, get } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
 import { subscribeToTranscript, writeSystemEvent } from './transcript-watcher.js';
 import { captureInput, captureOutput, subscribeToSession, writeSystemMessage, flushSession, destroySession, readTranscript, setSessionName, renameTranscript } from './pty-transcript.js';
 import { getTerminalLogDir, getShell, getDataDir } from './platform.js';
 import { createAlert } from './routes/dashboard.js';
 import { ClaudeAdapter } from './llm-adapter-claude.js';
+import { GeminiAdapter } from './llm-adapter-gemini.js';
 
 // Terminal log directory — persists ScreenBuffer logs across server restarts
 const TERMINAL_LOG_DIR = getTerminalLogDir();
@@ -37,43 +38,67 @@ function pipeSend(sessionId, userText) {
   userText = (userText || '').trim();
   if (!userText) return false;
 
-  // Create adapter on first use — pass stored Claude session ID for resume after restart
+  // Create adapter on first use — uses the configured provider (Claude vs Gemini vs others)
   if (!session._llmAdapter) {
+    // 1. Determine provider from settings
+    let provider = 'claude';
+    try {
+      const row = get("SELECT value FROM settings WHERE key = 'terminal_ai_provider'");
+      if (row) provider = row.value.replace(/^"|"$/g, '').toLowerCase() || 'claude';
+    } catch {}
+
     const resumeId = session.claudeSessionIds?.[session.claudeSessionIds.length - 1] || null;
-    session._llmAdapter = new ClaudeAdapter(sessionId, session.cwd, (messages) => {
+    
+    // 2. Instantiate the correct adapter
+    const onMessage = (messages) => {
       // Push transcript to all connected WebSocket clients
       session.lastOutputTs = Date.now();
       session.claudeRunning = session._llmAdapter?.busy || false;
       for (const client of session.clients) {
-        if (client.readyState === 1) {
-          try {
-            client.send(JSON.stringify({ type: 'transcript_messages', messages }));
-          } catch {}
+        if (client.readyState === WebSocket.OPEN) {
+          try { client.send(JSON.stringify({ type: 'transcript_messages', messages })); } catch {}
         }
       }
-      // Persist the Claude session ID back to the session + token
+      // Persist the session ID back to the session + token (for resume)
       const csid = session._llmAdapter?.getSessionId?.();
       if (csid && !(session.claudeSessionIds || []).includes(csid)) {
         session.claudeSessionIds = [...(session.claudeSessionIds || []), csid];
-        // Update all connected clients' tokens
         for (const c of session.clients) {
-          if (c._reconnectToken) {
-            updateTokenClaudeSessions(c._reconnectToken, session.claudeSessionIds);
-          }
+          if (c._reconnectToken) updateTokenClaudeSessions(c._reconnectToken, session.claudeSessionIds);
         }
       }
-    }, resumeId);
-    console.log(`[PAN LLM] Created Claude adapter for session ${sessionId} cwd=${session.cwd}` +
-      (resumeId ? ` (resuming Claude session ${resumeId})` : ' (fresh session)'));
+    };
+
+    if (provider === 'gemini') {
+      session._llmAdapter = new GeminiAdapter(sessionId, session.cwd, onMessage, resumeId);
+      console.log(`[PAN LLM] Created Gemini adapter for session ${sessionId}`);
+    } else {
+      // Default to Claude (built-in SDK)
+      session._llmAdapter = new ClaudeAdapter(sessionId, session.cwd, onMessage, resumeId);
+      console.log(`[PAN LLM] Created Claude adapter for session ${sessionId}`);
+    }
+
+    // Apply saved model preference from settings (if any) so that model changes
+    // made via the dashboard picker take effect even before the first message.
+    try {
+      const modelRow = get("SELECT value FROM settings WHERE key = 'terminal_ai_model'");
+      if (modelRow) {
+        const savedModel = modelRow.value.replace(/^"|"$/g, '').trim();
+        if (savedModel) {
+          session._llmAdapter.setModel(savedModel);
+          console.log(`[PAN LLM] Applied saved model preference: ${savedModel}`);
+        }
+      }
+    } catch {}
   }
 
   session.claudeRunning = true;
-  session.pipeMode = true; // Mark that this session uses pipe mode (Claude always available)
+  session.pipeMode = true; 
   session._llmAdapter.send(userText).then(() => {
     session.claudeRunning = false;
     // Notify ready
     for (const c of session.clients) {
-      if (c.readyState === 1) {
+      if (c.readyState === WebSocket.OPEN) {
         try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
       }
     }
@@ -88,6 +113,14 @@ function pipeInterrupt(sessionId) {
   session._llmAdapter.interrupt();
   session.claudeRunning = false;
   writeSystemMessage(sessionId, 'interrupt', 'Interrupted (Escape)');
+  return true;
+}
+
+// Set the model for a session's LLM adapter — takes effect on next message
+function pipeSetModel(sessionId, modelId) {
+  const session = sessions.get(sessionId);
+  if (!session?._llmAdapter?.setModel) return false;
+  session._llmAdapter.setModel(modelId);
   return true;
 }
 
@@ -199,13 +232,15 @@ async function discoverAndRegisterCliProcess(session, sessionId, bashPid) {
     }
 
     // Find the CLI process among descendants — look for known LLM CLI patterns
-    const cliPatterns = ['claude-code/cli.js', 'claude-code\\cli.js', 'opencode', 'aider', 'continue'];
+    const cliPatterns = ['claude-code/cli.js', 'claude-code\\cli.js', 'gemini', 'opencode', 'aider', 'continue'];
     for (const p of procs) {
       if (!descendants.has(p.pid)) continue;
-      const matchedPattern = cliPatterns.find(pat => p.cmd.includes(pat));
+      const matchedPattern = cliPatterns.find(pat => p.cmd.toLowerCase().includes(pat));
       if (matchedPattern) {
         session._claudeCliPid = p.pid;
-        const type = matchedPattern.includes('claude') ? 'claude_cli' : 'llm_cli';
+        let type = 'llm_cli';
+        if (matchedPattern.includes('claude')) type = 'claude_cli';
+        if (matchedPattern === 'gemini') type = 'gemini_cli';
         registerProcess({ pid: p.pid, type, sessionId, command: p.cmd.slice(0, 200), parentPid: bashPid });
         return;
       }
@@ -459,6 +494,22 @@ async function startTerminalServer(httpServer) {
           sessionId,
           command: `${SHELL} ${SHELL_ARGS.join(' ')}`,
         });
+
+        // ── AUTO-LAUNCH AI CLI ───────────────────────────────────────
+        // If the provider is 'gemini', send the command to the PTY.
+        // We use a small delay to ensure the shell is ready for input.
+        try {
+          const row = get("SELECT value FROM settings WHERE key = 'terminal_ai_provider'");
+          const provider = row ? row.value.replace(/^"|"$/g, '').toLowerCase() : 'claude';
+          if (provider === 'gemini') {
+            setTimeout(() => {
+              console.log(`[PAN Terminal] Auto-launching Gemini CLI in session ${sessionId}`);
+              ptyProcess.write('gemini\r');
+            }, 1000);
+          }
+        } catch (err) {
+          console.error('[PAN Terminal] Auto-launch check failed:', err.message);
+        }
 
         // PTY output → parse stream-json events from Claude pipe mode.
         // In pipe mode, Claude outputs one JSON event per line on stdout.
@@ -1206,4 +1257,4 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, getSessionMessages };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages };

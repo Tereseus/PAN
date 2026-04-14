@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, get, run } from '../db.js';
+import { all, get, run, allScoped, getScoped, runScoped } from '../db.js';
 import { auditLog } from '../middleware/org-context.js';
 
 const router = Router();
@@ -55,16 +55,16 @@ function seedSensors() {
 }
 
 // Initialize sensor rows for a device — only sensors it actually has
-function initDeviceSensors(deviceId, deviceType) {
-  const existing = get("SELECT COUNT(*) as c FROM device_sensors WHERE device_id = :did", { ':did': deviceId });
+function initDeviceSensors(deviceId, deviceType, orgId = 'org_personal') {
+  const existing = get("SELECT COUNT(*) as c FROM device_sensors WHERE device_id = :did AND org_id = :org_id", { ':did': deviceId, ':org_id': orgId });
   if (existing && existing.c > 0) return;
 
   const sensorIds = DEVICE_SENSORS[deviceType] || DEVICE_SENSORS.pc;
 
   for (const sid of sensorIds) {
-    run(`INSERT OR IGNORE INTO device_sensors (device_id, sensor_id, available, muted)
-         VALUES (:did, :sid, 1, 0)`, {
-      ':did': deviceId, ':sid': sid
+    run(`INSERT OR IGNORE INTO device_sensors (device_id, sensor_id, available, muted, org_id)
+         VALUES (:did, :sid, 1, 0, :org_id)`, {
+      ':did': deviceId, ':sid': sid, ':org_id': orgId
     });
   }
   console.log(`[PAN Sensors] Initialized ${sensorIds.length} sensors for device ${deviceId} (${deviceType})`);
@@ -82,23 +82,24 @@ router.get('/', (req, res) => {
 // Only returns sensors the device actually has (available=1 in device_sensors)
 router.get('/devices/:deviceId', (req, res) => {
   const deviceId = parseInt(req.params.deviceId);
-  const device = get("SELECT * FROM devices WHERE id = :id", { ':id': deviceId });
+  const device = getScoped(req, "SELECT * FROM devices WHERE id = :id AND org_id = :org_id", { ':id': deviceId });
   if (!device) return res.status(404).json({ error: 'device not found' });
 
-  initDeviceSensors(deviceId, device.device_type);
+  const orgId = req.org_id || 'org_personal';
+  initDeviceSensors(deviceId, device.device_type, orgId);
 
-  const sensors = all(`
+  const sensors = allScoped(req, `
     SELECT sd.*, ds.muted, ds.policy, ds.policy_reason
     FROM sensor_definitions sd
-    JOIN device_sensors ds ON ds.sensor_id = sd.id AND ds.device_id = :did
+    JOIN device_sensors ds ON ds.sensor_id = sd.id AND ds.device_id = :did AND ds.org_id = :org_id
     WHERE ds.available = 1
     ORDER BY sd.sort_order
   `, { ':did': deviceId });
 
   // Get attachments
-  const attachments = all(`
+  const attachments = allScoped(req, `
     SELECT sensor_id, attach_to, enabled
-    FROM sensor_attachments WHERE device_id = :did
+    FROM sensor_attachments WHERE device_id = :did AND org_id = :org_id
   `, { ':did': deviceId });
 
   const attachMap = {};
@@ -131,13 +132,14 @@ router.put('/devices/:deviceId/:sensorId', (req, res) => {
   const sensorId = req.params.sensorId;
   const { enabled } = req.body;
 
-  const device = get("SELECT * FROM devices WHERE id = :id", { ':id': deviceId });
+  const device = getScoped(req, "SELECT * FROM devices WHERE id = :id AND org_id = :org_id", { ':id': deviceId });
   if (!device) return res.status(404).json({ error: 'device not found' });
 
-  initDeviceSensors(deviceId, device.device_type);
+  const orgId = req.org_id || 'org_personal';
+  initDeviceSensors(deviceId, device.device_type, orgId);
 
   // Check for org policy lock
-  const ds = get("SELECT policy FROM device_sensors WHERE device_id = :did AND sensor_id = :sid",
+  const ds = getScoped(req, "SELECT policy FROM device_sensors WHERE device_id = :did AND sensor_id = :sid AND org_id = :org_id",
     { ':did': deviceId, ':sid': sensorId });
   if (ds && ds.policy) {
     return res.status(403).json({ error: 'locked', policy: ds.policy, message: `Sensor locked by organization policy (${ds.policy})` });
@@ -145,7 +147,7 @@ router.put('/devices/:deviceId/:sensorId', (req, res) => {
 
   // enabled=true → muted=0 (ON), enabled=false → muted=1 (OFF)
   const muted = enabled ? 0 : 1;
-  run(`UPDATE device_sensors SET muted = :val WHERE device_id = :did AND sensor_id = :sid`,
+  runScoped(req, `UPDATE device_sensors SET muted = :val WHERE device_id = :did AND sensor_id = :sid AND org_id = :org_id`,
     { ':val': muted, ':did': deviceId, ':sid': sensorId });
 
   try { auditLog(req, 'sensor.toggle', sensorId, { device_id: deviceId, enabled: !!enabled }); } catch {}
@@ -158,14 +160,14 @@ router.put('/devices/:deviceId/:sensorId/policy', (req, res) => {
   const sensorId = req.params.sensorId;
   const { policy, reason } = req.body;  // policy: null | 'force_on' | 'force_off'
 
-  const device = get("SELECT * FROM devices WHERE id = :id", { ':id': deviceId });
+  const device = getScoped(req, "SELECT * FROM devices WHERE id = :id AND org_id = :org_id", { ':id': deviceId });
   if (!device) return res.status(404).json({ error: 'device not found' });
 
   if (policy && !['force_on', 'force_off'].includes(policy)) {
     return res.status(400).json({ error: 'policy must be null, force_on, or force_off' });
   }
 
-  run(`UPDATE device_sensors SET policy = :pol, policy_reason = :reason WHERE device_id = :did AND sensor_id = :sid`, {
+  runScoped(req, `UPDATE device_sensors SET policy = :pol, policy_reason = :reason WHERE device_id = :did AND sensor_id = :sid AND org_id = :org_id`, {
     ':pol': policy || null, ':reason': reason || null, ':did': deviceId, ':sid': sensorId
   });
 
@@ -180,8 +182,8 @@ router.put('/devices/:deviceId/:sensorId/attach/:attachTo', (req, res) => {
   const attachTo = req.params.attachTo;
   const { enabled } = req.body;
 
-  run(`INSERT INTO sensor_attachments (device_id, sensor_id, attach_to, enabled)
-       VALUES (:did, :sid, :ato, :en)
+  runScoped(req, `INSERT INTO sensor_attachments (device_id, sensor_id, attach_to, enabled, org_id)
+       VALUES (:did, :sid, :ato, :en, :org_id)
        ON CONFLICT(device_id, sensor_id, attach_to) DO UPDATE SET enabled = :en`, {
     ':did': deviceId, ':sid': sensorId, ':ato': attachTo, ':en': enabled ? 1 : 0
   });
@@ -192,12 +194,13 @@ router.put('/devices/:deviceId/:sensorId/attach/:attachTo', (req, res) => {
 // POST /api/sensors/devices/:deviceId/init — force re-init
 router.post('/devices/:deviceId/init', (req, res) => {
   const deviceId = parseInt(req.params.deviceId);
-  const device = get("SELECT * FROM devices WHERE id = :id", { ':id': deviceId });
+  const device = getScoped(req, "SELECT * FROM devices WHERE id = :id AND org_id = :org_id", { ':id': deviceId });
   if (!device) return res.status(404).json({ error: 'device not found' });
 
-  run("DELETE FROM device_sensors WHERE device_id = :did", { ':did': deviceId });
-  run("DELETE FROM sensor_attachments WHERE device_id = :did", { ':did': deviceId });
-  initDeviceSensors(deviceId, device.device_type);
+  const orgId = req.org_id || 'org_personal';
+  runScoped(req, "DELETE FROM device_sensors WHERE device_id = :did AND org_id = :org_id", { ':did': deviceId });
+  runScoped(req, "DELETE FROM sensor_attachments WHERE device_id = :did AND org_id = :org_id", { ':did': deviceId });
+  initDeviceSensors(deviceId, device.device_type, orgId);
 
   res.json({ ok: true });
 });

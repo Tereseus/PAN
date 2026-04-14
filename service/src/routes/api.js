@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { insert, all, get, run, db, logEvent, anonymize, anonymizeEventData } from '../db.js';
+import { insert, all, get, run, db, logEvent, anonymize, anonymizeEventData, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
 import { logEventScoped } from '../events.js';
 import { getActiveOrg, isIncognitoAllowed } from '../org-policy.js';
 import { requireOrg } from '../middleware/org-context.js';
@@ -26,39 +26,7 @@ const router = Router();
 // Attaches req.org_id and req.membership. Falls back to org_personal.
 router.use(requireOrg);
 
-// Org management endpoints (under /api/v1/orgs — no auth gate needed, requireOrg handles it)
-router.get('/orgs', (req, res) => {
-  // List all orgs the current user is a member of
-  try {
-    const userId = req.user?.id || 1;
-    const rows = all(`SELECT o.*, m.role_id, m.permissions_json FROM memberships m
-      JOIN orgs o ON o.id = m.org_id
-      WHERE m.user_id = :uid AND m.left_at IS NULL`, { ':uid': userId });
-    res.json({ orgs: rows, active: req.org_id });
-  } catch (e) {
-    res.json({ orgs: [{ id: 'org_personal', slug: 'personal', name: 'Personal' }], active: 'org_personal' });
-  }
-});
-
-router.post('/orgs/switch', (req, res) => {
-  // Switch active org
-  const { org_id } = req.body;
-  if (!org_id) return res.status(400).json({ error: 'org_id required' });
-  const userId = req.user?.id || 1;
-
-  // Verify membership
-  try {
-    const membership = get(`SELECT * FROM memberships WHERE user_id = :uid AND org_id = :oid AND left_at IS NULL`,
-      { ':uid': userId, ':oid': org_id });
-    if (!membership) return res.status(403).json({ error: 'not a member of this org' });
-
-    run(`UPDATE users SET last_active_org_id = :oid WHERE id = :uid`, { ':uid': userId, ':oid': org_id });
-    const org = get(`SELECT * FROM orgs WHERE id = :oid`, { ':oid': org_id });
-    res.json({ ok: true, org });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// Org management moved to /api/v1/orgs (routes/orgs.js)
 
 // Dashboard chat — routes through AI router with dashboard source tag
 router.post('/chat', async (req, res) => {
@@ -128,18 +96,18 @@ router.use((req, res, next) => {
     // Use stable key: device-id header > device name > fallback to IP
     const phoneHost = deviceId ? `phone-${deviceId}` : `phone-${deviceName.replace(/\s+/g, '-').toLowerCase()}`;
 
-    const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': phoneHost });
+    const existing = getScoped(req, "SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id", { ':h': phoneHost });
     if (!existing) {
       // Also check for any old IP-based entries for this device name and remove them
-      run("DELETE FROM devices WHERE device_type = 'phone' AND name = :name AND hostname != :h",
+      runScoped(req, "DELETE FROM devices WHERE device_type = 'phone' AND name = :name AND hostname != :h AND org_id = :org_id",
         { ':name': deviceName, ':h': phoneHost });
-      insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen)
-        VALUES (:h, :name, 'phone', '["voice","camera","sensors"]', datetime('now','localtime'))`, {
+      insertScoped(req, `INSERT INTO devices (hostname, name, device_type, capabilities, last_seen, org_id)
+        VALUES (:h, :name, 'phone', '["voice","camera","sensors"]', datetime('now','localtime'), :org_id)`, {
         ':h': phoneHost, ':name': deviceName
       });
     } else {
       // Update name + last_seen
-      run("UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h",
+      runScoped(req, "UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h AND org_id = :org_id",
         { ':name': deviceName, ':h': phoneHost });
     }
   }
@@ -272,12 +240,12 @@ router.post('/recall', async (req, res) => {
       // FTS5 query — use OR so any matching term scores
       const ftsQuery = searchTerms.join(' OR ');
       try {
-        ftsResults = all(
+        ftsResults = allScoped(req,
           `SELECT f.rowid as event_id, e.event_type, e.created_at, e.data,
                   rank as fts_rank
            FROM events_fts f
            JOIN events e ON e.id = f.rowid
-           WHERE events_fts MATCH :q
+           WHERE events_fts MATCH :q AND e.org_id = :org_id
            ORDER BY rank
            LIMIT 100`,
           { ':q': ftsQuery }
@@ -288,9 +256,9 @@ router.post('/recall', async (req, res) => {
     }
 
     // Step 2: Also get recent events as fallback context
-    const recentEvents = all(
+    const recentEvents = allScoped(req,
       `SELECT id, event_type, data, created_at FROM events
-       WHERE event_type NOT IN ('SessionEnd', 'SessionStart')
+       WHERE event_type NOT IN ('SessionEnd', 'SessionStart') AND org_id = :org_id
        ORDER BY created_at DESC LIMIT 30`
     );
 
@@ -351,7 +319,7 @@ router.post('/recall', async (req, res) => {
       count++;
     }
 
-    const totalEvents = get('SELECT COUNT(*) as c FROM events')?.c || 0;
+    const totalEvents = getScoped(req, 'SELECT COUNT(*) as c FROM events WHERE org_id = :org_id')?.c || 0;
 
     // Step 5: Single Haiku call
     const summary = await claude(
@@ -361,7 +329,7 @@ Here are ${count} matching entries from their history (${totalEvents} total even
 
 ${snippetText}
 Answer the user's question based on these results. Be specific — mention dates, exact details, and what was said. If the answer isn't in the data, say so honestly. Keep it to 2-4 sentences, conversational tone.`,
-      { model: 'claude-haiku-4-5-20251001', maxTokens: 600, timeout: 30000, caller: 'recall' }
+      { maxTokens: 600, timeout: 30000, caller: 'recall' }
     );
 
     const elapsed = Date.now() - startTime;
@@ -559,8 +527,8 @@ router.post('/query', async (req, res) => {
     const hostname = (await import('os')).hostname();
 
     // Create command record first so router can log against it
-    const cmdId = insert(`INSERT INTO command_queue (target_device, command_type, command, text, status)
-      VALUES (:target, 'processing', '', :text, 'processing')`, {
+    const cmdId = insertScoped(req, `INSERT INTO command_queue (target_device, command_type, command, text, status, org_id)
+      VALUES (:target, 'processing', '', :text, 'processing', :org_id)`, {
       ':target': hostname,
       ':text': text
     });
@@ -635,7 +603,7 @@ router.post('/sync', (req, res) => {
 
 router.get('/recent', (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
-  const events = all(`SELECT * FROM events WHERE event_type = 'PhoneAudio' ORDER BY created_at DESC LIMIT :limit`, {
+  const events = allScoped(req, `SELECT * FROM events WHERE event_type = 'PhoneAudio' AND org_id = :org_id ORDER BY created_at DESC LIMIT :limit`, {
     ':limit': limit
   });
 
@@ -653,11 +621,11 @@ router.get('/recent', (req, res) => {
 });
 
 router.get('/stats', (req, res) => {
-  const stats = get(`SELECT
-    (SELECT COUNT(*) FROM events) as total_events,
-    (SELECT COUNT(*) FROM events WHERE event_type = 'PhoneAudio') as audio_events,
-    (SELECT COUNT(*) FROM projects) as projects,
-    (SELECT COUNT(*) FROM memory_items) as memory_items
+  const stats = getScoped(req, `SELECT
+    (SELECT COUNT(*) FROM events WHERE org_id = :org_id) as total_events,
+    (SELECT COUNT(*) FROM events WHERE event_type = 'PhoneAudio' AND org_id = :org_id) as audio_events,
+    (SELECT COUNT(*) FROM projects WHERE org_id = :org_id) as projects,
+    (SELECT COUNT(*) FROM memory_items WHERE org_id = :org_id) as memory_items
   `);
   res.json(stats);
 });
@@ -768,19 +736,19 @@ router.get('/export/anonymized', (req, res) => {
   const offset = parseInt(req.query.offset) || 0;
   const eventType = req.query.event_type;
 
-  let query = `SELECT id, session_id, event_type, data, created_at FROM events`;
+  let query = `SELECT id, session_id, event_type, data, created_at FROM events WHERE org_id = :org_id`;
   const params = {};
 
   if (eventType) {
-    query += ` WHERE event_type = :type`;
+    query += ` AND event_type = :type`;
     params[':type'] = eventType;
   }
   query += ` ORDER BY created_at DESC LIMIT :limit OFFSET :offset`;
   params[':limit'] = limit;
   params[':offset'] = offset;
 
-  const events = all(query, params);
-  const total = get(`SELECT COUNT(*) as c FROM events${eventType ? ` WHERE event_type = '${eventType}'` : ''}`)?.c || 0;
+  const events = allScoped(req, query, params);
+  const total = getScoped(req, `SELECT COUNT(*) as c FROM events WHERE org_id = :org_id${eventType ? ` AND event_type = :type` : ''}`, eventType ? { ':type': eventType } : {})?.c || 0;
 
   const anonymized = events.map(e => {
     const { data: anonData, totalReplacements } = anonymizeEventData(e.data);
@@ -820,6 +788,47 @@ router.get('/anonymize/stats', (req, res) => {
     pii_per_event: sample.length > 0 ? (totalPII / sample.length).toFixed(2) : 0,
     by_event_type: byType,
   });
+});
+
+// GET /api/v1/ai/models — returns available models, live from Anthropic API if key exists
+// Falls back to a hardcoded list of known models so the settings dropdown always has options.
+const KNOWN_CLAUDE_MODELS = [
+  { id: 'claude-haiku-4-5-20251001',  name: 'Claude Haiku 4.5',  tier: 'fast'    },
+  { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5', tier: 'balanced' },
+  { id: 'claude-sonnet-4-6-20250514', name: 'Claude Sonnet 4.6', tier: 'balanced' },
+  { id: 'claude-opus-4-6-20250610',   name: 'Claude Opus 4.6',   tier: 'powerful' },
+];
+
+router.get('/ai/models', async (req, res) => {
+  try {
+    const keyRow = get("SELECT value FROM settings WHERE key = 'anthropic_api_key'");
+    const apiKey = keyRow?.value?.replace(/^"|"$/g, '').trim();
+
+    if (apiKey) {
+      // Fetch live from Anthropic API
+      const resp = await fetch('https://api.anthropic.com/v1/models', {
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const models = (data.data || [])
+          .filter(m => m.id.startsWith('claude-'))
+          .sort((a, b) => b.id.localeCompare(a.id))
+          .map(m => ({
+            id: m.id,
+            name: m.display_name || m.id,
+            tier: m.id.includes('haiku') ? 'fast' : m.id.includes('opus') ? 'powerful' : 'balanced',
+            live: true,
+          }));
+        return res.json({ models, source: 'anthropic_api' });
+      }
+    }
+
+    // No key or API failed — return hardcoded list
+    res.json({ models: KNOWN_CLAUDE_MODELS, source: 'hardcoded' });
+  } catch (err) {
+    res.json({ models: KNOWN_CLAUDE_MODELS, source: 'hardcoded', error: err.message });
+  }
 });
 
 export default router;

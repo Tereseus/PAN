@@ -1,78 +1,64 @@
 @echo off
-:: PAN Launcher — starts server and opens dashboard
-:: Double-click this or type "PAN" from Start Menu
-
+set "SYS=%SystemRoot%\System32"
+set "PAN_SERVICE=%~dp0service"
 set "PAN_SHELL=%~dp0service\tauri\src-tauri\target\release\pan-shell.exe"
 set "PAN_SHELL_WD=%~dp0service\tauri"
-set "PAN_LOCK=%~dp0service\.pan-server.lock"
 
-cd /d "%~dp0service"
+:: Check if already running
+"%SYS%\netstat.exe" -ano | "%SYS%\findstr.exe" ":7777 " | "%SYS%\findstr.exe" "LISTENING" >NUL 2>&1
+if %ERRORLEVEL% EQU 0 goto ALREADY_RUNNING
 
-:: ─── Guard 1: Is /health already responding? ───
-curl -sf -o NUL --max-time 2 http://127.0.0.1:7777/health
-if %ERRORLEVEL% EQU 0 (
-    echo [PAN] Server already running — opening dashboard
-    start "" /D "%PAN_SHELL_WD%" "%PAN_SHELL%"
-    exit /b 0
-)
-
-:: ─── Guard 2: Is port 7777 already bound? (catches boot-in-progress) ───
-netstat -ano | findstr ":7777 " | findstr "LISTENING" >NUL 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo [PAN] Port 7777 already in use — server is booting, opening dashboard
-    goto WAIT
-)
-
-:: ─── Guard 3: Lock file prevents concurrent PAN.bat invocations ───
-:: Lock is deleted by the respawn loop on exit, or stale after reboot
-if exist "%PAN_LOCK%" (
-    :: Lock exists — check if the PID in the lock is still alive
-    set /p LOCK_PID=<"%PAN_LOCK%"
-    tasklist /FI "PID eq %LOCK_PID%" 2>NUL | findstr /I "cmd.exe" >NUL 2>&1
-    if %ERRORLEVEL% EQU 0 (
-        echo [PAN] Another launcher is running (PID %LOCK_PID%) — opening dashboard
-        goto WAIT
-    ) else (
-        echo [PAN] Stale lock file (PID %LOCK_PID% dead) — removing
-        del /f "%PAN_LOCK%" >NUL 2>&1
-    )
-)
-
+:: ── Fresh start ─────────────────────────────────────────────
 echo [PAN] Starting server...
-:: IMPORTANT: launch in a NEW visible cmd window (not /b background) so node
-:: gets a real Windows console. node-pty's conpty_console_list_agent.js calls
-:: AttachConsole(parent) — if there's no console, every PTY spawn crashes the
-:: server. The visible window is also a live log viewer; closing it kills PAN.
-::
-:: The window respawns node every time it exits — replaces the WinSW wrapper
-:: we used to have. Lets the in-app Restart button (which calls process.exit)
-:: work transparently. Closing the window kills the loop and stops PAN.
-::
-:: The lock file is written with the cmd PID and deleted on exit to prevent
-:: duplicate launchers (the root cause of the Carrier/Craft conflict bug).
-start "PAN Server" cmd /k "%~dp0service\pan-loop.bat"
+cd /d "%PAN_SERVICE%"
+start "PAN Server" node pan.js start
 
-:: Write lock with the new cmd's PID (best-effort — the cmd itself also writes one)
-:: We find it by looking for the newest cmd.exe with our window title
-timeout /t 1 /nobreak >NUL
-for /f "tokens=2" %%a in ('tasklist /FI "WINDOWTITLE eq PAN Server" /FO TABLE /NH 2^>NUL ^| findstr "cmd.exe"') do (
-    echo %%a > "%PAN_LOCK%"
-)
-
-:: Wait for server to come up (max 15 seconds)
-:WAIT
+echo [PAN] Waiting for Carrier...
 set ATTEMPTS=0
-:WAITLOOP
+:CARRIERLOOP
 set /a ATTEMPTS+=1
-if %ATTEMPTS% GTR 15 (
-    echo [PAN] Server did not start in time — check terminal
-    pause
-    exit /b 1
-)
-timeout /t 1 /nobreak >NUL
-curl -sf -o NUL --max-time 2 http://127.0.0.1:7777/health && goto READY
-goto WAITLOOP
+if %ATTEMPTS% GTR 40 goto FAILED
+"%SYS%\ping.exe" -n 2 127.0.0.1 >NUL 2>&1
+"%SYS%\curl.exe" -s --max-time 2 "http://127.0.0.1:7777/health" >NUL 2>&1
+if %ERRORLEVEL% NEQ 0 goto CARRIERLOOP
+goto WAITCRAFT
 
-:READY
-echo [PAN] Server running — opening dashboard
+:: ── Already running ─────────────────────────────────────────
+:ALREADY_RUNNING
+echo.
+echo  PAN is running.
+echo.
+echo  [O] Open dashboard  (default)
+echo  [Q] Quit PAN
+echo.
+choice /c OQ /t 5 /d O /n /m "  Choice: "
+if %ERRORLEVEL% EQU 2 goto QUIT
+goto WAITCRAFT
+
+:QUIT
+echo.
+echo [PAN] Shutting down...
+"%SYS%\curl.exe" -s -X POST --max-time 3 "http://127.0.0.1:7777/api/carrier/shutdown" >NUL 2>&1
+echo [PAN] Done.
+"%SYS%\timeout.exe" /t 2 /nobreak >NUL
+exit /b 0
+
+:: ── Wait for Craft to be ready ───────────────────────────────
+:WAITCRAFT
+echo [PAN] Waiting for Craft...
+set ATTEMPTS=0
+:CRAFTLOOP
+set /a ATTEMPTS+=1
+if %ATTEMPTS% GTR 60 goto FAILED
+"%SYS%\ping.exe" -n 2 127.0.0.1 >NUL 2>&1
+"%SYS%\curl.exe" -s --max-time 2 "http://127.0.0.1:7777/api/carrier/ready" >NUL 2>&1
+if %ERRORLEVEL% NEQ 0 goto CRAFTLOOP
+
+echo [PAN] UP - opening dashboard...
 start "" /D "%PAN_SHELL_WD%" "%PAN_SHELL%"
+exit /b 0
+
+:FAILED
+echo [PAN] Server failed to start. Check the "PAN Server" window for errors.
+"%SYS%\timeout.exe" /t 15 /nobreak
+exit /b 1

@@ -135,23 +135,24 @@ const services = [
     _lastError: null,
     _lastRun: null,
   },
-  // AHK RETIRED — voice hotkeys now handled natively by Tauri shell (rdev mouse listener + SendInput).
-  // Tauri shell registers XButton1→Win+H and XButton2→dictate-vad.py directly.
-  // Keeping entry for Atlas visibility but with no startFn (won't boot).
+  // AHK RETIRED — voice hotkeys now handled natively by Tauri shell.
+  // The Tauri shell registers XButton1→Win+H and XButton2→dictate-vad.py directly.
   {
-    id: 'ahk',
-    name: 'Voice Hotkeys (Tauri)',
-    description: 'Mouse side-button voice triggers — now native in PAN Shell (was AHK)',
+    id: 'voice-shell',
+    name: 'Voice Shell',
+    technicalName: 'Tauri Shell',
+    description: 'Native Windows dashboard & voice hotkey listener',
     modelTier: 'none',
     modelMinSize: 'N/A',
     modelCurrent: 'N/A',
     port: null,
-    healthCheck: 'self', // Tauri shell owns this — always "running" if shell is up
+    healthCheck: 'process',
+    processName: 'pan-shell.exe',
     userOnly: true,
     bootOrder: 4,
     dependsOn: ['whisper'],
     interval: null,
-    startFn: null, // No separate process needed — Tauri shell handles it
+    startFn: null, // Launched by PAN.bat, not steward
     stopFn: null,
     _status: 'unknown',
     _lastCheck: null,
@@ -671,14 +672,13 @@ async function healthCheck() {
   // Clean zombie PTY sessions (connected but no activity for 2 hours)
   await cleanZombieSessions();
 
-  // Detect orphaned Claude CLI processes (parent PTY gone, still alive).
+  // Detect orphaned AI CLI processes (parent PTY gone, still alive).
   // ALERT ONLY — never kills. User investigates and handles manually.
-  await detectOrphanClaudeProcesses();
+  await detectOrphanAiProcesses();
 
-  // DISABLED — ensureClaudeInSessions() ancestor walk was broken,
-  // kept spamming 'claude\r' into the PTY every health cycle.
-  // terminal.js already auto-launches claude on new PTY sessions.
-  // ensureClaudeInSessions();
+  // DISABLED — ensureAiInSessions() ancestor walk was broken,
+  // terminal.js already auto-launches AI on new PTY sessions.
+  // ensureAiInSessions();
 
   // Log a heartbeat event
   try {
@@ -711,11 +711,10 @@ async function cleanZombieSessions() {
   } catch {}
 }
 
-// Detect Claude CLI (cli.js) processes whose ancestor chain does NOT include
+// Detect AI CLI (cli.js or gemini) processes whose ancestor chain does NOT include
 // any of our tracked PTY pids and is older than 30 minutes.
 // ALERT ONLY — never kill. User investigates orphans manually.
-// NOTE: "Reaper" name is reserved for the Portal data collection system.
-async function detectOrphanClaudeProcesses() {
+async function detectOrphanAiProcesses() {
   if (process.platform !== 'win32') return;
   try {
     const sessions = await listSessions();
@@ -723,10 +722,11 @@ async function detectOrphanClaudeProcesses() {
     ourPtyPids.add(process.pid);
     if (process.ppid) ourPtyPids.add(process.ppid);
 
+    // Search for both Claude Code and Gemini patterns
     const ps = `$all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CreationDate, @{N='Cmd';E={$_.CommandLine}}
-$claude = $all | Where-Object { $_.Cmd -like '*@anthropic-ai/claude-code/cli.js*' }
+$ai = $all | Where-Object { $_.Cmd -like '*@anthropic-ai/claude-code/cli.js*' -or $_.Cmd -like '*gemini*' }
 $map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProcessId }
-$result = @{ claude = $claude; pidmap = $map }
+$result = @{ ai = $ai; pidmap = $map }
 $result | ConvertTo-Json -Compress -Depth 3`;
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
     const psFile = join(tmpDir, 'pan-detect-orphans.ps1');
@@ -734,8 +734,8 @@ $result | ConvertTo-Json -Compress -Depth 3`;
     const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true }).trim();
     if (!out) return;
     const parsed = JSON.parse(out);
-    const claudeProcs = parsed.claude ? (Array.isArray(parsed.claude) ? parsed.claude : [parsed.claude]) : [];
-    if (!claudeProcs.length) return;
+    const aiProcs = parsed.ai ? (Array.isArray(parsed.ai) ? parsed.ai : [parsed.ai]) : [];
+    if (!aiProcs.length) return;
 
     const pidMap = new Map();
     if (parsed.pidmap) {
@@ -744,7 +744,7 @@ $result | ConvertTo-Json -Compress -Depth 3`;
       }
     }
 
-    // Check process registry for known PIDs (LLM-agnostic — covers Claude, OpenCode, etc.)
+    // Check process registry for known PIDs
     const registryPids = new Set();
     try {
       const registry = await getProcessRegistry();
@@ -753,7 +753,7 @@ $result | ConvertTo-Json -Compress -Depth 3`;
       }
     } catch {}
 
-    // Walk UP from pid through living ancestors (fallback if registry misses it)
+    // Walk UP from pid through living ancestors
     function hasTrackedAncestor(pid) {
       let current = pid;
       for (let i = 0; i < 12; i++) {
@@ -769,52 +769,50 @@ $result | ConvertTo-Json -Compress -Depth 3`;
     const MIN_AGE_MS = 30 * 60 * 1000;
     const orphans = [];
 
-    for (const p of claudeProcs) {
+    for (const p of aiProcs) {
       const pid = p.ProcessId;
       const ppid = p.ParentProcessId;
       const m = /\((\d+)\)/.exec(p.CreationDate || '');
       const startedAt = m ? parseInt(m[1], 10) : 0;
       const ageMs = startedAt ? (now - startedAt) : 0;
 
-      if (registryPids.has(pid)) continue;      // in process registry — it's ours
-      if (ourPtyPids.has(ppid)) continue;        // direct child of a PTY
-      if (hasTrackedAncestor(pid)) continue;     // ancestor walk (fallback)
+      if (registryPids.has(pid)) continue;
+      if (ourPtyPids.has(ppid)) continue;
+      if (hasTrackedAncestor(pid)) continue;
       if (ageMs < MIN_AGE_MS) continue;
 
-      orphans.push({ pid, ppid, ageMin: Math.round(ageMs / 60000) });
+      orphans.push({ pid, ppid, ageMin: Math.round(ageMs / 60000), cmd: (p.Cmd || '').slice(0, 100) });
     }
 
     if (orphans.length > 0) {
       const summary = orphans.map(o => `pid=${o.pid} (${o.ageMin}min)`).join(', ');
-      console.log(`[Steward] Detected ${orphans.length} possible orphan Claude process(es): ${summary}`);
+      console.log(`[Steward] Detected ${orphans.length} possible orphan AI process(es): ${summary}`);
       logServiceEvent('orphan-detection', 'orphans_detected', { count: orphans.length, orphans });
 
-      // Only create a new alert if there isn't already an open one for orphan_processes
       const existingOpen = get("SELECT id FROM alerts WHERE alert_type = 'orphan_processes' AND status IN ('open', 'acknowledged') LIMIT 1");
       if (!existingOpen) {
         createAlert({
           alert_type: 'orphan_processes',
           severity: 'warning',
-          title: `${orphans.length} possible orphan Claude process(es) detected`,
+          title: `${orphans.length} possible orphan AI process(es) detected`,
           detail: JSON.stringify({
             orphans,
             tracked_pty_pids: [...ourPtyPids],
             detected_at: new Date().toISOString(),
-            hint: 'Kill manually via Task Manager or taskkill /PID <pid> if confirmed orphans'
+            hint: 'Kill manually if confirmed orphans'
           })
         });
       }
 
-      // Also broadcast to terminal so user sees it live
       for (const s of sessions) {
         broadcastToSession(s.id, 'system_message', {
-          text: `⚠ ${orphans.length} possible orphan Claude process(es): ${summary}. Check Alerts for details.`,
+          text: `⚠ ${orphans.length} possible orphan AI process(es): ${summary}. Check Alerts for details.`,
           level: 'warning'
         });
       }
     }
   } catch (err) {
-    console.error(`[Steward] detectOrphanClaudeProcesses error: ${err.message}`);
+    console.error(`[Steward] detectOrphanAiProcesses error: ${err.message}`);
   }
 }
 

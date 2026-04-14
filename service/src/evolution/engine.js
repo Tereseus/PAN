@@ -202,7 +202,7 @@ Rules:
 - Return ONLY JSON`;
 
   try {
-    const result = await claude(prompt, { model: 'claude-haiku-4-5-20251001', maxTokens: 2000, timeout: 45000, caller: 'evolution-critique' });
+    const result = await claude(prompt, { maxTokens: 2000, timeout: 45000, caller: 'evolution-critique' });
     return JSON.parse(result);
   } catch (err) {
     console.error('[PAN Evolution] Critique failed:', err.message);

@@ -115,38 +115,12 @@ async function dream() {
 
     const currentState = readCurrentState();
 
-    // Ask Haiku to rewrite the state document
+    // Ask AI to rewrite the state document
     const result = await claude(
       `You are PAN's memory system. You maintain a LIVING STATE DOCUMENT that tracks what's going on across the project.
-
-${currentState ? `CURRENT STATE DOCUMENT:\n${currentState}\n\n` : 'No state document exists yet.\n\n'}RECENT EVENTS:\n${context}
-
-REWRITE the state document based on what happened. The document should have these sections:
-
-## What Works
-Things that are confirmed working. Remove items from here if events show they broke.
-
-## Known Issues
-Bugs and problems that are CURRENTLY broken. REMOVE issues that were FIXED in the recent events. Only keep things that are actually still broken.
-
-## Current Priorities
-What the user is actively working on or wants done next. Update based on what they said.
-
-## Key Decisions
-Important architectural or design decisions that affect future work. Keep these stable unless explicitly changed.
-
-## User Preferences
-How the user likes to work, what they've told Claude to do/not do.
-
-CRITICAL RULES:
-- If something was FIXED in recent events, REMOVE it from Known Issues and ADD it to What Works.
-- If the user said something is wrong with this document, fix it.
-- Do NOT keep old bugs that were resolved — this is the #1 problem to avoid.
-- Keep it concise. Each item should be 1 line.
-- This document should be SHORT — under 80 lines total.
-
+...
 Output ONLY the markdown document, nothing else.`,
-      { model: 'claude-haiku-4-5-20251001', maxTokens: 3000, timeout: 60000, caller: 'dream' }
+      { maxTokens: 3000, timeout: 60000, caller: 'dream' }
     );
 
     if (!result || result.length < 50) {

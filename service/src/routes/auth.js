@@ -188,6 +188,7 @@ router.get('/me', (req, res) => {
     display_nickname: user.display_nickname || user.display_name,
     avatar_url: user.avatar_url,
     role: user.role,
+    power: user.power_lvl ?? getRoleLevels()[user.role] ?? 0,
     created_at: user.created_at,
     last_login: user.last_login,
     org: {
@@ -446,10 +447,15 @@ router.post('/dev-token', (req, res) => {
   });
 });
 
-// GET /api/v1/auth/users — list all users (admin+ only)
-router.get('/users', requireRole('admin'), (req, res) => {
-  const users = all("SELECT id, email, display_name, avatar_url, role, is_active, created_at, last_login FROM users ORDER BY id");
-  res.json(users || []);
+// GET /api/v1/auth/users — list all instance users
+router.get('/users', (req, res) => {
+  const users = all("SELECT id, email, display_name, avatar_url, role, power_lvl, is_active, created_at, last_login FROM users ORDER BY id");
+  const roleLevels = getRoleLevels();
+  const enriched = (users || []).map(u => ({
+    ...u,
+    power: u.power_lvl ?? roleLevels[u.role] ?? 0,
+  }));
+  res.json({ users: enriched });
 });
 
 // PUT /api/v1/auth/users/:id/role — change user role (owner only)
@@ -465,6 +471,50 @@ router.put('/users/:id/role', requireRole('owner'), (req, res) => {
   }
   run("UPDATE users SET role = :role WHERE id = :id", { ':role': role, ':id': userId });
   res.json({ ok: true });
+});
+
+// PUT /api/v1/auth/users/:id/power — set explicit power level override (owner only)
+// Pass { power: 60 } to override, or { power: null } to revert to role-derived
+router.put('/users/:id/power', requireRole('owner'), (req, res) => {
+  const userId = parseInt(req.params.id);
+  const { power } = req.body;
+  if (power !== null && (typeof power !== 'number' || power < 0 || power > 100)) {
+    return res.status(400).json({ error: 'Power level must be 0-100 or null' });
+  }
+  run("UPDATE users SET power_lvl = :power WHERE id = :id", { ':power': power, ':id': userId });
+  res.json({ ok: true });
+});
+
+// GET /api/v1/auth/power-map — widget/feature visibility thresholds
+// Dashboard fetches this on load and hides widgets below user's power level
+router.get('/power-map', (req, res) => {
+  res.json({
+    // Main navigation
+    terminal:       80,   // Admin/Owner — full system access
+    automation:     75,   // Admin+
+    projects:       50,   // Manager+
+    sensors:        50,   // Manager+
+    data:           50,   // Manager+
+    settings:       80,   // Admin+ for system settings
+    settings_personal: 0, // Everyone can see their own settings
+    // Right-panel widgets
+    services:       75,   // Admin+
+    instances:      80,   // Admin/Owner
+    tests:          75,   // Admin+
+    alerts:         50,   // Manager+
+    library:        25,   // Users+
+    perf:           75,   // Admin+
+    usage:          50,   // Manager+
+    // Comms — everyone gets these (user-scoped data)
+    contacts:       0,
+    messages:       0,
+    calendar:       0,
+    video_call:     25,   // Users+ (not viewers)
+    screen_share:   25,
+    // Left-panel widgets
+    users:          50,   // Manager+ can see user list
+    teams:          25,   // Users+ can see teams
+  });
 });
 
 // === ROLE MANAGEMENT (owner only) ===

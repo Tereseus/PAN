@@ -20,6 +20,8 @@
 	let usageBreakdown = $state([]);
 	let customModels = $state([]);
 	let jobModels = $state({});
+	let claudeModels = $state([]);
+	let claudeModelsSource = $state('hardcoded');
 	let deviceSettings = $state({});
 
 	// Add model form
@@ -35,7 +37,7 @@
 
 	// Terminal appearance — persisted in localStorage, read on mount
 	const TERM_DEFAULTS = {
-		username: 'Tereseus',
+		username: 'User',
 		llmName: 'Claude',
 		userColor: '#89b4fa',  // blue
 		userTextColor: '',     // empty = auto-derive (lighter shade of name color)
@@ -121,14 +123,37 @@
 	let expandedDeviceId = $state(null);
 	let confirmRemoveDeviceId = $state(null);
 
+	// --- Org management state ---
+	let orgList = $state([]);
+	let orgMembers = $state([]);
+	let orgInvites = $state([]);
+	let orgDetail = $state(null);
+	let activeOrgId = $state('org_personal');
+	let selectedOrgTab = $state('users');
+	let newOrgName = $state('');
+	let inviteEmail = $state('');
+	let inviteRole = $state('user');
+	let inviteMaxUses = $state(1);
+	let inviteExpiry = $state(72);
+	let orgMsg = $state('');
+
+	// --- Teams state ---
+	let teamsList = $state([]);
+	let selectedTeam = $state(null);
+	let teamMembers = $state([]);
+	let newTeamName = $state('');
+	let newTeamColor = $state('#89b4fa');
+	let newTeamDesc = $state('');
+	let teamMsg = $state('');
+
 	const tabs = [
 		{ id: 'general', label: 'General' },
 		{ id: 'ai', label: 'AI & Usage' },
 		{ id: 'controls', label: 'Controls' },
 		{ id: 'devices', label: 'Devices' },
+		{ id: 'orgs', label: 'Organizations' },
 		{ id: 'security', label: 'Security' },
 		{ id: 'auth', label: 'Authentication' },
-		{ id: 'users', label: 'Users' },
 		{ id: 'network', label: 'Remote Access' },
 		{ id: 'treasury', label: 'Treasury' },
 	];
@@ -219,6 +244,18 @@
 		} catch { users = []; }
 	}
 
+	async function loadUsersWithTeams() {
+		await loadUsers();
+		// Enrich each user with their team memberships
+		for (const u of users) {
+			try {
+				const d = await api(`/api/v1/teams/user/${u.id}`);
+				u._teams = d.teams || [];
+			} catch { u._teams = []; }
+		}
+		users = [...users]; // trigger reactivity
+	}
+
 	async function loadAuthProviders() {
 		try {
 			const d = await api('/api/v1/auth/providers');
@@ -229,6 +266,196 @@
 	async function loadTailscaleStatus() {
 		try { tailscaleStatus = await api('/api/v1/tailscale/status'); }
 		catch { tailscaleStatus = null; }
+	}
+
+	async function loadOrgs() {
+		try {
+			const d = await api('/api/v1/orgs');
+			orgList = d.orgs || [];
+			activeOrgId = d.active || 'org_personal';
+		} catch { orgList = []; }
+	}
+
+	async function loadOrgMembers(orgId) {
+		try {
+			const d = await api(`/api/v1/orgs/${orgId}/members`);
+			orgMembers = d.members || [];
+		} catch { orgMembers = []; }
+	}
+
+	async function loadOrgInvites(orgId) {
+		try {
+			const d = await api(`/api/v1/orgs/${orgId}/invites`);
+			orgInvites = d.invites || [];
+		} catch { orgInvites = []; }
+	}
+
+	async function loadOrgDetail(orgId) {
+		try {
+			orgDetail = await api(`/api/v1/orgs/${orgId}`);
+		} catch { orgDetail = null; }
+	}
+
+	async function selectOrgForManage(orgId) {
+		activeOrgId = orgId;
+		await Promise.all([loadOrgDetail(orgId), loadOrgMembers(orgId), loadOrgInvites(orgId), loadTeams()]);
+	}
+
+	async function createOrg() {
+		if (!newOrgName.trim()) return;
+		try {
+			const d = await api('/api/v1/orgs', { method: 'POST', body: JSON.stringify({ name: newOrgName.trim() }) });
+			if (d.ok) {
+				newOrgName = '';
+				orgMsg = `Created "${d.org.name}"`;
+				await loadOrgs();
+				await selectOrgForManage(d.org.id);
+				setTimeout(() => orgMsg = '', 3000);
+			}
+		} catch (e) { orgMsg = e.message; }
+	}
+
+	async function createInvite() {
+		try {
+			const d = await api(`/api/v1/orgs/${activeOrgId}/invites`, {
+				method: 'POST',
+				body: JSON.stringify({
+					email: inviteEmail || undefined,
+					role_name: inviteRole,
+					max_uses: inviteMaxUses,
+					expires_in_hours: inviteExpiry,
+				})
+			});
+			if (d.ok) {
+				orgMsg = `Invite created! Token: ${d.invite.token}`;
+				inviteEmail = '';
+				await loadOrgInvites(activeOrgId);
+				setTimeout(() => orgMsg = '', 8000);
+			}
+		} catch (e) { orgMsg = e.message; }
+	}
+
+	async function revokeInvite(inviteId) {
+		try {
+			await api(`/api/v1/orgs/${activeOrgId}/invites/${inviteId}`, { method: 'DELETE' });
+			await loadOrgInvites(activeOrgId);
+		} catch {}
+	}
+
+	async function changeMemberRole(userId, roleName) {
+		try {
+			await api(`/api/v1/orgs/${activeOrgId}/members/${userId}/role`, {
+				method: 'PUT',
+				body: JSON.stringify({ role_name: roleName })
+			});
+			orgMsg = 'Role updated';
+			await loadOrgMembers(activeOrgId);
+			setTimeout(() => orgMsg = '', 3000);
+		} catch (e) { orgMsg = e.message; setTimeout(() => orgMsg = '', 4000); }
+	}
+
+	async function removeMember(userId) {
+		if (!confirm('Remove this member from the organization?')) return;
+		try {
+			await api(`/api/v1/orgs/${activeOrgId}/members/${userId}`, { method: 'DELETE' });
+			orgMsg = 'Member removed';
+			await loadOrgMembers(activeOrgId);
+			setTimeout(() => orgMsg = '', 3000);
+		} catch (e) { orgMsg = e.message; setTimeout(() => orgMsg = '', 4000); }
+	}
+
+	async function deleteOrg(orgId) {
+		if (!confirm('Delete this organization? This cannot be undone.')) return;
+		try {
+			await api(`/api/v1/orgs/${orgId}`, { method: 'DELETE' });
+			orgMsg = 'Organization deleted';
+			await loadOrgs();
+			activeOrgId = 'org_personal';
+			orgDetail = null;
+			orgMembers = [];
+			orgInvites = [];
+			setTimeout(() => orgMsg = '', 3000);
+		} catch (e) { orgMsg = e.message; setTimeout(() => orgMsg = '', 4000); }
+	}
+
+	// --- Teams functions ---
+	async function loadTeams() {
+		try {
+			const d = await api('/api/v1/teams');
+			teamsList = d.teams || [];
+		} catch { teamsList = []; }
+	}
+
+	async function loadTeamDetail(teamId) {
+		try {
+			const d = await api(`/api/v1/teams/${teamId}`);
+			selectedTeam = d.team;
+			teamMembers = d.members || [];
+		} catch { selectedTeam = null; teamMembers = []; }
+	}
+
+	async function createTeam() {
+		if (!newTeamName.trim()) return;
+		try {
+			const d = await api('/api/v1/teams', {
+				method: 'POST',
+				body: JSON.stringify({ name: newTeamName.trim(), description: newTeamDesc || undefined, color: newTeamColor })
+			});
+			if (d.ok) {
+				newTeamName = '';
+				newTeamDesc = '';
+				newTeamColor = '#89b4fa';
+				teamMsg = `Created team "${d.team.name}"`;
+				await loadTeams();
+				await loadTeamDetail(d.team.id);
+				setTimeout(() => teamMsg = '', 3000);
+			}
+		} catch (e) { teamMsg = e.message; setTimeout(() => teamMsg = '', 4000); }
+	}
+
+	async function deleteTeam(teamId) {
+		if (!confirm('Delete this team? Projects and tasks will be unassigned.')) return;
+		try {
+			await api(`/api/v1/teams/${teamId}`, { method: 'DELETE' });
+			teamMsg = 'Team deleted';
+			selectedTeam = null;
+			teamMembers = [];
+			await loadTeams();
+			setTimeout(() => teamMsg = '', 3000);
+		} catch (e) { teamMsg = e.message; setTimeout(() => teamMsg = '', 4000); }
+	}
+
+	async function addTeamMember(teamId, userId) {
+		try {
+			await api(`/api/v1/teams/${teamId}/members`, {
+				method: 'POST',
+				body: JSON.stringify({ user_id: userId })
+			});
+			teamMsg = 'Member added';
+			await loadTeamDetail(teamId);
+			setTimeout(() => teamMsg = '', 3000);
+		} catch (e) { teamMsg = e.message; setTimeout(() => teamMsg = '', 4000); }
+	}
+
+	async function removeTeamMember(teamId, userId) {
+		try {
+			await api(`/api/v1/teams/${teamId}/members/${userId}`, { method: 'DELETE' });
+			teamMsg = 'Member removed';
+			await loadTeamDetail(teamId);
+			setTimeout(() => teamMsg = '', 3000);
+		} catch (e) { teamMsg = e.message; setTimeout(() => teamMsg = '', 4000); }
+	}
+
+	async function changeTeamMemberRole(teamId, userId, role) {
+		try {
+			await api(`/api/v1/teams/${teamId}/members/${userId}`, {
+				method: 'PUT',
+				body: JSON.stringify({ role })
+			});
+			teamMsg = 'Role updated';
+			await loadTeamDetail(teamId);
+			setTimeout(() => teamMsg = '', 3000);
+		} catch (e) { teamMsg = e.message; setTimeout(() => teamMsg = '', 4000); }
 	}
 
 	async function loadUsage() {
@@ -242,12 +469,15 @@
 	}
 
 	async function restartServer() {
-		flash('Restarting server...');
+		// Use Carrier swap — spawns a fresh Craft (server.js) and hot-swaps the proxy.
+		// This reloads all server-side JS without killing the Carrier or PTY sessions.
+		// /api/admin/restart was unreliable (tried to spawn a new Carrier while old one lived).
+		flash('Swapping Craft (reloading server code)...');
 		try {
-			await api('/api/admin/restart?hard=true', { method: 'POST' });
+			await api('/api/carrier/swap', { method: 'POST' });
 		} catch {}
-		// Poll for server to come back — retry every 2s for up to 60s
-		flash('Waiting for server to restart...');
+		// Poll for new Craft to become healthy — retry every 2s for up to 60s
+		flash('Waiting for new Craft to become healthy...');
 		let attempts = 0;
 		const poll = setInterval(async () => {
 			attempts++;
@@ -255,7 +485,7 @@
 				const resp = await fetch('/dashboard/api/stats');
 				if (resp.ok) {
 					clearInterval(poll);
-					flash('Server restarted successfully');
+					flash('Server reloaded successfully ✓');
 					setTimeout(() => location.reload(), 1000);
 				}
 			} catch {}
@@ -290,6 +520,8 @@
 		try {
 			await api('/api/v1/settings', { method: 'PUT', body: JSON.stringify(payload) });
 			flash('Terminal AI saved');
+			// Signal all open terminal tabs to clear their launch guard so ΠΑΝ Remembers re-fires
+			localStorage.setItem('pan_ai_changed', Date.now().toString());
 		} catch { flash('Save failed'); }
 	}
 
@@ -457,16 +689,29 @@
 		await saveSetting('voice_permission_approval', String(enabled));
 	}
 
+	async function loadClaudeModels() {
+		try {
+			const data = await api('/api/v1/ai/models');
+			claudeModels = data.models || [];
+			claudeModelsSource = data.source || 'hardcoded';
+		} catch {
+			claudeModels = [];
+		}
+	}
+
 	$effect(() => {
 		loadHealth();
 		loadSettings();
 		loadDevices();
 		loadProjects();
 		loadSessions();
-		loadUsers();
+		loadUsersWithTeams();
 		loadAuthProviders();
 		loadTailscaleStatus();
 		loadUsage();
+		loadClaudeModels();
+		loadOrgs();
+		loadTeams();
 	});
 </script>
 
@@ -516,7 +761,7 @@
 					</div>
 				{/if}
 				<div style="margin-top:10px">
-					<button class="btn warn" onclick={restartServer}>Restart Server</button>
+					<button class="btn warn" onclick={restartServer}>Reload Server (Craft Swap)</button>
 				</div>
 			</section>
 
@@ -586,7 +831,7 @@
 				<p class="hint">Customize your name, LLM name, and terminal colors. Changes apply immediately to the terminal view.</p>
 				<div class="row">
 					<span class="label">Your Name</span>
-					<input type="text" class="term-input" value={termSettings.username} oninput={(e) => updateTermSetting('pan_username', e.target.value)} placeholder="Tereseus" />
+					<input type="text" class="term-input" value={termSettings.username} oninput={(e) => updateTermSetting('pan_username', e.target.value)} placeholder="Your name" />
 				</div>
 				<div class="row">
 					<span class="label">LLM Name</span>
@@ -670,20 +915,56 @@
 					<div class="form-row">
 						<div class="form-label">
 							<div class="fw500">CLI Provider</div>
-							<div class="small muted">Type a provider name or pick from suggestions</div>
+							<div class="small muted">Which AI CLI launches in your terminals</div>
 						</div>
-						<input type="text" bind:value={settings.terminal_ai_provider} onchange={saveTerminalAI} placeholder="e.g. claude, gemini, aider..." class="input" />
+						<select bind:value={settings.terminal_ai_provider} onchange={saveTerminalAI} class="input" style="width:220px">
+							<option value="claude">Claude Code</option>
+							<option value="gemini">Gemini CLI</option>
+							<option value="aider">Aider</option>
+							<option value="copilot">GitHub Copilot</option>
+							{#if settings.terminal_ai_provider && !['claude','gemini','aider','copilot'].includes(settings.terminal_ai_provider)}
+								<option value={settings.terminal_ai_provider}>{settings.terminal_ai_provider} (custom)</option>
+							{/if}
+						</select>
 					</div>
 					<div class="form-row">
 						<div class="form-label">
 							<div class="fw500">Terminal Model</div>
-							<div class="small muted">Model override passed to the CLI via --model</div>
+							<div class="small muted">Passed to the CLI via --model</div>
 						</div>
-						<input type="text" bind:value={settings.terminal_ai_model} onchange={saveTerminalAI} placeholder="e.g. sonnet, opus, pro..." class="input" />
+						{#if settings.terminal_ai_provider === 'claude'}
+							<div style="display:flex;align-items:center;gap:6px">
+								<select bind:value={settings.terminal_ai_model} onchange={saveTerminalAI} class="input" style="width:220px">
+									<option value="">Default</option>
+									{#if claudeModels.length > 0}
+										{#each claudeModels as m}
+											<option value={m.id}>{m.name || m.id}</option>
+										{/each}
+									{:else}
+										<option value="claude-haiku-4-5">Haiku 4.5 (fast)</option>
+										<option value="claude-sonnet-4-5">Sonnet 4.5 (lighter)</option>
+										<option value="claude-sonnet-4-6">Sonnet 4.6</option>
+										<option value="claude-opus-4-6">Opus 4.6</option>
+									{/if}
+								</select>
+								<button class="btn btn-sm" onclick={loadClaudeModels} title={claudeModelsSource === 'anthropic_api' ? 'Live from Anthropic API' : 'Refresh from Anthropic API'} style="padding:4px 8px;font-size:11px">
+									{claudeModelsSource === 'anthropic_api' ? '🔴 live' : '↻'}
+								</button>
+							</div>
+						{:else if settings.terminal_ai_provider === 'gemini'}
+							<select bind:value={settings.terminal_ai_model} onchange={saveTerminalAI} class="input" style="width:220px">
+								<option value="">Default</option>
+								<option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+								<option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+								<option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+							</select>
+						{:else}
+							<input type="text" bind:value={settings.terminal_ai_model} onchange={saveTerminalAI} placeholder="model name..." class="input" style="width:220px" />
+						{/if}
 					</div>
 					<div class="form-row" style="flex-direction:column;align-items:stretch">
 						<div class="form-label">
-							<div class="fw500">Full CLI Command <span class="small muted">(optional -- overrides provider + model above)</span></div>
+							<div class="fw500">Full CLI Command <span class="small muted">(optional — overrides provider + model above)</span></div>
 						</div>
 						<input type="text" bind:value={settings.terminal_ai_cmd} onchange={saveTerminalAI} placeholder="e.g. gemini --model pro, aider --model gpt-4o" class="input mono" style="width:100%" />
 						<div class="small muted" style="margin-top:4px">Use {'{project}'} for project name, {'{path}'} for project path.</div>
@@ -917,6 +1198,269 @@
 			</section>
 		{/if}
 
+		<!-- Organizations -->
+		{#if activeTab === 'orgs'}
+			<h2>Organizations</h2>
+
+			{#if orgMsg}
+				<div class="flash">{orgMsg}</div>
+			{/if}
+
+			<section class="section">
+				<h3>Your Organizations</h3>
+				<div class="org-list">
+					{#each orgList as org}
+						<button
+							class="org-card" class:active={activeOrgId === org.id}
+							onclick={() => selectOrgForManage(org.id)}
+						>
+							<span class="org-card-dot" style="background: {org.color_primary || '#89b4fa'}"></span>
+							<span class="org-card-name">{org.name}</span>
+							<span class="org-card-role">{org.role_name || 'owner'}</span>
+						</button>
+					{/each}
+				</div>
+
+				<div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+					<input type="text" bind:value={newOrgName} placeholder="New org name..." class="input" style="width:200px" />
+					<button class="btn accent" onclick={createOrg}>Create Org</button>
+				</div>
+			</section>
+
+			<!-- Sub-tabs: always show Users/Teams; show Members/Invites/Settings for non-personal orgs -->
+			<div class="org-sub-tabs">
+				<button class="org-sub-tab" class:active={selectedOrgTab === 'users'} onclick={() => { selectedOrgTab = 'users'; loadUsersWithTeams(); }}>Users ({users.length})</button>
+				<button class="org-sub-tab" class:active={selectedOrgTab === 'teams'} onclick={() => { selectedOrgTab = 'teams'; loadTeams(); }}>Teams ({teamsList.length})</button>
+				{#if activeOrgId !== 'org_personal'}
+					<button class="org-sub-tab" class:active={selectedOrgTab === 'members'} onclick={() => selectedOrgTab = 'members'}>Members ({orgMembers.length})</button>
+					<button class="org-sub-tab" class:active={selectedOrgTab === 'invites'} onclick={() => selectedOrgTab = 'invites'}>Invites ({orgInvites.length})</button>
+					<button class="org-sub-tab" class:active={selectedOrgTab === 'settings'} onclick={() => selectedOrgTab = 'settings'}>Settings</button>
+				{/if}
+			</div>
+
+			{#if selectedOrgTab === 'users'}
+				<section class="section">
+					<h3>All Users</h3>
+					{#if users.length}
+						{#each users as u}
+							<div class="member-row">
+								<div class="member-avatar" style="background: #89b4fa">{(u.display_name || u.email || '?').charAt(0).toUpperCase()}</div>
+								<div class="member-info">
+									<span class="member-name">{u.display_name || u.email}</span>
+									<span class="member-email">{u.email && !u.email.endsWith('@localhost') ? u.email : ''}</span>
+								</div>
+								<select class="input role-select" value={u.role} onchange={(e) => changeUserRole(u.id, e.target.value)}>
+									<option value="user">User</option>
+									<option value="admin">Admin</option>
+									<option value="owner">Owner</option>
+								</select>
+								{#if u._teams && u._teams.length > 0}
+									<div style="display:flex;gap:4px;flex-wrap:wrap">
+										{#each u._teams as t}
+											<span class="team-badge" style="border-color: {t.color || '#89b4fa'}; color: {t.color || '#89b4fa'}">{t.name}</span>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					{:else}
+						<div class="muted">No users registered</div>
+					{/if}
+				</section>
+			{/if}
+
+			{#if selectedOrgTab === 'teams'}
+				<section class="section">
+					{#if teamMsg}
+						<div class="flash">{teamMsg}</div>
+					{/if}
+
+					<h3>Teams</h3>
+
+					<!-- Team list -->
+					<div class="teams-grid">
+						{#each teamsList as team}
+							<button
+								class="team-card" class:active={selectedTeam?.id === team.id}
+								onclick={() => loadTeamDetail(team.id)}
+							>
+								<span class="team-dot" style="background: {team.color || '#89b4fa'}"></span>
+								<div class="team-card-info">
+									<span class="team-card-name">{team.name}</span>
+									<span class="team-card-count">{team.member_count} Member{team.member_count !== 1 ? 's' : ''}</span>
+								</div>
+							</button>
+						{/each}
+						{#if teamsList.length === 0}
+							<div class="muted">No teams yet</div>
+						{/if}
+					</div>
+
+					<!-- Create team -->
+					<div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+						<input type="text" bind:value={newTeamName} placeholder="Team name..." class="input" style="width:160px" />
+						<input type="text" bind:value={newTeamDesc} placeholder="Description (optional)" class="input" style="width:200px" />
+						<input type="color" bind:value={newTeamColor} style="width:36px;height:32px;border:none;background:none;cursor:pointer" />
+						<button class="btn accent" onclick={createTeam}>Create Team</button>
+					</div>
+
+					<!-- Selected team detail -->
+					{#if selectedTeam}
+						<div style="margin-top:20px;border-top:1px solid #313244;padding-top:16px">
+							<div style="display:flex;justify-content:space-between;align-items:center">
+								<h4 style="margin:0;color:#cdd6f4">
+									<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{selectedTeam.color || '#89b4fa'};margin-right:8px"></span>
+									{selectedTeam.name}
+								</h4>
+								<button class="btn-icon danger" onclick={() => deleteTeam(selectedTeam.id)} title="Delete team">🗑</button>
+							</div>
+							{#if selectedTeam.description}
+								<div class="muted" style="margin-top:4px">{selectedTeam.description}</div>
+							{/if}
+
+							<h4 style="margin:16px 0 8px;color:#cdd6f4">Team Members</h4>
+							<div class="members-list">
+								{#each teamMembers as member}
+									<div class="member-row">
+										<div class="member-avatar" style="background: {selectedTeam.color || '#89b4fa'}">{(member.display_name || member.email || '?').charAt(0).toUpperCase()}</div>
+										<div class="member-info">
+											<span class="member-name">{member.display_name || member.email}</span>
+											<span class="member-email">{member.email && !member.email.endsWith('@localhost') ? member.email : ''}</span>
+										</div>
+										<select
+											class="input role-select"
+											value={member.role}
+											onchange={(e) => changeTeamMemberRole(selectedTeam.id, member.user_id, e.target.value)}
+										>
+											<option value="member">Member</option>
+											<option value="lead">Lead</option>
+										</select>
+										<button class="btn-icon danger" onclick={() => removeTeamMember(selectedTeam.id, member.user_id)} title="Remove">✕</button>
+									</div>
+								{/each}
+								{#if teamMembers.length === 0}
+									<div class="muted">No members yet</div>
+								{/if}
+							</div>
+
+							<!-- Add member from users list -->
+							{#if users.filter(u => !teamMembers.find(tm => tm.user_id === u.id)).length > 0}
+								<div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+									<select class="input" id="addTeamMember" style="width:200px">
+										{#each users.filter(u => !teamMembers.find(tm => tm.user_id === u.id)) as u}
+											<option value={u.id}>{u.display_name || u.email}</option>
+										{/each}
+									</select>
+									<button class="btn accent" onclick={() => {
+										const sel = document.getElementById('addTeamMember');
+										if (sel?.value) addTeamMember(selectedTeam.id, parseInt(sel.value));
+									}}>Add to Team</button>
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</section>
+			{/if}
+
+			{#if selectedOrgTab === 'members' && activeOrgId !== 'org_personal'}
+				<section class="section">
+					<h3>Members — {orgDetail?.name || 'Org'}</h3>
+					<div class="members-list">
+						{#each orgMembers as member}
+							<div class="member-row">
+								<div class="member-avatar" style="background: {member.role_color || '#89b4fa'}">{(member.display_name || member.email || '?').charAt(0).toUpperCase()}</div>
+								<div class="member-info">
+									<span class="member-name">{member.display_name || member.email}</span>
+									<span class="member-email">{member.email}</span>
+								</div>
+								<select
+									class="input role-select"
+									value={member.role_name || 'user'}
+									onchange={(e) => changeMemberRole(member.id, e.target.value)}
+								>
+									<option value="viewer">Viewer</option>
+									<option value="user">User</option>
+									<option value="manager">Manager</option>
+									<option value="admin">Admin</option>
+									<option value="owner">Owner</option>
+								</select>
+								<button class="btn-icon danger" onclick={() => removeMember(member.id)} title="Remove member">✕</button>
+							</div>
+						{/each}
+						{#if orgMembers.length === 0}
+							<div class="muted">No members</div>
+						{/if}
+					</div>
+				</section>
+			{/if}
+
+			{#if selectedOrgTab === 'invites' && activeOrgId !== 'org_personal'}
+				<section class="section">
+					<h3>Invite People</h3>
+					<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+						<input type="email" bind:value={inviteEmail} placeholder="Email (optional)" class="input" style="width:200px" />
+						<select bind:value={inviteRole} class="input" style="width:100px">
+							<option value="viewer">Viewer</option>
+							<option value="user">User</option>
+							<option value="manager">Manager</option>
+							<option value="admin">Admin</option>
+						</select>
+						<input type="number" bind:value={inviteMaxUses} min="1" max="100" class="input" style="width:80px" title="Max uses" />
+						<button class="btn accent" onclick={createInvite}>Generate Invite</button>
+					</div>
+
+					<h4 style="margin:16px 0 8px;color:#cdd6f4">Active Invites</h4>
+					{#each orgInvites as inv}
+						<div class="invite-row">
+							<code class="invite-token">{inv.token}</code>
+							<span class="invite-meta">
+								{inv.role_name || 'user'} · {inv.use_count}/{inv.max_uses} used
+								{#if inv.email} · {inv.email}{/if}
+							</span>
+							<button class="btn-icon danger" onclick={() => revokeInvite(inv.id)} title="Revoke">✕</button>
+						</div>
+					{/each}
+					{#if orgInvites.length === 0}
+						<div class="muted">No active invites</div>
+					{/if}
+				</section>
+			{/if}
+
+			{#if selectedOrgTab === 'settings' && activeOrgId !== 'org_personal'}
+				<section class="section">
+					<h3>Org Settings — {orgDetail?.name || 'Org'}</h3>
+					<div class="setting-row">
+						<span class="setting-label">Name</span>
+						<span class="setting-value">{orgDetail?.name}</span>
+					</div>
+					<div class="setting-row">
+						<span class="setting-label">Slug</span>
+						<span class="setting-value">{orgDetail?.slug}</span>
+					</div>
+					<div class="setting-row">
+						<span class="setting-label">Members</span>
+						<span class="setting-value">{orgDetail?.member_count}</span>
+					</div>
+					<div class="setting-row">
+						<span class="setting-label">Incognito Allowed</span>
+						<span class="setting-value">{orgDetail?.policy_incognito_allowed ? 'Yes' : 'No'}</span>
+					</div>
+					<div class="setting-row">
+						<span class="setting-label">Blackout Allowed</span>
+						<span class="setting-value">{orgDetail?.policy_blackout_allowed ? 'Yes' : 'No'}</span>
+					</div>
+					<div class="setting-row">
+						<span class="setting-label">Data Retention</span>
+						<span class="setting-value">{orgDetail?.policy_data_retention_days ? `${orgDetail.policy_data_retention_days} days` : 'Forever'}</span>
+					</div>
+
+					<div style="margin-top:20px">
+						<button class="btn danger" onclick={() => deleteOrg(activeOrgId)}>Delete Organization</button>
+					</div>
+				</section>
+			{/if}
+		{/if}
+
 		<!-- Security -->
 		{#if activeTab === 'security'}
 			<h2>Security</h2>
@@ -968,37 +1512,6 @@
 					{/each}
 				</div>
 				<button class="btn accent" style="margin-top:12px" onclick={saveOAuthProviders}>Save OAuth Settings</button>
-			</section>
-		{/if}
-
-		<!-- Users -->
-		{#if activeTab === 'users'}
-			<h2>Users</h2>
-
-			<section class="section">
-				<h3>User List</h3>
-				{#if users.length}
-					{#each users as u}
-						<div class="row">
-							<div style="flex:1">
-								<div class="fw500">{u.display_name || u.email}</div>
-								<div class="small muted">{u.email}</div>
-							</div>
-							<div style="display:flex;align-items:center;gap:8px">
-								<select class="input small" value={u.role} onchange={(e) => changeUserRole(u.id, e.target.value)}>
-									<option value="user">User</option>
-									<option value="admin">Admin</option>
-									<option value="owner">Owner</option>
-								</select>
-								{#if u.avatar_url}
-									<img src={u.avatar_url} alt="" style="width:28px;height:28px;border-radius:50%" />
-								{/if}
-							</div>
-						</div>
-					{/each}
-				{:else}
-					<span class="muted">No users registered</span>
-				{/if}
 			</section>
 		{/if}
 
@@ -1697,5 +2210,242 @@
 		border-radius: 3px;
 		border: 1px solid #1e1e2e;
 		font-size: 11px;
+	}
+
+	/* Organizations tab */
+	.org-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-bottom: 8px;
+	}
+
+	.org-card {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 14px;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px;
+		background: transparent;
+		color: #cdd6f4;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 13px;
+		transition: all 0.15s;
+	}
+
+	.org-card:hover { background: #1a1a25; border-color: #89b4fa44; }
+	.org-card.active { border-color: #89b4fa; background: rgba(137,180,250,0.08); }
+
+	.org-card-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.org-card-name { font-weight: 500; }
+
+	.org-card-role {
+		font-size: 10px;
+		color: #6c7086;
+		padding: 1px 6px;
+		background: #1a1a25;
+		border-radius: 3px;
+	}
+
+	.teams-grid {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-bottom: 8px;
+	}
+
+	.team-card {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 14px;
+		border: 1px solid #1e1e2e;
+		border-radius: 6px;
+		background: transparent;
+		color: #cdd6f4;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 13px;
+		transition: all 0.15s;
+	}
+
+	.team-card:hover { background: #1a1a25; border-color: #89b4fa44; }
+	.team-card.active { border-color: #89b4fa; background: rgba(137,180,250,0.08); }
+
+	.team-dot {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.team-card-info {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+	}
+
+	.team-card-name { font-weight: 500; }
+
+	.team-card-count {
+		font-size: 10px;
+		color: #6c7086;
+	}
+
+	.team-badge {
+		font-size: 10px;
+		padding: 1px 6px;
+		border: 1px solid;
+		border-radius: 3px;
+		background: transparent;
+	}
+
+	.org-sub-tabs {
+		display: flex;
+		gap: 4px;
+		margin: 16px 0 12px;
+		border-bottom: 1px solid #1e1e2e;
+		padding-bottom: 8px;
+	}
+
+	.org-sub-tab {
+		padding: 6px 14px;
+		border: none;
+		border-radius: 4px;
+		background: transparent;
+		color: #6c7086;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 12px;
+		transition: all 0.15s;
+	}
+
+	.org-sub-tab:hover { color: #cdd6f4; background: #1a1a25; }
+	.org-sub-tab.active { color: #89b4fa; background: rgba(137,180,250,0.1); }
+
+	.members-list {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.member-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 8px 10px;
+		border-radius: 6px;
+		background: #0e0e16;
+	}
+
+	.member-avatar {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-weight: 600;
+		font-size: 14px;
+		color: #0a0a0f;
+		flex-shrink: 0;
+	}
+
+	.member-info {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+	}
+
+	.member-name { font-size: 13px; font-weight: 500; }
+	.member-email { font-size: 11px; color: #6c7086; }
+
+	.role-select {
+		width: 100px;
+		font-size: 11px;
+		padding: 4px 6px;
+	}
+
+	.btn-icon {
+		background: none;
+		border: none;
+		cursor: pointer;
+		color: #6c7086;
+		font-size: 14px;
+		padding: 4px 6px;
+		border-radius: 4px;
+		transition: all 0.15s;
+	}
+
+	.btn-icon:hover { background: #1a1a25; }
+	.btn-icon.danger { color: #f38ba8; }
+	.btn-icon.danger:hover { background: rgba(243,139,168,0.1); }
+
+	.invite-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 6px 8px;
+		border-radius: 4px;
+		margin-bottom: 4px;
+		background: #0e0e16;
+	}
+
+	.invite-token {
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 11px;
+		color: #a6e3a1;
+		background: #1a1a25;
+		padding: 2px 8px;
+		border-radius: 3px;
+		max-width: 200px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.invite-meta {
+		flex: 1;
+		font-size: 11px;
+		color: #6c7086;
+	}
+
+	.setting-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 6px 0;
+		border-bottom: 1px solid #1e1e2e11;
+	}
+
+	.setting-label {
+		width: 160px;
+		font-size: 12px;
+		color: #6c7086;
+		flex-shrink: 0;
+	}
+
+	.setting-value {
+		font-size: 13px;
+	}
+
+	.flash {
+		padding: 8px 14px;
+		border-radius: 6px;
+		background: rgba(137,180,250,0.1);
+		border: 1px solid #89b4fa44;
+		color: #89b4fa;
+		font-size: 12px;
+		margin-bottom: 12px;
 	}
 </style>

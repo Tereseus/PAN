@@ -243,6 +243,8 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                             let url = val["url"].as_str().unwrap_or("http://127.0.0.1:7777").to_string();
                             let title = val["title"].as_str().map(|s| s.to_string());
                             let label = val["label"].as_str().map(|s| s.to_string());
+                            let width = val["width"].as_f64();
+                            let height = val["height"].as_f64();
                             let handle = app_handle.clone();
                             let reg = registry.clone();
                             // Use provided label or auto-generate
@@ -252,6 +254,9 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                             let wtitle = win_title.clone();
                             let wurl = url.clone();
                             let handle2 = handle.clone();
+                            let custom_size = width.is_some() || height.is_some();
+                            let w = width.unwrap_or(1280.0);
+                            let h = height.unwrap_or(800.0);
                             handle.run_on_main_thread(move || {
                                 if let Ok(window) = WebviewWindowBuilder::new(
                                     &handle2,
@@ -259,10 +264,13 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                                     WebviewUrl::External(wurl.parse().unwrap()),
                                 )
                                 .title(&wtitle)
-                                .inner_size(1280.0, 800.0)
+                                .inner_size(w, h)
                                 .build()
                                 {
-                                    let _ = window.maximize();
+                                    // Only maximize if no custom size was requested
+                                    if !custom_size {
+                                        let _ = window.maximize();
+                                    }
                                     let entry = WindowEntry {
                                         id: wid.clone(),
                                         url: wurl,
