@@ -31,7 +31,12 @@ import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.j
 import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
 import orgsRouter from './routes/orgs.js';
 import chatRouter, { ensureChatSchema } from './routes/chat.js';
+import emailRouter, { initEmail } from './routes/email.js';
 import teamsRouter from './routes/teams.js';
+import guardianRouter from './routes/guardian.js';
+import { guardianMiddleware } from './guardian.js';
+import { privacyMiddleware } from './privacy.js';
+import privacyRouter from './routes/privacy.js';
 import { extractUser } from './middleware/auth.js';
 import { requireOrg, auditLog, verifyAllAuditChains, resignAuditChain } from './middleware/org-context.js';
 import { evolve } from './evolution/engine.js';
@@ -512,8 +517,17 @@ app.use('/api/v1/sync', syncRouter);
 // Org Management (Phase 2)
 app.use('/api/v1/orgs', orgsRouter);
 
+// Guardian Guillotine — content security scanner
+app.use('/api/v1/guardian', guardianRouter);
+
+// Differential Privacy — budget tracking and config
+app.use('/api/v1/privacy', privacyRouter);
+
 // Chat — text messaging, contacts, calls
 app.use('/api/v1/chat', chatRouter);
+
+// Email — universal IMAP/SMTP integration
+app.use('/api/v1/email', emailRouter);
 
 // Teams — groups within orgs, task assignment
 app.use('/api/v1/teams', teamsRouter);
@@ -1184,8 +1198,8 @@ app.get('/api/v1/voice/pack/:name', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Dashboard (web UI + API)
-app.use('/dashboard', dashboardRouter);
+// Dashboard (web UI + API) — privacy middleware noises stats/counts on GET responses
+app.use('/dashboard', privacyMiddleware({ caller: 'dashboard' }), dashboardRouter);
 
 // Redirect /dashboard/ to /v2/ (Svelte dashboard)
 app.get('/dashboard', (req, res) => res.redirect('/v2/'));
@@ -2824,6 +2838,9 @@ function start() {
 
       // Chat schema (contacts, threads, messages, calls)
       ensureChatSchema(db);
+
+      // Email schema (IMAP/SMTP cache)
+      initEmail(db);
 
       // Seed sensor definitions (22 sensors)
       seedSensors();

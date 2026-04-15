@@ -62,6 +62,25 @@ export function ensureChatSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_unread ON chat_messages(thread_id, read_at);
 
+    -- Add message_type and channel columns (safe to re-run)
+  `);
+
+  // Migration: add message_type and channel columns if missing
+  try {
+    db.exec(`ALTER TABLE chat_messages ADD COLUMN message_type TEXT DEFAULT 'quick'`);  // quick | composed
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE chat_messages ADD COLUMN channel TEXT DEFAULT 'pan'`);          // pan | email | slack | discord | telegram | whatsapp | sms
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE chat_messages ADD COLUMN subject TEXT`);                        // subject line for composed messages
+  } catch {}
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_type ON chat_messages(message_type)`);
+  } catch {}
+
+  db.exec(`
+
     -- Call log
     CREATE TABLE IF NOT EXISTS chat_calls (
       id TEXT PRIMARY KEY,                          -- call_xxxx
@@ -91,6 +110,18 @@ export function ensureChatSchema(db) {
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_starts ON calendar_events(starts_at);
+
+    -- WebRTC call signaling (poll-based)
+    CREATE TABLE IF NOT EXISTS chat_call_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id TEXT NOT NULL REFERENCES chat_calls(id) ON DELETE CASCADE,
+      sender TEXT NOT NULL,                             -- 'initiator' or 'responder'
+      signal_type TEXT NOT NULL,                        -- 'offer', 'answer', 'ice-candidate'
+      signal_data TEXT NOT NULL,                        -- JSON: SDP or ICE candidate
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+      consumed INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_call_signals_call ON chat_call_signals(call_id, consumed);
   `);
 }
 
@@ -319,7 +350,7 @@ router.post('/incoming', (req, res) => {
 // The actual media streams go peer-to-peer via WebRTC — PAN server never touches them.
 
 router.post('/calls/start', (req, res) => {
-  
+
   const { thread_id, type } = req.body; // type: 'voice' or 'video'
   if (!thread_id) return res.status(400).json({ error: 'thread_id required' });
 
@@ -335,20 +366,86 @@ router.post('/calls/start', (req, res) => {
     VALUES (?, ?, 'self', ?, 'call_start', ?, ?)
   `).run(msgId, thread_id, `${type || 'voice'} call started`, JSON.stringify({ call_id: id }), Date.now());
 
-  // TODO: Send WebRTC offer through Hub relay
-
   res.json({ call_id: id });
 });
 
 // WebRTC signaling — exchange SDP offers/answers and ICE candidates
 router.post('/calls/:callId/signal', (req, res) => {
-  const { signal_type, signal_data } = req.body;
+  const { signal_type, signal_data, sender } = req.body;
   // signal_type: 'offer', 'answer', 'ice-candidate'
   // signal_data: SDP or ICE candidate object
+  // sender: 'initiator' or 'responder'
 
-  // TODO: Relay through Hub to the peer
-  // For now, store and forward via polling
+  if (!signal_type || !signal_data) {
+    return res.status(400).json({ error: 'signal_type and signal_data required' });
+  }
 
+  const call = db.prepare('SELECT * FROM chat_calls WHERE id = ?').get(req.params.callId);
+  if (!call) return res.status(404).json({ error: 'Call not found' });
+
+  db.prepare(`
+    INSERT INTO chat_call_signals (call_id, sender, signal_type, signal_data, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(req.params.callId, sender || 'initiator', signal_type, JSON.stringify(signal_data), Date.now());
+
+  // If answer received, mark call as active
+  if (signal_type === 'answer' && call.status === 'ringing') {
+    db.prepare('UPDATE chat_calls SET status = ?, answered_at = ? WHERE id = ?')
+      .run('active', Date.now(), req.params.callId);
+  }
+
+  res.json({ ok: true });
+});
+
+// Poll for signals addressed to you (the other party sent these)
+router.get('/calls/:callId/signals', (req, res) => {
+  const { role } = req.query; // 'initiator' or 'responder' — fetch signals NOT from this role
+  const otherRole = role === 'initiator' ? 'responder' : 'initiator';
+  const sinceId = parseInt(req.query.since_id) || 0;
+
+  const signals = db.prepare(`
+    SELECT id, signal_type, signal_data, created_at
+    FROM chat_call_signals
+    WHERE call_id = ? AND sender = ? AND id > ?
+    ORDER BY id ASC
+  `).all(req.params.callId, otherRole, sinceId);
+
+  const parsed = signals.map(s => ({
+    ...s,
+    signal_data: JSON.parse(s.signal_data)
+  }));
+
+  res.json(parsed);
+});
+
+// Incoming calls (status=ringing, not initiated by self)
+// Must be defined BEFORE /:callId to avoid Express matching 'incoming' as a callId param
+router.get('/calls/incoming', (req, res) => {
+  const calls = db.prepare(`
+    SELECT c.*,
+      (SELECT display_name FROM contacts WHERE id = (SELECT contact_id FROM chat_thread_members WHERE thread_id = c.thread_id LIMIT 1)) as contact_name
+    FROM chat_calls c
+    WHERE c.status = 'ringing' AND c.initiator != 'self'
+    ORDER BY c.started_at DESC
+  `).all();
+  res.json(calls);
+});
+
+// Get call status
+router.get('/calls/:callId', (req, res) => {
+  const call = db.prepare('SELECT * FROM chat_calls WHERE id = ?').get(req.params.callId);
+  if (!call) return res.status(404).json({ error: 'Call not found' });
+  res.json(call);
+});
+
+// Answer a call (responder accepts)
+router.post('/calls/:callId/answer', (req, res) => {
+  const call = db.prepare('SELECT * FROM chat_calls WHERE id = ?').get(req.params.callId);
+  if (!call) return res.status(404).json({ error: 'Call not found' });
+  if (call.status !== 'ringing') return res.status(400).json({ error: 'Call is not ringing' });
+
+  db.prepare('UPDATE chat_calls SET status = ?, answered_at = ? WHERE id = ?')
+    .run('active', Date.now(), req.params.callId);
   res.json({ ok: true });
 });
 
@@ -388,6 +485,148 @@ router.get('/calls', (req, res) => {
   res.json(calls);
 });
 
+// ─── Inbox / Outbox ───
+
+// Inbox: recent incoming messages (sender_id != 'self')
+router.get('/inbox', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const messages = db.prepare(`
+    SELECT m.id, m.thread_id, m.sender_id, m.body, m.body_type, m.read_at, m.created_at,
+      c.display_name as sender_name, c.avatar_url as sender_avatar
+    FROM chat_messages m
+    LEFT JOIN contacts c ON c.id = m.sender_id
+    WHERE m.sender_id != 'self' AND m.body_type = 'text'
+    ORDER BY m.created_at DESC
+    LIMIT ?
+  `).all(limit);
+  res.json(messages.map(m => ({
+    ...m,
+    body_preview: m.body && m.body.length > 100 ? m.body.substring(0, 100) + '...' : m.body
+  })));
+});
+
+// Outbox: recent outgoing messages (sender_id = 'self')
+router.get('/outbox', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const messages = db.prepare(`
+    SELECT m.id, m.thread_id, m.sender_id, m.body, m.body_type, m.read_at, m.created_at,
+      (SELECT c.display_name FROM chat_thread_members tm
+       JOIN contacts c ON c.id = tm.contact_id
+       WHERE tm.thread_id = m.thread_id LIMIT 1) as recipient_name,
+      (SELECT c.avatar_url FROM chat_thread_members tm
+       JOIN contacts c ON c.id = tm.contact_id
+       WHERE tm.thread_id = m.thread_id LIMIT 1) as recipient_avatar
+    FROM chat_messages m
+    WHERE m.sender_id = 'self' AND m.body_type = 'text'
+    ORDER BY m.created_at DESC
+    LIMIT ?
+  `).all(limit);
+  res.json(messages.map(m => ({
+    ...m,
+    body_preview: m.body && m.body.length > 100 ? m.body.substring(0, 100) + '...' : m.body
+  })));
+});
+
+// ─── Unified Inbox — merged PAN messages + emails ───
+
+router.get('/unified-inbox', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const offset = parseInt(req.query.offset) || 0;
+  const filter = req.query.filter || 'all'; // 'all' | 'pan' | 'email'
+
+  const items = [];
+
+  // PAN messages (incoming, sender != self)
+  if (filter === 'all' || filter === 'pan') {
+    const panMsgs = db.prepare(`
+      SELECT m.id, m.thread_id, m.sender_id, m.body, m.body_type, m.read_at, m.created_at,
+        c.display_name as from_name, c.avatar_url as from_avatar
+      FROM chat_messages m
+      LEFT JOIN contacts c ON c.id = m.sender_id
+      WHERE m.sender_id != 'self' AND m.body_type = 'text'
+      ORDER BY m.created_at DESC
+      LIMIT ?
+    `).all(limit * 2); // fetch extra so we have enough after merging
+
+    for (const m of panMsgs) {
+      items.push({
+        type: 'pan',
+        id: m.id,
+        from_name: m.from_name || 'Unknown',
+        from_address: null,
+        subject: null,
+        body_preview: m.body && m.body.length > 100 ? m.body.substring(0, 100) + '...' : (m.body || ''),
+        created_at: m.created_at,
+        date: m.created_at,
+        read: !!m.read_at,
+        thread_id: m.thread_id,
+        message_id: null,
+        sender_id: m.sender_id,
+      });
+    }
+  }
+
+  // Emails from local cache
+  if (filter === 'all' || filter === 'email') {
+    try {
+      const emails = db.prepare(`
+        SELECT id, message_id, from_address, from_name, subject, body_text, date, read
+        FROM emails
+        WHERE folder = 'INBOX'
+        ORDER BY date DESC
+        LIMIT ?
+      `).all(limit * 2);
+
+      for (const e of emails) {
+        const bodyText = e.body_text || e.subject || '';
+        items.push({
+          type: 'email',
+          id: 'email_' + e.id,
+          from_name: e.from_name || e.from_address || 'Unknown',
+          from_address: e.from_address,
+          subject: e.subject || '(no subject)',
+          body_preview: bodyText.length > 100 ? bodyText.substring(0, 100) + '...' : bodyText,
+          created_at: e.date,
+          date: e.date,
+          read: !!e.read,
+          thread_id: null,
+          message_id: e.message_id,
+          email_db_id: e.id,
+        });
+      }
+    } catch {
+      // emails table may not exist if email not set up — that's fine
+    }
+  }
+
+  // Sort by date DESC, interleaved
+  items.sort((a, b) => (b.date || 0) - (a.date || 0));
+
+  // Apply offset + limit
+  const paged = items.slice(offset, offset + limit);
+  res.json(paged);
+});
+
+// ─── Contact search (for unified compose autocomplete) ───
+
+router.get('/contact-search', (req, res) => {
+  const q = (req.query.q || '').trim().toLowerCase();
+  if (!q) return res.json([]);
+
+  const contacts = db.prepare(`
+    SELECT id, display_name, email, phone, avatar_url
+    FROM contacts
+    WHERE blocked = 0 AND (
+      LOWER(display_name) LIKE ? OR
+      LOWER(email) LIKE ?
+    )
+    ORDER BY display_name ASC
+    LIMIT 10
+  `).all(`%${q}%`, `%${q}%`);
+
+  res.json(contacts);
+});
+
 // Unread count across all threads
 router.get('/unread', (req, res) => {
   
@@ -395,6 +634,226 @@ router.get('/unread', (req, res) => {
     SELECT COUNT(*) as count FROM chat_messages WHERE read_at IS NULL AND sender_id != 'self'
   `).get();
   res.json({ unread: result.count });
+});
+
+// ─── Compose: unified send for composed messages ───
+
+router.post('/compose', async (req, res) => {
+  const { to_contact_id, to_address, channel, subject, body } = req.body;
+  if (!body && !subject) return res.status(400).json({ error: 'body or subject required' });
+  if (!channel) return res.status(400).json({ error: 'channel required (pan, email, sms, etc.)' });
+
+  const now = Date.now();
+  const msgId = 'cmsg_' + crypto.randomBytes(8).toString('hex');
+
+  try {
+    if (channel === 'email') {
+      // Send via SMTP
+      const emailTo = to_address || (() => {
+        if (!to_contact_id) return null;
+        const c = db.prepare('SELECT email FROM contacts WHERE id = ?').get(to_contact_id);
+        return c?.email;
+      })();
+      if (!emailTo) return res.status(400).json({ error: 'No email address for this contact' });
+
+      // Check email is configured before attempting send
+      const { sendEmail, getEmailSettings } = await import('../email.js');
+      const emailSettings = getEmailSettings();
+      if (!emailSettings.email_smtp_host || !emailSettings.email_user || !emailSettings.email_password) {
+        return res.status(400).json({ error: 'Email not configured — go to Settings to set up SMTP' });
+      }
+      await sendEmail({ to: emailTo, subject: subject || '(no subject)', body: body || '' });
+
+      // Also store in chat_messages as composed for the unified inbox
+      let threadId = null;
+      if (to_contact_id) {
+        const existing = db.prepare(`
+          SELECT t.id FROM chat_threads t
+          JOIN chat_thread_members m ON m.thread_id = t.id
+          WHERE t.type = 'dm' AND m.contact_id = ?
+        `).get(to_contact_id);
+        threadId = existing?.id;
+        if (!threadId) {
+          threadId = 'thread_' + crypto.randomBytes(8).toString('hex');
+          db.prepare('INSERT INTO chat_threads (id, type) VALUES (?, ?)').run(threadId, 'dm');
+          db.prepare('INSERT INTO chat_thread_members (thread_id, contact_id) VALUES (?, ?)').run(threadId, to_contact_id);
+        }
+      }
+      if (threadId) {
+        db.prepare(`
+          INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, message_type, channel, subject, created_at)
+          VALUES (?, ?, 'self', ?, 'text', 'composed', 'email', ?, ?)
+        `).run(msgId, threadId, body || '', subject || null, now);
+      }
+
+      res.json({ ok: true, id: msgId, channel: 'email', to: emailTo });
+
+    } else if (channel === 'pan') {
+      // Send via PAN Hub relay
+      if (!to_contact_id) return res.status(400).json({ error: 'Contact required for PAN messages' });
+
+      // Find or create thread
+      const existing = db.prepare(`
+        SELECT t.id FROM chat_threads t
+        JOIN chat_thread_members m ON m.thread_id = t.id
+        WHERE t.type = 'dm' AND m.contact_id = ?
+      `).get(to_contact_id);
+      let threadId = existing?.id;
+      if (!threadId) {
+        threadId = 'thread_' + crypto.randomBytes(8).toString('hex');
+        db.prepare('INSERT INTO chat_threads (id, type) VALUES (?, ?)').run(threadId, 'dm');
+        db.prepare('INSERT INTO chat_thread_members (thread_id, contact_id) VALUES (?, ?)').run(threadId, to_contact_id);
+      }
+
+      const composedBody = subject ? `**${subject}**\n\n${body || ''}` : (body || '');
+      db.prepare(`
+        INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, message_type, channel, subject, created_at)
+        VALUES (?, ?, 'self', ?, 'text', 'composed', 'pan', ?, ?)
+      `).run(msgId, threadId, composedBody, subject || null, now);
+      db.prepare('UPDATE chat_threads SET updated_at = ? WHERE id = ?').run(now, threadId);
+
+      // TODO: Relay to recipient's PAN instance via Hub
+
+      res.json({ ok: true, id: msgId, channel: 'pan', thread_id: threadId });
+
+    } else {
+      // Other channels (slack, discord, telegram, whatsapp, sms) — store + return deep link
+      // These get sent via webview wrapping, so we just store the intent
+      let threadId = null;
+      if (to_contact_id) {
+        const existing = db.prepare(`
+          SELECT t.id FROM chat_threads t
+          JOIN chat_thread_members m ON m.thread_id = t.id
+          WHERE t.type = 'dm' AND m.contact_id = ?
+        `).get(to_contact_id);
+        threadId = existing?.id;
+      }
+      if (threadId) {
+        db.prepare(`
+          INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, message_type, channel, subject, created_at)
+          VALUES (?, ?, 'self', ?, 'text', 'composed', ?, ?, ?)
+        `).run(msgId, threadId, body || '', channel, subject || null, now);
+      }
+
+      res.json({ ok: true, id: msgId, channel, note: 'Message stored — deliver via webview' });
+    }
+  } catch (e) {
+    console.error('[PAN] Compose send error:', e);
+    res.status(500).json({ error: e.message || 'Send failed' });
+  }
+});
+
+// Get available channels for a contact
+router.get('/contact-channels/:contactId', (req, res) => {
+  const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(req.params.contactId);
+  if (!contact) return res.status(404).json({ error: 'Contact not found' });
+
+  const channels = [];
+  if (contact.pan_instance_id) channels.push({ id: 'pan', label: 'PAN', icon: '◆' });
+  if (contact.email) channels.push({ id: 'email', label: 'Email', icon: '✉', address: contact.email });
+  if (contact.phone) channels.push({ id: 'sms', label: 'SMS', icon: '💬', address: contact.phone });
+  // Future: check connected apps for slack/discord/etc.
+
+  res.json({ contact_id: contact.id, display_name: contact.display_name, channels });
+});
+
+// ─── Mail inbox (composed messages + received emails) ───
+
+router.get('/mail', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const offset = parseInt(req.query.offset) || 0;
+  const filter = req.query.filter || 'all'; // 'all' | 'pan' | 'email'
+
+  // Composed messages from chat_messages
+  let composed = [];
+  if (filter === 'all' || filter === 'pan') {
+    composed = db.prepare(`
+      SELECT cm.id, cm.thread_id, cm.sender_id, cm.body, cm.subject, cm.channel, cm.created_at,
+             c.display_name as contact_name, c.email as contact_email
+      FROM chat_messages cm
+      LEFT JOIN chat_thread_members tm ON tm.thread_id = cm.thread_id
+      LEFT JOIN contacts c ON c.id = tm.contact_id
+      WHERE cm.message_type = 'composed'
+      ${filter === 'pan' ? "AND cm.channel = 'pan'" : ''}
+      ORDER BY cm.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(limit, offset);
+  }
+
+  // Also pull from emails table (IMAP-synced)
+  let emails = [];
+  if (filter === 'all' || filter === 'email') {
+    try {
+      emails = db.prepare(`
+        SELECT id, message_id, from_address, from_name, to_address, subject, body_text, date, read, starred
+        FROM emails
+        ORDER BY date DESC
+        LIMIT ? OFFSET ?
+      `).all(limit, offset);
+    } catch {
+      // emails table might not exist yet
+    }
+  }
+
+  // Also include email-channel composed messages
+  let composedEmails = [];
+  if (filter === 'all' || filter === 'email') {
+    try {
+      composedEmails = db.prepare(`
+        SELECT cm.id, cm.thread_id, cm.sender_id, cm.body, cm.subject, cm.channel, cm.created_at,
+               c.display_name as contact_name, c.email as contact_email
+        FROM chat_messages cm
+        LEFT JOIN chat_thread_members tm ON tm.thread_id = cm.thread_id
+        LEFT JOIN contacts c ON c.id = tm.contact_id
+        WHERE cm.message_type = 'composed' AND cm.channel = 'email'
+        ORDER BY cm.created_at DESC
+        LIMIT ? OFFSET ?
+      `).all(limit, offset);
+    } catch {}
+  }
+
+  // Merge + sort by date, dedup composed emails
+  const composedIds = new Set(composed.map(m => m.id));
+  const allComposed = [...composed, ...composedEmails.filter(m => !composedIds.has(m.id))];
+
+  const merged = [
+    ...allComposed.map(m => ({
+      id: m.id,
+      type: m.channel === 'email' ? 'email' : 'pan',
+      direction: m.sender_id === 'self' ? 'sent' : 'received',
+      from: m.sender_id === 'self' ? 'You' : (m.contact_name || 'Unknown'),
+      to: m.sender_id === 'self' ? (m.contact_name || m.contact_email || 'Unknown') : 'You',
+      subject: m.subject || null,
+      preview: (m.body || '').replace(/\*\*/g, '').slice(0, 120),
+      channel: m.channel,
+      date: m.created_at,
+      read: true,
+      sender_id: m.sender_id,
+      sender_name: m.contact_name,
+    })),
+    ...emails.map(e => ({
+      id: `email_${e.id}`,
+      email_db_id: e.id,
+      type: 'email',
+      direction: 'received',
+      from: e.from_name || e.from_address || 'Unknown',
+      from_name: e.from_name,
+      from_address: e.from_address,
+      to: e.to_address || 'You',
+      subject: e.subject || null,
+      preview: (e.body_text || '').slice(0, 120),
+      channel: 'email',
+      date: e.date,
+      read: !!e.read,
+      message_id: e.message_id,
+    }))
+  ].sort((a, b) => (b.date || 0) - (a.date || 0)).slice(0, limit);
+
+  const totalComposed = db.prepare(`SELECT COUNT(*) as count FROM chat_messages WHERE message_type = 'composed'`).get().count;
+  let totalEmails = 0;
+  try { totalEmails = db.prepare('SELECT COUNT(*) as count FROM emails').get().count; } catch {}
+
+  res.json({ messages: merged, total: totalComposed + totalEmails });
 });
 
 // ─── Calendar ───

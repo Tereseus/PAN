@@ -18,6 +18,7 @@ const sqliteVec = require('sqlite-vec');
 
 import { getDb } from './db-registry.js';
 import { embed, toBlob, EMBED_DIM } from './memory/embeddings.js';
+import { privatizeSearch } from './privacy.js';
 
 // Track which DB handles already have the vec extension loaded + tables
 // initialized. Loading the extension twice is harmless but slow; the table
@@ -228,13 +229,13 @@ async function searchMemory(query, opts = {}) {
   const ids = ranked.map(r => r.id);
   const placeholders = ids.map(() => '?').join(',');
   const rows = db.prepare(`
-    SELECT id, session_id, event_type, data, created_at
+    SELECT id, session_id, event_type, data, created_at, trust_origin, context_safe
     FROM events
-    WHERE id IN (${placeholders})
+    WHERE id IN (${placeholders}) AND context_safe = 1
   `).all(...ids);
   const byId = Object.fromEntries(rows.map(r => [r.id, r]));
 
-  return ranked.map(r => {
+  const results = ranked.map(r => {
     const ev = byId[r.id] || null;
     return {
       id: r.id,
@@ -246,6 +247,9 @@ async function searchMemory(query, opts = {}) {
       preview: ev ? eventText(ev).slice(0, 280) : '',
     };
   });
+
+  // Apply differential privacy — noise scores and perturb ranking
+  return privatizeSearch(results, opts.caller || 'search');
 }
 
 /**

@@ -112,6 +112,40 @@ server.tool(
   }
 );
 
+server.tool(
+  'pan_guardian',
+  'Guardian Guillotine — query security scan decisions, stats, or manually test content.',
+  {
+    action: z.enum(['status', 'decisions', 'scan', 'config']).describe('status=overview, decisions=audit log, scan=test content, config=update settings'),
+    content: z.string().optional().describe('Content to scan (for action=scan)'),
+    limit: z.number().optional(),
+    decision: z.enum(['allowed', 'warned', 'blocked']).optional(),
+    enabled: z.boolean().optional(),
+    mode: z.enum(['off', 'warn', 'block']).optional(),
+  },
+  async ({ action, content, limit, decision, enabled, mode }) => {
+    try {
+      if (action === 'status') return ok(await panFetch('/api/v1/guardian/status'));
+      if (action === 'decisions') {
+        let path = `/api/v1/guardian/decisions?limit=${limit || 20}`;
+        if (decision) path += `&decision=${decision}`;
+        return ok(await panFetch(path));
+      }
+      if (action === 'scan') {
+        if (!content) return err('content required for scan');
+        return ok(await panFetch('/api/v1/guardian/scan', { method: 'POST', body: { content } }));
+      }
+      if (action === 'config') {
+        const body = {};
+        if (enabled !== undefined) body.enabled = enabled;
+        if (mode) body.mode = mode;
+        return ok(await panFetch('/api/v1/guardian/config', { method: 'POST', body }));
+      }
+      return err('Unknown action');
+    } catch (e) { return err(e); }
+  }
+);
+
 // ==================== ROUTER (single tool for 18+ actions) ====================
 // This replaces 18 separate tool definitions, saving ~4000 tokens/turn.
 // Use @pan://actions resource to see all available actions and their parameters.
