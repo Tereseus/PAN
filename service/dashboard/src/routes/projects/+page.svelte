@@ -1,12 +1,10 @@
 <script>
 	import { api } from '$lib/api.js';
+	import { goto } from '$app/navigation';
+	import { base } from '$app/paths';
 
 	let projectsData = $state(null);
 	let loading = $state(true);
-	let selectedProject = $state(null);
-	let detailTasks = $state([]);
-	let detailMilestones = $state([]);
-	let detailLoading = $state(false);
 
 	// Overall stats
 	let totalTasks = $state(0);
@@ -44,37 +42,8 @@
 		loading = false;
 	}
 
-	async function showDetail(project) {
-		selectedProject = project;
-		detailLoading = true;
-		try {
-			const data = await api(`/dashboard/api/projects/${project.id}/tasks`);
-			detailTasks = data.tasks || [];
-			detailMilestones = data.milestones || [];
-		} catch {
-			detailTasks = [];
-			detailMilestones = [];
-		}
-		detailLoading = false;
-	}
-
-	function closeDetail() {
-		selectedProject = null;
-		detailTasks = [];
-		detailMilestones = [];
-	}
-
-	async function cycleTask(taskId, currentStatus) {
-		const next = currentStatus === 'backlog' ? 'todo' : currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'backlog';
-		try {
-			await api(`/dashboard/api/projects/${selectedProject.id}/tasks`, {
-				method: 'POST',
-				body: JSON.stringify({ task_id: taskId, status: next })
-			});
-			// Refresh
-			await showDetail(selectedProject);
-			await loadProjects();
-		} catch (e) { console.error('Cycle task failed:', e); }
+	function openKanban(project) {
+		goto(`${base}/kanban?project=${project.id}`);
 	}
 
 	async function unlinkProject(id, name) {
@@ -82,7 +51,6 @@
 		if (!confirm('Are you sure? This cannot be undone.')) return;
 		try {
 			await api(`/dashboard/api/projects/${id}`, { method: 'DELETE' });
-			closeDetail();
 			await loadProjects();
 		} catch {}
 	}
@@ -118,7 +86,7 @@
 		<div class="project-grid">
 			{#each projects as p}
 				{@const clr = pctColor(p.percentage)}
-				<div class="project-card" onclick={() => showDetail(p)}>
+				<div class="project-card" onclick={() => openKanban(p)}>
 					<div class="card-header">
 						<h3>{p.name}</h3>
 						<button class="unlink-btn" onclick={(e) => { e.stopPropagation(); unlinkProject(p.id, p.name); }} title="Unlink Project From PAN">&times;</button>
@@ -153,62 +121,7 @@
 			{/each}
 		</div>
 
-		<!-- Detail Panel -->
-		{#if selectedProject}
-			<div class="detail-panel">
-				<div class="detail-header">
-					<h3>{selectedProject.name} — Tasks</h3>
-					<button class="btn" onclick={closeDetail}>&times; Close</button>
-				</div>
-				{#if detailLoading}
-					<div class="muted" style="padding: 16px">Loading tasks...</div>
-				{:else}
-					{#each detailMilestones as m}
-						{@const mTasks = detailTasks.filter(t => t.milestone_id === m.id)}
-						{@const done = mTasks.filter(t => t.status === 'done').length}
-						{@const pct = mTasks.length > 0 ? Math.round(done / mTasks.length * 100) : 0}
-						<div class="milestone-section">
-							<div class="milestone-header">
-								<strong>{m.name}</strong>
-								<span class="muted-sm">{done}/{mTasks.length}</span>
-								<div class="milestone-bar">
-									<div class="progress-fill {pctColor(pct)}" style="width: {pct}%"></div>
-								</div>
-								<span class="muted-sm">{pct}%</span>
-							</div>
-							{#each mTasks as t}
-								<div class="task-item" onclick={() => cycleTask(t.id, t.status)}>
-									<div class="task-check" class:done={t.status === 'done'} class:in_progress={t.status === 'in_progress'} class:backlog={t.status === 'backlog'}>
-										{#if t.status === 'done'}&#10003;{:else if t.status === 'in_progress'}~{:else if t.status === 'backlog'}&#8943;{/if}
-									</div>
-									<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-								</div>
-							{/each}
-							<div class="add-hint">Use Terminal To Add: Tasks, Milestones, Projects, Jobs, Sections</div>
-						</div>
-					{/each}
-
-					<!-- Uncategorized tasks -->
-					{@const uncategorized = detailTasks.filter(t => !t.milestone_id)}
-					{#if uncategorized.length > 0 || detailMilestones.length === 0}
-						<div class="milestone-section">
-							<div class="milestone-header">
-								<strong>Uncategorized</strong>
-							</div>
-							{#each uncategorized as t}
-								<div class="task-item" onclick={() => cycleTask(t.id, t.status)}>
-									<div class="task-check" class:done={t.status === 'done'} class:in_progress={t.status === 'in_progress'} class:backlog={t.status === 'backlog'}>
-										{#if t.status === 'done'}&#10003;{:else if t.status === 'in_progress'}~{:else if t.status === 'backlog'}&#8943;{/if}
-									</div>
-									<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-								</div>
-							{/each}
-							<div class="add-hint">Use Terminal To Add: Tasks, Milestones, Projects, Jobs, Sections</div>
-						</div>
-					{/if}
-				{/if}
-			</div>
-		{/if}
+		<!-- Click any project card to open its Kanban board -->
 	{/if}
 </div>
 
