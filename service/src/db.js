@@ -260,6 +260,40 @@ const ORG_ID_TARGETS = [
   }
 }
 
+// Migration: add type column to project_tasks (task, bug, feature, etc.)
+{
+  const taskCols = db.pragma('table_info(project_tasks)').map(c => c.name);
+  if (taskCols.length > 0 && !taskCols.includes('type')) {
+    db.exec(`ALTER TABLE project_tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'task'`);
+    console.log('[PAN DB] Added type column to project_tasks');
+  }
+}
+
+// Migration: add security/privacy columns to events table
+// These 6 fields power the Guardian → Sensitivity → Routing pipeline
+{
+  const evCols = db.pragma('table_info(events)').map(c => c.name);
+  const securityCols = [
+    ['trust_origin',    "TEXT NOT NULL DEFAULT 'self'"],       // self, org_member, contact, external, public
+    ['source_device',   "TEXT"],                                // phone, desktop, pendant, zrok, email, system
+    ['sensitivity',     "INTEGER NOT NULL DEFAULT 0"],          // 0=public, 1=internal, 2=sensitive, 3=critical
+    ['guardian_status',  "TEXT NOT NULL DEFAULT 'clean'"],      // clean, flagged, blocked
+    ['sender_id',       "TEXT"],                                // user_id, contact_id, email addr, null for self
+    ['context_safe',    "INTEGER NOT NULL DEFAULT 1"],          // 1=Claude can read, 0=quarantined
+  ];
+  let secMigrated = 0;
+  for (const [col, def] of securityCols) {
+    if (evCols.length > 0 && !evCols.includes(col)) {
+      db.exec(`ALTER TABLE events ADD COLUMN ${col} ${def}`);
+      secMigrated++;
+    }
+  }
+  if (secMigrated > 0) {
+    console.log(`[PAN DB] Added ${secMigrated} security columns to events table`);
+    // Backfill: all existing events are from self/system, so defaults are correct
+  }
+}
+
 // Migration: add user_id columns to existing tables for multi-user support
 const tablesToAddUserId = ['devices', 'sessions', 'events', 'command_queue', 'memory_items'];
 for (const table of tablesToAddUserId) {
@@ -580,8 +614,16 @@ function _checkIncognito(userId) {
   } catch { return null; }
 }
 
-function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_personal') {
+function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_personal', security = {}) {
   const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
+
+  // Security fields with safe defaults
+  const trustOrigin   = security.trustOrigin   || 'self';
+  const sourceDevice  = security.sourceDevice  || null;
+  const sensitivity   = security.sensitivity   ?? 0;
+  const guardianStatus = security.guardianStatus || 'clean';
+  const senderId      = security.senderId      || null;
+  const contextSafe   = security.contextSafe   ?? 1;
 
   // If incognito is active for this user, route to incognito_events instead
   const incognitoState = _checkIncognito(userId);
@@ -601,13 +643,17 @@ function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_person
   let eventId;
   if (userId) {
     eventId = insert(
-      `INSERT INTO events (session_id, event_type, data, user_id, org_id) VALUES (:sid, :type, :data, :uid, :oid)`,
-      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':uid': userId, ':oid': orgId }
+      `INSERT INTO events (session_id, event_type, data, user_id, org_id, trust_origin, source_device, sensitivity, guardian_status, sender_id, context_safe)
+       VALUES (:sid, :type, :data, :uid, :oid, :trust, :device, :sens, :guardian, :sender, :csafe)`,
+      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':uid': userId, ':oid': orgId,
+        ':trust': trustOrigin, ':device': sourceDevice, ':sens': sensitivity, ':guardian': guardianStatus, ':sender': senderId, ':csafe': contextSafe }
     );
   } else {
     eventId = insert(
-      `INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, :type, :data, :oid)`,
-      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':oid': orgId }
+      `INSERT INTO events (session_id, event_type, data, org_id, trust_origin, source_device, sensitivity, guardian_status, sender_id, context_safe)
+       VALUES (:sid, :type, :data, :oid, :trust, :device, :sens, :guardian, :sender, :csafe)`,
+      { ':sid': sessionId, ':type': eventType, ':data': dataStr, ':oid': orgId,
+        ':trust': trustOrigin, ':device': sourceDevice, ':sens': sensitivity, ':guardian': guardianStatus, ':sender': senderId, ':csafe': contextSafe }
     );
   }
   indexEventFTS(eventId, eventType, dataStr);

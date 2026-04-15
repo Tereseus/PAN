@@ -196,22 +196,24 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### Recent Conversation
-**User** (2026-04-14 17:40:34): ΠΑΝ Remembers: summarize recent session context briefly.
-**Claude** (2026-04-14 17:40:38): ΠΑΝ Remembers: Last session you were working on **users & teams** in the dashboard — specifically that it was showing your real name/email when it should only show "Teresius." There was also frustrati
-**User** (2026-04-14 17:41:43): yeah so we were doing some things about the contacts I believe i'm not i'mYeah so we were doing some things about the contacts I believe i'm not I'm not really sure. Oh yeah you were making it so that
-**User** (2026-04-14 17:41:50): Cant load contacts now though
-**Claude** (2026-04-14 17:41:50): Right — you were working on **window opening** via `openPanWindow()`. The issue was that Call and Compose windows weren't respecting the requested height/width. The fix switched from `window.open()` t
+**Claude** (2026-04-15 18:39:46): Craft swapped. Hard-refresh (Ctrl+Shift+R) the Kanban page. Here's what I fixed:
+
+1. **Card text overflow** — titles now clamp to 2 lines max with ellipsis instead of expanding the card
+2. **Modal fie
+**Claude** (2026-04-15 18:40:17): Background task finished — that was the earlier API test, already handled. Waiting on your feedback after the hard-refresh.
+**User** (2026-04-15 18:44:30): There is no team C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776293062667.png
+**Claude** (2026-04-15 18:45:04): I see — the Assigned To dropdown shows "Unassigned" and "Tereseus", so it IS working. But you're saying there's no way to **create teams** or **add team members**. Right now it only pulls from org mem
 
 ### Open Tasks
-- [in_progress P1] Differential privacy (statistical noise)
-- [todo P1] Compute-to-data pipeline
-- [todo P1] Treasury 3-tier UI on phone
-- [todo P1] Real-time conversation classifier
-- [todo P1] Context-aware routing
-- [todo P1] Cerebras/Groq fast inference integration
 - [backlog P1] Enter key / send button stops working in chat input � requires page refresh
 - [backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [todo P1] Camera system: Reolink PoE + Frigate NVR on TedProDesk1
-- [todo] Voice data collection pipeline
+- [in_progress P1] Camera system: Reolink PoE + Frigate NVR on TedProDesk1
+- [todo] Spotify auto-play
+- [todo] Background retraining (2am-6am)
+- [todo] Voice marketplace ($1-2 each)
+- [todo] Voice personality packs
+- [todo] Cloud training for no-GPU users
+- [todo] Model push to phone after training
+- [todo] Order components (ESP32S3, battery, sensors, laser, LED)
 
 <!-- PAN-CONTEXT-END -->

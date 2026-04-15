@@ -35,6 +35,74 @@
 	let pwCurrent = $state('');
 	let pwNew = $state('');
 
+	// Email settings
+	let emailConfig = $state({});
+	let emailProvider = $state('custom');
+	let emailTestResult = $state(null);
+	let emailTesting = $state(false);
+	let emailMsg = $state('');
+
+	const emailPresets = {
+		gmail: { imap_host: 'imap.gmail.com', imap_port: '993', smtp_host: 'smtp.gmail.com', smtp_port: '587' },
+		outlook: { imap_host: 'outlook.office365.com', imap_port: '993', smtp_host: 'smtp.office365.com', smtp_port: '587' },
+	};
+
+	async function loadEmailConfig() {
+		try {
+			const res = await fetch(window.location.origin + '/api/v1/email/config');
+			if (res.ok) {
+				emailConfig = await res.json();
+				emailProvider = emailConfig.email_provider || 'custom';
+			}
+		} catch {}
+	}
+
+	function applyEmailPreset(provider) {
+		emailProvider = provider;
+		emailConfig.email_provider = provider;
+		if (emailPresets[provider]) {
+			const p = emailPresets[provider];
+			emailConfig.email_imap_host = p.imap_host;
+			emailConfig.email_imap_port = p.imap_port;
+			emailConfig.email_smtp_host = p.smtp_host;
+			emailConfig.email_smtp_port = p.smtp_port;
+		}
+		emailConfig = { ...emailConfig };
+	}
+
+	async function saveEmailConfig() {
+		try {
+			const res = await fetch(window.location.origin + '/api/v1/email/config', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(emailConfig),
+			});
+			if (res.ok) {
+				emailMsg = 'Saved';
+				setTimeout(() => { emailMsg = ''; }, 3000);
+			} else {
+				emailMsg = 'Save failed';
+			}
+		} catch { emailMsg = 'Save failed'; }
+	}
+
+	async function testEmailConnection() {
+		emailTesting = true;
+		emailTestResult = null;
+		try {
+			const res = await fetch(window.location.origin + '/api/v1/email/test', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(emailConfig),
+			});
+			emailTestResult = await res.json();
+		} catch (e) {
+			emailTestResult = { ok: false, errors: [{ type: 'general', error: e.message }] };
+		} finally {
+			emailTesting = false;
+		}
+	}
+
 	// Terminal appearance — persisted in localStorage, read on mount
 	const TERM_DEFAULTS = {
 		username: 'User',
@@ -156,6 +224,7 @@
 		{ id: 'auth', label: 'Authentication' },
 		{ id: 'network', label: 'Remote Access' },
 		{ id: 'treasury', label: 'Treasury' },
+		{ id: 'email', label: 'Email' },
 	];
 
 	const jobDefs = [
@@ -712,6 +781,7 @@
 		loadClaudeModels();
 		loadOrgs();
 		loadTeams();
+		loadEmailConfig();
 	});
 </script>
 
@@ -1696,6 +1766,106 @@
 			<div style="text-align:center;padding-top:12px">
 				<span class="small muted" style="opacity:0.6">Powered by Cardano</span>
 			</div>
+		{/if}
+
+		<!-- Email -->
+		{#if activeTab === 'email'}
+			<h2>Email</h2>
+			{#if emailMsg}
+				<div class="flash-msg">{emailMsg}</div>
+			{/if}
+
+			<section class="section">
+				<h3>Provider</h3>
+				<p class="hint">Select your email provider for auto-configuration, or choose Custom for manual IMAP/SMTP settings.</p>
+				<div class="form-row">
+					<div class="form-label"><div class="fw500">Provider</div></div>
+					<select class="input" style="width:200px" bind:value={emailProvider} onchange={(e) => applyEmailPreset(e.target.value)}>
+						<option value="gmail">Gmail</option>
+						<option value="outlook">Outlook / Office 365</option>
+						<option value="custom">Custom</option>
+					</select>
+				</div>
+			</section>
+
+			<section class="section">
+				<h3>Account</h3>
+				<div class="form-row">
+					<div class="form-label">
+						<div class="fw500">Email Address</div>
+						<div class="small muted">Your full email address</div>
+					</div>
+					<input type="email" class="input" style="width:260px" bind:value={emailConfig.email_user} placeholder="you@example.com" />
+				</div>
+				<div class="form-row">
+					<div class="form-label">
+						<div class="fw500">Password / App Password</div>
+						<div class="small muted">For Gmail, use an App Password</div>
+					</div>
+					<input type="password" class="input" style="width:260px" bind:value={emailConfig.email_password} placeholder="App password..." />
+				</div>
+				<div class="form-row">
+					<div class="form-label">
+						<div class="fw500">From Address</div>
+						<div class="small muted">Optional — defaults to email address</div>
+					</div>
+					<input type="email" class="input" style="width:260px" bind:value={emailConfig.email_from} placeholder="Same as email address" />
+				</div>
+			</section>
+
+			<section class="section">
+				<h3>IMAP (Receive)</h3>
+				<div class="form-row">
+					<div class="form-label"><div class="fw500">IMAP Host</div></div>
+					<input type="text" class="input" style="width:220px" bind:value={emailConfig.email_imap_host} placeholder="imap.example.com" />
+				</div>
+				<div class="form-row">
+					<div class="form-label"><div class="fw500">IMAP Port</div></div>
+					<input type="text" class="input" style="width:80px" bind:value={emailConfig.email_imap_port} placeholder="993" />
+				</div>
+			</section>
+
+			<section class="section">
+				<h3>SMTP (Send)</h3>
+				<div class="form-row">
+					<div class="form-label"><div class="fw500">SMTP Host</div></div>
+					<input type="text" class="input" style="width:220px" bind:value={emailConfig.email_smtp_host} placeholder="smtp.example.com" />
+				</div>
+				<div class="form-row">
+					<div class="form-label"><div class="fw500">SMTP Port</div></div>
+					<input type="text" class="input" style="width:80px" bind:value={emailConfig.email_smtp_port} placeholder="587" />
+				</div>
+			</section>
+
+			<section class="section">
+				<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+					<button class="btn accent" onclick={saveEmailConfig}>Save</button>
+					<button class="btn secondary" onclick={testEmailConnection} disabled={emailTesting}>
+						{emailTesting ? 'Testing...' : 'Test Connection'}
+					</button>
+				</div>
+				{#if emailTestResult}
+					<div style="margin-top:10px;padding:10px;border-radius:6px;background:{emailTestResult.ok ? 'rgba(166,227,161,0.1)' : 'rgba(243,139,168,0.1)'};border:1px solid {emailTestResult.ok ? 'rgba(166,227,161,0.3)' : 'rgba(243,139,168,0.3)'}">
+						{#if emailTestResult.ok}
+							<span style="color:#a6e3a1">Connection successful</span>
+						{:else}
+							<span style="color:#f38ba8">Connection failed:</span>
+							{#each emailTestResult.errors || [] as err}
+								<div class="small" style="color:#f38ba8;margin-top:4px">{err.type}: {err.error}</div>
+							{/each}
+						{/if}
+					</div>
+				{/if}
+			</section>
+
+			<section class="section">
+				<h3>Help</h3>
+				<div class="small muted" style="line-height:1.7">
+					<strong style="color:var(--text)">Gmail:</strong> Enable 2FA, then create an App Password at myaccount.google.com/apppasswords. Use the 16-char code as password.<br/>
+					<strong style="color:var(--text)">Outlook:</strong> Use your regular password. If 2FA is on, create an App Password in your Microsoft account security settings.<br/>
+					<strong style="color:var(--text)">Custom:</strong> Enter your provider's IMAP/SMTP host and port. Port 993 = SSL, 587 = STARTTLS.
+				</div>
+			</section>
 		{/if}
 	</div>
 </div>

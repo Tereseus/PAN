@@ -894,7 +894,14 @@ router.patch('/api/scout/:id', (req, res) => {
 
 // GET /dashboard/api/progress — project progress for WezTerm sidebar
 // Returns all projects with milestone/task completion percentages
+// Cached for 10s to avoid N×M query storm on every sidebar refresh
+let _progressCache = null;
+let _progressCacheTime = 0;
 router.get('/api/progress', (req, res) => {
+  const now = Date.now();
+  if (_progressCache && (now - _progressCacheTime) < 10000) {
+    return res.json(_progressCache);
+  }
   const projects = allScoped(req, "SELECT * FROM projects WHERE org_id = :org_id ORDER BY name");
 
   const result = projects.map(p => {
@@ -962,11 +969,14 @@ router.get('/api/progress', (req, res) => {
   const totalEvents = getScoped(req, "SELECT COUNT(*) as c FROM events WHERE org_id = :org_id")?.c || 0;
   const deviceCount = getScoped(req, "SELECT COUNT(*) as c FROM devices WHERE org_id = :org_id")?.c || 0;
 
-  res.json({
+  const response = {
     projects: result,
     activity: { total_events: totalEvents, devices: deviceCount },
     timestamp: new Date().toISOString(),
-  });
+  };
+  _progressCache = response;
+  _progressCacheTime = Date.now();
+  res.json(response);
 });
 
 // GET /dashboard/api/projects/:id/tasks — all tasks for a project
@@ -977,10 +987,49 @@ router.get('/api/projects/:id/tasks', (req, res) => {
     { ':pid': pid }
   );
   const tasks = allScoped(req,
-    "SELECT * FROM project_tasks WHERE project_id = :pid AND org_id = :org_id ORDER BY milestone_id, sort_order, title",
+    `SELECT t.*, u.display_name as assigned_name
+     FROM project_tasks t
+     LEFT JOIN users u ON t.assigned_to = u.id
+     WHERE t.project_id = :pid AND t.org_id = :org_id
+     ORDER BY t.milestone_id, t.sort_order, t.title`,
     { ':pid': pid }
   );
-  res.json({ milestones, tasks });
+  // Also return team members for assignment dropdowns
+  const project = getScoped(req, "SELECT team_id FROM projects WHERE id = :pid AND org_id = :org_id", { ':pid': pid });
+  let members = [];
+  if (project?.team_id) {
+    members = allScoped(req,
+      `SELECT u.id, u.display_name, u.email, tm.role as team_role
+       FROM team_members tm JOIN users u ON tm.user_id = u.id
+       WHERE tm.team_id = :tid`,
+      { ':tid': project.team_id }
+    );
+  }
+  // Fallback: return all users in the org if no team assigned
+  if (members.length === 0) {
+    members = allScoped(req,
+      `SELECT u.id, u.display_name, u.email
+       FROM memberships m JOIN users u ON m.user_id = u.id
+       WHERE m.org_id = :org_id`,
+      {}
+    );
+  }
+  res.json({ milestones, tasks, members, team_id: project?.team_id || null });
+});
+
+// PUT /dashboard/api/projects/:id/team — assign team to project
+router.put('/api/projects/:id/team', (req, res) => {
+  const pid = parseInt(req.params.id);
+  const { team_id } = req.body;
+  try {
+    runScoped(req,
+      "UPDATE projects SET team_id = :tid WHERE id = :pid AND org_id = :org_id",
+      { ':tid': team_id || null, ':pid': pid }
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // POST /dashboard/api/projects/:id/milestones — create a milestone
@@ -999,11 +1048,11 @@ router.post('/api/projects/:id/milestones', (req, res) => {
 // POST /dashboard/api/projects/:id/tasks — create a task
 router.post('/api/projects/:id/tasks', (req, res) => {
   const pid = parseInt(req.params.id);
-  const { title, description, milestone_id, status, priority } = req.body;
+  const { title, description, milestone_id, status, priority, type, assigned_to } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
   const maxOrder = getScoped(req, "SELECT MAX(sort_order) as m FROM project_tasks WHERE project_id = :pid AND org_id = :org_id", { ':pid': pid });
   const id = insertScoped(req,
-    "INSERT INTO project_tasks (project_id, milestone_id, title, description, status, priority, sort_order, org_id) VALUES (:pid, :mid, :title, :desc, :status, :pri, :order, :org_id)",
+    "INSERT INTO project_tasks (project_id, milestone_id, title, description, status, priority, type, assigned_to, sort_order, org_id) VALUES (:pid, :mid, :title, :desc, :status, :pri, :type, :assign, :order, :org_id)",
     {
       ':pid': pid,
       ':mid': milestone_id || null,
@@ -1011,10 +1060,12 @@ router.post('/api/projects/:id/tasks', (req, res) => {
       ':desc': description || null,
       ':status': status || 'todo',
       ':pri': priority || 0,
+      ':type': type || 'task',
+      ':assign': assigned_to || null,
       ':order': (maxOrder?.m || 0) + 1,
     }
   );
-  res.json({ id, title, status: status || 'todo' });
+  res.json({ id, title, status: status || 'todo', type: type || 'task' });
 });
 
 // PUT /dashboard/api/tasks/:id — update a task (status, title, etc.)
@@ -1041,6 +1092,9 @@ router.put('/api/tasks/:id', (req, res) => {
   }
   if (priority !== undefined) { updates.push("priority = :pri"); params[':pri'] = priority; }
   if (milestone_id !== undefined) { updates.push("milestone_id = :mid"); params[':mid'] = milestone_id; }
+  if (req.body.sort_order !== undefined) { updates.push("sort_order = :sort"); params[':sort'] = req.body.sort_order; }
+  if (req.body.type !== undefined) { updates.push("type = :type"); params[':type'] = req.body.type; }
+  if (req.body.assigned_to !== undefined) { updates.push("assigned_to = :assign"); params[':assign'] = req.body.assigned_to || null; }
 
   if (updates.length === 0) return res.json({ ok: true, unchanged: true });
 
@@ -1061,6 +1115,26 @@ router.delete('/api/milestones/:id', (req, res) => {
   runScoped(req, "DELETE FROM project_tasks WHERE milestone_id = :id AND org_id = :org_id", { ':id': id });
   runScoped(req, "DELETE FROM project_milestones WHERE id = :id AND org_id = :org_id", { ':id': id });
   res.json({ ok: true });
+});
+
+// PUT /dashboard/api/tasks/reorder — batch update sort_order + status (for Kanban drag-drop)
+router.put('/api/tasks/reorder', (req, res) => {
+  const { tasks } = req.body; // [{ id, status, sort_order }]
+  if (!Array.isArray(tasks)) return res.status(400).json({ error: 'tasks array required' });
+  for (const t of tasks) {
+    const existing = getScoped(req, "SELECT * FROM project_tasks WHERE id = :id AND org_id = :org_id", { ':id': t.id });
+    if (!existing) continue;
+    const updates = ["sort_order = :sort"];
+    const params = { ':id': t.id, ':sort': t.sort_order ?? 0 };
+    if (t.status !== undefined) {
+      updates.push("status = :status");
+      params[':status'] = t.status;
+      if (t.status === 'done' && existing.status !== 'done') updates.push("completed_at = datetime('now','localtime')");
+      if (t.status !== 'done') updates.push("completed_at = NULL");
+    }
+    runScoped(req, `UPDATE project_tasks SET ${updates.join(', ')} WHERE id = :id AND org_id = :org_id`, params);
+  }
+  res.json({ ok: true, updated: tasks.length });
 });
 
 // POST /dashboard/api/projects/:id/bulk-tasks — create multiple tasks at once

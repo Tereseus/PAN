@@ -133,10 +133,11 @@ async function injectSessionContext(cwd, orgId = 'org_personal') {
     const fwd = cwd.replace(/\\/g, '/');
     const jsonEscaped = cwd.replace(/\\/g, '\\\\');
     const recentEvents = all(
-      `SELECT event_type, data, created_at FROM events
+      `SELECT event_type, data, created_at, trust_origin, context_safe FROM events
        WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
        AND (data LIKE :pp1 OR data LIKE :pp2)
        AND org_id = :org_id
+       AND context_safe = 1
        ORDER BY created_at DESC LIMIT 5`,
       { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%', ':org_id': orgId }
     );

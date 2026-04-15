@@ -126,6 +126,16 @@
 	let chatCallActive = $state(null); // { call_id, type, thread_id, status }
 	let chatMessagesEl; // scroll container ref
 
+	// ─── Mail state ───
+	let mailMessages = $state([]);
+	let mailLoading = $state(false);
+	let mailTotal = $state(0);
+	let mailPage = $state(0);
+	let mailStatus = $state(null); // { connected, configured, user }
+
+	// ─── Compose (opens in Tauri window) ───
+	const TAURI_PORT = 7790;
+
 	async function loadContacts() {
 		try {
 			const data = await api('/api/v1/chat/contacts');
@@ -258,6 +268,100 @@
 		} catch (e) {
 			console.error('Failed to end call:', e);
 		}
+	}
+
+	// ─── Mail functions ───
+	async function loadMail(page = 0) {
+		mailLoading = true;
+		try {
+			const data = await api(`/api/v1/chat/mail?limit=50&offset=${page * 50}`);
+			mailMessages = Array.isArray(data?.messages) ? data.messages : [];
+			mailTotal = data?.total || mailMessages.length;
+			mailPage = page;
+		} catch (e) {
+			console.error('Failed to load mail:', e);
+			mailMessages = [];
+		}
+		mailLoading = false;
+	}
+
+	async function loadMailStatus() {
+		try {
+			mailStatus = await api('/api/v1/email/status');
+		} catch (e) {
+			mailStatus = { connected: false, configured: false };
+		}
+	}
+
+	async function syncMail() {
+		mailLoading = true;
+		try {
+			await api('/api/v1/email/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: 'INBOX' }) });
+			await loadMail(0);
+		} catch (e) {
+			console.error('Failed to sync mail:', e);
+		}
+		mailLoading = false;
+	}
+
+	// ─── Compose: opens in Tauri window ───
+	async function openCompose(contact = null, prefillSubject = '', prefillEmail = '') {
+		const params = new URLSearchParams();
+		if (contact) {
+			params.set('contact', contact.id);
+			params.set('name', contact.display_name);
+			if (contact.email) params.set('email', contact.email);
+		} else if (prefillEmail) {
+			params.set('email', prefillEmail);
+		}
+		if (prefillSubject) params.set('subject', prefillSubject);
+
+		const composeUrl = `${window.location.origin}/v2/compose?${params.toString()}`;
+
+		try {
+			// Try Tauri window first
+			await fetch(`http://127.0.0.1:${TAURI_PORT}/open`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url: composeUrl, title: 'Compose', width: 640, height: 520 })
+			});
+		} catch {
+			// Fallback: browser popup
+			window.open(composeUrl, '_blank', 'width=640,height=520');
+		}
+	}
+
+	// ─── Expanded views: open full panel in Tauri window ───
+	async function openExpandedView(section) {
+		const urls = {
+			contacts: `${window.location.origin}/v2/comms?view=contacts`,
+			mail: `${window.location.origin}/v2/comms?view=mail`,
+			calendar: `${window.location.origin}/v2/comms?view=calendar`,
+		};
+		const titles = { contacts: 'Contacts', mail: 'Mail', calendar: 'Calendar' };
+		const url = urls[section];
+		if (!url) return;
+
+		try {
+			await fetch(`http://127.0.0.1:${TAURI_PORT}/open`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url, title: titles[section] || section, width: 900, height: 700 })
+			});
+		} catch {
+			window.open(url, '_blank', 'width=900,height=700');
+		}
+	}
+
+	function formatMailDate(dateStr) {
+		if (!dateStr) return '';
+		const d = new Date(dateStr);
+		const now = new Date();
+		const isToday = d.toDateString() === now.toDateString();
+		if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		const isThisYear = d.getFullYear() === now.getFullYear();
+		if (isThisYear) return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+		return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
 	function formatChatTime(ts) {
@@ -3655,24 +3759,28 @@
 		loadAlertTypes();
 		loadLifeboat();
 
+		// --- Polling intervals (visibility-aware: pause when tab is hidden) ---
+		let _pageVisible = true;
+		const visCb = () => { _pageVisible = !document.hidden; };
+		document.addEventListener('visibilitychange', visCb);
+
 		// Start chat refresh
 		chatRefreshInterval = setInterval(() => {
-			if (leftSection === 'transcript') loadChatHistory();
-		}, 10000);
+			if (_pageVisible && leftSection === 'transcript') loadChatHistory();
+		}, 15000);
 
-		// Refresh services every 30s, approvals every 5s, lifeboat every 3s
+		// Refresh services every 60s, approvals every 10s, lifeboat every 10s
 		const svcInterval = setInterval(() => {
+			if (!_pageVisible) return;
 			api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
-		}, 30000);
-		const approvalInterval = setInterval(loadApprovals, 5000);
-		const lifeboatInterval = setInterval(loadLifeboat, 3000);
-		const alertCountInterval = setInterval(loadAlertCount, 10000); // poll alert count every 10s
+		}, 60000);
+		const approvalInterval = setInterval(() => { if (_pageVisible) loadApprovals(); }, 10000);
+		const lifeboatInterval = setInterval(() => { if (_pageVisible) loadLifeboat(); }, 10000);
+		const alertCountInterval = setInterval(() => { if (_pageVisible) loadAlertCount(); }, 30000);
 
-		// Poll live PTY status for the active tab every 1.5s. The server now
-		// returns a real `thinking` flag derived from input-vs-output recency,
-		// plus pid/uptime/lastInput/lastOutput so we can show what the PTY is
-		// actually doing instead of guessing from local state.
+		// Poll live PTY status for the active tab every 3s (was 1.5s).
 		const ptyStatusInterval = setInterval(async () => {
+			if (!_pageVisible) return;
 			try {
 				const tab = getActiveTab();
 				if (!tab?.sessionId) { ptyStatus = null; return; }
@@ -3680,25 +3788,19 @@
 				const list = r?.sessions || [];
 				const match = list.find(s => s.id === tab.sessionId);
 				ptyStatus = match || null;
-				// Sync the legacy claudeReady flag from authoritative state so the
-				// rest of the UI stops lying after refreshes / tab switches.
 				if (match) {
-					// Only show "Ready" if Claude is actually running in this PTY.
-					// Without this, a bare bash prompt shows "Ready" because
-					// thinking=false when idle — that's a lie.
-					// Pipe mode is always on — Claude is always available on-demand
 					const realReady = !match.thinking;
 					if (claudeReady !== realReady) claudeReady = realReady;
 					if (tab.claudeReady !== realReady) tab.claudeReady = realReady;
 				}
 			} catch {}
-		}, 1500);
-		// 1s ticker so the "Xs ago" labels in the status bar update smoothly
-		const ptyTicker = setInterval(() => { ptyStatusNow = Date.now(); }, 1000);
+		}, 3000);
+		// 2s ticker for "Xs ago" labels (was 1s)
+		const ptyTicker = setInterval(() => { ptyStatusNow = Date.now(); }, 2000);
 
-		// Poll for UI commands (window opens, etc.) — this runs in the renderer,
-		// so window.open creates real Electron windows from the interactive session
+		// Poll for UI commands (window opens, etc.)
 		const uiCmdInterval = setInterval(async () => {
+			if (!_pageVisible) return;
 			try {
 				const cmds = await api('/api/v1/ui-commands');
 				if (!Array.isArray(cmds)) return;
@@ -3708,7 +3810,7 @@
 					}
 				}
 			} catch {}
-		}, 2000);
+		}, 3000);
 
 		// Auto-connect: wait for projects to load, then start terminal
 		setTimeout(async () => {
@@ -3920,6 +4022,7 @@
 		return () => {
 			saveSessionState(); // Persist session IDs before page unloads
 			saveChatToStorage(); // Persist chat before page unloads
+			document.removeEventListener('visibilitychange', visCb);
 			window.removeEventListener('keydown', handleGlobalKeydown);
 			window.removeEventListener('resize', handleResize);
 			if (termResizeObserver) termResizeObserver.disconnect();
@@ -3927,6 +4030,8 @@
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			clearInterval(svcInterval);
 			clearInterval(approvalInterval);
+			clearInterval(lifeboatInterval);
+			clearInterval(alertCountInterval);
 			clearInterval(ptyStatusInterval);
 			clearInterval(ptyTicker);
 			clearInterval(uiCmdInterval);
@@ -4029,7 +4134,7 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
@@ -4038,6 +4143,7 @@
 				<option value="instances">Instances</option>
 				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
+				<option value="mail">Mail</option>
 				<option value="perf">Performance</option>
 				<option value="project">Project</option>
 				<option value="services">Services</option>
@@ -4052,6 +4158,9 @@
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
 			</select>
+			{#if leftSection === 'contacts' || leftSection === 'mail' || leftSection === 'calendar'}
+				<button class="expand-btn" onclick={() => openExpandedView(leftSection)} title="Open in window">&#x2197;</button>
+			{/if}
 		</div>
 		<div class="left-content" bind:this={chatSidebarEl} onscroll={handleTranscriptScroll}>
 			{#if leftSection === 'transcript'}
@@ -4622,6 +4731,7 @@
 					<!-- Search + Add -->
 					<div class="contacts-toolbar">
 						<input type="text" class="contacts-search" placeholder="Search contacts..." bind:value={chatSearchQuery} />
+						<button class="contacts-add-btn" onclick={() => openCompose(null)} title="Compose message">&#9998;</button>
 						<button class="contacts-add-btn" onclick={() => { addContactModal = true; }} title="Add contact">+</button>
 					</div>
 
@@ -4706,6 +4816,58 @@
 						<div class="empty-state">{chatSearchQuery ? 'No matches' : 'No contacts yet — click + to add'}</div>
 					{/if}
 				{/each}
+				</div>
+			{:else if leftSection === 'mail'}
+				<div class="mail-panel">
+					<div class="contacts-toolbar">
+						<button class="contacts-add-btn" onclick={syncMail} title="Sync inbox" disabled={mailLoading}>&#x21BB;</button>
+						<div style="flex:1; font-size: 12px; color: #a6adc8;">
+							{#if mailStatus?.connected}
+								<span style="color: #a6e3a1;">&#x25CF;</span> {mailStatus.user || 'Connected'}
+							{:else if mailStatus?.configured}
+								<span style="color: #f38ba8;">&#x25CF;</span> Disconnected
+							{:else}
+								<span style="color: #585b70;">&#x25CF;</span> Not configured
+							{/if}
+						</div>
+						<button class="contacts-add-btn" onclick={() => openCompose()} title="Compose">+</button>
+					</div>
+					{#if mailLoading && mailMessages.length === 0}
+						<div class="empty-state">Loading...</div>
+					{:else if mailMessages.length === 0}
+						<div class="empty-state">
+							{#if !mailStatus?.configured}
+								Email not configured — go to Settings
+							{:else}
+								No messages — click &#x21BB; to sync
+							{/if}
+						</div>
+					{:else}
+						<div class="mail-list">
+							{#each mailMessages as msg}
+								<div class="mail-row" class:unread={!msg.read} onclick={() => openCompose(null, msg.subject ? 'Re: ' + msg.subject : '', msg.direction === 'received' ? msg.from : '')}>
+									<div class="mail-row-top">
+										<span class="mail-type-badge" class:pan={msg.channel === 'pan'} class:email={msg.channel === 'email'}>{msg.channel === 'pan' ? '◆' : '✉'}</span>
+										<span class="mail-from">{msg.direction === 'sent' ? `To: ${msg.to}` : msg.from}</span>
+										<span class="mail-date">{formatMailDate(msg.date)}</span>
+									</div>
+									{#if msg.subject}<div class="mail-subject">{msg.subject}</div>{/if}
+									<div class="mail-preview">{msg.preview || ''}</div>
+								</div>
+							{/each}
+						</div>
+						{#if mailTotal > 50}
+							<div class="mail-pager">
+								{#if mailPage > 0}
+									<button class="contact-btn-save" onclick={() => loadMail(mailPage - 1)}>&larr; Newer</button>
+								{/if}
+								<span style="color: #585b70; font-size: 11px;">{mailPage * 50 + 1}-{Math.min((mailPage + 1) * 50, mailTotal)} of {mailTotal}</span>
+								{#if (mailPage + 1) * 50 < mailTotal}
+									<button class="contact-btn-save" onclick={() => loadMail(mailPage + 1)}>Older &rarr;</button>
+								{/if}
+							</div>
+						{/if}
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -5071,7 +5233,7 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
@@ -5080,6 +5242,7 @@
 				<option value="instances">Instances</option>
 				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
+				<option value="mail">Mail</option>
 				<option value="perf">Performance</option>
 				<option value="project">Project</option>
 				<option value="services">Services</option>
@@ -5984,6 +6147,58 @@
 						}} />
 					</div>
 				</div>
+			{:else if rightSection === 'mail'}
+				<div class="mail-panel">
+					<div class="contacts-toolbar">
+						<button class="contacts-add-btn" onclick={syncMail} title="Sync inbox" disabled={mailLoading}>&#x21BB;</button>
+						<div style="flex:1; font-size: 12px; color: #a6adc8;">
+							{#if mailStatus?.connected}
+								<span style="color: #a6e3a1;">&#x25CF;</span> {mailStatus.user || 'Connected'}
+							{:else if mailStatus?.configured}
+								<span style="color: #f38ba8;">&#x25CF;</span> Disconnected
+							{:else}
+								<span style="color: #585b70;">&#x25CF;</span> Not configured
+							{/if}
+						</div>
+						<button class="contacts-add-btn" onclick={() => openCompose()} title="Compose">+</button>
+					</div>
+					{#if mailLoading && mailMessages.length === 0}
+						<div class="empty-state">Loading...</div>
+					{:else if mailMessages.length === 0}
+						<div class="empty-state">
+							{#if !mailStatus?.configured}
+								Email not configured — go to Settings
+							{:else}
+								No messages — click &#x21BB; to sync
+							{/if}
+						</div>
+					{:else}
+						<div class="mail-list">
+							{#each mailMessages as msg}
+								<div class="mail-row" class:unread={!msg.read} onclick={() => openCompose(null, msg.subject ? 'Re: ' + msg.subject : '', msg.direction === 'received' ? msg.from : '')}>
+									<div class="mail-row-top">
+										<span class="mail-type-badge" class:pan={msg.channel === 'pan'} class:email={msg.channel === 'email'}>{msg.channel === 'pan' ? '◆' : '✉'}</span>
+										<span class="mail-from">{msg.direction === 'sent' ? `To: ${msg.to}` : msg.from}</span>
+										<span class="mail-date">{formatMailDate(msg.date)}</span>
+									</div>
+									{#if msg.subject}<div class="mail-subject">{msg.subject}</div>{/if}
+									<div class="mail-preview">{msg.preview || ''}</div>
+								</div>
+							{/each}
+						</div>
+						{#if mailTotal > 50}
+							<div class="mail-pager">
+								{#if mailPage > 0}
+									<button class="contact-btn-save" onclick={() => loadMail(mailPage - 1)}>&larr; Newer</button>
+								{/if}
+								<span style="color: #585b70; font-size: 11px;">{mailPage * 50 + 1}-{Math.min((mailPage + 1) * 50, mailTotal)} of {mailTotal}</span>
+								{#if (mailPage + 1) * 50 < mailTotal}
+									<button class="contact-btn-save" onclick={() => loadMail(mailPage + 1)}>Older &rarr;</button>
+								{/if}
+							</div>
+						{/if}
+					{/if}
+				</div>
 			{:else if rightSection.startsWith('custom-')}
 				{@const sectionId = parseInt(rightSection.replace('custom-', ''))}
 				{@const section = getSectionById(sectionId)}
@@ -6015,6 +6230,8 @@
 		</div>
 	</div>
 </div>
+
+<!-- Compose opens in Tauri window via openCompose() -->
 
 <style>
 	/* ==================== Center Panel ==================== */
@@ -7841,4 +8058,51 @@
 		transition: transform 0.15s;
 	}
 	.call-end-btn:hover { transform: scale(1.1); background: #e06080; }
+
+	/* ─── Mail Panel ─── */
+	.mail-panel { display: flex; flex-direction: column; height: 100%; }
+	.mail-list { flex: 1; overflow-y: auto; }
+	.mail-row {
+		padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #1e1e2e;
+		transition: background 0.15s;
+	}
+	.mail-row:hover { background: #313244; }
+	.mail-row.unread { border-left: 3px solid #89b4fa; }
+	.mail-from {
+		font-size: 13px; font-weight: 500; color: #cdd6f4;
+		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	}
+	.mail-row.unread .mail-from { font-weight: 700; }
+	.mail-subject {
+		font-size: 12px; color: #a6adc8;
+		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	}
+	.mail-preview {
+		font-size: 11px; color: #585b70;
+		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	}
+	.mail-date {
+		font-size: 10px; color: #585b70; margin-top: 2px;
+	}
+	.mail-pager {
+		display: flex; align-items: center; justify-content: center; gap: 8px;
+		padding: 8px; border-top: 1px solid #313244;
+	}
+
+	/* ─── Expand button (open panel in Tauri window) ─── */
+	.expand-btn {
+		background: none; border: none; color: #585b70; cursor: pointer;
+		font-size: 14px; padding: 2px 6px; margin-left: 4px;
+	}
+	.expand-btn:hover { color: #89b4fa; }
+
+	/* ─── Mail row top line ─── */
+	.mail-row-top {
+		display: flex; align-items: center; gap: 6px;
+	}
+	.mail-type-badge {
+		font-size: 11px; color: #585b70; flex-shrink: 0;
+	}
+	.mail-type-badge.pan { color: #a6e3a1; }
+	.mail-type-badge.email { color: #89b4fa; }
 </style>

@@ -19,7 +19,7 @@
 	let tabs = $derived(allTabs.filter(t => !(t.userOnly && getPanMode() === 'service')));
 
 	let commsOpen = $state(typeof window !== 'undefined' && localStorage.getItem('pan_comms_open') === '1');
-	let commsView = $state('contacts'); // 'contacts' | 'calendar'
+	let commsView = $state('contacts'); // 'contacts' | 'calendar' | 'mail'
 	let unreadMessages = $state(0);
 	let commsContacts = $state([]);
 	let commsActiveContact = $state(null);   // contact object currently expanded
@@ -28,6 +28,214 @@
 	let commsInput = $state('');             // chat input text
 	let commsMessagesEl;                     // scroll container ref
 	let commsSearch = $state('');            // contact search filter
+
+	// Unified messages state
+	let unifiedMessages = $state([]);
+	let unifiedFilter = $state('all');  // 'all' | 'pan' | 'email'
+	let unifiedLoading = $state(false);
+	let unifiedExpandedEmail = $state(null); // email_db_id of expanded email
+	let unifiedEmailConfigured = $state(false);
+	let unifiedEmailDetail = $state(null); // full email object when expanded
+
+	// Unified compose state
+	let unifiedCompose = $state(false);
+	let composeToQuery = $state('');
+	let composeToResults = $state([]);
+	let composeToSelected = $state(null); // { type: 'contact', id, display_name } or { type: 'email', address }
+	let composeSubject = $state('');
+	let composeBody = $state('');
+	let composeSending = $state(false);
+	let composeIsEmail = $derived(
+		composeToSelected?.type === 'email' ||
+		(!composeToSelected && composeToQuery.includes('@'))
+	);
+
+	async function loadUnifiedInbox() {
+		unifiedLoading = true;
+		try {
+			const res = await fetch(`${window.location.origin}/api/v1/chat/mail?limit=50&filter=${unifiedFilter}`);
+			if (res.ok) {
+				const data = await res.json();
+				unifiedMessages = data.messages || [];
+			}
+		} catch (e) {
+			console.error('[PAN Comms] loadUnifiedInbox failed:', e);
+		} finally {
+			unifiedLoading = false;
+		}
+		// Check email status in background (lazy)
+		try {
+			const sres = await fetch(`${window.location.origin}/api/v1/email/status`);
+			if (sres.ok) {
+				const st = await sres.json();
+				unifiedEmailConfigured = st.configured;
+			}
+		} catch {}
+	}
+
+	async function syncEmailFromUnified() {
+		unifiedLoading = true;
+		try {
+			await fetch(`${window.location.origin}/api/v1/email/sync`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ folder: 'INBOX', full: true }),
+			});
+			await loadUnifiedInbox();
+		} catch (e) {
+			console.error('[PAN Comms] syncEmail failed:', e);
+		} finally {
+			unifiedLoading = false;
+		}
+	}
+
+	async function unifiedClickMessage(msg) {
+		if (msg.type === 'pan') {
+			// Open contact chat
+			const contactId = msg.sender_id;
+			commsView = 'contacts';
+			await loadCommsContacts();
+			const contact = commsContacts.find(c => c.id === contactId);
+			if (contact) commsClickContact(contact);
+		} else if (msg.type === 'email') {
+			// Toggle expand inline
+			if (unifiedExpandedEmail === msg.id) {
+				unifiedExpandedEmail = null;
+				unifiedEmailDetail = null;
+			} else {
+				unifiedExpandedEmail = msg.id;
+				unifiedEmailDetail = null;
+				// Fetch full email body
+				try {
+					const dbId = msg.email_db_id;
+					const res = await fetch(`${window.location.origin}/api/v1/email/messages?folder=INBOX&limit=200`);
+					if (res.ok) {
+						const all = await res.json();
+						unifiedEmailDetail = all.find(e => e.id === dbId) || null;
+					}
+				} catch {}
+				// Mark as read
+				if (!msg.read && msg.message_id) {
+					try {
+						await fetch(`${window.location.origin}/api/v1/email/mark-read`, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ message_id: msg.message_id }),
+						});
+						unifiedMessages = unifiedMessages.map(m =>
+							m.id === msg.id ? { ...m, read: true } : m
+						);
+					} catch {}
+				}
+			}
+		}
+	}
+
+	async function composeSearch(q) {
+		if (!q || q.length < 2) { composeToResults = []; return; }
+		try {
+			const res = await fetch(`${window.location.origin}/api/v1/chat/contact-search?q=${encodeURIComponent(q)}`);
+			if (res.ok) composeToResults = await res.json();
+		} catch { composeToResults = []; }
+	}
+
+	function composeSelectContact(contact) {
+		composeToSelected = { type: 'contact', id: contact.id, display_name: contact.display_name, thread_id: null };
+		composeToQuery = contact.display_name;
+		composeToResults = [];
+	}
+
+	function composeSelectEmailAddr() {
+		composeToSelected = { type: 'email', address: composeToQuery.trim() };
+		composeToResults = [];
+	}
+
+	async function unifiedSend() {
+		if (!composeBody.trim()) return;
+		composeSending = true;
+		try {
+			if (composeIsEmail) {
+				// Send via email
+				const toAddr = composeToSelected?.address || composeToQuery.trim();
+				if (!toAddr || !composeSubject) { composeSending = false; return; }
+				await fetch(`${window.location.origin}/api/v1/email/send`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ to: toAddr, subject: composeSubject, body: composeBody }),
+				});
+			} else if (composeToSelected?.type === 'contact') {
+				// Send via PAN — get or create thread
+				const tRes = await fetch(`${window.location.origin}/api/v1/chat/threads/dm`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ contact_id: composeToSelected.id }),
+				});
+				if (tRes.ok) {
+					const t = await tRes.json();
+					await fetch(`${window.location.origin}/api/v1/chat/threads/${t.thread_id}/messages`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ body: composeBody }),
+					});
+				}
+			}
+			// Reset compose
+			unifiedCompose = false;
+			composeToQuery = '';
+			composeToSelected = null;
+			composeSubject = '';
+			composeBody = '';
+			composeToResults = [];
+			// Refresh
+			loadUnifiedInbox();
+		} catch (e) {
+			console.error('[PAN Comms] send failed:', e);
+		} finally {
+			composeSending = false;
+		}
+	}
+
+	function openExpandedCommsView(view) {
+		const urls = {
+			contacts: `${window.location.origin}/v2/comms?view=contacts`,
+			mail: `${window.location.origin}/v2/comms?view=mail`,
+			calendar: `${window.location.origin}/v2/comms?view=calendar`,
+		};
+		const titles = { contacts: 'Contacts', mail: 'Mail', calendar: 'Calendar' };
+		openPanWindow(urls[view] || urls.contacts, { width: 900, height: 700, title: titles[view] || 'Comms' });
+	}
+
+	function openComposeWindow(contact = null) {
+		const params = new URLSearchParams();
+		if (contact) {
+			params.set('contact', contact.id);
+			params.set('name', contact.display_name);
+			if (contact.email) params.set('email', contact.email);
+		}
+		openPanWindow(`${window.location.origin}/v2/compose?${params.toString()}`, { width: 640, height: 520, title: 'Compose' });
+	}
+
+	async function openMessageThread(msg) {
+		// Find the contact for this message and open the chat
+		const contactName = msg.sender_name || msg.recipient_name || msg.from_name;
+		const contactId = msg.sender_id !== 'self' ? msg.sender_id : null;
+		commsView = 'contacts';
+		await loadCommsContacts();
+		const contact = commsContacts.find(c => c.id === contactId) ||
+			commsContacts.find(c => c.display_name === contactName);
+		if (contact) commsClickContact(contact);
+	}
+
+	function commsTimeAgo(ts) {
+		if (!ts) return '';
+		const now = Date.now();
+		const diff = now - (typeof ts === 'number' ? ts : parseInt(ts));
+		if (diff < 60000) return 'now';
+		if (diff < 3600000) return Math.floor(diff / 60000) + 'm';
+		if (diff < 86400000) return Math.floor(diff / 3600000) + 'h';
+		if (diff < 604800000) return Math.floor(diff / 86400000) + 'd';
+		return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+	}
 
 	function toggleComms() {
 		commsOpen = !commsOpen;
@@ -408,7 +616,7 @@
 	<div class="mobile-overlay" onclick={closeMobileMenu}></div>
 {/if}
 
-{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/crucible') || page.url.pathname.includes('/compose') || page.url.pathname.includes('/call')}
+{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/crucible') || page.url.pathname.includes('/compose') || page.url.pathname.includes('/call') || page.url.pathname.includes('/comms')}
 	{@render children()}
 {:else}
 <div class="shell">
@@ -465,13 +673,94 @@
 			</button>
 			{#if commsOpen && !collapsed}
 				<div class="comms-body">
-					<!-- Contacts / Calendar toggle -->
+					<!-- Contacts / Messages / Calendar toggle -->
 					<div class="comms-view-toggle">
-						<button class="comms-vtab" class:active={commsView === 'contacts'} onclick={() => { commsView = 'contacts'; loadCommsContacts(); }}>👤 Contacts</button>
-						<button class="comms-vtab" class:active={commsView === 'calendar'} class:flash={calendarFlash} onclick={() => { commsView = 'calendar'; commsActiveContact = null; loadCalendarEvents(); }}>📅 Calendar</button>
+						<button class="comms-vtab" class:active={commsView === 'contacts'} onclick={() => { commsView = 'contacts'; loadCommsContacts(); }} title="Contacts">👤</button>
+						<button class="comms-vtab" class:active={commsView === 'mail'} onclick={() => { commsView = 'mail'; commsActiveContact = null; loadUnifiedInbox(); }} title="Mail">
+							📨
+							{#if unreadMessages > 0}<span class="comms-msg-badge">{unreadMessages}</span>{/if}
+						</button>
+						<button class="comms-vtab" class:active={commsView === 'calendar'} class:flash={calendarFlash} onclick={() => { commsView = 'calendar'; commsActiveContact = null; loadCalendarEvents(); }} title="Calendar">📅</button>
+						<button class="comms-vtab comms-expand-btn" onclick={() => openExpandedCommsView(commsView)} title="Open {commsView} in window">↗</button>
 					</div>
 
-					{#if commsView === 'calendar'}
+					{#if commsView === 'mail'}
+						<div class="comms-messages-view">
+							<!-- Toolbar: filter tabs + actions -->
+							<div class="comms-unified-toolbar">
+								<div class="comms-msg-subtabs">
+									<button class="comms-msg-subtab" class:active={unifiedFilter === 'all'} onclick={() => { unifiedFilter = 'all'; loadUnifiedInbox(); }}>All</button>
+									<button class="comms-msg-subtab" class:active={unifiedFilter === 'pan'} onclick={() => { unifiedFilter = 'pan'; loadUnifiedInbox(); }}>PAN</button>
+									<button class="comms-msg-subtab" class:active={unifiedFilter === 'email'} onclick={() => { unifiedFilter = 'email'; loadUnifiedInbox(); }}>Email</button>
+								</div>
+								<div class="comms-unified-actions">
+									<button class="comms-action-btn" onclick={openComposeWindow} title="Compose">📝</button>
+									{#if unifiedEmailConfigured}
+										<button class="comms-action-btn" onclick={syncEmailFromUnified} disabled={unifiedLoading} title="Sync Email">↻</button>
+									{/if}
+								</div>
+							</div>
+
+							<!-- Message list (compose opens in Tauri window via 📝 button) -->
+							{#if unifiedLoading && unifiedMessages.length === 0}
+								<div class="comms-empty">Loading...</div>
+							{:else if unifiedMessages.length === 0}
+								<div class="comms-empty">No messages</div>
+							{:else}
+								<div class="comms-msg-list">
+									{#each unifiedMessages as msg}
+										<button class="comms-msg-row" class:unread={!msg.read} onclick={() => unifiedClickMessage(msg)}>
+											{#if msg.type === 'email'}
+												<span class="comms-avatar comms-avatar-sm comms-avatar-email">📧</span>
+											{:else}
+												<span class="comms-avatar comms-avatar-sm">{commsInitials(msg.from_name || '?')}</span>
+											{/if}
+											<div class="comms-msg-row-body">
+												<div class="comms-msg-row-top">
+													<span class="comms-msg-row-name" class:unread={!msg.read}>{msg.from_name || 'Unknown'}</span>
+													<span class="comms-transport-badge" class:pan={msg.type === 'pan'} class:email={msg.type === 'email'}>{msg.type === 'pan' ? 'PAN' : 'Email'}</span>
+													<span class="comms-msg-row-time">{commsTimeAgo(msg.date)}</span>
+												</div>
+												{#if msg.type === 'email' && msg.subject}
+													<div class="comms-email-subject" class:unread={!msg.read}>{msg.subject}</div>
+												{/if}
+												<div class="comms-msg-row-preview">{msg.body_preview}</div>
+											</div>
+										</button>
+										<!-- Expanded email view -->
+										{#if msg.type === 'email' && unifiedExpandedEmail === msg.id}
+											<div class="comms-email-expanded">
+												{#if unifiedEmailDetail}
+													<div class="comms-email-header">
+														<div><strong>From:</strong> {unifiedEmailDetail.from_name ? `${unifiedEmailDetail.from_name} <${unifiedEmailDetail.from_address}>` : unifiedEmailDetail.from_address}</div>
+														<div><strong>To:</strong> {unifiedEmailDetail.to_address}</div>
+														<div><strong>Date:</strong> {new Date(unifiedEmailDetail.date).toLocaleString()}</div>
+														{#if unifiedEmailDetail.attachments_json}
+															{@const atts = JSON.parse(unifiedEmailDetail.attachments_json)}
+															<div class="comms-email-attachments">
+																{#each atts as att}
+																	<span class="comms-email-att">📎 {att.filename}</span>
+																{/each}
+															</div>
+														{/if}
+													</div>
+													<div class="comms-email-body-content">
+														{#if unifiedEmailDetail.body_html}
+															{@html unifiedEmailDetail.body_html}
+														{:else}
+															<pre class="comms-email-text">{unifiedEmailDetail.body_text || '(empty)'}</pre>
+														{/if}
+													</div>
+												{:else}
+													<div class="comms-empty">Loading email...</div>
+												{/if}
+											</div>
+										{/if}
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{:else if commsView === 'calendar'}
 						<div class="comms-calendar">
 							<div class="cal-nav">
 								<button class="cal-nav-btn" onclick={calendarPrev}>◂</button>
@@ -1125,9 +1414,9 @@
 
 	.comms-view-toggle {
 		display: flex;
-		gap: 2px;
+		gap: 4px;
 		margin-bottom: 6px;
-		padding: 2px;
+		padding: 4px;
 		background: #1e1e2e;
 		border-radius: 5px;
 		flex-shrink: 0;
@@ -1138,15 +1427,142 @@
 		background: none;
 		border: none;
 		color: #6c7086;
-		font-size: 10px;
-		padding: 4px 0;
+		font-size: 18px;
+		padding: 6px 0;
 		cursor: pointer;
 		border-radius: 3px;
 		transition: all 0.12s;
+		line-height: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 32px;
+		min-height: 32px;
 	}
 
 	.comms-vtab:hover { background: rgba(137,180,250,0.08); }
 	.comms-vtab.active { background: rgba(137,180,250,0.15); color: #89b4fa; }
+	.comms-expand-btn { flex: 0; font-size: 12px; padding: 4px 6px; color: #585b70; }
+	.comms-expand-btn:hover { color: #89b4fa; }
+
+	/* Messages tab badge */
+	.comms-msg-badge {
+		background: #f38ba8;
+		color: #11111b;
+		font-size: 8px;
+		font-weight: 700;
+		padding: 0 4px;
+		border-radius: 6px;
+		margin-left: 3px;
+		vertical-align: top;
+	}
+
+	/* Messages sub-tabs (Inbox / Sent) */
+	.comms-messages-view {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		flex: 1;
+	}
+
+	.comms-msg-subtabs {
+		display: flex;
+		gap: 6px;
+		margin-bottom: 4px;
+	}
+
+	.comms-msg-subtab {
+		flex: 1;
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		color: #6c7086;
+		font-size: 10px;
+		padding: 3px 0;
+		cursor: pointer;
+		transition: all 0.12s;
+	}
+
+	.comms-msg-subtab:hover { color: #a6adc8; }
+	.comms-msg-subtab.active { color: #89b4fa; border-bottom-color: #89b4fa; }
+
+	/* Message list */
+	.comms-msg-list {
+		display: flex;
+		flex-direction: column;
+		overflow-y: auto;
+		flex: 1;
+		min-height: 0;
+	}
+
+	.comms-msg-row {
+		display: flex;
+		gap: 8px;
+		align-items: flex-start;
+		padding: 6px 8px;
+		background: none;
+		border: none;
+		border-bottom: 1px solid #1e1e2e;
+		cursor: pointer;
+		text-align: left;
+		width: 100%;
+		transition: background 0.1s;
+		color: #bac2de;
+	}
+
+	.comms-msg-row:hover { background: rgba(137,180,250,0.06); }
+	.comms-msg-row.unread { background: rgba(137,180,250,0.04); }
+
+	.comms-avatar-sm {
+		width: 26px;
+		height: 26px;
+		font-size: 9px;
+		flex-shrink: 0;
+	}
+
+	.comms-msg-row-body {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+	}
+
+	.comms-msg-row-top {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+	}
+
+	.comms-msg-row-name {
+		font-size: 11px;
+		color: #cdd6f4;
+		font-weight: 400;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.comms-msg-row-name.unread {
+		font-weight: 700;
+		color: #cdd6f4;
+	}
+
+	.comms-msg-row-time {
+		font-size: 9px;
+		color: #585b70;
+		flex-shrink: 0;
+		margin-left: 4px;
+	}
+
+	.comms-msg-row-preview {
+		font-size: 10px;
+		color: #6c7086;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		line-height: 1.3;
+	}
 
 	.comms-empty {
 		text-align: center;
@@ -1322,6 +1738,194 @@
 	.comms-action:hover {
 		background: rgba(137,180,250,0.1);
 		color: #89b4fa;
+	}
+
+	/* Unified Messages */
+	.comms-unified-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 2px 4px;
+		border-bottom: 1px solid #313244;
+		flex-shrink: 0;
+	}
+	.comms-unified-actions {
+		display: flex;
+		gap: 2px;
+	}
+	.comms-action-btn {
+		background: none;
+		border: 1px solid #313244;
+		color: #a6adc8;
+		font-size: 13px;
+		width: 24px;
+		height: 24px;
+		border-radius: 4px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: all 0.15s;
+	}
+	.comms-action-btn:hover { background: rgba(137,180,250,0.1); color: #89b4fa; border-color: #89b4fa; }
+	.comms-action-btn:disabled { opacity: 0.4; cursor: default; }
+
+	.comms-transport-badge {
+		font-size: 9px;
+		padding: 0 4px;
+		border-radius: 3px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.3px;
+		flex-shrink: 0;
+	}
+	.comms-transport-badge.pan {
+		background: rgba(137,180,250,0.15);
+		color: #89b4fa;
+	}
+	.comms-transport-badge.email {
+		background: rgba(108,112,134,0.2);
+		color: #6c7086;
+	}
+
+	.comms-avatar-email {
+		font-size: 14px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: rgba(108,112,134,0.2);
+	}
+
+	/* Unified Compose */
+	.comms-unified-compose {
+		padding: 6px 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		border-bottom: 1px solid #313244;
+		background: rgba(30,30,46,0.5);
+	}
+	.comms-compose-to-wrap {
+		position: relative;
+	}
+	.comms-compose-to-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: rgba(137,180,250,0.15);
+		color: #89b4fa;
+		font-size: 11px;
+		padding: 2px 6px;
+		border-radius: 3px;
+		margin-top: 2px;
+	}
+	.comms-compose-to-clear {
+		background: none;
+		border: none;
+		color: #89b4fa;
+		cursor: pointer;
+		font-size: 11px;
+		padding: 0 2px;
+	}
+	.comms-compose-dropdown {
+		position: absolute;
+		top: 100%;
+		left: 0;
+		right: 0;
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 4px;
+		z-index: 100;
+		max-height: 150px;
+		overflow-y: auto;
+		box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+	}
+	.comms-compose-dropdown-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		width: 100%;
+		padding: 6px 8px;
+		background: none;
+		border: none;
+		color: #cdd6f4;
+		font-size: 12px;
+		cursor: pointer;
+		text-align: left;
+	}
+	.comms-compose-dropdown-item:hover { background: rgba(137,180,250,0.1); }
+	.comms-compose-dropdown-email { color: #6c7086; font-size: 10px; }
+	.comms-compose-dropdown-icon { font-size: 14px; }
+	.comms-avatar-xs {
+		width: 20px;
+		height: 20px;
+		font-size: 9px;
+	}
+	.comms-compose-body {
+		resize: vertical;
+		min-height: 50px;
+		font-family: inherit;
+	}
+	.comms-email-subject {
+		font-size: 12px;
+		color: #bac2de;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.comms-email-subject.unread {
+		color: #cdd6f4;
+		font-weight: 600;
+	}
+	.comms-email-expanded {
+		background: #1e1e2e;
+		border: 1px solid #313244;
+		border-radius: 6px;
+		margin: 0 4px 6px;
+		padding: 8px;
+		max-height: 300px;
+		overflow-y: auto;
+		font-size: 12px;
+	}
+	.comms-email-header {
+		padding-bottom: 8px;
+		border-bottom: 1px solid #313244;
+		margin-bottom: 8px;
+		color: #a6adc8;
+		font-size: 11px;
+		line-height: 1.6;
+	}
+	.comms-email-header strong {
+		color: #cdd6f4;
+	}
+	.comms-email-attachments {
+		margin-top: 4px;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+	.comms-email-att {
+		background: #313244;
+		padding: 2px 6px;
+		border-radius: 4px;
+		font-size: 10px;
+		color: #89b4fa;
+	}
+	.comms-email-body-content {
+		color: #cdd6f4;
+		line-height: 1.5;
+		word-break: break-word;
+	}
+	.comms-email-body-content :global(img) {
+		max-width: 100%;
+		height: auto;
+	}
+	.comms-email-text {
+		white-space: pre-wrap;
+		font-family: inherit;
+		font-size: 12px;
+		margin: 0;
+		color: #cdd6f4;
 	}
 
 	/* Calendar */
