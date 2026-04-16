@@ -532,7 +532,14 @@ router.get('/api/pty-transcript', (req, res) => {
 });
 
 // GET /dashboard/api/stats
+// Cached — queries run on a 72K-row events table (2-3s each). Stale for 60s is fine for dashboard counters.
+let _statsCache = null;
+let _statsCacheAt = 0;
+const STATS_TTL_MS = 60_000;
 router.get('/api/stats', (req, res) => {
+  if (_statsCache && (Date.now() - _statsCacheAt) < STATS_TTL_MS) {
+    return res.json(_statsCache);
+  }
   const stats = getScoped(req, `SELECT
     (SELECT COUNT(*) FROM events WHERE org_id = :org_id) as total_events,
     (SELECT COUNT(*) FROM memory_items WHERE org_id = :org_id) as total_memory,
@@ -580,13 +587,16 @@ router.get('/api/stats', (req, res) => {
     console.warn('[stats] restart count failed:', err.message);
   }
 
-  res.json({
+  const result = {
     ...stats,
     db_size_bytes: dbSize,
     event_types: eventTypes,
     total_restarts: totalRestarts,
     restarts_by_project: restartsByProject,
-  });
+  };
+  _statsCache = result;
+  _statsCacheAt = Date.now();
+  res.json(result);
 });
 
 // GET /dashboard/api/memory — reads actual Claude Code memory files from ~/.claude/projects/*/memory/

@@ -680,6 +680,25 @@ async function healthCheck() {
   // terminal.js already auto-launches AI on new PTY sessions.
   // ensureAiInSessions();
 
+  // ── Memory watchdog ──────────────────────────────────────────────
+  // Alert when Node heap grows past threshold (likely leak).
+  const MEMORY_WARN_MB = 300;
+  const mem = process.memoryUsage();
+  const rssMb = Math.round(mem.rss / 1048576);
+  const heapMb = Math.round(mem.heapUsed / 1048576);
+  if (rssMb > MEMORY_WARN_MB) {
+    const existing = get("SELECT id FROM alerts WHERE alert_type = 'memory_high' AND status IN ('open', 'acknowledged') LIMIT 1");
+    if (!existing) {
+      console.warn(`[Steward] ⚠ Memory high: RSS=${rssMb}MB heap=${heapMb}MB (threshold ${MEMORY_WARN_MB}MB)`);
+      createAlert({
+        alert_type: 'memory_high',
+        severity: 'warning',
+        title: `PAN memory high: ${rssMb}MB RSS`,
+        detail: `RSS=${rssMb}MB, heap=${heapMb}MB, uptime=${Math.round(process.uptime())}s. Possible memory leak — consider restarting.`,
+      });
+    }
+  }
+
   // Log a heartbeat event
   try {
     const summary = services.map(s => `${s.id}:${s._status}`).join(',');
@@ -785,29 +804,43 @@ $result | ConvertTo-Json -Compress -Depth 3`;
     }
 
     if (orphans.length > 0) {
+      const KILL_AGE_MIN = 60; // Auto-kill orphans older than 60 minutes
+      const toKill = orphans.filter(o => o.ageMin >= KILL_AGE_MIN);
+      const toWarn = orphans.filter(o => o.ageMin < KILL_AGE_MIN);
+
+      // Auto-kill old orphans — these are confirmed leaks
+      for (const o of toKill) {
+        try {
+          execSync(`taskkill /F /PID ${o.pid}`, { windowsHide: true, timeout: 5000 });
+          console.log(`[Steward] ☠ Killed orphan pid=${o.pid} (${o.ageMin}min old): ${o.cmd}`);
+        } catch (killErr) {
+          console.warn(`[Steward] Failed to kill orphan pid=${o.pid}: ${killErr.message}`);
+        }
+      }
+
       const summary = orphans.map(o => `pid=${o.pid} (${o.ageMin}min)`).join(', ');
-      console.log(`[Steward] Detected ${orphans.length} possible orphan AI process(es): ${summary}`);
-      logServiceEvent('orphan-detection', 'orphans_detected', { count: orphans.length, orphans });
+      console.log(`[Steward] Detected ${orphans.length} orphan(s): ${summary} — killed ${toKill.length}, warned ${toWarn.length}`);
+      logServiceEvent('orphan-detection', 'orphans_reaped', { count: orphans.length, killed: toKill.length, warned: toWarn.length, orphans });
 
       const existingOpen = get("SELECT id FROM alerts WHERE alert_type = 'orphan_processes' AND status IN ('open', 'acknowledged') LIMIT 1");
       if (!existingOpen) {
         createAlert({
           alert_type: 'orphan_processes',
-          severity: 'warning',
-          title: `${orphans.length} possible orphan AI process(es) detected`,
+          severity: toKill.length > 0 ? 'critical' : 'warning',
+          title: `${orphans.length} orphan AI process(es) — ${toKill.length} killed, ${toWarn.length} warned`,
           detail: JSON.stringify({
             orphans,
+            killed: toKill.map(o => o.pid),
             tracked_pty_pids: [...ourPtyPids],
             detected_at: new Date().toISOString(),
-            hint: 'Kill manually if confirmed orphans'
           })
         });
       }
 
       for (const s of sessions) {
         broadcastToSession(s.id, 'system_message', {
-          text: `⚠ ${orphans.length} possible orphan AI process(es): ${summary}. Check Alerts for details.`,
-          level: 'warning'
+          text: `☠ ${orphans.length} orphan AI process(es): ${summary}. Killed ${toKill.length}.`,
+          level: toKill.length > 0 ? 'error' : 'warning'
         });
       }
     }
