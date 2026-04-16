@@ -186,7 +186,15 @@
 		</div>
 
 		{#if sendError}
-			<div class="compose-error">{sendError}</div>
+			<div class="compose-error">
+				{sendError}
+				{#if /not configured|SMTP|Email not/i.test(sendError)}
+					<button
+						class="error-action"
+						onclick={() => { window.open(`${API_BASE}/v2/settings?section=email`, '_blank', 'width=900,height=700'); }}
+					>Open Email Settings →</button>
+				{/if}
+			</div>
 		{/if}
 
 		<div class="compose-fields">
@@ -497,7 +505,14 @@
 	.compose-error {
 		background: #45273a; color: #f38ba8;
 		padding: 8px 20px; font-size: 13px; border-bottom: 1px solid #f38ba8;
+		display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
 	}
+	.error-action {
+		background: #f38ba8; color: #1e1e2e; border: none;
+		padding: 4px 10px; border-radius: 4px; font-size: 12px;
+		font-weight: 600; cursor: pointer; margin-left: auto;
+	}
+	.error-action:hover { background: #eba0ac; }
 	.compose-sent {
 		display: flex; flex-direction: column;
 		align-items: center; justify-content: center;
