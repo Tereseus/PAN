@@ -768,7 +768,21 @@ app.get('/api/v1/claude-models', _modelsHandler);
 app.get('/api/v1/ai/models', _modelsHandler);
 
 // GET /api/v1/claude-usage — Claude Code session token usage from JSONL files
+// Heavy: reads dozens of JSONL files + calls Anthropic API. Cached 5 minutes.
+// On cold start, returns empty shell immediately and computes in background.
+let _claudeUsageCache = null;
+let _claudeUsageCacheAt = 0;
+let _claudeUsageComputing = false;
+const CLAUDE_USAGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 app.get('/api/v1/claude-usage', async (req, res) => {
+  if (_claudeUsageCache && (Date.now() - _claudeUsageCacheAt) < CLAUDE_USAGE_TTL_MS) {
+    return res.json(_claudeUsageCache);
+  }
+  // If already computing, return stale cache or empty shell (don't pile up)
+  if (_claudeUsageComputing) {
+    return res.json(_claudeUsageCache || { session: { input: 0, output: 0, cache_read: 0, cache_create: 0, total: 0, messages: 0 }, today: { input: 0, output: 0, cache_read: 0, cache_create: 0, total: 0, messages: 0 }, week: { input: 0, output: 0, cache_read: 0, cache_create: 0, total: 0, messages: 0 }, model: 'loading...', rateLimits: null });
+  }
+  _claudeUsageComputing = true;
   try {
     const homeDir = process.env.HOME || process.env.USERPROFILE;
     const sessDir = join(homeDir, '.claude', 'sessions');
@@ -781,9 +795,12 @@ app.get('/api/v1/claude-usage', async (req, res) => {
     }).filter(Boolean);
 
     // Find JSONL files for sessions and sum tokens
-    function sumJsonlTokens(filePath) {
+    function sumJsonlTokens(filePath, maxBytes = 10 * 1024 * 1024) {
       const result = { input: 0, output: 0, cache_read: 0, cache_create: 0, messages: 0, model: '' };
       try {
+        // Skip files larger than maxBytes (10MB default) — they're old giant sessions
+        const fstat = statSync(filePath);
+        if (fstat.size > maxBytes) return result;
         const data = readFileSync(filePath, 'utf8');
         for (const line of data.split('\n')) {
           if (!line.trim()) continue;
@@ -976,7 +993,7 @@ app.get('/api/v1/claude-usage', async (req, res) => {
     if (rateLimits) global._rlCache = { ts: Date.now(), data: rateLimits };
     } // end rlCache miss
 
-    res.json({
+    const usageResult = {
       session: {
         ...sessionTokens,
         total: sessionTokens.input + sessionTokens.output + sessionTokens.cache_read + sessionTokens.cache_create,
@@ -993,8 +1010,13 @@ app.get('/api/v1/claude-usage', async (req, res) => {
       },
       model: model || 'unknown',
       rateLimits,
-    });
+    };
+    _claudeUsageCache = usageResult;
+    _claudeUsageCacheAt = Date.now();
+    _claudeUsageComputing = false;
+    res.json(usageResult);
   } catch (e) {
+    _claudeUsageComputing = false;
     console.error('[Claude Usage] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
@@ -1205,20 +1227,33 @@ app.use('/dashboard', privacyMiddleware({ caller: 'dashboard' }), dashboardRoute
 app.get('/dashboard', (req, res) => res.redirect('/v2/'));
 app.get('/dashboard/', (req, res) => res.redirect('/v2/'));
 
+// Shortcut redirects for full-screen apps
+app.get('/kronos', (req, res) => res.redirect('/v2/kronos'));
+app.get('/atlas', (req, res) => res.redirect('/v2/atlas'));
+
 // Svelte v2 dashboard — static files
+// Immutable chunks (_app/immutable/**) have content-hashed filenames — cache forever.
+// index.html and version.json must never be cached (they change on rebuild).
 app.use('/v2', express.static(join(__dirname, '..', 'public', 'v2'), {
-  etag: false,
+  etag: true,
   lastModified: true,
   index: 'index.html',
-  setHeaders: (res) => {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  setHeaders: (res, filePath) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
+    if (filePath.includes('/_app/immutable/')) {
+      // Content-hashed — safe to cache for 1 year
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else {
+      // index.html, version.json, etc. — always revalidate
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
   }
 }));
 // SPA fallback — any /v2/* that isn't a file gets index.html
 app.get('/v2/*path', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(join(__dirname, '..', 'public', 'v2', 'index.html'));
 });
 
@@ -2783,6 +2818,47 @@ function start() {
       // Incognito TTL cleanup — purge expired incognito events on startup and every 5 minutes
       cleanupExpiredIncognito();
       _startupIntervals.push(setInterval(cleanupExpiredIncognito, 5 * 60 * 1000));
+
+      // ── MEMORY HEALTH MONITOR — every 2 minutes ──────────────────
+      // Tracks Node.js heap usage and alerts if it crosses thresholds.
+      // This is the first autodev mechanism: PAN monitors itself.
+      const HEAP_WARN_MB = 300;
+      const HEAP_CRITICAL_MB = 500;
+      let _lastMemAlert = 0;
+      function _checkMemoryHealth() {
+        const mem = process.memoryUsage();
+        const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+        const rssMB = Math.round(mem.rss / 1024 / 1024);
+        const extMB = Math.round((mem.external || 0) / 1024 / 1024);
+        // Log every check so we can spot trends
+        console.log(`[PAN Health] Memory: heap=${heapMB}MB rss=${rssMB}MB ext=${extMB}MB`);
+        const now = Date.now();
+        if (heapMB > HEAP_CRITICAL_MB && (now - _lastMemAlert) > 600000) {
+          _lastMemAlert = now;
+          try {
+            createAlert({
+              alert_type: 'memory_critical',
+              severity: 'critical',
+              title: `Memory critical: ${heapMB}MB heap`,
+              detail: `RSS=${rssMB}MB, External=${extMB}MB. Server may become unresponsive. Consider restarting.`,
+            });
+          } catch {}
+          console.error(`[PAN Health] CRITICAL: heap=${heapMB}MB exceeds ${HEAP_CRITICAL_MB}MB threshold`);
+        } else if (heapMB > HEAP_WARN_MB && (now - _lastMemAlert) > 1800000) {
+          _lastMemAlert = now;
+          try {
+            createAlert({
+              alert_type: 'memory_warning',
+              severity: 'warning',
+              title: `Memory warning: ${heapMB}MB heap`,
+              detail: `RSS=${rssMB}MB, External=${extMB}MB. Trending high — monitor for leaks.`,
+            });
+          } catch {}
+          console.warn(`[PAN Health] WARNING: heap=${heapMB}MB exceeds ${HEAP_WARN_MB}MB threshold`);
+        }
+      }
+      _checkMemoryHealth(); // Run on startup
+      _startupIntervals.push(setInterval(_checkMemoryHealth, 2 * 60 * 1000));
 
       // Tier 0 Phase 6 — Verify audit chain integrity on startup and every 1 hour
       function _verifyAuditChains() {

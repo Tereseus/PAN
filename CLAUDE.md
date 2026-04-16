@@ -196,24 +196,29 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### Recent Conversation
-**Claude** (2026-04-15 18:39:46): Craft swapped. Hard-refresh (Ctrl+Shift+R) the Kanban page. Here's what I fixed:
+**Claude** (2026-04-15 21:30:23): It's in the built JS. The swap happened — after the auto-reload, the "Page Load" section will appear in the perf panel with all the timers. It just hasn't reloaded on your end yet.
+**User** (2026-04-15 21:53:57): But why hasn't it reloaded why I refreshed I restarted what the fuck is happening this is not a craft does this have to be a carrier what is happening Why why is it so difficult to get these widgets t
+**Claude** (2026-04-15 21:57:07): "Page Load" IS in the built JS chunk (node 22). The code is there, the build is there, the Craft is serving it. 
 
-1. **Card text overflow** — titles now clamp to 2 lines max with ellipsis instead of expanding the card
-2. **Modal fie
-**Claude** (2026-04-15 18:40:17): Background task finished — that was the earlier API test, already handled. Waiting on your feedback after the hard-refresh.
-**User** (2026-04-15 18:44:30): There is no team C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776293062667.png
-**Claude** (2026-04-15 18:45:04): I see — the Assigned To dropdown shows "Unassigned" and "Tereseus", so it IS working. But you're saying there's no way to **create teams** or **add team members**. Right now it only pulls from org mem
+Here's what was happening: the swap auto-reload fires, the page reloads, the new code 
+**User** (2026-04-15 21:57:23): Look at what I see now, now, not before. C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776304609500.png C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776304638596.png
+**Claude** (2026-04-15 21:57:40): I can see it in the second screenshot — the **Page Load** section IS there in the right panel:
+
+- **Script Init** — 531ms
+- **Mounted** — (visible)
+- **First Transcript** — (visible)
+- **Close to Read
 
 ### Open Tasks
 - [backlog P1] Enter key / send button stops working in chat input � requires page refresh
 - [backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [in_progress P1] Camera system: Reolink PoE + Frigate NVR on TedProDesk1
-- [todo] Spotify auto-play
-- [todo] Background retraining (2am-6am)
-- [todo] Voice marketplace ($1-2 each)
+- [in_progress] Spotify auto-play
+- [in_progress] Voice marketplace ($1-2 each)
 - [todo] Voice personality packs
 - [todo] Cloud training for no-GPU users
 - [todo] Model push to phone after training
 - [todo] Order components (ESP32S3, battery, sensors, laser, LED)
+- [todo] 3D print case design (~52x42x25mm)
+- [todo] Solder I2C sensor board + GPIO expander
 
 <!-- PAN-CONTEXT-END -->

@@ -594,17 +594,37 @@
 		} catch {}
 	}
 
+	// Auto-reload on Craft swap — polls version.json, reloads if build changed
+	let _knownVersion = null;
+	async function checkVersion() {
+		try {
+			const r = await fetch(`/v2/_app/version.json?_=${Date.now()}`);
+			if (!r.ok) return;
+			const d = await r.json();
+			if (_knownVersion && d.version !== _knownVersion) {
+				console.log('[PAN] Build changed, auto-reloading...');
+				try { if ('caches' in window) { const ks = await caches.keys(); ks.forEach(k => caches.delete(k)); } } catch {}
+				window.location.reload();
+				return;
+			}
+			_knownVersion = d.version;
+		} catch {}
+	}
+
 	$effect(() => {
 		checkHealth();
 		loadUser();
 		loadOrgs();
 		loadUnread();
+		checkVersion();
 		const iv = setInterval(checkHealth, 10000);
 		const uiv = setInterval(loadUnread, 15000);
+		const viv = setInterval(checkVersion, 5000);
 		window.addEventListener('pan-branding-changed', handleBrandingChange);
 		return () => {
 			clearInterval(iv);
 			clearInterval(uiv);
+			clearInterval(viv);
 			window.removeEventListener('pan-branding-changed', handleBrandingChange);
 		};
 	});
@@ -616,7 +636,7 @@
 	<div class="mobile-overlay" onclick={closeMobileMenu}></div>
 {/if}
 
-{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/crucible') || page.url.pathname.includes('/compose') || page.url.pathname.includes('/call') || page.url.pathname.includes('/comms')}
+{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/kronos') || page.url.pathname.includes('/crucible') || page.url.pathname.includes('/compose') || page.url.pathname.includes('/call') || page.url.pathname.includes('/comms')}
 	{@render children()}
 {:else}
 <div class="shell">
@@ -647,7 +667,14 @@
 					class="tab"
 					class:active={isActive(tab)}
 					title={collapsed ? tab.label : ''}
-					onclick={closeMobileMenu}
+					onclick={(e) => {
+						closeMobileMenu();
+						if (tab.openAsWindow) {
+							e.preventDefault();
+							const url = `${window.location.origin}${tab.href}`;
+							window.open(url, tab.label, 'width=1200,height=800');
+						}
+					}}
 				>
 					<span class="tab-icon">{tab.icon}</span>
 					{#if !collapsed}
