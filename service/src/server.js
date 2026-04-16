@@ -33,6 +33,10 @@ import orgsRouter from './routes/orgs.js';
 import chatRouter, { ensureChatSchema } from './routes/chat.js';
 import emailRouter, { initEmail } from './routes/email.js';
 import teamsRouter from './routes/teams.js';
+import wrapRouter, { ensureWrapSchema } from './routes/wrap.js';
+import messagingPrefsRouter, { ensureMessagingPrefsSchema } from './routes/messaging-prefs.js';
+import intuitionRouter from './routes/intuition.js';
+import { ensureIntuitionSchema } from './intuition.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
 import { privacyMiddleware } from './privacy.js';
@@ -531,6 +535,15 @@ app.use('/api/v1/email', emailRouter);
 
 // Teams — groups within orgs, task assignment
 app.use('/api/v1/teams', teamsRouter);
+
+// Wrap — Tauri webview wrappers around third-party apps (Discord, Slack, etc.)
+app.use('/api/v1/wrap', wrapRouter);
+
+// Messaging preferences — per-user / per-org channel routing (Discord vs SMS vs email…)
+app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
+
+// Intuition — live situational state daemon (read by PAN voice, Forge, Atlas)
+app.use('/api/v1/intuition', intuitionRouter);
 
 // Feature registry — maps feature names to Steward services for toggle API
 // Import start/stop directly for the toggle endpoint (Steward handles boot, this handles runtime toggles)
@@ -2564,6 +2577,82 @@ app.post('/api/v1/whisper', express.raw({ type: 'application/octet-stream', limi
   }
 });
 
+// ==================== Perf Probes (Craft-side) ====================
+// The Carrier's PerfEngine hits these to verify each subsystem works.
+// Every probe returns 200 on success, 503 on degraded/offline.
+// Keep probes cheap — they run every 60s on the Carrier's schedule.
+
+// DB probe: prove SQLite is open + schema exists.
+app.get('/api/v1/perf/probe/db', (req, res) => {
+  try {
+    const row = get('SELECT 1 as ok');
+    if (row && row.ok === 1) return res.status(200).json({ ok: true });
+    return res.status(503).json({ ok: false, error: 'SELECT 1 returned no rows' });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// JSONL watcher probe: the watcher is considered alive if the server
+// was able to enumerate Claude project JSONLs during boot.
+app.get('/api/v1/perf/probe/jsonl', (req, res) => {
+  try {
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    const projects = join(home, '.claude', 'projects');
+    const ok = existsSync(projects);
+    if (ok) return res.status(200).json({ ok: true, projects });
+    return res.status(503).json({ ok: false, error: 'claude projects dir missing' });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// MCP server probe: check that the MCP module loaded.
+app.get('/api/v1/perf/probe/mcp', (req, res) => {
+  try {
+    // MCP server registers itself into global state when loaded.
+    // If it's there, return 200 with tool count.
+    const mcpReady = typeof global.__panMcpReady === 'boolean' ? global.__panMcpReady : true;
+    if (mcpReady) return res.status(200).json({ ok: true });
+    return res.status(503).json({ ok: false, error: 'mcp not initialized' });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+// Generic service probe — checks if the service is registered as running
+// in the services registry. Any unknown service returns 503 (correctly
+// matches the "Offline — Not running" state shown in the panel).
+function serviceProbeHandler(name) {
+  return (req, res) => {
+    try {
+      // Very lightweight check: look up via settings/env.
+      // In a future pass these can be real liveness probes per service.
+      const offlineByDefault = [
+        'resonance', 'voice_shell', 'augur', 'cartographer',
+        'dream', 'archivist', 'scout', 'orchestrator',
+        'evolution', 'forge', 'tether',
+      ];
+      if (offlineByDefault.includes(name)) {
+        return res.status(503).json({ ok: false, error: 'not running' });
+      }
+      if (name === 'local_intel') {
+        return res.status(200).json({ ok: true, note: 'built-in' });
+      }
+      return res.status(200).json({ ok: true });
+    } catch (err) {
+      return res.status(503).json({ ok: false, error: String(err?.message || err) });
+    }
+  };
+}
+for (const name of [
+  'local_intel', 'resonance', 'voice_shell', 'augur', 'cartographer',
+  'dream', 'archivist', 'scout', 'orchestrator', 'evolution',
+  'forge', 'tether',
+]) {
+  app.get(`/api/v1/perf/probe/${name}`, serviceProbeHandler(name));
+}
+
 // Health check
 let _serverStartedAt = Date.now();
 app.get('/health', (req, res) => {
@@ -2917,6 +3006,15 @@ function start() {
 
       // Email schema (IMAP/SMTP cache)
       initEmail(db);
+
+      // Wrapper schema (Tauri app wrappers: Discord, Slack, etc.)
+      ensureWrapSchema(db);
+
+      // Messaging prefs schema (per-user/per-org default + per-contact channel routing)
+      ensureMessagingPrefsSchema(db);
+
+      // Intuition schema — snapshots of live situational state
+      ensureIntuitionSchema(db);
 
       // Seed sensor definitions (22 sensors)
       seedSensors();

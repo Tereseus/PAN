@@ -3,12 +3,87 @@
 	import { api, wsUrl } from '$lib/api.js';
 	import { getActiveProject, setActiveProject, sortProjects, getTerminalInput, setTerminalInput } from '$lib/stores.svelte.js';
 
-	// --- Load Timer (tracks page load phases) ---
+	// --- Load Timer (tracks every page load phase, in ms since page start) ---
+	// Each field = time from navigation start to when that milestone fires.
+	// Human names used in the Performance panel are defined in STAGE_LABELS below.
 	const _loadT0 = performance.now();
-	const _loadTimings = $state({ scriptInit: 0, mounted: 0, wsOpen: 0, firstScreen: 0, firstTranscript: 0 });
-	let _loadTimingsReactive = $derived({ ..._loadTimings, total: Math.round(_loadTimings.firstScreen || _loadTimings.wsOpen || _loadTimings.mounted || 0) });
+	const _loadTimings = $state({
+		scriptInit: 0,        // Script parsed + top-level state initialized
+		mounted: 0,           // Svelte onMount ran — DOM trees exist
+		wsOpen: 0,            // WebSocket handshake with server succeeded
+		ptyAttached: 0,       // Server replied — PTY session is alive
+		firstScreen: 0,       // First screen/scrollback bytes painted in terminal
+		firstTranscript: 0,   // First JSONL transcript delivered via WS
+		transcriptWidget: 0,  // Left transcript panel rendered its first bubble
+		usageWidget: 0,       // Usage widget finished its first fetch
+		interactive: 0,       // Everything ready — user can type with no lag
+	});
 	function _markLoad(key) { if (!_loadTimings[key]) _loadTimings[key] = Math.round(performance.now() - _loadT0); }
 	_markLoad('scriptInit');
+
+	// Human-readable labels + soft budgets (ms) for the Performance panel.
+	// Budgets are aspirational — anything over the yellow threshold flags as slow,
+	// over red is a real problem worth investigating.
+	const STAGE_LABELS = {
+		scriptInit:       { name: 'Script parsed',        warn: 300,  bad: 1000, help: 'Browser downloaded + parsed the JS bundle.' },
+		mounted:          { name: 'Page mounted',         warn: 600,  bad: 1500, help: 'Svelte built the DOM tree. You see the layout.' },
+		wsOpen:           { name: 'WebSocket connected',  warn: 800,  bad: 2000, help: 'Handshake with server done. Terminal can send keys.' },
+		ptyAttached:      { name: 'PTY attached',         warn: 1200, bad: 3000, help: 'Server confirmed a live terminal session is ready.' },
+		firstScreen:      { name: 'Terminal painted',     warn: 1800, bad: 4000, help: 'First bytes of terminal output rendered on screen.' },
+		firstTranscript:  { name: 'Transcript loaded',    warn: 2000, bad: 5000, help: 'JSONL transcript for this session arrived via WS.' },
+		transcriptWidget: { name: 'Left panel ready',     warn: 2000, bad: 5000, help: 'Left transcript panel rendered its first message.' },
+		usageWidget:      { name: 'Usage widget ready',   warn: 2500, bad: 6000, help: 'Usage/cost data fetched + rendered.' },
+		interactive:      { name: 'Interactive',          warn: 2500, bad: 6000, help: 'Everything loaded. Keystrokes hit the PTY instantly.' },
+	};
+
+	// --- Send Timer (measures keystroke → echo → assistant response) ---
+	// Reset on every sendTerminalInput call. Shown live in the Performance panel.
+	const _sendTimings = $state({
+		lastSendAt: 0,       // performance.now() of last send
+		lastAckMs: 0,        // time from send → HTTP 200 from /pipe
+		lastEchoMs: 0,       // time from send → user_echo arrived on WS
+		lastAssistantMs: 0,  // time from send → first assistant char appeared
+		lastSendText: '',    // preview of what was sent (first 40 chars)
+		awaitingAssistant: false, // true between send and first assistant message
+	});
+	function _markSend(text) {
+		_sendTimings.lastSendAt = performance.now();
+		_sendTimings.lastAckMs = 0;
+		_sendTimings.lastEchoMs = 0;
+		_sendTimings.lastAssistantMs = 0;
+		_sendTimings.lastSendText = (text || '').slice(0, 40);
+		_sendTimings.awaitingAssistant = true;
+	}
+	function _markSendPhase(key) {
+		if (!_sendTimings.lastSendAt) return;
+		const dt = Math.round(performance.now() - _sendTimings.lastSendAt);
+		if (key === 'ack' && !_sendTimings.lastAckMs) {
+			_sendTimings.lastAckMs = dt;
+			// Feed the carrier perf engine so hot.keystroke_ack scores against budget.
+			try { fetch('/api/v1/perf/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'sendAck', ms: dt }), cache: 'no-store' }).catch(() => {}); } catch {}
+		}
+		if (key === 'echo' && !_sendTimings.lastEchoMs) {
+			_sendTimings.lastEchoMs = dt;
+			try { fetch('/api/v1/perf/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'sendEcho', ms: dt }), cache: 'no-store' }).catch(() => {}); } catch {}
+		}
+		if (key === 'assistant' && !_sendTimings.lastAssistantMs) {
+			_sendTimings.lastAssistantMs = dt;
+			_sendTimings.awaitingAssistant = false;
+			try { fetch('/api/v1/perf/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'sendAssistant', ms: dt }), cache: 'no-store' }).catch(() => {}); } catch {}
+		}
+	}
+
+	// Ordered list of load stages for the Performance panel.
+	// Shown in the order the user experiences them.
+	const LOAD_STAGE_ORDER = [
+		'scriptInit', 'mounted', 'wsOpen', 'ptyAttached',
+		'firstScreen', 'firstTranscript', 'transcriptWidget', 'usageWidget', 'interactive',
+	];
+	function _fmtMs(ms) {
+		if (!ms) return '—';
+		if (ms < 1000) return ms + 'ms';
+		return (ms / 1000).toFixed(2) + 's';
+	}
 
 	// --- Session Cost (derived from active tab's turn_stats in transcript) ---
 	let sessionCost = $derived.by(() => {
@@ -135,6 +210,22 @@
 	let tasksData = $state(null);
 	let sectionsData = $state([]);
 	let servicesData = $state([]);
+	let intuitionData = $state(null);
+	let intuitionPolling = null;
+
+	async function loadIntuition() {
+		try {
+			intuitionData = await api('/api/v1/intuition/current');
+		} catch {}
+	}
+	function startIntuitionPolling() {
+		loadIntuition();
+		if (intuitionPolling) clearInterval(intuitionPolling);
+		intuitionPolling = setInterval(loadIntuition, 5000);
+	}
+	function stopIntuitionPolling() {
+		if (intuitionPolling) { clearInterval(intuitionPolling); intuitionPolling = null; }
+	}
 	let approvalsData = $state([]);
 
 	// ─── Chat / Contacts state ───
@@ -736,6 +827,70 @@
 	let perfFrames = 0;
 	let perfLastFpsTime = Date.now();
 
+	// --- New: canonical perf trace from /api/v1/perf/trace on the carrier.
+	// This replaces the ad-hoc health checks with the probe-driven DAG.
+	// See service/src/perf/stages.js for the registry.
+	let perfTrace = $state({
+		now: 0,
+		engine_started_at: 0,
+		system_ready: false,
+		interactive_ready: false,
+		swap_safe: { safe: false, reason: '' },
+		critical_path_ms: 0,
+		counts: { ready: 0, pending: 0, running: 0, failed: 0, total: 0 },
+		stages: [],
+	});
+	let perfTraceTimer = null;
+	let perfTraceLoadedOnce = $state(false);
+	let perfPanelView = $state(typeof window !== 'undefined' && localStorage.getItem('pan_perf_view') || 'list'); // 'list' | 'gantt'
+	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_perf_view', perfPanelView); });
+
+	// Human-readable phase labels for grouping stages in the panel.
+	const PERF_PHASE_LABELS = {
+		boot: 'Boot',
+		attach: 'Attach',
+		service: 'Services',
+		widget: 'Widgets',
+		hot_path: 'Hot path',
+	};
+	const PERF_PHASE_ORDER = ['boot', 'attach', 'service', 'hot_path', 'widget'];
+
+	async function loadPerfTrace() {
+		try {
+			const r = await fetch('/api/v1/perf/trace', { cache: 'no-store' });
+			if (!r.ok) return;
+			const j = await r.json();
+			if (j && Array.isArray(j.stages)) {
+				perfTrace = j;
+				perfTraceLoadedOnce = true;
+			}
+		} catch {}
+	}
+
+	// Force a re-probe on click — immediate feedback for the user.
+	async function forceProbeStage(stageId) {
+		try {
+			await fetch('/api/v1/perf/probe/' + encodeURIComponent(stageId), {
+				method: 'POST',
+				cache: 'no-store',
+			});
+			// Give the engine a beat, then refresh.
+			setTimeout(loadPerfTrace, 200);
+		} catch {}
+	}
+
+	// Post a hot-path timing event so the engine can score it against budgets.
+	function postPerfEvent(name, ms) {
+		try {
+			fetch('/api/v1/perf/event', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name, ms }),
+				cache: 'no-store',
+			}).catch(() => {});
+		} catch {}
+	}
+
 	async function loadPerfProcesses() {
 		try {
 			const [procData, serverData] = await Promise.all([
@@ -758,10 +913,15 @@
 	function startPerfPolling() {
 		if (perfProcessTimer) return;
 		loadPerfProcesses();
-		perfProcessTimer = setInterval(loadPerfProcesses, 5000);
+		loadPerfTrace();
+		perfProcessTimer = setInterval(() => {
+			loadPerfProcesses();
+			loadPerfTrace();
+		}, 5000);
 	}
 	function stopPerfPolling() {
 		if (perfProcessTimer) { clearInterval(perfProcessTimer); perfProcessTimer = null; }
+		if (perfTraceTimer) { clearInterval(perfTraceTimer); perfTraceTimer = null; }
 	}
 
 	async function killProcess(pid) {
@@ -1016,8 +1176,11 @@
 				try {
 					const tRecv = performance.now();
 					const msg = JSON.parse(event.data);
+					// Any server message after wsOpen proves the PTY session is attached.
+					_markLoad('ptyAttached');
 					switch (msg.type) {
 						case 'user_echo': {
+							_markSendPhase('echo');
 							// Immediate echo from server — user message appears instantly
 							// without waiting for JSONL. Dedup handles overlap when JSONL arrives.
 							if (!tabData._echoMessages) tabData._echoMessages = [];
@@ -1031,6 +1194,13 @@
 						}
 						case 'transcript_messages': {
 							_markLoad('firstTranscript');
+							if (_loadTimings.firstScreen) _markLoad('interactive');
+							// If the last JSONL message is from the assistant AND arrived after our send,
+							// mark that as the first-assistant milestone.
+							if (_sendTimings.awaitingAssistant && Array.isArray(msg.messages) && msg.messages.length) {
+								const last = msg.messages[msg.messages.length - 1];
+								if (last && last.role === 'assistant') _markSendPhase('assistant');
+							}
 							// Server pushed parsed messages from the JSONL file watcher.
 							// Replaces polling. We get the full deduped message list each
 							// time any JSONL in the project's dir changes.
@@ -1056,6 +1226,8 @@
 							break;
 						}
 						case 'screen-v2': {
+							_markLoad('firstScreen');
+							if (_loadTimings.firstTranscript || _loadTimings.transcriptWidget) _markLoad('interactive');
 							// Visual scrollback comes from transcript JSON. Here we only
 							// scan the live screen text to detect Claude's interactive
 							// approval menus. The "thinking" indicator is now driven by
@@ -1134,6 +1306,7 @@
 						}
 						case 'screen': {
 							_markLoad('firstScreen');
+							if (_loadTimings.firstTranscript || _loadTimings.transcriptWidget) _markLoad('interactive');
 							// Legacy v1 fallback
 							const scrollHeightBefore2 = tabData.userScrolledUp ? tabContainer.scrollHeight : 0;
 							if (msg.scrollback && msg.scrollback.length > 0) {
@@ -1242,6 +1415,28 @@
 							}
 							scrollbackDiv.innerHTML += '\n<span style="color:#f9e2af">[Server restarting \u2014 will reconnect automatically...]</span>';
 							break;
+						case 'carrier_restarting': {
+							// Carrier is about to process.exit(1); pan-loop will respawn it in ~2s.
+							// Existing reconnect tokens (stored in sessionStorage per tab) will be
+							// replayed by the WS reconnect loop below — same path as server_restarting.
+							serverRestarting = true;
+							reconnectAttempts = 0;
+							const delayMs = msg.reconnect_in_ms || 2500;
+							const reason = msg.reason === 'forced' ? ' (forced)' : '';
+							scrollbackDiv.innerHTML += `\n<span style="color:#89b4fa">[PAN restarting${reason} \u2014 reconnecting in ~${Math.round(delayMs/1000)}s...]</span>`;
+							// Show a one-shot global banner so the user doesn't have to find the right tab.
+							if (typeof window !== 'undefined' && !window._panCarrierRestartBanner) {
+								window._panCarrierRestartBanner = true;
+								const banner = document.createElement('div');
+								banner.textContent = `⟳ PAN restarting${reason} — reconnecting…`;
+								banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#1e1e2e;color:#89b4fa;padding:8px 16px;text-align:center;font-family:inherit;font-weight:600;border-bottom:1px solid #89b4fa;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
+								document.body.appendChild(banner);
+								// Banner auto-removes once reconnect succeeds (see _panSwapReloading reset flow),
+								// but also self-clear after 30s as a safety net.
+								setTimeout(() => { try { banner.remove(); } catch {} window._panCarrierRestartBanner = false; }, 30_000);
+							}
+							break;
+						}
 						case 'widget_update': {
 							// Server pushed a change notification — refetch the affected widget
 							const w = msg.widget;
@@ -1337,6 +1532,11 @@
 						serverRestarting = false;
 						tabData.ws = newWs;
 						prevLines = [];
+						// Clear the global "PAN restarting…" banner now that we're reconnected.
+						if (typeof window !== 'undefined' && window._panCarrierRestartBanner) {
+							document.querySelectorAll('div').forEach(d => { if (d.textContent && d.textContent.startsWith('⟳ PAN restarting')) d.remove(); });
+							window._panCarrierRestartBanner = false;
+						}
 						// Reset PTY death state so the exit banner doesn't persist
 						tabData.ptyDead = false;
 						tabData.ptyExitCode = null;
@@ -2245,6 +2445,7 @@
 
 			chatBubbles = newBubbles;
 			chatServerLoaded = true;
+			if (newBubbles.length > 0) _markLoad('transcriptWidget');
 			saveChatToStorage();
 
 			await tick();
@@ -2439,11 +2640,13 @@
 
 		try {
 			if (!text) return;
+			_markSend(text);
 			const data = await api('/api/v1/terminal/pipe', {
 				method: 'POST',
 				body: JSON.stringify({ session_id: active.sessionId, text }),
 			});
 			if (!data.ok) throw new Error(data.error || 'pipe send failed');
+			_markSendPhase('ack');
 			console.log('[PAN Terminal] Pipe send OK');
 		} catch (err) {
 			console.error('[PAN Terminal] pipe send failed:', err);
@@ -3108,6 +3311,7 @@
 			} else {
 				usageData = { claude: usage, stats };
 			}
+			_markLoad('usageWidget');
 		} catch (e) {
 			console.error('Failed to load usage data:', e);
 		}
@@ -3792,6 +3996,7 @@
 		// Load initial panel data based on what's selected
 		if (leftSection === 'usage' || rightSection === 'usage') loadUsageData();
 		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
+		if (leftSection === 'intuition' || rightSection === 'intuition') startIntuitionPolling();
 
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
@@ -4091,6 +4296,283 @@
 	});
 </script>
 
+<!-- ==================== Perf panel snippet (shared by left + right sidebar) ====================
+     Renders the full "Perf" widget body:
+       1. Readiness summary (system / interactive / swap-safe + critical path)
+       2. View toggle (List / Gantt)
+       3. Stages grouped by phase (or Gantt bars on a shared timeline)
+       4. Last message timings (client-side mirror of hot.* events)
+       5. Page load trace (client-side only, per-page)
+       6. Speed / Resources / Bottlenecks / Heavy processes (existing steward data)
+     Backed by GET /api/v1/perf/trace (carrier) — single source of truth. -->
+{#snippet perfPanelContents()}
+	{@const stages = perfTrace.stages || []}
+	{@const downCount = stages.filter(s => s.state === 'failed' && s.required).length}
+	{@const memPct = Math.round((perfServer.rss_mb || 0) / 512 * 100)}
+	{@const overallBad = downCount > 0 || !perfTrace.system_ready || perfData.wsLatency > 200 || perfServer.rss_mb > 500}
+	{@const overallWarn = perfData.wsLatency > 50 || perfServer.rss_mb > 200 || perfServer.slow_requests > 5}
+	{@const readyCount = stages.filter(s => s.state === 'ready').length}
+	{@const totalCount = stages.length}
+	{@const failedStages = stages.filter(s => s.state === 'failed')}
+	{@const phaseOrder = PERF_PHASE_ORDER}
+
+	<!-- Overall banner -->
+	<div class="perf-overall" class:perf-overall-good={!overallBad && !overallWarn} class:perf-overall-warn={overallWarn && !overallBad} class:perf-overall-bad={overallBad}>
+		<span class="perf-overall-icon">{overallBad ? '!!' : overallWarn ? '!' : 'OK'}</span>
+		<span class="perf-overall-text">{overallBad ? 'Issues detected' : overallWarn ? 'Minor issues' : 'All good'}</span>
+	</div>
+
+	<!-- Readiness summary (from /api/v1/perf/trace) -->
+	{#if perfTraceLoadedOnce}
+		<div class="perf-ready-grid" title="Live from the carrier perf engine. Each cell is computed from the probe DAG in service/src/perf/stages.js.">
+			<div class="perf-ready-cell" class:perf-ready-good={perfTrace.system_ready} class:perf-ready-bad={!perfTrace.system_ready}>
+				<div class="perf-ready-val">{perfTrace.system_ready ? 'READY' : 'WAIT'}</div>
+				<div class="perf-ready-lbl" title="AND of all REQUIRED stages being ready. Drives system_ready in the math spec.">System</div>
+			</div>
+			<div class="perf-ready-cell" class:perf-ready-good={perfTrace.interactive_ready} class:perf-ready-bad={!perfTrace.interactive_ready}>
+				<div class="perf-ready-val">{perfTrace.interactive_ready ? 'READY' : 'WAIT'}</div>
+				<div class="perf-ready-lbl" title="AND of INTERACTIVE_SET. When this flips to READY, keystrokes hit the PTY with no buffering lag.">Interactive</div>
+			</div>
+			<div class="perf-ready-cell" class:perf-ready-good={perfTrace.swap_safe?.safe} class:perf-ready-bad={!perfTrace.swap_safe?.safe}>
+				<div class="perf-ready-val">{perfTrace.swap_safe?.safe ? 'SAFE' : 'HOLD'}</div>
+				<div class="perf-ready-lbl" title={perfTrace.swap_safe?.safe ? 'All SWAP_GATE stages are ready. Lifeboat will allow commit.' : 'Lifeboat will NOT commit. Reason: ' + (perfTrace.swap_safe?.reason || 'unknown')}>Swap</div>
+			</div>
+			<div class="perf-ready-cell">
+				<div class="perf-ready-val">{readyCount}<span style="opacity:0.4">/{totalCount}</span></div>
+				<div class="perf-ready-lbl" title="Count of probes currently in the ready state (incl. non-required).">Probes</div>
+			</div>
+		</div>
+		<div class="perf-metric" style="margin-top:2px">
+			<span class="perf-label" title="Longest wall-clock path through the readiness DAG — the actual critical path for a cold start.">Critical path</span>
+			<span class="perf-value">{_fmtMs(perfTrace.critical_path_ms)}</span>
+		</div>
+		{#if !perfTrace.swap_safe?.safe && perfTrace.swap_safe?.reason}
+			<div class="perf-metric" style="font-size:10px;opacity:0.75">
+				<span class="perf-label perf-bad" title={perfTrace.swap_safe.reason}>⚠ {perfTrace.swap_safe.reason}</span>
+			</div>
+		{/if}
+
+		<!-- View toggle -->
+		<div class="perf-view-toggle" role="tablist" aria-label="Perf view">
+			<button class="perf-view-btn" class:perf-view-active={perfPanelView === 'list'} onclick={() => perfPanelView = 'list'} title="Grouped stage list, one row per probe.">List</button>
+			<button class="perf-view-btn" class:perf-view-active={perfPanelView === 'gantt'} onclick={() => perfPanelView = 'gantt'} title="Gantt bars on a shared timeline. Critical path stages highlighted.">Gantt</button>
+		</div>
+
+		{#if perfPanelView === 'list'}
+			<!-- Stages grouped by phase -->
+			{#each phaseOrder as phase}
+				{@const phaseStages = stages.filter(s => s.phase === phase)}
+				{#if phaseStages.length > 0}
+					<div class="perf-section-title" style="margin-top:10px">{PERF_PHASE_LABELS[phase] || phase}</div>
+					{#each phaseStages as s}
+						{@const warn = s.budget?.warn_ms || 0}
+						{@const bad = s.budget?.bad_ms || 0}
+						{@const hard = s.budget?.hard_ms || 0}
+						{@const overWarn = warn && s.last_probe_ms > warn}
+						{@const overBad = bad && s.last_probe_ms > bad}
+						<div class="perf-stage-row" class:perf-stage-ready={s.state === 'ready'} class:perf-stage-failed={s.state === 'failed'} class:perf-stage-running={s.state === 'running'} class:perf-stage-pending={s.state === 'pending'}>
+							<span class="perf-stage-dot" title={s.state}></span>
+							<span class="perf-stage-name" title={s.help || s.id}>{s.name}</span>
+							<span class="perf-stage-val" class:perf-warn={overWarn && !overBad} class:perf-bad={overBad} title={'warn/bad/hard: ' + warn + '/' + bad + '/' + hard + 'ms  —  ' + (s.probe_method || 'probe')}>
+								{s.state === 'ready' ? _fmtMs(s.last_probe_ms) : s.state === 'running' ? '…' : s.state === 'failed' ? 'fail' : 'wait'}
+							</span>
+							<button class="perf-reprobe-btn" onclick={() => forceProbeStage(s.id)} title={'Re-run the ' + s.probe_method + ' probe now.'}>↻</button>
+						</div>
+						{#if s.state === 'failed' && s.error}
+							<div class="perf-stage-err" title={s.error}>{s.error}</div>
+						{/if}
+					{/each}
+				{/if}
+			{/each}
+		{:else}
+			<!-- Gantt view -->
+			{@const started = perfTrace.engine_started_at || 0}
+			{@const now = perfTrace.now || Date.now()}
+			{@const totalMs = Math.max(perfTrace.critical_path_ms || 0, now - started, 1000)}
+			{@const scale = (ms) => Math.max(0, Math.min(100, (ms / totalMs) * 100))}
+
+			<div class="perf-section-title" style="margin-top:10px">Gantt — critical path: {_fmtMs(perfTrace.critical_path_ms)}</div>
+			<div class="perf-gantt">
+				{#each phaseOrder as phase}
+					{@const phaseStages = stages.filter(s => s.phase === phase)}
+					{#each phaseStages as s}
+						{@const startMs = s.ready_at ? Math.max(0, s.ready_at - started - s.last_probe_ms) : 0}
+						{@const endMs = s.ready_at ? Math.max(0, s.ready_at - started) : (now - started)}
+						{@const widthPct = Math.max(0.5, scale(endMs) - scale(startMs))}
+						{@const leftPct = scale(startMs)}
+						<div class="perf-gantt-row" title={s.help || s.id}>
+							<span class="perf-gantt-name">{s.name}</span>
+							<div class="perf-gantt-track">
+								{#if s.state === 'ready' || s.state === 'failed'}
+									<div class="perf-gantt-bar"
+										class:perf-gantt-ready={s.state === 'ready'}
+										class:perf-gantt-failed={s.state === 'failed'}
+										style="left:{leftPct}%;width:{widthPct}%"
+										title={s.state === 'ready' ? _fmtMs(endMs) + ' wall-clock · probe ' + _fmtMs(s.last_probe_ms) : (s.error || 'failed')}>
+									</div>
+								{:else if s.state === 'running'}
+									<div class="perf-gantt-bar perf-gantt-running" style="left:0%;width:100%" title="running…"></div>
+								{:else}
+									<div class="perf-gantt-bar perf-gantt-pending" style="left:0%;width:100%" title="waiting for dependencies"></div>
+								{/if}
+							</div>
+							<span class="perf-gantt-ms">{s.state === 'ready' ? _fmtMs(endMs) : s.state === 'failed' ? 'fail' : s.state === 'running' ? '…' : '—'}</span>
+						</div>
+					{/each}
+				{/each}
+			</div>
+			<div class="perf-gantt-legend">
+				<span><span class="perf-gantt-swatch perf-gantt-ready"></span>ready</span>
+				<span><span class="perf-gantt-swatch perf-gantt-running"></span>running</span>
+				<span><span class="perf-gantt-swatch perf-gantt-failed"></span>failed</span>
+				<span><span class="perf-gantt-swatch perf-gantt-pending"></span>pending</span>
+			</div>
+		{/if}
+	{:else}
+		<div class="perf-metric" style="opacity:0.6">
+			<span class="perf-label">Loading perf trace…</span>
+		</div>
+	{/if}
+
+	<!-- Last message (client-side send → ack → echo → assistant trace) -->
+	{#if _sendTimings.lastSendAt > 0}
+		<div class="perf-section-title" style="margin-top:12px">Last message</div>
+		<div class="perf-metric" style="font-size:10px;opacity:0.65">
+			<span class="perf-label" title={_sendTimings.lastSendText}>&ldquo;{_sendTimings.lastSendText}{_sendTimings.lastSendText.length >= 40 ? '…' : ''}&rdquo;</span>
+		</div>
+		<div class="perf-metric">
+			<span class="perf-label" title="Time from pressing Enter until server returned HTTP 200.">Server acked</span>
+			<span class="perf-value" class:perf-warn={_sendTimings.lastAckMs > 300} class:perf-bad={_sendTimings.lastAckMs > 1500}>{_sendTimings.lastAckMs ? _fmtMs(_sendTimings.lastAckMs) : (_sendTimings.awaitingAssistant ? '…' : '—')}</span>
+		</div>
+		<div class="perf-metric">
+			<span class="perf-label" title="Time until your own message echoed back over the WebSocket.">Echo back</span>
+			<span class="perf-value" class:perf-warn={_sendTimings.lastEchoMs > 500} class:perf-bad={_sendTimings.lastEchoMs > 2000}>{_sendTimings.lastEchoMs ? _fmtMs(_sendTimings.lastEchoMs) : (_sendTimings.awaitingAssistant ? '…' : '—')}</span>
+		</div>
+		<div class="perf-metric">
+			<span class="perf-label" title="Time until the assistant's first reply arrived via JSONL.">Assistant replied</span>
+			<span class="perf-value" class:perf-warn={_sendTimings.lastAssistantMs > 5000} class:perf-bad={_sendTimings.lastAssistantMs > 15000}>{_sendTimings.lastAssistantMs ? _fmtMs(_sendTimings.lastAssistantMs) : (_sendTimings.awaitingAssistant ? 'thinking…' : '—')}</span>
+		</div>
+	{/if}
+
+	<!-- Page load trace (client-side only; per-page wall-clock) -->
+	{#if _loadTimings.scriptInit}
+		<div class="perf-section-title" style="margin-top:12px">Page load trace</div>
+		{#each LOAD_STAGE_ORDER as key, i}
+			{@const ms = _loadTimings[key]}
+			{@const spec = STAGE_LABELS[key]}
+			{#if ms}
+				{@const prev = i > 0 ? _loadTimings[LOAD_STAGE_ORDER[i-1]] : 0}
+				{@const delta = prev ? ms - prev : ms}
+				<div class="perf-metric" class:perf-stage-final={key === 'interactive'}>
+					<span class="perf-label" title={spec.help}>{spec.name}</span>
+					<span class="perf-value" class:perf-warn={ms > spec.warn} class:perf-bad={ms > spec.bad}>
+						{_fmtMs(ms)}
+						{#if delta > 0 && delta !== ms}<span style="opacity:0.45;font-size:9px">&nbsp;(+{_fmtMs(delta)})</span>{/if}
+					</span>
+				</div>
+			{:else}
+				<div class="perf-metric" style="opacity:0.4">
+					<span class="perf-label" title={spec.help}>{spec.name}</span>
+					<span class="perf-value">pending…</span>
+				</div>
+			{/if}
+		{/each}
+	{/if}
+
+	<!-- Speed -->
+	<div class="perf-section-title" style="margin-top:12px">Speed</div>
+	<div class="perf-metric">
+		<span class="perf-label" title="Avg HTTP response time across all server routes.">Server response</span>
+		<span class="perf-value" class:perf-warn={perfServer.avg_ms > 100} class:perf-bad={perfServer.avg_ms > 500}>
+			{perfServer.avg_ms < 10 ? 'Instant' : perfServer.avg_ms < 100 ? 'Fast' : perfServer.avg_ms < 500 ? 'Slow' : 'Very slow'}
+			<span style="opacity:0.5;font-size:9px">({Math.round(perfServer.avg_ms)}ms)</span>
+		</span>
+	</div>
+	<div class="perf-metric">
+		<span class="perf-label" title="Round-trip of a WebSocket ping. Your network + server wake-up.">WebSocket ping</span>
+		<span class="perf-value" class:perf-warn={perfData.wsLatency > 50} class:perf-bad={perfData.wsLatency > 200}>
+			{perfData.wsLatency < 10 ? 'Instant' : perfData.wsLatency < 50 ? 'Fast' : perfData.wsLatency < 200 ? 'Laggy' : 'Frozen'}
+			<span style="opacity:0.5;font-size:9px">({perfData.wsLatency}ms)</span>
+		</span>
+	</div>
+	{#if perfServer.slow_requests > 0}
+		<div class="perf-metric">
+			<span class="perf-label">Slow requests</span>
+			<span class="perf-value perf-warn">{perfServer.slow_requests} of {perfServer.total_requests}</span>
+		</div>
+	{/if}
+
+	<!-- Resources -->
+	<div class="perf-section-title" style="margin-top:12px">Resources</div>
+	<div class="perf-metric">
+		<span class="perf-label">Memory</span>
+		<span class="perf-value" class:perf-warn={perfServer.rss_mb > 200} class:perf-bad={perfServer.rss_mb > 500}>{perfServer.rss_mb}MB</span>
+	</div>
+	<div class="perf-bar-track"><div class="perf-bar-fill" class:perf-warn={memPct > 40} class:perf-bad={memPct > 80} style="width:{Math.min(memPct,100)}%"></div></div>
+	<div class="perf-metric">
+		<span class="perf-label">Uptime</span>
+		<span class="perf-value">{perfServer.uptime_s > 86400 ? (perfServer.uptime_s/86400).toFixed(1)+' days' : perfServer.uptime_s > 3600 ? (perfServer.uptime_s/3600).toFixed(1)+' hrs' : perfServer.uptime_s > 60 ? Math.round(perfServer.uptime_s/60)+' min' : perfServer.uptime_s+' sec'}</span>
+	</div>
+	<div class="perf-metric">
+		<span class="perf-label">Connected clients</span>
+		<span class="perf-value">{perfServer.ws_connections}</span>
+	</div>
+
+	{#if perfServer.top_routes?.length > 0}
+		{@const slowRoutes = perfServer.top_routes.filter(r => r.maxMs > 500).slice(0, 3)}
+		{#if slowRoutes.length > 0}
+			<div class="perf-section-title" style="margin-top:12px">Bottlenecks</div>
+			{#each slowRoutes as r}
+				<div class="perf-metric" style="font-size:10px">
+					<span class="perf-label" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={r.route}>{r.route.replace(/^\/api\/v1\//, '').replace(/^\/dashboard\/api\//, '').replace(/^\/_app\/.*\//, 'asset/')}</span>
+					<span class="perf-value perf-bad">Peaked {r.maxMs > 1000 ? (r.maxMs/1000).toFixed(1)+'s' : Math.round(r.maxMs)+'ms'}</span>
+				</div>
+			{/each}
+		{/if}
+	{/if}
+
+	<!-- Process liveness (from steward) — complements probe-driven stages above. -->
+	{#if perfServices.length > 0}
+		<div class="perf-section-title" style="margin-top:12px">Processes</div>
+		{#each perfServices as svc}
+			<div class="perf-proc" class:perf-zombie={svc.status === 'down' || svc.status === 'error'}>
+				<div class="perf-proc-header">
+					<span class="perf-proc-name vital">{svc.name}</span>
+					{#if svc.inProcess}
+						<span class="perf-proc-tag" title="Runs inside the PAN server process">built-in</span>
+					{:else if svc.pid}
+						<span class="perf-proc-tag perf-good" style="font-size:9px">{svc.memMB}MB</span>
+						<button class="perf-kill-btn" onclick={() => killProcess(svc.pid)} title="Kill {svc.name} (pid {svc.pid})">Kill</button>
+					{:else}
+						<span class="perf-proc-tag perf-bad">Offline</span>
+					{/if}
+				</div>
+				{#if svc.inProcess}
+					<div class="perf-proc-stats"><span style="opacity:0.6">{svc.modelTierLabel || 'built-in'}</span></div>
+				{:else if !svc.pid}
+					<div class="perf-proc-stats"><span class="perf-bad">Not running</span></div>
+				{/if}
+				{#if svc.lastError}
+					<div class="perf-proc-stats perf-bad" style="font-size:9px;margin-top:2px">{String(svc.lastError).slice(0,80)}</div>
+				{/if}
+			</div>
+		{/each}
+	{/if}
+
+	{#if perfOther.length > 0}
+		<div class="perf-section-title" style="margin-top:12px">Heavy Processes</div>
+		{#each perfOther.slice(0, 5) as p}
+			<div class="perf-proc">
+				<div class="perf-proc-header">
+					<span class="perf-proc-name" style="opacity:0.7">{p.exe}</span>
+					<span class="perf-proc-tag" style="font-size:9px">{p.memMB}MB</span>
+					<button class="perf-kill-btn" onclick={() => killProcess(p.pid)} title="Kill pid {p.pid}">Kill</button>
+				</div>
+			</div>
+		{/each}
+	{/if}
+{/snippet}
+
 <!-- TOOLBAR -->
 <div class="toolbar">
 	<select class="project-select" value={selectedProjectValue} onchange={(e) => {
@@ -4180,13 +4662,14 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
 				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="intuition">Intuition</option>
 				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
 				<option value="mail">Mail</option>
@@ -4377,108 +4860,7 @@
 				{/if}
 			{:else if leftSection === 'perf'}
 				<div class="perf-widget">
-					{#if true}
-					{@const downCount = perfServices.filter(s => s.status === 'down' || s.status === 'error').length}
-					{@const memPct = Math.round((perfServer.rss_mb || 0) / 512 * 100)}
-					{@const overallBad = downCount > 0 || perfData.wsLatency > 200 || perfServer.rss_mb > 500}
-					{@const overallWarn = perfData.wsLatency > 50 || perfServer.rss_mb > 200 || perfServer.slow_requests > 5}
-					<div class="perf-overall" class:perf-overall-good={!overallBad && !overallWarn} class:perf-overall-warn={overallWarn && !overallBad} class:perf-overall-bad={overallBad}>
-						<span class="perf-overall-icon">{overallBad ? '!!' : overallWarn ? '!' : 'OK'}</span>
-						<span class="perf-overall-text">{overallBad ? 'Issues detected' : overallWarn ? 'Minor issues' : 'All good'}</span>
-					</div>
-
-					<div class="perf-section-title">Speed</div>
-					<div class="perf-metric">
-						<span class="perf-label">Response time</span>
-						<span class="perf-value" class:perf-warn={perfServer.avg_ms > 100} class:perf-bad={perfServer.avg_ms > 500}>
-							{perfServer.avg_ms < 10 ? 'Instant' : perfServer.avg_ms < 100 ? 'Fast' : perfServer.avg_ms < 500 ? 'Slow' : 'Very slow'}
-							<span style="opacity:0.5;font-size:9px">({Math.round(perfServer.avg_ms)}ms)</span>
-						</span>
-					</div>
-					<div class="perf-metric">
-						<span class="perf-label">Connection</span>
-						<span class="perf-value" class:perf-warn={perfData.wsLatency > 50} class:perf-bad={perfData.wsLatency > 200}>
-							{perfData.wsLatency < 10 ? 'Instant' : perfData.wsLatency < 50 ? 'Fast' : perfData.wsLatency < 200 ? 'Laggy' : 'Frozen'}
-							<span style="opacity:0.5;font-size:9px">({perfData.wsLatency}ms)</span>
-						</span>
-					</div>
-					{#if perfServer.slow_requests > 0}
-						<div class="perf-metric">
-							<span class="perf-label">Slow requests</span>
-							<span class="perf-value perf-warn">{perfServer.slow_requests} of {perfServer.total_requests}</span>
-						</div>
-					{/if}
-
-					<div class="perf-section-title" style="margin-top:12px">Resources</div>
-					<div class="perf-metric">
-						<span class="perf-label">Memory</span>
-						<span class="perf-value" class:perf-warn={perfServer.rss_mb > 200} class:perf-bad={perfServer.rss_mb > 500}>{perfServer.rss_mb}MB</span>
-					</div>
-					<div class="perf-bar-track"><div class="perf-bar-fill" class:perf-warn={memPct > 40} class:perf-bad={memPct > 80} style="width:{Math.min(memPct,100)}%"></div></div>
-					<div class="perf-metric">
-						<span class="perf-label">Uptime</span>
-						<span class="perf-value">{perfServer.uptime_s > 86400 ? (perfServer.uptime_s/86400).toFixed(1)+' days' : perfServer.uptime_s > 3600 ? (perfServer.uptime_s/3600).toFixed(1)+' hrs' : perfServer.uptime_s > 60 ? Math.round(perfServer.uptime_s/60)+' min' : perfServer.uptime_s+' sec'}</span>
-					</div>
-					<div class="perf-metric">
-						<span class="perf-label">Connected clients</span>
-						<span class="perf-value">{perfServer.ws_connections}</span>
-					</div>
-
-					{#if perfServer.top_routes?.length > 0}
-						{@const slowRoutes = perfServer.top_routes.filter(r => r.maxMs > 500).slice(0, 3)}
-						{#if slowRoutes.length > 0}
-							<div class="perf-section-title" style="margin-top:12px">Bottlenecks</div>
-							{#each slowRoutes as r}
-								<div class="perf-metric" style="font-size:10px">
-									<span class="perf-label" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={r.route}>{r.route.replace(/^\/api\/v1\//, '').replace(/^\/dashboard\/api\//, '').replace(/^\/_app\/.*\//, 'asset/')}</span>
-									<span class="perf-value perf-bad">Peaked {r.maxMs > 1000 ? (r.maxMs/1000).toFixed(1)+'s' : Math.round(r.maxMs)+'ms'}</span>
-								</div>
-							{/each}
-						{/if}
-					{/if}
-
-					<div class="perf-section-title" style="margin-top:12px">Services</div>
-					{#if perfServices.length === 0}
-						<div class="perf-metric"><span class="perf-label" style="opacity:0.5">Scanning...</span></div>
-					{:else}
-						{#each perfServices as svc}
-							<div class="perf-proc" class:perf-zombie={svc.status === 'down' || svc.status === 'error'}>
-								<div class="perf-proc-header">
-									<span class="perf-proc-name vital">{svc.name}</span>
-									{#if svc.inProcess}
-										<span class="perf-proc-tag" title="Runs inside the PAN server process">built-in</span>
-									{:else if svc.pid}
-										<span class="perf-proc-tag perf-good" style="font-size:9px">{svc.memMB}MB</span>
-										<button class="perf-kill-btn" onclick={() => killProcess(svc.pid)} title="Kill {svc.name} (pid {svc.pid})">Kill</button>
-									{:else}
-										<span class="perf-proc-tag perf-bad">Offline</span>
-									{/if}
-								</div>
-								{#if svc.inProcess}
-									<div class="perf-proc-stats"><span style="opacity:0.6">{svc.modelTierLabel || 'built-in'}</span></div>
-								{:else if !svc.pid}
-									<div class="perf-proc-stats"><span class="perf-bad">Not running</span></div>
-								{/if}
-								{#if svc.lastError}
-									<div class="perf-proc-stats perf-bad" style="font-size:9px;margin-top:2px">{String(svc.lastError).slice(0,80)}</div>
-								{/if}
-							</div>
-						{/each}
-					{/if}
-
-					{#if perfOther.length > 0}
-						<div class="perf-section-title" style="margin-top:12px">Heavy Processes</div>
-						{#each perfOther.slice(0, 5) as p}
-							<div class="perf-proc">
-								<div class="perf-proc-header">
-									<span class="perf-proc-name" style="opacity:0.7">{p.exe}</span>
-									<span class="perf-proc-tag" style="font-size:9px">{p.memMB}MB</span>
-									<button class="perf-kill-btn" onclick={() => killProcess(p.pid)} title="Kill pid {p.pid}">Kill</button>
-								</div>
-							</div>
-						{/each}
-					{/if}
-					{/if}
+					{@render perfPanelContents()}
 				</div>
 			{:else if leftSection === 'library'}
 				<div class="library-panel">
@@ -4601,6 +4983,115 @@
 							<div class="svc-detail">Coming Soon</div>
 						</div>
 					</div>
+				</div>
+			{:else if leftSection === 'intuition'}
+				<div class="intuition-panel">
+					{#if !intuitionData}
+						<div class="empty-state">Loading Intuition...</div>
+					{:else}
+						{@const snap = intuitionData.snapshot || intuitionData}
+						{@const n = snap.now || {}}
+						{@const pan = snap.pan || {}}
+						{@const data = snap.data || {}}
+						{@const sig = snap.signals || {}}
+						{@const preds = pan.predictions || []}
+
+						<!-- Commander + Timestamp -->
+						<div class="int-header">
+							<span class="int-commander">{snap.commander || 'Commander'}</span>
+							<span class="int-ago">{snap.as_of ? new Date(snap.as_of).toLocaleTimeString() : '—'}</span>
+						</div>
+
+						<!-- Dimensional Axes -->
+						<div class="svc-category">State</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{n.where || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{n.activity || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{n.focus || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Direction</span><span class="int-val">{n.direction || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{n.engagement || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Social</span><span class="int-val">{(n.social || []).join(', ') || 'alone'}</span></div>
+							<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{n.urgency || 'normal'}</span></div>
+						</div>
+
+						<!-- Mood + Assumption -->
+						<div class="svc-category">Mood & Assumption</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{n.mood || '—'}</span></div>
+							{#if n.mood_detail}
+								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.mood_detail}</span></div>
+							{/if}
+							<div class="int-axis">
+								<span class="int-label">Assumption</span>
+								<span class="int-val" class:wellbeing-ok={n.assumption === 'ok'} class:wellbeing-notok={n.assumption === 'not_ok'} class:wellbeing-emergency={n.assumption === 'emergency'}>{n.assumption || '—'}</span>
+							</div>
+							{#if n.assumption_detail}
+								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.assumption_detail}</span></div>
+							{/if}
+							<div class="int-disclaimer">⚠ Not medical advice — PAN's assumptions only</div>
+						</div>
+
+						<!-- PAN Status -->
+						<div class="svc-category">PAN</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'idle'}</span></div>
+							<div class="int-axis"><span class="int-label">Sessions</span><span class="int-val">{(pan.sessions || []).length}</span></div>
+							{#each (pan.active_tasks || []).slice(0, 5) as task}
+								<div class="int-axis task">
+									<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
+									<span class="int-val">{task.title}</span>
+								</div>
+							{/each}
+						</div>
+
+						<!-- Predictions -->
+						{#if preds.length > 0}
+							<div class="svc-category">Predictions</div>
+							<div class="int-axes">
+								{#each preds as p}
+									<div class="int-axis pred">
+										<span class="int-val">{p.what}</span>
+										<span class="int-confidence">{Math.round((p.confidence || 0) * 100)}%</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
+
+						<!-- Data Sources -->
+						<div class="svc-category">Data Sources</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Terminal</span><span class="int-val small">{data.terminal || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Chat</span><span class="int-val small">{data.conversations || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Events</span><span class="int-val small">{data.events || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Apps</span><span class="int-val small">{data.apps || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Sensors</span><span class="int-val small">{data.sensors || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.camera || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Audio</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Location</span><span class="int-val small">{data.location || '—'}</span></div>
+						</div>
+
+						<!-- Recent Topics -->
+						{#if (n.recent_topics || []).length > 0}
+							<div class="svc-category">Recent Topics</div>
+							<div class="int-topics">
+								{#each (n.recent_topics || []).slice(0, 5) as topic}
+									<div class="int-topic">{topic}</div>
+								{/each}
+							</div>
+						{/if}
+
+						<!-- Last Heard -->
+						{#if n.last_heard}
+							<div class="svc-category">Last Heard</div>
+							<div class="int-last-heard">"{n.last_heard}"</div>
+						{/if}
+
+						<!-- Signals footer -->
+						<div class="int-footer">
+							<span>Confidence: {Math.round((sig.confidence || 0) * 100)}%</span>
+							<span>{sig.events_sampled || 0} events · {sig.wrap_messages_sampled || 0} msgs</span>
+						</div>
+					{/if}
 				</div>
 			{:else if leftSection === 'lifeboat'}
 				<div class="lifeboat-panel">
@@ -5275,13 +5766,14 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
+				<option value="intuition">Intuition</option>
 				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
 				<option value="mail">Mail</option>
@@ -5507,6 +5999,107 @@
 						<div class="instance-note">Dev sessions use isolated terminal IDs (dev-dash-*) so they don't interfere with Prod.</div>
 					{/if}
 				</div>
+			{:else if rightSection === 'intuition'}
+				<div class="intuition-panel">
+					{#if !intuitionData}
+						<div class="empty-state">Loading Intuition...</div>
+					{:else}
+						{@const snap = intuitionData.snapshot || intuitionData}
+						{@const n = snap.now || {}}
+						{@const pan = snap.pan || {}}
+						{@const data = snap.data || {}}
+						{@const sig = snap.signals || {}}
+						{@const preds = pan.predictions || []}
+
+						<div class="int-header">
+							<span class="int-commander">{snap.commander || 'Commander'}</span>
+							<span class="int-ago">{snap.as_of ? new Date(snap.as_of).toLocaleTimeString() : '—'}</span>
+						</div>
+
+						<div class="svc-category">State</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{n.where || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{n.activity || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{n.focus || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Direction</span><span class="int-val">{n.direction || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{n.engagement || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Social</span><span class="int-val">{(n.social || []).join(', ') || 'alone'}</span></div>
+							<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{n.urgency || 'normal'}</span></div>
+						</div>
+
+						<!-- Mood + Assumption -->
+						<div class="svc-category">Mood & Assumption</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{n.mood || '—'}</span></div>
+							{#if n.mood_detail}
+								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.mood_detail}</span></div>
+							{/if}
+							<div class="int-axis">
+								<span class="int-label">Assumption</span>
+								<span class="int-val" class:wellbeing-ok={n.assumption === 'ok'} class:wellbeing-notok={n.assumption === 'not_ok'} class:wellbeing-emergency={n.assumption === 'emergency'}>{n.assumption || '—'}</span>
+							</div>
+							{#if n.assumption_detail}
+								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.assumption_detail}</span></div>
+							{/if}
+							<div class="int-disclaimer">Not medical advice — PAN's assumptions only</div>
+						</div>
+
+						<div class="svc-category">PAN</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'idle'}</span></div>
+							<div class="int-axis"><span class="int-label">Sessions</span><span class="int-val">{(pan.sessions || []).length}</span></div>
+							{#each (pan.active_tasks || []).slice(0, 5) as task}
+								<div class="int-axis task">
+									<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
+									<span class="int-val">{task.title}</span>
+								</div>
+							{/each}
+						</div>
+
+						{#if preds.length > 0}
+							<div class="svc-category">Predictions</div>
+							<div class="int-axes">
+								{#each preds as p}
+									<div class="int-axis pred">
+										<span class="int-val">{p.what}</span>
+										<span class="int-confidence">{Math.round((p.confidence || 0) * 100)}%</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
+
+						<div class="svc-category">Data Sources</div>
+						<div class="int-axes">
+							<div class="int-axis"><span class="int-label">Terminal</span><span class="int-val small">{data.terminal || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Chat</span><span class="int-val small">{data.conversations || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Events</span><span class="int-val small">{data.events || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Apps</span><span class="int-val small">{data.apps || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Sensors</span><span class="int-val small">{data.sensors || '—'}</span></div>
+							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.camera || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Audio</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Location</span><span class="int-val small">{data.location || '—'}</span></div>
+						</div>
+
+						{#if (n.recent_topics || []).length > 0}
+							<div class="svc-category">Recent Topics</div>
+							<div class="int-topics">
+								{#each (n.recent_topics || []).slice(0, 5) as topic}
+									<div class="int-topic">{topic}</div>
+								{/each}
+							</div>
+						{/if}
+
+						{#if n.last_heard}
+							<div class="svc-category">Last Heard</div>
+							<div class="int-last-heard">"{n.last_heard}"</div>
+						{/if}
+
+						<div class="int-footer">
+							<span>Confidence: {Math.round((sig.confidence || 0) * 100)}%</span>
+							<span>{sig.events_sampled || 0} events · {sig.wrap_messages_sampled || 0} msgs</span>
+						</div>
+					{/if}
+				</div>
 			{:else if rightSection === 'lifeboat'}
 				<div class="lifeboat-panel">
 					{#if !lifeboatData}
@@ -5675,142 +6268,7 @@
 				<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
 			{:else if rightSection === 'perf'}
 				<div class="perf-widget">
-					{#if true}
-					{@const downCount2 = perfServices.filter(s => s.status === 'down' || s.status === 'error').length}
-					{@const memPct2 = Math.round((perfServer.rss_mb || 0) / 512 * 100)}
-					{@const overallBad2 = downCount2 > 0 || perfData.wsLatency > 200 || perfServer.rss_mb > 500}
-					{@const overallWarn2 = perfData.wsLatency > 50 || perfServer.rss_mb > 200 || perfServer.slow_requests > 5}
-					<div class="perf-overall" class:perf-overall-good={!overallBad2 && !overallWarn2} class:perf-overall-warn={overallWarn2 && !overallBad2} class:perf-overall-bad={overallBad2}>
-						<span class="perf-overall-icon">{overallBad2 ? '!!' : overallWarn2 ? '!' : 'OK'}</span>
-						<span class="perf-overall-text">{overallBad2 ? 'Issues detected' : overallWarn2 ? 'Minor issues' : 'All good'}</span>
-					</div>
-
-					<div class="perf-section-title">Speed</div>
-					<div class="perf-metric">
-						<span class="perf-label">Response time</span>
-						<span class="perf-value" class:perf-warn={perfServer.avg_ms > 100} class:perf-bad={perfServer.avg_ms > 500}>
-							{perfServer.avg_ms < 10 ? 'Instant' : perfServer.avg_ms < 100 ? 'Fast' : perfServer.avg_ms < 500 ? 'Slow' : 'Very slow'}
-							<span style="opacity:0.5;font-size:9px">({Math.round(perfServer.avg_ms)}ms)</span>
-						</span>
-					</div>
-					<div class="perf-metric">
-						<span class="perf-label">Connection</span>
-						<span class="perf-value" class:perf-warn={perfData.wsLatency > 50} class:perf-bad={perfData.wsLatency > 200}>
-							{perfData.wsLatency < 10 ? 'Instant' : perfData.wsLatency < 50 ? 'Fast' : perfData.wsLatency < 200 ? 'Laggy' : 'Frozen'}
-							<span style="opacity:0.5;font-size:9px">({perfData.wsLatency}ms)</span>
-						</span>
-					</div>
-					{#if perfServer.slow_requests > 0}
-						<div class="perf-metric">
-							<span class="perf-label">Slow requests</span>
-							<span class="perf-value perf-warn">{perfServer.slow_requests} of {perfServer.total_requests}</span>
-						</div>
-					{/if}
-
-					{#if _loadTimings.mounted}
-					<div class="perf-section-title" style="margin-top:12px">Page Load</div>
-					<div class="perf-metric">
-						<span class="perf-label">Script Init</span>
-						<span class="perf-value" class:perf-warn={_loadTimings.scriptInit > 500} class:perf-bad={_loadTimings.scriptInit > 2000}>{_loadTimings.scriptInit}ms</span>
-					</div>
-					<div class="perf-metric">
-						<span class="perf-label">Mounted</span>
-						<span class="perf-value" class:perf-warn={_loadTimings.mounted > 1000} class:perf-bad={_loadTimings.mounted > 3000}>{_loadTimings.mounted}ms</span>
-					</div>
-					{#if _loadTimings.wsOpen}
-					<div class="perf-metric">
-						<span class="perf-label">WebSocket Open</span>
-						<span class="perf-value" class:perf-warn={_loadTimings.wsOpen > 2000} class:perf-bad={_loadTimings.wsOpen > 5000}>{_loadTimings.wsOpen}ms</span>
-					</div>
-					{/if}
-					{#if _loadTimings.firstScreen}
-					<div class="perf-metric">
-						<span class="perf-label">First Screen</span>
-						<span class="perf-value" class:perf-warn={_loadTimings.firstScreen > 3000} class:perf-bad={_loadTimings.firstScreen > 8000}>{_loadTimings.firstScreen}ms</span>
-					</div>
-					{/if}
-					{#if _loadTimings.firstTranscript}
-					<div class="perf-metric">
-						<span class="perf-label">First Transcript</span>
-						<span class="perf-value" class:perf-warn={_loadTimings.firstTranscript > 3000} class:perf-bad={_loadTimings.firstTranscript > 8000}>{_loadTimings.firstTranscript}ms</span>
-					</div>
-					{/if}
-					<div class="perf-metric" style="font-weight:600;margin-top:4px">
-						<span class="perf-label">Total to Ready</span>
-						<span class="perf-value" style="color:#cba6f7" class:perf-warn={_loadTimingsReactive.total > 3000} class:perf-bad={_loadTimingsReactive.total > 8000}>{(_loadTimingsReactive.total / 1000).toFixed(1)}s</span>
-					</div>
-					{/if}
-
-					<div class="perf-section-title" style="margin-top:12px">Resources</div>
-					<div class="perf-metric">
-						<span class="perf-label">Memory</span>
-						<span class="perf-value" class:perf-warn={perfServer.rss_mb > 200} class:perf-bad={perfServer.rss_mb > 500}>{perfServer.rss_mb}MB</span>
-					</div>
-					<div class="perf-bar-track"><div class="perf-bar-fill" class:perf-warn={memPct2 > 40} class:perf-bad={memPct2 > 80} style="width:{Math.min(memPct2,100)}%"></div></div>
-					<div class="perf-metric">
-						<span class="perf-label">Uptime</span>
-						<span class="perf-value">{perfServer.uptime_s > 86400 ? (perfServer.uptime_s/86400).toFixed(1)+' days' : perfServer.uptime_s > 3600 ? (perfServer.uptime_s/3600).toFixed(1)+' hrs' : perfServer.uptime_s > 60 ? Math.round(perfServer.uptime_s/60)+' min' : perfServer.uptime_s+' sec'}</span>
-					</div>
-					<div class="perf-metric">
-						<span class="perf-label">Connected clients</span>
-						<span class="perf-value">{perfServer.ws_connections}</span>
-					</div>
-
-					{#if perfServer.top_routes?.length > 0}
-						{@const slowRoutes2 = perfServer.top_routes.filter(r => r.maxMs > 500).slice(0, 3)}
-						{#if slowRoutes2.length > 0}
-							<div class="perf-section-title" style="margin-top:12px">Bottlenecks</div>
-							{#each slowRoutes2 as r}
-								<div class="perf-metric" style="font-size:10px">
-									<span class="perf-label" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={r.route}>{r.route.replace(/^\/api\/v1\//, '').replace(/^\/dashboard\/api\//, '').replace(/^\/_app\/.*\//, 'asset/')}</span>
-									<span class="perf-value perf-bad">Peaked {r.maxMs > 1000 ? (r.maxMs/1000).toFixed(1)+'s' : Math.round(r.maxMs)+'ms'}</span>
-								</div>
-							{/each}
-						{/if}
-					{/if}
-
-					<div class="perf-section-title" style="margin-top:12px">Services</div>
-					{#if perfServices.length === 0}
-						<div class="perf-metric"><span class="perf-label" style="opacity:0.5">Scanning...</span></div>
-					{:else}
-						{#each perfServices as svc}
-							<div class="perf-proc" class:perf-zombie={svc.status === 'down' || svc.status === 'error'}>
-								<div class="perf-proc-header">
-									<span class="perf-proc-name vital">{svc.name}</span>
-									{#if svc.inProcess}
-										<span class="perf-proc-tag" title="Runs inside the PAN server process">built-in</span>
-									{:else if svc.pid}
-										<span class="perf-proc-tag perf-good" style="font-size:9px">{svc.memMB}MB</span>
-										<button class="perf-kill-btn" onclick={() => killProcess(svc.pid)} title="Kill {svc.name} (pid {svc.pid})">Kill</button>
-									{:else}
-										<span class="perf-proc-tag perf-bad">Offline</span>
-									{/if}
-								</div>
-								{#if svc.inProcess}
-									<div class="perf-proc-stats"><span style="opacity:0.6">{svc.modelTierLabel || 'built-in'}</span></div>
-								{:else if !svc.pid}
-									<div class="perf-proc-stats"><span class="perf-bad">Not running</span></div>
-								{/if}
-								{#if svc.lastError}
-									<div class="perf-proc-stats perf-bad" style="font-size:9px;margin-top:2px">{String(svc.lastError).slice(0,80)}</div>
-								{/if}
-							</div>
-						{/each}
-					{/if}
-
-					{#if perfOther.length > 0}
-						<div class="perf-section-title" style="margin-top:12px">Heavy Processes</div>
-						{#each perfOther.slice(0, 5) as p}
-							<div class="perf-proc">
-								<div class="perf-proc-header">
-									<span class="perf-proc-name" style="opacity:0.7">{p.exe}</span>
-									<span class="perf-proc-tag" style="font-size:9px">{p.memMB}MB</span>
-									<button class="perf-kill-btn" onclick={() => killProcess(p.pid)} title="Kill pid {p.pid}">Kill</button>
-								</div>
-							</div>
-						{/each}
-					{/if}
-					{/if}
+					{@render perfPanelContents()}
 				</div>
 			{:else if rightSection === 'usage'}
 				{#if !usageData}
@@ -7213,9 +7671,217 @@
 		font-size: 12px;
 	}
 	.perf-label { color: #a6adc8; }
+	.perf-label[title] { cursor: help; border-bottom: 1px dotted rgba(166, 173, 200, 0.25); }
 	.perf-value { color: #a6e3a1; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
 	.perf-value.perf-warn { color: #f9e2af; }
 	.perf-value.perf-bad { color: #f38ba8; }
+	.perf-metric.perf-stage-final {
+		background: rgba(203, 166, 247, 0.08);
+		border-top: 1px solid rgba(203, 166, 247, 0.25);
+		border-bottom: 1px solid rgba(203, 166, 247, 0.25);
+		margin-top: 2px;
+	}
+	.perf-metric.perf-stage-final .perf-label { color: #cba6f7; font-weight: 600; }
+	.perf-metric.perf-stage-final .perf-value { color: #cba6f7; }
+
+	/* Readiness summary (system/interactive/swap_safe/probes) */
+	.perf-ready-grid {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 4px;
+		padding: 4px 8px 2px 8px;
+	}
+	.perf-ready-cell {
+		text-align: center;
+		padding: 6px 4px;
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.02);
+		border: 1px solid rgba(255, 255, 255, 0.05);
+	}
+	.perf-ready-cell.perf-ready-good {
+		background: rgba(166, 227, 161, 0.1);
+		border-color: rgba(166, 227, 161, 0.3);
+	}
+	.perf-ready-cell.perf-ready-bad {
+		background: rgba(249, 226, 175, 0.08);
+		border-color: rgba(249, 226, 175, 0.25);
+	}
+	.perf-ready-val {
+		font-size: 13px;
+		font-weight: 700;
+		font-family: 'JetBrains Mono', monospace;
+		color: #cdd6f4;
+		letter-spacing: 0.5px;
+	}
+	.perf-ready-cell.perf-ready-good .perf-ready-val { color: #a6e3a1; }
+	.perf-ready-cell.perf-ready-bad .perf-ready-val { color: #f9e2af; }
+	.perf-ready-lbl {
+		font-size: 9px;
+		color: #a6adc8;
+		text-transform: uppercase;
+		letter-spacing: 0.4px;
+		margin-top: 2px;
+		cursor: help;
+	}
+
+	/* View toggle (List / Gantt) */
+	.perf-view-toggle {
+		display: flex;
+		gap: 4px;
+		padding: 6px 8px 0 8px;
+	}
+	.perf-view-btn {
+		flex: 1;
+		background: rgba(255, 255, 255, 0.03);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		color: #a6adc8;
+		padding: 4px 8px;
+		font-size: 11px;
+		font-family: inherit;
+		cursor: pointer;
+		border-radius: 4px;
+		transition: all 0.15s;
+	}
+	.perf-view-btn:hover { background: rgba(255, 255, 255, 0.06); color: #cdd6f4; }
+	.perf-view-btn.perf-view-active {
+		background: rgba(137, 180, 250, 0.15);
+		border-color: rgba(137, 180, 250, 0.4);
+		color: #89b4fa;
+	}
+
+	/* Stage rows in list view */
+	.perf-stage-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 8px;
+		border-bottom: 1px solid #1e1e2e;
+		font-size: 11px;
+	}
+	.perf-stage-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: #6c7086;
+		flex-shrink: 0;
+	}
+	.perf-stage-row.perf-stage-ready .perf-stage-dot { background: #a6e3a1; box-shadow: 0 0 4px rgba(166, 227, 161, 0.5); }
+	.perf-stage-row.perf-stage-failed .perf-stage-dot { background: #f38ba8; box-shadow: 0 0 4px rgba(243, 139, 168, 0.6); }
+	.perf-stage-row.perf-stage-running .perf-stage-dot { background: #f9e2af; animation: perfPulse 1s infinite; }
+	.perf-stage-row.perf-stage-pending .perf-stage-dot { background: #45475a; }
+	@keyframes perfPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+	.perf-stage-name {
+		flex: 1;
+		color: #cdd6f4;
+		cursor: help;
+		border-bottom: 1px dotted rgba(205, 214, 244, 0.15);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.perf-stage-row.perf-stage-pending .perf-stage-name { opacity: 0.5; }
+	.perf-stage-val {
+		font-family: 'JetBrains Mono', monospace;
+		color: #a6e3a1;
+		font-size: 10px;
+		font-weight: bold;
+		min-width: 40px;
+		text-align: right;
+	}
+	.perf-stage-val.perf-warn { color: #f9e2af; }
+	.perf-stage-val.perf-bad { color: #f38ba8; }
+	.perf-stage-row.perf-stage-failed .perf-stage-val { color: #f38ba8; }
+	.perf-stage-row.perf-stage-pending .perf-stage-val { color: #6c7086; }
+	.perf-reprobe-btn {
+		background: transparent;
+		border: none;
+		color: #6c7086;
+		cursor: pointer;
+		font-size: 12px;
+		padding: 0 2px;
+		line-height: 1;
+	}
+	.perf-reprobe-btn:hover { color: #89b4fa; }
+	.perf-stage-err {
+		font-size: 10px;
+		color: #f38ba8;
+		padding: 2px 8px 4px 20px;
+		opacity: 0.85;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		cursor: help;
+	}
+
+	/* Gantt view */
+	.perf-gantt {
+		padding: 4px 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+	.perf-gantt-row {
+		display: grid;
+		grid-template-columns: 110px 1fr 44px;
+		align-items: center;
+		gap: 6px;
+		font-size: 10px;
+	}
+	.perf-gantt-name {
+		color: #cdd6f4;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.perf-gantt-track {
+		position: relative;
+		height: 10px;
+		background: rgba(255, 255, 255, 0.03);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+	.perf-gantt-bar {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		border-radius: 2px;
+		min-width: 2px;
+	}
+	.perf-gantt-bar.perf-gantt-ready { background: linear-gradient(90deg, rgba(166, 227, 161, 0.6), rgba(166, 227, 161, 0.9)); }
+	.perf-gantt-bar.perf-gantt-failed { background: linear-gradient(90deg, rgba(243, 139, 168, 0.6), rgba(243, 139, 168, 0.9)); }
+	.perf-gantt-bar.perf-gantt-running {
+		background: repeating-linear-gradient(90deg, rgba(249, 226, 175, 0.3), rgba(249, 226, 175, 0.6) 10px, rgba(249, 226, 175, 0.3) 20px);
+		animation: perfSlide 1s linear infinite;
+	}
+	.perf-gantt-bar.perf-gantt-pending { background: rgba(69, 71, 90, 0.5); }
+	@keyframes perfSlide {
+		0% { background-position: 0 0; }
+		100% { background-position: 20px 0; }
+	}
+	.perf-gantt-ms {
+		font-family: 'JetBrains Mono', monospace;
+		color: #a6adc8;
+		font-size: 9px;
+		text-align: right;
+	}
+	.perf-gantt-legend {
+		display: flex;
+		justify-content: space-between;
+		padding: 4px 8px 8px 8px;
+		font-size: 9px;
+		color: #6c7086;
+	}
+	.perf-gantt-legend span { display: flex; align-items: center; gap: 3px; }
+	.perf-gantt-swatch {
+		display: inline-block;
+		width: 10px;
+		height: 8px;
+		border-radius: 2px;
+	}
+	.perf-gantt-swatch.perf-gantt-ready { background: rgba(166, 227, 161, 0.7); }
+	.perf-gantt-swatch.perf-gantt-failed { background: rgba(243, 139, 168, 0.7); }
+	.perf-gantt-swatch.perf-gantt-running { background: rgba(249, 226, 175, 0.5); }
+	.perf-gantt-swatch.perf-gantt-pending { background: rgba(69, 71, 90, 0.6); }
 	.perf-section-title {
 		font-size: 11px;
 		font-weight: bold;
@@ -7954,6 +8620,56 @@
 	.instance-note {
 		padding: 8px; margin-top: 8px; font-size: 11px;
 		color: #a6adc8; background: #181825; border-radius: 6px;
+	}
+
+	/* ==================== Intuition ==================== */
+	.intuition-panel { padding: 8px; }
+	.int-header {
+		display: flex; justify-content: space-between; align-items: center;
+		padding: 8px 4px; margin-bottom: 4px; border-bottom: 1px solid #313244;
+	}
+	.int-commander { font-weight: 700; color: #cba6f7; font-size: 14px; }
+	.int-ago { font-size: 11px; color: #6c7086; }
+	.int-axes { padding: 2px 0 6px 0; }
+	.int-axis {
+		display: flex; align-items: baseline; gap: 6px;
+		padding: 3px 4px; font-size: 12px;
+	}
+	.int-axis:hover { background: #1e1e2e; border-radius: 4px; }
+	.int-label { color: #6c7086; min-width: 80px; flex-shrink: 0; }
+	.int-val { color: #cdd6f4; word-break: break-word; }
+	.int-val.small { font-size: 11px; color: #a6adc8; }
+	.int-axis.task { padding-left: 12px; }
+	.int-axis.task .int-label { min-width: auto; }
+	.task-status { color: #6c7086; }
+	.task-status.in-progress { color: #f9e2af; }
+	.int-axis.pred { justify-content: space-between; }
+	.int-confidence {
+		color: #a6e3a1; font-size: 11px; flex-shrink: 0;
+		background: #1e1e2e; padding: 1px 6px; border-radius: 8px;
+	}
+	.int-topics { padding: 2px 4px 6px 4px; }
+	.int-topic {
+		font-size: 11px; color: #a6adc8; padding: 2px 0;
+		border-left: 2px solid #313244; padding-left: 8px; margin-bottom: 2px;
+	}
+	.int-last-heard {
+		font-size: 12px; color: #bac2de; padding: 4px 8px;
+		background: #1e1e2e; border-radius: 6px; margin: 4px;
+		font-style: italic;
+	}
+	.int-footer {
+		display: flex; justify-content: space-between;
+		font-size: 10px; color: #585b70; padding: 8px 4px 4px;
+		border-top: 1px solid #313244; margin-top: 8px;
+	}
+
+	.wellbeing-ok { color: #a6e3a1; }
+	.wellbeing-notok { color: #f9e2af; }
+	.wellbeing-emergency { color: #f38ba8; font-weight: 700; }
+	.int-disclaimer {
+		font-size: 10px; color: #585b70; padding: 4px 4px 2px;
+		font-style: italic;
 	}
 
 	/* ==================== Lifeboat ==================== */

@@ -29,6 +29,8 @@ import { fileURLToPath } from 'url';
 import { existsSync, readFileSync } from 'fs';
 import { hostname } from 'os';
 import { killProcessOnPort } from './platform.js';
+import { PerfEngine } from './perf/engine.js';
+import { toMarkdown as perfToMarkdown } from './perf/stages.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -54,6 +56,11 @@ let shadowStats = { mirrored: 0, errors: 0, promoted: 0, rejected: 0, startedAt:
 
 // Phase 7: Crucible — variant comparison data (primary vs shadow side-by-side)
 const crucibleResults = []; // { id, path, method, primary: {status, latencyMs}, shadow: {status, latencyMs}, match, ts }
+
+// PerfEngine — probe-driven readiness tracking (replaces health-only swap gate).
+// See service/src/perf/stages.js and service/src/perf/engine.js.
+// Lives on the Carrier so it survives Craft swaps.
+const perfEngine = new PerfEngine({ carrierPort: CARRIER_PORT });
 
 // ==================== Git Snapshot ====================
 function getGitCommit() {
@@ -399,11 +406,119 @@ const carrierServer = http.createServer((req, res) => {
     return;
   }
 
+  // Perf trace — the one live dashboard endpoint.
+  // GET /api/v1/perf/trace              — JSON snapshot
+  // GET /api/v1/perf/trace?format=markdown — spec doc auto-generated from stages.js
+  // POST /api/v1/perf/probe/:stage_id    — force re-probe a stage
+  // POST /api/v1/perf/event              — record a client-side hot-path event
+  if (url.pathname === '/api/v1/perf/trace') {
+    const format = url.searchParams.get('format');
+    if (format === 'markdown') {
+      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+      res.end(perfToMarkdown());
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(perfEngine.snapshot()));
+    return;
+  }
+  if (url.pathname.startsWith('/api/v1/perf/probe/') && req.method === 'POST') {
+    const stageId = url.pathname.slice('/api/v1/perf/probe/'.length);
+    perfEngine.forceProbe(stageId).catch(() => {});
+    res.writeHead(202, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, stage: stageId, queued: true }));
+    return;
+  }
+  if (url.pathname === '/api/v1/perf/event' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const { name, ms } = JSON.parse(body);
+        if (typeof name === 'string' && typeof ms === 'number') {
+          perfEngine.recordEvent(name, ms);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'expected { name: string, ms: number }' }));
+        }
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid json' }));
+      }
+    });
+    return;
+  }
+
   if (url.pathname === '/api/carrier/swap' && req.method === 'POST') {
     // Phase 4: Hot-swap Craft without losing PTY/WS connections
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, message: 'Swap initiated' }));
     performSwap();
+    return;
+  }
+
+  // Full carrier restart — process.exit(1) so pan-loop.bat respawns us.
+  // Use this when carrier.js / stages.js / probes.js / engine.js changed
+  // (a Craft swap cannot pick up those changes because they live in the Carrier).
+  // Pre-gate: perfEngine.system_ready must be true — don't kill a healthy
+  // carrier while something else is already broken. Override with ?force=1.
+  // See FEATURES.md → "Settings → Restart PAN" for the full spec.
+  if (url.pathname === '/api/carrier/restart' && req.method === 'POST') {
+    const force = url.searchParams.get('force') === '1';
+    const snap = perfEngine.snapshot();
+    if (!snap.system_ready && !force) {
+      const failed = (snap.stages || []).filter(s => s.required && s.state === 'failed').map(s => s.name);
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        reason: 'system_not_ready',
+        failed_stages: failed,
+        hint: 'Append ?force=1 to restart anyway.',
+      }));
+      return;
+    }
+
+    // Give the client a fast, deterministic answer BEFORE we start the exit dance.
+    // Clients listen for WS `carrier_restarting` to show a banner + reconnect.
+    const RESTART_DELAY_MS = 500;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      message: 'Carrier restart initiated',
+      reconnect_in_ms: RESTART_DELAY_MS + 2000, // delay + typical respawn time
+      forced: force,
+    }));
+
+    console.log(`[Carrier] 🔄 Full restart requested${force ? ' (forced)' : ''}. Broadcasting carrier_restarting…`);
+
+    // 1. Broadcast to all PTY clients so they can show a banner + buffer input
+    //    during the gap. Reconnect tokens are persisted to disk on every
+    //    issueToken() already — no extra flush needed.
+    if (terminalServer) {
+      try {
+        terminalServer.broadcastNotification('carrier_restarting', {
+          reconnect_in_ms: RESTART_DELAY_MS + 2000,
+          reason: force ? 'forced' : 'user_requested',
+        });
+      } catch (err) {
+        console.error('[Carrier] Failed to broadcast carrier_restarting:', err.message);
+      }
+    }
+
+    // 2. Wait long enough for WS frames to flush, then exit non-zero
+    //    so pan-loop.bat respawns us with current disk code.
+    setTimeout(() => {
+      console.log('[Carrier] 👋 Exiting for respawn…');
+      // Kill the craft children first so they don't linger as orphans.
+      try {
+        if (primaryCraft?.proc) primaryCraft.proc.kill();
+        if (previousCraft?.proc) previousCraft.proc.kill();
+        if (shadowCraft?.proc) shadowCraft.proc.kill();
+      } catch {}
+      process.exit(1);
+    }, RESTART_DELAY_MS);
     return;
   }
 
@@ -578,7 +693,7 @@ async function performSwap() {
   const healthy = await waitForCraftHealth(newCraft);
 
   if (!healthy) {
-    console.error('[Carrier] New Craft failed health check — aborting swap, keeping old Craft');
+    console.error('[Carrier] New Craft failed /health — aborting swap, keeping old Craft');
     newCraft.proc.kill();
     return;
   }
@@ -586,7 +701,9 @@ async function performSwap() {
   // Keep old Craft alive as rollback target
   previousCraft = oldCraft;
   primaryCraft = newCraft;
+  perfEngine.primaryCraftPort = newCraft.port;
   swapPending = true;
+  perfEngine.markSwapStart();
 
   console.log(`[Carrier] ═══ SWAP LIVE ═══ Primary is now Craft-${newCraft.id} (${newCommit})`);
   console.log(`[Carrier] ⏱️  Rollback window: ${ROLLBACK_TIMEOUT_MS / 1000}s — POST /lifeboat/rollback to revert, POST /lifeboat/confirm to keep`);
@@ -613,8 +730,19 @@ async function performSwap() {
 
 function confirmSwap() {
   if (!swapPending) return { ok: false, reason: 'No swap pending' };
+
+  // Enforce probe-based readiness gate: if SWAP_GATE stages aren't all ready,
+  // refuse to confirm and trigger rollback instead. Prevents the old
+  // "healthy but unusable" bug (Craft /health passes but PTY isn't bound).
+  const safety = perfEngine.isSwapSafe();
+  if (!safety.safe) {
+    console.error(`[Carrier] ❌ Swap unsafe: ${safety.reason} — rolling back instead of confirming`);
+    return performRollback();
+  }
+
   if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
   swapPending = false;
+  perfEngine.markSwapEnd();
 
   // NOW kill the old Craft
   if (previousCraft) {
@@ -637,6 +765,8 @@ function performRollback() {
   const failedCraft = primaryCraft;
   primaryCraft = previousCraft;
   previousCraft = null;
+  perfEngine.primaryCraftPort = primaryCraft.port;
+  perfEngine.markSwapEnd();
 
   console.log(`[Carrier] 🔙 ROLLBACK — reverting to Craft-${primaryCraft.id} (${primaryCraft.gitCommit}), killing Craft-${failedCraft.id}`);
   try { failedCraft.proc.kill(); } catch {}
@@ -743,14 +873,36 @@ async function boot() {
   // Start Claude handoff monitor (Phase 5)
   startClaudeHandoffMonitor();
 
+  // PerfEngine — give it the terminalServer reference for PTY probes, then start.
+  // Boot-time marks are set when each subsystem finishes initializing.
+  perfEngine.terminalServer = terminalServer;
+  perfEngine.mark('carrier_boot', 0);
+  perfEngine.start();
+
+  // Auto-rollback hook: if the engine detects SWAP_GATE failure during the
+  // rollback window, fire Lifeboat automatically (without waiting for timeout).
+  perfEngine.onChange(() => {
+    if (!swapPending || !previousCraft) return;
+    const safety = perfEngine.isSwapSafe();
+    if (!safety.safe) {
+      console.error(`[Carrier] 🚨 Perf probe failed during rollback window: ${safety.reason} — auto-rolling back`);
+      performRollback();
+    }
+  });
+
   // Kill any stale process holding the Craft port from a prior crash
   const craftPort = CRAFT_PORT_BASE;
+  const portCleanStart = Date.now();
   try {
     const killed = await killProcessOnPort(craftPort);
     if (killed.size > 0) {
       console.log(`[Carrier] Killed stale process(es) on port ${craftPort}: ${[...killed].join(', ')}`);
       await new Promise(r => setTimeout(r, 1000));
     }
+    // Tell the perf engine the port is now ours to use. This satisfies
+    // carrier.port_clean as a one-shot boot mark — after Craft spawns it
+    // will own 17700 and a recurring port_unbound probe would always fail.
+    perfEngine.mark('craft_port_clean', Date.now() - portCleanStart);
   } catch (e) {
     console.warn(`[Carrier] Failed to clean port ${craftPort}: ${e.message}`);
   }

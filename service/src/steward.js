@@ -16,6 +16,7 @@
 
 import { get, all, run, insert } from './db.js';
 import { startClassifier, stopClassifier } from './classifier.js';
+import { startIntuition, stopIntuition } from './intuition.js';
 import { startScout, stopScout } from './scout.js';
 import { startDream, stopDream } from './dream.js';
 import { startAutoDev, stopAutoDev } from './autodev.js';
@@ -175,6 +176,27 @@ const services = [
     intervalMs: 5 * 60 * 1000,
     startFn: () => startClassifier(5 * 60 * 1000),
     stopFn: () => stopClassifier(),
+    _status: 'stopped',
+    _lastCheck: null,
+    _lastError: null,
+    _lastRun: null,
+  },
+  {
+    id: 'intuition',
+    name: 'Intuition',
+    technicalName: 'Dimensional State Daemon',
+    description: 'Live situational state — fuses events+wrap+sensors into what Commander is doing right now. Read by PAN voice layer, Forge/AutoDev, and Atlas.',
+    modelTier: 'none',                                // v1 = dumb aggregator; v2 adds Cerebras classification
+    modelMinSize: 'N/A',
+    modelCurrent: 'N/A',
+    port: null,
+    healthCheck: 'interval',
+    bootOrder: 5,
+    dependsOn: [],
+    interval: '30s',
+    intervalMs: 30 * 1000,
+    startFn: () => startIntuition(30 * 1000),
+    stopFn: () => stopIntuition(),
     _status: 'stopped',
     _lastCheck: null,
     _lastError: null,
