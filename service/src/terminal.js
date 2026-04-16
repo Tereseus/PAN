@@ -27,6 +27,9 @@ try { mkdirSync(TERMINAL_LOG_DIR, { recursive: true }); } catch {}
 // Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
 const sessions = new Map();
 
+// Cap per-session transcript messages to prevent memory leak
+const MAX_STREAM_MESSAGES = 500;
+
 // Send a message to a session's LLM adapter.
 // Uses the Agent SDK (no PTY, no subprocess, no TUI).
 function pipeSend(sessionId, userText) {
@@ -136,14 +139,37 @@ function getSessionMessages(sessionId) {
   return all;
 }
 
-// Push stream transcript messages to all connected clients for a session
+// Trim _streamMessages to prevent unbounded memory growth.
+// Keeps the most recent messages, drops the oldest.
+function _trimStreamMessages(sess) {
+  const max = sess._maxStreamMessages || 500;
+  if (sess._streamMessages && sess._streamMessages.length > max) {
+    sess._streamMessages = sess._streamMessages.slice(-max);
+  }
+  if (sess.systemMessages && sess.systemMessages.length > 200) {
+    sess.systemMessages = sess.systemMessages.slice(-200);
+  }
+}
+
+// Push stream transcript messages to all connected clients for a session.
+// Debounced: rapid-fire tool calls won't serialize 500 messages × 20 times/sec.
 function _pushStreamTranscript(sess) {
+  if (sess._transcriptTimer) return; // already scheduled
+  sess._transcriptTimer = setTimeout(() => {
+    sess._transcriptTimer = null;
+    _flushStreamTranscript(sess);
+  }, 100); // 100ms debounce — fast enough to feel live, slow enough to batch
+}
+
+function _flushStreamTranscript(sess) {
+  _trimStreamMessages(sess);
   const messages = [...(sess.systemMessages || []), ...(sess._streamMessages || [])];
   messages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+  const payload = JSON.stringify({ type: 'transcript_messages', messages });
   for (const client of sess.clients) {
     if (client.readyState === 1) {
       try {
-        client.send(JSON.stringify({ type: 'transcript_messages', messages }));
+        client.send(payload);
       } catch {}
     }
   }
@@ -587,6 +613,15 @@ async function startTerminalServer(httpServer) {
               console.log(`[PAN Terminal] Stream init: claude_session=${evt.session_id} in ${sessionId}`);
 
             } else if (evt.type === 'assistant' && evt.message?.content) {
+              // Track cumulative token usage from assistant messages
+              const mu = evt.message?.usage;
+              if (mu) {
+                if (!session._tokenTotals) session._tokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+                session._tokenTotals.input += mu.input_tokens || 0;
+                session._tokenTotals.output += mu.output_tokens || 0;
+                session._tokenTotals.cacheRead += mu.cache_read_input_tokens || 0;
+                session._tokenTotals.cacheCreate += mu.cache_creation_input_tokens || 0;
+              }
               // Assistant message — extract clean text and tool use
               for (const block of evt.message.content) {
                 if (block.type === 'text' && block.text?.trim()) {
@@ -614,13 +649,33 @@ async function startTerminalServer(httpServer) {
                   });
                 }
               }
+              // Trim to prevent unbounded growth (memory leak)
+              if (session._streamMessages.length > MAX_STREAM_MESSAGES) {
+                session._streamMessages = session._streamMessages.slice(-MAX_STREAM_MESSAGES);
+              }
               // Push updated transcript to all clients
               _pushStreamTranscript(session);
 
             } else if (evt.type === 'result') {
               // Turn complete — Claude exited back to bash
               session.claudeRunning = false;
-              console.log(`[PAN Terminal] Stream result: turns=${evt.num_turns} cost=$${evt.total_cost_usd?.toFixed(4)} in ${sessionId}`);
+              console.log(`[PAN Terminal] Stream result: turns=${evt.num_turns} cost=$${evt.total_cost_usd?.toFixed(4)} in ${sessionId}`, JSON.stringify(Object.keys(evt)));
+              // Push turn stats with cumulative cost + tokens
+              const tt = session._tokenTotals || { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+              session._streamMessages.push({
+                role: 'system', type: 'turn_stats',
+                ts: new Date().toISOString(),
+                tokens: {
+                  total_input: tt.input,
+                  total_output: tt.output,
+                  total_cache_read: tt.cacheRead,
+                  total_cache_create: tt.cacheCreate,
+                  total_cost: evt.total_cost_usd ?? null,
+                },
+              });
+              if (session._streamMessages.length > MAX_STREAM_MESSAGES) {
+                session._streamMessages = session._streamMessages.slice(-MAX_STREAM_MESSAGES);
+              }
               // Final push
               _pushStreamTranscript(session);
             }
@@ -819,6 +874,9 @@ async function startTerminalServer(httpServer) {
                     text: userText.trim(),
                     ts: new Date().toISOString(),
                   });
+                  if (session._streamMessages.length > MAX_STREAM_MESSAGES) {
+                    session._streamMessages = session._streamMessages.slice(-MAX_STREAM_MESSAGES);
+                  }
                   _pushStreamTranscript(session);
                 }
               }
@@ -993,7 +1051,7 @@ function listSessions() {
     // quiet for >2s AND input is older than output (i.e. genuinely waiting on the user).
     const inputNewer = lastIn > lastOut && now - lastOut > 300;
     const stillStreaming = lastIn > 0 && now - lastOut < 2000 && lastIn > lastOut - 60000;
-    const thinking = inputNewer || stillStreaming;
+    const thinking = !!session.claudeRunning || inputNewer || stillStreaming;
     const inFlight = getInFlightTool(session.cwd, session.claudeSessionIds);
     result.push({
       id,

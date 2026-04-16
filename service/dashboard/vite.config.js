@@ -3,6 +3,10 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
 	plugins: [sveltekit()],
+	build: {
+		// Don't wipe output dir — old hashed bundles stay alive so in-flight SPAs don't break
+		emptyOutDir: false,
+	},
 	server: {
 		port: 5173,
 		proxy: {

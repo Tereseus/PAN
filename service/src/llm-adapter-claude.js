@@ -18,6 +18,7 @@ export class ClaudeAdapter {
     this.cwd = cwd;                       // Working directory
     this.onMessage = onMessage;           // Callback: (messages: Message[]) => void
     this.messages = [];                   // Transcript: [{role, type, text, ts, model?}]
+    this.MAX_MESSAGES = 500;              // Cap to prevent memory leak
     this.claudeSessionId = resumeClaudeSessionId; // Claude's internal session UUID (restored from token on restart)
     this.busy = false;                    // True while a query is running
     this.abortController = null;          // For interrupting
@@ -223,6 +224,10 @@ export class ClaudeAdapter {
 
   // Push transcript update to callback
   _push() {
+    // Trim to cap — old messages already persisted to transcript files
+    if (this.messages.length > this.MAX_MESSAGES) {
+      this.messages = this.messages.slice(-this.MAX_MESSAGES);
+    }
     try {
       this.onMessage(this.getMessages());
     } catch (err) {
