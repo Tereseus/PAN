@@ -196,29 +196,28 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### Recent Conversation
-**Claude** (2026-04-15 21:30:23): It's in the built JS. The swap happened — after the auto-reload, the "Page Load" section will appear in the perf panel with all the timers. It just hasn't reloaded on your end yet.
-**User** (2026-04-15 21:53:57): But why hasn't it reloaded why I refreshed I restarted what the fuck is happening this is not a craft does this have to be a carrier what is happening Why why is it so difficult to get these widgets t
-**Claude** (2026-04-15 21:57:07): "Page Load" IS in the built JS chunk (node 22). The code is there, the build is there, the Craft is serving it. 
+**User** (2026-04-15 23:03:03): push to git
+**Claude** (2026-04-15 23:03:29): Kronos is now a vertical tree growing upward. The redesign:
 
-Here's what was happening: the swap auto-reload fires, the page reloads, the new code 
-**User** (2026-04-15 21:57:23): Look at what I see now, now, not before. C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776304609500.png C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776304638596.png
-**Claude** (2026-04-15 21:57:40): I can see it in the second screenshot — the **Page Load** section IS there in the right panel:
+- **Trunk**: Vertical, center of screen, with a gentle organic wavering (bezier curves). Gradient from dark at roots to lighter at crown.
+-
+**Claude** (2026-04-15 23:04:04): Pushed. `237a3f9` is live on origin/master — 119 files, covers the death spiral fix, session cost tracking, Kronos tree, perf panel overhaul, and page load timers.
+**User** (2026-04-15 23:04:26): Do these prompts in any way look hallucinating to you And if you see this UI what can you tell me about it this is how I did it because I like to read as much information as possible and I try to comp
+**Claude** (2026-04-15 23:04:44): The other session made solid points. Here's what's real vs. aspirational, and what we can actually do:
 
-- **Script Init** — 531ms
-- **Mounted** — (visible)
-- **First Transcript** — (visible)
-- **Close to Read
+**Accurate observations:**
+- 50-75 char line width for prose reading speed — well-established re
 
 ### Open Tasks
 - [backlog P1] Enter key / send button stops working in chat input � requires page refresh
 - [backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [in_progress] Spotify auto-play
 - [in_progress] Voice marketplace ($1-2 each)
 - [todo] Voice personality packs
-- [todo] Cloud training for no-GPU users
+- [in_progress] Cloud training for no-GPU users
 - [todo] Model push to phone after training
-- [todo] Order components (ESP32S3, battery, sensors, laser, LED)
+- [in_progress] Order components (ESP32S3, battery, sensors, laser, LED)
 - [todo] 3D print case design (~52x42x25mm)
 - [todo] Solder I2C sensor board + GPIO expander
+- [todo] ESP32 firmware: BLE, camera, mic VAD, sensors
 
 <!-- PAN-CONTEXT-END -->
