@@ -1,0 +1,1 @@
+import{p as r}from"./CxIRvUWu.js";import{s as t}from"./DHApt8-H.js";const e={get data(){return r.data},get error(){return r.error},get form(){return r.form},get params(){return r.params},get route(){return r.route},get state(){return r.state},get status(){return r.status},get url(){return r.url}};t.updated.check;const u=e;export{u as p};

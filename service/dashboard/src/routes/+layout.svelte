@@ -496,6 +496,32 @@
 	let collapsed = $derived(isSidebarCollapsed());
 	let mobileMenuOpen = $state(false);
 
+	// Sidebar resize
+	let sidebarWidth = $state(210);
+	let sidebarResizing = $state(false);
+	let sidebarResizeStartX = 0;
+	let sidebarResizeStartW = 0;
+
+	function onSidebarResizeStart(e) {
+		if (collapsed) return;
+		e.preventDefault();
+		sidebarResizing = true;
+		sidebarResizeStartX = e.clientX;
+		sidebarResizeStartW = sidebarWidth;
+		document.addEventListener('mousemove', onSidebarResizeMove);
+		document.addEventListener('mouseup', onSidebarResizeEnd);
+	}
+	function onSidebarResizeMove(e) {
+		if (!sidebarResizing) return;
+		const delta = e.clientX - sidebarResizeStartX;
+		sidebarWidth = Math.min(400, Math.max(140, sidebarResizeStartW + delta));
+	}
+	function onSidebarResizeEnd() {
+		sidebarResizing = false;
+		document.removeEventListener('mousemove', onSidebarResizeMove);
+		document.removeEventListener('mouseup', onSidebarResizeEnd);
+	}
+
 	// Branding — customizable logo image or text (cached in localStorage)
 	let brandingLogo = $state('Π');
 	let brandingImage = $state('');
@@ -640,7 +666,7 @@
 	{@render children()}
 {:else}
 <div class="shell">
-	<nav class="sidebar" class:collapsed class:mobile-open={mobileMenuOpen}>
+	<nav class="sidebar" class:collapsed class:mobile-open={mobileMenuOpen} style={collapsed ? '' : `width: ${sidebarWidth}px; min-width: ${sidebarWidth}px`}>
 		<div class="logo">
 			{#if brandingImage}
 				<img class="logo-img" src={brandingImage} alt="Logo" />
@@ -968,6 +994,8 @@
 			{/if}
 		</div>
 	</nav>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="sidebar-resize-handle" onmousedown={onSidebarResizeStart}></div>
 	<main class="content">
 		<div class="topbar">
 			<button class="hamburger" onclick={() => mobileMenuOpen = !mobileMenuOpen}>☰</button>
@@ -1018,11 +1046,22 @@
 		width: 210px;
 		min-width: 210px;
 		background: #12121a;
-		border-right: 1px solid #1e1e2e;
+		border-right: none;
 		display: flex;
 		flex-direction: column;
 		padding: 0;
 		transition: width 0.2s ease, min-width 0.2s ease;
+	}
+
+	.sidebar-resize-handle {
+		width: 4px;
+		cursor: col-resize;
+		background: #1e1e2e;
+		flex-shrink: 0;
+		transition: background 0.15s;
+	}
+	.sidebar-resize-handle:hover {
+		background: #89b4fa;
 	}
 
 	.sidebar.collapsed {
