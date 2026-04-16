@@ -538,31 +538,50 @@
 	}
 
 	async function restartServer() {
-		// Use Carrier swap — spawns a fresh Craft (server.js) and hot-swaps the proxy.
-		// This reloads all server-side JS without killing the Carrier or PTY sessions.
-		// /api/admin/restart was unreliable (tried to spawn a new Carrier while old one lived).
-		flash('Swapping Craft (reloading server code)...');
+		// Full Carrier restart — used when carrier.js / perf stages / engine code
+		// changed (a Craft swap cannot pick up carrier-level changes).
+		// For Craft-only changes use the Lifeboat widget (POST /api/carrier/swap).
+		// See FEATURES.md → "Settings → Restart PAN" for the full spec.
+		flash('Restarting PAN (carrier + craft)...');
+		let startedOk = false;
 		try {
-			await api('/api/carrier/swap', { method: 'POST' });
-		} catch {}
-		// Poll for new Craft to become healthy — retry every 2s for up to 60s
-		flash('Waiting for new Craft to become healthy...');
+			const r = await fetch('/api/carrier/restart', { method: 'POST' });
+			const d = await r.json().catch(() => ({}));
+			if (r.status === 409) {
+				// Probe-gate refused — tell the user which stages are failing.
+				const failed = Array.isArray(d.failed_stages) ? d.failed_stages.join(', ') : 'unknown';
+				const proceed = confirm(`PAN is not fully healthy (failed: ${failed}). Force restart anyway?`);
+				if (!proceed) { flash('Restart cancelled'); return; }
+				const r2 = await fetch('/api/carrier/restart?force=1', { method: 'POST' });
+				startedOk = r2.ok;
+			} else {
+				startedOk = r.ok;
+			}
+		} catch {
+			// Network error is actually expected mid-restart — keep going.
+			startedOk = true;
+		}
+		if (!startedOk) { flash('Restart endpoint refused — check console'); return; }
+
+		// Poll for the new Carrier to be back up. /api/carrier/status is a
+		// Carrier-side route, so getting a 200 means the fresh carrier is live.
+		flash('Waiting for PAN to come back...');
 		let attempts = 0;
 		const poll = setInterval(async () => {
 			attempts++;
 			try {
-				const resp = await fetch('/dashboard/api/stats');
+				const resp = await fetch('/api/carrier/status', { cache: 'no-store' });
 				if (resp.ok) {
 					clearInterval(poll);
-					flash('Server reloaded successfully ✓');
-					setTimeout(() => location.reload(), 1000);
+					flash('PAN back online ✓');
+					setTimeout(() => location.reload(), 800);
 				}
 			} catch {}
-			if (attempts >= 30) {
+			if (attempts >= 60) {
 				clearInterval(poll);
-				flash('Server did not come back after 60s — check manually');
+				flash('PAN did not come back after 60s — check pan-loop.bat window');
 			}
-		}, 2000);
+		}, 1000);
 	}
 
 	async function saveSetting(key, value) {
@@ -782,6 +801,12 @@
 		loadOrgs();
 		loadTeams();
 		loadEmailConfig();
+
+		// Deep-link: ?section=email jumps to the email tab
+		if (typeof window !== 'undefined') {
+			const sec = new URLSearchParams(window.location.search).get('section');
+			if (sec && tabs.some(t => t.id === sec)) activeTab = sec;
+		}
 	});
 </script>
 
@@ -831,7 +856,7 @@
 					</div>
 				{/if}
 				<div style="margin-top:10px">
-					<button class="btn warn" onclick={restartServer}>Reload Server (Craft Swap)</button>
+					<button class="btn warn" onclick={restartServer} title="Full PAN restart — kills carrier, pan-loop.bat respawns it. Use when carrier.js / perf stages / engine code changed. For Craft-only changes use the Lifeboat widget instead.">Restart PAN</button>
 				</div>
 			</section>
 

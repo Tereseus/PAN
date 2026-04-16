@@ -245,6 +245,9 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                             let label = val["label"].as_str().map(|s| s.to_string());
                             let width = val["width"].as_f64();
                             let height = val["height"].as_f64();
+                            // initScript: JS injected into the webview before every page load.
+                            // Used by wrappers (Discord, Slack, etc.) to read DOM + post back to PAN.
+                            let init_script = val["initScript"].as_str().map(|s| s.to_string());
                             let handle = app_handle.clone();
                             let reg = registry.clone();
                             // Use provided label or auto-generate
@@ -257,15 +260,19 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                             let custom_size = width.is_some() || height.is_some();
                             let w = width.unwrap_or(1280.0);
                             let h = height.unwrap_or(800.0);
+                            let init = init_script.clone();
                             handle.run_on_main_thread(move || {
-                                if let Ok(window) = WebviewWindowBuilder::new(
+                                let mut builder = WebviewWindowBuilder::new(
                                     &handle2,
                                     &wid,
                                     WebviewUrl::External(wurl.parse().unwrap()),
                                 )
                                 .title(&wtitle)
-                                .inner_size(w, h)
-                                .build()
+                                .inner_size(w, h);
+                                if let Some(script) = init {
+                                    builder = builder.initialization_script(&script);
+                                }
+                                if let Ok(window) = builder.build()
                                 {
                                     // Only maximize if no custom size was requested
                                     if !custom_size {
@@ -430,6 +437,82 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                     send_win_h();
                     println!("[PAN Shell] Win+H triggered via HTTP");
                     (200, serde_json::json!({"ok": true, "action": "winh"}).to_string())
+                }
+
+                // CORS preflight for wrapper ingest
+                ("OPTIONS", url_str) if url_str.starts_with("/wrap/") => {
+                    let response = tiny_http::Response::from_string("")
+                        .with_status_code(204)
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"POST, GET, OPTIONS"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Max-Age"[..], &b"86400"[..]).unwrap());
+                    let _ = request.respond(response);
+                    continue;
+                }
+
+                // Wrapper inbound: content scripts running inside wrapped apps (Discord, Slack, etc.)
+                // POST here with a JSON payload. We forward to PAN server on :7777 so it reaches the DB.
+                // Permissive CORS so fetch from https://discord.com works.
+                ("POST", "/wrap/inbound") => {
+                    let mut body_str = String::new();
+                    let _ = request.as_reader().read_to_string(&mut body_str);
+                    // Fire-and-forget forward to PAN server
+                    let fwd_body = body_str.clone();
+                    std::thread::spawn(move || {
+                        let _ = ureq::post(&format!("{}/api/v1/wrap/inbound", PAN_SERVER))
+                            .set("Content-Type", "application/json")
+                            .send_string(&fwd_body);
+                    });
+                    let response = tiny_http::Response::from_string(
+                        serde_json::json!({"ok": true}).to_string()
+                    )
+                    .with_status_code(200)
+                    .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                    .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+                    let _ = request.respond(response);
+                    continue;
+                }
+
+                ("POST", "/eval") => {
+                    // Run JS inside a given webview window. Body: { windowId, js }.
+                    // Used to drive wrapped apps (e.g. window.__PAN_SEND__("booty")).
+                    let mut body_str = String::new();
+                    let _ = request.as_reader().read_to_string(&mut body_str);
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                        let wid = val["windowId"].as_str().unwrap_or("").to_string();
+                        let js = val["js"].as_str().unwrap_or("").to_string();
+                        if wid.is_empty() || js.is_empty() {
+                            (400, serde_json::json!({"ok": false, "error": "windowId and js required"}).to_string())
+                        } else {
+                            let handle = app_handle.clone();
+                            let handle2 = handle.clone();
+                            let wid2 = wid.clone();
+                            let js2 = js.clone();
+                            let result = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+                            let result2 = result.clone();
+                            handle.run_on_main_thread(move || {
+                                if let Some(w) = handle2.get_webview_window(&wid2) {
+                                    match w.eval(&js2) {
+                                        Ok(_) => *result2.lock().unwrap() = "ok".to_string(),
+                                        Err(e) => *result2.lock().unwrap() = format!("eval error: {}", e),
+                                    }
+                                } else {
+                                    *result2.lock().unwrap() = "window not found".to_string();
+                                }
+                            }).ok();
+                            // small wait for main-thread execution
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            let r = result.lock().unwrap().clone();
+                            if r == "ok" {
+                                (200, serde_json::json!({"ok": true}).to_string())
+                            } else {
+                                (500, serde_json::json!({"ok": false, "error": r}).to_string())
+                            }
+                        }
+                    } else {
+                        (400, serde_json::json!({"ok": false, "error": "bad json"}).to_string())
+                    }
                 }
 
                 ("POST", "/close") => {

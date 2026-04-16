@@ -19,7 +19,7 @@
 	let tabs = $derived(allTabs.filter(t => !(t.userOnly && getPanMode() === 'service')));
 
 	let commsOpen = $state(typeof window !== 'undefined' && localStorage.getItem('pan_comms_open') === '1');
-	let commsView = $state('contacts'); // 'contacts' | 'calendar' | 'mail'
+	let commsView = $state('contacts'); // 'contacts' | 'calendar' | 'mail' | 'wrap'
 	let unreadMessages = $state(0);
 	let commsContacts = $state([]);
 	let commsActiveContact = $state(null);   // contact object currently expanded
@@ -400,6 +400,37 @@
 	let composeOpen = $state(false);
 	let composeText = $state('');
 
+	// Wrap (Tauri webview wrappers) state
+	let wrapServices = $state([]);
+	let wrapOpening = $state(null);
+	let wrapMsg = $state('');
+
+	async function loadWrapServices() {
+		try {
+			const res = await fetch(`${window.location.origin}/api/v1/wrap/services`);
+			if (res.ok) {
+				const data = await res.json();
+				wrapServices = data.services || [];
+			}
+		} catch (e) { console.error('[PAN Wrap] services load failed:', e); }
+	}
+
+	async function openWrapper(serviceId) {
+		wrapOpening = serviceId;
+		wrapMsg = '';
+		try {
+			const res = await fetch(`${window.location.origin}/api/v1/wrap/open/${serviceId}`, { method: 'POST' });
+			const data = await res.json();
+			if (!res.ok || !data.ok) wrapMsg = data.error || 'Failed to open wrapper';
+			else wrapMsg = `Opened ${serviceId} (${data.label})`;
+		} catch (e) {
+			wrapMsg = e.message || 'Failed to open wrapper';
+		} finally {
+			wrapOpening = null;
+			setTimeout(() => { wrapMsg = ''; }, 3000);
+		}
+	}
+
 	function openPanWindow(url, opts = {}) {
 		// Always use Tauri shell API — window.open() doesn't create real windows in Tauri
 		fetch('/api/v1/ui-commands', {
@@ -734,6 +765,7 @@
 							{#if unreadMessages > 0}<span class="comms-msg-badge">{unreadMessages}</span>{/if}
 						</button>
 						<button class="comms-vtab" class:active={commsView === 'calendar'} class:flash={calendarFlash} onclick={() => { commsView = 'calendar'; commsActiveContact = null; loadCalendarEvents(); }} title="Calendar">📅</button>
+						<button class="comms-vtab" class:active={commsView === 'wrap'} onclick={() => { commsView = 'wrap'; commsActiveContact = null; loadWrapServices(); }} title="Wrapped apps">🪟</button>
 						<button class="comms-vtab comms-expand-btn" onclick={() => openExpandedCommsView(commsView)} title="Open {commsView} in window">↗</button>
 					</div>
 
@@ -861,6 +893,35 @@
 										</div>
 									</div>
 								{/if}
+							{/if}
+						</div>
+					{:else if commsView === 'wrap'}
+						<div class="comms-wrap-view">
+							<div class="comms-wrap-header">Wrapped apps</div>
+							<div class="comms-wrap-hint">Opens a Tauri webview with PAN's content script injected. Messages stream back to PAN.</div>
+							{#if wrapServices.length === 0}
+								<div class="comms-empty">No services registered yet. <button class="comms-retry-btn" onclick={loadWrapServices}>Reload</button></div>
+							{:else}
+								<div class="comms-wrap-list">
+									{#each wrapServices as svc}
+										<div class="comms-wrap-item">
+											<div class="comms-wrap-info">
+												<div class="comms-wrap-name">{svc.title || svc.id}</div>
+												<div class="comms-wrap-url">{svc.url}</div>
+											</div>
+											<button
+												class="comms-wrap-open"
+												disabled={wrapOpening === svc.id}
+												onclick={() => openWrapper(svc.id)}
+											>
+												{wrapOpening === svc.id ? 'Opening…' : 'Open'}
+											</button>
+										</div>
+									{/each}
+								</div>
+							{/if}
+							{#if wrapMsg}
+								<div class="comms-wrap-msg">{wrapMsg}</div>
 							{/if}
 						</div>
 					{:else if commsLoading}
@@ -1647,6 +1708,28 @@
 		margin-left: 4px;
 	}
 	.comms-retry-btn:hover { background: #45475a; }
+
+	/* Wrap view */
+	.comms-wrap-view { padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+	.comms-wrap-header { font-size: 11px; color: #cdd6f4; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+	.comms-wrap-hint { font-size: 10px; color: #6c7086; line-height: 1.4; }
+	.comms-wrap-list { display: flex; flex-direction: column; gap: 4px; }
+	.comms-wrap-item {
+		display: flex; align-items: center; gap: 8px;
+		padding: 6px 8px; background: #1e1e2e; border: 1px solid #313244;
+		border-radius: 6px;
+	}
+	.comms-wrap-info { flex: 1; min-width: 0; }
+	.comms-wrap-name { font-size: 12px; color: #cdd6f4; font-weight: 500; }
+	.comms-wrap-url { font-size: 9px; color: #6c7086; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.comms-wrap-open {
+		background: #89b4fa; color: #1e1e2e; border: none;
+		padding: 4px 10px; border-radius: 4px; font-size: 10px;
+		font-weight: 600; cursor: pointer;
+	}
+	.comms-wrap-open:hover:not(:disabled) { background: #74c7ec; }
+	.comms-wrap-open:disabled { opacity: 0.5; cursor: not-allowed; }
+	.comms-wrap-msg { font-size: 10px; color: #a6e3a1; padding: 4px 0; }
 
 	/* Inline chat — takes over most of sidebar when open */
 	.comms-chat {

@@ -423,8 +423,15 @@ async function startTerminalServer(httpServer) {
     } else if (pathname === '/ws/whisper') {
       // Proxy to Whisper streaming server on port 7783
       proxyWhisperWs(request, socket, head);
+    } else {
+      // Unknown paths: reject fast so misconfigured probes/clients don't
+      // eat their timeout budget. Previously we let the socket hang which
+      // silently burned the perf engine's ws.handshake 2s window.
+      try {
+        socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+      } catch {}
     }
-    // Unknown paths: let socket hang/timeout naturally
   });
 
   wss.on('connection', (ws, req) => {

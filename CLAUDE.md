@@ -2,6 +2,11 @@
 
 PAN is a persistent AI operating system across all devices, projects, and conversations.
 
+> **Feature specs live in [FEATURES.md](./FEATURES.md).** Every button, widget, and
+> endpoint is documented there with what it calls, what it preserves, what it
+> replaces, and its pre-gate. If you're about to guess what a UI element does —
+> check FEATURES.md first. Update it in the same commit as any code change.
+
 ## Architecture
 
 ```mermaid
@@ -196,28 +201,29 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### Recent Conversation
-**User** (2026-04-15 23:03:03): push to git
-**Claude** (2026-04-15 23:03:29): Kronos is now a vertical tree growing upward. The redesign:
+**Claude** (2026-04-16 16:25:05): **Questions before I touch code:**
 
-- **Trunk**: Vertical, center of screen, with a gentle organic wavering (bezier curves). Gradient from dark at roots to lighter at crown.
--
-**Claude** (2026-04-15 23:04:04): Pushed. `237a3f9` is live on origin/master — 119 files, covers the death spiral fix, session cost tracking, Kronos tree, perf panel overhaul, and page load timers.
-**User** (2026-04-15 23:04:26): Do these prompts in any way look hallucinating to you And if you see this UI what can you tell me about it this is how I did it because I like to read as much information as possible and I try to comp
-**Claude** (2026-04-15 23:04:44): The other session made solid points. Here's what's real vs. aspirational, and what we can actually do:
+1. **Snapshot cadence** — every 5s (matches pendant), 15s (cheaper), or *event-driven* (recompute only when a sensor fires)? I'd start event-driven + a 30s heartbea
+**User** (2026-04-16 16:31:47): Now so the user should be called commander me in that case should be called pan or is that is that gonna be too Is it is that gonna be too confusing 'cause you're it's it's mixing up the names, Even t
+**Claude** (2026-04-16 16:34:03): Good — the canon was already mostly written by you on 2026-03-31. I was about to redesign things that have names and structure already. Here's what I pulled and where the collision is:
 
-**Accurate observations:**
-- 50-75 char line width for prose reading speed — well-established re
+**What's alrea
+**User** (2026-04-16 16:42:08): The forge's intuitional state is the same thing So when the forge is basically hey create this application in real time right it's part of auto development the fortune auto development are the same th
+**Claude** (2026-04-16 16:42:48): **Locked vocabulary:**
+- **Commander** = you (tzuri)
+- **PAN** = the voice you talk to / the agent dispatcher
+- **Intuition** = the one daemon that knows what's happening right now — feeds PAN for con
 
 ### Open Tasks
-- [backlog P1] Enter key / send button stops working in chat input � requires page refresh
+- [backlog P2] Compose email — send returns HTTP 400, no email service wired
 - [backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
+- [in_progress P1] Performance dashboard — probes, stages, Gantt, critical path
+- [backlog P1] PAN.bat respawn loop failed to restart today
+- [todo P1] Multi-channel send — Discord, email, Signal (never end-to-end tested)
+- [in_progress P1] Memory pipeline end-to-end verification + live visualization
+- [in_progress P1] Tauri wrappers around apps — Discord, Slack, WhatsApp, Instagram, any web/desktop app
+- [todo P1] PAN-to-PAN onboarding via QR code
+- [todo P1] PAN client — lightweight app for secondary computers
 - [in_progress] Voice marketplace ($1-2 each)
-- [todo] Voice personality packs
-- [in_progress] Cloud training for no-GPU users
-- [todo] Model push to phone after training
-- [in_progress] Order components (ESP32S3, battery, sensors, laser, LED)
-- [todo] 3D print case design (~52x42x25mm)
-- [todo] Solder I2C sensor board + GPIO expander
-- [todo] ESP32 firmware: BLE, camera, mic VAD, sensors
 
 <!-- PAN-CONTEXT-END -->
