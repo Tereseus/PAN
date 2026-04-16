@@ -121,8 +121,8 @@
 	let rightMilestoneFilter = $state(null);
 
 	// Panel resize state
-	let leftPanelWidth = $state(260);
-	let rightPanelWidth = $state(280);
+	let leftPanelWidth = $state(340);
+	let rightPanelWidth = $state(260);
 	let resizingPanel = $state(null); // 'left' | 'right' | null
 	let resizeStartX = $state(0);
 	let resizeStartWidth = $state(0);
@@ -430,14 +430,25 @@
 		document.body.style.cursor = 'col-resize';
 		document.body.style.userSelect = 'none';
 	}
+	const MIN_TERMINAL_WIDTH = 650; // ~75 chars at monospace — optimal reading width
 	function onResizeMove(e) {
 		if (!resizingPanel) return;
 		const delta = e.clientX - resizeStartX;
+		const totalWidth = window.innerWidth;
+		// Estimate sidebar width (layout sidebar + its resize handle)
+		const sidebarEst = document.querySelector('.sidebar')?.offsetWidth || 210;
+		const chrome = sidebarEst + 20; // sidebar + resize handles + padding
 		if (resizingPanel === 'left') {
-			leftPanelWidth = Math.min(500, Math.max(180, resizeStartWidth + delta));
+			let proposed = Math.min(600, Math.max(160, resizeStartWidth + delta));
+			// Don't let terminal go below minimum
+			const available = totalWidth - chrome - proposed - rightPanelWidth;
+			if (available < MIN_TERMINAL_WIDTH) proposed = totalWidth - chrome - rightPanelWidth - MIN_TERMINAL_WIDTH;
+			leftPanelWidth = Math.max(160, proposed);
 		} else {
-			// Right panel: dragging left = bigger, dragging right = smaller
-			rightPanelWidth = Math.min(500, Math.max(180, resizeStartWidth - delta));
+			let proposed = Math.min(400, Math.max(160, resizeStartWidth - delta));
+			const available = totalWidth - chrome - leftPanelWidth - proposed;
+			if (available < MIN_TERMINAL_WIDTH) proposed = totalWidth - chrome - leftPanelWidth - MIN_TERMINAL_WIDTH;
+			rightPanelWidth = Math.max(160, proposed);
 		}
 	}
 	function onResizeEnd() {
@@ -6353,9 +6364,22 @@
 	.center-panel {
 		flex: 1;
 		min-height: 0;
-		min-width: 0;
+		min-width: 0;             /* panels enforce min terminal width via resize logic */
 		display: flex;
 		flex-direction: column;
+		position: relative;
+	}
+
+	/* ── Π crossbar: solid blue bar, overshooting past legs ── */
+	.center-panel::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: -18px;
+		right: -18px;
+		height: 2px;
+		background: #89b4fa;
+		z-index: 10;
 	}
 
 	.center-tabs {
@@ -6382,7 +6406,8 @@
 	.center-tab:hover { color: #cdd6f4; }
 	.center-tab.active {
 		color: #89b4fa;
-		border-bottom-color: #89b4fa;
+		border-bottom-color: transparent;  /* crossbar is now on top, not bottom */
+		text-shadow: 0 0 12px rgba(137, 180, 250, 0.3);
 	}
 
 	.center-chat {
@@ -6855,14 +6880,28 @@
 	}
 
 	.resize-handle {
-		width: 5px;
+		width: 4px;
 		cursor: col-resize;
-		background: #1e1e2e;
+		background: linear-gradient(to bottom,
+			#89b4fa 0%,
+			#89b4fa 50%,
+			rgba(137, 180, 250, 0.3) 80%,
+			rgba(137, 180, 250, 0.05) 100%
+		);
 		flex-shrink: 0;
-		transition: background 0.15s;
+		transition: all 0.15s;
+		position: relative;
+		margin-top: -3px;
+		z-index: 11;
 	}
 	.resize-handle:hover {
-		background: #89b4fa;
+		background: linear-gradient(to bottom,
+			#89b4fa 0%,
+			#89b4fa 60%,
+			rgba(137, 180, 250, 0.4) 85%,
+			rgba(137, 180, 250, 0.1) 100%
+		);
+		box-shadow: 0 0 8px rgba(137, 180, 250, 0.2);
 	}
 	.left-panel.resizing, .right-panel.resizing {
 		transition: none;
@@ -7254,6 +7293,7 @@
 		z-index: 1;
 		background: #1e1e2e;
 		max-width: 100%;
+		padding: 0 12px;
 	}
 	.term-container :global(.term-screen),
 	.term-container :global(.term-scrollback) {
@@ -7266,7 +7306,7 @@
 	.term-container :global(.t-line) {
 		padding: 0;
 		margin: 0;
-		line-height: 1.4;
+		line-height: 1.55;       /* Bumped from 1.4 — easier line tracking */
 	}
 	.term-container :global(.t-user) {
 		margin-top: 6px;
@@ -7287,13 +7327,13 @@
 	   This is the readability pass — distinct visual chunks per speaker. */
 	.term-container :global(.turn) {
 		display: block;
-		margin: 10px 0 12px 0;
-		padding: 2px 0 2px 10px;
+		margin: 14px 0 16px 0;  /* More breathing room between turns */
+		padding: 4px 0 4px 12px;
 		border-left: 3px solid #313244;
 	}
 	.term-container :global(.turn + .turn) {
-		border-top: 1px solid #1e1e2e;
-		padding-top: 6px;
+		border-top: 1px solid rgba(69, 71, 90, 0.4);
+		padding-top: 10px;
 	}
 	.term-container :global(.turn-user) { border-left-color: #89b4fa; }
 	.term-container :global(.turn-assistant) { border-left-color: #fab387; }
@@ -7318,15 +7358,16 @@
 	}
 	.term-container :global(.turn-user .turn-name) { color: #89b4fa; }
 	.term-container :global(.turn-assistant .turn-name) { color: #fab387; }
-	.term-container :global(.turn-time) { color: #585b70; font-size: 10px; }
+	.term-container :global(.turn-time) { color: #45475a; font-size: 10px; opacity: 0.7; }
 	.term-container :global(.turn-model) {
-		color: #cba6f7;
-		font-size: 9.5px;
-		background: #1e1e2e;
-		border: 1px solid #313244;
+		color: #9080b0;
+		font-size: 9px;
+		background: rgba(30, 30, 46, 0.6);
+		border: 1px solid #2a2a3a;
 		border-radius: 3px;
 		padding: 0 5px;
 		font-family: ui-monospace, monospace;
+		opacity: 0.6;
 	}
 	.term-container :global(.turn-collapsed[open]) { opacity: 1; }
 	.term-container :global(.turn-collapsed:not([open]) .t-line) { display: none; }
