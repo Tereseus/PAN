@@ -201,22 +201,21 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### Recent Conversation
-**Claude** (2026-04-16 23:13:28): Report's open. Here's what it covers:
+**Claude** (2026-04-17 08:58:18): Server healthy with all model changes. Here's what just changed:
 
-**12 sections** — full dependency map with exact sizes:
+**7 files switched — all llama3.2 references replaced:**
 
-| Install Tier | Disk | RAM Required |
+| File | Was | Now |
 |---|---|---|
-| **Lite** (CPU, small models) | ~1.5 GB | 16 GB |
+| `memory/embeddings.js` | llama3.2 / 307
+**User** (2026-04-17 09:49:16): OK so this is a much better I can see the installation guide here so it says tail scale here for the component but shouldn't see a wire guard so they can put whatever they want right so these are the 
+**Claude** (2026-04-17 09:54:46): Reopened in PAN's window. Here's what changed in v1.1:
 
-**User** (2026-04-16 23:15:32): That document didn't open in our own window it opened in Chrome as a web page that should never happen it should always open in our window so that we can send it to any device that we need to send it 
-**Claude** (2026-04-16 23:20:39): Report is now open in PAN's own window (Tauri shell, port 7790). Accessible from any device via `http://<tailscale-ip>:7777/docs/install-requirements.html`.
+**PAN Service breakdown** — now shows all 9 sub-components indented under it: Express server, SQLite+SQLCipher, sqlite-vec, SvelteKit dashboard,
+**User** (2026-04-17 10:04:35): Is it is the sensitivity rou router in the privacy compute is that the same thing What what is the difference between those those look like the same thing. So the Scout will also look for all the appl
+**Claude** (2026-04-17 10:04:57): **Sensitivity Router vs Privacy Compute — different jobs:**
 
-Here's what changed from the first version
-**User** (2026-04-16 23:25:31): Mr Lee I also have some stuff about real life uh translation of your voice into different languages in a pretty good way So you can't you can't run you can't run eight billion on 16 gigs We obviously 
-**Claude** (2026-04-16 23:26:10): Good stuff. Here's my take on everything:
-
-**Cerebras math checks out.** 200K/day from background services with phone OFF = 20% of the 1M free tier. Phone voice adds maybe 50-100K/day (router calls ar
+**Sensitivity Router** is the bouncer at the door. It looks at your query and classifies it 0-3: "Is this about passwords? Level 3, local o
 
 ### Open Tasks
 - [backlog P2] Compose email — send returns HTTP 400, no email service wired

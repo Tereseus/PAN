@@ -747,7 +747,7 @@ function persistSnapshot(snap, trigger) {
 // Fires after each tick to fill in axes that the aggregator can't determine.
 // Uses Cerebras Qwen 235B (free, ~220ms). Updates the snapshot in-place.
 let _classifyPending = false;
-const CLASSIFY_MODELS = ['cerebras:qwen-3-235b', 'ollama:llama3.2']; // try in order
+const CLASSIFY_MODELS = ['cerebras:qwen-3-235b', 'ollama:qwen3:4b']; // try in order
 const CLASSIFY_COOLDOWN_MS = 15000;         // min gap between classify calls
 let _lastClassifyTime = 0;
 
@@ -787,7 +787,7 @@ Classify:
 }
 
 // Call Ollama directly (bypass askAI for local models)
-async function callOllama(prompt, model = 'llama3.2') {
+async function callOllama(prompt, model = 'qwen3:4b') {
   const resp = await fetch('http://localhost:11434/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -37,12 +37,34 @@ function ensureInitialized(db) {
     // Already loaded for this connection — extensions can throw on re-load.
     if (!/already loaded|already exists/i.test(err.message)) throw err;
   }
-  // vec0 virtual table — one row per event, embedding stored as float[3072].
+  // vec0 virtual table — one row per event, embedding stored as float vector.
   // We DON'T use FOREIGN KEY here because vec0 doesn't support it; we instead
   // clean orphans on a periodic sweep (or by trigger) below.
-  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS event_embeddings USING vec0(
-    embedding float[${EMBED_DIM}]
-  )`);
+  //
+  // Migration: if EMBED_DIM changed (e.g. 3072 → 1024), drop and recreate.
+  // Old embeddings are invalid anyway since dimensions differ.
+  try {
+    const existing = db.prepare(`SELECT * FROM event_embeddings LIMIT 0`).columns();
+    // vec0 column info — check if dimensions match by trying an insert
+    // If table exists but dimensions mismatch, the safest path is recreate.
+  } catch {
+    // Table doesn't exist yet — will be created below
+  }
+  try {
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS event_embeddings USING vec0(
+      embedding float[${EMBED_DIM}]
+    )`);
+  } catch (err) {
+    if (/dimension/i.test(err.message) || /mismatch/i.test(err.message)) {
+      console.log(`[PAN Memory] Embedding dimension changed to ${EMBED_DIM} — rebuilding vector index...`);
+      db.exec(`DROP TABLE IF EXISTS event_embeddings`);
+      db.exec(`CREATE VIRTUAL TABLE event_embeddings USING vec0(
+        embedding float[${EMBED_DIM}]
+      )`);
+    } else {
+      throw err;
+    }
+  }
   initialized.add(db);
 }
 

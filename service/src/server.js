@@ -1377,6 +1377,14 @@ app.use('/setup', express.static(join(__dirname, '..', 'public', 'setup'), {
   }
 }));
 
+// Docs / reports — served in PAN window, accessible from any device
+app.use('/docs', express.static(join(__dirname, '..', 'public', 'docs'), {
+  etag: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+}));
+
 // Mobile dashboard — static files, no ES modules, no caching
 app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
   etag: false,
