@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import { db, get, all } from './db.js';
+import { askAI } from './llm.js';
 
 // ─── Config ───
 const PAN_PORT = parseInt(process.env.PAN_CARRIER_PORT || '7777');
@@ -80,6 +81,26 @@ export function ensureIntuitionSchema(database) {
   `);
 }
 
+// ─── Helpers ───
+function titleCase(str) {
+  if (!str) return str;
+  return str.replace(/(^|\s)\S/g, c => c.toUpperCase());
+}
+
+// Filter out system/XML messages that aren't real conversation
+function isRealMessage(text) {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.startsWith('<')) return false;              // XML/HTML tags
+  if (t.startsWith('task-notification')) return false;
+  if (t.includes('<task-id>')) return false;
+  if (t.includes('<tool-use-id>')) return false;
+  if (t.includes('<output-file>')) return false;
+  if (t.includes('<system-reminder>')) return false;
+  if (t.length < 3) return false;                   // too short to be meaningful
+  return true;
+}
+
 // ─── Identity ───
 // Commander's name lives in the `users` table (synced from the `display_name`
 // setting by /api/v1/org/current). Nickname is what they want to be called in
@@ -98,62 +119,64 @@ function getCommanderIdentity() {
   return 'Commander';
 }
 
-// ─── Topic extraction (v1: keyword + pattern, no LLM) ───
-// Turns raw conversation messages into a short intelligible topic string.
-// Looks for nouns/concepts that repeat across messages, strips filler.
-function extractTopic(messages, projectName) {
-  if (!messages || messages.length === 0) return null;
+// ─── Known PAN feature keywords ───
+// Maps conversation keywords to clean feature/concept names.
+// v2 will replace this with Cerebras classification.
+const TOPIC_KEYWORDS = {
+  'intuition': 'intuition system',
+  'dashboard': 'dashboard ui',
+  'pendant': 'pendant hardware',
+  'discord': 'discord integration',
+  'wrapper': 'app wrappers',
+  'tauri': 'desktop shell',
+  'steward': 'steward services',
+  'memory': 'memory pipeline',
+  'dream': 'dream cycle',
+  'forge': 'forge / autodev',
+  'voice': 'voice pipeline',
+  'router': 'command router',
+  'carrier': 'carrier architecture',
+  'craft': 'craft swap',
+  'terminal': 'terminal sessions',
+  'agent': 'agent system',
+  'onboarding': 'onboarding / installer',
+  'qr': 'qr onboarding',
+  'wellbeing': 'assumption / wellbeing',
+  'assumption': 'assumption / wellbeing',
+  'mood': 'mood detection',
+  'sensor': 'sensor data',
+  'camera': 'camera / vision',
+  'phone': 'phone integration',
+  'preference': 'messaging preferences',
+  'whisper': 'speech-to-text',
+  'atlas': 'atlas knowledge graph',
+  'scout': 'scout / cerebras',
+  'installer': 'installer / distribution',
+};
 
-  // Combine last 3 messages into one text blob
+// Extract a clean topic from conversation messages.
+// Uses keyword matching against known PAN concepts, falls back to project context.
+function extractTopic(messages, projectName) {
+  if (!messages || messages.length === 0) {
+    return projectName ? `${projectName.toLowerCase()} development` : null;
+  }
+
   const blob = messages.slice(0, 3)
     .map(m => (m.content || '').toLowerCase())
-    .join(' ')
-    .replace(/[^a-z0-9\s\-_]/g, ' ')     // strip punctuation
-    .replace(/\s+/g, ' ')
-    .trim();
+    .join(' ');
 
-  if (!blob) return null;
+  // Check for known PAN feature keywords (most specific wins)
+  const hits = [];
+  for (const [keyword, topic] of Object.entries(TOPIC_KEYWORDS)) {
+    if (blob.includes(keyword)) hits.push(topic);
+  }
 
-  // Stop words to filter out
-  const stopWords = new Set([
-    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-    'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
-    'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
-    'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
-    'between', 'out', 'off', 'over', 'under', 'again', 'further', 'then',
-    'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each',
-    'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
-    'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
-    'just', 'don', 'now', 'and', 'but', 'or', 'if', 'because', 'while',
-    'this', 'that', 'these', 'those', 'i', 'me', 'my', 'we', 'you', 'your',
-    'he', 'she', 'it', 'they', 'them', 'its', 'his', 'her', 'our', 'their',
-    'what', 'which', 'who', 'whom', 'about', 'up', 'like', 'know', 'think',
-    'want', 'make', 'going', 'gonna', 'really', 'actually', 'basically',
-    'something', 'thing', 'things', 'stuff', 'way', 'right', 'yeah', 'ok',
-    'well', 'also', 'get', 'got', 'let', 'put', 'say', 'said', 'tell',
-    'much', 'even', 'still', 'already', 'kind', 'kinda', 'pretty', 'cause',
-  ]);
+  // Deduplicate and take top 2
+  const unique = [...new Set(hits)].slice(0, 2);
+  if (unique.length > 0) return unique.join(', ');
 
-  // Count meaningful words (2+ chars, not stop words)
-  const words = blob.split(' ').filter(w => w.length > 2 && !stopWords.has(w));
-  const freq = {};
-  for (const w of words) freq[w] = (freq[w] || 0) + 1;
-
-  // Sort by frequency, take top concepts
-  const topWords = Object.entries(freq)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([w]) => w);
-
-  if (topWords.length === 0) return projectName ? `${projectName.toLowerCase()} development` : null;
-
-  // Build a readable topic from top 2-3 words
-  // If project name appears, don't repeat it
-  const filtered = topWords.filter(w => w !== (projectName || '').toLowerCase());
-  const topic = filtered.slice(0, 3).join(' + ');
-
-  return topic || (projectName ? `${projectName.toLowerCase()} development` : null);
+  // Fallback: project context
+  return projectName ? `${projectName.toLowerCase()} development` : null;
 }
 
 // ─── Build a snapshot from raw signals ───
@@ -199,6 +222,7 @@ function buildSnapshot(trigger = 'heartbeat') {
       started: s.createdAt,
       thinking: s.thinking || false,
       claudeRunning: s.claudeRunning || false,
+      clients: s.clients || 0,
     }));
 
   // Active tasks
@@ -233,6 +257,69 @@ function buildSnapshot(trigger = 'heartbeat') {
             cwd: d.cwd || null,
             created_at: r.created_at,
           });
+        }
+      } catch {}
+    }
+  } catch {}
+
+  // ─── PAN self-awareness: what are PAN's own systems doing? ───
+  let stewardServices = [];
+  let recentPanActions = [];
+  try {
+    // Get latest steward heartbeat for service health
+    const hb = all(`
+      SELECT data FROM events WHERE event_type = 'StewardHeartbeat'
+      ORDER BY id DESC LIMIT 1
+    `);
+    if (hb.length > 0) {
+      try {
+        const d = JSON.parse(hb[0].data);
+        if (Array.isArray(d.services)) {
+          // Array of { id, status, lastCheck, lastError }
+          stewardServices = d.services.map(s => ({
+            name: s.id || s.name || 'unknown',
+            status: s.status || 'unknown',
+          }));
+        } else if (d.services && typeof d.services === 'object') {
+          // Object keyed by name
+          stewardServices = Object.entries(d.services).map(([name, info]) => ({
+            name, status: (typeof info === 'string' ? info : info.status) || 'unknown',
+          }));
+        }
+      } catch {}
+    }
+  } catch {}
+
+  try {
+    // Recent PAN actions — what did PAN itself just do?
+    const actions = all(`
+      SELECT event_type, data, created_at FROM events
+      WHERE event_type IN ('StewardAction', 'AssistantMessage', 'ToolUse', 'OrchestratorSummary', 'ConsolidationRun', 'EvolutionCycle', 'DreamCycle')
+      ORDER BY id DESC LIMIT 10
+    `);
+    for (const a of actions) {
+      try {
+        const d = JSON.parse(a.data || '{}');
+        let description = null;
+        if (a.event_type === 'StewardAction') {
+          const act = titleCase((d.action || 'action').replace(/_/g, ' '));
+          description = `${act}: ${titleCase(d.service || 'service')}`;
+        } else if (a.event_type === 'AssistantMessage') {
+          const txt = (d.text || '').slice(0, 60);
+          if (txt) description = `Replied: "${txt}${d.text?.length > 60 ? '...' : ''}"`;
+        } else if (a.event_type === 'ToolUse') {
+          description = `Used tool: ${d.tool || d.name || 'unknown'}`;
+        } else if (a.event_type === 'ConsolidationRun') {
+          description = 'Ran memory consolidation';
+        } else if (a.event_type === 'EvolutionCycle') {
+          description = 'Ran evolution cycle';
+        } else if (a.event_type === 'DreamCycle') {
+          description = 'Ran dream cycle';
+        } else if (a.event_type === 'OrchestratorSummary') {
+          description = 'Orchestrator completed';
+        }
+        if (description) {
+          recentPanActions.push({ action: description, at: a.created_at });
         }
       } catch {}
     }
@@ -287,8 +374,9 @@ function buildSnapshot(trigger = 'heartbeat') {
 
   // ─── ACTIVITY — what Commander is actually doing ───
   // Priority: active Claude session > active tasks > wrapper apps > idle
+  // A session is "active" if Claude is running OR a client (dashboard) is connected.
   let activity = 'idle';
-  const activeSessions = panSessions.filter(s => s.claudeRunning);
+  const activeSessions = panSessions.filter(s => s.claudeRunning || s.clients > 0);
   const activeProject = activeSessions.find(s => s.project);
   const inProgressTasks = activeTasks.filter(t => t.status === 'in_progress');
   if (activeProject) {
@@ -375,18 +463,49 @@ function buildSnapshot(trigger = 'heartbeat') {
     else if (span < 180000) urgency = 'elevated';
   }
 
-  // ─── Recent topics (blend terminal + wrap) ───
+  // ─── Recent topics (keyword-extracted from terminal + wrap messages) ───
   const recentTopics = [];
-  for (const m of recentTerminalMsgs.slice(0, 3)) {
-    const t = (m.content || '').slice(0, 80);
-    if (t) recentTopics.push(t);
+  const allRecentText = [
+    ...recentTerminalMsgs.slice(0, 8).map(m => m.content || ''),
+    ...recentWrap.slice(0, 5).map(m => m.text || ''),
+  ].filter(isRealMessage);
+
+  // Extract known PAN feature keywords from recent messages
+  const topicBlob = allRecentText.join(' ').toLowerCase();
+  for (const [keyword, topic] of Object.entries(TOPIC_KEYWORDS)) {
+    const t = titleCase(topic);
+    if (topicBlob.includes(keyword) && !recentTopics.includes(t)) {
+      recentTopics.push(t);
+    }
+    if (recentTopics.length >= 5) break;
   }
-  for (const m of recentWrap.slice(0, 3)) {
-    const t = (m.text || '').slice(0, 80);
-    if (t && !recentTopics.includes(t)) recentTopics.push(t);
+  // If no keywords matched, use project context
+  if (recentTopics.length === 0 && activeProject) {
+    recentTopics.push(titleCase(`${activeProject.project} Development`));
   }
 
-  const lastHeard = recentTerminalMsgs[0]?.content || recentWrap[0]?.text || null;
+  // Last heard = most recent REAL user message, trimmed to a readable length
+  let lastHeard = null;
+  for (const m of recentTerminalMsgs) {
+    if (m.role === 'assistant') continue;  // skip AI replies
+    if (isRealMessage(m.content)) {
+      // Take first sentence or first 80 chars, whichever is shorter
+      const raw = m.content.trim();
+      const firstSentence = raw.match(/^[^.!?\n]+[.!?]?/)?.[0] || raw;
+      lastHeard = firstSentence.length > 80 ? firstSentence.slice(0, 77) + '...' : firstSentence;
+      break;
+    }
+  }
+  if (!lastHeard) {
+    for (const m of recentWrap) {
+      if (isRealMessage(m.text)) {
+        const raw = m.text.trim();
+        const firstSentence = raw.match(/^[^.!?\n]+[.!?]?/)?.[0] || raw;
+        lastHeard = firstSentence.length > 80 ? firstSentence.slice(0, 77) + '...' : firstSentence;
+        break;
+      }
+    }
+  }
   const lastSender = recentWrap[0]?.author || null;
 
   // ─── Predictions ───
@@ -410,19 +529,19 @@ function buildSnapshot(trigger = 'heartbeat') {
   // ─── Data summaries ───
   const dataSummaries = {
     terminal: recentTerminalMsgs.length > 0
-      ? `${recentTerminalMsgs.length} messages in active session`
-      : 'no active conversation',
+      ? `${recentTerminalMsgs.length} Messages in Active Session`
+      : 'No Active Conversation',
     conversations: recentWrap.length > 0
-      ? `${recentWrap.length} msgs, latest from ${lastSender || 'unknown'}: "${(recentWrap[0]?.text || '').slice(0, 50)}"`
-      : 'no recent messages',
+      ? `${recentWrap.length} Msgs, Latest from ${lastSender || 'Unknown'}: "${(recentWrap[0]?.text || '').slice(0, 50)}"`
+      : 'No Recent Messages',
     events: recentEvents.length > 0
-      ? `${recentEvents.length} events (${[...new Set(recentEvents.map(e => e.event_type))].slice(0, 5).join(', ')})`
-      : 'no recent events',
+      ? `${recentEvents.length} Events (${[...new Set(recentEvents.map(e => e.event_type))].slice(0, 5).join(', ')})`
+      : 'No Recent Events',
     camera: null,                            // ⏳ pendant
     audio: null,                             // ⏳ pendant
-    sensors: sensorsActive.size > 0 ? `active: ${[...sensorsActive].join(', ')}` : 'none active',
-    location: where || null,                 // desktop inference for now, pendant GPS later
-    apps: activeApps.size > 0 ? [...activeApps].join(', ') : 'none detected',
+    sensors: sensorsActive.size > 0 ? `Active: ${[...sensorsActive].join(', ')}` : 'None Active',
+    location: where ? titleCase(where) : null,
+    apps: activeApps.size > 0 ? titleCase([...activeApps].join(', ')) : 'None Detected',
   };
 
   // ─── Confidence — how much data do we actually have? ───
@@ -441,28 +560,38 @@ function buildSnapshot(trigger = 'heartbeat') {
     as_of: now,
     trigger,
     now: {
-      where,
-      activity,
+      where: titleCase(where),
+      activity: titleCase(activity),
       social: [...social],
-      focus,
-      mood: mood.state,
-      mood_detail: mood.detail,
-      assumption: wellbeing.state,               // ok | not_ok | emergency
-      assumption_detail: wellbeing.detail,       // PAN's guess — NOT medical advice
-      urgency,
-      direction,
+      focus: titleCase(focus),
+      mood: titleCase(mood.state),
+      mood_detail: mood.detail ? mood.detail.charAt(0).toUpperCase() + mood.detail.slice(1) : null,
+      assumption: titleCase(wellbeing.state?.replace(/_/g, ' ')),
+      assumption_detail: wellbeing.detail ? wellbeing.detail.charAt(0).toUpperCase() + wellbeing.detail.slice(1) : null,
+      urgency: titleCase(urgency),
+      direction: titleCase(direction),
       need: null,                               // needs deeper classifier
-      engagement,
+      engagement: titleCase(engagement?.replace(/_/g, ' ')),
       complexity: null,                         // needs classifier
       recent_topics: recentTopics.slice(0, 5),
-      last_heard: lastHeard ? lastHeard.slice(0, 120) : null,
+      last_heard: lastHeard || null,
       last_seen: null,                          // ⏳ pendant camera
     },
     pan: {
-      sessions: panSessions,
+      sessions: panSessions.map(s => ({
+        ...s,
+        description: s.project
+          ? `${titleCase(s.project)} — ${s.claudeRunning ? 'Claude active' : s.thinking ? 'thinking' : 'idle'}`
+          : s.claudeRunning ? 'Claude active' : 'Session open',
+      })),
+      services: stewardServices.map(s => ({
+        name: titleCase(s.name),
+        status: titleCase(s.status),
+      })),
+      recent_actions: recentPanActions.slice(0, 5),
       active_tasks: activeTasks,
       predictions,
-      status: panSessions.length > 0 ? 'active' : 'idle',
+      status: panSessions.length > 0 ? 'Active' : 'Idle',
     },
     data: dataSummaries,
     style: {
@@ -614,6 +743,141 @@ function persistSnapshot(snap, trigger) {
   }
 }
 
+// ─── Cerebras axis classification (async, non-blocking) ───
+// Fires after each tick to fill in axes that the aggregator can't determine.
+// Uses Cerebras Qwen 235B (free, ~220ms). Updates the snapshot in-place.
+let _classifyPending = false;
+const CLASSIFY_MODELS = ['cerebras:qwen-3-235b', 'ollama:llama3.2']; // try in order
+const CLASSIFY_COOLDOWN_MS = 15000;         // min gap between classify calls
+let _lastClassifyTime = 0;
+
+function buildClassifyPrompt(snap) {
+  const n = snap.now;
+  const signals = [
+    `Commander: ${snap.commander}`,
+    `Time: ${new Date(snap.as_of).toLocaleTimeString()}`,
+    n.where ? `Location: ${n.where}` : null,
+    n.activity ? `Activity: ${n.activity}` : null,
+    n.focus ? `Focus: ${n.focus}` : null,
+    n.engagement ? `Engagement: ${n.engagement}` : null,
+    (n.social || []).length > 0 ? `Social: ${n.social.join(', ')}` : null,
+    n.recent_topics?.length > 0 ? `Recent topics: ${n.recent_topics.slice(0, 3).join('; ')}` : null,
+    n.last_heard ? `Last said: "${n.last_heard.slice(0, 100)}"` : null,
+    snap.pan?.active_tasks?.length > 0 ? `Tasks: ${snap.pan.active_tasks.slice(0, 3).map(t => t.title).join(', ')}` : null,
+    snap.data?.events || null,
+  ].filter(Boolean).join('\n');
+
+  return `You are Intuition, PAN's situational awareness daemon. Given the following signals about Commander's current state, classify these axes. Reply ONLY with a JSON object, no explanation.
+
+SIGNALS:
+${signals}
+
+Classify:
+{
+  "focus": "short phrase: what Commander is focused on right now",
+  "direction": "short phrase: what Commander is working toward",
+  "mood": "one of: calm, engaged, energized, focused, frustrated, impatient, relaxed, winding_down, starting_up",
+  "mood_detail": "one sentence explaining why",
+  "urgency": "one of: low, normal, elevated, high, critical",
+  "need": "short phrase: what Commander needs from PAN right now, or null",
+  "complexity": "one of: simple, moderate, complex, deep",
+  "assumption": "one of: ok, not_ok, emergency",
+  "assumption_detail": "one sentence: PAN's guess about Commander's wellbeing (NOT medical advice)"
+}`;
+}
+
+// Call Ollama directly (bypass askAI for local models)
+async function callOllama(prompt, model = 'llama3.2') {
+  const resp = await fetch('http://localhost:11434/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      stream: false,
+      options: { temperature: 0.3, num_predict: 300 },
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!resp.ok) throw new Error(`Ollama ${resp.status}`);
+  const data = await resp.json();
+  return data.message?.content || '';
+}
+
+async function classifyAxes(snap) {
+  if (_classifyPending) { console.log('[Intuition] classify skipped: pending'); return; }
+  const now = Date.now();
+  if (now - _lastClassifyTime < CLASSIFY_COOLDOWN_MS) { console.log('[Intuition] classify skipped: cooldown'); return; }
+
+  _classifyPending = true;
+  _lastClassifyTime = now;
+  const debugFile = path.join(path.dirname(INTUITION_FILE), 'intuition-debug.log');
+  const dbg = (msg) => { console.log(msg); try { fs.appendFileSync(debugFile, new Date().toISOString() + ' ' + msg + '\n'); } catch {} };
+  dbg('[Intuition] classify starting...');
+
+  try {
+    const prompt = buildClassifyPrompt(snap);
+    let raw = null;
+    let usedModel = null;
+
+    // Try Cerebras first, fall back to local Ollama
+    for (const model of CLASSIFY_MODELS) {
+      try {
+        if (model.startsWith('ollama:')) {
+          raw = await callOllama(prompt, model.replace('ollama:', ''));
+          usedModel = model;
+        } else {
+          raw = await askAI(prompt, {
+            model,
+            timeout: 5000,
+            maxTokens: 250,
+            caller: 'intuition-classifier',
+            _skipAnonymize: true,
+          });
+          usedModel = model;
+        }
+        if (raw) break;
+      } catch (e) {
+        dbg(`[Intuition] ${model} failed: ${e.message}, trying next...`);
+      }
+    }
+
+    if (!raw) { _classifyPending = false; return; }
+
+    // Parse response
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) { _classifyPending = false; return; }
+
+    const classified = JSON.parse(jsonMatch[0]);
+
+    // Merge classified values into the live snapshot (Title Case)
+    if (classified.focus) snap.now.focus = titleCase(classified.focus);
+    if (classified.direction) snap.now.direction = titleCase(classified.direction);
+    if (classified.mood) snap.now.mood = titleCase(classified.mood.replace(/_/g, ' '));
+    if (classified.mood_detail) snap.now.mood_detail = classified.mood_detail.charAt(0).toUpperCase() + classified.mood_detail.slice(1);
+    if (classified.urgency) snap.now.urgency = titleCase(classified.urgency);
+    if (classified.need && classified.need !== 'null') snap.now.need = titleCase(classified.need);
+    if (classified.complexity) snap.now.complexity = titleCase(classified.complexity);
+    if (classified.assumption) snap.now.assumption = titleCase(classified.assumption.replace(/_/g, ' '));
+    if (classified.assumption_detail) snap.now.assumption_detail = classified.assumption_detail.charAt(0).toUpperCase() + classified.assumption_detail.slice(1);
+
+    // Mark as AI-classified
+    snap.meta.classifier = usedModel;
+    snap.meta.classified_at = Date.now();
+    snap.signals.confidence = Math.min((snap.signals.confidence || 0) + 0.25, 1.0);
+
+    // Re-persist with classified values
+    persistSnapshot(snap, snap.trigger + '+classified');
+    _lastSnapshot = snap;
+
+    dbg(`[Intuition] classified via ${usedModel}: mood=${classified.mood} focus="${classified.focus}" complexity=${classified.complexity} (${Date.now() - now}ms)`);
+  } catch (e) {
+    dbg(`[Intuition] classify OUTER failed: ${e.message}\n${e.stack}`);
+  } finally {
+    _classifyPending = false;
+  }
+}
+
 // ─── Public: tick + accessors ───
 export function tickIntuition(trigger = 'heartbeat') {
   if (!_running) return null;
@@ -621,6 +885,10 @@ export function tickIntuition(trigger = 'heartbeat') {
     const snap = buildSnapshot(trigger);
     persistSnapshot(snap, trigger);
     _lastSnapshot = snap;
+
+    // Fire async classification (non-blocking, updates snapshot later)
+    classifyAxes(snap).catch(e => console.warn('[Intuition] classifyAxes unhandled:', e.message));
+
     return snap;
   } catch (e) {
     console.warn('[Intuition] tick failed:', e.message);

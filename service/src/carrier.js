@@ -36,7 +36,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ==================== Configuration ====================
 const CARRIER_PORT = parseInt(process.env.PAN_PORT) || 7777;
-const CRAFT_PORT_BASE = 17700; // Internal ports for Craft instances
+// Derive internal Craft port from Carrier port — prevents multi-instance conflicts.
+// Default: 7777 → 17700, Dev (7781) → 17704, Docker/custom → CARRIER_PORT + 9923
+const CRAFT_PORT_BASE = parseInt(process.env.PAN_CRAFT_PORT_BASE) || (CARRIER_PORT + 9923);
 const HOST = '0.0.0.0';
 const ROLLBACK_TIMEOUT_MS = 30_000; // 30s auto-rollback if not confirmed
 
@@ -132,7 +134,8 @@ function spawnCraft(port, label = 'primary') {
   return craft;
 }
 
-async function waitForCraftHealth(craft, timeoutMs = 15000) {
+// First install: DB migration can take 20-30s. Normal: <2s.
+async function waitForCraftHealth(craft, timeoutMs = 45000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {

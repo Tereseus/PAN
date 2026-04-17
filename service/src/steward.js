@@ -981,6 +981,9 @@ function getAtlasData() {
       lastRun: svc._lastRun,
       // Configuration
       port: svc.port,
+      healthCheck: svc.healthCheck,
+      processName: svc.processName || null,
+      processCmdLineMatch: svc.processCmdLineMatch || null,
       interval: svc.interval,
       bootOrder: svc.bootOrder,
       dependsOn: svc.dependsOn,

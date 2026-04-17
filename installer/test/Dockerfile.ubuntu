@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# PAN Installer Test — Clean Ubuntu
+# Simulates a fresh Linux machine with zero dev tools installed.
+# Verifies the installer handles everything from scratch.
+#
+# Build:  docker build -f Dockerfile.ubuntu -t pan-test-ubuntu ../..
+# Run:    docker run --rm pan-test-ubuntu
+# ═══════════════════════════════════════════════════════════════════════════
+FROM ubuntu:24.04
+
+# Simulate a real user (not root)
+RUN useradd -m -s /bin/bash commander && \
+    apt-get update -qq && \
+    apt-get install -y -qq curl sudo && \
+    echo "commander ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+USER commander
+WORKDIR /home/commander
+
+# Copy the PAN source (installer needs the service/ directory)
+COPY --chown=commander:commander . /home/commander/pan
+
+# Set test mode so installer doesn't prompt for input
+ENV PAN_TEST=1
+ENV HOME=/home/commander
+
+# Run the installer
+RUN cd /home/commander/pan/installer && \
+    chmod +x install.sh && \
+    bash install.sh --no-service --no-desktop 2>&1 | tee /home/commander/install.log
+
+# Verify installation
+RUN echo "=== Verification ===" && \
+    echo "Node:" && /home/commander/.local/share/pan/node/bin/node --version && \
+    echo "PAN dir:" && ls /home/commander/.local/share/pan/service/src/server.js && \
+    echo "Data dir:" && ls /home/commander/.local/share/pan/data/pan.key && \
+    echo "Launcher:" && ls /home/commander/.local/bin/pan && \
+    echo "node_modules:" && ls /home/commander/.local/share/pan/service/node_modules/.package-lock.json && \
+    echo "=== All checks passed ==="
+
+# Health check: start PAN server and verify it responds
+# (runs as foreground process, checks health, then exits)
+COPY --chown=commander:commander installer/test/health-check.sh /home/commander/health-check.sh
+RUN chmod +x /home/commander/health-check.sh
+
+CMD ["/home/commander/health-check.sh"]
