@@ -7,8 +7,8 @@
 import { execSync, spawn } from 'child_process';
 import { resetOllamaStatus } from './embeddings.js';
 
-// TODO: Switch to 'qwen3-embedding' once pulled
-const EMBED_MODEL = 'llama3.2';
+const EMBED_MODEL = 'qwen3-embedding';
+const INFERENCE_MODEL = 'qwen3:4b';
 const OLLAMA_URL = 'http://localhost:11434';
 
 async function isOllamaRunning() {
@@ -53,7 +53,7 @@ function startOllama() {
 }
 
 async function pullModel() {
-  console.log(`[PAN Memory] Pulling ${EMBED_MODEL} (one-time, ~274MB)...`);
+  console.log(`[PAN Memory] Pulling ${EMBED_MODEL} (one-time, ~500MB)...`);
   try {
     const res = await fetch(`${OLLAMA_URL}/api/pull`, {
       method: 'POST',
@@ -111,6 +111,29 @@ async function ensureOllama() {
     console.log(`[PAN Memory] ${EMBED_MODEL} ready — neural embeddings active`);
     resetOllamaStatus();
   }
+
+  // Also ensure inference model is available (for sensitivity, routing, etc.)
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (res.ok) {
+      const data = await res.json();
+      const hasInference = data.models?.some(m => m.name.startsWith(INFERENCE_MODEL)) || false;
+      if (!hasInference) {
+        console.log(`[PAN Memory] Pulling ${INFERENCE_MODEL} for local inference (~3GB)...`);
+        fetch(`${OLLAMA_URL}/api/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: INFERENCE_MODEL, stream: false }),
+          signal: AbortSignal.timeout(600000), // 10 min for larger model
+        }).then(r => {
+          if (r.ok) console.log(`[PAN Memory] ${INFERENCE_MODEL} pulled successfully`);
+          else console.error(`[PAN Memory] ${INFERENCE_MODEL} pull failed: ${r.status}`);
+        }).catch(err => console.error(`[PAN Memory] ${INFERENCE_MODEL} pull error: ${err.message}`));
+      } else {
+        console.log(`[PAN Memory] ${INFERENCE_MODEL} ready — local inference active`);
+      }
+    }
+  } catch {}
 }
 
 export { ensureOllama };

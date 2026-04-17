@@ -1,13 +1,12 @@
 // PAN Embeddings — local Ollama embeddings with graceful fallback
 //
-// Uses llama3.2 (3072 dimensions) via Ollama. Swap to qwen3-embedding:0.6b
-// (1024D, multilingual, 100+ languages) once downloaded.
+// Uses qwen3-embedding (1024 dimensions) via Ollama.
+// 0.6B params, 100+ languages, ~0.5 GB download.
 // Falls back to simple TF-IDF-like keyword vectors when Ollama is down.
 
 const OLLAMA_URL = 'http://localhost:11434';
-// TODO: Switch to 'qwen3-embedding' once pulled (1024D, multilingual, smaller)
-const EMBED_MODEL = 'llama3.2';
-const EMBED_DIM = 3072;
+const EMBED_MODEL = 'qwen3-embedding';
+const EMBED_DIM = 1024;
 
 let ollamaAvailable = null; // null = unknown, true/false = cached
 

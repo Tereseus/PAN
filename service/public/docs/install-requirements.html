@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PAN Installation Requirements &amp; AI Model Report</title>
+<title>PAN &mdash; System Architecture &amp; Installation Guide</title>
 <style>
   :root {
     --bg: #1e1e2e; --surface: #181825; --overlay: #313244;
@@ -25,6 +25,7 @@
     border-bottom: 1px solid var(--overlay); padding-bottom: 0.4rem;
   }
   h3 { color: var(--teal); font-size: 1.05rem; margin: 1.2rem 0 0.5rem; }
+  h4 { color: var(--sky); font-size: 0.95rem; margin: 0.8rem 0 0.3rem; }
   p, li { color: var(--subtext); }
   a { color: var(--blue); text-decoration: none; }
   table {
@@ -62,6 +63,8 @@
   .note strong { color: var(--yellow); }
   .critical { border-left-color: var(--red); background: rgba(243,139,168,0.08); }
   .critical strong { color: var(--red); }
+  .info { border-left-color: var(--blue); background: rgba(137,180,250,0.08); }
+  .info strong { color: var(--blue); }
   ul { padding-left: 1.5rem; margin: 0.5rem 0; }
   li { margin: 0.3rem 0; }
   code { background: var(--overlay); padding: 0.1rem 0.4rem; border-radius: 3px;
@@ -76,14 +79,17 @@
   .cols-3 div { background: var(--surface); border-radius: 6px; padding: 0.75rem; }
   .cols-3 .num { font-size: 1.8rem; font-weight: 700; color: var(--blue); }
   .cols-3 .lbl { font-size: 0.78rem; color: var(--dim); text-transform: uppercase; }
+  .sub-dep { padding-left: 2rem; }
+  .sub-dep td:first-child { padding-left: 2rem; color: var(--dim); font-size: 0.85rem; }
+  .speed-bar { display: inline-block; height: 6px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
   footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--overlay);
            color: var(--dim); font-size: 0.8rem; text-align: center; }
 </style>
 </head>
 <body>
 
-<h1>PAN Installation Requirements <small>v1.0 &mdash; April 2026</small></h1>
-<p>Complete dependency map, model options, system requirements, and size breakdown for the PAN installer across all platforms.</p>
+<h1>PAN &mdash; System Architecture &amp; Installation Guide <small>v1.1 &mdash; April 2026</small></h1>
+<p>What PAN is, what's inside it, what models power each service, and how to install it.</p>
 
 <div class="summary-box">
   <strong style="color:var(--blue)">Quick Summary</strong>
@@ -95,646 +101,608 @@
 </div>
 
 <!-- ================================================================== -->
-<h2>1. Core Dependencies</h2>
-<p>Every PAN installation requires these components, regardless of platform or tier.</p>
+<h2>1. Core Dependencies &mdash; What You're Installing</h2>
+<p>Every PAN installation includes these components. The installer handles all of them automatically.</p>
 
 <table>
-  <tr><th>Component</th><th>Version</th><th>Size</th><th>Required</th><th>Notes</th></tr>
+  <tr><th>Component</th><th>Version</th><th>Size</th><th>Required</th><th>What It Is</th></tr>
   <tr>
     <td><strong>PAN Service</strong></td><td>latest</td>
     <td class="size">~310 MB</td>
     <td><span class="badge b-req">Required</span></td>
-    <td>Node.js server, dashboard, public assets, node_modules</td>
+    <td>The core PAN server. Contains everything below:</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>Express HTTP Server</td><td colspan="4">API endpoints, dashboard hosting, device communication, WebSocket real-time layer</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>SQLite + SQLCipher</td><td colspan="4">Encrypted local database. All memory, events, settings, conversations stored here. Never leaves your machine.</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>sqlite-vec</td><td colspan="4">Vector search engine for semantic memory. Powers "remind me about the car thing" style queries.</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>SvelteKit Dashboard</td><td colspan="4">Full web UI: terminal, atlas, kronos, kanban, sensors, comms, settings. Served locally.</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>node-pty</td><td colspan="4">Pseudo-terminal. Each tab runs a real shell session. Powers Forge automated dev.</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>Ed25519 / X25519 Crypto</td><td colspan="4">End-to-end encryption for PAN-to-PAN communication. Key exchange, signing, verification.</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>MCP Server (15 tools)</td><td colspan="4">Model Context Protocol. Gives Claude direct access to PAN's memory, events, settings.</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>Anthropic + Google + Cerebras SDKs</td><td colspan="4">AI provider integrations. Routes requests to the right backend based on service + sensitivity.</td>
+  </tr>
+  <tr class="sub-dep">
+    <td>IMAP/SMTP (nodemailer)</td><td colspan="4">Email integration for notifications and PAN-to-PAN messaging.</td>
   </tr>
   <tr>
     <td><strong>Node.js</strong> (portable)</td><td>22.16.0 LTS</td>
     <td class="size">~94 MB</td>
     <td><span class="badge b-req">Required</span></td>
-    <td>Bundled &mdash; no system install needed. Extracted to PAN directory.</td>
+    <td>JavaScript runtime. Bundled inside PAN &mdash; not installed system-wide. You won't see it.</td>
   </tr>
   <tr>
-    <td><strong>Tailscale</strong></td><td>latest</td>
+    <td><strong>WireGuard</strong> (via Tailscale)</td><td>latest</td>
     <td class="size">~45 MB</td>
     <td><span class="badge b-req">Required</span></td>
-    <td>VPN for phone &harr; server. Every phone user needs this. Not optional.</td>
+    <td>Encrypted tunnel for ALL device communication. Phone, desktop, other PANs &mdash; everything goes through this. You can use any WireGuard-compatible VPN, but Tailscale is the default (easiest setup, free for personal use).</td>
   </tr>
   <tr>
     <td><strong>Ollama</strong></td><td>latest</td>
     <td class="size">~90 MB <small>(CPU)</small><br>~6.3 GB <small>(all GPU)</small></td>
     <td><span class="badge b-req">Required</span></td>
-    <td>Local LLM runtime. Ships all GPU runtimes (CUDA v12/v13, ROCm, Vulkan). Installer should detect GPU and download only the matching runtime.</td>
+    <td>Local AI model runtime. Runs the embedding model and inference model on your machine. Installer detects your GPU and downloads only the matching runtime.</td>
   </tr>
   <tr>
     <td><strong>Kokoro TTS</strong></td><td>v0.19+</td>
     <td class="size">~80 MB</td>
     <td><span class="badge b-req">Required</span></td>
-    <td>Text-to-speech. 82M params, #1 TTS Arena. Runs on CPU. ~50 built-in voices.</td>
+    <td>Text-to-speech engine. 82M parameters, #1 on TTS Arena. Runs on CPU. ~50 built-in voices across EN, FR, KO, JA, ZH. Primary voice output for phone and desktop.</td>
   </tr>
   <tr>
     <td><strong>Claude CLI</strong></td><td>latest</td>
     <td class="size">~69 MB</td>
     <td><span class="badge b-opt">Optional</span></td>
-    <td>Interactive AI sessions in terminal. Requires Claude Code subscription ($100/mo). Not needed for voice-only / headless setups.</td>
+    <td>Interactive AI terminal + PAN automation controller. Opens windows, manages devices, runs Forge autodev. Requires subscription.</td>
   </tr>
 </table>
 
 <div class="note">
   <strong>Ollama GPU Runtimes:</strong> The stock Ollama download is 6.3 GB because it bundles
   CUDA v12 (2.4 GB), CUDA v13 (0.8 GB), ROCm (1.9 GB), and Vulkan (0.3 GB). For CPU-only installs,
-  only ~90 MB is needed. The installer should detect the GPU vendor and download the matching runtime only.
+  only ~90 MB is needed. The installer detects your GPU and downloads only what you need.
 </div>
 
 <!-- ================================================================== -->
-<h2>2. AI Models &mdash; What Gets Downloaded</h2>
-<p>PAN uses a tiered AI architecture. Models are pulled by Ollama on first run, not during installation.</p>
+<h2>2. AI Models &mdash; Required &amp; Optional</h2>
+<p>PAN uses a tiered AI architecture. Models are pulled automatically on first run.</p>
 
-<h3>2a. Local Models (Ollama)</h3>
+<h3>2a. Required Local Models (Ollama)</h3>
+<p>These are downloaded automatically. You <strong>must</strong> have both.</p>
 <table>
-  <tr><th>Model</th><th>Parameters</th><th>Download</th><th>RAM (loaded)</th><th>Used By</th><th>Purpose</th></tr>
-  <tr>
-    <td><strong>llama3.2</strong></td><td>7B</td>
-    <td class="size">~4.7 GB</td><td>~5.5 GB</td>
-    <td>Embeddings, Sensitivity Router, Privacy Compute, Intuition (fallback)</td>
-    <td>3072-dim vector embeddings, local-only inference for sensitive data</td>
-  </tr>
-  <tr style="background:rgba(166,227,161,0.05)">
-    <td><strong>qwen3:4b</strong> <span class="badge b-free">Recommended</span></td><td>4B</td>
+  <tr><th>Model</th><th>Params</th><th>Download</th><th>RAM</th><th>What It Does</th></tr>
+  <tr style="background:rgba(243,139,168,0.05)">
+    <td><strong>qwen3:4b</strong> <span class="badge b-req">Required</span></td><td>4B</td>
     <td class="size">~3 GB</td><td>~3.5 GB</td>
-    <td>General local inference, sensitivity routing, Guardian</td>
-    <td>Leads benchmarks at 4B class. Strong multilingual + reasoning. Best for 16 GB RAM.</td>
+    <td><strong>Local inference engine.</strong> Handles sensitivity classification ("is this safe to send to cloud?"), privacy routing, content security (Guardian), and serves as fallback when cloud is unavailable. Leads benchmarks in the 4B class. Runs on CPU or GPU.</td>
   </tr>
-  <tr>
-    <td><strong>gemma3:4b</strong></td><td>4B</td>
-    <td class="size">~3.3 GB</td><td>~3.5 GB</td>
-    <td>Alternative local inference</td>
-    <td>Decent but outperformed by Qwen 3 4B and Phi-4 on benchmarks. Viable fallback.</td>
-  </tr>
-  <tr>
-    <td><strong>gemma3:1b</strong></td><td>1B</td>
-    <td class="size">~0.8 GB</td><td>~1.2 GB</td>
-    <td>Embeddings only (if RAM-constrained)</td>
-    <td>Too small for classification / routing. Only viable for embeddings.</td>
-  </tr>
-  <tr>
-    <td><strong>qwen3-embedding:0.6b</strong></td><td>0.6B</td>
+  <tr style="background:rgba(243,139,168,0.05)">
+    <td><strong>qwen3-embedding:0.6b</strong> <span class="badge b-req">Required</span></td><td>0.6B</td>
     <td class="size">~0.5 GB</td><td>~0.8 GB</td>
-    <td>Embeddings (planned replacement)</td>
-    <td>1024-dim vectors, 100+ languages, much smaller than llama3.2 for embeddings.</td>
+    <td><strong>Vector embedding engine.</strong> Converts text into 1024-dimension number vectors for semantic search. When you say "remind me about the car thing," this is what finds the matching memory. Supports 100+ languages. Runs silently in background.</td>
+  </tr>
+</table>
+
+<h3>2b. Optional Local Models (Upgrade)</h3>
+<table>
+  <tr><th>Model</th><th>Params</th><th>Download</th><th>RAM</th><th>When to Use</th></tr>
+  <tr>
+    <td>qwen3:8b</td><td>8B</td>
+    <td class="size">~5 GB</td><td>~6 GB</td>
+    <td>Upgrade for 32 GB RAM machines. Best-in-class 8B &mdash; outperforms most 12B models. Better local classification + sensitivity routing. <strong>Cannot run on 16 GB RAM.</strong></td>
+  </tr>
+  <tr>
+    <td>qwen3:32b</td><td>32B</td>
+    <td class="size">~20 GB</td><td>~22 GB</td>
+    <td>64 GB RAM only. Can replace Cerebras for Dream, Archivist, Scout &mdash; run fully offline. Needs 16+ GB VRAM for decent speed.</td>
+  </tr>
+  <tr>
+    <td>gemma3:4b</td><td>4B</td>
+    <td class="size">~3.3 GB</td><td>~3.5 GB</td>
+    <td>Alternative to qwen3:4b. Viable but outperformed by Qwen 3 and Phi-4 on benchmarks.</td>
+  </tr>
+  <tr>
+    <td>phi-4</td><td>3.8B</td>
+    <td class="size">~2.3 GB</td><td>~3 GB</td>
+    <td>Microsoft. Strong reasoning for size. Alternative to qwen3:4b.</td>
   </tr>
 </table>
 
 <div class="note critical">
-  <strong>1B models are NOT sufficient</strong> for PAN's classification, routing, and sensitivity tasks.
-  They fail on multi-step reasoning and produce unreliable classifications. Minimum viable local model
-  for general inference is 4B parameters (gemma3:4b or equivalent).
+  <strong>1B models are NOT sufficient.</strong> They fail on multi-step reasoning and produce unreliable
+  sensitivity classifications. PAN requires minimum 4B parameters for local inference.
+  The embedding model (0.6B) is fine because embeddings are a simpler task than reasoning.
 </div>
 
-<h3>2b. Cloud Models (Free)</h3>
+<h3>2c. Cloud Models</h3>
+<p>These run on remote servers. PAN sends the query, gets a response. Your data goes through the sensitivity router first.</p>
+
 <table>
-  <tr><th>Model</th><th>Provider</th><th>Cost</th><th>Speed</th><th>Used By</th></tr>
+  <tr><th>Model</th><th>Provider</th><th>Cost</th><th>Speed</th><th>What It Does</th><th>Could a Smaller Model Do It?</th></tr>
   <tr>
     <td><strong>Qwen 3 235B</strong></td>
     <td>Cerebras <span class="badge b-free">Free Tier</span></td>
-    <td>$0</td><td>~580ms</td>
-    <td>Dream, Archivist, Scout, Orchestrator, Evolution, Intuition (primary), Context Router</td>
+    <td>$0 (1M tokens/day)</td>
+    <td><span class="speed-bar" style="width:80px;background:var(--green)"></span>~580ms</td>
+    <td>Primary reasoning backbone. Powers Dream, Archivist, Scout, Orchestrator, Evolution, Intuition classification.</td>
+    <td>120B: Yes, for most services. 70B: Dream and Evolution would degrade. 8B: Not enough for consolidation tasks.</td>
+  </tr>
+  <tr>
+    <td><strong>GPT-OSS 120B</strong></td>
+    <td>Cerebras <span class="badge b-free">Free Tier</span></td>
+    <td>$0 (1M tokens/day)</td>
+    <td><span class="speed-bar" style="width:100px;background:var(--green)"></span>~330ms</td>
+    <td>Alternative backbone. Faster than 235B. Can handle Scout, Guardian, Archivist. Slightly weaker on complex reasoning.</td>
+    <td>Good enough for: Scout, Guardian, Orchestrator. Weaker on: Dream cycle, Evolution (needs deeper reasoning).</td>
   </tr>
   <tr>
     <td><strong>LLaMA 3.1 8B</strong></td>
     <td>Cerebras <span class="badge b-free">Free Tier</span></td>
-    <td>$0</td><td>~200ms</td>
-    <td>Guardian (content security classifier)</td>
+    <td>$0 (1M tokens/day)</td>
+    <td><span class="speed-bar" style="width:120px;background:var(--green)"></span>~200ms</td>
+    <td>Fast classifier. Powers Guardian (content security). Fastest option.</td>
+    <td>This IS the smallest viable cloud model. Below 8B, classification becomes unreliable.</td>
   </tr>
 </table>
 
-<h3>2c. Paid Models (Optional)</h3>
+<div class="note info">
+  <strong>Free tier limits (per model):</strong> 1M tokens/day, 60K tokens/min, 30 requests/min.
+  Background services currently consume ~200K tokens/day with phone OFF.
+  With phone active: ~300-400K/day. Well within free tier.
+</div>
+
+<div class="note critical">
+  <strong>Cerebras Free Tier Risk:</strong> Free today, but paid tiers exist ($0.10&ndash;0.60/M tokens).
+  At current usage (200K/day), going paid would cost <strong>~$5&ndash;8/month</strong>.
+  Heavy usage (2M/day): ~$54/month. PAN is designed to swap backends (Groq, Together, local 32B) when needed.
+</div>
+
+<h3>2d. Paid Models (Optional)</h3>
 <table>
-  <tr><th>Model</th><th>Provider</th><th>Cost</th><th>Used By</th><th>Required?</th></tr>
+  <tr><th>Model</th><th>Provider</th><th>Cost</th><th>What It Does</th></tr>
   <tr>
     <td><strong>Claude Haiku 4.5</strong></td>
     <td>Anthropic API</td>
     <td>~$2&ndash;5/mo</td>
-    <td>Voice router, quick responses</td>
-    <td><span class="badge b-opt">Optional</span> &mdash; Cerebras handles this if no API key</td>
+    <td>Faster voice routing. Replaces Cerebras for interactive responses. Lower latency.</td>
   </tr>
   <tr>
     <td><strong>Claude Sonnet/Opus</strong></td>
-    <td>Claude CLI</td>
-    <td>$100/mo subscription</td>
-    <td>Interactive terminal (Forge/autodev), deep reasoning</td>
-    <td><span class="badge b-opt">Optional</span> &mdash; PAN works without CLI</td>
+    <td>Claude CLI (subscription)</td>
+    <td>Subscription</td>
+    <td>Interactive terminal, Forge autodev, deep reasoning, PAN automation controller (opens windows, manages devices, runs complex multi-step tasks).</td>
   </tr>
   <tr>
     <td><strong>Gemini 2.0 Flash</strong></td>
     <td>Google</td>
     <td>Free tier available</td>
-    <td>Alternative voice/routing backend</td>
-    <td><span class="badge b-opt">Optional</span></td>
+    <td>Alternative routing backend. Multimodal (can process images).</td>
   </tr>
 </table>
 
 <!-- ================================================================== -->
 <h2>3. Service-to-Model Map</h2>
-<p>Every PAN service and which AI model it calls, where, and why.</p>
+<p>Every PAN service, what it does, what model powers it, and what it actually needs to function.</p>
 
 <table>
-  <tr><th>Service</th><th>Codename</th><th>Tier</th><th>Model</th><th>Fallback</th><th>File</th></tr>
+  <tr><th>Service</th><th>Codename</th><th>What It Does</th><th>Default Model</th><th>Min. Requirement</th><th>Fallback</th></tr>
   <tr>
     <td>Embeddings</td><td>Resonance</td>
-    <td><span class="badge b-local">Local</span></td>
-    <td>llama3.2 (Ollama)</td><td>Hash-based TF-IDF vectors</td>
-    <td><code>memory/embeddings.js</code></td>
-  </tr>
-  <tr>
-    <td>Intuition</td><td>Dimensional State</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>cerebras:qwen-3-235b</td><td>ollama:llama3.2</td>
-    <td><code>intuition.js</code></td>
-  </tr>
-  <tr>
-    <td>Voice Router</td><td>&mdash;</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>Claude Haiku / Cerebras</td><td>Cerebras Qwen 235B</td>
-    <td><code>router.js</code></td>
-  </tr>
-  <tr>
-    <td>Dream Cycle</td><td>Dream</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>cerebras:qwen-3-235b</td><td>None (skips cycle)</td>
-    <td><code>steward.js</code></td>
-  </tr>
-  <tr>
-    <td>Memory Consolidation</td><td>Archivist</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>cerebras:qwen-3-235b</td><td>None</td>
-    <td><code>steward.js</code></td>
-  </tr>
-  <tr>
-    <td>Tool Discovery</td><td>Scout</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>cerebras:qwen-3-235b</td><td>None</td>
-    <td><code>scout.js</code></td>
-  </tr>
-  <tr>
-    <td>Orchestrator</td><td>Orchestrator</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>cerebras:qwen-3-235b</td><td>None</td>
-    <td><code>steward.js</code></td>
-  </tr>
-  <tr>
-    <td>Evolution</td><td>Evolution Engine</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>cerebras:qwen-3-235b</td><td>None</td>
-    <td><code>steward.js</code></td>
-  </tr>
-  <tr>
-    <td>Security</td><td>Guardian</td>
-    <td><span class="badge b-cloud">Cloud</span></td>
-    <td>cerebras:llama3.1-8b</td><td>Local llama3.2</td>
-    <td><code>guardian.js</code></td>
+    <td>Converts text to vectors for semantic memory search (1024D)</td>
+    <td><span class="badge b-local">qwen3-embedding:0.6b</span></td>
+    <td>0.6B embedding model</td>
+    <td>Hash-based keyword vectors (no AI needed, worse quality)</td>
   </tr>
   <tr>
     <td>Sensitivity Router</td><td>&mdash;</td>
-    <td><span class="badge b-local">Local</span></td>
-    <td>llama3.2:latest (Ollama)</td><td>Always routes to cloud</td>
-    <td><code>context-router.js</code></td>
+    <td>Classifies content sensitivity (0-3) before any cloud call. Decides what stays local.</td>
+    <td><span class="badge b-local">qwen3:4b</span></td>
+    <td>4B+ local model</td>
+    <td>Routes everything to cloud (no privacy filtering)</td>
+  </tr>
+  <tr>
+    <td>Guardian</td><td>Guardian</td>
+    <td>Content security classifier. Detects hostile/suspicious input.</td>
+    <td><span class="badge b-cloud">cerebras:llama3.1-8b</span></td>
+    <td>8B+ (cloud or local)</td>
+    <td>Local qwen3:4b</td>
   </tr>
   <tr>
     <td>Privacy Compute</td><td>Compute-to-Data</td>
-    <td><span class="badge b-local">Local</span></td>
-    <td>llama3.2:latest (Ollama)</td><td>Cloud with anonymization</td>
-    <td><code>compute-to-data.js</code></td>
+    <td>Anonymizes data before cloud calls. Differential privacy with noise injection.</td>
+    <td><span class="badge b-local">qwen3:4b</span></td>
+    <td>4B+ local model</td>
+    <td>Sends to cloud with basic anonymization</td>
   </tr>
   <tr>
-    <td>Forge (AutoDev)</td><td>Forge</td>
-    <td><span class="badge b-cli">CLI</span></td>
-    <td>Claude Haiku (CLI)</td><td>None (needs subscription)</td>
-    <td><code>autodev.js</code></td>
+    <td>Intuition</td><td>Dimensional State</td>
+    <td>Reads your current state: mood, focus, urgency, engagement. Updates every tick.</td>
+    <td><span class="badge b-cloud">cerebras:qwen-3-235b</span></td>
+    <td>30B+ for accurate mood/urgency classification</td>
+    <td>Local qwen3:4b (less accurate)</td>
   </tr>
   <tr>
-    <td>Whisper STT</td><td>Whisper</td>
-    <td><span class="badge b-local">Local</span></td>
-    <td>faster-whisper-base (~145 MB)</td><td>Google STT on phone</td>
-    <td><code>steward.js</code></td>
+    <td>Voice Router</td><td>&mdash;</td>
+    <td>Classifies voice commands AND generates responses in one call.</td>
+    <td><span class="badge b-cloud">Claude Haiku / Cerebras</span></td>
+    <td>8B+ with tool use support</td>
+    <td>Cerebras Qwen 235B</td>
+  </tr>
+  <tr>
+    <td>Dream Cycle</td><td>Dream</td>
+    <td>Consolidates 6 hours of context into long-term understanding. Runs every 6h.</td>
+    <td><span class="badge b-cloud">cerebras:qwen-3-235b</span></td>
+    <td><strong>70B+</strong> &mdash; needs deep reasoning over large context</td>
+    <td>Skips cycle (memories not consolidated)</td>
+  </tr>
+  <tr>
+    <td>Memory Consolidation</td><td>Archivist</td>
+    <td>Extracts episodic, semantic, and procedural memories from raw events.</td>
+    <td><span class="badge b-cloud">cerebras:qwen-3-235b</span></td>
+    <td><strong>30B+</strong> &mdash; needs to understand context and extract facts</td>
+    <td>None (memories stay as raw events)</td>
+  </tr>
+  <tr>
+    <td>Tool Discovery</td><td>Scout</td>
+    <td>Discovers new tools, APIs, and capabilities PAN could use.</td>
+    <td><span class="badge b-cloud">cerebras:qwen-3-235b</span></td>
+    <td>8B+ (simpler classification task)</td>
+    <td>None</td>
+  </tr>
+  <tr>
+    <td>Orchestrator</td><td>Orchestrator</td>
+    <td>Autonomous agent. Plans and executes multi-step tasks without user input.</td>
+    <td><span class="badge b-cloud">cerebras:qwen-3-235b</span></td>
+    <td><strong>30B+</strong> &mdash; needs planning + tool use</td>
+    <td>None</td>
+  </tr>
+  <tr>
+    <td>Evolution</td><td>Evolution Engine</td>
+    <td>Self-improvement. Analyzes PAN's own performance and suggests changes.</td>
+    <td><span class="badge b-cloud">cerebras:qwen-3-235b</span></td>
+    <td><strong>70B+</strong> &mdash; needs meta-reasoning about system behavior</td>
+    <td>None</td>
+  </tr>
+  <tr>
+    <td>Forge</td><td>Forge</td>
+    <td>Headless automated development. Spawns Claude CLI sessions for coding tasks.</td>
+    <td><span class="badge b-cli">Claude Haiku (CLI)</span></td>
+    <td>Claude CLI (subscription)</td>
+    <td>None (needs interactive CLI)</td>
+  </tr>
+  <tr>
+    <td>TTS</td><td>&mdash;</td>
+    <td>Text-to-speech. Voice output on phone and desktop.</td>
+    <td><span class="badge b-local">Kokoro-82M</span></td>
+    <td>82M TTS model</td>
+    <td>Android system TTS (phone), Piper (desktop)</td>
+  </tr>
+  <tr>
+    <td>STT</td><td>Whisper</td>
+    <td>Speech-to-text. Voice input.</td>
+    <td><span class="badge b-local">faster-whisper-base</span></td>
+    <td>~145 MB Whisper model</td>
+    <td>Google STT on phone (cloud)</td>
   </tr>
 </table>
+
+<div class="note">
+  <strong>Reading the "Min. Requirement" column:</strong> Services marked 70B+ (Dream, Evolution) CANNOT run on a local 4B model.
+  They need either a cloud provider (Cerebras free tier) or a local 32B+ model with 64 GB RAM.
+  Services marked 4B+ or 8B+ CAN run locally on the required qwen3:4b.
+</div>
 
 <!-- ================================================================== -->
 <h2>4. System Requirements</h2>
 
 <div class="tier-grid">
   <div class="tier-card">
-    <h3 style="color:var(--yellow)">Minimum &mdash; 16 GB RAM</h3>
+    <h3 style="color:var(--yellow)">16 GB RAM &mdash; Minimum</h3>
     <ul>
       <li><strong>OS:</strong> Windows 10/11, Ubuntu 20.04+, macOS 12+</li>
-      <li><strong>RAM:</strong> 16 GB (8 GB free for PAN + model)</li>
-      <li><strong>Disk:</strong> ~2 GB (PAN + Node + Ollama CPU-only + gemma3:4b)</li>
-      <li><strong>GPU:</strong> Not required (CPU inference works)</li>
-      <li><strong>Network:</strong> Required for Cerebras cloud services + Tailscale</li>
-      <li><strong>Local model:</strong> qwen3:4b (~3 GB download, ~3.5 GB RAM)</li>
-      <li><strong>Embedding model:</strong> qwen3-embedding:0.6b (0.5 GB, saves RAM)</li>
+      <li><strong>RAM:</strong> 16 GB (8 GB free for PAN + models)</li>
+      <li><strong>Disk:</strong> ~1.5 GB</li>
+      <li><strong>GPU:</strong> Not required (CPU inference works, slower)</li>
+      <li><strong>Network:</strong> Required (Cerebras + WireGuard)</li>
+      <li><strong>Local models:</strong> qwen3:4b + qwen3-embedding:0.6b</li>
+      <li><strong>Cloud:</strong> Cerebras free tier handles Dream, Archivist, Scout, etc.</li>
     </ul>
     <p style="margin-top:0.5rem;font-size:0.85rem;color:var(--dim)">
-      Total disk: ~2 GB. Reasoning services use Cerebras cloud (free).
-      Local model handles embeddings + privacy-sensitive queries only.
+      Cannot run 8B models. All heavy reasoning goes to cloud. Local model handles
+      privacy-sensitive tasks and fallback only.
     </p>
   </div>
 
   <div class="tier-card">
-    <h3 style="color:var(--green)">Recommended &mdash; 32 GB RAM</h3>
+    <h3 style="color:var(--green)">32 GB RAM &mdash; Recommended</h3>
     <ul>
-      <li><strong>OS:</strong> Windows 10/11, Ubuntu 20.04+, macOS 12+</li>
       <li><strong>RAM:</strong> 32 GB (16 GB free)</li>
-      <li><strong>Disk:</strong> ~5 GB (PAN + Ollama + llama3.2 + gemma3:4b)</li>
-      <li><strong>GPU:</strong> NVIDIA (CUDA) or AMD (ROCm) for faster inference</li>
-      <li><strong>Network:</strong> Required for cloud + Tailscale</li>
-      <li><strong>Local models:</strong> llama3.2 (embeddings) + qwen3:4b (inference)</li>
+      <li><strong>Disk:</strong> ~4 GB</li>
+      <li><strong>GPU:</strong> NVIDIA (CUDA) or AMD (ROCm) for 10-20x faster inference</li>
+      <li><strong>Local models:</strong> qwen3:8b (inference) + qwen3-embedding:0.6b</li>
+      <li><strong>Cloud:</strong> Still uses Cerebras for Dream/Evolution (needs 70B+)</li>
     </ul>
     <p style="margin-top:0.5rem;font-size:0.85rem;color:var(--dim)">
-      Total disk: ~5 GB. Full local privacy pipeline. Both embedding + inference models loaded.
-      GPU enables 10-20x faster local responses.
+      Can run 8B locally for better sensitivity routing, Guardian, and Intuition fallback.
+      Dream and Evolution still need cloud.
     </p>
   </div>
 </div>
 
 <div class="tier-card" style="margin-top:0.75rem">
-  <h3 style="color:var(--mauve)">Full &mdash; 64 GB RAM (Power User / Developer)</h3>
+  <h3 style="color:var(--mauve)">64 GB RAM &mdash; Fully Offline Capable</h3>
   <ul>
-    <li><strong>Disk:</strong> ~8+ GB (all models + Whisper + Claude CLI)</li>
-    <li><strong>GPU:</strong> 8+ GB VRAM recommended (RTX 3060+, RX 7600+)</li>
-    <li><strong>Everything local:</strong> Can run without any cloud dependency</li>
-    <li><strong>Claude CLI:</strong> Interactive terminal sessions ($100/mo subscription)</li>
-    <li><strong>Whisper:</strong> Local speech-to-text (faster-whisper-base, ~145 MB)</li>
-    <li><strong>Multiple models:</strong> Hot-swap between gemma3, qwen3, llama3.2</li>
+    <li><strong>Disk:</strong> ~25+ GB (all models)</li>
+    <li><strong>GPU:</strong> 16+ GB VRAM recommended (RTX 4070+, RX 7800+)</li>
+    <li><strong>Local model:</strong> <strong>qwen3:32b</strong> (~20 GB) &mdash; this is what replaces Cerebras for Dream, Archivist, Orchestrator, Evolution</li>
+    <li><strong>Everything runs locally.</strong> No cloud dependency at all. Full privacy.</li>
+    <li><strong>Claude CLI:</strong> Subscription &mdash; for interactive terminal + Forge + PAN automation</li>
+    <li><strong>Whisper + Kokoro:</strong> Full local voice pipeline, no Google STT needed</li>
   </ul>
+  <p style="margin-top:0.5rem;font-size:0.85rem;color:var(--dim)">
+    qwen3:32b at 32B parameters can handle Dream (needs 70B+ ideally, but 32B is functional),
+    Archivist (30B+ works), Orchestrator (30B+ works), and Evolution (reduced quality vs 70B+).
+    For truly equivalent quality to Cerebras 235B, you'd need qwen3:72b (~45 GB, 64+ GB RAM, 24+ GB VRAM).
+  </p>
 </div>
 
 <!-- ================================================================== -->
 <h2>5. What Runs Locally vs. Cloud</h2>
 
 <table>
-  <tr><th>Function</th><th>Location</th><th>Why</th></tr>
+  <tr><th>Function</th><th>Where</th><th>Why</th></tr>
   <tr>
     <td>Vector embeddings</td>
     <td><span class="badge b-local">Always Local</span></td>
-    <td>Embeddings encode user data. Must never leave the machine.</td>
+    <td>Embeddings encode your data into searchable vectors. They contain the meaning of everything you've said. Must never leave your machine.</td>
   </tr>
   <tr>
     <td>Sensitivity classification</td>
     <td><span class="badge b-local">Always Local</span></td>
-    <td>Determines if content is safe to send to cloud. Must run locally first.</td>
+    <td>Runs BEFORE any cloud call. Decides: is this password-level sensitive (local only)? Or safe to send to Cerebras?</td>
   </tr>
   <tr>
     <td>Level 3 (critical) queries</td>
     <td><span class="badge b-local">Always Local</span></td>
-    <td>Passwords, keys, medical records. Zero cloud exposure.</td>
+    <td>Passwords, encryption keys, medical records. Zero bytes leave your machine. Processed by qwen3:4b locally.</td>
   </tr>
   <tr>
     <td>Privacy compute</td>
     <td><span class="badge b-local">Always Local</span></td>
-    <td>Differential privacy, data anonymization before any cloud call.</td>
+    <td>Adds differential privacy noise, strips PII, anonymizes data BEFORE anything goes to cloud.</td>
   </tr>
   <tr>
-    <td>Voice routing / classification</td>
+    <td>TTS (voice output)</td>
+    <td><span class="badge b-local">Always Local</span></td>
+    <td>Kokoro-82M runs on your device. Your voice responses never touch a cloud server.</td>
+  </tr>
+  <tr>
+    <td>Voice routing</td>
     <td><span class="badge b-cloud">Cloud</span></td>
-    <td>Needs reasoning quality. Cerebras Qwen 235B (free) or Claude Haiku.</td>
+    <td>Needs fast, high-quality reasoning. Cerebras Qwen 235B (free) or Claude Haiku.</td>
   </tr>
   <tr>
-    <td>Dream cycle / memory consolidation</td>
+    <td>Dream / Archivist / Evolution</td>
     <td><span class="badge b-cloud">Cloud</span></td>
-    <td>Complex reasoning over large context. Runs every 6h via Cerebras (free).</td>
+    <td>Complex reasoning over large context windows. Needs 30-70B+ parameters. Runs every 6h on Cerebras (free).</td>
   </tr>
   <tr>
-    <td>Scout / Orchestrator / Evolution</td>
+    <td>Scout / Orchestrator</td>
     <td><span class="badge b-cloud">Cloud</span></td>
-    <td>Background services needing 30B+ reasoning. All use free Cerebras tier.</td>
+    <td>Background intelligence services. Use Cerebras free tier. ~200K tokens/day total.</td>
   </tr>
   <tr>
-    <td>Interactive terminal (Forge)</td>
+    <td>Forge (autodev)</td>
     <td><span class="badge b-cli">CLI</span></td>
-    <td>Runs Claude Haiku via CLI. Requires paid subscription.</td>
+    <td>Spawns Claude sessions for automated coding. Also controls PAN: opens windows, manages devices, orchestrates tasks.</td>
   </tr>
   <tr>
-    <td>STT (speech-to-text)</td>
+    <td>STT (voice input)</td>
     <td><span class="badge b-local">Local</span> / <span class="badge b-cloud">Cloud</span></td>
-    <td>Whisper (local) on desktop, Google STT (cloud) on phone.</td>
+    <td>Desktop: Whisper (local, ~145 MB). Phone: Google STT (on-device, no cloud in most cases).</td>
   </tr>
 </table>
 
-<div class="note critical">
-  <strong>Cerebras Free Tier Risk:</strong> Currently free (1M tokens/day, 30 req/min, 8K context).
-  No sunset date announced, but paid tiers exist ($0.10&ndash;0.60/M tokens, or $50&ndash;200/mo plans).
-  The free tier is clearly a funnel to paid. <strong>Treat as "free until it isn't."</strong>
-  PAN should be designed to swap backends (Groq, Together, local) when this changes.
-  Estimated cost if Cerebras goes paid: ~$20/mo for PAN's background service usage.
-</div>
-
 <!-- ================================================================== -->
-<h2>6. Installation Size Breakdown</h2>
-
-<h3>6a. Windows</h3>
-<table>
-  <tr><th>Component</th><th>Download</th><th>On Disk</th></tr>
-  <tr><td>PAN service + node_modules</td><td class="size">~180 MB</td><td class="size">~310 MB</td></tr>
-  <tr><td>Node.js 22.16.0 (portable zip)</td><td class="size">~32 MB</td><td class="size">~94 MB</td></tr>
-  <tr><td>Ollama (CPU-only runtime)</td><td class="size">~90 MB</td><td class="size">~90 MB</td></tr>
-  <tr><td>Ollama (with NVIDIA CUDA v12)</td><td class="size">~2.5 GB</td><td class="size">~2.5 GB</td></tr>
-  <tr><td>Tailscale</td><td class="size">~45 MB</td><td class="size">~45 MB</td></tr>
-  <tr><td>Claude CLI (optional)</td><td class="size">~69 MB</td><td class="size">~69 MB</td></tr>
-  <tr><td>qwen3:4b model</td><td class="size">~3 GB</td><td class="size">~3 GB</td></tr>
-  <tr><td>llama3.2 model (embeddings)</td><td class="size">~4.7 GB</td><td class="size">~4.7 GB</td></tr>
-  <tr><td>qwen3-embedding:0.6b (lighter alt)</td><td class="size">~0.5 GB</td><td class="size">~0.5 GB</td></tr>
-  <tr style="background:var(--overlay)">
-    <td><strong>TOTAL (Minimum &mdash; CPU, small embedding)</strong></td>
-    <td></td><td class="size"><strong>~1.5 GB</strong></td>
-  </tr>
-  <tr style="background:var(--overlay)">
-    <td><strong>TOTAL (Recommended &mdash; GPU + both models)</strong></td>
-    <td></td><td class="size"><strong>~4&ndash;5 GB</strong></td>
-  </tr>
-</table>
-
-<h3>6b. Linux (Docker)</h3>
-<table>
-  <tr><th>Component</th><th>Size</th></tr>
-  <tr><td>Docker image (<code>pan:slim</code>)</td><td class="size">~685 MB</td></tr>
-  <tr><td>Data volume (runtime)</td><td class="size">~50 MB</td></tr>
-  <tr><td>Ollama (separate container or host)</td><td class="size">~90 MB&ndash;6.3 GB</td></tr>
-  <tr><td>Model downloads (via Ollama)</td><td class="size">~3.3&ndash;8 GB</td></tr>
-</table>
-
-<!-- ================================================================== -->
-<h2>7. Model Comparison &mdash; Which to Ship</h2>
+<h2>6. Sensitivity-Based Routing</h2>
+<p>Every query goes through the local sensitivity router (qwen3:4b) BEFORE any cloud call.</p>
 
 <table>
-  <tr><th>Model</th><th>Params</th><th>Size</th><th>RAM</th><th>Quality</th><th>Speed (CPU)</th><th>Verdict</th></tr>
-  <tr style="background:rgba(166,227,161,0.05)">
-    <td><strong>qwen3:4b</strong></td><td>4B</td>
-    <td class="size">~3 GB</td><td>~3.5 GB</td>
-    <td>Leads 4B class on benchmarks. Strong multilingual + reasoning.</td>
-    <td>~2&ndash;4 tok/s</td>
-    <td style="color:var(--green)"><strong>Ship this as default</strong></td>
-  </tr>
-  <tr>
-    <td>gemma3:4b</td><td>4B</td>
-    <td class="size">3.3 GB</td><td>~3.5 GB</td>
-    <td>Decent 4B model. Does NOT match 12B quality despite marketing.</td>
-    <td>~2&ndash;4 tok/s</td>
-    <td>Viable fallback. Outperformed by Qwen 3 and Phi-4.</td>
-  </tr>
-  <tr>
-    <td>llama3.2:7b</td><td>7B</td>
-    <td class="size">4.7 GB</td><td>~5.5 GB</td>
-    <td>Good general purpose, best embeddings (3072D). Leads on coding (72.6% HumanEval).</td>
-    <td>~1&ndash;2 tok/s</td>
-    <td>Keep for embeddings; replace with qwen3-embedding for size</td>
-  </tr>
-  <tr>
-    <td>qwen3:8b</td><td>8B</td>
-    <td class="size">~5 GB</td><td>~6 GB</td>
-    <td>Best-in-class 8B. Outperforms all 4B and most 12B models.</td>
-    <td>~1&ndash;2 tok/s</td>
-    <td>Upgrade pick for 32 GB RAM machines</td>
-  </tr>
-  <tr>
-    <td>phi-4</td><td>3.8B</td>
-    <td class="size">~2.3 GB</td><td>~3 GB</td>
-    <td>Strong reasoning for size. Microsoft.</td>
-    <td>~3&ndash;5 tok/s</td>
-    <td>Viable alternative to qwen3:4b</td>
-  </tr>
-  <tr>
-    <td>gemma3:1b</td><td>1B</td>
-    <td class="size">0.8 GB</td><td>~1.2 GB</td>
-    <td>Weak &mdash; fails multi-step tasks</td>
-    <td>~8&ndash;12 tok/s</td>
-    <td style="color:var(--red)">NOT viable for PAN classification</td>
-  </tr>
-</table>
-
-<div class="note">
-  <strong>Recommendation:</strong> Ship <strong>qwen3:4b</strong> as the default local model.
-  It leads benchmarks in the 4B class, fits in 16 GB RAM alongside OS + PAN server.
-  For 32 GB machines, offer <strong>qwen3:8b</strong> as an upgrade.
-  Replace llama3.2 embeddings with <strong>qwen3-embedding:0.6b</strong>
-  (0.5 GB, 1024D, 100+ languages) to save ~4 GB.
-</div>
-
-<!-- ================================================================== -->
-<h2>8. GPU Detection &amp; Runtime Selection</h2>
-<p>The installer should detect the GPU and download only the matching Ollama runtime.</p>
-
-<table>
-  <tr><th>GPU Vendor</th><th>Detection Method</th><th>Ollama Runtime</th><th>Size</th></tr>
-  <tr>
-    <td>NVIDIA</td>
-    <td>Windows: <code>nvidia-smi</code><br>Linux: <code>lspci | grep -i nvidia</code></td>
-    <td>CUDA v12</td>
-    <td class="size">~2.4 GB</td>
-  </tr>
-  <tr>
-    <td>AMD</td>
-    <td>Windows: <code>wmic path win32_VideoController</code><br>Linux: <code>lspci | grep -i amd</code></td>
-    <td>ROCm</td>
-    <td class="size">~1.9 GB</td>
-  </tr>
-  <tr>
-    <td>Intel Arc</td>
-    <td>Windows: <code>wmic</code> / Linux: <code>lspci</code></td>
-    <td>Vulkan (experimental)</td>
-    <td class="size">~0.3 GB</td>
-  </tr>
-  <tr>
-    <td>None / Integrated</td>
-    <td>Fallback</td>
-    <td>CPU-only</td>
-    <td class="size">~90 MB</td>
-  </tr>
-</table>
-
-<div class="note">
-  <strong>GPU VRAM requirements:</strong> gemma3:4b needs ~3 GB VRAM for full GPU offload.
-  Cards with 4+ GB VRAM (GTX 1650+, RX 5500+) can fully offload. Cards with less
-  use partial offload (some layers on GPU, rest on CPU &mdash; still faster than pure CPU).
-</div>
-
-<!-- ================================================================== -->
-<h2>9. Tiered Install Options</h2>
-
-<div class="tier-grid">
-  <div class="tier-card">
-    <h3 style="color:var(--sky)">Lite Install (~1.5 GB)</h3>
-    <p style="font-size:0.88rem;color:var(--dim);margin-bottom:0.5rem">For 16 GB RAM, no GPU, minimal disk</p>
-    <ul>
-      <li>PAN service + portable Node.js</li>
-      <li>Ollama (CPU-only runtime)</li>
-      <li>qwen3:4b (local inference)</li>
-      <li>qwen3-embedding:0.6b (tiny embedding model)</li>
-      <li>Tailscale</li>
-      <li>Cloud reasoning via Cerebras (free)</li>
-    </ul>
-  </div>
-
-  <div class="tier-card">
-    <h3 style="color:var(--green)">Full Install (~5 GB)</h3>
-    <p style="font-size:0.88rem;color:var(--dim);margin-bottom:0.5rem">For 32 GB RAM with discrete GPU</p>
-    <ul>
-      <li>Everything in Lite, plus:</li>
-      <li>Ollama with GPU runtime (CUDA/ROCm)</li>
-      <li>llama3.2 (full 3072D embeddings)</li>
-      <li>qwen3:4b (local inference)</li>
-      <li>Claude CLI (optional, prompted)</li>
-      <li>Whisper STT (local speech-to-text)</li>
-      <li>Tailscale</li>
-    </ul>
-  </div>
-</div>
-
-<!-- ================================================================== -->
-<h2>10. Sensitivity-Based Routing</h2>
-<p>PAN classifies every query by sensitivity before deciding where to process it.</p>
-
-<table>
-  <tr><th>Level</th><th>Classification</th><th>Route</th><th>Context Mode</th><th>Examples</th></tr>
+  <tr><th>Level</th><th>Name</th><th>Route</th><th>What Leaves Your Machine</th><th>Examples</th></tr>
   <tr>
     <td><strong>0</strong></td><td>Public</td>
-    <td><span class="badge b-cloud">Cloud</span> (Cerebras)</td>
-    <td>Full context sent</td>
+    <td><span class="badge b-cloud">Cloud</span></td>
+    <td>Full query + context</td>
     <td>Weather, general knowledge, coding help</td>
   </tr>
   <tr>
     <td><strong>1</strong></td><td>Internal</td>
-    <td><span class="badge b-cloud">Cloud</span> (filtered)</td>
-    <td>PII anonymized</td>
+    <td><span class="badge b-cloud">Cloud (filtered)</span></td>
+    <td>Query with PII stripped</td>
     <td>Work projects, meeting notes</td>
   </tr>
   <tr>
     <td><strong>2</strong></td><td>Sensitive</td>
     <td><span class="badge b-cloud">Hybrid</span></td>
-    <td>Summarized only</td>
+    <td>Anonymized summary only</td>
     <td>Health data, finances, personal messages</td>
   </tr>
   <tr>
     <td><strong>3</strong></td><td>Critical</td>
-    <td><span class="badge b-local">Local ONLY</span></td>
-    <td>Zero context transmitted</td>
-    <td>Passwords, encryption keys, medical records</td>
+    <td><span class="badge b-local">LOCAL ONLY</span></td>
+    <td><strong>Nothing. Zero bytes.</strong></td>
+    <td>Passwords, keys, medical records, legal docs</td>
   </tr>
 </table>
 
 <!-- ================================================================== -->
-<h2>11. Installation Flow</h2>
-
-<h3>Windows</h3>
-<ol style="padding-left:1.5rem">
-  <li>User runs: <code>irm https://get.pan.dev/install.ps1 | iex</code> (or downloads .exe)</li>
-  <li>Installer downloads portable Node.js 22.16.0 (~32 MB)</li>
-  <li>Extracts PAN service, runs <code>npm install</code> with portable Node</li>
-  <li>Generates encryption keys (pan.key, audit.key)</li>
-  <li>Creates PAN.bat (crash-restart loop) + desktop/Start Menu shortcuts</li>
-  <li>Registers as Windows service (admin) or Startup folder (non-admin)</li>
-  <li>Opens firewall for port 7777</li>
-  <li>Launches PAN &rarr; Setup Wizard opens at <code>http://localhost:7777/setup</code></li>
-  <li>Setup Wizard: Name &rarr; AI config &rarr; Tailscale &rarr; redirects to dashboard</li>
-  <li>First-run background: Ollama check &rarr; model pull (qwen3:4b, ~3 GB) &rarr; ready</li>
-</ol>
-
-<h3>Linux</h3>
-<ol style="padding-left:1.5rem">
-  <li>User runs: <code>curl -sSL https://pan.dev/install | bash</code></li>
-  <li>Installer downloads portable Node.js for detected arch (x64/arm64)</li>
-  <li>Extracts to <code>~/.local/share/pan/</code></li>
-  <li>Runs npm install, generates encryption keys</li>
-  <li>Creates systemd user service (Linux) or launchd plist (macOS)</li>
-  <li>Creates desktop shortcut via XDG .desktop file</li>
-  <li>Symlinks <code>pan</code> to <code>~/.local/bin/</code></li>
-  <li>Starts PAN &rarr; Setup Wizard at <code>http://localhost:7777/setup</code></li>
-</ol>
-
-<h3>Docker</h3>
-<ol style="padding-left:1.5rem">
-  <li><code>docker compose up -d</code></li>
-  <li>Image builds via multi-stage Dockerfile (~685 MB final)</li>
-  <li>Data persisted in named volume</li>
-  <li>Ollama runs on host or as separate container</li>
-</ol>
-
-<!-- ================================================================== -->
-<h2>12. Voice &amp; TTS Models</h2>
-<p>Text-to-speech for PAN's voice output on desktop and phone.</p>
+<h2>7. Voice &amp; TTS</h2>
 
 <table>
-  <tr><th>Model</th><th>Params</th><th>Size</th><th>Quality</th><th>Speed</th><th>Voices</th><th>Verdict</th></tr>
+  <tr><th>Model</th><th>Params</th><th>Size</th><th>Quality</th><th>Speed</th><th>Languages</th></tr>
   <tr style="background:rgba(166,227,161,0.05)">
-    <td><strong>Kokoro-82M</strong></td><td>82M</td>
+    <td><strong>Kokoro-82M</strong> <span class="badge b-req">Required</span></td><td>82M</td>
     <td class="size">~80 MB</td>
     <td>#1 on TTS Arena. Beats XTTS (467M) and MetaVoice (1.2B).</td>
-    <td>CPU: real-time on 2019 MacBook. GPU: 210x realtime.</td>
-    <td>~50 built-in (EN, FR, KO, JA, ZH). No voice cloning.</td>
-    <td style="color:var(--green)"><strong>Ship this</strong></td>
+    <td>CPU: real-time. GPU: 210x realtime.</td>
+    <td>EN, FR, KO, JA, ZH. ~50 voices.</td>
   </tr>
   <tr>
     <td>Piper TTS</td><td>Varies</td>
     <td class="size">~15&ndash;50 MB</td>
-    <td>Decent. More robotic than Kokoro. Faster on CPU.</td>
-    <td>Very fast CPU inference</td>
-    <td>Many voices, many languages</td>
-    <td>Fallback for ultra-low-end hardware</td>
-  </tr>
-  <tr>
-    <td>Android TTS</td><td>N/A</td>
-    <td class="size">0 (system)</td>
-    <td>Varies by device. Google voices are good.</td>
-    <td>Instant (system API)</td>
-    <td>System voices</td>
-    <td>Phone default (no download needed)</td>
+    <td>Decent but more robotic.</td>
+    <td>Very fast CPU</td>
+    <td>Many languages</td>
   </tr>
 </table>
 
 <div class="note">
   <strong>Kokoro-82M</strong> uses StyleTTS 2 + ISTFTNet (single forward pass, no diffusion).
-  At 82M parameters it's 5&ndash;15x smaller than competing models while ranking #1 on quality.
-  Runs on CPU without issues. Perfect fit for PAN's desktop voice.
-  Voice marketplace ($1&ndash;2 per voice pack) can sell additional Kokoro voices.
+  5&ndash;15x smaller than competitors while ranking #1 on quality. Runs on CPU.
+  Voice marketplace ($1&ndash;2 per pack) sells additional voices and accents.
+  Real-time voice translation pipeline: speak &rarr; STT &rarr; translate (Cerebras) &rarr; Kokoro TTS in target language.
 </div>
 
 <!-- ================================================================== -->
-<h2>13. Network Requirements</h2>
+<h2>8. Installation</h2>
+
+<div class="tier-grid">
+  <div class="tier-card">
+    <h3>Windows</h3>
+    <p style="margin:0.5rem 0"><strong>Download the installer. Run it. Done.</strong></p>
+    <p style="font-size:0.88rem;color:var(--dim)">The installer handles everything automatically:</p>
+    <ul style="font-size:0.88rem">
+      <li>Downloads and bundles Node.js (you never see it)</li>
+      <li>Installs PAN service + all dependencies</li>
+      <li>Generates encryption keys</li>
+      <li>Creates desktop + Start Menu shortcuts</li>
+      <li>Registers PAN as a startup service (auto-starts with Windows)</li>
+      <li>Opens the Setup Wizard in PAN's own window</li>
+      <li>Setup Wizard: enter your name &rarr; choose AI backend &rarr; connect phone via WireGuard &rarr; done</li>
+      <li>AI models download in the background on first run</li>
+    </ul>
+  </div>
+
+  <div class="tier-card">
+    <h3>Linux / macOS</h3>
+    <p style="margin:0.5rem 0"><strong>Download the package. Install it. Done.</strong></p>
+    <p style="font-size:0.88rem;color:var(--dim)">Or from terminal: <code>curl -sSL https://pan.dev/install | bash</code></p>
+    <ul style="font-size:0.88rem">
+      <li>Detects your architecture (x64/arm64) automatically</li>
+      <li>Installs to <code>~/.local/share/pan/</code></li>
+      <li>Creates systemd service (Linux) or launchd plist (macOS)</li>
+      <li>Creates desktop shortcut</li>
+      <li>Opens Setup Wizard &rarr; same flow as Windows</li>
+    </ul>
+  </div>
+</div>
+
+<div class="tier-card" style="margin-top:0.75rem">
+  <h3>Docker (Advanced)</h3>
+  <p style="font-size:0.88rem;color:var(--dim)"><code>docker compose up -d</code> &mdash; 685 MB image, data persisted in named volume. Ollama runs on host or as separate container.</p>
+</div>
+
+<div class="note">
+  <strong>What happens after install:</strong> PAN starts, checks if Ollama is installed, starts it if needed,
+  pulls qwen3-embedding:0.6b (~500 MB) and qwen3:4b (~3 GB) in the background. You can use PAN immediately
+  &mdash; cloud services work while local models download. Full local capability is ready in 5&ndash;15 minutes
+  depending on your internet speed.
+</div>
+
+<!-- ================================================================== -->
+<h2>9. Installation Size Breakdown</h2>
+
 <table>
-  <tr><th>Service</th><th>Endpoint</th><th>Required</th><th>Purpose</th></tr>
+  <tr><th>Component</th><th>Download</th><th>On Disk</th></tr>
+  <tr><td>PAN service + node_modules</td><td class="size">~180 MB</td><td class="size">~310 MB</td></tr>
+  <tr><td>Node.js 22.16.0 (portable)</td><td class="size">~32 MB</td><td class="size">~94 MB</td></tr>
+  <tr><td>Ollama (CPU-only)</td><td class="size">~90 MB</td><td class="size">~90 MB</td></tr>
+  <tr><td>Ollama (with NVIDIA CUDA v12)</td><td class="size">~2.5 GB</td><td class="size">~2.5 GB</td></tr>
+  <tr><td>WireGuard/Tailscale</td><td class="size">~45 MB</td><td class="size">~45 MB</td></tr>
+  <tr><td>Kokoro TTS</td><td class="size">~80 MB</td><td class="size">~80 MB</td></tr>
+  <tr><td>qwen3:4b (required)</td><td class="size">~3 GB</td><td class="size">~3 GB</td></tr>
+  <tr><td>qwen3-embedding:0.6b (required)</td><td class="size">~0.5 GB</td><td class="size">~0.5 GB</td></tr>
+  <tr><td>Claude CLI (optional)</td><td class="size">~69 MB</td><td class="size">~69 MB</td></tr>
+  <tr style="background:var(--overlay)">
+    <td><strong>TOTAL (16 GB, CPU-only)</strong></td>
+    <td></td><td class="size"><strong>~1.5 GB</strong></td>
+  </tr>
+  <tr style="background:var(--overlay)">
+    <td><strong>TOTAL (32 GB, NVIDIA GPU, qwen3:8b)</strong></td>
+    <td></td><td class="size"><strong>~4 GB</strong></td>
+  </tr>
+  <tr style="background:var(--overlay)">
+    <td><strong>TOTAL (64 GB, all models, fully offline)</strong></td>
+    <td></td><td class="size"><strong>~25+ GB</strong></td>
+  </tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>10. GPU Detection</h2>
+<p>The installer automatically detects your GPU and downloads only the matching Ollama runtime.</p>
+
+<table>
+  <tr><th>GPU</th><th>Runtime</th><th>Extra Size</th><th>Inference Speed (qwen3:4b)</th></tr>
   <tr>
-    <td>Cerebras API</td><td><code>api.cerebras.ai</code></td>
-    <td><span class="badge b-req">Required</span></td>
-    <td>Free reasoning backend (Qwen 3 235B)</td>
+    <td>NVIDIA (GTX 1650+)</td><td>CUDA v12</td>
+    <td class="size">~2.4 GB</td><td><span class="speed-bar" style="width:100px;background:var(--green)"></span>10-20x faster than CPU</td>
   </tr>
   <tr>
-    <td>Tailscale</td><td><code>*.tailscale.com</code></td>
-    <td><span class="badge b-req">Required</span></td>
-    <td>VPN mesh for phone access</td>
+    <td>AMD (RX 5500+)</td><td>ROCm</td>
+    <td class="size">~1.9 GB</td><td><span class="speed-bar" style="width:80px;background:var(--green)"></span>8-15x faster than CPU</td>
   </tr>
   <tr>
-    <td>Node.js download</td><td><code>nodejs.org</code></td>
+    <td>Intel Arc</td><td>Vulkan</td>
+    <td class="size">~0.3 GB</td><td><span class="speed-bar" style="width:50px;background:var(--yellow)"></span>Experimental, 3-5x faster</td>
+  </tr>
+  <tr>
+    <td>None / Integrated</td><td>CPU-only</td>
+    <td class="size">0</td><td>~2-4 tok/s (functional, just slower)</td>
+  </tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>11. Network Requirements</h2>
+<table>
+  <tr><th>Endpoint</th><th>When</th><th>Purpose</th></tr>
+  <tr>
+    <td><code>api.cerebras.ai</code></td>
+    <td><span class="badge b-req">Always</span></td>
+    <td>Free reasoning backend for background services</td>
+  </tr>
+  <tr>
+    <td>WireGuard mesh</td>
+    <td><span class="badge b-req">Always</span></td>
+    <td>Encrypted tunnel for all device communication</td>
+  </tr>
+  <tr>
+    <td><code>nodejs.org</code>, <code>ollama.com</code></td>
     <td>Install only</td>
-    <td>One-time portable Node download</td>
+    <td>One-time downloads during setup</td>
   </tr>
   <tr>
-    <td>Ollama download</td><td><code>ollama.com</code></td>
-    <td>Install only</td>
-    <td>One-time runtime + model pull</td>
-  </tr>
-  <tr>
-    <td>Anthropic API</td><td><code>api.anthropic.com</code></td>
+    <td><code>api.anthropic.com</code></td>
     <td><span class="badge b-opt">Optional</span></td>
-    <td>Direct Haiku calls (if API key configured)</td>
-  </tr>
-  <tr>
-    <td>Claude CLI</td><td><code>*.anthropic.com</code></td>
-    <td><span class="badge b-opt">Optional</span></td>
-    <td>Interactive terminal sessions</td>
+    <td>Claude API / CLI (if configured)</td>
   </tr>
 </table>
 
 <footer>
-  PAN &mdash; Personal AI Network &bull; Installation Requirements Report &bull; Generated April 2026
+  PAN &mdash; Personal AI Network &bull; System Architecture &amp; Installation Guide &bull; April 2026
 </footer>
 
 </body>
