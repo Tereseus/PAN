@@ -5032,17 +5032,39 @@
 						</div>
 
 						<!-- PAN Status -->
-						<div class="svc-category">PAN</div>
+						<div class="svc-category">PAN Activity</div>
 						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'idle'}</span></div>
-							<div class="int-axis"><span class="int-label">Sessions</span><span class="int-val">{(pan.sessions || []).length}</span></div>
-							{#each (pan.active_tasks || []).slice(0, 5) as task}
-								<div class="int-axis task">
-									<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
-									<span class="int-val">{task.title}</span>
-								</div>
+							<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'Idle'}</span></div>
+							{#each (pan.sessions || []) as sess}
+								<div class="int-axis"><span class="int-label">Session</span><span class="int-val small">{sess.description || sess.id}</span></div>
 							{/each}
+							{#if (pan.services || []).length > 0}
+								{#each (pan.services || []) as svc}
+									<div class="int-axis"><span class="int-label">{svc.name}</span><span class="int-val small" class:svc-healthy={svc.status === 'Running'} class:svc-down={svc.status === 'Down'}>{svc.status}</span></div>
+								{/each}
+							{/if}
 						</div>
+						<!-- Recent PAN Actions -->
+						{#if (pan.recent_actions || []).length > 0}
+							<div class="svc-category">Recent Actions</div>
+							<div class="int-axes">
+								{#each (pan.recent_actions || []).slice(0, 5) as act}
+									<div class="int-axis"><span class="int-val small">{act.action}</span></div>
+								{/each}
+							</div>
+						{/if}
+						<!-- Tasks -->
+						{#if (pan.active_tasks || []).length > 0}
+							<div class="svc-category">Tasks</div>
+							<div class="int-axes">
+								{#each (pan.active_tasks || []).slice(0, 5) as task}
+									<div class="int-axis task">
+										<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
+										<span class="int-val">{task.title}</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
 
 						<!-- Predictions -->
 						{#if preds.length > 0}
@@ -8671,6 +8693,8 @@
 		font-size: 10px; color: #585b70; padding: 4px 4px 2px;
 		font-style: italic;
 	}
+	.svc-healthy { color: #a6e3a1; }
+	.svc-down { color: #f38ba8; }
 
 	/* ==================== Lifeboat ==================== */
 	.lifeboat-panel {

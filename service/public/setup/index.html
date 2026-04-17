@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PAN — Setup</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #1e1e2e; color: #cdd6f4;
+    min-height: 100vh; display: flex; justify-content: center; align-items: center;
+  }
+  .setup {
+    max-width: 560px; width: 100%; padding: 40px;
+    background: #181825; border-radius: 16px;
+    border: 1px solid #313244;
+  }
+  .logo { text-align: center; margin-bottom: 24px; }
+  .logo h1 { font-size: 32px; color: #cba6f7; letter-spacing: 4px; }
+  .logo p { font-size: 14px; color: #585b70; margin-top: 4px; }
+  .step {
+    margin-bottom: 24px; padding: 16px;
+    background: #1e1e2e; border-radius: 8px;
+    border: 1px solid #313244;
+    transition: border-color 0.3s;
+  }
+  .step.done { border-color: #a6e3a1; }
+  .step.active { border-color: #cba6f7; }
+  .step-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+  }
+  .step-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #313244; color: #585b70;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600; flex-shrink: 0;
+  }
+  .step.done .step-num { background: #a6e3a1; color: #1e1e2e; }
+  .step.active .step-num { background: #cba6f7; color: #1e1e2e; }
+  .step-title { font-size: 16px; font-weight: 600; }
+  .step-desc { font-size: 13px; color: #585b70; margin-left: 40px; }
+  .step-body { margin-top: 12px; margin-left: 40px; }
+
+  label { font-size: 13px; color: #a6adc8; display: block; margin-bottom: 4px; }
+  input[type="text"], input[type="password"] {
+    width: 100%; padding: 10px 12px; border-radius: 6px;
+    background: #181825; border: 1px solid #313244; color: #cdd6f4;
+    font-size: 14px; outline: none;
+  }
+  input:focus { border-color: #cba6f7; }
+  .input-row { margin-bottom: 12px; }
+  .hint { font-size: 11px; color: #585b70; margin-top: 4px; }
+
+  button {
+    padding: 10px 20px; border-radius: 6px; border: none;
+    background: #cba6f7; color: #1e1e2e;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #b4befe; }
+  button:disabled { background: #313244; color: #585b70; cursor: not-allowed; }
+  button.secondary {
+    background: transparent; border: 1px solid #313244;
+    color: #a6adc8;
+  }
+  button.secondary:hover { border-color: #585b70; }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 12px; }
+  .check { color: #a6e3a1; font-weight: 600; }
+  .error { color: #f38ba8; font-size: 13px; margin-top: 8px; }
+  .skip { font-size: 12px; color: #585b70; cursor: pointer; margin-top: 8px; }
+  .skip:hover { color: #a6adc8; }
+
+  .done-banner {
+    text-align: center; padding: 32px; display: none;
+  }
+  .done-banner h2 { color: #a6e3a1; font-size: 24px; margin-bottom: 8px; }
+  .done-banner p { color: #a6adc8; font-size: 14px; margin-bottom: 16px; }
+  .done-banner a { color: #cba6f7; text-decoration: none; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="setup" id="setup">
+  <div class="logo">
+    <h1>PAN</h1>
+    <p>Personal AI Network — First-Time Setup</p>
+  </div>
+
+  <!-- Step 1: Identity -->
+  <div class="step active" id="step1">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div class="step-title">Who Are You?</div>
+    </div>
+    <div class="step-desc">PAN needs to know your name. This is how it addresses you.</div>
+    <div class="step-body">
+      <div class="input-row">
+        <label>Your Name</label>
+        <input type="text" id="displayName" placeholder="e.g. Alex" autocomplete="name">
+      </div>
+      <div class="input-row">
+        <label>Nickname (optional — what PAN calls you in conversation)</label>
+        <input type="text" id="nickname" placeholder="e.g. Commander">
+      </div>
+      <div class="btn-row">
+        <button onclick="saveIdentity()">Continue</button>
+      </div>
+      <div class="error" id="err1"></div>
+    </div>
+  </div>
+
+  <!-- Step 2: AI Provider -->
+  <div class="step" id="step2">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">AI Brain</div>
+    </div>
+    <div class="step-desc">PAN needs an AI backend. Choose one:</div>
+    <div class="step-body" style="display:none">
+      <div class="input-row">
+        <label>Option A: Claude CLI (recommended — uses your Claude Code subscription)</label>
+        <div class="hint">If you have Claude Code installed, PAN uses it automatically. No API key needed.</div>
+        <div class="btn-row">
+          <button class="secondary" onclick="checkClaude()">Check Claude CLI</button>
+          <span id="claudeStatus"></span>
+        </div>
+      </div>
+      <div class="input-row" style="margin-top:16px">
+        <label>Option B: Anthropic API Key (direct API calls, ~$2-5/month for voice)</label>
+        <input type="password" id="apiKey" placeholder="sk-ant-...">
+        <div class="hint">Get one at console.anthropic.com</div>
+      </div>
+      <div class="input-row">
+        <label>Option C: Cerebras (free, fast — for voice/router commands)</label>
+        <input type="password" id="cerebrasKey" placeholder="csk-...">
+        <div class="hint">Free at cerebras.ai — 580ms responses</div>
+      </div>
+      <div class="btn-row">
+        <button onclick="saveAI()">Continue</button>
+        <button class="secondary" onclick="skipStep(2)">Skip for now</button>
+      </div>
+      <div class="error" id="err2"></div>
+    </div>
+  </div>
+
+  <!-- Step 3: Phone Connection (optional) -->
+  <div class="step" id="step3">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div class="step-title">Phone Connection (Optional)</div>
+    </div>
+    <div class="step-desc">Connect your Android phone via Tailscale for voice + mobile dashboard.</div>
+    <div class="step-body" style="display:none">
+      <div class="input-row">
+        <label>Tailscale</label>
+        <div class="hint">Install Tailscale on both this computer and your phone. PAN auto-detects it.</div>
+        <div class="btn-row">
+          <button class="secondary" onclick="checkTailscale()">Check Tailscale</button>
+          <span id="tailscaleStatus"></span>
+        </div>
+      </div>
+      <div class="input-row" style="margin-top:16px">
+        <label>Android APK</label>
+        <div class="hint">Download the PAN app on your phone, then scan the QR code that appears on your dashboard.</div>
+      </div>
+      <div class="btn-row">
+        <button onclick="finishSetup()">Finish Setup</button>
+        <button class="secondary" onclick="skipStep(3)">Skip</button>
+      </div>
+      <div class="error" id="err3"></div>
+    </div>
+  </div>
+
+  <!-- Done -->
+  <div class="done-banner" id="doneBanner">
+    <h2>PAN is Ready</h2>
+    <p>Your Personal AI Network is running. Everything you do from here is remembered.</p>
+    <a href="/">Open Dashboard →</a>
+  </div>
+</div>
+
+<script>
+const API = '';  // same origin
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  return res.json();
+}
+
+// ─── Step 1: Identity ───────────────────────────────────────────────────
+async function saveIdentity() {
+  const name = document.getElementById('displayName').value.trim();
+  if (!name) {
+    document.getElementById('err1').textContent = 'Please enter your name.';
+    return;
+  }
+  const nickname = document.getElementById('nickname').value.trim() || name;
+
+  try {
+    // Save display name
+    await api('/api/v1/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ key: 'display_name', value: name }),
+    });
+    // Save nickname
+    await api('/api/v1/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ key: 'display_nickname', value: nickname }),
+    });
+    // Update users table
+    await api('/api/v1/org/current', {
+      method: 'PATCH',
+      body: JSON.stringify({ display_name: name, display_nickname: nickname }),
+    });
+
+    completeStep(1);
+    activateStep(2);
+  } catch (e) {
+    document.getElementById('err1').textContent = 'Failed to save: ' + e.message;
+  }
+}
+
+// ─── Step 2: AI Provider ────────────────────────────────────────────────
+async function checkClaude() {
+  const el = document.getElementById('claudeStatus');
+  el.textContent = 'Checking...';
+  el.className = '';
+  try {
+    const r = await api('/api/setup-status');
+    if (r.configured) {
+      el.textContent = '✓ ' + (r.model || 'Claude detected');
+      el.className = 'check';
+    } else {
+      el.textContent = 'Not found — enter an API key below';
+      el.style.color = '#fab387';
+    }
+  } catch {
+    el.textContent = 'Check failed';
+    el.style.color = '#f38ba8';
+  }
+}
+
+async function saveAI() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const cerebrasKey = document.getElementById('cerebrasKey').value.trim();
+
+  try {
+    if (apiKey) {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ key: 'anthropic_api_key', value: apiKey }),
+      });
+    }
+    if (cerebrasKey) {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ key: 'cerebras_api_key', value: cerebrasKey }),
+      });
+    }
+    // If neither key provided, check if CLI is available
+    if (!apiKey && !cerebrasKey) {
+      const r = await api('/api/setup-status');
+      if (!r.configured) {
+        document.getElementById('err2').textContent = 'Please provide at least one API key, or install Claude CLI.';
+        return;
+      }
+    }
+    completeStep(2);
+    activateStep(3);
+  } catch (e) {
+    document.getElementById('err2').textContent = 'Failed: ' + e.message;
+  }
+}
+
+// ─── Step 3: Phone ──────────────────────────────────────────────────────
+async function checkTailscale() {
+  const el = document.getElementById('tailscaleStatus');
+  el.textContent = 'Checking...';
+  try {
+    const r = await api('/api/v1/network/tailscale');
+    if (r.connected) {
+      el.textContent = '✓ Connected (' + (r.ip || 'ok') + ')';
+      el.className = 'check';
+    } else {
+      el.textContent = 'Not detected — install tailscale.com';
+      el.style.color = '#fab387';
+    }
+  } catch {
+    el.textContent = 'Not detected';
+    el.style.color = '#fab387';
+  }
+}
+
+async function finishSetup() {
+  completeStep(3);
+  showDone();
+}
+
+// ─── Step management ────────────────────────────────────────────────────
+function completeStep(n) {
+  const step = document.getElementById('step' + n);
+  step.classList.remove('active');
+  step.classList.add('done');
+  step.querySelector('.step-num').textContent = '✓';
+  const body = step.querySelector('.step-body');
+  if (body) body.style.display = 'none';
+}
+
+function activateStep(n) {
+  const step = document.getElementById('step' + n);
+  step.classList.add('active');
+  const body = step.querySelector('.step-body');
+  if (body) body.style.display = 'block';
+}
+
+function skipStep(n) {
+  completeStep(n);
+  if (n < 3) activateStep(n + 1);
+  else showDone();
+}
+
+function showDone() {
+  document.getElementById('doneBanner').style.display = 'block';
+  // Mark setup as complete
+  api('/api/v1/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ key: 'setup_complete', value: 'true' }),
+  }).catch(() => {});
+}
+
+// ─── Init: check if already set up ─────────────────────────────────────
+(async function init() {
+  try {
+    const r = await api('/api/setup-status');
+    if (r.configured) {
+      // Check if identity is set
+      try {
+        const s = await api('/api/v1/settings/display_name');
+        if (s?.value) {
+          // Already configured — redirect to dashboard
+          const setupDone = await api('/api/v1/settings/setup_complete');
+          if (setupDone?.value === 'true' || setupDone?.value === true) {
+            window.location.href = '/';
+            return;
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+})();
+</script>
+</body>
+</html>

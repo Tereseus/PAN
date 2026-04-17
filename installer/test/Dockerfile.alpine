@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# PAN Installer Test — Alpine Linux (minimal)
+# Tests on the smallest common Linux distro. If it works here, it works
+# anywhere. Alpine uses musl libc — this tests the installer handles it.
+#
+# Build:  docker build -f Dockerfile.alpine -t pan-test-alpine ../..
+# Run:    docker run --rm pan-test-alpine
+# ═══════════════════════════════════════════════════════════════════════════
+FROM alpine:3.20
+
+# Alpine needs these basics (most distros already have them)
+RUN apk add --no-cache bash curl sudo shadow build-base python3 linux-headers
+
+# Simulate a real user (not root)
+RUN useradd -m -s /bin/bash commander && \
+    echo "commander ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+USER commander
+WORKDIR /home/commander
+
+COPY --chown=commander:commander . /home/commander/pan
+
+ENV PAN_TEST=1
+ENV HOME=/home/commander
+
+# Run installer
+RUN cd /home/commander/pan/installer && \
+    chmod +x install.sh && \
+    bash install.sh --no-service --no-desktop 2>&1 | tee /home/commander/install.log
+
+# Verify
+RUN /home/commander/.local/share/pan/node/bin/node --version && \
+    ls /home/commander/.local/share/pan/service/src/server.js && \
+    ls /home/commander/.local/share/pan/data/pan.key && \
+    echo "=== Alpine verification passed ==="
+
+COPY --chown=commander:commander installer/test/health-check.sh /home/commander/health-check.sh
+RUN chmod +x /home/commander/health-check.sh
+
+CMD ["/home/commander/health-check.sh"]
