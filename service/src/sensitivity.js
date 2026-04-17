@@ -46,7 +46,7 @@ function ensureSensitivitySchema() {
     const existing = get("SELECT value FROM settings WHERE key = 'sensitivity_enabled'");
     if (!existing) {
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('sensitivity_enabled', '1')");
-      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('sensitivity_model', 'llama3.2:latest')");
+      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('sensitivity_model', 'qwen3:4b')");
     }
   } catch {}
 }
@@ -62,10 +62,10 @@ export function getSensitivityConfig() {
     const model = get("SELECT value FROM settings WHERE key = 'sensitivity_model'");
     return {
       enabled: enabled?.value !== '0',
-      model: model?.value || 'llama3.2:latest',
+      model: model?.value || 'qwen3:4b',
     };
   } catch {
-    return { enabled: true, model: 'llama3.2:latest' };
+    return { enabled: true, model: 'qwen3:4b' };
   }
 }
 

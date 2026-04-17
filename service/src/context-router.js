@@ -39,7 +39,7 @@ function ensureRoutingSchema() {
     const existing = get("SELECT value FROM settings WHERE key = 'routing_enabled'");
     if (!existing) {
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('routing_enabled', '1')");
-      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('routing_local_model', 'llama3.2:latest')");
+      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('routing_local_model', 'qwen3:4b')");
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('routing_cloud_model', 'cerebras:qwen-3-235b')");
     }
   } catch {}
@@ -57,11 +57,11 @@ export function getRoutingConfig() {
     const cloudModel = get("SELECT value FROM settings WHERE key = 'routing_cloud_model'");
     return {
       enabled: enabled?.value !== '0',
-      localModel: localModel?.value || 'llama3.2:latest',
+      localModel: localModel?.value || 'qwen3:4b',
       cloudModel: cloudModel?.value || 'cerebras:qwen-3-235b',
     };
   } catch {
-    return { enabled: true, localModel: 'llama3.2:latest', cloudModel: 'cerebras:qwen-3-235b' };
+    return { enabled: true, localModel: 'qwen3:4b', cloudModel: 'cerebras:qwen-3-235b' };
   }
 }
 

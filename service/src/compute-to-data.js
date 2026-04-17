@@ -49,7 +49,7 @@ function ensureC2DSchema() {
     const existing = get("SELECT value FROM settings WHERE key = 'c2d_mode'");
     if (!existing) {
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('c2d_mode', 'hybrid')");
-      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('c2d_local_model', 'llama3.2:latest')");
+      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('c2d_local_model', 'qwen3:4b')");
     }
   } catch {}
 }
@@ -65,10 +65,10 @@ export function getC2DConfig() {
     const localModel = get("SELECT value FROM settings WHERE key = 'c2d_local_model'");
     return {
       mode: mode?.value || 'hybrid',
-      localModel: localModel?.value || 'llama3.2:latest',
+      localModel: localModel?.value || 'qwen3:4b',
     };
   } catch {
-    return { mode: 'hybrid', localModel: 'llama3.2:latest' };
+    return { mode: 'hybrid', localModel: 'qwen3:4b' };
   }
 }
 
