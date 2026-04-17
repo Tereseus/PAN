@@ -201,29 +201,33 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### Recent Conversation
-**Claude** (2026-04-16 16:25:05): **Questions before I touch code:**
+**Claude** (2026-04-16 23:13:28): Report's open. Here's what it covers:
 
-1. **Snapshot cadence** — every 5s (matches pendant), 15s (cheaper), or *event-driven* (recompute only when a sensor fires)? I'd start event-driven + a 30s heartbea
-**User** (2026-04-16 16:31:47): Now so the user should be called commander me in that case should be called pan or is that is that gonna be too Is it is that gonna be too confusing 'cause you're it's it's mixing up the names, Even t
-**Claude** (2026-04-16 16:34:03): Good — the canon was already mostly written by you on 2026-03-31. I was about to redesign things that have names and structure already. Here's what I pulled and where the collision is:
+**12 sections** — full dependency map with exact sizes:
 
-**What's alrea
-**User** (2026-04-16 16:42:08): The forge's intuitional state is the same thing So when the forge is basically hey create this application in real time right it's part of auto development the fortune auto development are the same th
-**Claude** (2026-04-16 16:42:48): **Locked vocabulary:**
-- **Commander** = you (tzuri)
-- **PAN** = the voice you talk to / the agent dispatcher
-- **Intuition** = the one daemon that knows what's happening right now — feeds PAN for con
+| Install Tier | Disk | RAM Required |
+|---|---|---|
+| **Lite** (CPU, small models) | ~1.5 GB | 16 GB |
+
+**User** (2026-04-16 23:15:32): That document didn't open in our own window it opened in Chrome as a web page that should never happen it should always open in our window so that we can send it to any device that we need to send it 
+**Claude** (2026-04-16 23:20:39): Report is now open in PAN's own window (Tauri shell, port 7790). Accessible from any device via `http://<tailscale-ip>:7777/docs/install-requirements.html`.
+
+Here's what changed from the first version
+**User** (2026-04-16 23:25:31): Mr Lee I also have some stuff about real life uh translation of your voice into different languages in a pretty good way So you can't you can't run you can't run eight billion on 16 gigs We obviously 
+**Claude** (2026-04-16 23:26:10): Good stuff. Here's my take on everything:
+
+**Cerebras math checks out.** 200K/day from background services with phone OFF = 20% of the 1M free tier. Phone voice adds maybe 50-100K/day (router calls ar
 
 ### Open Tasks
 - [backlog P2] Compose email — send returns HTTP 400, no email service wired
 - [backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [in_progress P1] Performance dashboard — probes, stages, Gantt, critical path
 - [backlog P1] PAN.bat respawn loop failed to restart today
 - [todo P1] Multi-channel send — Discord, email, Signal (never end-to-end tested)
-- [in_progress P1] Memory pipeline end-to-end verification + live visualization
 - [in_progress P1] Tauri wrappers around apps — Discord, Slack, WhatsApp, Instagram, any web/desktop app
 - [todo P1] PAN-to-PAN onboarding via QR code
 - [todo P1] PAN client — lightweight app for secondary computers
 - [in_progress] Voice marketplace ($1-2 each)
+- [todo] Voice personality packs
+- [in_progress] Cloud training for no-GPU users
 
 <!-- PAN-CONTEXT-END -->

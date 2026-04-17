@@ -1,0 +1,33 @@
+# PAN — Personal AI Network
+# Start: docker compose up -d
+# Dashboard: http://localhost:7777
+
+services:
+  pan:
+    build:
+      context: ..
+      dockerfile: installer/Dockerfile
+    container_name: pan
+    restart: unless-stopped
+    ports:
+      - "7777:7777"
+    volumes:
+      # Persist data across container rebuilds
+      - pan-data:/data
+    environment:
+      - PAN_SERVICE=1
+      - PAN_DATA_DIR=/data
+      - NODE_ENV=production
+      # Optional: set API keys here or via the dashboard setup wizard
+      # - ANTHROPIC_API_KEY=sk-ant-...
+      # - CEREBRAS_API_KEY=...
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:7777/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  pan-data:
+    driver: local

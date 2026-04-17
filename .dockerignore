@@ -1,0 +1,33 @@
+# PAN Docker build context - keep it lean
+.git
+android/
+installer/
+personaplex/
+piper/
+tmp-*/
+*.log
+*.bak
+*.db
+*.db-wal
+*.db-shm
+
+# Node/build artifacts
+service/node_modules/
+service/dashboard/node_modules/
+service/dashboard/.svelte-kit/
+service/tauri/
+service/data/
+service/target/
+service/tmp/
+
+# Large binary/data dirs — NOT part of the install
+whisper/
+llama/
+service/src/data/
+service/bin/
+*.wav
+*.mp3
+*.onnx
+*.pt
+*.pth
+*.bin

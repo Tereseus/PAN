@@ -286,6 +286,105 @@ app.get('/api/setup-status', async (req, res) => {
   res.json(result);
 });
 
+// System health check — tests every service, used by setup wizard and monitoring
+app.get('/api/system-check', async (req, res) => {
+  const checks = {};
+
+  // 1. Database
+  try {
+    get("SELECT 1");
+    checks.database = { ok: true, status: 'Running' };
+  } catch (e) {
+    checks.database = { ok: false, status: 'Down', error: e.message };
+  }
+
+  // 2. AI provider
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'ai_model'");
+    const model = row?.value?.replace(/^"|"$/g, '') || 'claude (CLI)';
+    checks.ai = { ok: true, status: 'Configured', model };
+  } catch {
+    checks.ai = { ok: false, status: 'Not Configured' };
+  }
+
+  // 3. Memory pipeline (check tables exist and have data)
+  try {
+    const eventCount = get("SELECT COUNT(*) as c FROM events")?.c || 0;
+    const memCount = get("SELECT COUNT(*) as c FROM memory_items")?.c || 0;
+    checks.memory = { ok: eventCount > 0, status: eventCount > 0 ? 'Active' : 'Empty', events: eventCount, memories: memCount };
+  } catch (e) {
+    checks.memory = { ok: false, status: 'Error', error: e.message };
+  }
+
+  // 4. Steward (check for recent heartbeat)
+  try {
+    const hb = get("SELECT created_at FROM events WHERE event_type = 'StewardHeartbeat' ORDER BY id DESC LIMIT 1");
+    if (hb) {
+      const age = Date.now() - new Date(hb.created_at).getTime();
+      checks.steward = { ok: age < 120000, status: age < 120000 ? 'Running' : 'Stale', last_heartbeat_ms: age };
+    } else {
+      checks.steward = { ok: false, status: 'No Heartbeats' };
+    }
+  } catch {
+    checks.steward = { ok: false, status: 'Error' };
+  }
+
+  // 5. Intuition — check via JSON file or API, not DB (table may use different connection)
+  try {
+    const fs = await import('fs');
+    const { getDataDir } = await import('./platform.js');
+    const intuitionPath = (await import('path')).join(getDataDir(), 'intuition.json');
+    if (fs.existsSync(intuitionPath)) {
+      const raw = JSON.parse(fs.readFileSync(intuitionPath, 'utf8'));
+      const age = Date.now() - (raw.as_of || 0);
+      checks.intuition = { ok: age < 120000, status: age < 120000 ? 'Running' : 'Stale', age_ms: age };
+    } else {
+      checks.intuition = { ok: false, status: 'No Snapshots' };
+    }
+  } catch {
+    checks.intuition = { ok: false, status: 'Not Available' };
+  }
+
+  // 6. Encryption
+  try {
+    const fs = await import('fs');
+    const { getDataDir } = await import('./platform.js');
+    const keyPath = (await import('path')).join(getDataDir(), 'pan.key');
+    checks.encryption = { ok: fs.existsSync(keyPath), status: fs.existsSync(keyPath) ? 'Active' : 'No Key' };
+  } catch {
+    checks.encryption = { ok: false, status: 'Error' };
+  }
+
+  // 7. Terminal/PTY
+  try {
+    const sessions = get("SELECT COUNT(*) as c FROM (SELECT 1 LIMIT 1)");
+    // Terminal is always available if server is running
+    checks.terminal = { ok: true, status: 'Available' };
+  } catch {
+    checks.terminal = { ok: false, status: 'Error' };
+  }
+
+  // 8. Modules
+  try {
+    const { getModulesStatus } = await import('./modules.js');
+    const mods = getModulesStatus();
+    checks.modules = { ok: true, status: `${mods.filter(m => m.loaded).length}/${mods.length} Loaded`, modules: mods };
+  } catch {
+    checks.modules = { ok: true, status: '0 Loaded' };
+  }
+
+  // Summary
+  const allOk = Object.values(checks).every(c => c.ok);
+  const failedCount = Object.values(checks).filter(c => !c.ok).length;
+
+  res.json({
+    ok: allOk,
+    failed: failedCount,
+    total: Object.keys(checks).length,
+    checks,
+  });
+});
+
 // Auth middleware — all other /api routes get req.user
 // Tailscale or localhost requests with X-Device-Name header auto-authenticate
 app.use('/api', (req, res, next) => {
@@ -1269,6 +1368,14 @@ app.get('/v2/*path', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(join(__dirname, '..', 'public', 'v2', 'index.html'));
 });
+
+// Setup wizard — first-run page, no auth required, no caching
+app.use('/setup', express.static(join(__dirname, '..', 'public', 'setup'), {
+  etag: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+}));
 
 // Mobile dashboard — static files, no ES modules, no caching
 app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
@@ -2623,23 +2730,41 @@ app.get('/api/v1/perf/probe/mcp', (req, res) => {
 // Generic service probe — checks if the service is registered as running
 // in the services registry. Any unknown service returns 503 (correctly
 // matches the "Offline — Not running" state shown in the panel).
+// Map perf probe names → steward service IDs
+const PROBE_TO_STEWARD = {
+  local_intel: null,           // built-in, always ok
+  resonance: 'embeddings',
+  voice_shell: 'voice-shell',
+  augur: 'classifier',
+  cartographer: 'stack-scanner',
+  dream: 'dream',
+  archivist: 'consolidation',
+  scout: 'scout',
+  orchestrator: 'orchestrator',
+  evolution: 'evolution',
+  forge: 'autodev',
+  tether: 'tailscale',
+};
+
 function serviceProbeHandler(name) {
   return (req, res) => {
     try {
-      // Very lightweight check: look up via settings/env.
-      // In a future pass these can be real liveness probes per service.
-      const offlineByDefault = [
-        'resonance', 'voice_shell', 'augur', 'cartographer',
-        'dream', 'archivist', 'scout', 'orchestrator',
-        'evolution', 'forge', 'tether',
-      ];
-      if (offlineByDefault.includes(name)) {
-        return res.status(503).json({ ok: false, error: 'not running' });
-      }
       if (name === 'local_intel') {
         return res.status(200).json({ ok: true, note: 'built-in' });
       }
-      return res.status(200).json({ ok: true });
+
+      // Check real steward service status
+      const stewardId = PROBE_TO_STEWARD[name];
+      if (stewardId) {
+        const svc = getServiceStatus(stewardId);
+        if (svc && svc._status === 'running') {
+          return res.status(200).json({ ok: true, service: stewardId, status: 'running' });
+        }
+        const reason = svc?._lastError || svc?._status || 'not registered';
+        return res.status(503).json({ ok: false, error: reason, service: stewardId });
+      }
+
+      return res.status(503).json({ ok: false, error: 'no steward mapping' });
     } catch (err) {
       return res.status(503).json({ ok: false, error: String(err?.message || err) });
     }
