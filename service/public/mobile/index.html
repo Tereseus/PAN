@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <script src="/v2/pan-telemetry.js"></script>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
 <title>PAN</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -29,7 +29,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .page.active { display:block; }
 
 /* Terminal-style chat — matches desktop terminal renderer */
-.messages { display:flex; flex-direction:column; padding:8px 10px 56px; min-height:200px; background:#11111b; font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.4; }
+.messages { display:flex; flex-direction:column; padding:8px 10px 64px; min-height:200px; background:#11111b; font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.4; }
 .t-line { padding:6px 8px; margin:0; word-break:break-word; white-space:pre-wrap; border-radius:6px; }
 .t-user { margin-top:8px; color:#cdd6f4; background:#1e1e2e; border-left:3px solid #a6e3a1; }
 .t-user .name { color:#a6e3a1; font-weight:bold; }
@@ -163,7 +163,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .org-modal-overlay.visible { display:flex; }
 .org-modal { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:16px; width:85%; max-width:320px; max-height:70vh; overflow-y:auto; }
 .org-modal h3 { font-size:15px; color:var(--accent); margin-bottom:12px; }
-.org-modal-item { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; cursor:pointer; }
+.org-modal-item { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; cursor:pointer; font-size:15px; }
 .org-modal-item:active { background:var(--bg3); }
 .org-modal-item.active { border-color:var(--accent); background:rgba(137,180,250,0.1); }
 .org-modal-item .org-item-name { font-size:14px; font-weight:500; }
@@ -174,6 +174,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .incognito-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:var(--radius); border:1px solid var(--border); font-size:13px; font-weight:500; cursor:pointer; }
 .incognito-btn.off { background:var(--bg3); color:var(--text); }
 .incognito-btn.on { background:var(--accent); color:#000; }
+
 </style>
 </head>
 <body>
@@ -240,7 +241,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div class="messages" id="chat-msgs"><div class="muted">Loading conversations...</div></div>
   <div id="chat-status" class="status-bar" style="display:none"><span class="spinner"></span><span>Claude is thinking…</span></div>
   <div class="input-bar" id="input-bar">
-    <button onclick="showModelPicker()" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:16px;min-width:40px" title="Switch AI model">✨</button>
+    <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:14px;font-weight:600;min-width:80px;white-space:nowrap" title="Switch AI model">Model</button>
     <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
     <input type="file" id="screenshot-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
     <button onclick="document.getElementById('screenshot-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:16px;align-self:flex-end" title="Share screenshot">&#128247;</button>
@@ -313,16 +314,25 @@ function onProjectChange() {
 }
 
 // Model change
-// Load current model setting
+// Load current model setting and update the button label
 async function loadCurrentModel() {
   try {
     const res = await fetch(API + '/api/v1/settings');
     const settings = await res.json();
     const model = settings.terminal_ai_model || '';
     console.log('[PAN Mobile] loaded current model:', model);
+    updateModelButton(model);
   } catch(err) {
     console.error('[PAN Mobile] failed to load model setting:', err);
   }
+}
+
+function updateModelButton(modelId) {
+  const btn = document.getElementById('model-btn');
+  if (!btn || !modelId) return;
+  // Show short readable name
+  const short = modelId.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/^cerebras:/, '');
+  btn.textContent = short;
 }
 
 // Model picker modal
@@ -337,6 +347,7 @@ function hideModelPicker() {
 async function selectModel(model) {
   console.log('[PAN Mobile] selecting model:', model);
   hideModelPicker();
+  updateModelButton(model);
 
   // Find active session
   let sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
@@ -463,6 +474,7 @@ async function init() {
   } catch(e) { console.error('init error:', e); document.body.innerHTML += '<div style="color:red;padding:20px">INIT ERROR: '+e.message+'</div>'; }
   loadOrgContext();
   loadChat();
+  loadDynamicModels(); // populate model picker from API
   // Auto-refresh active tab every 3 seconds
   setInterval(() => {
     const active = document.querySelector('.page.active');
@@ -1599,42 +1611,64 @@ function autoGrowTextarea(el) {
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-// Keyboard visibility — keep input bar above the soft keyboard on Android
-// Three strategies combined for maximum compatibility:
+// Keyboard visibility — keep input bar above the soft keyboard on Android WebView.
+// Uses interactive-widget=resizes-visual so window.innerHeight stays constant (= full screen).
+// visualViewport.height shrinks when keyboard appears — the difference is keyboard height.
 (function() {
   const inputBar = document.getElementById('input-bar');
   const chatInput = document.getElementById('chat-input');
+  const chatMsgs = document.getElementById('chat-msgs');
   if (!inputBar || !chatInput) return;
 
-  // Strategy 1: visualViewport API (best, but not always reliable)
-  if (window.visualViewport) {
-    function adjustForKeyboard() {
-      const offset = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
-      inputBar.style.bottom = Math.max(0, offset) + 'px';
+  // Capture full-screen height at load time (before any keyboard appears)
+  const fullHeight = window.innerHeight;
+  const BASE_MSG_PADDING = 64; // matches .messages padding-bottom
+
+  function applyKeyboardOffset(kbHeight) {
+    const h = Math.max(0, Math.round(kbHeight));
+    inputBar.style.bottom = h + 'px';
+    // Also push message list up so content doesn't hide behind input+keyboard
+    if (chatMsgs) chatMsgs.style.paddingBottom = (BASE_MSG_PADDING + h) + 'px';
+  }
+
+  function adjustForKeyboard() {
+    if (!window.visualViewport) return;
+    // With resizes-visual: layout viewport stays full height, visual shrinks for keyboard
+    const kbHeight = fullHeight - window.visualViewport.height - window.visualViewport.offsetTop;
+    applyKeyboardOffset(kbHeight);
+    // Scroll chat to bottom so latest message stays visible
+    if (chatMsgs && kbHeight > 50) {
+      setTimeout(() => { chatMsgs.scrollTop = chatMsgs.scrollHeight; }, 50);
     }
+  }
+
+  if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', adjustForKeyboard);
     window.visualViewport.addEventListener('scroll', adjustForKeyboard);
   }
 
-  // Strategy 2: On focus, scroll the input into view after keyboard animation
-  chatInput.addEventListener('focus', () => {
-    setTimeout(() => {
-      chatInput.scrollIntoView({ block: 'end', behavior: 'smooth' });
-      // Also try the viewport approach again after keyboard settles
-      if (window.visualViewport) {
-        const offset = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
-        inputBar.style.bottom = Math.max(0, offset) + 'px';
-      }
-    }, 300);
-    // Second attempt after keyboard fully open
-    setTimeout(() => {
-      chatInput.scrollIntoView({ block: 'end', behavior: 'smooth' });
-    }, 600);
+  // Fallback: window resize for WebViews that don't fire visualViewport events
+  let lastWindowHeight = fullHeight;
+  window.addEventListener('resize', () => {
+    const h = window.innerHeight;
+    if (Math.abs(h - lastWindowHeight) > 50) {
+      // Layout also resized — keyboard likely opened/closed
+      applyKeyboardOffset(Math.max(0, lastWindowHeight - h));
+    }
   });
 
-  // Strategy 3: Reset on blur (keyboard closes)
+  // On focus: re-run after keyboard animation settles (Android is slow)
+  chatInput.addEventListener('focus', () => {
+    [200, 400, 700].forEach(delay => {
+      setTimeout(adjustForKeyboard, delay);
+    });
+  });
+
+  // On blur: keyboard closing — reset after animation
   chatInput.addEventListener('blur', () => {
-    setTimeout(() => { inputBar.style.bottom = '0px'; }, 100);
+    setTimeout(() => {
+      applyKeyboardOffset(0);
+    }, 150);
   });
 })();
 
@@ -1646,6 +1680,42 @@ function refreshCurrentTab() {
   if (active) loadTab(active.id);
   // Also re-fetch library items cache
   _libraryItems = [];
+}
+
+// ========== DYNAMIC MODEL PICKER ==========
+async function loadDynamicModels() {
+  try {
+    const res = await fetch(API + '/api/v1/ai/models');
+    const data = await res.json();
+    const models = data.models || [];
+    const local = data.local || [];
+    const container = document.querySelector('#model-modal .org-modal > div:first-of-type');
+    if (!container) return;
+    container.innerHTML = '';
+    for (const m of models) {
+      const shortName = m.id.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      const btn = document.createElement('button');
+      btn.className = 'org-modal-item';
+      btn.textContent = shortName;
+      btn.onclick = () => selectModel(m.id);
+      container.appendChild(btn);
+    }
+    if (local.length > 0) {
+      const divider = document.createElement('div');
+      divider.style.cssText = 'font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;padding:8px 0 4px;margin-top:4px;border-top:1px solid var(--border)';
+      divider.textContent = 'Local Models';
+      container.appendChild(divider);
+      for (const m of local) {
+        const btn = document.createElement('button');
+        btn.className = 'org-modal-item';
+        btn.textContent = m.name;
+        btn.onclick = () => selectModel(m.id);
+        container.appendChild(btn);
+      }
+    }
+  } catch(e) {
+    console.error('[PAN Mobile] model list load error:', e);
+  }
 }
 
 init();
