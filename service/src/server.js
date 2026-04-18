@@ -57,6 +57,8 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
 import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages } from './terminal-bridge.js';
+import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
+import clientRouter from './routes/client.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
 
@@ -102,20 +104,110 @@ app.use((req, res, next) => {
   next();
 });
 
-// Auto-register/update phone device from any route (phone sends X-Device-Name header)
+// Auto-register/update phone device from any route (phone sends X-Device-Name + X-Device-Id headers)
+// Uses X-Device-Id as stable key (survives app reinstall) instead of IP-based hostnames
 app.use((req, res, next) => {
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
   const deviceName = req.headers['x-device-name'];
+  const deviceId = req.headers['x-device-id'];
+  const tailscaleHost = req.headers['x-tailscale-hostname'];
   if (deviceName && ip !== '127.0.0.1' && ip !== '::1' && !ip.endsWith('127.0.0.1')) {
-    const phoneHost = `phone-${ip.replace(/[^0-9.]/g, '')}`;
+    // Use stable device ID if available, fall back to IP-based
+    const phoneHost = deviceId ? `phone-${deviceId}` : `phone-${ip.replace(/[^0-9.]/g, '')}`;
     const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': phoneHost });
     if (existing) {
       run("UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h",
         { ':name': deviceName, ':h': phoneHost });
+      // Track Tailscale hostname changes — if it changed, the old node is stale
+      if (tailscaleHost && existing.tailscale_hostname && tailscaleHost !== existing.tailscale_hostname) {
+        console.log(`[PAN Device] Tailscale hostname changed: ${existing.tailscale_hostname} → ${tailscaleHost} — cleaning up stale node`);
+        cleanupStaleTailscaleNode(existing.tailscale_hostname);
+      }
+      if (tailscaleHost && tailscaleHost !== existing.tailscale_hostname) {
+        run("UPDATE devices SET tailscale_hostname = :ts WHERE hostname = :h",
+          { ':ts': tailscaleHost, ':h': phoneHost });
+      }
+    } else if (deviceId) {
+      // Check for legacy IP-based records for this device and migrate
+      const legacyIpHost = `phone-${ip.replace(/[^0-9.]/g, '')}`;
+      const legacy = get("SELECT * FROM devices WHERE hostname = :h", { ':h': legacyIpHost });
+      if (legacy) {
+        run("UPDATE devices SET hostname = :newH, name = :name, tailscale_hostname = :ts, last_seen = datetime('now','localtime') WHERE hostname = :h",
+          { ':newH': phoneHost, ':name': deviceName, ':ts': tailscaleHost || null, ':h': legacyIpHost });
+        console.log(`[PAN Device] Migrated legacy device ${legacyIpHost} → ${phoneHost}`);
+      } else {
+        try {
+          insert(`INSERT INTO devices (hostname, name, device_type, capabilities, tailscale_hostname, last_seen, org_id)
+            VALUES (:h, :name, 'phone', '["mic","camera","sensors","gps"]', :ts, datetime('now','localtime'), 'org_personal')`, {
+            ':h': phoneHost, ':name': deviceName, ':ts': tailscaleHost || null
+          });
+          console.log(`[PAN Device] Registered phone: ${phoneHost} (${deviceName})`);
+        } catch(e) { /* UNIQUE constraint — already exists */ }
+      }
     }
   }
   next();
 });
+
+// Cleanup stale Tailscale nodes — uses local tailscale CLI (full permissions on this machine)
+// then falls back to Tailscale API if available
+async function cleanupStaleTailscaleNode(staleHostname) {
+  try {
+    // Get full peer list from tailscale status --json
+    let statusJson;
+    try {
+      statusJson = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe',
+        ['status', '--json'], { timeout: 5000, encoding: 'utf8', windowsHide: true });
+    } catch {
+      try {
+        statusJson = execFileSync('tailscale',
+          ['status', '--json'], { timeout: 5000, encoding: 'utf8', windowsHide: true });
+      } catch { return; }
+    }
+
+    const status = JSON.parse(statusJson);
+    const peers = status.Peer || {};
+    const staleNodes = Object.entries(peers)
+      .filter(([_, v]) => v.HostName === staleHostname && !v.Online)
+      .map(([k, v]) => ({ nodekey: k, hostname: v.HostName, ip: (v.TailscaleIPs || [])[0] }));
+
+    if (staleNodes.length === 0) {
+      console.log(`[PAN Device] No stale nodes found for hostname: ${staleHostname}`);
+      return;
+    }
+
+    // Try Tailscale API to delete (needs API key with devices:write scope)
+    const clientId = get("SELECT value FROM settings WHERE key = 'tailscale_oauth_client_id'")?.value;
+    const clientSecret = get("SELECT value FROM settings WHERE key = 'tailscale_oauth_client_secret'")?.value;
+    if (clientId && clientSecret) {
+      const auth = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+      const listRes = await fetch('https://api.tailscale.com/api/v2/tailnet/-/devices', {
+        headers: { 'Authorization': auth }
+      });
+      if (listRes.ok) {
+        const data = await listRes.json();
+        const apiDevices = (data.devices || []).filter(d =>
+          d.hostname === staleHostname && !d.online
+        );
+        for (const dev of apiDevices) {
+          console.log(`[PAN Device] Removing stale node via API: ${dev.hostname} (${dev.id})`);
+          const delRes = await fetch(`https://api.tailscale.com/api/v2/device/${dev.id}`, {
+            method: 'DELETE', headers: { 'Authorization': auth }
+          });
+          console.log(`[PAN Device] Delete result: ${delRes.status}`);
+        }
+        return;
+      }
+    }
+
+    // Fallback: log the stale nodes so the user knows (API doesn't have permissions)
+    for (const node of staleNodes) {
+      console.warn(`[PAN Device] Stale Tailscale node detected: ${node.hostname} (${node.ip}) — remove manually at https://login.tailscale.com/admin/machines`);
+    }
+  } catch (e) {
+    console.warn(`[PAN Device] Tailscale cleanup failed: ${e.message}`);
+  }
+}
 
 // Auth routes (some endpoints skip auth — login-related stuff)
 app.use('/api/v1/auth', (req, res, next) => {
@@ -643,6 +735,208 @@ app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
 
 // Intuition — live situational state daemon (read by PAN voice, Forge, Atlas)
 app.use('/api/v1/intuition', intuitionRouter);
+
+// PAN Client — manages connected pan-client processes on other machines
+app.use('/api/v1/client', clientRouter);
+
+// ── PAN Client install scripts ────────────────────────────────────────────────
+// Secondary computers fetch these via: irm http://hub:7777/install/TOKEN | iex
+//                                  or: curl -s http://hub:7777/install/TOKEN | bash
+// The route auto-detects OS from User-Agent and returns the right script.
+// pan-client.js is served from /client/pan-client.js for the script to download.
+
+app.get('/client/pan-client.js', (req, res) => {
+  const clientFile = join(__dirname, '../../pan-client/pan-client.js');
+  res.setHeader('Content-Type', 'text/javascript');
+  res.sendFile(clientFile);
+});
+
+app.get('/install/:token', (req, res) => {
+  const { token } = req.params;
+  if (!checkInviteToken(token)) {
+    res.status(403).send('# Invalid or expired install token\n');
+    return;
+  }
+
+  const host = req.headers.host || `127.0.0.1:${PORT}`;
+  const proto = req.secure ? 'https' : 'http';
+  const wsProto = req.secure ? 'wss' : 'ws';
+  const hubWs  = `${wsProto}://${host}`;
+  const clientJsUrl = `${proto}://${host}/client/pan-client.js`;
+
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const isWindows = ua.includes('windows') || ua.includes('powershell');
+
+  if (isWindows) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(generateWindowsClientInstaller(token, hubWs, clientJsUrl));
+  } else {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(generateLinuxClientInstaller(token, hubWs, clientJsUrl));
+  }
+});
+
+function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
+  // Build as array to avoid JS template-literal vs PowerShell backtick conflicts
+  const httpUrl = hubWs.replace(/^ws/, 'http');
+  const lines = [
+    '# PAN Client Installer — Windows',
+    '# Run: irm ' + httpUrl + '/install/' + token + ' | iex',
+    '',
+    '$ErrorActionPreference = "Stop"',
+    '$PanDir = Join-Path $env:LOCALAPPDATA "PAN-Client"',
+    '$NodeDir = Join-Path $PanDir "node"',
+    '$NodeVersion = "22.16.0"',
+    '$NodeUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip"',
+    '',
+    'function Step($m) { Write-Host "> $m" -ForegroundColor Cyan }',
+    'function Ok($m)   { Write-Host "  [OK] $m" -ForegroundColor Green }',
+    '',
+    'Step "Creating directories"',
+    'foreach ($d in @($PanDir, $NodeDir, (Join-Path $PanDir "data"))) {',
+    '  if (-not (Test-Path $d)) { New-Item -ItemType Directory $d -Force | Out-Null }',
+    '}',
+    '',
+    'Step "Downloading Node.js v$NodeVersion"',
+    '$nodeExe = Join-Path $NodeDir "node.exe"',
+    'if (-not (Test-Path $nodeExe)) {',
+    '  $tmp = Join-Path $env:TEMP "pan-node.zip"',
+    '  (New-Object System.Net.WebClient).DownloadFile($NodeUrl, $tmp)',
+    '  Expand-Archive $tmp (Join-Path $env:TEMP "pan-node-extract") -Force',
+    '  Get-ChildItem (Join-Path $env:TEMP "pan-node-extract\\node-v$NodeVersion-win-x64") | Move-Item -Destination $NodeDir -Force',
+    '  Remove-Item $tmp -Force -ErrorAction SilentlyContinue',
+    '}',
+    'Ok "Node.js ready"',
+    '',
+    'Step "Downloading pan-client.js"',
+    '$clientJs = Join-Path $PanDir "pan-client.js"',
+    '(New-Object System.Net.WebClient).DownloadFile("' + clientJsUrl + '", $clientJs)',
+    '',
+    'Step "Installing ws dependency"',
+    '$npmCli = Join-Path $NodeDir "node_modules\\npm\\bin\\npm-cli.js"',
+    'cd $PanDir',
+    '& $nodeExe $npmCli init -y 2>&1 | Out-Null',
+    '& $nodeExe $npmCli install ws --no-audit --no-fund 2>&1 | Out-Null',
+    'Ok "Dependencies installed"',
+    '',
+    'Step "Writing config"',
+    '$cfg = \'{"hub_ws":"' + hubWs + '","token":"' + token + '","device_id":"$env:COMPUTERNAME","name":"$env:COMPUTERNAME"}\'',
+    '$cfg = $cfg -replace \'"\\$env:COMPUTERNAME"\', \'"\'+ $env:COMPUTERNAME +\'"\' ',
+    '[IO.File]::WriteAllText((Join-Path $PanDir "pan-client-config.json"), $cfg)',
+    '',
+    'Step "Registering startup task"',
+    '$action = New-ScheduledTaskAction -Execute $nodeExe -Argument $clientJs -WorkingDirectory $PanDir',
+    '$trigger = New-ScheduledTaskTrigger -AtLogOn',
+    '$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)',
+    'Register-ScheduledTask -TaskName "PAN-Client" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force | Out-Null',
+    'Ok "Scheduled task registered (starts on login)"',
+    '',
+    'Step "Starting PAN Client"',
+    'Start-Process -FilePath $nodeExe -ArgumentList $clientJs -WorkingDirectory $PanDir -WindowStyle Hidden',
+    '',
+    'Write-Host ""',
+    'Write-Host "PAN Client installed!" -ForegroundColor Green',
+    'Write-Host "  Hub:   ' + hubWs + '" -ForegroundColor White',
+    'Write-Host "  Data:  $PanDir" -ForegroundColor Gray',
+  ];
+  return lines.join('\r\n');
+}
+
+function generateLinuxClientInstaller(token, hubWs, clientJsUrl) {
+  // Build as array — avoids JS template-literal escaping issues with shell $() and heredocs
+  const httpUrl = hubWs.replace(/^ws/, 'http');
+  const lines = [
+    '#!/usr/bin/env bash',
+    '# PAN Client Installer — Linux / macOS',
+    '# Run: curl -s ' + httpUrl + '/install/' + token + ' | bash',
+    'set -euo pipefail',
+    '',
+    'PAN_DIR="${HOME}/.local/share/pan-client"',
+    'NODE_DIR="${PAN_DIR}/node"',
+    'NODE_VERSION="22.16.0"',
+    'OS="$(uname -s | tr \'[:upper:]\' \'[:lower:]\')"',
+    'ARCH="$(uname -m)"',
+    '[ "${ARCH}" = "x86_64" ] && NODE_ARCH="x64" || NODE_ARCH="arm64"',
+    'NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${OS}-${NODE_ARCH}.tar.xz"',
+    '',
+    'log() { echo -e "  \\033[36m>\\033[0m $1"; }',
+    'ok()  { echo -e "  \\033[32m[OK]\\033[0m $1"; }',
+    '',
+    'log "Creating directories"',
+    'mkdir -p "${PAN_DIR}" "${NODE_DIR}" "${PAN_DIR}/data"',
+    '',
+    'log "Setting up Node.js v${NODE_VERSION}"',
+    'if [ ! -x "${NODE_DIR}/bin/node" ]; then',
+    '  TMP="$(mktemp /tmp/pan-node.XXXXXX.tar.xz)"',
+    '  if command -v curl &>/dev/null; then',
+    '    curl -sSL "${NODE_URL}" -o "${TMP}"',
+    '  else',
+    '    wget -qO "${TMP}" "${NODE_URL}"',
+    '  fi',
+    '  tar -xJf "${TMP}" -C "${NODE_DIR}" --strip-components=1',
+    '  rm -f "${TMP}"',
+    'fi',
+    'ok "Node.js $(${NODE_DIR}/bin/node --version)"',
+    '',
+    'log "Downloading pan-client.js"',
+    'if command -v curl &>/dev/null; then',
+    '  curl -sSL "' + clientJsUrl + '" -o "${PAN_DIR}/pan-client.js"',
+    'else',
+    '  wget -qO "${PAN_DIR}/pan-client.js" "' + clientJsUrl + '"',
+    'fi',
+    '',
+    'log "Installing ws dependency"',
+    'cd "${PAN_DIR}"',
+    '"${NODE_DIR}/bin/npm" init -y >/dev/null 2>&1',
+    '"${NODE_DIR}/bin/npm" install ws --no-audit --no-fund >/dev/null 2>&1',
+    'ok "Dependencies installed"',
+    '',
+    'log "Writing config"',
+    'DEVICE_ID="$(hostname)"',
+    'cat > "${PAN_DIR}/pan-client-config.json" <<PANCFGEOF',
+    '{',
+    '  "hub_ws": "' + hubWs + '",',
+    '  "token": "' + token + '",',
+    '  "device_id": "${DEVICE_ID}",',
+    '  "name": "${DEVICE_ID}"',
+    '}',
+    'PANCFGEOF',
+    '',
+    'log "Registering systemd service"',
+    'SYSTEMD_DIR="${HOME}/.config/systemd/user"',
+    'mkdir -p "${SYSTEMD_DIR}"',
+    'cat > "${SYSTEMD_DIR}/pan-client.service" <<PANUNIT',
+    '[Unit]',
+    'Description=PAN Client',
+    'After=network-online.target',
+    '',
+    '[Service]',
+    'ExecStart=${NODE_DIR}/bin/node ${PAN_DIR}/pan-client.js',
+    'WorkingDirectory=${PAN_DIR}',
+    'Restart=always',
+    'RestartSec=5',
+    '',
+    '[Install]',
+    'WantedBy=default.target',
+    'PANUNIT',
+    '',
+    'if command -v systemctl &>/dev/null; then',
+    '  systemctl --user daemon-reload 2>/dev/null || true',
+    '  systemctl --user enable pan-client.service 2>/dev/null || true',
+    '  systemctl --user start pan-client.service 2>/dev/null || true',
+    '  ok "Systemd service started"',
+    'else',
+    '  "${NODE_DIR}/bin/node" "${PAN_DIR}/pan-client.js" &',
+    '  ok "Client started (running in background)"',
+    'fi',
+    '',
+    'echo ""',
+    'echo -e "  \\033[32mPAN Client installed!\\033[0m"',
+    'echo "  Hub:   ' + hubWs + '"',
+    'echo "  Data:  ${PAN_DIR}"',
+  ];
+  return lines.join('\n');
+}
 
 // Feature registry — maps feature names to Steward services for toggle API
 // Import start/stop directly for the toggle endpoint (Steward handles boot, this handles runtime toggles)
@@ -2181,6 +2475,86 @@ app.get('/api/v1/org/current', async (req, res) => {
 
 // Tier 0 Phase 5 org routes moved to routes/orgs.js (mounted at /api/v1/orgs)
 
+// Clean up stale Tailscale pan-* nodes (duplicates from app reinstalls)
+// Uses `tailscale status --json` to find offline pan-* nodes and expires them
+async function cleanupStaleTailscaleNodes() {
+  try {
+    const tsExe = process.platform === 'win32' ? 'C:\\Program Files\\Tailscale\\tailscale.exe' : 'tailscale';
+    const statusJson = execFileSync(tsExe, ['status', '--json'], { timeout: 5000, encoding: 'utf8', windowsHide: true });
+    const status = JSON.parse(statusJson);
+    const self = status.Self || {};
+    const peers = status.Peer || {};
+
+    // Find all pan-* nodes
+    const panNodes = Object.entries(peers)
+      .filter(([_, v]) => v.HostName && v.HostName.startsWith('pan-'))
+      .map(([k, v]) => ({ nodeKey: k, hostname: v.HostName, online: v.Online, ips: v.TailscaleIPs || [] }));
+
+    // Keep the one that's online, expire offline duplicates
+    const onlineNodes = panNodes.filter(n => n.online);
+    const offlineNodes = panNodes.filter(n => !n.online);
+
+    if (onlineNodes.length > 0 && offlineNodes.length > 0) {
+      console.log(`[PAN Tailscale] Found ${onlineNodes.length} online + ${offlineNodes.length} offline pan-* nodes. Cleaning up stale...`);
+
+      // Try to delete stale nodes via Tailscale API using OAuth credentials
+      let oauthId, oauthSecret;
+      try {
+        const idRow = get("SELECT value FROM settings WHERE key = 'tailscale_oauth_client_id'");
+        const secretRow = get("SELECT value FROM settings WHERE key = 'tailscale_oauth_client_secret'");
+        oauthId = idRow?.value?.replace(/^"|"$/g, '').trim();
+        oauthSecret = secretRow?.value?.replace(/^"|"$/g, '').trim();
+      } catch {}
+
+      if (oauthId && oauthSecret) {
+        // Get Tailscale API token via OAuth
+        try {
+          const tokenResp = await fetch('https://api.tailscale.com/api/v2/oauth/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(oauthId)}&client_secret=${encodeURIComponent(oauthSecret)}&grant_type=client_credentials`
+          });
+          if (tokenResp.ok) {
+            const tokenData = await tokenResp.json();
+            const token = tokenData.access_token;
+
+            // List devices via API to get device IDs (nodekeys don't map to API IDs)
+            const devResp = await fetch('https://api.tailscale.com/api/v2/tailnet/-/devices', {
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (devResp.ok) {
+              const devData = await devResp.json();
+              const apiDevices = devData.devices || [];
+              for (const stale of offlineNodes) {
+                const apiDev = apiDevices.find(d => d.hostname === stale.hostname && !d.online);
+                if (apiDev) {
+                  const delResp = await fetch(`https://api.tailscale.com/api/v2/device/${apiDev.id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                  });
+                  console.log(`[PAN Tailscale] Deleted stale node ${stale.hostname}: ${delResp.ok ? 'success' : delResp.status}`);
+                }
+              }
+            } else {
+              console.log(`[PAN Tailscale] API device list failed: ${devResp.status} — OAuth client may need 'devices' scope`);
+            }
+          }
+        } catch (apiErr) {
+          console.log(`[PAN Tailscale] API cleanup failed: ${apiErr.message}`);
+        }
+      } else {
+        for (const stale of offlineNodes) {
+          console.log(`[PAN Tailscale] Stale node: ${stale.hostname} — remove from: https://login.tailscale.com/admin/machines`);
+        }
+      }
+    } else if (offlineNodes.length > 0 && onlineNodes.length === 0) {
+      console.log(`[PAN Tailscale] ${offlineNodes.length} offline pan-* nodes, none online — phone may be disconnected`);
+    }
+  } catch (e) {
+    // Tailscale not installed or not running — skip silently
+  }
+}
+
 // Tier 0 Phase 5: diagnostics endpoint for phone settings.
 // Returns server PID, uptime, Tailscale status, and connection info.
 app.get('/api/v1/diagnostics', (req, res) => {
@@ -2361,11 +2735,14 @@ app.get('/api/v1/backup/list', (req, res) => {
 });
 
 // Inject context into CLAUDE.md — called by frontend before launching Claude
+// Optional: pass tab_session_ids (array of Claude session IDs for this PTY tab)
+// to scope Part 1 of the injection to this specific tab's history.
 app.post('/api/v1/inject-context', async (req, res) => {
-  const { cwd } = req.body || {};
+  const { cwd, tab_session_ids } = req.body || {};
   if (!cwd) return res.status(400).json({ error: 'cwd required' });
   try {
-    injectSessionContext(cwd);
+    const tabIds = Array.isArray(tab_session_ids) ? tab_session_ids : [];
+    injectSessionContext(cwd, 'org_personal', tabIds);
     res.json({ ok: true, message: 'Context injected into CLAUDE.md' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2965,38 +3342,20 @@ async function autoDetectLocalModels() {
     return;
   }
 
-  // Check if we already have custom models configured
-  let existing = [];
-  try {
-    const row = get("SELECT value FROM settings WHERE key = 'custom_models'");
-    if (row) existing = JSON.parse(row.value);
-  } catch {}
+  // Sync detected models — replace stale entries, add new ones, remove gone ones
+  run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('custom_models', :val, datetime('now','localtime'))", {
+    ':val': JSON.stringify(detected)
+  });
+  console.log(`[PAN Setup] Synced ${detected.length} local model(s) to providers`);
 
-  // Add newly detected models that aren't already configured
-  const existingIds = new Set(existing.map(m => m.id));
-  let added = 0;
-  for (const m of detected) {
-    if (!existingIds.has(m.id)) {
-      existing.push(m);
-      added++;
-    }
-  }
-
-  if (added > 0) {
-    run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('custom_models', :val, datetime('now','localtime'))", {
-      ':val': JSON.stringify(existing)
+  // If no default model is set, use the first detected one
+  const currentModel = get("SELECT value FROM settings WHERE key = 'ai_model'");
+  if (!currentModel || !currentModel.value || currentModel.value === '""') {
+    const firstModel = detected[0].id;
+    run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('ai_model', :val, datetime('now','localtime'))", {
+      ':val': JSON.stringify(firstModel)
     });
-    console.log(`[PAN Setup] Auto-added ${added} local model(s) to providers`);
-
-    // If no default model is set, use the first detected one
-    const currentModel = get("SELECT value FROM settings WHERE key = 'ai_model'");
-    if (!currentModel || !currentModel.value || currentModel.value === '""') {
-      const firstModel = detected[0].id;
-      run("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('ai_model', :val, datetime('now','localtime'))", {
-        ':val': JSON.stringify(firstModel)
-      });
-      console.log(`[PAN Setup] Auto-set default model to: ${firstModel}`);
-    }
+    console.log(`[PAN Setup] Auto-set default model to: ${firstModel}`);
   }
 }
 
@@ -3019,6 +3378,12 @@ function start() {
       // Only system-wide singletons (steward, device heartbeat) are
       // skipped in dev — they're one-per-machine and would conflict
       // with the running prod server.
+
+      // Start PAN Client WebSocket server — BEFORE terminal server so its upgrade
+      // handler runs first (terminal.js rejects unknown paths, client needs /ws/client).
+      if (!IS_CRAFT) {
+        startClientServer(server);
+      }
 
       // Start WebSocket terminal server (PTY sessions).
       // Gated to user-session mode only — node-pty's ConPTY backend
@@ -3194,6 +3559,9 @@ function start() {
             run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
           } catch {}
         }, 60 * 1000));
+
+        // Clean up stale Tailscale pan-* nodes on startup (delay to let Tailscale stabilize)
+        setTimeout(() => cleanupStaleTailscaleNodes(), 30000);
 
         // Steward boots all background services in dependency order.
         bootAll().catch(err => console.error('[Steward] Boot error:', err.message));

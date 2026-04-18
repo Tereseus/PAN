@@ -122,9 +122,25 @@ function pipeInterrupt(sessionId) {
 // Set the model for a session's LLM adapter — takes effect on next message
 function pipeSetModel(sessionId, modelId) {
   const session = sessions.get(sessionId);
-  if (!session?._llmAdapter?.setModel) return false;
-  session._llmAdapter.setModel(modelId);
-  return true;
+  if (!session) return false;
+
+  // Pipe mode (Agent SDK): set model on the adapter directly
+  if (session._llmAdapter?.setModel) {
+    session._llmAdapter.setModel(modelId);
+    return true;
+  }
+
+  // PTY mode (Claude TUI): send /model command directly into the terminal.
+  // Claude Code's /model command switches model in the live session — no restart needed.
+  if (session.pty && modelId) {
+    // Normalize model name: strip provider prefix if present (e.g. "anthropic:claude-sonnet-4-6" → "claude-sonnet-4-6")
+    const modelName = modelId.includes(':') ? modelId.split(':').pop() : modelId;
+    session.pty.write(`/model ${modelName}\r`);
+    console.log(`[PAN Terminal] Sent /model ${modelName} to PTY session ${sessionId}`);
+    return true;
+  }
+
+  return false;
 }
 
 // Get all transcript messages for a session (for HTTP fallback on page load)
@@ -780,11 +796,13 @@ async function startTerminalServer(httpServer) {
           sessions.delete(sessionId);
         });
 
-        // Inject session context into CLAUDE.md BEFORE Claude starts
+        // Inject session context into CLAUDE.md BEFORE Claude starts.
+        // Pass this tab's Claude session IDs so Part 1 is tab-scoped.
         if (cwd) {
           try {
-            injectSessionContext(cwd);
-            console.log(`[PAN Terminal] Pre-injected session context for ${projectName || sessionId}`);
+            const tabIds = session?.claudeSessionIds || [];
+            injectSessionContext(cwd, 'org_personal', tabIds);
+            console.log(`[PAN Terminal] Pre-injected session context for ${projectName || sessionId} (tabIds: ${tabIds.length})`);
           } catch (err) {
             console.error(`[PAN Terminal] Context injection failed:`, err.message);
           }
