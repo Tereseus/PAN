@@ -113,7 +113,10 @@ router.post('/PermissionRequest', async (req, res) => {
 });
 
 // Inject readable session context into CLAUDE.md between PAN-CONTEXT markers
-async function injectSessionContext(cwd, orgId = 'org_personal') {
+// tabClaudeSessionIds: array of Claude session IDs that have run in this specific PTY tab.
+// When provided, Part 1 of the injection is scoped to THIS TAB's history.
+// Part 2 always shows the most recent OTHER session for the project (cross-tab context).
+async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessionIds = []) {
   try {
     const claudeMdPath = join(cwd, 'CLAUDE.md');
     if (!existsSync(claudeMdPath)) return;
@@ -125,33 +128,101 @@ async function injectSessionContext(cwd, orgId = 'org_personal') {
     const endIdx = content.lastIndexOf(endMarker);
     if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) return;
 
-    // Build readable context from multiple sources
-
-    // 1. Recent conversation — last 15 exchanges for this project
     // JSON.stringify escapes backslashes, so the DB stores C:\\Users\\ not C:\Users\
-    // We need to match the JSON-escaped version (double backslashes) in the LIKE pattern
     const fwd = cwd.replace(/\\/g, '/');
     const jsonEscaped = cwd.replace(/\\/g, '\\\\');
-    const recentEvents = all(
-      `SELECT event_type, data, created_at, trust_origin, context_safe FROM events
-       WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
+
+    // Filter out system/meta prompts — never inject these back into context
+    const isNoise = (prompt) => {
+      if (typeof prompt !== 'string') return true;
+      const p = prompt.trimStart();
+      return p.startsWith('<task-')
+          || p.startsWith('<tool-use-id>')
+          || p.startsWith('You are PAN')
+          || p.startsWith('CURRENT STATE')
+          || /^ΠΑΝ Remembers:/i.test(p)       // break the self-injection loop
+          || p.toLowerCase().startsWith('pan remembers:')
+          || p.length < 2;
+    };
+
+    // Render a list of events into chat lines (up to maxChars)
+    function renderEvents(events, maxChars) {
+      const chatItems = [...events].reverse();
+      const lines = [];
+      let chars = 0;
+      for (const e of chatItems) {
+        try {
+          const d = JSON.parse(e.data);
+          let line = null;
+          if (e.event_type === 'UserPromptSubmit' && d.prompt && !isNoise(d.prompt)) {
+            line = `**User** (${e.created_at}): ${d.prompt.substring(0, 250)}`;
+          } else if (e.event_type === 'Stop' && d.last_assistant_message) {
+            line = `**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 250)}`;
+          }
+          if (line) {
+            chars += line.length;
+            if (chars > maxChars) break;
+            lines.push(line);
+          }
+        } catch {}
+      }
+      return lines;
+    }
+
+    // ── PART 1: This tab ──────────────────────────────────────────────────────
+    // Pull events from this specific PTY tab's Claude session IDs.
+    let tabEvents = [];
+    let tabSessionId = null;
+    if (tabClaudeSessionIds.length > 0) {
+      const placeholders = tabClaudeSessionIds.map((_, i) => `:sid${i}`).join(',');
+      const params = Object.fromEntries(tabClaudeSessionIds.map((id, i) => [`:sid${i}`, id]));
+      tabEvents = all(
+        `SELECT event_type, data, created_at, session_id FROM events
+         WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
+         AND session_id IN (${placeholders})
+         AND context_safe = 1
+         ORDER BY created_at DESC LIMIT 12`,
+        params
+      );
+      tabSessionId = tabClaudeSessionIds[tabClaudeSessionIds.length - 1];
+    }
+
+    // ── PART 2: Recent project work ───────────────────────────────────────────
+    // Most recent session for this project that is NOT this tab's sessions.
+    // UserPromptSubmit events embed cwd; Stop events do NOT — use UPS to find session.
+    const excludeIds = tabClaudeSessionIds.length > 0
+      ? `AND session_id NOT IN (${tabClaudeSessionIds.map((_, i) => `:xsid${i}`).join(',')})` : '';
+    const excludeParams = Object.fromEntries(tabClaudeSessionIds.map((id, i) => [`:xsid${i}`, id]));
+
+    const projectSession = get(
+      `SELECT session_id FROM events
+       WHERE event_type = 'UserPromptSubmit'
        AND (data LIKE :pp1 OR data LIKE :pp2)
        AND org_id = :org_id
        AND context_safe = 1
-       ORDER BY created_at DESC LIMIT 5`,
-      { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%', ':org_id': orgId }
+       ${excludeIds}
+       ORDER BY created_at DESC LIMIT 1`,
+      { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%', ':org_id': orgId, ...excludeParams }
     );
 
-    // 2. Claude's auto-memory files (~/.claude/projects/*/memory/*.md) are loaded
-    //    automatically by Claude Code — do NOT duplicate them here.
-    //    inject-context.cjs already noted this. Duplicating wastes context tokens.
+    let projectEvents = [];
+    if (projectSession?.session_id) {
+      projectEvents = all(
+        `SELECT event_type, data, created_at, session_id FROM events
+         WHERE (event_type = 'UserPromptSubmit' OR event_type = 'Stop')
+         AND session_id = :sid
+         AND context_safe = 1
+         ORDER BY created_at DESC LIMIT 10`,
+        { ':sid': projectSession.session_id }
+      );
+    }
 
-    // 3. Open tasks for this project
+    // ── TASKS ─────────────────────────────────────────────────────────────────
     const project = get("SELECT id, name FROM projects WHERE path = :p AND org_id = :org_id", { ':p': fwd, ':org_id': orgId });
     let tasks = [];
     if (project) {
       tasks = all(
-        `SELECT title, status, priority FROM project_tasks
+        `SELECT id, title, status, priority FROM project_tasks
          WHERE project_id = :pid AND status != 'done'
          AND org_id = :org_id
          ORDER BY priority DESC LIMIT 10`,
@@ -159,63 +230,38 @@ async function injectSessionContext(cwd, orgId = 'org_personal') {
       );
     }
 
-    // Build the briefing — Recent Conversation FIRST (highest priority, drives "PAN remembers"),
-    // then state dump and memory (can be truncated without breaking continuity).
+    // ── BUILD BRIEFING ────────────────────────────────────────────────────────
     let briefing = `## PAN Session Context\n\n`;
     briefing += `This is a fresh session for the "${project?.name || 'PAN'}" project.\n`;
     briefing += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
     briefing += `**Session context** (for the first message of a fresh session only — see Session Continuity Rule above):\n\n`;
 
-    // PRIORITY 1: Recent conversation — this drives the "PAN remembers" briefing
-    // Filter out non-human system messages — task notifications, memory agent calls, etc.
-    const isTaskNotification = (prompt) => {
-      if (typeof prompt !== 'string') return true;
-      const p = prompt.trimStart();
-      return p.startsWith('<task-')          // task-notification XML
-          || p.startsWith('<tool-use-id>')   // raw tool receipts
-          || p.startsWith('You are PAN')     // memory/state agent background calls
-          || p.startsWith('CURRENT STATE')   // dream-cycle state dumps
-          || p.length < 2;                   // empty/whitespace
-    };
+    // Part 1 — This tab
+    const tabLines = renderEvents(tabEvents, 2000);
+    if (tabLines.length > 0) {
+      briefing += `### This Tab`;
+      if (tabSessionId) briefing += ` *(session: ${tabSessionId.substring(0, 12)})*`;
+      briefing += `\n${tabLines.join('\n')}\n\n`;
+    } else if (tabClaudeSessionIds.length > 0) {
+      briefing += `### This Tab\nNew tab — no prior conversation yet.\n\n`;
+    }
 
-    if (recentEvents.length > 0) {
-      const chatItems = [...recentEvents].reverse();
-      const lines = [];
-      for (const e of chatItems) {
-        try {
-          const d = JSON.parse(e.data);
-          if (e.event_type === 'UserPromptSubmit' && d.prompt && !isTaskNotification(d.prompt)) {
-            lines.push(`**User** (${e.created_at}): ${d.prompt.substring(0, 200)}`);
-          } else if (e.event_type === 'Stop' && d.last_assistant_message) {
-            lines.push(`**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 200)}`);
-          }
-        } catch {}
-      }
-
-      if (lines.length > 0) {
-        briefing += `### Recent Conversation\n`;
-        briefing += lines.join('\n') + '\n\n';
-      } else {
-        // Only task-notifications found — tell Claude there's no real conversation to summarize
-        briefing += `### Recent Conversation\nNo recent conversation — background tasks only. Skip the "ΠΑΝ Remembers:" opener and just greet the user normally.\n\n`;
-      }
-    } else {
+    // Part 2 — Recent project work (most recent OTHER session)
+    const projectLines = renderEvents(projectEvents, 1800);
+    if (projectLines.length > 0) {
+      briefing += `### Recent Project Work`;
+      if (projectSession?.session_id) briefing += ` *(session: ${projectSession.session_id.substring(0, 12)})*`;
+      briefing += `\n${projectLines.join('\n')}\n\n`;
+    } else if (!tabClaudeSessionIds.length) {
+      // No tab context AND no project context — fresh install
       briefing += `### Recent Conversation\nFresh session — no previous conversation on record.\n\n`;
     }
 
-    // PRIORITY 2: State dump from dream cycle — SKIP entirely.
-    // .pan-state.md was dumping ~8K of "What Works", "Known Facts", etc. into CLAUDE.md
-    // on every session start. This is redundant — Claude can query MCP for state when needed.
-    // This was the #1 cause of context bloat (12K injected per session).
-
-    // PRIORITY 3: Vector memory — SKIP.
-    // Memory is available via MCP tools on demand, not bulk-loaded into context.
-
-    // PRIORITY 4: Open tasks
+    // Tasks (with IDs for auto-closer)
     if (tasks.length > 0) {
       briefing += `### Open Tasks\n`;
       for (const t of tasks) {
-        briefing += `- [${t.status}${t.priority > 0 ? ' P' + t.priority : ''}] ${t.title}\n`;
+        briefing += `- [#${t.id} ${t.status}${t.priority > 0 ? ' P' + t.priority : ''}] ${t.title}\n`;
       }
       briefing += '\n';
     }
@@ -223,9 +269,9 @@ async function injectSessionContext(cwd, orgId = 'org_personal') {
     // Sanitize — strip any literal PAN-CONTEXT markers from injected content
     briefing = briefing.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
 
-    // Cap injection to ~3000 chars — just enough for conversation summary + tasks
-    if (briefing.length > 3000) {
-      briefing = briefing.substring(0, 3000) + '\n\n[... context trimmed ...]\n';
+    // Hard cap at 4100 chars (~1025 tokens) — raised from 3000 to fit two-part structure
+    if (briefing.length > 4100) {
+      briefing = briefing.substring(0, 4100) + '\n\n[... context trimmed ...]\n';
     }
 
     // Write to CLAUDE.md
@@ -316,8 +362,9 @@ router.post('/:eventType', (req, res) => {
 
       // Inject context into CLAUDE.md NOW so the NEXT session opens with fresh context
       // (Claude Code reads CLAUDE.md before SessionStart hooks run, so this must happen on SessionEnd)
+      // Pass sessionId as a single-item tab array so Part 1 is scoped to the ending session.
       if (cwd) {
-        injectSessionContext(cwd, req.org_id || 'org_personal').catch(err => {
+        injectSessionContext(cwd, req.org_id || 'org_personal', sessionId ? [sessionId] : []).catch(err => {
           console.error('[PAN Hook] SessionEnd context injection failed:', err.message);
         });
       }
