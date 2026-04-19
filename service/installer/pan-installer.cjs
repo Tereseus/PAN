@@ -760,7 +760,7 @@ if (isDirect) {
 </html>`;
 
 // ── HTTP GUI server ────────────────────────────────────────────────────────────
-function startGUI() {
+function startGUI(launchUrl = `http://localhost:${GUI_PORT}`) {
   const server = http.createServer(async (req, res) => {
     const u = req.url.split('?')[0];
 
@@ -834,13 +834,13 @@ function startGUI() {
 
   server.listen(GUI_PORT, '127.0.0.1', () => {
     console.log(`\n  PAN Installer running at http://localhost:${GUI_PORT}\n`);
-    openBrowser(`http://localhost:${GUI_PORT}`);
+    openBrowser(launchUrl);
   });
 
   server.on('error', err => {
     if (err.code === 'EADDRINUSE') {
       console.error(`\n  Port ${GUI_PORT} already in use. Opening existing installer...\n`);
-      openBrowser(`http://localhost:${GUI_PORT}`);
+      openBrowser(launchUrl);
     } else {
       console.error('[PAN Installer] Server error:', err.message);
     }
@@ -867,10 +867,9 @@ async function main() {
   const filenameCfg = tryReadConfigFromFilename();
   if (filenameCfg) {
     console.log('  Config detected from filename — connecting directly...');
-    startGUI();
-    // Open browser in direct mode (skips scan UI, auto-subscribes to SSE)
-    setTimeout(() => openBrowser(`http://localhost:${GUI_PORT}/?direct=1`), 800);
-    // Give browser a moment to connect SSE, then start install
+    // Pass ?direct=1 so the browser skips the scan UI entirely
+    startGUI(`http://localhost:${GUI_PORT}/?direct=1`);
+    // Give browser a moment to open and subscribe to SSE, then start install
     setTimeout(() => {
       runInstall(filenameCfg).catch(e => done(false, e.message));
     }, 2500);
