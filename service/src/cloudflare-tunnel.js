@@ -7,7 +7,7 @@
 // The URL changes each restart (by design — old invite links expire naturally).
 // Any device anywhere can reach PAN via this URL without Tailscale.
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { existsSync, mkdirSync, createWriteStream, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -46,7 +46,12 @@ function downloadCloudflared() {
         res.pipe(file);
         file.on('finish', () => {
           file.close();
-          if (process.platform !== 'win32') chmodSync(CLOUDFLARED, 0o755);
+          if (process.platform === 'win32') {
+            // Remove Mark of the Web so Windows allows spawning the downloaded exe
+            try { execSync(`powershell -NoProfile -Command "Unblock-File '${CLOUDFLARED}'"`, { windowsHide: true }); } catch {}
+          } else {
+            chmodSync(CLOUDFLARED, 0o755);
+          }
           console.log('[Cloudflare Tunnel] Binary ready');
           resolve();
         });
@@ -76,8 +81,10 @@ export async function startCloudflareTunnel(port) {
   return new Promise(resolve => {
     console.log(`[Cloudflare Tunnel] Starting tunnel → localhost:${port}...`);
 
+    // shell:true is required on Windows to spawn downloaded .exe files without EBUSY
     _proc = spawn(CLOUDFLARED, ['tunnel', '--url', `http://localhost:${port}`], {
       windowsHide: true,
+      shell: process.platform === 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
