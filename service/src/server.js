@@ -754,8 +754,20 @@ app.get('/client/pan-client.js', (req, res) => {
 app.get('/install/:token', (req, res) => {
   const { token } = req.params;
   if (!checkInviteToken(token)) {
-    res.status(403).send('# Invalid or expired install token\n');
-    return;
+    // Browser gets a nice error page
+    const ua = (req.headers['user-agent'] || '').toLowerCase();
+    const isBrowser = ua.includes('mozilla');
+    if (isBrowser) {
+      return res.status(403).send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>PAN — Invalid Token</title>
+<style>body{background:#0a0a0f;color:#cdd6f4;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{text-align:center;padding:40px}.icon{font-size:48px}.title{font-size:22px;color:#f38ba8;margin:16px 0 8px}
+.sub{color:#a6adc8;font-size:15px}</style></head>
+<body><div class="box"><div class="icon">⛔</div>
+<div class="title">Invalid or expired install token</div>
+<div class="sub">This link has already been used or has expired.<br>Generate a new one from your PAN dashboard.</div>
+</div></body></html>`);
+    }
+    return res.status(403).send('# Invalid or expired install token\n');
   }
 
   const host = req.headers.host || `127.0.0.1:${PORT}`;
@@ -763,17 +775,102 @@ app.get('/install/:token', (req, res) => {
   const wsProto = req.secure ? 'wss' : 'ws';
   const hubWs  = `${wsProto}://${host}`;
   const clientJsUrl = `${proto}://${host}/client/pan-client.js`;
+  const installUrl = `${proto}://${host}/install/${token}`;
 
   const ua = (req.headers['user-agent'] || '').toLowerCase();
-  const isWindows = ua.includes('windows') || ua.includes('powershell');
+  const isBrowser = ua.includes('mozilla');
+  const isWindows = ua.includes('windows');
+  const isMac = ua.includes('mac');
+  const isPowerShell = ua.includes('powershell');
+
+  // Browser → serve HTML landing page with download button
+  if (isBrowser) {
+    const osLabel = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
+    const downloadUrl = `${proto}://${host}/install/${token}/download`;
+    return res.send(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Install PAN</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0f;color:#cdd6f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:40px 36px;max-width:480px;width:100%;text-align:center}
+.logo{font-size:48px;letter-spacing:4px;color:#89b4fa;font-weight:700;margin-bottom:8px}
+.tagline{color:#a6adc8;font-size:14px;margin-bottom:32px}
+.os-badge{display:inline-block;background:#313244;color:#cba6f7;border-radius:20px;padding:4px 14px;font-size:13px;margin-bottom:24px}
+h2{font-size:20px;margin-bottom:8px;color:#cdd6f4}
+.desc{color:#a6adc8;font-size:14px;line-height:1.6;margin-bottom:32px}
+.btn{display:block;background:#89b4fa;color:#0a0a0f;border:none;border-radius:10px;padding:16px 24px;font-size:17px;font-weight:700;cursor:pointer;text-decoration:none;width:100%;margin-bottom:12px;transition:background 0.15s}
+.btn:hover{background:#b4d0ff}
+.btn-secondary{background:#313244;color:#cdd6f4;font-size:14px;padding:12px 24px;font-weight:500}
+.btn-secondary:hover{background:#45475a}
+.steps{text-align:left;background:#11111b;border-radius:10px;padding:16px 20px;margin-bottom:24px}
+.step{display:flex;gap:12px;align-items:flex-start;padding:6px 0;font-size:14px;color:#a6adc8}
+.step-num{background:#313244;color:#89b4fa;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;margin-top:1px}
+.expiry{font-size:12px;color:#6c7086;margin-top:16px}
+</style></head>
+<body><div class="card">
+  <div class="logo">ΠΑΝ</div>
+  <div class="tagline">Personal AI Network</div>
+  <div class="os-badge">Detected: ${osLabel}</div>
+  <h2>Install PAN on this computer</h2>
+  <div class="desc">This will connect your computer to your PAN hub. It installs a background client that keeps everything in sync.</div>
+  <div class="steps">
+    <div class="step"><div class="step-num">1</div><div>Click <strong>Download Installer</strong> below</div></div>
+    <div class="step"><div class="step-num">2</div>${isWindows
+      ? '<div>Open the downloaded file → <strong>Right-click → Run with PowerShell</strong></div>'
+      : '<div>Open Terminal → <code>bash ~/Downloads/pan-install.sh</code></div>'}</div>
+    <div class="step"><div class="step-num">3</div><div>Done — PAN connects automatically</div></div>
+  </div>
+  <a class="btn" href="${downloadUrl}">${isWindows ? '⬇ Download pan-install.bat' : '⬇ Download pan-install.sh'}</a>
+  <div class="expiry">⏱ This install link is single-use and expires in 24 hours</div>
+</div></body></html>`);
+  }
+
+  // PowerShell (irm ... | iex) or curl → raw script, existing behavior
+  if (isWindows || isPowerShell) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.send(generateWindowsClientInstaller(token, hubWs, clientJsUrl));
+  }
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.send(generateLinuxClientInstaller(token, hubWs, clientJsUrl));
+});
+
+// Download the installer as a file (from the HTML page's button)
+app.get('/install/:token/download', (req, res) => {
+  const { token } = req.params;
+  if (!checkInviteToken(token)) return res.status(403).send('Invalid or expired token');
+
+  const host = req.headers.host || `127.0.0.1:${PORT}`;
+  const proto = req.secure ? 'https' : 'http';
+  const wsProto = req.secure ? 'wss' : 'ws';
+  const hubWs = `${wsProto}://${host}`;
+  const clientJsUrl = `${proto}://${host}/client/pan-client.js`;
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const isWindows = ua.includes('windows');
 
   if (isWindows) {
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(generateWindowsClientInstaller(token, hubWs, clientJsUrl));
-  } else {
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(generateLinuxClientInstaller(token, hubWs, clientJsUrl));
+    // .bat file — user double-clicks to run, no right-click needed
+    const batContent = [
+      '@echo off',
+      'echo Installing PAN Client...',
+      `powershell -ExecutionPolicy Bypass -Command "irm ${proto}://${host}/install/${token} | iex"`,
+      'pause',
+    ].join('\r\n');
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment; filename="pan-install.bat"');
+    return res.send(batContent);
   }
+
+  // Linux/Mac — .sh file
+  const shContent = [
+    '#!/bin/bash',
+    'echo "Installing PAN Client..."',
+    `curl -s ${proto}://${host}/install/${token} | bash`,
+  ].join('\n');
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', 'attachment; filename="pan-install.sh"');
+  res.send(shContent);
 });
 
 function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
