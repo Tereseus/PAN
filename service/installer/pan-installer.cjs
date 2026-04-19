@@ -694,6 +694,26 @@ async function startInstall() {
 loadHubs();
 // Show install button and link input while scanning (don't wait for scan to finish)
 setTimeout(updateInstallBtn, 500);
+
+// Auto-read clipboard: if it contains a PAN invite link, pre-fill and auto-install
+(async function tryClipboard() {
+  try {
+    const text = (await navigator.clipboard.readText()).trim();
+    if (/\/install\/pan-[a-f0-9]+/.test(text)) {
+      const input = document.getElementById('linkInput');
+      input.value = text;
+      selectedHub = null;
+      updateInstallBtn();
+      // Show banner so user knows what's happening
+      const banner = document.createElement('div');
+      banner.style.cssText = 'background:#1a2a1a;border:1px solid #3fb950;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:13px;color:#3fb950;text-align:center';
+      banner.textContent = '✓ Invite link found — connecting in 3 seconds...';
+      document.getElementById('installBtn').before(banner);
+      // Auto-start after short delay so user can see what's happening
+      setTimeout(() => { banner.remove(); startInstall(); }, 3000);
+    }
+  } catch { /* clipboard access denied — user can paste manually */ }
+})();
 </script>
 </body>
 </html>`;

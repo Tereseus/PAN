@@ -774,8 +774,12 @@ app.get('/install/:token', (req, res) => {
   }
 
   const host = req.headers.host || `127.0.0.1:${PORT}`;
-  const proto = req.secure ? 'https' : 'http';
-  const wsProto = req.secure ? 'wss' : 'ws';
+  const isHttpsReq = req.secure
+    || req.headers['x-forwarded-proto'] === 'https'
+    || host.includes('trycloudflare.com')
+    || host.includes('ts.net');
+  const proto = isHttpsReq ? 'https' : 'http';
+  const wsProto = isHttpsReq ? 'wss' : 'ws';
   const hubWs  = `${wsProto}://${host}`;
   const clientJsUrl = `${proto}://${host}/client/pan-client.js`;
   const installUrl = `${proto}://${host}/install/${token}`;
@@ -793,7 +797,7 @@ app.get('/install/:token', (req, res) => {
       ? `irm ${proto}://${host}/install/${token} | iex`
       : `curl -s ${proto}://${host}/install/${token} | bash`;
 
-    // GitHub releases — trusted domain, no SmartScreen issues with the source
+    // GitHub releases — always reachable, no token/SSL complexity
     const GH = 'https://github.com/Tereseus/PAN/releases/latest/download';
     const dlUrl  = isWindows ? `${GH}/pan-installer-win.exe`
                   : isMac    ? `${GH}/pan-installer-linux`
@@ -945,7 +949,10 @@ app.get('/install/:token/download', (req, res) => {
   if (!checkInviteToken(token)) return res.status(403).send('Invalid or expired token');
 
   const host    = req.headers.host || `127.0.0.1:${PORT}`;
-  const isHttps = req.secure || host.includes('trycloudflare.com') || host.includes('ts.net');
+  const isHttps = req.secure
+    || (req.headers['x-forwarded-proto'] === 'https')
+    || host.includes('trycloudflare.com')
+    || host.includes('ts.net');
   const proto   = isHttps ? 'https' : 'http';
   const ua      = (req.headers['user-agent'] || '').toLowerCase();
   const isWin   = ua.includes('windows');
@@ -3827,6 +3834,16 @@ function start() {
         // UDP discovery responder — lets the installer find this hub on LAN/Tailscale
         // without manual IP entry. Installer broadcasts "PAN_DISCOVER", we reply.
         startDiscovery(PORT, '0.3.1');
+
+        // Ensure Windows Firewall allows inbound on PORT so LAN discovery works
+        // (silently ignored if rule already exists or on non-Windows)
+        try {
+          execFileSync('netsh', [
+            'advfirewall', 'firewall', 'add', 'rule',
+            `name=PAN Hub (${PORT})`, 'dir=in', 'action=allow',
+            'protocol=TCP', `localport=${PORT}`, 'profile=private,domain'
+          ], { windowsHide: true, timeout: 5000 });
+        } catch { /* rule may already exist or not on Windows */ }
 
         // Steward boots all background services in dependency order.
         bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
