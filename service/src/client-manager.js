@@ -49,8 +49,12 @@ function validateToken(token) {
 }
 
 // Dev mode: allow any token starting with 'dev-'
+// 'local' sentinel: connections from the same LAN/Tailscale network discovered
+// via UDP broadcast or Tailscale peer scan — no invite needed, but still goes
+// through the pending-approval gate so the hub owner must approve them.
 function isTokenValid(token) {
   if (!token) return false;
+  if (token === 'local') return true;        // local network discovery bypass
   if (token.startsWith('dev-')) return true; // dev bypass
   return validateToken(token);
 }
