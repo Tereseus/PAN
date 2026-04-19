@@ -6,6 +6,9 @@
   "bin": {
     "pan": "./pan.js"
   },
+  "scripts": {
+    "build:installer": "node scripts/build-installer.js"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.92",
     "@anthropic-ai/sdk": "^0.39.0",
@@ -19,6 +22,7 @@
     "node-pty": "^1.1.0",
     "node-windows": "^1.0.0-beta.8",
     "nodemailer": "^8.0.5",
+    "qrcode": "^1.5.4",
     "sql.js": "^1.11.0",
     "sqlite-vec": "^0.1.9",
     "ws": "^8.20.0",
