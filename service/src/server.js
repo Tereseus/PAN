@@ -788,15 +788,13 @@ app.get('/install/:token', (req, res) => {
   // Browser → serve HTML landing page with copy-paste terminal command
   // No file downloads — Chrome blocks .bat/.ps1 files. Copy-paste is universal.
   if (isBrowser) {
-    const osLabel = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
-    const winCmd  = `irm ${proto}://${host}/install/${token} | iex`;
-    const unixCmd = `curl -s ${proto}://${host}/install/${token} | bash`;
-    const cmd = isWindows ? winCmd : unixCmd;
-    const terminalName = isWindows ? 'PowerShell' : 'Terminal';
-    const openHint = isWindows
-      ? 'Press <strong>Win + X</strong> → <strong>Terminal</strong> (or PowerShell)'
-      : isMac ? 'Press <strong>Cmd + Space</strong> → type <strong>Terminal</strong>'
-      : 'Open your <strong>Terminal</strong>';
+    const osLabel     = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
+    const downloadUrl = `${proto}://${host}/install/${token}/download`;
+    const smartScreenNote = isWindows
+      ? '<p class="note">Windows may show a security warning — click <strong>More info → Run anyway</strong></p>'
+      : isMac
+        ? '<p class="note">Mac: right-click the file → Open → Open anyway if prompted</p>'
+        : '';
     return res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -804,50 +802,27 @@ app.get('/install/:token', (req, res) => {
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0a0a0f;color:#cdd6f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:40px 36px;max-width:500px;width:100%;text-align:center}
+.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:48px 40px;max-width:440px;width:100%;text-align:center}
 .logo{font-size:44px;letter-spacing:4px;color:#89b4fa;font-weight:700;margin-bottom:4px}
 .tagline{color:#6c7086;font-size:13px;margin-bottom:28px}
-.os-badge{display:inline-block;background:#313244;color:#cba6f7;border-radius:20px;padding:4px 14px;font-size:12px;margin-bottom:20px}
-h2{font-size:19px;margin-bottom:6px}
-.desc{color:#a6adc8;font-size:14px;line-height:1.5;margin-bottom:24px}
-.steps{text-align:left;margin-bottom:20px}
-.step{display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#a6adc8}
-.step:last-child{border-bottom:none}
-.step-num{background:#313244;color:#89b4fa;border-radius:50%;width:24px;height:24px;min-width:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-top:1px}
-.cmd-box{background:#11111b;border:1px solid #313244;border-radius:10px;padding:14px 16px;margin:10px 0 4px;display:flex;align-items:center;gap:10px;text-align:left}
-.cmd-text{font-family:'Courier New',monospace;font-size:13px;color:#a6e3a1;flex:1;word-break:break-all;line-height:1.4}
-.copy-btn{background:#313244;border:none;color:#89b4fa;border-radius:7px;padding:7px 14px;font-size:13px;cursor:pointer;white-space:nowrap;transition:background 0.15s;font-weight:600}
-.copy-btn:hover{background:#45475a}
-.copy-btn.copied{background:#a6e3a1;color:#0a0a0f}
-.expiry{font-size:12px;color:#f38ba8;margin-top:16px}
+.os-badge{display:inline-block;background:#313244;color:#cba6f7;border-radius:20px;padding:4px 14px;font-size:12px;margin-bottom:24px}
+h2{font-size:22px;margin-bottom:10px}
+.desc{color:#a6adc8;font-size:15px;line-height:1.5;margin-bottom:32px}
+.btn{display:block;background:#89b4fa;color:#0a0a0f;border:none;border-radius:12px;padding:18px 24px;font-size:18px;font-weight:800;cursor:pointer;text-decoration:none;width:100%;transition:background 0.15s;letter-spacing:0.3px}
+.btn:hover{background:#b4d0ff}
+.note{font-size:12px;color:#6c7086;margin-top:14px;line-height:1.5}
+.note strong{color:#a6adc8}
+.expiry{font-size:12px;color:#f38ba8;margin-top:20px}
 </style></head>
 <body><div class="card">
   <div class="logo">ΠΑΝ</div>
   <div class="tagline">Personal AI Network</div>
-  <div class="os-badge">Detected: ${osLabel}</div>
-  <h2>Connect this computer to PAN</h2>
-  <div class="desc">Two steps — takes about 30 seconds.</div>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">1</div>
-      <div>${openHint} and open <strong>${terminalName}</strong></div>
-    </div>
-    <div class="step">
-      <div class="step-num">2</div>
-      <div style="width:100%">
-        <div>Copy and paste this command, then press <strong>Enter</strong></div>
-        <div class="cmd-box">
-          <span class="cmd-text">${cmd}</span>
-          <button class="copy-btn" onclick="
-            navigator.clipboard.writeText('${cmd}').then(()=>{
-              this.textContent='Copied!';this.classList.add('copied');
-              setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},2000)
-            })">Copy</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="expiry">⏱ This link expires in 5 minutes and is single-use</div>
+  <div class="os-badge">${osLabel}</div>
+  <h2>Connect this device to PAN</h2>
+  <div class="desc">Download and run the installer. It takes about a minute and sets everything up automatically.</div>
+  <a class="btn" href="${downloadUrl}">⬇ Download Installer</a>
+  ${smartScreenNote}
+  <div class="expiry">⏱ This link expires in 5 minutes</div>
 </div></body></html>`);
   }
 
@@ -860,41 +835,48 @@ h2{font-size:19px;margin-bottom:6px}
   res.send(generateLinuxClientInstaller(token, hubWs, clientJsUrl));
 });
 
-// Download the installer as a file (from the HTML page's button)
+// Download the installer as a compiled .exe (Windows) or binary (Linux).
+// The hub URL + token are encoded into the filename so the exe is self-configuring —
+// user double-clicks, it installs, no terminal needed.
+// Falls back to script download if the compiled binary isn't built yet.
 app.get('/install/:token/download', (req, res) => {
   const { token } = req.params;
   if (!checkInviteToken(token)) return res.status(403).send('Invalid or expired token');
 
-  const host = req.headers.host || `127.0.0.1:${PORT}`;
-  const proto = req.secure ? 'https' : 'http';
-  const wsProto = req.secure ? 'wss' : 'ws';
-  const hubWs = `${wsProto}://${host}`;
-  const clientJsUrl = `${proto}://${host}/client/pan-client.js`;
-  const ua = (req.headers['user-agent'] || '').toLowerCase();
-  const isWindows = ua.includes('windows');
+  const host    = req.headers.host || `127.0.0.1:${PORT}`;
+  const isHttps = req.secure || host.includes('trycloudflare.com') || host.includes('ts.net');
+  const proto   = isHttps ? 'https' : 'http';
+  const ua      = (req.headers['user-agent'] || '').toLowerCase();
+  const isWin   = ua.includes('windows');
+  const isLinux = ua.includes('linux') && !ua.includes('android');
 
-  if (isWindows) {
-    // .bat file — user double-clicks to run, no right-click needed
-    const batContent = [
-      '@echo off',
-      'echo Installing PAN Client...',
-      `powershell -ExecutionPolicy Bypass -Command "irm ${proto}://${host}/install/${token} | iex"`,
-      'pause',
-    ].join('\r\n');
+  // Encode hub host + token into filename so exe is self-configuring
+  const cfg     = JSON.stringify({ h: host, t: token, s: isHttps ? 1 : 0 });
+  const encoded = Buffer.from(cfg).toString('base64url');
+  const platform = isWin ? 'win' : 'linux';
+  const binName  = `pan-installer-${platform}${isWin ? '.exe' : ''}`;
+  const binPath  = join(__dirname, '..', 'bin', binName);
+  const dlName   = `pan-${encoded}${isWin ? '.exe' : ''}`;
+
+  if (fs.existsSync(binPath)) {
+    // Serve the compiled binary — filename contains embedded config
     res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', 'attachment; filename="pan-install.bat"');
-    return res.send(batContent);
+    res.setHeader('Content-Disposition', `attachment; filename="${dlName}"`);
+    res.setHeader('X-PAN-Installer', 'compiled');
+    return res.sendFile(binPath);
   }
 
-  // Linux/Mac — .sh file
-  const shContent = [
-    '#!/bin/bash',
-    'echo "Installing PAN Client..."',
-    `curl -s ${proto}://${host}/install/${token} | bash`,
-  ].join('\n');
+  // Binary not built yet — fall back to script with instructions
+  if (isWin) {
+    const ps1 = `# PAN Installer — paste this in PowerShell\nirm ${proto}://${host}/install/${token} | iex`;
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', 'attachment; filename="pan-install.ps1"');
+    return res.send(ps1);
+  }
+  const sh = `#!/bin/bash\ncurl -s ${proto}://${host}/install/${token} | bash`;
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', 'attachment; filename="pan-install.sh"');
-  res.send(shContent);
+  res.send(sh);
 });
 
 function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
