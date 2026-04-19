@@ -368,7 +368,7 @@ async function runInstall(cfg) {
   log('Installing dependencies...');
   const pkgJson = path.join(panDir, 'package.json');
   if (!fs.existsSync(pkgJson)) {
-    fs.writeFileSync(pkgJson, JSON.stringify({ name: 'pan-client', version: '1.0.0', type: 'commonjs' }));
+    fs.writeFileSync(pkgJson, JSON.stringify({ name: 'pan-client', version: '1.0.0', type: 'module' }));
   }
   try {
     run(`"${npmCmd}" install ws --no-audit --no-fund --save`, panDir, { shell: IS_WIN });
