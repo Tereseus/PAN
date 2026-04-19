@@ -790,39 +790,77 @@ app.get('/install/:token', (req, res) => {
   if (isBrowser) {
     const osLabel     = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
     const downloadUrl = `${proto}://${host}/install/${token}/download`;
-    const smartScreenNote = isWindows
-      ? '<p class="note">Windows may show a security warning — click <strong>More info → Run anyway</strong></p>'
-      : isMac
-        ? '<p class="note">Mac: right-click the file → Open → Open anyway if prompted</p>'
-        : '';
+
+    // Chrome blocks unknown .exe files with a "dangerous file" warning.
+    // The page walks the user through allowing it step by step.
+    const afterDownload = isWindows ? `
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>
+          Chrome will show a warning at the bottom of the screen.<br>
+          Click the <strong>arrow ›</strong> next to it → <strong>Keep anyway</strong>
+          <div class="img-hint">
+            <span class="bar">pan-install.exe  ⚠ blocked  <u>›</u></span>
+            <span class="arrow">↑ click this arrow</span>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div>Open your <strong>Downloads folder</strong>, double-click <strong>pan-install.exe</strong></div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div>Windows may ask <em>"Do you want to allow this app?"</em> — click <strong>Yes</strong></div>
+      </div>` : isMac ? `
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>Open <strong>Downloads</strong>, right-click <strong>pan-install</strong> → <strong>Open</strong> → <strong>Open</strong> again</div>
+      </div>` : `
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>Open a terminal, run: <code>chmod +x ~/Downloads/pan-install && ~/Downloads/pan-install</code></div>
+      </div>`;
+
     return res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect to PAN</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a0f;color:#cdd6f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:48px 40px;max-width:440px;width:100%;text-align:center}
-.logo{font-size:44px;letter-spacing:4px;color:#89b4fa;font-weight:700;margin-bottom:4px}
-.tagline{color:#6c7086;font-size:13px;margin-bottom:28px}
-.os-badge{display:inline-block;background:#313244;color:#cba6f7;border-radius:20px;padding:4px 14px;font-size:12px;margin-bottom:24px}
-h2{font-size:22px;margin-bottom:10px}
-.desc{color:#a6adc8;font-size:15px;line-height:1.5;margin-bottom:32px}
-.btn{display:block;background:#89b4fa;color:#0a0a0f;border:none;border-radius:12px;padding:18px 24px;font-size:18px;font-weight:800;cursor:pointer;text-decoration:none;width:100%;transition:background 0.15s;letter-spacing:0.3px}
+body{background:#0a0a0f;color:#cdd6f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:36px 32px;max-width:480px;width:100%}
+.logo{font-size:36px;letter-spacing:4px;color:#89b4fa;font-weight:700;text-align:center;margin-bottom:2px}
+.tagline{color:#6c7086;font-size:12px;text-align:center;margin-bottom:20px}
+h2{font-size:19px;margin-bottom:18px;text-align:center}
+.steps{display:flex;flex-direction:column;gap:0}
+.step{display:flex;gap:14px;padding:14px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#a6adc8;line-height:1.5}
+.step:last-child{border-bottom:none}
+.step-num{background:#313244;color:#89b4fa;border-radius:50%;width:26px;height:26px;min-width:26px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-top:1px}
+.btn{display:block;background:#89b4fa;color:#0a0a0f;border:none;border-radius:10px;padding:15px 20px;font-size:16px;font-weight:800;cursor:pointer;text-decoration:none;text-align:center;transition:background 0.15s}
 .btn:hover{background:#b4d0ff}
-.note{font-size:12px;color:#6c7086;margin-top:14px;line-height:1.5}
-.note strong{color:#a6adc8}
-.expiry{font-size:12px;color:#f38ba8;margin-top:20px}
+.img-hint{background:#11111b;border:1px solid #313244;border-radius:7px;padding:8px 12px;margin-top:8px;font-size:12px}
+.bar{display:block;color:#cba6f7;font-family:monospace;margin-bottom:3px}
+.arrow{color:#a6e3a1;font-size:11px}
+code{background:#11111b;padding:2px 6px;border-radius:4px;font-size:12px;color:#a6e3a1}
+.expiry{font-size:11px;color:#f38ba8;text-align:center;margin-top:16px}
 </style></head>
 <body><div class="card">
   <div class="logo">ΠΑΝ</div>
-  <div class="tagline">Personal AI Network</div>
-  <div class="os-badge">${osLabel}</div>
-  <h2>Connect this device to PAN</h2>
-  <div class="desc">Download and run the installer. It takes about a minute and sets everything up automatically.</div>
-  <a class="btn" href="${downloadUrl}">⬇ Download Installer</a>
-  ${smartScreenNote}
-  <div class="expiry">⏱ This link expires in 5 minutes</div>
+  <div class="tagline">Personal AI Network — ${osLabel}</div>
+  <h2>Connect this computer to PAN</h2>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div style="flex:1"><a class="btn" href="${downloadUrl}">⬇ Download Installer</a></div>
+    </div>
+    ${afterDownload}
+    <div class="step">
+      <div class="step-num" style="background:#a6e3a1;color:#0a0a0f">✓</div>
+      <div>A black window will open, install PAN, then close. You're done!</div>
+    </div>
+  </div>
+  <div class="expiry">⏱ This link expires in 5 minutes — generate a new one if needed</div>
 </div></body></html>`);
   }
 
