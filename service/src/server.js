@@ -797,11 +797,8 @@ app.get('/install/:token', (req, res) => {
       ? `irm ${proto}://${host}/install/${token} | iex`
       : `curl -s ${proto}://${host}/install/${token} | bash`;
 
-    // GitHub releases — always reachable, no token/SSL complexity
-    const GH = 'https://github.com/Tereseus/PAN/releases/latest/download';
-    const dlUrl  = isWindows ? `${GH}/pan-installer-win.exe`
-                  : isMac    ? `${GH}/pan-installer-linux`
-                             : `${GH}/pan-installer-linux`;
+    // Hub-served download: personalised per invite — hub URL + token baked into filename
+    const dlUrl  = `${proto}://${host}/install/${token}/download`;
     const dlName = isWindows ? 'pan-installer-win.exe' : 'pan-installer-linux';
     const dlHint = isWindows
       ? 'If Windows shows a warning, click <strong>More info → Run anyway</strong>'
@@ -873,7 +870,7 @@ kbd{display:inline-block;background:#313244;border:1px solid #45475a;border-radi
   <div class="sub">Download the installer, run it — your browser opens automatically.</div>
 
   <div class="dl-box">
-    <a class="dl-btn" href="${dlUrl}" download="${dlName}">⬇ Download PAN Installer</a>
+    <a class="dl-btn" href="${dlUrl}">⬇ Download PAN Installer</a>
     <div class="dl-hint">${dlHint}</div>
   </div>
 
