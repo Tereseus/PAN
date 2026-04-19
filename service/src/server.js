@@ -785,47 +785,69 @@ app.get('/install/:token', (req, res) => {
   const isMac = ua.includes('mac');
   const isPowerShell = ua.includes('powershell');
 
-  // Browser → serve HTML landing page with download button
+  // Browser → serve HTML landing page with copy-paste terminal command
+  // No file downloads — Chrome blocks .bat/.ps1 files. Copy-paste is universal.
   if (isBrowser) {
     const osLabel = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
-    const downloadUrl = `${proto}://${host}/install/${token}/download`;
+    const winCmd  = `irm ${proto}://${host}/install/${token} | iex`;
+    const unixCmd = `curl -s ${proto}://${host}/install/${token} | bash`;
+    const cmd = isWindows ? winCmd : unixCmd;
+    const terminalName = isWindows ? 'PowerShell' : 'Terminal';
+    const openHint = isWindows
+      ? 'Press <strong>Win + X</strong> → <strong>Terminal</strong> (or PowerShell)'
+      : isMac ? 'Press <strong>Cmd + Space</strong> → type <strong>Terminal</strong>'
+      : 'Open your <strong>Terminal</strong>';
     return res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Install PAN</title>
+<title>Connect to PAN</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0a0a0f;color:#cdd6f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:40px 36px;max-width:480px;width:100%;text-align:center}
-.logo{font-size:48px;letter-spacing:4px;color:#89b4fa;font-weight:700;margin-bottom:8px}
-.tagline{color:#a6adc8;font-size:14px;margin-bottom:32px}
-.os-badge{display:inline-block;background:#313244;color:#cba6f7;border-radius:20px;padding:4px 14px;font-size:13px;margin-bottom:24px}
-h2{font-size:20px;margin-bottom:8px;color:#cdd6f4}
-.desc{color:#a6adc8;font-size:14px;line-height:1.6;margin-bottom:32px}
-.btn{display:block;background:#89b4fa;color:#0a0a0f;border:none;border-radius:10px;padding:16px 24px;font-size:17px;font-weight:700;cursor:pointer;text-decoration:none;width:100%;margin-bottom:12px;transition:background 0.15s}
-.btn:hover{background:#b4d0ff}
-.btn-secondary{background:#313244;color:#cdd6f4;font-size:14px;padding:12px 24px;font-weight:500}
-.btn-secondary:hover{background:#45475a}
-.steps{text-align:left;background:#11111b;border-radius:10px;padding:16px 20px;margin-bottom:24px}
-.step{display:flex;gap:12px;align-items:flex-start;padding:6px 0;font-size:14px;color:#a6adc8}
-.step-num{background:#313244;color:#89b4fa;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;margin-top:1px}
-.expiry{font-size:12px;color:#6c7086;margin-top:16px}
+.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:40px 36px;max-width:500px;width:100%;text-align:center}
+.logo{font-size:44px;letter-spacing:4px;color:#89b4fa;font-weight:700;margin-bottom:4px}
+.tagline{color:#6c7086;font-size:13px;margin-bottom:28px}
+.os-badge{display:inline-block;background:#313244;color:#cba6f7;border-radius:20px;padding:4px 14px;font-size:12px;margin-bottom:20px}
+h2{font-size:19px;margin-bottom:6px}
+.desc{color:#a6adc8;font-size:14px;line-height:1.5;margin-bottom:24px}
+.steps{text-align:left;margin-bottom:20px}
+.step{display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#a6adc8}
+.step:last-child{border-bottom:none}
+.step-num{background:#313244;color:#89b4fa;border-radius:50%;width:24px;height:24px;min-width:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-top:1px}
+.cmd-box{background:#11111b;border:1px solid #313244;border-radius:10px;padding:14px 16px;margin:10px 0 4px;display:flex;align-items:center;gap:10px;text-align:left}
+.cmd-text{font-family:'Courier New',monospace;font-size:13px;color:#a6e3a1;flex:1;word-break:break-all;line-height:1.4}
+.copy-btn{background:#313244;border:none;color:#89b4fa;border-radius:7px;padding:7px 14px;font-size:13px;cursor:pointer;white-space:nowrap;transition:background 0.15s;font-weight:600}
+.copy-btn:hover{background:#45475a}
+.copy-btn.copied{background:#a6e3a1;color:#0a0a0f}
+.expiry{font-size:12px;color:#f38ba8;margin-top:16px}
 </style></head>
 <body><div class="card">
   <div class="logo">ΠΑΝ</div>
   <div class="tagline">Personal AI Network</div>
   <div class="os-badge">Detected: ${osLabel}</div>
-  <h2>Install PAN on this computer</h2>
-  <div class="desc">This will connect your computer to your PAN hub. It installs a background client that keeps everything in sync.</div>
+  <h2>Connect this computer to PAN</h2>
+  <div class="desc">Two steps — takes about 30 seconds.</div>
   <div class="steps">
-    <div class="step"><div class="step-num">1</div><div>Click <strong>Download Installer</strong> below</div></div>
-    <div class="step"><div class="step-num">2</div>${isWindows
-      ? '<div>Open the downloaded file → <strong>Right-click → Run with PowerShell</strong></div>'
-      : '<div>Open Terminal → <code>bash ~/Downloads/pan-install.sh</code></div>'}</div>
-    <div class="step"><div class="step-num">3</div><div>Done — PAN connects automatically</div></div>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div>${openHint} and open <strong>${terminalName}</strong></div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div style="width:100%">
+        <div>Copy and paste this command, then press <strong>Enter</strong></div>
+        <div class="cmd-box">
+          <span class="cmd-text">${cmd}</span>
+          <button class="copy-btn" onclick="
+            navigator.clipboard.writeText('${cmd}').then(()=>{
+              this.textContent='Copied!';this.classList.add('copied');
+              setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},2000)
+            })">Copy</button>
+        </div>
+      </div>
+    </div>
   </div>
-  <a class="btn" href="${downloadUrl}">${isWindows ? '⬇ Download pan-install.bat' : '⬇ Download pan-install.sh'}</a>
-  <div class="expiry">⏱ This install link is single-use and expires in 24 hours</div>
+  <div class="expiry">⏱ This link expires in 5 minutes and is single-use</div>
 </div></body></html>`);
   }
 
