@@ -243,7 +243,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div class="input-bar" id="input-bar">
     <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:14px;font-weight:600;min-width:80px;white-space:nowrap" title="Switch AI model">Model</button>
     <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
-    <input type="file" id="screenshot-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
+    <input type="file" id="screenshot-input" accept="image/*" style="display:none" onchange="uploadScreenshot(this)">
     <button onclick="document.getElementById('screenshot-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:16px;align-self:flex-end" title="Share screenshot">&#128247;</button>
     <button onclick="sendChat()">Send</button>
   </div>
@@ -1568,9 +1568,13 @@ async function generateInstallQR() {
     const data = await res.json();
     if (!data.ok) throw new Error('Failed to generate token');
     const installUrl = data.install.url;
+    const warningHtml = data.warning
+      ? `<div style="font-size:12px;color:var(--yellow,#f9e2af);background:rgba(249,226,175,0.1);border-radius:6px;padding:8px 10px;margin-bottom:8px">⚠️ ${data.warning}</div>`
+      : '';
     // Render QR using qrcode.js from CDN (loaded lazily)
     area.innerHTML = `
-      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Scan on the new computer's browser</div>
+      ${warningHtml}
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">New device must be on the same WiFi. Scan to install.</div>
       <div id="qr-canvas" style="background:#fff;display:inline-block;padding:10px;border-radius:8px"></div>
       <div style="font-size:11px;color:var(--text2);margin-top:8px;word-break:break-all">${installUrl}</div>
       <div style="font-size:11px;color:var(--text2);margin-top:4px">⏱ Expires in 24 hours · Single use</div>`;
