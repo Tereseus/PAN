@@ -1343,6 +1343,13 @@ async function loadSettings() {
     html += '</div>';
   }
 
+  // Add Device
+  html += '<div class="section-title">Devices</div><div class="card">';
+  html += '<div style="padding:8px 12px 4px;font-size:13px;color:var(--text2)">Add a new computer to PAN. Scan the QR code on the new device.</div>';
+  html += '<div style="padding:8px 12px"><button onclick="generateInstallQR()" style="background:var(--accent);color:#000;border:none;border-radius:var(--radius);padding:10px 18px;font-size:14px;font-weight:600;width:100%;cursor:pointer">+ Add Device</button></div>';
+  html += '<div id="install-qr-area" style="display:none;padding:8px 12px 12px;text-align:center"></div>';
+  html += '</div>';
+
   // Connection
   html += '<div class="section-title">Connection</div><div class="card">';
   try {
@@ -1546,6 +1553,41 @@ async function saveDisplayName(name) {
     await loadOrgContext();
     loadSettings();
   } catch(e) { console.error('Save display name failed:', e); }
+}
+
+async function generateInstallQR() {
+  const area = document.getElementById('install-qr-area');
+  if (!area) return;
+  area.style.display = 'block';
+  area.innerHTML = '<div style="color:var(--text2);font-size:13px">Generating...</div>';
+  try {
+    const res = await fetch(API + '/api/v1/client/invite?name=new-device&ttl_hours=24');
+    const data = await res.json();
+    if (!data.ok) throw new Error('Failed to generate token');
+    const installUrl = data.install.url;
+    // Render QR using qrcode.js from CDN (loaded lazily)
+    area.innerHTML = `
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Scan on the new computer's browser</div>
+      <div id="qr-canvas" style="background:#fff;display:inline-block;padding:10px;border-radius:8px"></div>
+      <div style="font-size:11px;color:var(--text2);margin-top:8px;word-break:break-all">${installUrl}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px">⏱ Expires in 24 hours · Single use</div>`;
+    // Load qrcode library from CDN then generate
+    if (!window.QRCode) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+    new QRCode(document.getElementById('qr-canvas'), {
+      text: installUrl, width: 200, height: 200,
+      colorDark: '#000000', colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  } catch(e) {
+    area.innerHTML = '<div style="color:var(--red);font-size:13px">Failed: ' + e.message + '</div>';
+  }
 }
 
 async function toggleIncognito() {
