@@ -793,7 +793,7 @@ app.get('/install/:token', (req, res) => {
       ? `irm ${proto}://${host}/install/${token} | iex`
       : `curl -s ${proto}://${host}/install/${token} | bash`;
 
-    // GitHub releases URLs — hosted on a trusted domain so browsers don't block the download
+    // GitHub releases — trusted domain, no SmartScreen issues with the source
     const GH = 'https://github.com/Tereseus/PAN/releases/latest/download';
     const dlUrl  = isWindows ? `${GH}/pan-installer-win.exe`
                   : isMac    ? `${GH}/pan-installer-linux`
@@ -841,7 +841,7 @@ h2{font-size:18px;margin-bottom:6px;text-align:center;color:#cdd6f4}
 .link-box{background:#11111b;border:1px solid #313244;border-radius:10px;padding:14px 16px;margin-bottom:20px}
 .link-label{font-size:11px;color:#6c7086;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
 .link-row{display:flex;gap:8px;align-items:center}
-.link-val{font-family:monospace;font-size:12px;color:#a6e3a1;word-break:break-all;flex:1;line-height:1.4}
+.link-val{font-family:monospace;font-size:12px;color:#a6e3a1;overflow-wrap:anywhere;min-width:0;flex:1;line-height:1.4}
 .copy-link-btn{background:#313244;color:#cdd6f4;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;transition:background 0.15s}
 .copy-link-btn:hover{background:#45475a}
 .copy-link-btn.done{background:#a6e3a1;color:#0a0a0f}
@@ -874,39 +874,57 @@ kbd{display:inline-block;background:#313244;border:1px solid #45475a;border-radi
   </div>
 
   <div class="link-box">
-    <div class="link-label">Your invite link — paste this in the installer if prompted</div>
+    <div class="link-label" id="linkLabel">Your invite link — auto-copied to clipboard</div>
     <div class="link-row">
       <div class="link-val" id="inviteLink">${installUrl}</div>
-      <button class="copy-link-btn" id="cpyLink" onclick="
-        navigator.clipboard.writeText(${JSON.stringify(installUrl)}).then(()=>{
-          const b=document.getElementById('cpyLink');
-          b.textContent='✓'; b.classList.add('done');
-          setTimeout(()=>{b.textContent='Copy'; b.classList.remove('done')},2000);
-        })">Copy</button>
+      <button class="copy-link-btn" id="cpyLink" data-url="${installUrl}">Copy</button>
     </div>
   </div>
 
-  <button class="adv-toggle" onclick="
-    const s=document.getElementById('advSec');
-    s.classList.toggle('open');
-    this.textContent=s.classList.contains('open')?'▲ Hide terminal option':'▼ No installer? Use terminal instead'
-  ">▼ No installer? Use terminal instead</button>
+  <button class="adv-toggle" id="advToggle">▼ No installer? Use terminal instead</button>
 
   <div class="adv-section" id="advSec">
     <div class="copy-box">
       <div class="copy-cmd">${installCmd}</div>
-      <button class="copy-btn" id="cpyBtn" onclick="
-        navigator.clipboard.writeText(${JSON.stringify(installCmd)}).then(()=>{
-          const b=document.getElementById('cpyBtn');
-          b.textContent='✓ Copied!'; b.classList.add('done');
-          setTimeout(()=>{b.textContent='Copy command'; b.classList.remove('done')},3000);
-        })">Copy command</button>
+      <button class="copy-btn" id="cpyBtn" data-cmd="${installCmd}">Copy command</button>
     </div>
     ${advSteps}
   </div>
 
   <div class="expiry">⏱ This invite link expires in 5 minutes</div>
-</div></body></html>`);
+</div>
+<script>
+var INVITE_URL = document.getElementById('cpyLink').dataset.url;
+
+// Auto-copy invite link to clipboard on load so it's ready to paste in installer
+window.addEventListener('load', function() {
+  navigator.clipboard.writeText(INVITE_URL).then(function() {
+    var lbl = document.getElementById('linkLabel');
+    if (lbl) lbl.textContent = '✓ Invite link copied! Paste it in the installer if it doesn\'t connect automatically.';
+  }).catch(function() {}); // silently ignore if clipboard denied
+});
+
+document.getElementById('advToggle').addEventListener('click', function() {
+  var s = document.getElementById('advSec');
+  s.classList.toggle('open');
+  this.textContent = s.classList.contains('open') ? '▲ Hide terminal option' : '▼ No installer? Use terminal instead';
+});
+document.getElementById('cpyLink').addEventListener('click', function() {
+  var b = this;
+  navigator.clipboard.writeText(INVITE_URL).then(function() {
+    b.textContent = '✓'; b.classList.add('done');
+    setTimeout(function() { b.textContent = 'Copy'; b.classList.remove('done'); }, 2000);
+  });
+});
+document.getElementById('cpyBtn').addEventListener('click', function() {
+  var b = this;
+  navigator.clipboard.writeText(b.dataset.cmd).then(function() {
+    b.textContent = '✓ Copied!'; b.classList.add('done');
+    setTimeout(function() { b.textContent = 'Copy command'; b.classList.remove('done'); }, 3000);
+  });
+});
+</script>
+</body></html>`);
   }
 
   // PowerShell (irm ... | iex) or curl → raw script, existing behavior

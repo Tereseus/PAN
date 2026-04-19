@@ -168,10 +168,10 @@ router.post('/shell', async (req, res) => {
 
 // ── GET /api/v1/client/invite ─────────────────────────────────────────────────
 // Generates a one-time install token + install instructions.
-// Query: ?name=bedroom-pc&ttl_minutes=5  (default 5 min — QR codes are short-lived by design)
+// Query: ?name=bedroom-pc&ttl_minutes=30  (default 30 min — enough time to download + run installer)
 router.get('/invite', (req, res) => {
   const name = req.query.name || 'new-device';
-  const ttlMinutes = parseInt(req.query.ttl_minutes) || 5;
+  const ttlMinutes = parseInt(req.query.ttl_minutes) || 30;
   const token = createInviteToken(name, ttlMinutes * 60 * 1000);
 
   const port = parseInt(process.env.PAN_PUBLIC_PORT || process.env.PAN_CARRIER_PORT || '7777');
