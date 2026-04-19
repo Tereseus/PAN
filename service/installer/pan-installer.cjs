@@ -52,9 +52,25 @@ function send(type, data) {
   const payload = `data: ${JSON.stringify({ type, ...data })}\n\n`;
   for (const res of sseClients) { try { res.write(payload); } catch {} }
 }
-function log(msg)   { send('log',     { msg }); }
+function log(msg)   {
+  console.log('  ' + msg);
+  send('log', { msg });
+}
 function status(s)  { send('status',  { status: s }); }
-function done(ok, msg) { send('done', { ok, msg }); }
+function done(ok, msg) {
+  send('done', { ok, msg });
+  console.log('');
+  if (ok) {
+    console.log('  ✓ ' + (msg || 'Connected!'));
+    console.log('  Check your PAN dashboard to approve this device.');
+    console.log('  (You can close this window)');
+  } else {
+    console.log('  ✗ ' + (msg || 'Connection failed'));
+  }
+  console.log('');
+  // Give SSE a moment to flush, then exit if in direct (no GUI) mode
+  if (sseClients.size === 0) setTimeout(() => process.exit(ok ? 0 : 1), 500);
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function download(urlStr, destPath) {
@@ -536,23 +552,12 @@ const HTML = `<!DOCTYPE html>
 <div class="logo">ΠΑΝ</div>
 <div class="subtitle">Personal AI Network — Device Installer</div>
 
-<div class="card" id="discoveryCard">
-  <h2>
-    <span id="scanIcon"><span class="spinner"></span></span>
-    <span id="scanLabel"> Scanning for PAN hubs...</span>
-    <button class="btn-refresh" id="rescanBtn" style="margin-left:auto;display:none" onclick="rescan()">↻ Rescan</button>
-  </h2>
-  <div class="hub-list" id="hubList">
-    <div class="empty" id="scanMsg">Searching local network and Tailscale...</div>
-  </div>
-</div>
-
 <div class="card">
-  <div class="divider">or paste an invite link</div>
-  <input type="text" id="linkInput" placeholder="http://hub-address/install/token  or  https://xyz.trycloudflare.com/install/token" />
+  <h2>Paste your invite link</h2>
+  <input type="text" id="linkInput" placeholder="https://your-hub/install/pan-..." />
 </div>
 
-<button class="btn btn-primary" id="installBtn" onclick="startInstall()">⬇ Install PAN Client</button>
+<button class="btn btn-primary" id="installBtn" onclick="startInstall()">⬇ Connect to PAN</button>
 
 <div class="card" id="installCard" style="display:none">
   <h2>Installing...</h2>
@@ -566,194 +571,67 @@ const HTML = `<!DOCTYPE html>
 </div>
 
 <script>
-let selectedHub = null;
-let hubs = [];
 let installing = false;
-
-async function rescan() {
-  document.getElementById('rescanBtn').style.display = 'none';
-  document.getElementById('scanIcon').innerHTML = '<span class="spinner"></span>';
-  document.getElementById('scanLabel').textContent = ' Scanning...';
-  document.getElementById('hubList').innerHTML = '<div class="empty">Searching...</div>';
-  selectedHub = null;
-  updateInstallBtn();
-  await loadHubs();
-}
-
-async function loadHubs() {
-  try {
-    const res = await fetch('/api/hubs');
-    hubs = await res.json();
-  } catch { hubs = []; }
-  renderHubs();
-}
-
-function renderHubs() {
-  const list = document.getElementById('hubList');
-  document.getElementById('scanIcon').innerHTML = '🔍';
-  document.getElementById('scanLabel').textContent = hubs.length
-    ? \` Found \${hubs.length} hub\${hubs.length > 1 ? 's' : ''}\`
-    : ' No hubs found nearby';
-  document.getElementById('rescanBtn').style.display = 'inline-block';
-
-  if (!hubs.length) {
-    list.innerHTML = '<div class="empty">No PAN hubs found on your network.<br>Paste an invite link below, or make sure the hub is running.</div>';
-    return;
-  }
-  list.innerHTML = '';
-  hubs.forEach((hub, i) => {
-    const card = document.createElement('div');
-    card.className = 'hub-card';
-    card.innerHTML = \`
-      <div>
-        <div class="hub-name">\${esc(hub.name || hub.hostname)}</div>
-        <div class="hub-meta">\${esc(hub.host)}:\${hub.port} · v\${esc(hub.version || '?')}</div>
-      </div>
-      <span class="hub-badge \${hub.via === 'tailscale' ? 'tailscale' : ''}">\${hub.via === 'tailscale' ? '🔒 Tailscale' : '📡 Local'}</span>
-    \`;
-    card.onclick = () => {
-      document.querySelectorAll('.hub-card').forEach(c => c.classList.remove('selected'));
-      card.classList.add('selected');
-      selectedHub = hub;
-      document.getElementById('linkInput').value = '';
-      updateInstallBtn();
-    };
-    list.appendChild(card);
-    if (i === 0) card.click(); // auto-select first
-  });
-}
-
-function esc(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
 
 function updateInstallBtn() {
   const btn = document.getElementById('installBtn');
-  const hasHub = selectedHub || document.getElementById('linkInput').value.trim();
-  btn.style.display = 'block';
-  btn.disabled = !hasHub || installing;
-  btn.textContent = installing ? 'Installing...' : '⬇ Install PAN Client';
+  const hasLink = document.getElementById('linkInput').value.trim();
+  btn.style.display = hasLink ? 'block' : 'none';
+  btn.disabled = installing;
+  btn.textContent = installing ? 'Connecting...' : '⬇ Connect to PAN';
 }
 
-document.getElementById('linkInput').addEventListener('input', () => {
-  if (document.getElementById('linkInput').value) {
-    document.querySelectorAll('.hub-card').forEach(c => c.classList.remove('selected'));
-    selectedHub = null;
-  }
-  updateInstallBtn();
-});
+document.getElementById('linkInput').addEventListener('input', updateInstallBtn);
 
 async function startInstall() {
   if (installing) return;
   const link = document.getElementById('linkInput').value.trim();
-
-  let body;
-  if (selectedHub) {
-    body = { hub: selectedHub };
-  } else if (link) {
-    body = { link };
-  } else { return; }
+  if (!link) return;
 
   installing = true;
   updateInstallBtn();
   document.getElementById('installCard').style.display = 'block';
   document.getElementById('logBox').textContent = '';
-  window.scrollTo(0, document.body.scrollHeight);
 
-  // SSE for live logs
-  const es = new EventSource('/events');
-  es.onmessage = e => {
-    const d = JSON.parse(e.data);
-    if (d.type === 'log') {
-      const box = document.getElementById('logBox');
-      box.textContent += d.msg + '\\n';
-      box.scrollTop = box.scrollHeight;
-    } else if (d.type === 'progress') {
-      document.getElementById('progFill').style.width = Math.min(d.mb * 5, 90) + '%';
-    } else if (d.type === 'done') {
-      es.close();
-      document.getElementById('progFill').style.width = '100%';
-      const card = document.getElementById('doneCard');
-      card.style.display = 'block';
-      document.getElementById('doneTitle').innerHTML = d.ok
-        ? '<span class="success">✓ Installation complete!</span>'
-        : '<span class="error">✗ Installation failed</span>';
-      document.getElementById('doneMsg').textContent = d.msg || '';
-      window.scrollTo(0, document.body.scrollHeight);
-    }
-  };
-
-  await fetch('/api/install', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-// Direct mode: hub URL came from filename — skip scan, auto-connect
-const isDirect = new URLSearchParams(location.search).get('direct') === '1';
-if (isDirect) {
-  // Hide scan and link-paste UI entirely
-  document.querySelectorAll('.card').forEach(c => c.style.display = 'none');
-  document.getElementById('installBtn').style.display = 'none';
-
-  // Show connecting banner
-  const banner = document.createElement('div');
-  banner.style.cssText = 'background:#0d2137;border:2px solid #89b4fa;border-radius:12px;padding:24px;text-align:center;margin:20px 0';
-  banner.innerHTML = '<div style="font-size:22px;margin-bottom:8px">🔗</div><div style="color:#89b4fa;font-size:16px;font-weight:700">Connecting to your PAN hub...</div><div style="color:#6c7086;font-size:13px;margin-top:6px">Hub address was read from installer — no scan needed</div>';
-  document.body.appendChild(banner);
-
-  // Show log box for progress
-  const logCard = document.getElementById('installCard');
-  logCard.style.display = 'block';
-
-  // Auto-subscribe to SSE events from Node.js runInstall
   const es = new EventSource('/events');
   es.onmessage = e => {
     try {
       const d = JSON.parse(e.data);
       if (d.type === 'log') {
         const box = document.getElementById('logBox');
-        box.textContent += d.msg + '\n';
+        box.textContent += d.msg + '\\n';
         box.scrollTop = box.scrollHeight;
       } else if (d.type === 'progress') {
         document.getElementById('progFill').style.width = Math.min(d.mb * 5, 90) + '%';
       } else if (d.type === 'done') {
         es.close();
-        banner.remove();
         document.getElementById('progFill').style.width = '100%';
-        const card = document.getElementById('doneCard');
-        card.style.display = 'block';
+        document.getElementById('doneCard').style.display = 'block';
         document.getElementById('doneTitle').innerHTML = d.ok
-          ? '<span class="success">✓ Connected! Waiting for hub owner to approve...</span>'
-          : '<span class="error">✗ Connection failed: ' + (d.msg || '') + '</span>';
-        document.getElementById('doneMsg').textContent = d.ok ? 'Check your PAN dashboard to approve this device.' : '';
+          ? '<span class="success">✓ Connected! Check your PAN dashboard to approve.</span>'
+          : '<span class="error">✗ Failed: ' + (d.msg || 'unknown error') + '</span>';
       }
     } catch {}
   };
-} else {
-  // Normal mode: scan takes up to ~7s (HTTP LAN scan is the slow one)
-  loadHubs();
-  setTimeout(updateInstallBtn, 500);
 
-  // Auto-read clipboard: if it contains a PAN invite link, pre-fill and auto-install
-  (async function tryClipboard() {
-    try {
-      const text = (await navigator.clipboard.readText()).trim();
-      if (/\/install\/pan-[a-f0-9]+/.test(text)) {
-        const input = document.getElementById('linkInput');
-        input.value = text;
-        selectedHub = null;
-        updateInstallBtn();
-        const banner = document.createElement('div');
-        banner.style.cssText = 'background:#1a2a1a;border:1px solid #3fb950;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:13px;color:#3fb950;text-align:center';
-        banner.textContent = '✓ Invite link found — connecting in 3 seconds...';
-        document.getElementById('installBtn').before(banner);
-        setTimeout(() => { banner.remove(); startInstall(); }, 3000);
-      }
-    } catch {}
-  })();
+  await fetch('/api/install', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ link }),
+  });
 }
+
+// Auto-read clipboard on open — if invite link is there, fill it and connect
+(async function tryClipboard() {
+  try {
+    const text = (await navigator.clipboard.readText()).trim();
+    if (/\/install\/pan-[a-f0-9]+/.test(text)) {
+      document.getElementById('linkInput').value = text;
+      updateInstallBtn();
+      setTimeout(startInstall, 1500);
+    }
+  } catch {}
+})();
 
 </script>
 </body>
@@ -863,16 +741,12 @@ async function main() {
   console.log('  (Keep this window open while installing)');
   console.log('');
 
-  // Fast path: filename has encoded config — connect directly, no scan needed
+  // Fast path: filename has encoded config — connect directly in terminal, no browser needed
   const filenameCfg = tryReadConfigFromFilename();
   if (filenameCfg) {
-    console.log('  Config detected from filename — connecting directly...');
-    // Pass ?direct=1 so the browser skips the scan UI entirely
-    startGUI(`http://localhost:${GUI_PORT}/?direct=1`);
-    // Give browser a moment to open and subscribe to SSE, then start install
-    setTimeout(() => {
-      runInstall(filenameCfg).catch(e => done(false, e.message));
-    }, 2500);
+    console.log('  Hub address loaded from filename — connecting...');
+    console.log('');
+    runInstall(filenameCfg).catch(e => done(false, e.message));
     return;
   }
 

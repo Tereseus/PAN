@@ -875,53 +875,40 @@ kbd{display:inline-block;background:#313244;border:1px solid #45475a;border-radi
   </div>
 
   <div class="link-box">
-    <div class="link-label" id="linkLabel">Your invite link — auto-copied to clipboard</div>
+    <div class="link-label" id="linkLabel">Invited by</div>
     <div class="link-row">
-      <div class="link-val" id="inviteLink">${installUrl}</div>
-      <button class="copy-link-btn" id="cpyLink" data-url="${installUrl}">Copy</button>
+      <div class="link-val" style="font-size:15px;font-weight:700;color:#cdd6f4;font-family:inherit">🖥 ${hostname()}</div>
     </div>
+    <div style="font-size:11px;color:#6c7086;margin-top:8px">Invite link auto-copied to clipboard — the installer will use it automatically.</div>
   </div>
 
-  <button class="adv-toggle" id="advToggle">▼ No installer? Use terminal instead</button>
+  <button class="adv-toggle" id="advToggle">▼ Need to paste the link manually?</button>
 
   <div class="adv-section" id="advSec">
     <div class="copy-box">
-      <div class="copy-cmd">${installCmd}</div>
-      <button class="copy-btn" id="cpyBtn" data-cmd="${installCmd}">Copy command</button>
+      <div class="copy-cmd" style="font-size:11px;word-break:break-all">${installUrl}</div>
+      <button class="copy-btn" id="cpyLink" data-url="${installUrl}">Copy invite link</button>
     </div>
-    ${advSteps}
   </div>
 
-  <div class="expiry">⏱ This invite link expires in 5 minutes</div>
+  <div class="expiry">⏱ This invite expires in 30 minutes</div>
 </div>
 <script>
-var INVITE_URL = document.getElementById('cpyLink').dataset.url;
+var INVITE_URL = ${JSON.stringify(installUrl)};
 
-// Auto-copy invite link to clipboard on load so it's ready to paste in installer
-window.addEventListener('load', function() {
-  navigator.clipboard.writeText(INVITE_URL).then(function() {
-    var lbl = document.getElementById('linkLabel');
-    if (lbl) lbl.textContent = '✓ Invite link copied! Paste it in the installer if it doesn\'t connect automatically.';
-  }).catch(function() {}); // silently ignore if clipboard denied
-});
+// Auto-copy invite link to clipboard on load
+navigator.clipboard.writeText(INVITE_URL).catch(function() {});
 
 document.getElementById('advToggle').addEventListener('click', function() {
   var s = document.getElementById('advSec');
   s.classList.toggle('open');
-  this.textContent = s.classList.contains('open') ? '▲ Hide terminal option' : '▼ No installer? Use terminal instead';
+  this.textContent = s.classList.contains('open') ? '▲ Hide' : '▼ Need to paste the link manually?';
 });
 document.getElementById('cpyLink').addEventListener('click', function() {
   var b = this;
   navigator.clipboard.writeText(INVITE_URL).then(function() {
-    b.textContent = '✓'; b.classList.add('done');
-    setTimeout(function() { b.textContent = 'Copy'; b.classList.remove('done'); }, 2000);
-  });
-});
-document.getElementById('cpyBtn').addEventListener('click', function() {
-  var b = this;
-  navigator.clipboard.writeText(b.dataset.cmd).then(function() {
     b.textContent = '✓ Copied!'; b.classList.add('done');
-    setTimeout(function() { b.textContent = 'Copy command'; b.classList.remove('done'); }, 3000);
+    setTimeout(function() { b.textContent = 'Copy invite link'; b.classList.remove('done'); }, 2000);
   });
 });
 </script>
