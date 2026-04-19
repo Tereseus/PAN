@@ -154,6 +154,57 @@ function udpDiscover(timeoutMs = 4000) {
   });
 }
 
+// ── HTTP LAN scan ─────────────────────────────────────────────────────────────
+// Scans the local subnet for PAN hubs by hitting /health on port 7777.
+// More reliable than UDP — works through Windows Firewall and router AP isolation.
+async function lanHttpScan(timeoutMs = 6000) {
+  const found = [];
+  // Get all local IPv4 addresses to determine subnets to scan
+  const subnets = new Set();
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        // e.g. 192.168.1.42 → scan 192.168.1.1–254
+        const parts = iface.address.split('.');
+        if (parts.length === 4) subnets.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
+      }
+    }
+  }
+
+  const perIpTimeout = Math.min(400, timeoutMs / 10); // fast parallel checks
+  const checks = [];
+  for (const subnet of subnets) {
+    for (let i = 1; i <= 254; i++) {
+      const ip = `${subnet}.${i}`;
+      checks.push((async () => {
+        for (const port of [7777, 7781]) {
+          try {
+            const info = await httpGet(`http://${ip}:${port}/health`, perIpTimeout);
+            if (info && info.status === 'running') {
+              found.push({
+                name: info.hubName || ip,
+                hostname: ip,
+                host: ip,
+                port,
+                version: info.craftVersion || '?',
+                via: 'lan',
+              });
+              break;
+            }
+          } catch {}
+        }
+      })());
+    }
+  }
+  // Run in batches of 40 to avoid exhausting file descriptors
+  const BATCH = 40;
+  for (let i = 0; i < checks.length; i += BATCH) {
+    await Promise.all(checks.slice(i, i + BATCH));
+  }
+  return found;
+}
+
 // ── Tailscale peer discovery ──────────────────────────────────────────────────
 async function tailscaleDiscover(timeoutMs = 6000) {
   const found = [];
@@ -639,10 +690,10 @@ async function startInstall() {
   });
 }
 
-// Boot
+// Boot — scan takes up to ~7s (HTTP LAN scan is the slow one)
 loadHubs();
-// Show install button after scan
-setTimeout(updateInstallBtn, 1000);
+// Show install button and link input while scanning (don't wait for scan to finish)
+setTimeout(updateInstallBtn, 500);
 </script>
 </body>
 </html>`;
@@ -672,15 +723,20 @@ function startGUI() {
     }
 
     if (req.method === 'GET' && u === '/api/hubs') {
-      // Run discovery — LAN and Tailscale in parallel
-      const [lanHubs, tsHubs] = await Promise.all([
+      // Run all discovery methods in parallel:
+      // 1. UDP broadcast — fast, may be blocked by firewall/AP isolation
+      // 2. HTTP LAN scan — reliable, works through firewall (just needs port 7777 open)
+      // 3. Tailscale peers — for remote hubs on the same Tailscale network
+      const [udpHubs, httpHubs, tsHubs] = await Promise.all([
         udpDiscover(3000),
+        lanHttpScan(6000),
         tailscaleDiscover(5000),
       ]);
-      // De-dupe by host:port (LAN takes precedence over Tailscale)
+      // De-dupe by host:port (UDP → HTTP → Tailscale priority)
       const all = new Map();
-      for (const h of lanHubs) all.set(`${h.host}:${h.port}`, h);
       for (const h of tsHubs)  all.set(`${h.host}:${h.port}`, h);
+      for (const h of httpHubs) all.set(`${h.host}:${h.port}`, h);
+      for (const h of udpHubs) all.set(`${h.host}:${h.port}`, h);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify([...all.values()]));
       return;
