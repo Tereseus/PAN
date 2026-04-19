@@ -478,7 +478,10 @@ async function init() {
   // Auto-refresh active tab every 3 seconds
   setInterval(() => {
     const active = document.querySelector('.page.active');
-    if (active) loadTab(active.id);
+    if (!active) return;
+    // Don't re-render settings if QR code is visible — it would wipe it
+    if (active.id === 'settings' && document.getElementById('install-qr-area')?.style.display !== 'none') return;
+    loadTab(active.id);
   }, 3000);
   // Poll approvals every 2 seconds — independent of active tab so the banner
   // appears no matter where the user is in the app
