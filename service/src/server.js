@@ -858,7 +858,7 @@ app.get('/install/:token/download', (req, res) => {
   const binPath  = join(__dirname, '..', 'bin', binName);
   const dlName   = `pan-${encoded}${isWin ? '.exe' : ''}`;
 
-  if (fs.existsSync(binPath)) {
+  if (existsSync(binPath)) {
     // Serve the compiled binary — filename contains embedded config
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${dlName}"`);
