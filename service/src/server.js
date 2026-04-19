@@ -48,6 +48,8 @@ import { buildContext as buildMemoryContext } from './memory/index.js';
 import { getConfig as getAutoDevConfig, saveConfig as saveAutoDevConfig, getAutoDevLog } from './autodev.js';
 import { getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } from './stack-scanner.js';
 import { bootAll, shutdownAll, getAtlasData, getServiceStatus, reportServiceRun } from './steward.js';
+import { startCloudflareTunnel, stopCloudflareTunnel, getTunnelURL } from './cloudflare-tunnel.js';
+export { getTunnelURL }; // re-export so client.js can import it
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir } from './platform.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db } from './db.js';
@@ -2151,6 +2153,33 @@ app.all('/api/v1/dev/proxy/*proxyPath', async (req, res) => {
   }
 });
 
+// ── Tunnel API ────────────────────────────────────────────────────────────────
+// GET  /api/v1/tunnel/status  — returns current public tunnel URL (or null)
+// POST /api/v1/tunnel/start   — (re)starts Cloudflare Quick Tunnel without a full server restart
+app.get('/api/v1/tunnel/status', (req, res) => {
+  const cfURL = getTunnelURL();
+  const tailscaleActive = (() => {
+    try { execSync(`tailscale funnel status`, { timeout: 2000, windowsHide: true, stdio: 'pipe' }); return true; } catch { return false; }
+  })();
+  res.json({
+    ok: true,
+    cloudflare: cfURL || null,
+    tailscale_funnel: tailscaleActive,
+    active_url: cfURL || (tailscaleActive ? 'tailscale-funnel' : null),
+  });
+});
+
+app.post('/api/v1/tunnel/start', async (req, res) => {
+  const port = parseInt(process.env.PAN_PUBLIC_PORT || process.env.PAN_CARRIER_PORT || '7777');
+  try {
+    const url = await startCloudflareTunnel(port);
+    if (url) return res.json({ ok: true, url, via: 'cloudflare-tunnel' });
+    res.json({ ok: false, error: 'Tunnel started but no URL received — check server logs' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Terminal API — list sessions, projects for terminal
 app.get('/api/v1/terminal/sessions', async (req, res) => {
   res.json({ sessions: await listSessions() });
@@ -3659,6 +3688,28 @@ function start() {
 
         // Clean up stale Tailscale pan-* nodes on startup (delay to let Tailscale stabilize)
         setTimeout(() => cleanupStaleTailscaleNodes(), 30000);
+
+        // Auto-establish a public tunnel so any new device can scan the QR code
+        // from anywhere — no Tailscale enrollment, no config, no user action needed.
+        // Priority: Tailscale Funnel (best) → Cloudflare Quick Tunnel (zero-config) → LAN IP
+        setTimeout(async () => {
+          // 1. Try Tailscale Funnel (already set up users get this for free)
+          try {
+            execSync(`tailscale funnel ${PORT}`, { timeout: 5000, windowsHide: true, stdio: 'pipe' });
+            console.log(`[PAN] Tailscale Funnel active — QR codes use public ts.net URL`);
+            return; // Done — Tailscale Funnel handles it
+          } catch {
+            // Tailscale not running, or Funnel not enabled in admin console — try Cloudflare
+          }
+
+          // 2. Fall back to Cloudflare Quick Tunnel — zero config, downloads binary automatically
+          const cfURL = await startCloudflareTunnel(PORT);
+          if (cfURL) {
+            console.log(`[PAN] Cloudflare Tunnel active — QR codes use ${cfURL}`);
+          } else {
+            console.log('[PAN] No public tunnel available — QR codes will use LAN IP (same network only)');
+          }
+        }, 5000); // Delay 5s to let Tailscale daemon stabilize after boot
 
         // Steward boots all background services in dependency order.
         bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
