@@ -1,9 +1,12 @@
 package dev.pan.app.ui.dashboard
 
 import android.annotation.SuppressLint
+import android.net.Uri
 import android.util.Log
 import android.webkit.ConsoleMessage
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebChromeClient.FileChooserParams
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -12,6 +15,8 @@ import android.webkit.WebViewClient
 import android.webkit.WebStorage
 import android.webkit.CookieManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -34,6 +39,16 @@ fun DashboardScreen(
     val baseUrl = if (proxyPort > 0) "http://127.0.0.1:$proxyPort" else ""
     val context = LocalContext.current
     Log.w("PAN-DASH", "Render: proxyPort=$proxyPort baseUrl=$baseUrl")
+
+    // File chooser support — holds the WebView callback until the picker returns
+    val fileChooserCallback = remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        fileChooserCallback.value?.onReceiveValue(if (uri != null) arrayOf(uri) else null)
+        fileChooserCallback.value = null
+    }
 
     // Android back button/gesture always leaves the dashboard — never navigates within WebView
     BackHandler { onBack() }
@@ -89,6 +104,18 @@ fun DashboardScreen(
                         webChromeClient = object : WebChromeClient() {
                             override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
                                 Log.w("PAN-DASH", "JS: ${msg?.message()}")
+                                return true
+                            }
+
+                            override fun onShowFileChooser(
+                                webView: WebView?,
+                                filePathCallback: ValueCallback<Array<Uri>>,
+                                fileChooserParams: FileChooserParams
+                            ): Boolean {
+                                // Cancel any previous pending callback before opening a new picker
+                                fileChooserCallback.value?.onReceiveValue(null)
+                                fileChooserCallback.value = filePathCallback
+                                imagePicker.launch("image/*")
                                 return true
                             }
                         }
