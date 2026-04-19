@@ -10,12 +10,29 @@
 
 import dgram from 'dgram';
 import os from 'os';
+import { execFileSync } from 'child_process';
 
 const DISCOVERY_PORT = 7778;
 const DISCOVER_MSG   = 'PAN_DISCOVER';
 const REPLY_PREFIX   = 'PAN_HERE:';
 
 let _sock = null;
+
+// On Windows, add a firewall rule so inbound UDP 7778 discovery packets get through.
+// Runs once at startup; silently ignored if already exists or no admin rights.
+function ensureFirewallRule() {
+  if (process.platform !== 'win32') return;
+  try {
+    execFileSync('netsh', [
+      'advfirewall', 'firewall', 'add', 'rule',
+      'name=PAN Discovery UDP',
+      'dir=in', 'action=allow', 'protocol=UDP', 'localport=7778',
+    ], { timeout: 5000, windowsHide: true, stdio: 'pipe' });
+    console.log('[Discovery] Firewall rule added for UDP 7778');
+  } catch {
+    // Already exists, or no admin rights — fine either way
+  }
+}
 
 /**
  * Start the UDP discovery responder.
@@ -25,6 +42,7 @@ let _sock = null;
  */
 export function startDiscovery(hubPort = 7777, version = '0.3.1', hubName = null) {
   if (_sock) stopDiscovery();
+  ensureFirewallRule();
 
   _sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
