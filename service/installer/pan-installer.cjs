@@ -790,14 +790,13 @@ function startGUI() {
 async function main() {
   console.clear();
   console.log('');
-  console.log('  ██████╗  █████╗ ███╗   ██╗');
-  console.log('  ██╔══██╗██╔══██╗████╗  ██║');
-  console.log('  ██████╔╝███████║██╔██╗ ██║');
-  console.log('  ██╔═══╝ ██╔══██║██║╚██╗██║');
-  console.log('  ██║     ██║  ██║██║ ╚████║');
-  console.log('  ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝');
+  console.log('  ╔══════════════════════════════════════╗');
+  console.log('  ║                                      ║');
+  console.log('  ║          ΠΑΝ  ·  Personal AI Network ║');
+  console.log('  ║                                      ║');
+  console.log('  ╚══════════════════════════════════════╝');
   console.log('');
-  console.log('  Personal AI Network — Device Installer');
+  console.log('  Device Installer');
   console.log('  ─────────────────────────────────────');
   console.log('  Opening installer in your browser...');
   console.log('  (Keep this window open while installing)');
