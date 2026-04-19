@@ -50,6 +50,7 @@ import { getAllStacks, scanStacks, getProjectBriefing, getEnvironmentBriefing } 
 import { bootAll, shutdownAll, getAtlasData, getServiceStatus, reportServiceRun } from './steward.js';
 import { startCloudflareTunnel, stopCloudflareTunnel, getTunnelURL } from './cloudflare-tunnel.js';
 export { getTunnelURL }; // re-export so client.js can import it
+import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir } from './platform.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db } from './db.js';
@@ -3378,16 +3379,24 @@ app.get('/health', (req, res) => {
     }
   } catch {}
 
-  res.json({ 
-    status: 'running', 
-    timestamp: new Date().toISOString(), 
-    startedAt: _serverStartedAt, 
-    uptime, 
-    tailscaleIp, 
-    mode: PAN_MODE, 
-    craftId: process.env.PAN_CRAFT_ID || null, 
+  // Hub display name from settings (for installer UI)
+  let hubName = hostname(); // default to OS hostname
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'hub_name'");
+    if (row && row.value) hubName = JSON.parse(row.value);
+  } catch {}
+
+  res.json({
+    status: 'running',
+    timestamp: new Date().toISOString(),
+    startedAt: _serverStartedAt,
+    uptime,
+    tailscaleIp,
+    hubName: hubName || 'PAN Hub',
+    mode: PAN_MODE,
+    craftId: process.env.PAN_CRAFT_ID || null,
     craftVersion: 'A',
-    terminal_ai_provider 
+    terminal_ai_provider
   });
 });
 
@@ -3771,6 +3780,10 @@ function start() {
             console.log('[PAN] No public tunnel available — QR codes will use LAN IP (same network only)');
           }
         }, 5000); // Delay 5s to let Tailscale daemon stabilize after boot
+
+        // UDP discovery responder — lets the installer find this hub on LAN/Tailscale
+        // without manual IP entry. Installer broadcasts "PAN_DISCOVER", we reply.
+        startDiscovery(PORT, '0.3.1');
 
         // Steward boots all background services in dependency order.
         bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
