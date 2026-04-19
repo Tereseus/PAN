@@ -788,38 +788,58 @@ app.get('/install/:token', (req, res) => {
   // Browser → serve HTML landing page with copy-paste terminal command
   // No file downloads — Chrome blocks .bat/.ps1 files. Copy-paste is universal.
   if (isBrowser) {
-    const osLabel     = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
-    const downloadUrl = `${proto}://${host}/install/${token}/download`;
+    const osLabel = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
+    const installCmd = isWindows
+      ? `irm ${proto}://${host}/install/${token} | iex`
+      : `curl -s ${proto}://${host}/install/${token} | bash`;
 
-    // Chrome blocks unknown .exe files with a "dangerous file" warning.
-    // The page walks the user through allowing it step by step.
-    const afterDownload = isWindows ? `
+    // Windows: Win+R is the universal shortcut — every Windows user can do it.
+    // Mac/Linux: Terminal is standard. No file downloads needed — browsers block unsigned exes.
+    const steps = isWindows ? `
       <div class="step">
-        <div class="step-num">2</div>
+        <div class="num">1</div>
+        <div>Click <strong>Copy Command</strong> below</div>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
         <div>
-          Chrome will show a warning at the bottom of the screen.<br>
-          Click the <strong>arrow ›</strong> next to it → <strong>Keep anyway</strong>
-          <div class="img-hint">
-            <span class="bar">pan-install.exe  ⚠ blocked  <u>›</u></span>
-            <span class="arrow">↑ click this arrow</span>
-          </div>
+          Press <kbd>⊞ Win</kbd> + <kbd>R</kbd> on your keyboard
+          <div class="hint">A small "Run" box appears in the bottom-left corner</div>
         </div>
       </div>
       <div class="step">
-        <div class="step-num">3</div>
-        <div>Open your <strong>Downloads folder</strong>, double-click <strong>pan-install.exe</strong></div>
+        <div class="num">3</div>
+        <div>
+          Type <strong>powershell</strong> and press <kbd>Enter</kbd>
+          <div class="hint">A blue or black window opens</div>
+        </div>
       </div>
       <div class="step">
-        <div class="step-num">4</div>
-        <div>Windows may ask <em>"Do you want to allow this app?"</em> — click <strong>Yes</strong></div>
+        <div class="num">4</div>
+        <div>
+          Press <kbd>Ctrl</kbd> + <kbd>V</kbd> to paste, then press <kbd>Enter</kbd>
+          <div class="hint">PAN installs automatically — takes about 1 minute</div>
+        </div>
       </div>` : isMac ? `
       <div class="step">
-        <div class="step-num">2</div>
-        <div>Open <strong>Downloads</strong>, right-click <strong>pan-install</strong> → <strong>Open</strong> → <strong>Open</strong> again</div>
+        <div class="num">1</div>
+        <div>Click <strong>Copy Command</strong> below</div>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <div>Press <kbd>⌘ Cmd</kbd> + <kbd>Space</kbd>, type <strong>Terminal</strong>, press <kbd>Enter</kbd></div>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <div>Paste with <kbd>⌘ Cmd</kbd> + <kbd>V</kbd> and press <kbd>Enter</kbd></div>
       </div>` : `
       <div class="step">
-        <div class="step-num">2</div>
-        <div>Open a terminal, run: <code>chmod +x ~/Downloads/pan-install && ~/Downloads/pan-install</code></div>
+        <div class="num">1</div>
+        <div>Click <strong>Copy Command</strong> below</div>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <div>Open a Terminal, paste, and press <kbd>Enter</kbd></div>
       </div>`;
 
     return res.send(`<!DOCTYPE html>
@@ -829,38 +849,37 @@ app.get('/install/:token', (req, res) => {
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0a0a0f;color:#cdd6f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:36px 32px;max-width:480px;width:100%}
+.card{background:#181825;border:1px solid #313244;border-radius:16px;padding:36px 32px;max-width:460px;width:100%}
 .logo{font-size:36px;letter-spacing:4px;color:#89b4fa;font-weight:700;text-align:center;margin-bottom:2px}
-.tagline{color:#6c7086;font-size:12px;text-align:center;margin-bottom:20px}
-h2{font-size:19px;margin-bottom:18px;text-align:center}
-.steps{display:flex;flex-direction:column;gap:0}
-.step{display:flex;gap:14px;padding:14px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#a6adc8;line-height:1.5}
-.step:last-child{border-bottom:none}
-.step-num{background:#313244;color:#89b4fa;border-radius:50%;width:26px;height:26px;min-width:26px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-top:1px}
-.btn{display:block;background:#89b4fa;color:#0a0a0f;border:none;border-radius:10px;padding:15px 20px;font-size:16px;font-weight:800;cursor:pointer;text-decoration:none;text-align:center;transition:background 0.15s}
-.btn:hover{background:#b4d0ff}
-.img-hint{background:#11111b;border:1px solid #313244;border-radius:7px;padding:8px 12px;margin-top:8px;font-size:12px}
-.bar{display:block;color:#cba6f7;font-family:monospace;margin-bottom:3px}
-.arrow{color:#a6e3a1;font-size:11px}
-code{background:#11111b;padding:2px 6px;border-radius:4px;font-size:12px;color:#a6e3a1}
-.expiry{font-size:11px;color:#f38ba8;text-align:center;margin-top:16px}
+.tagline{color:#6c7086;font-size:12px;text-align:center;margin-bottom:22px}
+h2{font-size:18px;margin-bottom:20px;text-align:center;color:#cdd6f4}
+.copy-box{background:#11111b;border:2px solid #89b4fa;border-radius:12px;padding:16px;margin-bottom:20px}
+.copy-cmd{font-family:monospace;font-size:13px;color:#a6e3a1;word-break:break-all;line-height:1.5;margin-bottom:12px}
+.copy-btn{width:100%;background:#89b4fa;color:#0a0a0f;border:none;border-radius:8px;padding:13px;font-size:15px;font-weight:800;cursor:pointer;transition:background 0.15s}
+.copy-btn:hover{background:#b4d0ff}
+.copy-btn.done{background:#a6e3a1}
+.steps{display:flex;flex-direction:column}
+.step{display:flex;gap:14px;padding:12px 0;border-top:1px solid #1e1e2e;font-size:14px;color:#a6adc8;line-height:1.5;align-items:flex-start}
+.num{background:#313244;color:#89b4fa;border-radius:50%;width:24px;height:24px;min-width:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-top:2px}
+.hint{font-size:12px;color:#6c7086;margin-top:3px}
+kbd{display:inline-block;background:#313244;border:1px solid #45475a;border-radius:5px;padding:1px 7px;font-size:12px;font-family:monospace;color:#cdd6f4}
+.expiry{font-size:11px;color:#f38ba8;text-align:center;margin-top:18px}
 </style></head>
 <body><div class="card">
   <div class="logo">ΠΑΝ</div>
   <div class="tagline">Personal AI Network — ${osLabel}</div>
   <h2>Connect this computer to PAN</h2>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">1</div>
-      <div style="flex:1"><a class="btn" href="${downloadUrl}">⬇ Download Installer</a></div>
-    </div>
-    ${afterDownload}
-    <div class="step">
-      <div class="step-num" style="background:#a6e3a1;color:#0a0a0f">✓</div>
-      <div>A black window will open, install PAN, then close. You're done!</div>
-    </div>
+  <div class="copy-box">
+    <div class="copy-cmd">${installCmd}</div>
+    <button class="copy-btn" id="cpyBtn" onclick="
+      navigator.clipboard.writeText(${JSON.stringify(installCmd)}).then(()=>{
+        const b=document.getElementById('cpyBtn');
+        b.textContent='✓ Copied!'; b.classList.add('done');
+        setTimeout(()=>{b.textContent='Copy Command'; b.classList.remove('done')},3000);
+      })">Copy Command</button>
   </div>
-  <div class="expiry">⏱ This link expires in 5 minutes — generate a new one if needed</div>
+  <div class="steps">${steps}</div>
+  <div class="expiry">⏱ This link expires in 5 minutes</div>
 </div></body></html>`);
   }
 
