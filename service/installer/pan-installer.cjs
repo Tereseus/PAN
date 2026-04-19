@@ -690,30 +690,71 @@ async function startInstall() {
   });
 }
 
-// Boot — scan takes up to ~7s (HTTP LAN scan is the slow one)
-loadHubs();
-// Show install button and link input while scanning (don't wait for scan to finish)
-setTimeout(updateInstallBtn, 500);
+// Direct mode: hub URL came from filename — skip scan, auto-connect
+const isDirect = new URLSearchParams(location.search).get('direct') === '1';
+if (isDirect) {
+  // Hide scan and link-paste UI entirely
+  document.querySelectorAll('.card').forEach(c => c.style.display = 'none');
+  document.getElementById('installBtn').style.display = 'none';
 
-// Auto-read clipboard: if it contains a PAN invite link, pre-fill and auto-install
-(async function tryClipboard() {
-  try {
-    const text = (await navigator.clipboard.readText()).trim();
-    if (/\/install\/pan-[a-f0-9]+/.test(text)) {
-      const input = document.getElementById('linkInput');
-      input.value = text;
-      selectedHub = null;
-      updateInstallBtn();
-      // Show banner so user knows what's happening
-      const banner = document.createElement('div');
-      banner.style.cssText = 'background:#1a2a1a;border:1px solid #3fb950;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:13px;color:#3fb950;text-align:center';
-      banner.textContent = '✓ Invite link found — connecting in 3 seconds...';
-      document.getElementById('installBtn').before(banner);
-      // Auto-start after short delay so user can see what's happening
-      setTimeout(() => { banner.remove(); startInstall(); }, 3000);
-    }
-  } catch { /* clipboard access denied — user can paste manually */ }
-})();
+  // Show connecting banner
+  const banner = document.createElement('div');
+  banner.style.cssText = 'background:#0d2137;border:2px solid #89b4fa;border-radius:12px;padding:24px;text-align:center;margin:20px 0';
+  banner.innerHTML = '<div style="font-size:22px;margin-bottom:8px">🔗</div><div style="color:#89b4fa;font-size:16px;font-weight:700">Connecting to your PAN hub...</div><div style="color:#6c7086;font-size:13px;margin-top:6px">Hub address was read from installer — no scan needed</div>';
+  document.body.appendChild(banner);
+
+  // Show log box for progress
+  const logCard = document.getElementById('installCard');
+  logCard.style.display = 'block';
+
+  // Auto-subscribe to SSE events from Node.js runInstall
+  const es = new EventSource('/events');
+  es.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.type === 'log') {
+        const box = document.getElementById('logBox');
+        box.textContent += d.msg + '\n';
+        box.scrollTop = box.scrollHeight;
+      } else if (d.type === 'progress') {
+        document.getElementById('progFill').style.width = Math.min(d.mb * 5, 90) + '%';
+      } else if (d.type === 'done') {
+        es.close();
+        banner.remove();
+        document.getElementById('progFill').style.width = '100%';
+        const card = document.getElementById('doneCard');
+        card.style.display = 'block';
+        document.getElementById('doneTitle').innerHTML = d.ok
+          ? '<span class="success">✓ Connected! Waiting for hub owner to approve...</span>'
+          : '<span class="error">✗ Connection failed: ' + (d.msg || '') + '</span>';
+        document.getElementById('doneMsg').textContent = d.ok ? 'Check your PAN dashboard to approve this device.' : '';
+      }
+    } catch {}
+  };
+} else {
+  // Normal mode: scan takes up to ~7s (HTTP LAN scan is the slow one)
+  loadHubs();
+  setTimeout(updateInstallBtn, 500);
+
+  // Auto-read clipboard: if it contains a PAN invite link, pre-fill and auto-install
+  (async function tryClipboard() {
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (/\/install\/pan-[a-f0-9]+/.test(text)) {
+        const input = document.getElementById('linkInput');
+        input.value = text;
+        selectedHub = null;
+        updateInstallBtn();
+        const banner = document.createElement('div');
+        banner.style.cssText = 'background:#1a2a1a;border:1px solid #3fb950;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:13px;color:#3fb950;text-align:center';
+        banner.textContent = '✓ Invite link found — connecting in 3 seconds...';
+        document.getElementById('installBtn').before(banner);
+        setTimeout(() => { banner.remove(); startInstall(); }, 3000);
+      }
+    } catch {}
+  })();
+}
+
 </script>
 </body>
 </html>`;
@@ -822,12 +863,14 @@ async function main() {
   console.log('  (Keep this window open while installing)');
   console.log('');
 
-  // Fast path: filename has encoded config — skip GUI, install directly
+  // Fast path: filename has encoded config — connect directly, no scan needed
   const filenameCfg = tryReadConfigFromFilename();
   if (filenameCfg) {
-    console.log('  Config detected from filename — starting GUI in direct mode...');
+    console.log('  Config detected from filename — connecting directly...');
     startGUI();
-    // Wait for browser to open and SSE client to connect, then auto-install
+    // Open browser in direct mode (skips scan UI, auto-subscribes to SSE)
+    setTimeout(() => openBrowser(`http://localhost:${GUI_PORT}/?direct=1`), 800);
+    // Give browser a moment to connect SSE, then start install
     setTimeout(() => {
       runInstall(filenameCfg).catch(e => done(false, e.message));
     }, 2500);
