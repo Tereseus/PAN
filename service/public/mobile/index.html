@@ -195,11 +195,13 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 
 <!-- Top bar with org name + project selector -->
 <div class="topbar" id="topbar">
-  <h1 id="topbar-title" onclick="showOrgSwitcher()" style="cursor:pointer">Π</h1>
+  <h1 id="topbar-title" onclick="showOrgSwitcher()" style="cursor:pointer;white-space:nowrap">Π</h1>
+  <span id="org-badge-lock" style="display:none;font-size:14px;margin-left:-4px"></span>
   <button id="refresh-btn" onclick="refreshCurrentTab()" style="background:none;border:none;color:var(--accent);padding:0 4px;font-size:18px;cursor:pointer;line-height:1">↻</button>
-  <select id="project-select" onchange="onProjectChange()" style="flex:1;max-width:140px">
+  <select id="project-select" onchange="onProjectChange()" style="flex:1;min-width:0;max-width:130px">
     <option value="">Project...</option>
   </select>
+  <span id="org-badge-text" style="display:none"></span>
 </div>
 
 <!-- Session tab row — PTY sessions -->
@@ -1773,65 +1775,17 @@ function autoGrowTextarea(el) {
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-// Keyboard visibility — keep input bar above the soft keyboard on Android WebView.
-// Uses interactive-widget=resizes-visual so window.innerHeight stays constant (= full screen).
-// visualViewport.height shrinks when keyboard appears — the difference is keyboard height.
+// Keyboard visibility — interactive-widget=resizes-content handles positioning natively:
+// the layout viewport shrinks when the keyboard opens, so position:fixed; bottom:0
+// is already above the keyboard with no JS needed. This IIFE just scrolls to bottom
+// so the latest messages stay visible when the keyboard opens.
 (function() {
-  const inputBar = document.getElementById('input-bar');
   const chatInput = document.getElementById('chat-input');
   const chatMsgs = document.getElementById('chat-msgs');
-  if (!inputBar || !chatInput) return;
-
-  // Capture full-screen height at load time (before any keyboard appears)
-  const fullHeight = window.innerHeight;
-  const BASE_MSG_PADDING = 64; // matches .messages padding-bottom
-
-  function applyKeyboardOffset(kbHeight) {
-    const h = Math.max(0, Math.round(kbHeight));
-    inputBar.style.bottom = h + 'px';
-    // Also push message list up so content doesn't hide behind input+keyboard
-    if (chatMsgs) chatMsgs.style.paddingBottom = (BASE_MSG_PADDING + h) + 'px';
-  }
-
-  function adjustForKeyboard() {
-    if (!window.visualViewport) return;
-    // With resizes-visual: layout viewport stays full height, visual shrinks for keyboard
-    const kbHeight = fullHeight - window.visualViewport.height - window.visualViewport.offsetTop;
-    applyKeyboardOffset(kbHeight);
-    // Scroll chat to bottom so latest message stays visible
-    if (chatMsgs && kbHeight > 50) {
-      setTimeout(() => { chatMsgs.scrollTop = chatMsgs.scrollHeight; }, 50);
-    }
-  }
-
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', adjustForKeyboard);
-    window.visualViewport.addEventListener('scroll', adjustForKeyboard);
-  }
-
-  // Fallback: window resize for WebViews that don't fire visualViewport events
-  let lastWindowHeight = fullHeight;
-  window.addEventListener('resize', () => {
-    const h = window.innerHeight;
-    if (Math.abs(h - lastWindowHeight) > 50) {
-      // Layout also resized — keyboard likely opened/closed
-      applyKeyboardOffset(Math.max(0, lastWindowHeight - h));
-    }
-  });
-
-  // On focus: re-run after keyboard animation settles (Android is slow)
-  chatInput.addEventListener('focus', () => {
-    [200, 400, 700].forEach(delay => {
-      setTimeout(adjustForKeyboard, delay);
-    });
-  });
-
-  // On blur: keyboard closing — reset after animation
-  chatInput.addEventListener('blur', () => {
-    setTimeout(() => {
-      applyKeyboardOffset(0);
-    }, 150);
-  });
+  if (!chatInput || !chatMsgs) return;
+  function scrollBottom() { chatMsgs.scrollTop = chatMsgs.scrollHeight; }
+  chatInput.addEventListener('focus', () => { [150, 350, 600].forEach(d => setTimeout(scrollBottom, d)); });
+  window.addEventListener('resize', () => setTimeout(scrollBottom, 100));
 })();
 
 // ========== REFRESH BUTTON ==========
