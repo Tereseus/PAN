@@ -9,6 +9,10 @@
 
 import { insert, all, get, run } from './db.js';
 import { claude } from './claude.js';
+import { execSync } from 'child_process';
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 let timer = null;
 
@@ -36,7 +40,25 @@ const SOURCES = [
   },
 ];
 
-// Ensure scout table exists
+// Ensure tables exist
+try {
+  run(`CREATE TABLE IF NOT EXISTS local_apps (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    url TEXT NOT NULL,
+    exe_found TEXT,
+    installed INTEGER DEFAULT 0,
+    browser_only INTEGER DEFAULT 0,
+    icon TEXT,
+    module_id TEXT,
+    last_scanned TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(id)
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS idx_local_apps_category ON local_apps(category)`);
+  run(`CREATE INDEX IF NOT EXISTS idx_local_apps_installed ON local_apps(installed)`);
+} catch {}
+
 try {
   run(`CREATE TABLE IF NOT EXISTS scout_findings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,8 +325,20 @@ function updateFinding(id, status) {
 }
 
 function startScout(intervalMs = 24 * 60 * 60 * 1000) {
-  const run = async () => {
+  // Scan local apps immediately on startup (fast, no AI needed)
+  setTimeout(async () => {
     try {
+      const matched = await scanLocalApps();
+      console.log(`[PAN Scout] Initial local scan: ${matched} apps discovered`);
+    } catch (e) {
+      console.error('[PAN Scout] Local scan failed:', e.message);
+    }
+  }, 5000);
+
+  const runRemote = async () => {
+    try {
+      // Re-scan local apps too (picks up new installs)
+      await scanLocalApps();
       await scout();
       const { reportServiceRun } = await import('./steward.js');
       reportServiceRun('scout');
@@ -313,8 +347,8 @@ function startScout(intervalMs = 24 * 60 * 60 * 1000) {
       console.error('[PAN Scout]', err.message);
     }
   };
-  setTimeout(run, 30000);
-  timer = setInterval(run, intervalMs);
+  setTimeout(runRemote, 30000);
+  timer = setInterval(runRemote, intervalMs);
   console.log(`[PAN Scout] Running every ${Math.round(intervalMs / 3600000)}h`);
 }
 
@@ -323,4 +357,150 @@ function stopScout() {
   timer = null;
 }
 
-export { scout, startScout, stopScout, getFindings, updateFinding };
+// ─── Local App Discovery ───────────────────────────────────────────
+// Scans Windows for installed applications that have web equivalents.
+// Matches against known-web-apps.json registry.
+// Results stored in local_apps table and served via /api/v1/wrap/services.
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function loadKnownApps() {
+  try {
+    const raw = readFileSync(join(__dirname, 'modules', 'known-web-apps.json'), 'utf-8');
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error('[PAN Scout] Failed to load known-web-apps.json:', e.message);
+    return { apps: [], categories: {} };
+  }
+}
+
+// Scan Windows Start Menu and registry for installed apps
+function scanInstalledApps() {
+  const found = new Set();
+  const paths = [
+    process.env.APPDATA ? join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs') : null,
+    'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs',
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs') : null,
+    process.env.PROGRAMFILES || 'C:\\Program Files',
+    process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)',
+  ].filter(Boolean);
+
+  // Method 1: Search Start Menu shortcuts for app names
+  for (const dir of paths) {
+    try {
+      const output = execSync(`dir /s /b "${dir}" 2>nul`, {
+        encoding: 'utf-8',
+        timeout: 10000,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      });
+      for (const line of output.split('\n')) {
+        const name = line.trim().split('\\').pop()?.replace(/\.lnk$/i, '').replace(/\.exe$/i, '');
+        if (name) found.add(name);
+      }
+    } catch {}
+  }
+
+  // Method 2: Registry scan for installed programs (display names)
+  try {
+    const regPaths = [
+      'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+      'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+      'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    ];
+    for (const regPath of regPaths) {
+      try {
+        const output = execSync(
+          `reg query "${regPath}" /s /v DisplayName 2>nul`,
+          { encoding: 'utf-8', timeout: 10000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }
+        );
+        for (const line of output.split('\n')) {
+          const match = line.match(/DisplayName\s+REG_SZ\s+(.+)/i);
+          if (match) found.add(match[1].trim());
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return found;
+}
+
+// Match installed apps against known web apps registry
+async function scanLocalApps() {
+  const platform = process.platform;
+  if (platform !== 'win32') {
+    console.log('[PAN Scout] Local app scan only supported on Windows currently');
+    return 0;
+  }
+
+  console.log('[PAN Scout] Scanning for installed applications...');
+  const known = loadKnownApps();
+  const installed = scanInstalledApps();
+  console.log(`[PAN Scout] Found ${installed.size} installed programs, matching against ${known.apps.length} known web apps...`);
+
+  let matched = 0;
+
+  for (const app of known.apps) {
+    // Check if any of the app's known names appear in installed programs
+    const isInstalled = app.names.some(name =>
+      [...installed].some(prog =>
+        prog.toLowerCase().includes(name.toLowerCase())
+      )
+    );
+
+    // Find which exe was matched (if any)
+    let exeFound = null;
+    if (!app.browser_only) {
+      for (const name of app.names) {
+        const match = [...installed].find(prog => prog.toLowerCase().includes(name.toLowerCase()));
+        if (match) { exeFound = match; break; }
+      }
+    }
+
+    try {
+      run(`INSERT INTO local_apps (id, name, category, url, exe_found, installed, browser_only, icon, last_scanned)
+           VALUES (:id, :name, :cat, :url, :exe, :installed, :browser, :icon, datetime('now','localtime'))
+           ON CONFLICT(id) DO UPDATE SET
+             exe_found = :exe,
+             installed = :installed,
+             last_scanned = datetime('now','localtime')`, {
+        ':id': app.id,
+        ':name': app.title,
+        ':cat': app.category,
+        ':url': app.url,
+        ':exe': exeFound || null,
+        ':installed': isInstalled ? 1 : 0,
+        ':browser': app.browser_only ? 1 : 0,
+        ':icon': app.icon || null,
+      });
+      if (isInstalled) matched++;
+    } catch (e) {
+      console.error(`[PAN Scout] Failed to store ${app.id}:`, e.message);
+    }
+  }
+
+  console.log(`[PAN Scout] Local scan complete. ${matched} apps matched out of ${known.apps.length} known.`);
+  return matched;
+}
+
+// Get discovered local apps (for the Apps widget)
+function getLocalApps({ category, installed_only = true } = {}) {
+  let sql = 'SELECT * FROM local_apps';
+  const conditions = [];
+  const params = {};
+
+  if (installed_only) {
+    conditions.push('installed = 1');
+  }
+  if (category) {
+    conditions.push('category = :cat');
+    params[':cat'] = category;
+  }
+
+  if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
+  sql += ' ORDER BY category, name';
+
+  return all(sql, params);
+}
+
+export { scout, startScout, stopScout, getFindings, updateFinding, scanLocalApps, getLocalApps };

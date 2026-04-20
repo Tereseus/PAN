@@ -33,6 +33,12 @@ object ScopeHolder {
     @Volatile var scope: String = "main"
 }
 
+/** Holds the current Tailscale hostname (e.g. "pan-632ad7") so the server can track
+ *  which tailnet node belongs to this device. Set by PanVpnService after connect. */
+object TailscaleHostnameHolder {
+    @Volatile var hostname: String = ""
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
@@ -59,11 +65,15 @@ object NetworkModule {
                     request = request.newBuilder().url(newUrl).build()
                 }
 
-                request = request.newBuilder()
+                val reqBuilder = request.newBuilder()
                     .addHeader("X-Device-Name", DeviceNameHolder.name)
                     .addHeader("X-Device-Id", android.os.Build.MODEL.lowercase().replace(" ", "-"))
                     .addHeader("X-PAN-Scope", ScopeHolder.scope)
-                    .build()
+                val tsHost = TailscaleHostnameHolder.hostname
+                if (tsHost.isNotEmpty()) {
+                    reqBuilder.addHeader("X-Tailscale-Hostname", tsHost)
+                }
+                request = reqBuilder.build()
                 chain.proceed(request)
             })
             .addInterceptor(HttpLoggingInterceptor().apply {

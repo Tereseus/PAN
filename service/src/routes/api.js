@@ -181,11 +181,11 @@ router.post('/vision', async (req, res) => {
   }
 
   try {
-    const { claudeVision } = await import('../claude.js');
+    const { analyzeImage } = await import('../claude.js');
     const prompt = question || 'What is in this image? Describe it concisely in 1-3 sentences.';
     console.log(`[PAN Vision] Analyzing image (${image_base64.length} chars), question: "${prompt.slice(0, 80)}"`);
 
-    const description = await claudeVision(prompt, image_base64, { caller: 'vision' });
+    const description = await analyzeImage(prompt, image_base64, { caller: 'vision' });
     console.log(`[PAN Vision] Result: ${description.slice(0, 100)}`);
 
     // Save the image to disk
@@ -209,8 +209,8 @@ router.post('/vision', async (req, res) => {
 
     res.json({ description });
   } catch (err) {
-    console.error('[PAN Vision] Error:', err.message);
-    res.status(500).json({ error: 'Vision analysis failed', description: 'I could not analyze the image right now.' });
+    console.error('[PAN Vision] Error:', err.message, err.stack);
+    res.status(500).json({ error: 'Vision analysis failed', detail: err.message, description: 'I could not analyze the image right now.' });
   }
 });
 
@@ -793,42 +793,35 @@ router.get('/anonymize/stats', (req, res) => {
 // GET /api/v1/ai/models — returns available models, live from Anthropic API if key exists
 // Falls back to a hardcoded list of known models so the settings dropdown always has options.
 const KNOWN_CLAUDE_MODELS = [
-  { id: 'claude-haiku-4-5-20251001',  name: 'Claude Haiku 4.5',  tier: 'fast'    },
-  { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5', tier: 'balanced' },
-  { id: 'claude-sonnet-4-6-20250514', name: 'Claude Sonnet 4.6', tier: 'balanced' },
-  { id: 'claude-opus-4-6-20250610',   name: 'Claude Opus 4.6',   tier: 'powerful' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5',  tier: 'fast'    },
+  { id: 'claude-sonnet-4-6',         name: 'Claude Sonnet 4.6', tier: 'balanced' },
+  { id: 'claude-opus-4-6',           name: 'Claude Opus 4.6',   tier: 'powerful' },
+  { id: 'claude-opus-4-7',           name: 'Claude Opus 4.7',   tier: 'powerful' },
 ];
 
 router.get('/ai/models', async (req, res) => {
   try {
-    const keyRow = get("SELECT value FROM settings WHERE key = 'anthropic_api_key'");
-    const apiKey = keyRow?.value?.replace(/^"|"$/g, '').trim();
-
-    if (apiKey) {
-      // Fetch live from Anthropic API
-      const resp = await fetch('https://api.anthropic.com/v1/models', {
-        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        const models = (data.data || [])
-          .filter(m => m.id.startsWith('claude-'))
-          .sort((a, b) => b.id.localeCompare(a.id))
-          .map(m => ({
-            id: m.id,
-            name: m.display_name || m.id,
-            tier: m.id.includes('haiku') ? 'fast' : m.id.includes('opus') ? 'powerful' : 'balanced',
-            live: true,
-          }));
-        return res.json({ models, source: 'anthropic_api' });
-      }
-    }
-
-    // No key or API failed — return hardcoded list
-    res.json({ models: KNOWN_CLAUDE_MODELS, source: 'hardcoded' });
+    const local = getLocalModels();
+    res.json({ models: KNOWN_CLAUDE_MODELS, local, source: 'hardcoded' });
   } catch (err) {
-    res.json({ models: KNOWN_CLAUDE_MODELS, source: 'hardcoded', error: err.message });
+    res.json({ models: KNOWN_CLAUDE_MODELS, local: [], source: 'hardcoded', error: err.message });
   }
 });
+
+function getLocalModels() {
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'custom_models'");
+    if (row?.value) {
+      const models = JSON.parse(row.value);
+      return models.map(m => ({
+        id: m.id,
+        name: m.name || m.id,
+        provider: m.provider || 'local',
+        tier: 'local',
+      }));
+    }
+  } catch {}
+  return [];
+}
 
 export default router;

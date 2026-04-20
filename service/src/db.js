@@ -191,6 +191,13 @@ if (dsCols.length > 0 && !dsCols.includes('policy')) {
   console.log('[PAN DB] device_sensors policy columns added.');
 }
 
+// Migration: add tailscale_hostname to devices if missing
+const devCols = db.pragma('table_info(devices)').map(c => c.name);
+if (devCols.length > 0 && !devCols.includes('tailscale_hostname')) {
+  console.log('[PAN DB] Adding tailscale_hostname to devices...');
+  db.exec(`ALTER TABLE devices ADD COLUMN tailscale_hostname TEXT`);
+}
+
 // Migration: Tier 0 org foundation — add org_id columns to existing tables
 // This runs the same logic as migrations/tier0-org-foundation.js but inline on startup,
 // so the migration is automatic (no manual CLI step required).

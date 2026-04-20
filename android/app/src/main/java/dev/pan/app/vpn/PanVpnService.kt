@@ -9,6 +9,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.pan.app.R
+import dev.pan.app.di.TailscaleHostnameHolder
 import kotlinx.coroutines.*
 import panvpn.Panvpn
 
@@ -76,18 +77,31 @@ class PanVpnService : VpnService() {
             }
 
             val prefs = getSharedPreferences("pan_vpn", Context.MODE_PRIVATE)
-            // Stable hostname based on device — prevents duplicate tailnet entries on reinstall
-            val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
-            val hostname = prefs.getString("hostname", null) ?: "pan-${deviceId.take(6)}"
+            // Human-readable hostname: "pan-pixel-10-pro" — recognizable in Tailscale admin
+            // Uses device model name so you can identify every device at a glance
+            val modelSlug = android.os.Build.MODEL.lowercase()
+                .replace(Regex("[^a-z0-9]+"), "-")
+                .trim('-')
+            val hostname = "pan-$modelSlug"
             prefs.edit().putString("hostname", hostname).apply()
             val authKey = prefs.getString("auth_key", "") ?: ""
 
-            val dataDir = filesDir.absolutePath
+            // Use external storage for tsnet state — survives app reinstalls
+            // This prevents creating a new Tailscale node identity on every install
+            val externalDir = getExternalFilesDir("tsnet")
+            val dataDir = if (externalDir != null && (externalDir.exists() || externalDir.mkdirs())) {
+                Log.i(TAG, "Using external tsnet state: ${externalDir.absolutePath}")
+                externalDir.absolutePath
+            } else {
+                Log.w(TAG, "External storage unavailable, falling back to internal")
+                filesDir.absolutePath
+            }
 
             os.Setenv("TMPDIR", dataDir)
             os.Setenv("HOME", dataDir)
 
             Log.i(TAG, "Starting tsnet as '$hostname'...")
+            TailscaleHostnameHolder.hostname = hostname
             val result = Panvpn.start(dataDir, hostname, authKey)
             prefs.edit().putBoolean("enabled", true).apply()
 

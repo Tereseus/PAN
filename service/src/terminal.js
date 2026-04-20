@@ -439,6 +439,9 @@ async function startTerminalServer(httpServer) {
     } else if (pathname === '/ws/whisper') {
       // Proxy to Whisper streaming server on port 7783
       proxyWhisperWs(request, socket, head);
+    } else if (pathname === '/ws/client') {
+      // Handled by client-manager — do not interfere
+      return;
     } else {
       // Unknown paths: reject fast so misconfigured probes/clients don't
       // eat their timeout budget. Previously we let the socket hang which

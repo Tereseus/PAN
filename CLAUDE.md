@@ -200,33 +200,52 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### Recent Conversation
-**Claude** (2026-04-17 08:58:18): Server healthy with all model changes. Here's what just changed:
+### This Tab *(session: 511445f3-6a8)*
+**User** (2026-04-19 22:03:29): What are you talking about You you shouldn't respond to background task conclusions those are those are things that you're you're saying you're you're responding to your own things No we definitely were going to design the system I'm pretty sure we a
+**Claude** (2026-04-19 22:04:08): Saved. That's a real thing we need to build — agent names, status, what each one is doing, all visible in the dashboard so you always know who you're talking to and background work never floods the chat.
 
-**7 files switched — all llama3.2 references replaced:**
+**Where we got to with TED:**
 
-| File | Was | Now |
-|---|---|---|
-| `memory/embeddings.js` | llama3.2 / 307
-**User** (2026-04-17 09:49:16): OK so this is a much better I can see the installation guide here so it says tail scale here for the component but shouldn't see a wire guard so they can put whatever they want right so these are the 
-**Claude** (2026-04-17 09:54:46): Reopened in PAN's window. Here's what changed in v1.1:
+HTTP polling t
+**User** (2026-04-19 22:04:14): Why don't you remove all these other devices that I have that are not relevant so I can actually see if it connects correctly
+**Claude** (2026-04-19 22:04:39): All cleared. Now go to **Add Device** in the dashboard, grab the install command, run it on TED — you'll see exactly one device appear.
+**User** (2026-04-19 22:10:49): OK I guess it's I guess it's connected now I already have the devices open on the dashboard and it didn't appear I had to go to the approvals which is a widget in the dashboard and then come back here to the devices for it to actually show the approv
+**Claude** (2026-04-19 22:11:21): TED is live and responding. `pong` came back via HTTP queue (through Cloudflare, as expected). Want me to run a shell command on it to prove it?
+**User** (2026-04-19 22:11:57): Umm so yeah I mean can you Yeah can you Yeah just run a shell command I don't know what you what are you gonna do hello world But like OK yeah just do it just so we can prove and then I have a ton a billion questions
+**Claude** (2026-04-19 22:12:15): ```
+Hello from TED
+Ted
+ted\tzuridis
+```
 
-**PAN Service breakdown** — now shows all 9 sub-components indented under it: Express server, SQLite+SQLCipher, sqlite-vec, SvelteKit dashboard,
-**User** (2026-04-17 10:04:35): Is it is the sensitivity rou router in the privacy compute is that the same thing What what is the difference between those those look like the same thing. So the Scout will also look for all the appl
-**Claude** (2026-04-17 10:04:57): **Sensitivity Router vs Privacy Compute — different jobs:**
+That's TED's actual machine responding — hostname `Ted`, user `tzuridis`. Fire away with your questions.
 
-**Sensitivity Router** is the bouncer at the door. It looks at your query and classifies it 0-3: "Is this about passwords? Level 3, local o
+### Recent Project Work *(session: 6238608c-d2e)*
+**Claude** (2026-04-19 16:46:08): Push via GitHub Desktop (it has full token scope). Open it, click **Push origin**, done. Then to trigger the release build:
+
+```
+git tag v0.3.1
+git push origin v0.3.1
+```
+
+Or push the tag from GitHub Desktop's **Repository → Push** after the main pus
+**User** (2026-04-19 16:47:06): What are you talking about your you push why am I pushing what are you talking about you push did you push And you you push to GitHub and then you restart via the settings for the carrier restart
+**Claude** (2026-04-19 16:51:22): Done. Here's what the QR flow looks like now:
+
+1. Scan QR → page loads → **"⬇ Download PAN Installer"** button at the top, links to `github.com/Tereseus/PAN/releases/latest/download/pan-installer-win.exe`
+2. GitHub is a trusted domain — Chrome and Ed
+**Claude** (2026-04-19 16:51:47): Background upload finished clean. Everything's live — the download button on the QR page now points to a real, published binary at GitHub releases.
+**User** (2026-04-19 16:55:08): OK I scan the QR code it shows the invite link but it's really fucked up Umm I have a screen shot of it on my phone if you want to look at it I clicked the download it actually downloads an EXE but windows blocks the EXE it says windows protected you
+**User** (2026-04-19 16:56:50): I can't send you the screen shot it doesn't L it doesn't work on the phone but you have access to my phone to look at the screenshots I plugged my phone in It's actually a photo not a screen shot We were supposed to have to be ability to to upload ph
 
 ### Open Tasks
-- [backlog P2] Compose email — send returns HTTP 400, no email service wired
-- [backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [backlog P1] PAN.bat respawn loop failed to restart today
-- [todo P1] Multi-channel send — Discord, email, Signal (never end-to-end tested)
-- [in_progress P1] Tauri wrappers around apps — Discord, Slack, WhatsApp, Instagram, any web/desktop app
-- [todo P1] PAN-to-PAN onboarding via QR code
-- [todo P1] PAN client — lightweight app for secondary computers
-- [in_progress] Voice marketplace ($1-2 each)
-- [todo] Voice personality packs
-- [in_progress] Cloud training for no-GPU users
+- [#394 backlog P2] Compose email — send returns HTTP 400, no email service wired
+- [#376 backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
+- [#382 backlog P1] PAN.bat respawn loop failed to restart today
+- [#51 in_progress] Voice marketplace ($1-2 each)
+- [#52 todo] Voice personality packs
+- [#53 in_progress] Cloud training for no-GPU users
+- [#54 tod
 
+[... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

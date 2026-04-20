@@ -85,6 +85,18 @@ export function checkInviteToken(token) {
       last_seen INTEGER,
       org_id TEXT
     )`,
+    `CREATE TABLE IF NOT EXISTS client_command_queue (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      params TEXT NOT NULL DEFAULT '{}',
+      queued_at INTEGER NOT NULL,
+      picked_up_at INTEGER,
+      result TEXT,
+      error TEXT,
+      completed_at INTEGER
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_ccq_device_pending ON client_command_queue(device_id, picked_up_at)`,
   ];
   for (const sql of migrations) {
     try { run(sql); } catch {} // Ignore duplicate column errors
@@ -309,6 +321,39 @@ function handleHeartbeat(deviceId, msg) {
 // Pending command replies: commandId → { resolve, reject, timer }
 const pendingCommands = new Map();
 
+// HTTP command queue: deviceId → [{ id, type, params }]
+// Used when device connects via HTTP polling (Cloudflare tunnel) instead of WebSocket
+const httpCommandQueue = new Map();
+// Long-poll waiters: deviceId → { res, timer }
+const httpPollWaiters = new Map();
+
+/** Called by GET /api/v1/client/poll — holds connection until command or timeout */
+export function registerHttpPollWaiter(deviceId, res, timeoutMs = 25_000) {
+  const queue = httpCommandQueue.get(deviceId);
+  if (queue?.length) {
+    const cmd = queue.shift();
+    return res.json({ ok: true, command: cmd });
+  }
+  const existing = httpPollWaiters.get(deviceId);
+  if (existing) { clearTimeout(existing.timer); try { existing.res.json({ ok: true, command: null }); } catch {} }
+  const timer = setTimeout(() => {
+    httpPollWaiters.delete(deviceId);
+    try { res.json({ ok: true, command: null }); } catch {}
+  }, timeoutMs);
+  httpPollWaiters.set(deviceId, { res, timer });
+}
+
+/** Called by POST /api/v1/client/result — resolves the sendToClient promise */
+export function resolveHttpCommand(cmdId, result, error) {
+  const pending = pendingCommands.get(cmdId);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingCommands.delete(cmdId);
+    if (error) pending.reject(new Error(error));
+    else pending.resolve(result);
+  }
+}
+
 function handleCommandResult(deviceId, msg) {
   const pending = pendingCommands.get(msg.id);
   if (pending) {
@@ -342,15 +387,18 @@ function handleShellOutput(deviceId, msg) {
  */
 export function sendToClient(deviceId, type, params = {}, timeoutMs = 30_000) {
   const entry = clients.get(deviceId);
-  if (!entry || entry.ws.readyState !== WebSocket.OPEN) {
+  const wsOk = entry && entry.ws.readyState === WebSocket.OPEN;
+  const httpOk = httpPollWaiters.has(deviceId) || httpCommandQueue.has(deviceId);
+
+  if (!wsOk && !httpOk) {
     return Promise.reject(new Error(`Client '${deviceId}' not connected`));
   }
-  if (!entry.trusted) {
-    return Promise.reject(new Error(`Client '${deviceId}' is pending approval — approve it in the Devices panel first`));
+  if (entry && !entry.trusted) {
+    return Promise.reject(new Error(`Client '${deviceId}' is pending approval`));
   }
 
   const id = crypto.randomUUID();
-  const msg = { id, type, ...params };
+  const cmd = { id, type, ...params };
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -358,7 +406,22 @@ export function sendToClient(deviceId, type, params = {}, timeoutMs = 30_000) {
       reject(new Error(`Command timeout: ${type} → ${deviceId}`));
     }, timeoutMs);
     pendingCommands.set(id, { resolve, reject, timer });
-    entry.ws.send(JSON.stringify(msg));
+
+    if (wsOk) {
+      entry.ws.send(JSON.stringify(cmd));
+    } else {
+      // HTTP queue fallback — client is polling via GET /api/v1/client/poll
+      if (!httpCommandQueue.has(deviceId)) httpCommandQueue.set(deviceId, []);
+      const waiter = httpPollWaiters.get(deviceId);
+      if (waiter) {
+        // Long-poll connection waiting — deliver immediately
+        clearTimeout(waiter.timer);
+        httpPollWaiters.delete(deviceId);
+        try { waiter.res.json({ ok: true, command: cmd }); } catch {}
+      } else {
+        httpCommandQueue.get(deviceId).push(cmd);
+      }
+    }
   });
 }
 

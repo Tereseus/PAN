@@ -42,9 +42,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MODEL_TIERS = {
   none:        { label: 'None',        color: '#6c7086', description: 'No AI model needed' },
-  local:       { label: 'Local 7B',    color: '#a6e3a1', description: 'Local Ollama (embeddings, simple tasks)' },
-  reasoning:   { label: 'Cloud 120B+', color: '#89b4fa', description: 'Cerebras 120B+ (summarization, extraction, analysis)' },
-  interactive: { label: 'Claude',      color: '#f9e2af', description: 'Claude via CLI subscription (terminal sessions)' },
+  local:       { label: 'Local',       color: '#a6e3a1', description: 'Local Ollama (qwen3:4b / qwen3-embedding)' },
+  reasoning:   { label: 'Cloud 30B+',  color: '#89b4fa', description: 'Cerebras (Qwen 3 235B / GPT-OSS 120B)' },
+  interactive: { label: 'Claude CLI',  color: '#f9e2af', description: 'Claude via CLI subscription (terminal + automation)' },
 };
 
 // ==================== SERVICE REGISTRY ====================

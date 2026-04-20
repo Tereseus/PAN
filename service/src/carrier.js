@@ -26,7 +26,7 @@ import http from 'http';
 import { fork, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { hostname } from 'os';
 import { killProcessOnPort } from './platform.js';
 import { PerfEngine } from './perf/engine.js';
@@ -76,6 +76,19 @@ function getGitCommit() {
   } catch { return 'unknown'; }
 }
 
+// ==================== Client WebSocket (PAN Client devices) ====================
+async function initClientServer(httpServer) {
+  // MUST run before initTerminal — terminal.js's upgrade handler rejects unknown paths,
+  // so client-manager's /ws/client handler must be registered first.
+  try {
+    const clientManager = await import('./client-manager.js');
+    clientManager.startClientServer(httpServer);
+    console.log('[Carrier] Client WebSocket server initialized (/ws/client)');
+  } catch (err) {
+    console.error('[Carrier] Client server init failed:', err.message);
+  }
+}
+
 // ==================== Terminal (Phase 4: Carrier owns PTY) ====================
 async function initTerminal(httpServer) {
   const terminal = await import('./terminal.js');
@@ -93,6 +106,7 @@ function spawnCraft(port, label = 'primary') {
     PAN_CRAFT_PORT: String(port),
     PAN_CRAFT_ID: String(id),
     PAN_PORT: String(port),
+    PAN_CARRIER_PORT: String(CARRIER_PORT),
   };
 
   const proc = fork(join(__dirname, 'server.js'), [], {
@@ -510,7 +524,20 @@ const carrierServer = http.createServer((req, res) => {
       }
     }
 
-    // 2. Wait long enough for WS frames to flush, then exit non-zero
+    // 2. Write restart marker so the respawned start.js knows this is a
+    //    restart (not a duplicate) and waits for the old process to die
+    //    instead of seeing a "healthy" carrier and exiting with code 0.
+    try {
+      const isDev = process.env.PAN_DEV === '1';
+      const markerDir = join(process.env.LOCALAPPDATA || '', 'PAN', isDev ? 'data-dev' : 'data');
+      mkdirSync(markerDir, { recursive: true });
+      writeFileSync(join(markerDir, '.restart-pending'), Date.now().toString());
+      console.log('[Carrier] Restart marker written');
+    } catch (err) {
+      console.error('[Carrier] Failed to write restart marker:', err.message);
+    }
+
+    // 3. Wait long enough for WS frames to flush, then exit non-zero
     //    so pan-loop.bat respawns us with current disk code.
     setTimeout(() => {
       console.log('[Carrier] 👋 Exiting for respawn…');
@@ -870,6 +897,9 @@ async function triggerClaudeHandoff(session) {
 
 // ==================== Boot ====================
 async function boot() {
+  // Client WS MUST be registered before terminal (terminal rejects unknown upgrade paths)
+  await initClientServer(carrierServer);
+
   // Phase 4: Carrier owns terminal/PTY
   await initTerminal(carrierServer);
 

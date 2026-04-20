@@ -1,0 +1,249 @@
+{
+  "_comment": "Known applications that have web equivalents openable in a Tauri webview. Scout matches installed apps against this list.",
+  "apps": [
+    {
+      "id": "discord",
+      "names": ["Discord"],
+      "exe": ["Discord.exe", "Update.exe"],
+      "url": "https://discord.com/app",
+      "category": "communication",
+      "icon": "discord",
+      "title": "Discord"
+    },
+    {
+      "id": "slack",
+      "names": ["Slack"],
+      "exe": ["slack.exe"],
+      "url": "https://app.slack.com",
+      "category": "communication",
+      "icon": "slack",
+      "title": "Slack"
+    },
+    {
+      "id": "whatsapp",
+      "names": ["WhatsApp"],
+      "exe": ["WhatsApp.exe"],
+      "url": "https://web.whatsapp.com",
+      "category": "communication",
+      "icon": "whatsapp",
+      "title": "WhatsApp"
+    },
+    {
+      "id": "telegram",
+      "names": ["Telegram", "Telegram Desktop"],
+      "exe": ["Telegram.exe"],
+      "url": "https://web.telegram.org",
+      "category": "communication",
+      "icon": "telegram",
+      "title": "Telegram"
+    },
+    {
+      "id": "signal",
+      "names": ["Signal"],
+      "exe": ["Signal.exe"],
+      "url": "https://signal.org/install",
+      "category": "communication",
+      "icon": "signal",
+      "title": "Signal"
+    },
+    {
+      "id": "teams",
+      "names": ["Microsoft Teams", "Teams"],
+      "exe": ["ms-teams.exe", "Teams.exe"],
+      "url": "https://teams.microsoft.com",
+      "category": "communication",
+      "icon": "teams",
+      "title": "Microsoft Teams"
+    },
+    {
+      "id": "spotify",
+      "names": ["Spotify"],
+      "exe": ["Spotify.exe"],
+      "url": "https://open.spotify.com",
+      "category": "media",
+      "icon": "spotify",
+      "title": "Spotify"
+    },
+    {
+      "id": "youtube",
+      "names": ["YouTube"],
+      "exe": [],
+      "url": "https://www.youtube.com",
+      "category": "media",
+      "icon": "youtube",
+      "title": "YouTube",
+      "browser_only": true
+    },
+    {
+      "id": "youtube-music",
+      "names": ["YouTube Music"],
+      "exe": [],
+      "url": "https://music.youtube.com",
+      "category": "media",
+      "icon": "youtube-music",
+      "title": "YouTube Music",
+      "browser_only": true
+    },
+    {
+      "id": "notion",
+      "names": ["Notion"],
+      "exe": ["Notion.exe"],
+      "url": "https://www.notion.so",
+      "category": "productivity",
+      "icon": "notion",
+      "title": "Notion"
+    },
+    {
+      "id": "obsidian",
+      "names": ["Obsidian"],
+      "exe": ["Obsidian.exe"],
+      "url": "https://obsidian.md",
+      "category": "productivity",
+      "icon": "obsidian",
+      "title": "Obsidian",
+      "note": "Desktop app preferred, web version limited"
+    },
+    {
+      "id": "figma",
+      "names": ["Figma"],
+      "exe": ["Figma.exe"],
+      "url": "https://www.figma.com",
+      "category": "creative",
+      "icon": "figma",
+      "title": "Figma"
+    },
+    {
+      "id": "github",
+      "names": ["GitHub Desktop"],
+      "exe": ["GitHubDesktop.exe"],
+      "url": "https://github.com",
+      "category": "development",
+      "icon": "github",
+      "title": "GitHub"
+    },
+    {
+      "id": "vscode-web",
+      "names": ["Visual Studio Code", "VS Code"],
+      "exe": ["Code.exe"],
+      "url": "https://vscode.dev",
+      "category": "development",
+      "icon": "vscode",
+      "title": "VS Code (Web)"
+    },
+    {
+      "id": "gmail",
+      "names": ["Gmail"],
+      "exe": [],
+      "url": "https://mail.google.com",
+      "category": "communication",
+      "icon": "gmail",
+      "title": "Gmail",
+      "browser_only": true
+    },
+    {
+      "id": "outlook",
+      "names": ["Outlook", "Microsoft Outlook"],
+      "exe": ["OUTLOOK.EXE", "olk.exe"],
+      "url": "https://outlook.live.com",
+      "category": "communication",
+      "icon": "outlook",
+      "title": "Outlook"
+    },
+    {
+      "id": "google-drive",
+      "names": ["Google Drive"],
+      "exe": ["GoogleDriveFS.exe"],
+      "url": "https://drive.google.com",
+      "category": "productivity",
+      "icon": "google-drive",
+      "title": "Google Drive"
+    },
+    {
+      "id": "google-docs",
+      "names": ["Google Docs"],
+      "exe": [],
+      "url": "https://docs.google.com",
+      "category": "productivity",
+      "icon": "google-docs",
+      "title": "Google Docs",
+      "browser_only": true
+    },
+    {
+      "id": "twitter",
+      "names": ["X", "Twitter"],
+      "exe": [],
+      "url": "https://x.com",
+      "category": "social",
+      "icon": "twitter",
+      "title": "X (Twitter)",
+      "browser_only": true
+    },
+    {
+      "id": "reddit",
+      "names": ["Reddit"],
+      "exe": [],
+      "url": "https://www.reddit.com",
+      "category": "social",
+      "icon": "reddit",
+      "title": "Reddit",
+      "browser_only": true
+    },
+    {
+      "id": "instagram",
+      "names": ["Instagram"],
+      "exe": [],
+      "url": "https://www.instagram.com",
+      "category": "social",
+      "icon": "instagram",
+      "title": "Instagram",
+      "browser_only": true
+    },
+    {
+      "id": "twitch",
+      "names": ["Twitch"],
+      "exe": [],
+      "url": "https://www.twitch.tv",
+      "category": "media",
+      "icon": "twitch",
+      "title": "Twitch",
+      "browser_only": true
+    },
+    {
+      "id": "chatgpt",
+      "names": ["ChatGPT"],
+      "exe": ["ChatGPT.exe"],
+      "url": "https://chat.openai.com",
+      "category": "productivity",
+      "icon": "chatgpt",
+      "title": "ChatGPT"
+    },
+    {
+      "id": "linear",
+      "names": ["Linear"],
+      "exe": ["Linear.exe"],
+      "url": "https://linear.app",
+      "category": "development",
+      "icon": "linear",
+      "title": "Linear"
+    },
+    {
+      "id": "trello",
+      "names": ["Trello"],
+      "exe": [],
+      "url": "https://trello.com",
+      "category": "productivity",
+      "icon": "trello",
+      "title": "Trello",
+      "browser_only": true
+    }
+  ],
+  "categories": {
+    "communication": "Communication",
+    "media": "Media",
+    "productivity": "Productivity",
+    "creative": "Creative",
+    "development": "Development",
+    "social": "Social",
+    "browsing": "Browsing"
+  }
+}
