@@ -175,14 +175,27 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .org-modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center; }
 .org-modal-overlay.visible { display:flex; }
 .org-modal { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:16px; width:92%; max-width:380px; max-height:82vh; overflow-y:auto; }
-.org-modal-item { font-size:16px; padding:16px 18px; }
-.org-modal h3 { font-size:15px; color:var(--accent); margin-bottom:12px; }
-.org-modal-item { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; cursor:pointer; font-size:15px; }
-.org-modal-item:active { background:var(--bg3); }
+.org-modal-item { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; cursor:pointer; font-size:15px; width:100%; background:var(--bg3); color:var(--text); text-align:left; }
+.org-modal-item:active { background:var(--bg3); opacity:0.7; }
 .org-modal-item.active { border-color:var(--accent); background:rgba(137,180,250,0.1); }
 .org-modal-item .org-item-name { font-size:14px; font-weight:500; }
 .org-modal-item .org-item-role { font-size:11px; color:var(--text2); }
+.org-modal h3 { font-size:15px; color:var(--accent); margin-bottom:12px; }
 .org-modal-close { display:block; width:100%; margin-top:8px; padding:10px; background:var(--bg3); color:var(--text); border:none; border-radius:var(--radius); font-size:14px; cursor:pointer; }
+
+/* Model picker — bottom sheet */
+.model-sheet-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:100; }
+.model-sheet-overlay.visible { display:block; }
+.model-sheet { position:fixed; bottom:0; left:0; right:0; background:var(--bg2); border-radius:16px 16px 0 0; padding-bottom:env(safe-area-inset-bottom,16px); max-height:72vh; overflow-y:auto; z-index:101; transform:translateY(100%); transition:transform 0.22s ease-out; }
+.model-sheet-overlay.visible .model-sheet { transform:translateY(0); }
+.model-sheet-handle { width:36px; height:4px; background:var(--bg3); border-radius:2px; margin:10px auto 4px; }
+.model-sheet-title { font-size:12px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; padding:8px 16px 12px; border-bottom:1px solid var(--border); }
+.model-sheet-item { display:flex; align-items:center; justify-content:space-between; width:100%; padding:18px 20px; background:none; border:none; border-bottom:1px solid var(--border); color:var(--text); font-size:17px; text-align:left; cursor:pointer; }
+.model-sheet-item:last-of-type { border-bottom:none; }
+.model-sheet-item:active { background:var(--bg3); }
+.model-sheet-item.active { color:var(--accent); }
+.model-sheet-item .model-check { font-size:16px; color:var(--accent); }
+.model-sheet-close { display:block; width:calc(100% - 32px); margin:12px 16px; padding:14px; background:var(--bg3); color:var(--text); border:none; border-radius:var(--radius); font-size:15px; font-weight:600; cursor:pointer; }
 
 /* Incognito toggle button */
 .incognito-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:var(--radius); border:1px solid var(--border); font-size:13px; font-weight:500; cursor:pointer; }
@@ -219,18 +232,18 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   </div>
 </div>
 
-<!-- Model picker modal -->
-<div class="org-modal-overlay" id="model-modal" onclick="if(event.target===this)hideModelPicker()">
-  <div class="org-modal">
-    <h3>AI Model</h3>
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <button class="org-modal-item" onclick="selectModel('claude-sonnet-4-5')">Sonnet 4.5</button>
-      <button class="org-modal-item" onclick="selectModel('claude-sonnet-4-6')">Sonnet 4.6</button>
-      <button class="org-modal-item" onclick="selectModel('claude-opus-4-6')">Opus 4.6</button>
-      <button class="org-modal-item" onclick="selectModel('claude-haiku-4-5-20251001')">Haiku 4.5</button>
-      <button class="org-modal-item" onclick="selectModel('cerebras:qwen-3-235b')">Qwen 235B</button>
+<!-- Model picker — bottom sheet -->
+<div class="model-sheet-overlay" id="model-modal" onclick="if(event.target===this)hideModelPicker()">
+  <div class="model-sheet">
+    <div class="model-sheet-handle"></div>
+    <div class="model-sheet-title">AI Model</div>
+    <div id="model-sheet-items">
+      <button class="model-sheet-item" onclick="selectModel('claude-sonnet-4-6')">Sonnet 4.6</button>
+      <button class="model-sheet-item" onclick="selectModel('claude-opus-4-6')">Opus 4.6</button>
+      <button class="model-sheet-item" onclick="selectModel('claude-haiku-4-5-20251001')">Haiku 4.5</button>
+      <button class="model-sheet-item" onclick="selectModel('cerebras:qwen-3-235b')">Qwen 235B (fast)</button>
     </div>
-    <button class="org-modal-close" onclick="hideModelPicker()">Close</button>
+    <button class="model-sheet-close" onclick="hideModelPicker()">Cancel</button>
   </div>
 </div>
 
@@ -263,13 +276,11 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div class="messages" id="chat-msgs"><div class="muted">Loading conversations...</div></div>
   <div id="chat-status" class="status-bar" style="display:none"><span class="spinner"></span><span>Claude is thinking…</span></div>
   <div class="input-bar" id="input-bar">
-    <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:14px;font-weight:600;min-width:80px;white-space:nowrap" title="Switch AI model">Model</button>
+    <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:12px;font-weight:600;white-space:nowrap;flex-shrink:0" title="Switch AI model">Model</button>
     <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
-    <input type="file" id="camera-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
-    <input type="file" id="gallery-input" accept="image/*" multiple style="display:none" onchange="uploadScreenshot(this)">
-    <button onclick="document.getElementById('camera-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 11px;font-size:16px;align-self:flex-end" title="Take photo">&#128247;</button>
-    <button onclick="document.getElementById('gallery-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 11px;font-size:15px;align-self:flex-end" title="Choose from gallery">&#128444;</button>
-    <button onclick="sendChat()">Send</button>
+    <input type="file" id="photo-input" accept="image/*" multiple style="display:none" onchange="uploadScreenshot(this)">
+    <button onclick="document.getElementById('photo-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:18px;align-self:flex-end;flex-shrink:0" title="Photo / Camera">&#128247;</button>
+    <button onclick="sendChat()" style="flex-shrink:0">Send</button>
   </div>
 </div>
 
@@ -354,9 +365,19 @@ async function loadCurrentModel() {
 function updateModelButton(modelId) {
   const btn = document.getElementById('model-btn');
   if (!btn || !modelId) return;
+  // Store full ID for checkmark highlighting in sheet
+  btn.dataset.modelId = modelId;
   // Show short readable name
   const short = modelId.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/^cerebras:/, '');
   btn.textContent = short;
+  // Update active checkmark in open sheet
+  document.querySelectorAll('.model-sheet-item').forEach(el => {
+    const isActive = el.onclick?.toString().includes(modelId);
+    el.classList.toggle('active', isActive);
+    const existing = el.querySelector('.model-check');
+    if (isActive && !existing) el.insertAdjacentHTML('beforeend','<span class="model-check">✓</span>');
+    else if (!isActive && existing) existing.remove();
+  });
 }
 
 // Model picker modal
@@ -1805,25 +1826,27 @@ async function loadDynamicModels() {
     const data = await res.json();
     const models = data.models || [];
     const local = data.local || [];
-    const container = document.querySelector('#model-modal .org-modal > div:first-of-type');
+    const container = document.getElementById('model-sheet-items');
     if (!container) return;
     container.innerHTML = '';
+    const currentModel = document.getElementById('model-btn')?.dataset.modelId || '';
     for (const m of models) {
-      const shortName = m.id.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      const shortName = m.id.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
       const btn = document.createElement('button');
-      btn.className = 'org-modal-item';
+      btn.className = 'model-sheet-item' + (m.id === currentModel ? ' active' : '');
       btn.textContent = shortName;
+      if (m.id === currentModel) btn.insertAdjacentHTML('beforeend','<span class="model-check">✓</span>');
       btn.onclick = () => selectModel(m.id);
       container.appendChild(btn);
     }
     if (local.length > 0) {
       const divider = document.createElement('div');
-      divider.style.cssText = 'font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;padding:8px 0 4px;margin-top:4px;border-top:1px solid var(--border)';
+      divider.style.cssText = 'font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;padding:10px 20px 6px;border-top:1px solid var(--border)';
       divider.textContent = 'Local Models';
       container.appendChild(divider);
       for (const m of local) {
         const btn = document.createElement('button');
-        btn.className = 'org-modal-item';
+        btn.className = 'model-sheet-item';
         btn.textContent = m.name;
         btn.onclick = () => selectModel(m.id);
         container.appendChild(btn);
