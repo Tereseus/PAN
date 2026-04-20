@@ -183,13 +183,14 @@
 		window.dispatchEvent(new CustomEvent('pan-terminal-settings-changed'));
 	}
 
-	// Rename device
+	// Rename device (inline per-device)
 	let renameDeviceId = $state(null);
 	let renameDeviceName = $state('');
 
 	// Device expand/remove
 	let expandedDeviceId = $state(null);
 	let confirmRemoveDeviceId = $state(null);
+	let confirmRemoveTyped = $state('');
 
 	// --- Org management state ---
 	let orgList = $state([]);
@@ -652,7 +653,7 @@
 		if (!renameDeviceId || !renameDeviceName) return;
 		try {
 			await api(`/api/v1/devices/${renameDeviceId}/rename`, {
-				method: 'PUT',
+				method: 'PATCH',
 				body: JSON.stringify({ name: renameDeviceName })
 			});
 			flash('Device renamed');
@@ -667,6 +668,7 @@
 			await api(`/api/v1/devices/${deviceId}`, { method: 'DELETE' });
 			flash('Device removed');
 			confirmRemoveDeviceId = null;
+			confirmRemoveTyped = '';
 			expandedDeviceId = null;
 			await loadDevices();
 		} catch { flash('Remove failed'); }
@@ -1229,14 +1231,35 @@
 				<h3>Connected Devices</h3>
 				{#if devices.length}
 					{#each devices as d}
+						{@const isHub = d.device_type === 'pc' && !d.client_version}
+						{@const staleMs = d.device_type === 'phone' ? 15 * 60 * 1000 : 5 * 60 * 1000}
+						{@const ageMs = d.last_seen ? Date.now() - new Date(d.last_seen).getTime() : Infinity}
+						{@const isOnline = ageMs < staleMs}
 						<div class="device-card" class:expanded={expandedDeviceId === d.id}>
 							<div class="device-row">
 								<div style="flex:1">
-									<div class="fw500">
-										{d.name || d.device_name || 'Unknown'}
-										<span class="small muted">({d.hostname || ''})</span>
+									<div class="fw500" style="display:flex;align-items:center;gap:6px">
+										{#if renameDeviceId === d.id}
+											<input
+												type="text"
+												class="input"
+												style="width:160px;padding:2px 6px;font-size:13px"
+												bind:value={renameDeviceName}
+												onkeydown={(e) => { if (e.key === 'Enter') renameDevice(); if (e.key === 'Escape') { renameDeviceId = null; renameDeviceName = ''; } }}
+											/>
+											<button class="btn accent" style="padding:2px 10px;font-size:12px" onclick={renameDevice}>Save</button>
+											<button class="btn" style="padding:2px 10px;font-size:12px" onclick={() => { renameDeviceId = null; renameDeviceName = ''; }}>Cancel</button>
+										{:else}
+											<span>{d.name || d.device_name || 'Unknown'}</span>
+											<button class="btn-icon" style="opacity:0.5;font-size:11px" title="Rename" onclick={() => { renameDeviceId = d.id; renameDeviceName = d.name || d.device_name || ''; }}>✏️</button>
+										{/if}
+										{#if isHub}
+											<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#89b4fa22;color:#89b4fa;border:1px solid #89b4fa44">HUB</span>
+										{:else if d.client_version}
+											<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#a6e3a122;color:#a6e3a1;border:1px solid #a6e3a144">CLIENT</span>
+										{/if}
 									</div>
-									<div class="small muted">Type: {d.device_type || d.type || '--'} | Last seen: {fmtTime(d.last_seen)}</div>
+									<div class="small muted">{d.device_type || '--'} · {d.hostname || ''} · Last seen: {fmtTime(d.last_seen)}</div>
 								</div>
 								<div style="display:flex;align-items:center;gap:10px">
 									<span class="small muted">Remote Access</span>
@@ -1248,28 +1271,41 @@
 										/>
 										<span class="slider"></span>
 									</label>
-									<span class="dot" class:online={isRecent(d.last_seen)} class:stale={!isRecent(d.last_seen)}></span>
-									<button class="btn-icon" onclick={() => expandedDeviceId = expandedDeviceId === d.id ? null : d.id} title="More options">
-										<span class="chevron" class:rotated={expandedDeviceId === d.id}>&#9656;</span>
-									</button>
+									<span class="dot" class:online={isOnline} class:stale={!isOnline}></span>
+									{#if !isHub}
+										<button class="btn-icon" onclick={() => { expandedDeviceId = expandedDeviceId === d.id ? null : d.id; confirmRemoveDeviceId = null; confirmRemoveTyped = ''; }} title="More options">
+											<span class="chevron" class:rotated={expandedDeviceId === d.id}>&#9656;</span>
+										</button>
+									{/if}
 								</div>
 							</div>
-							{#if expandedDeviceId === d.id}
+							{#if expandedDeviceId === d.id && !isHub}
 								<div class="device-options">
 									<div class="device-option">
-										<span class="small muted">ID: {d.id} | Hostname: {d.hostname}</span>
+										<span class="small muted">ID: {d.id} | Hostname: {d.hostname}{d.client_version ? ` | Client v${d.client_version}` : ''}</span>
 									</div>
 									{#if confirmRemoveDeviceId === d.id}
 										<div class="device-option danger-zone">
-											<span class="small">Remove <strong>{d.name || d.hostname}</strong>? This revokes access and the device must re-register.</span>
-											<div style="display:flex;gap:8px;margin-top:6px">
-												<button class="btn danger" onclick={() => removeDevice(d.id)}>Confirm Remove</button>
-												<button class="btn" onclick={() => confirmRemoveDeviceId = null}>Cancel</button>
+											<span class="small" style="display:block;margin-bottom:8px">To remove <strong>{d.name || d.hostname}</strong>, type the device name to confirm:</span>
+											<input
+												type="text"
+												class="input"
+												style="width:220px;margin-bottom:8px"
+												placeholder={d.name || d.hostname}
+												bind:value={confirmRemoveTyped}
+											/>
+											<div style="display:flex;gap:8px">
+												<button
+													class="btn danger"
+													disabled={confirmRemoveTyped.trim() !== (d.name || d.hostname)}
+													onclick={() => removeDevice(d.id)}
+												>Confirm Remove</button>
+												<button class="btn" onclick={() => { confirmRemoveDeviceId = null; confirmRemoveTyped = ''; }}>Cancel</button>
 											</div>
 										</div>
 									{:else}
 										<div class="device-option">
-											<button class="btn danger-outline" onclick={() => confirmRemoveDeviceId = d.id}>Remove Device</button>
+											<button class="btn danger-outline" onclick={() => { confirmRemoveDeviceId = d.id; confirmRemoveTyped = ''; }}>Remove Device</button>
 										</div>
 									{/if}
 								</div>
@@ -1279,17 +1315,6 @@
 				{:else}
 					<span class="muted">No devices registered</span>
 				{/if}
-
-				<div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-					<select class="input" bind:value={renameDeviceId} style="width:180px">
-						<option value={null}>Select device...</option>
-						{#each devices as d}
-							<option value={d.id}>{d.name || d.device_name || d.hostname}</option>
-						{/each}
-					</select>
-					<input type="text" bind:value={renameDeviceName} placeholder="New name..." class="input" style="width:180px" />
-					<button class="btn accent" onclick={renameDevice}>Rename</button>
-				</div>
 			</section>
 		{/if}
 

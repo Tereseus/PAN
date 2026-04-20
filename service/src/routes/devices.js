@@ -44,6 +44,17 @@ router.get('/list', (req, res) => {
   res.json(devices);
 });
 
+// Rename a device by ID
+router.patch('/:id/rename', (req, res) => {
+  const id = parseInt(req.params.id);
+  const { name } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ ok: false, error: 'Name required' });
+  const device = getScoped(req, "SELECT * FROM devices WHERE id = :id AND org_id = :org_id", { ':id': id });
+  if (!device) return res.status(404).json({ ok: false, error: 'Device not found' });
+  runScoped(req, "UPDATE devices SET name = :name WHERE id = :id AND org_id = :org_id", { ':name': name.trim(), ':id': id });
+  res.json({ ok: true, name: name.trim() });
+});
+
 // Delete a device by ID
 router.delete('/:id', (req, res) => {
   const id = parseInt(req.params.id);

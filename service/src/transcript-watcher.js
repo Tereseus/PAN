@@ -91,6 +91,11 @@ function parseJsonlFile(filepath) {
     if (!raw) return [];
     const lines = raw.split('\n');
     const messages = [];
+    // Track Agent tool_use IDs so we can match tool_result blocks back to them
+    // and display sub-agent responses distinctly from the leader's own messages.
+    // key: tool_use_id → { description }
+    const agentToolCalls = new Map();
+
     for (const line of lines) {
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
@@ -101,7 +106,7 @@ function parseJsonlFile(filepath) {
         continue;
       }
 
-      // User prompt
+      // User prompt — also contains tool_result blocks (agent responses)
       if (obj.type === 'user' && obj.message) {
         const content = obj.message.content;
         if (typeof content === 'string' && content.trim()) {
@@ -109,7 +114,28 @@ function parseJsonlFile(filepath) {
         } else if (Array.isArray(content)) {
           let textParts = [];
           for (const block of content) {
-            if (block.type === 'text' && block.text?.trim()) textParts.push(block.text);
+            if (block.type === 'text' && block.text?.trim()) {
+              textParts.push(block.text);
+            } else if (block.type === 'tool_result' && agentToolCalls.has(block.tool_use_id)) {
+              // This tool_result is the response from a sub-agent — emit it as a
+              // distinct 'agent_result' message instead of folding it into the leader's turn.
+              const agentInfo = agentToolCalls.get(block.tool_use_id);
+              let resultText = '';
+              if (typeof block.content === 'string') {
+                resultText = block.content;
+              } else if (Array.isArray(block.content)) {
+                resultText = block.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+              }
+              if (resultText.trim()) {
+                messages.push({
+                  role: 'agent',
+                  type: 'agent_result',
+                  text: resultText.trim(),
+                  agentDescription: agentInfo.description,
+                  ts: obj.timestamp,
+                });
+              }
+            }
           }
           if (textParts.length) {
             messages.push({ role: 'user', type: 'prompt', text: textParts.join('\n'), ts: obj.timestamp });
@@ -134,8 +160,14 @@ function parseJsonlFile(filepath) {
             else if (name === 'Write' && input.file_path) summary = `Write: ${input.file_path.split(/[/\\]/).pop()}`;
             else if (name === 'Grep' && input.pattern) summary = `Grep: ${input.pattern.substring(0, 60)}`;
             else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
-            else if (name === 'Agent' && input.description) summary = `Agent: ${input.description}`;
-            else if (name === 'Agent' && input.prompt) summary = `Agent: ${input.prompt.substring(0, 80)}`;
+            else if (name === 'Agent' && input.description) {
+              summary = `Agent: ${input.description}`;
+              // Register this agent call so we can display its result distinctly
+              if (block.id) agentToolCalls.set(block.id, { description: input.description });
+            } else if (name === 'Agent' && input.prompt) {
+              summary = `Agent: ${input.prompt.substring(0, 80)}`;
+              if (block.id) agentToolCalls.set(block.id, { description: input.prompt.substring(0, 60) });
+            }
             messages.push({ role: 'assistant', type: 'tool', text: summary, ts: obj.timestamp });
           }
         }

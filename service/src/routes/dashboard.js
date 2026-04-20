@@ -715,10 +715,40 @@ router.get('/api/projects', (req, res) => {
   res.json(projects);
 });
 
+// POST /dashboard/api/phone-ping — mobile dashboard heartbeat
+// Called every 2 min from /mobile/ to keep phone last_seen fresh
+router.post('/api/phone-ping', (req, res) => {
+  const { device_id } = req.body || {};
+  if (device_id) {
+    // Update specific device if provided
+    runScoped(req, `UPDATE devices SET last_seen = datetime('now','localtime'), online = 1
+      WHERE hostname = :h AND org_id = :org_id`, { ':h': device_id });
+  } else {
+    // Update most recently seen phone (fallback when device_id unknown)
+    runScoped(req, `UPDATE devices SET last_seen = datetime('now','localtime'), online = 1
+      WHERE device_type = 'phone' AND org_id = :org_id
+      AND last_seen = (SELECT MAX(last_seen) FROM devices WHERE device_type = 'phone' AND org_id = :org_id)`);
+  }
+  res.json({ ok: true });
+});
+
 // GET /dashboard/api/devices
 router.get('/api/devices', (req, res) => {
   const devices = allScoped(req, `SELECT * FROM devices WHERE org_id = :org_id ORDER BY last_seen DESC`);
-  res.json(devices);
+  // Enrich with real activity from client_logs (phone's last_seen may lag if logs handler doesn't update it)
+  const recentLogs = allScoped(req, `
+    SELECT device_id, MAX(created_at) as last_log
+    FROM client_logs WHERE org_id = :org_id
+    GROUP BY device_id`);
+  const logMap = Object.fromEntries(recentLogs.map(r => [r.device_id, r.last_log]));
+  const enriched = devices.map(d => {
+    const lastLog = logMap[d.hostname];
+    if (lastLog && (!d.last_seen || lastLog > d.last_seen)) {
+      return { ...d, last_seen: lastLog, online: 1 };
+    }
+    return d;
+  });
+  res.json(enriched);
 });
 
 // GET /dashboard/api/services — unified services + devices status
@@ -762,8 +792,15 @@ router.get('/api/services', (req, res) => {
     services.push({ category: 'PAN Core', name: 'Scout', status: 'unknown', detail: 'No runs recorded' });
   }
 
-  // Devices
-  const devices = allScoped(req, `SELECT * FROM devices WHERE org_id = :org_id ORDER BY last_seen DESC`);
+  // Devices — enrich last_seen from client_logs for devices that log but don't heartbeat
+  const allDevRaw = allScoped(req, `SELECT * FROM devices WHERE org_id = :org_id ORDER BY last_seen DESC`);
+  const recentDevLogs = allScoped(req, `SELECT device_id, MAX(created_at) as last_log FROM client_logs WHERE org_id = :org_id GROUP BY device_id`);
+  const devLogMap = Object.fromEntries(recentDevLogs.map(r => [r.device_id, r.last_log]));
+  const devices = allDevRaw.map(d => {
+    const lastLog = devLogMap[d.hostname];
+    if (lastLog && (!d.last_seen || lastLog > d.last_seen)) return { ...d, last_seen: lastLog };
+    return d;
+  });
   for (const d of devices) {
     const ageSec = d.last_seen ? (Date.now() - new Date(d.last_seen).getTime()) / 1000 : Infinity;
     // PC running this server is ALWAYS online
@@ -772,6 +809,7 @@ router.get('/api/services', (req, res) => {
     const ageStr = ageSec < 60 ? `${Math.round(ageSec)}s ago` : ageSec < 3600 ? `${Math.round(ageSec / 60)}m ago` : `${Math.round(ageSec / 3600)}h ago`;
     services.push({
       category: 'Devices', name: d.name || d.hostname,
+      hostname: d.hostname, device_type: d.device_type,
       status: isOnline ? 'up' : 'down',
       detail: `${d.device_type === 'phone' ? 'Phone' : 'PC'} — last seen ${isThisPC ? '0s ago' : ageStr}`
     });

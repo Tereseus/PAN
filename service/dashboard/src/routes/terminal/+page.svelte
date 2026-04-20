@@ -184,6 +184,11 @@
 	let panClientInviteCmd = $state('');
 	let panClientInviteName = $state('');
 	let panClientPollTimer = null;
+	let allDevices = $state([]);
+	let deviceRenameId = $state(null);
+	let deviceRenameName = $state('');
+	let deviceDeleteConfirmId = $state(null);
+	let deviceFilter = $state('all'); // 'all' | 'computers' | 'phones' | 'pendants' | 'other'
 
 	// Alerts
 	let alertsData = $state([]);
@@ -1245,6 +1250,8 @@
 							// Replaces polling. We get the full deduped message list each
 							// time any JSONL in the project's dir changes.
 							tabData._pushedMessages = msg.messages || [];
+							_pushedMsgsCache.set(tabData.id, tabData._pushedMessages); // bypass proxy
+							tabData._lastTranscriptPush = Date.now();
 							// Clear loading indicator once real transcript data arrives
 							if (tabData._claudeLoading && msg.messages?.length) {
 								tabData._claudeLoading = false;
@@ -1258,10 +1265,37 @@
 									.filter(e => !jsonlTexts.has((e.text || '').replace(/\s+/g, ' ').trim()));
 							}
 							renderTranscriptToTerminal(tabData);
-							// Also refresh the chat panel — it uses HTTP API which may
-							// not have been triggered by a hook event yet.
-							if (leftSection === 'transcript') {
-								debouncedLoadChatHistory();
+							// Update left panel bubbles synchronously — same messages array,
+							// no async, no lock, no proxy. Mirrors how right panel renders.
+							if (activeTabId === tabData.id) {
+								const b = bubblesFromMessages(tabData._pushedMessages);
+								if (b !== null) {
+									const isFirstChatLoad = !chatServerLoaded;
+									chatBubbles = b;
+									chatServerLoaded = true;
+									// Restore scroll position after first load (refresh / craft swap).
+									// Must happen after Svelte flushes the DOM update, so use tick().
+									if (isFirstChatLoad && chatSidebarEl) {
+										tick().then(() => {
+											if (!chatSidebarEl) return;
+											try {
+												const storedUp = sessionStorage.getItem('pan_transcript_scrolled_up');
+												const storedPos = sessionStorage.getItem('pan_transcript_scroll_pos');
+												if (storedUp === '1' && storedPos != null) {
+													chatSidebarEl.scrollTop = parseFloat(storedPos);
+												} else {
+													chatSidebarEl.scrollTop = chatSidebarEl.scrollHeight;
+												}
+											} catch { chatSidebarEl.scrollTop = chatSidebarEl.scrollHeight; }
+										});
+									} else if (chatSidebarEl) {
+										// Subsequent updates — stick to bottom only if already there
+										const distFromBottom = chatSidebarEl.scrollHeight - chatSidebarEl.scrollTop - chatSidebarEl.clientHeight;
+										if (distFromBottom < 60) {
+											tick().then(() => { if (chatSidebarEl) chatSidebarEl.scrollTop = chatSidebarEl.scrollHeight; });
+										}
+									}
+								}
 							}
 							break;
 						}
@@ -1427,8 +1461,8 @@
 									}
 								}
 							}
-							if (leftSection === 'transcript') {
-								debouncedLoadChatHistory();
+							if (leftSection === 'transcript' || rightSection === 'transcript') {
+								loadChatHistory(tabData);
 							}
 							// Refresh main terminal view from transcript
 							renderTranscriptToTerminal(tabData);
@@ -1437,12 +1471,11 @@
 						case 'permission_prompt':
 							break;
 						case 'server_swap':
-							// Carrier hot-swapped a new Craft — reload to pick up new frontend
-							// Guard: only reload once per swap (prevents loop from double broadcast)
+							// Carrier hot-swapped a new Craft — wait until it's healthy then reload
 							if (!window._panSwapReloading) {
 								window._panSwapReloading = true;
-								console.log('[PAN] Craft swapped — reloading frontend...');
-								setTimeout(() => window.location.reload(), 1500);
+								console.log('[PAN] Craft swapped — waiting for server ready...');
+								waitForServerAndReload('⟳ Updating — reloading when ready…');
 							}
 							break;
 						case 'server_restarting':
@@ -1864,6 +1897,7 @@
 		} else {
 			if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
 		}
+		if (tab === 'devices') { loadClientDevices(); loadAllDevices(); }
 	}
 
 	function handleTranscriptScroll() {
@@ -1945,7 +1979,8 @@
 			// Merge JSONL transcript messages with any pending echo messages
 			const pushed = tabData._pushedMessages || [];
 			const echoes = tabData._echoMessages || [];
-			const allMessages = echoes.length ? [...pushed, ...echoes].sort((a, b) => (a.ts || '').localeCompare(b.ts || '')) : pushed;
+			const btws = (tabData._btwMessages || []);
+			const allMessages = [...pushed, ...echoes, ...btws].sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
 			console.log('[PAN DIAG] RENDER ← tab.sessionId =', tabData.sessionId, '| messages =', allMessages.length, '| echoes =', echoes.length);
 			if (allMessages.length === 0) return;
 
@@ -2088,6 +2123,26 @@
 						`<span style="color:${toolColor};">${escapeHtml(msg.text || '')}</span>` +
 						`</div>`
 					);
+				} else if (msg.role === 'user' && msg.type === 'btw') {
+					return (
+						`<div class="t-line" style="margin-left:20px;border-left:2px solid #89b4fa44;padding-left:8px;margin-top:2px;margin-bottom:2px;">` +
+						`<span style="font-size:0.8em;color:#89b4fa;opacity:0.7;">btw → </span>` +
+						`<span style="color:#89b4fa;">${escapeHtml(msg.text || '')}</span>` +
+						`</div>`
+					);
+				} else if (msg.role === 'agent' && msg.type === 'agent_result') {
+					// Sub-agent response — visually distinct from the leader's messages.
+					// Indented, purple ₡ prefix, muted label showing what the agent was.
+					const label = msg.agentDescription ? escapeHtml(msg.agentDescription.substring(0, 50)) : 'subagent';
+					// Truncate very long agent responses — show first 400 chars
+					const full = msg.text || '';
+					const truncated = full.length > 400 ? full.substring(0, 400) + '…' : full;
+					return (
+						`<div class="t-line t-agent-result" style="margin-left:20px;border-left:2px solid #45475a;padding-left:8px;">` +
+						`<div style="font-size:0.8em;color:#6c7086;margin-bottom:2px;">₡ ${label}</div>` +
+						`<span style="color:#cba6f7;">${renderMarkdown(truncated)}</span>` +
+						`</div>`
+					);
 				} else if (msg.role === 'system' && msg.type === 'turn_stats') {
 					// Per-turn token usage bar — compact, right-aligned
 					const t = msg.tokens || {};
@@ -2159,8 +2214,10 @@
 
 				let kind = null;
 				if (m.role === 'user' && (m.type === 'prompt' || m.type === 'input')) kind = 'user';
+				else if (m.role === 'user' && m.type === 'btw') kind = 'btw';
 				else if (m.role === 'assistant' && (m.type === 'text' || m.type === 'output')) kind = 'assistant';
 				else if (m.role === 'assistant' && m.type === 'tool') kind = 'tool';
+				else if (m.role === 'agent' && m.type === 'agent_result') kind = 'agent';
 				else if (m.role === 'system') kind = 'system';
 				if (!kind) continue;
 
@@ -2216,6 +2273,8 @@
 					const m = shortModel(turn.items.find(i => i.model)?.model);
 					if (m) { modelLabel = m; lastShownModel = m; }
 				}
+				else if (turn.kind === 'btw') { headLabel = ''; cls = 'turn turn-btw'; }
+				else if (turn.kind === 'agent') { headLabel = ''; cls = 'turn turn-agent'; }
 				else if (turn.kind === 'system') { headLabel = ''; cls = 'turn turn-system'; }
 				else { headLabel = ''; cls = 'turn turn-tool'; }
 
@@ -2314,6 +2373,37 @@
 	let chatLoadDirty = false; // true if an update arrived while load was in progress
 	let chatLoadDebounceTimer = null;
 
+	// Module-level cache that bypasses Svelte proxy indirection.
+	// Written by the WS transcript_messages handler (raw tabData path).
+	// Read by loadChatHistory for ALL call paths — interval, WS, manual.
+	// This prevents stale HTTP fetches from overwriting live WS data.
+	const _pushedMsgsCache = new Map(); // tabId → messages[]
+
+	// Synchronous bubble builder — used by both the real-time WS path and loadChatHistory.
+	// Keeps both paths in sync without any async/lock/proxy indirection.
+	function bubblesFromMessages(messages) {
+		if (!messages || messages.length === 0) return null; // null = don't clear existing
+		const firstCap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+		const username = firstCap((localStorage.getItem('pan_username') || 'User').replace(/[^a-zA-Z0-9_-]/g, ''));
+		const llmName = firstCap((localStorage.getItem('pan_llm_name') || 'Claude').replace(/[^a-zA-Z0-9_-]/g, ''));
+		const shortModel = (id) => { if (!id) return ''; return String(id).replace(/^claude-/i, '').replace(/-\d{8}$/, ''); };
+		const bubbles = [];
+		for (const msg of messages) {
+			if (msg.role === 'user') {
+				if (msg.text && /^\u03A0\u0391\u039D remembers/i.test(msg.text.trim()) && msg.text.trim().length < 120) continue;
+				bubbles.push({ type: 'user', text: msg.text || '', speaker: username });
+			} else if (msg.type === 'text' || msg.type === 'output') {
+				const m = shortModel(msg.model);
+				bubbles.push({ type: 'assistant', text: msg.text || '', speaker: llmName, model: m });
+			} else if (msg.type === 'tool') {
+				bubbles.push({ type: 'tool', text: msg.text || '' });
+			} else if (msg.type === 'turn_stats' && msg.tokens) {
+				bubbles.push({ type: 'stats', tokens: msg.tokens });
+			}
+		}
+		return bubbles;
+	}
+
 	function debouncedLoadChatHistory(delayMs = 300) {
 		if (chatLoadDebounceTimer) clearTimeout(chatLoadDebounceTimer);
 		chatLoadDebounceTimer = setTimeout(() => {
@@ -2322,11 +2412,19 @@
 		}, delayMs);
 	}
 
-	async function loadChatHistory() {
+	// tabOverride: pass the tabData closure object directly from WS handlers to avoid
+	// any Svelte proxy indirection between the plain object and getActiveTab()'s proxy.
+	// Also ensures we're reading from the exact object that was just mutated.
+	async function loadChatHistory(tabOverride) {
 		if (chatLoadInProgress) { chatLoadDirty = true; return; } // queue re-run
 		chatLoadInProgress = true;
 		chatLoadDirty = false;
-		const active = getActiveTab();
+		// If tabOverride is provided AND it's not the active tab, skip (stale tab update)
+		if (tabOverride && tabOverride.id !== activeTabId) {
+			chatLoadInProgress = false;
+			return;
+		}
+		const active = tabOverride || getActiveTab();
 		if (!active) {
 			if (chatServerLoaded) chatBubbles = [];
 			chatLoadInProgress = false;
@@ -2334,17 +2432,11 @@
 		}
 
 		try {
-			// Fast path: if we already have pushed messages from the transcript
-			// file watcher (WebSocket), use those directly instead of round-tripping
-			// through the HTTP API (which requires a DB lookup that may not have the
-			// session yet). Both parse the same JSONL files.
-			//
-			// Per-tab isolation: if this tab has no claudeSessionIds yet AND other
-			// tabs share the same cwd (= same project), the server falls back to
-			// reading the most recent JSONL file — which belongs to the other tab.
-			// In that case, don't show pushed messages; wait for this tab's own
-			// Claude session to start.
-			const pushed = active._pushedMessages || [];
+			// Fast path: read from _pushedMsgsCache (written by WS handler via raw tabData,
+			// bypasses Svelte proxy entirely). Falls back to proxy prop, then HTTP API.
+			// Cache prevents stale HTTP responses from overwriting live WS data when
+			// interval-based loadChatHistory runs without a tabOverride.
+			const pushed = _pushedMsgsCache.get(active?.id) || active._pushedMessages || [];
 			const echoes = active._echoMessages || [];
 			let allMessages;
 			if (pushed.length > 0) {
@@ -2388,7 +2480,9 @@
 				}
 
 				if (sessionIds.length === 0) {
-					if (chatServerLoaded) chatBubbles = [];
+					// Don't clear existing chatBubbles — keep showing last known state.
+					// Empty sessions just means the Claude session hasn't started yet,
+					// not that there's nothing to show. Clearing causes a blank flash.
 					chatLoadInProgress = false;
 					if (chatLoadDirty) setTimeout(loadChatHistory, 100);
 					return;
@@ -2409,7 +2503,9 @@
 			}
 
 			if (allMessages.length === 0) {
-				if (chatServerLoaded) chatBubbles = [];
+				// Don't clear existing data — keep showing last known state.
+				// An empty result here likely means a transient/empty push,
+				// not an actual "no conversation" state.
 				return;
 			}
 
@@ -2673,6 +2769,69 @@
 			console.warn('[PAN Terminal] sendTerminalInput: no active tab');
 			return;
 		}
+
+		// ── Slash command interception ──────────────────────────────────────────
+		if (text.startsWith('/')) {
+			const spaceIdx = text.indexOf(' ');
+			const cmd = (spaceIdx === -1 ? text : text.slice(0, spaceIdx)).toLowerCase();
+			const arg = spaceIdx === -1 ? '' : text.slice(spaceIdx + 1).trim();
+
+			if (cmd === '/model') {
+				// Switch model mid-session — no restart needed
+				if (!arg) {
+					// Show current model or available options hint
+					if (active.scrollbackDiv) {
+						active.scrollbackDiv.innerHTML += `<div style="margin:4px 0;padding:4px 10px;color:#6c7086;font-size:0.85em">Usage: /model &lt;name&gt; — e.g. /model haiku · /model sonnet · /model opus</div>`;
+						active.scrollbackDiv.scrollTop = active.scrollbackDiv.scrollHeight;
+					}
+					terminalInputText = ''; setTerminalInput('');
+					return;
+				}
+				try {
+					const r = await api('/api/v1/terminal/set-model', {
+						method: 'POST',
+						body: JSON.stringify({ session_id: active.sessionId, model: arg }),
+					});
+					if (active.scrollbackDiv) {
+						const ok = r?.ok;
+						const msg = ok ? `⇄ Model switched to <strong>${escapeHtml(arg)}</strong>` : `⚠ Model switch failed`;
+						const color = ok ? '#a6e3a1' : '#f38ba8';
+						active.scrollbackDiv.innerHTML += `<div style="margin:4px 0;padding:4px 10px;color:${color};font-size:0.85em">${msg}</div>`;
+						active.scrollbackDiv.scrollTop = active.scrollbackDiv.scrollHeight;
+					}
+				} catch { /* silent */ }
+				terminalInputText = ''; setTerminalInput('');
+				return;
+			}
+
+			if (cmd === '/btw') {
+				// Send an aside to Claude even if it's currently working.
+				// Stored in _btwMessages so it survives full re-renders.
+				// Also appended directly to DOM for IMMEDIATE visual feedback —
+				// no full re-render (which would read stale proxy._pushedMessages
+				// and wipe all existing transcript content).
+				if (!arg) { terminalInputText = ''; setTerminalInput(''); return; }
+				if (!active._btwMessages) active._btwMessages = [];
+				active._btwMessages.push({ role: 'user', type: 'btw', text: arg, ts: new Date().toISOString() });
+				if (active.scrollbackDiv) {
+					active.scrollbackDiv.innerHTML +=
+						`<div class="t-line" style="margin-left:20px;border-left:2px solid #89b4fa44;padding-left:8px;margin-top:2px;margin-bottom:2px;">` +
+						`<span style="font-size:0.8em;color:#89b4fa;opacity:0.7;">btw \u2192 </span>` +
+						`<span style="color:#89b4fa;">${escapeHtml(arg)}</span></div>`;
+					active.scrollbackDiv.scrollTop = active.scrollbackDiv.scrollHeight;
+				}
+				// Send to Claude as-is (it'll see it inline in the conversation)
+				await api('/api/v1/terminal/pipe', {
+					method: 'POST',
+					body: JSON.stringify({ session_id: active.sessionId, text: arg }),
+				});
+				terminalInputText = ''; setTerminalInput('');
+				return;
+			}
+
+			// Unknown slash command — let it through to Claude (Claude Code handles /help etc.)
+		}
+		// ── End slash command interception ──────────────────────────────────────
 
 		// PIPE MODE: send message via HTTP POST. Server spawns claude -p
 		// as a child_process — clean JSON stream, no PTY, no TUI.
@@ -3629,19 +3788,43 @@
 	}
 
 	// ==================== PAN Clients ====================
+	async function loadAllDevices() {
+		try {
+			const d = await api('/dashboard/api/devices');
+			allDevices = Array.isArray(d) ? d : (d.devices || []);
+		} catch {}
+	}
+
+	async function renameDevicePanel(id) {
+		if (!deviceRenameName.trim()) return;
+		try {
+			await api(`/api/v1/devices/${id}/rename`, { method: 'PATCH', body: JSON.stringify({ name: deviceRenameName.trim() }) });
+			deviceRenameId = null;
+			deviceRenameName = '';
+			await loadAllDevices();
+		} catch {}
+	}
+
+	async function removeDevicePanel(id) {
+		try {
+			await api(`/api/v1/devices/${id}`, { method: 'DELETE' });
+			deviceDeleteConfirmId = null;
+			await loadAllDevices();
+			await loadClientDevices();
+		} catch {}
+	}
+
 	async function loadClientDevices() {
 		try {
 			const resp = await fetch('/api/v1/client/devices');
 			if (resp.ok) {
 				const d = await resp.json();
 				panClientDevices = d.devices || [];
-				// Auto-poll while any device is pending approval
+				// Poll at 4s when pending approvals, 10s otherwise (so status stays live)
 				const hasPending = panClientDevices.some(dev => dev.trusted === false);
-				if (hasPending && !panClientPollTimer) {
-					panClientPollTimer = setInterval(loadClientDevices, 4000);
-				} else if (!hasPending && panClientPollTimer) {
-					clearInterval(panClientPollTimer);
-					panClientPollTimer = null;
+				const targetInterval = hasPending ? 4000 : 10000;
+				if (!panClientPollTimer) {
+					panClientPollTimer = setInterval(loadClientDevices, targetInterval);
 				}
 			}
 		} catch {}
@@ -3650,11 +3833,13 @@
 	async function approveClient(deviceId) {
 		await fetch(`/api/v1/client/${encodeURIComponent(deviceId)}/approve`, { method: 'POST' });
 		await loadClientDevices();
+		await loadAllDevices();
 	}
 
 	async function denyClient(deviceId) {
 		await fetch(`/api/v1/client/${encodeURIComponent(deviceId)}/deny`, { method: 'POST' });
 		await loadClientDevices();
+		await loadAllDevices();
 	}
 
 	async function generateClientInvite() {
@@ -4059,10 +4244,38 @@
 		return sectionsData.find(s => s.id === id);
 	}
 
+	// ==================== Swap / Health Polling ====================
+
+	/**
+	 * Silently poll /health every 500ms until the server is ready, then reload.
+	 * No overlay — the existing ΠΑΝ loading screen in app.html covers the load.
+	 */
+	function waitForServerAndReload() {
+		if (window._panSwapPolling) return;
+		window._panSwapPolling = true;
+		const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+		const healthUrl = `${window.location.protocol}//${window.location.hostname}:${port}/health`;
+		let consecutiveOk = 0;
+		const poll = setInterval(async () => {
+			try {
+				const r = await fetch(healthUrl, { cache: 'no-store' });
+				if (r.ok) {
+					consecutiveOk++;
+					// Two consecutive healthy responses before reload — avoids reloading
+					// when health passes momentarily before WS endpoint is fully ready.
+					if (consecutiveOk >= 2) { clearInterval(poll); window._panSwapPolling = false; window.location.reload(); }
+				} else { consecutiveOk = 0; }
+			} catch { consecutiveOk = 0; }
+		}, 600);
+		// Safety: clear stale polling flag after 30s so the next swap is never blocked
+		setTimeout(() => { clearInterval(poll); window._panSwapPolling = false; }, 30_000);
+	}
+
 	// ==================== Init ====================
 
 	onMount(() => {
 		_markLoad('mounted');
+
 		// Load wrapped app services for the Apps panel
 		loadWrapServices();
 		// Clear auto-launch guards on page load so Claude greets on refresh.
@@ -4089,7 +4302,7 @@
 		if (leftSection === 'usage' || rightSection === 'usage') loadUsageData();
 		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
 		if (leftSection === 'intuition' || rightSection === 'intuition') startIntuitionPolling();
-		if (leftSection === 'devices' || rightSection === 'devices') loadClientDevices();
+		if (leftSection === 'devices' || rightSection === 'devices') { loadClientDevices(); loadAllDevices(); }
 
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
@@ -4121,6 +4334,26 @@
 		const approvalInterval = setInterval(() => { if (_pageVisible) loadApprovals(); }, 10000);
 		const lifeboatInterval = setInterval(() => { if (_pageVisible) loadLifeboat(); }, 10000);
 		const alertCountInterval = setInterval(() => { if (_pageVisible) loadAlertCount(); }, 30000);
+
+		// Transcript heartbeat — fallback poll every 15s.
+		// The primary path is adapter → WS push (real-time). But if a push is missed
+		// (WS blip, missed event, session reconnect), this catches it.
+		const transcriptHeartbeat = setInterval(async () => {
+			if (!_pageVisible) return;
+			const tab = getActiveTab();
+			if (!tab?.sessionId) return;
+			const now = Date.now();
+			const lastPush = tab._lastTranscriptPush || 0;
+			// Only poll if we haven't received a push in the last 15s
+			if (now - lastPush < 15000) return;
+			try {
+				const msgs = await api(`/api/v1/terminal/messages/${encodeURIComponent(tab.sessionId)}`);
+				if (Array.isArray(msgs) && msgs.length > (tab._pushedMessages?.length || 0)) {
+					tab._pushedMessages = msgs;
+					renderTranscriptToTerminal(tab);
+				}
+			} catch {}
+		}, 15000);
 
 		// Poll live PTY status for the active tab every 3s (was 1.5s).
 		const ptyStatusInterval = setInterval(async () => {
@@ -4377,6 +4610,7 @@
 			clearInterval(lifeboatInterval);
 			clearInterval(alertCountInterval);
 			clearInterval(ptyStatusInterval);
+			clearInterval(transcriptHeartbeat);
 			clearInterval(ptyTicker);
 			clearInterval(uiCmdInterval);
 			for (const tab of tabs) {
@@ -4867,9 +5101,8 @@
 					{/each}
 				{/if}
 			{:else if leftSection === 'devices'}
-				<!-- PAN Clients (secondary machines) -->
+				<!-- Pending approval -->
 				{@const pendingClients = panClientDevices.filter(d => d.trusted === false)}
-				{@const approvedClients = panClientDevices.filter(d => d.trusted !== false)}
 				{#if pendingClients.length > 0}
 					<div class="svc-category" style="color:#f38ba8">⚠ Pending Approval</div>
 					{#each pendingClients as device}
@@ -4877,7 +5110,7 @@
 							<span class="svc-dot unknown"></span>
 							<div class="svc-info" style="flex:1">
 								<div class="svc-name">{device.name || device.device_id}</div>
-								<div class="svc-detail">{device.platform || 'unknown platform'} — waiting for approval</div>
+								<div class="svc-detail">{device.platform || 'unknown'} — waiting for approval</div>
 							</div>
 							<div style="display:flex;gap:4px;flex-shrink:0">
 								<button class="approval-btn approve" onclick={() => approveClient(device.device_id)} title="Approve">✓</button>
@@ -4886,42 +5119,52 @@
 						</div>
 					{/each}
 				{/if}
-				{#if approvedClients.length > 0}
-					<div class="svc-category">Connected Machines</div>
-					{#each approvedClients as device}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={device.online} class:down={!device.online}></span>
-							<div class="svc-info">
-								<div class="svc-name">{device.name || device.device_id}</div>
-								<div class="svc-detail">{device.online ? 'Online' : 'Offline'}{device.platform ? ' · ' + device.platform : ''}{device.version ? ' v' + device.version : ''}</div>
-							</div>
-						</div>
+				<!-- Filter bar -->
+				{@const devCatMapL = d => d.device_type === 'pc' ? 'computers' : d.device_type === 'phone' ? 'phones' : d.device_type === 'pendant' ? 'pendants' : 'other'}
+				{@const catCountsL = allDevices.reduce((acc, d) => { const c = devCatMapL(d); acc[c] = (acc[c]||0)+1; return acc; }, {})}
+				{@const filteredDevicesL = deviceFilter === 'all' ? allDevices : allDevices.filter(d => devCatMapL(d) === deviceFilter)}
+				{#if allDevices.length > 0}
+					<div style="display:flex;gap:4px;align-items:center;padding:4px 0 6px 0;flex-wrap:wrap">
+						{#each [['all','All'], ['computers','Computers'], ['phones','Phones'], ['pendants','Pendants'], ['other','Other']] as [val, label]}
+							{@const count = val === 'all' ? allDevices.length : (catCountsL[val] || 0)}
+							{#if count > 0 || val === 'all'}
+								<button
+									onclick={() => deviceFilter = val}
+									style="font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid {deviceFilter===val ? '#89b4fa' : 'rgba(255,255,255,0.1)'};background:{deviceFilter===val ? 'rgba(137,180,250,0.15)' : 'transparent'};color:{deviceFilter===val ? '#89b4fa' : '#6c7086'};cursor:pointer;white-space:nowrap"
+								>{label}{count > 0 ? ` · ${count}` : ''}</button>
+							{/if}
+						{/each}
+					</div>
+					{@const categoriesL = deviceFilter === 'all'
+						? [['computers','Computers','#89b4fa'],['phones','Phones','#fab387'],['pendants','Pendants','#cba6f7'],['other','Other','#6c7086']]
+						: [[deviceFilter, deviceFilter.charAt(0).toUpperCase()+deviceFilter.slice(1), '#89b4fa']]}
+					{#each categoriesL as [catKey, catLabel, catColor]}
+						{@const catDevs = filteredDevicesL.filter(d => devCatMapL(d) === catKey)}
+						{#if catDevs.length > 0}
+							<div class="svc-category" style="color:{catColor};margin-top:6px">{catLabel} · {catDevs.length}</div>
+							{#each catDevs as dev}
+								{@const STALE = dev.device_type === 'phone' ? 15 * 60 * 1000 : 5 * 60 * 1000}
+								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
+								{@const isOnline = dev.online === 1 && ageMs < STALE}
+								{@const isHub = dev.device_type === 'pc' && !dev.client_version && ageMs < STALE}
+								{@const isPanClient = !!dev.client_version}
+								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
+								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
+									<div style="display:flex;align-items:center;gap:6px">
+										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
+										<div class="svc-name" style="display:flex;align-items:center;gap:4px">
+											{dev.name || dev.hostname}
+											{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
+											{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+										</div>
+										<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+									</div>
+								</div>
+							{/each}
+						{/if}
 					{/each}
-				{:else if pendingClients.length === 0}
-					<div class="empty-state small">No PAN clients connected</div>
-				{/if}
-				<!-- Invite section -->
-				<div class="svc-category" style="margin-top:12px">Add Machine</div>
-				<div style="display:flex;gap:4px;padding:4px 0">
-					<input type="text" class="add-input" style="flex:1" placeholder="Machine name..." bind:value={panClientInviteName} />
-					<button class="contacts-add-btn" onclick={generateClientInvite} title="Generate invite">+</button>
-				</div>
-				{#if panClientInviteCmd}
-					<div style="font-size:10px;color:#a6adc8;padding:4px 0;word-break:break-all;cursor:pointer" onclick={() => { navigator.clipboard.writeText(panClientInviteCmd); panClientInviteCmd = '✓ Copied!'; setTimeout(() => panClientInviteCmd = '', 2000); }}>{panClientInviteCmd}</div>
-				{/if}
-				<!-- Other known devices (phone, etc.) -->
-				{@const knownDevices = servicesData.filter(s => s.category === 'Devices')}
-				{#if knownDevices.length > 0}
-					<div class="svc-category" style="margin-top:12px">Other Devices</div>
-					{#each knownDevices as svc}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="svc-info">
-								<div class="svc-name">{svc.name}</div>
-								<div class="svc-detail">{svc.detail}</div>
-							</div>
-						</div>
-					{/each}
+				{:else}
+					<div class="empty-state small">No devices registered</div>
 				{/if}
 			{:else if leftSection === 'services'}
 				{@const coreServices = servicesData.filter(s => s.category === 'PAN Core')}
@@ -5962,7 +6205,7 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'devices') loadClientDevices(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'devices') { loadClientDevices(); loadAllDevices(); } }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
@@ -6751,9 +6994,8 @@
 					{/each}
 				{/if}
 			{:else if rightSection === 'devices'}
-				<!-- PAN Clients -->
+				<!-- Pending approval -->
 				{@const pendingClients2 = panClientDevices.filter(d => d.trusted === false)}
-				{@const approvedClients2 = panClientDevices.filter(d => d.trusted !== false)}
 				{#if pendingClients2.length > 0}
 					<div class="svc-category" style="color:#f38ba8">⚠ Pending Approval</div>
 					{#each pendingClients2 as device}
@@ -6761,7 +7003,7 @@
 							<span class="svc-dot unknown"></span>
 							<div class="svc-info" style="flex:1">
 								<div class="svc-name">{device.name || device.device_id}</div>
-								<div class="svc-detail">{device.platform || 'unknown platform'} — waiting for approval</div>
+								<div class="svc-detail">{device.platform || 'unknown'} — waiting for approval</div>
 							</div>
 							<div style="display:flex;gap:4px;flex-shrink:0">
 								<button class="approval-btn approve" onclick={() => approveClient(device.device_id)} title="Approve">✓</button>
@@ -6770,42 +7012,53 @@
 						</div>
 					{/each}
 				{/if}
-				{#if approvedClients2.length > 0}
-					<div class="svc-category">Connected Machines</div>
-					{#each approvedClients2 as device}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={device.online} class:down={!device.online}></span>
-							<div class="svc-info">
-								<div class="svc-name">{device.name || device.device_id}</div>
-								<div class="svc-detail">{device.online ? 'Online' : 'Offline'}{device.platform ? ' · ' + device.platform : ''}{device.version ? ' v' + device.version : ''}</div>
-							</div>
-						</div>
+				<!-- Filter bar -->
+				{@const devCatMap = d => d.device_type === 'pc' ? 'computers' : d.device_type === 'phone' ? 'phones' : d.device_type === 'pendant' ? 'pendants' : 'other'}
+				{@const catCounts = allDevices.reduce((acc, d) => { const c = devCatMap(d); acc[c] = (acc[c]||0)+1; return acc; }, {})}
+				{@const filteredDevices = deviceFilter === 'all' ? allDevices : allDevices.filter(d => devCatMap(d) === deviceFilter)}
+				{#if allDevices.length > 0}
+					<div style="display:flex;gap:4px;align-items:center;padding:4px 0 6px 0;flex-wrap:wrap">
+						{#each [['all','All'], ['computers','Computers'], ['phones','Phones'], ['pendants','Pendants'], ['other','Other']] as [val, label]}
+							{@const count = val === 'all' ? allDevices.length : (catCounts[val] || 0)}
+							{#if count > 0 || val === 'all'}
+								<button
+									onclick={() => deviceFilter = val}
+									style="font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid {deviceFilter===val ? '#89b4fa' : 'rgba(255,255,255,0.1)'};background:{deviceFilter===val ? 'rgba(137,180,250,0.15)' : 'transparent'};color:{deviceFilter===val ? '#89b4fa' : '#6c7086'};cursor:pointer;white-space:nowrap"
+								>{label}{count > 0 && val !== 'all' ? ` · ${count}` : val === 'all' ? ` · ${count}` : ''}</button>
+							{/if}
+						{/each}
+					</div>
+					<!-- Categorized device rows -->
+					{@const categories = deviceFilter === 'all'
+						? [['computers','Computers','#89b4fa'],['phones','Phones','#fab387'],['pendants','Pendants','#cba6f7'],['other','Other','#6c7086']]
+						: [[deviceFilter, deviceFilter.charAt(0).toUpperCase()+deviceFilter.slice(1), '#89b4fa']]}
+					{#each categories as [catKey, catLabel, catColor]}
+						{@const catDevices = filteredDevices.filter(d => devCatMap(d) === catKey)}
+						{#if catDevices.length > 0}
+							<div class="svc-category" style="color:{catColor};margin-top:6px">{catLabel} · {catDevices.length}</div>
+							{#each catDevices as dev}
+								{@const STALE = dev.device_type === 'phone' ? 15 * 60 * 1000 : 5 * 60 * 1000}
+								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
+								{@const isOnline = dev.online === 1 && ageMs < STALE}
+								{@const isHub = dev.device_type === 'pc' && !dev.client_version && ageMs < STALE}
+								{@const isPanClient = !!dev.client_version}
+								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
+								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
+									<div style="display:flex;align-items:center;gap:6px">
+										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
+										<div class="svc-name" style="display:flex;align-items:center;gap:4px">
+											{dev.name || dev.hostname}
+											{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
+											{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+										</div>
+										<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+									</div>
+								</div>
+							{/each}
+						{/if}
 					{/each}
-				{:else if pendingClients2.length === 0}
-					<div class="empty-state small">No PAN clients connected</div>
-				{/if}
-				<!-- Invite -->
-				<div class="svc-category" style="margin-top:12px">Add Machine</div>
-				<div style="display:flex;gap:4px;padding:4px 0">
-					<input type="text" class="add-input" style="flex:1" placeholder="Machine name..." bind:value={panClientInviteName} />
-					<button class="contacts-add-btn" onclick={generateClientInvite} title="Generate">+</button>
-				</div>
-				{#if panClientInviteCmd}
-					<div style="font-size:10px;color:#a6adc8;padding:4px 0;word-break:break-all;cursor:pointer" onclick={() => { navigator.clipboard.writeText(panClientInviteCmd); panClientInviteCmd = '✓ Copied!'; setTimeout(() => panClientInviteCmd = '', 2000); }}>{panClientInviteCmd}</div>
-				{/if}
-				<!-- Other devices -->
-				{@const knownDevices2 = servicesData.filter(s => s.category === 'Devices')}
-				{#if knownDevices2.length > 0}
-					<div class="svc-category" style="margin-top:12px">Other Devices</div>
-					{#each knownDevices2 as svc}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="svc-info">
-								<div class="svc-name">{svc.name}</div>
-								<div class="svc-detail">{svc.detail}</div>
-							</div>
-						</div>
-					{/each}
+				{:else}
+					<div class="empty-state small">No devices registered</div>
 				{/if}
 			{:else if rightSection === 'transcript'}
 				{#if chatBubbles.length === 0}

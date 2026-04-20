@@ -88,16 +88,22 @@ router.get('/devices', (req, res) => {
 
   // getConnectedClients() is always empty in Craft (live WS map lives in Carrier).
   // Use DB online column as source of truth — Carrier updates it via setDeviceOnline().
-  const dbMapped = dbDevices.map(d => ({
-    device_id: d.hostname,
-    name: d.name,
-    platform: null,
-    version: d.client_version,
-    capabilities: JSON.parse(d.capabilities || '[]'),
-    online: d.online === 1,
-    trusted: d.trusted === 1 ? true : d.trusted === -1 ? -1 : false,
-    last_seen: d.last_seen,
-  }));
+  // Safety net: if last_seen is > 5 minutes old, treat as offline regardless of DB flag.
+  // This handles ungraceful disconnects (power-off, crash) where the WS close never fired.
+  const STALE_MS = 5 * 60 * 1000;
+  const dbMapped = dbDevices.map(d => {
+    const ageSec = d.last_seen ? Date.now() - new Date(d.last_seen).getTime() : Infinity;
+    return {
+      device_id: d.hostname,
+      name: d.name,
+      platform: null,
+      version: d.client_version,
+      capabilities: JSON.parse(d.capabilities || '[]'),
+      online: d.online === 1 && ageSec < STALE_MS,
+      trusted: d.trusted === 1 ? true : d.trusted === -1 ? -1 : false,
+      last_seen: d.last_seen,
+    };
+  });
 
   res.json({ ok: true, devices: dbMapped });
 });
