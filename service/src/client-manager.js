@@ -36,8 +36,10 @@ function saveTokens(tokens) {
 
 export function createInviteToken(name = 'new-device', ttlMs = 24 * 60 * 60 * 1000) {
   const token = 'pan-' + crypto.randomBytes(16).toString('hex');
-  const tokens = getTokens();
-  tokens.push({ token, name, created: Date.now(), expires: Date.now() + ttlMs, used: false });
+  const now = Date.now();
+  // Prune expired + used tokens on every creation to prevent pile-up
+  const tokens = getTokens().filter(t => !t.used && t.expires > now);
+  tokens.push({ token, name, created: now, expires: now + ttlMs, used: false });
   saveTokens(tokens);
   return token;
 }
@@ -155,6 +157,10 @@ function setDeviceOnline(device_id, online) {
 let wss = null;
 
 export function startClientServer(httpServer) {
+  // Mark all devices offline at startup — they'll reconnect if live.
+  // Without this, ungraceful disconnects (power-off, crash) leave online=1 forever.
+  run("UPDATE devices SET online = 0 WHERE online = 1");
+
   wss = new WebSocketServer({ noServer: true });
 
   // Register our upgrade path. terminal.js's upgrade handler rejects unknown paths,
@@ -167,7 +173,10 @@ export function startClientServer(httpServer) {
     const token = params.get('token');
     const deviceId = params.get('device_id');
 
-    if (!isTokenValid(token)) {
+    // Localhost connections (hub machine itself) always allowed — no invite token needed.
+    const remoteIp = request.socket.remoteAddress || '';
+    const isLocalhost = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+    if (!isLocalhost && !isTokenValid(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
       socket.destroy();
       console.warn(`[PAN Clients] Rejected connection: invalid token (device=${deviceId})`);

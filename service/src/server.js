@@ -4221,6 +4221,7 @@ app.post('/api/v1/logs', (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'))`);
 
     let inserted = 0;
+    const seenDevices = new Set();
     for (const e of entries) {
       if (!e.message) continue;
       stmt.run(
@@ -4232,6 +4233,15 @@ app.post('/api/v1/logs', (req, res) => {
         JSON.stringify(e.meta || {})
       );
       inserted++;
+      // Track unique device IDs to update last_seen once per batch
+      if (e.device_id && e.device_id !== 'unknown' && e.device_id !== 'phone-dashboard') {
+        seenDevices.add(e.device_id);
+      }
+    }
+    // Update last_seen + online for any real device that just sent logs
+    for (const deviceId of seenDevices) {
+      db.prepare(`UPDATE devices SET last_seen = datetime('now','localtime'), online = 1
+        WHERE hostname = ?`).run(deviceId);
     }
     res.json({ ok: true, inserted });
   } catch (err) {

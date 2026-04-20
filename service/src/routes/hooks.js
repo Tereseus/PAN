@@ -287,7 +287,7 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
         alert_type: 'context_bloat',
         severity: 'warning',
         title: `Injected context too large: ${briefing.length} chars (limit: ${INJECTED_CONTEXT_WARN})`,
-        detail: `Session injection for ${cwd} is ${briefing.length} chars (~${Math.round(briefing.length / 4)} tokens). This adds cost to every message. Sources: conversation=${recentEvents.length} exchanges, tasks=${tasks.length}.`,
+        detail: `Session injection for ${cwd} is ${briefing.length} chars (~${Math.round(briefing.length / 4)} tokens). This adds cost to every message. Tasks: ${tasks.length}.`,
       });
     }
     if (newContent.length > CLAUDE_MD_WARN_SIZE) {
