@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <script src="/v2/pan-telemetry.js"></script>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
 <title>PAN</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -11,16 +11,29 @@
 body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sans-serif; font-size:14px; height:100vh; height:100dvh; overscroll-behavior-y:contain; }
 
 /* Top bar — fixed so it never scrolls away */
-.topbar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); background:var(--bg); position:fixed; top:0; left:0; right:0; z-index:30; height:42px; }
-.topbar h1 { font-size:16px; color:var(--accent); white-space:nowrap; }
-.topbar select { flex:1; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; font-size:13px; }
+.topbar { display:flex; align-items:center; gap:6px; padding:4px 10px; border-bottom:1px solid var(--border); background:var(--bg); position:fixed; top:0; left:0; right:0; z-index:30; height:42px; }
+.topbar h1 { font-size:16px; color:var(--accent); white-space:nowrap; flex-shrink:0; }
+.topbar select { flex:0 1 110px; min-width:60px; max-width:120px; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:4px 6px; font-size:12px; }
+/* Terminal session tabs in topbar */
+#term-tabs { display:flex; align-items:center; gap:4px; flex:1; overflow-x:auto; min-width:0; }
+#term-tabs::-webkit-scrollbar { display:none; }
+.term-tab { background:var(--bg2); color:var(--text2); border:1px solid var(--border); border-radius:4px; padding:4px 10px; font-size:12px; white-space:nowrap; cursor:pointer; flex-shrink:0; }
+.term-tab.active { background:var(--accent); color:#000; border-color:var(--accent); }
+#new-tab-btn { background:var(--bg2); color:var(--accent); border:1px solid var(--border); border-radius:4px; padding:4px 8px; font-size:16px; font-weight:700; cursor:pointer; flex-shrink:0; line-height:1; }
 
-/* Tabs — fixed below topbar */
-.tabs { display:flex; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--bg); position:fixed; top:42px; left:0; right:0; z-index:29; }
+/* Session tab row — PTY sessions, fixed below topbar */
+.session-row { display:flex; align-items:center; gap:2px; padding:0 6px; border-bottom:1px solid var(--border); background:var(--bg); position:fixed; top:42px; left:0; right:0; z-index:30; height:34px; overflow-x:auto; }
+.session-row::-webkit-scrollbar { display:none; }
+.session-tab { padding:4px 10px; color:var(--text2); cursor:pointer; white-space:nowrap; border-radius:4px; font-size:12px; font-weight:500; background:none; border:none; color:var(--text2); }
+.session-tab.active { color:var(--accent); background:rgba(137,180,250,0.12); }
+.session-tab-new { color:var(--text2); background:none; border:1px solid var(--border); border-radius:4px; font-size:16px; padding:2px 8px; cursor:pointer; line-height:1; }
+
+/* Tabs — fixed below session row */
+.tabs { display:flex; border-bottom:1px solid var(--border); overflow-x:auto; background:var(--bg); position:fixed; top:76px; left:0; right:0; z-index:29; }
 .tabs::-webkit-scrollbar { display:none; }
 
-/* Content spacer — push page content below fixed topbar+tabs */
-.content-spacer { height:80px; }
+/* Content spacer — push page content below fixed topbar+session+tabs */
+.content-spacer { height:114px; }
 .tab { padding:10px 14px; color:var(--text2); cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; font-size:13px; font-weight:500; }
 .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
 
@@ -57,7 +70,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 @keyframes spin { to { transform:rotate(360deg); } }
 
 /* Approvals banner — sticky at top, visible on every tab */
-.approvals-banner { position:fixed; top:80px; left:0; right:0; z-index:28; background:#f9e2af; color:#1e1e2e; padding:10px 12px; border-top:1px solid #d4a72c; border-bottom:1px solid #d4a72c; display:none; }
+.approvals-banner { position:fixed; top:114px; left:0; right:0; z-index:28; background:#f9e2af; color:#1e1e2e; padding:10px 12px; border-top:1px solid #d4a72c; border-bottom:1px solid #d4a72c; display:none; }
 .approvals-banner.visible { display:block; animation:pulse 2s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{background:#f9e2af} 50%{background:#fab387} }
 .approvals-banner .hdr { font-weight:700; font-size:13px; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
@@ -161,7 +174,8 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 /* Org switcher modal */
 .org-modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center; }
 .org-modal-overlay.visible { display:flex; }
-.org-modal { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:16px; width:85%; max-width:320px; max-height:70vh; overflow-y:auto; }
+.org-modal { background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:16px; width:92%; max-width:380px; max-height:82vh; overflow-y:auto; }
+.org-modal-item { font-size:16px; padding:16px 18px; }
 .org-modal h3 { font-size:15px; color:var(--accent); margin-bottom:12px; }
 .org-modal-item { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; cursor:pointer; font-size:15px; }
 .org-modal-item:active { background:var(--bg3); }
@@ -183,9 +197,15 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 <div class="topbar" id="topbar">
   <h1 id="topbar-title" onclick="showOrgSwitcher()" style="cursor:pointer">Π</h1>
   <button id="refresh-btn" onclick="refreshCurrentTab()" style="background:none;border:none;color:var(--accent);padding:0 4px;font-size:18px;cursor:pointer;line-height:1">↻</button>
-  <select id="project-select" onchange="onProjectChange()" style="flex:1">
-    <option value="">Select project...</option>
+  <select id="project-select" onchange="onProjectChange()" style="flex:1;max-width:140px">
+    <option value="">Project...</option>
   </select>
+</div>
+
+<!-- Session tab row — PTY sessions -->
+<div class="session-row" id="session-row">
+  <div class="session-tab active" data-session="" id="session-tab-default">PAN</div>
+  <button class="session-tab-new" onclick="newSession()" title="New tab">+</button>
 </div>
 
 <!-- Org switcher modal -->
@@ -243,8 +263,10 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div class="input-bar" id="input-bar">
     <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:14px;font-weight:600;min-width:80px;white-space:nowrap" title="Switch AI model">Model</button>
     <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
-    <input type="file" id="screenshot-input" accept="image/*" style="display:none" onchange="uploadScreenshot(this)">
-    <button onclick="document.getElementById('screenshot-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-size:16px;align-self:flex-end" title="Share screenshot">&#128247;</button>
+    <input type="file" id="camera-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
+    <input type="file" id="gallery-input" accept="image/*" multiple style="display:none" onchange="uploadScreenshot(this)">
+    <button onclick="document.getElementById('camera-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 11px;font-size:16px;align-self:flex-end" title="Take photo">&#128247;</button>
+    <button onclick="document.getElementById('gallery-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 11px;font-size:15px;align-self:flex-end" title="Choose from gallery">&#128444;</button>
     <button onclick="sendChat()">Send</button>
   </div>
 </div>
@@ -473,8 +495,10 @@ async function init() {
     if (pan) { sel.value = pan.path; activeProject = pan; }
   } catch(e) { console.error('init error:', e); document.body.innerHTML += '<div style="color:red;padding:20px">INIT ERROR: '+e.message+'</div>'; }
   loadOrgContext();
-  loadChat();
+  loadSessionTabs().then(() => loadChat()); // load sessions first, then chat
   loadDynamicModels(); // populate model picker from API
+  // Refresh session tabs every 10s so new sessions appear
+  setInterval(loadSessionTabs, 10000);
   // Auto-refresh active tab every 3 seconds
   setInterval(() => {
     const active = document.querySelector('.page.active');
@@ -562,8 +586,14 @@ async function loadChat() {
     const sessRes = await fetch(API + '/api/v1/terminal/sessions');
     const sessData = await sessRes.json();
     const sessions = sessData.sessions || [];
-    const projectSlug = activeProject ? activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'pan';
-    const match = sessions.find(s => s.id.startsWith('dash-' + projectSlug)) || sessions[0];
+    // Use explicitly selected session tab, or fall back to project-based resolution
+    let match;
+    if (activeSessionId) {
+      match = sessions.find(s => s.id === activeSessionId) || sessions[0];
+    } else {
+      const projectSlug = activeProject ? activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'pan';
+      match = sessions.find(s => s.id.startsWith('dash-' + projectSlug)) || sessions[0];
+    }
     if (match) {
       const msgRes = await fetch(API + '/api/v1/terminal/messages/' + encodeURIComponent(match.id));
       const msgData = await msgRes.json();
@@ -639,15 +669,19 @@ async function sendChat() {
   el.scrollTop = el.scrollHeight;
   if (status) status.style.display = 'flex';
 
-  // Find the best matching session — query active sessions from server
+  // Find the best matching session — use active tab selection or fall back to project
   let sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
   try {
     const sessRes = await fetch(API + '/api/v1/terminal/sessions');
     const sessData = await sessRes.json();
     const sessions = sessData.sessions || [];
     console.log('[PAN Mobile] sessions:', sessions.map(s => s.id).join(', '));
-    // Find session matching this project (e.g. dash-pan-1 matches dash-pan)
-    const match = sessions.find(s => s.id.startsWith(sessionId)) || sessions[0];
+    let match;
+    if (activeSessionId) {
+      match = sessions.find(s => s.id === activeSessionId) || sessions[0];
+    } else {
+      match = sessions.find(s => s.id.startsWith(sessionId)) || sessions[0];
+    }
     if (match) sessionId = match.id;
     console.log('[PAN Mobile] resolved sessionId:', sessionId);
   } catch(sessErr) { console.error('[PAN Mobile] session lookup failed:', sessErr); }
@@ -1480,22 +1514,26 @@ function updateOrgBadge() {
   if (!_orgContext) return;
   const nick = _orgContext.user_nickname || _orgContext.user_display_name || 'User';
   const orgName = _orgContext.org_name || 'Personal';
-  textEl.textContent = nick + '@' + orgName;
+  if (textEl) textEl.textContent = nick + '@' + orgName;
   // Show org name next to Pi in the title
-  titleEl.textContent = '\u03A0 ' + orgName;
+  if (titleEl) titleEl.textContent = '\u03A0 ' + orgName;
   // Apply org color to top bar background (subtle — darkened for dark theme)
-  if (_orgContext.org_color && _orgContext.org_id !== 'org_personal') {
-    topbar.style.background = hexToRgba(_orgContext.org_color, 0.15);
-    topbar.style.borderBottomColor = hexToRgba(_orgContext.org_color, 0.3);
-  } else {
-    topbar.style.background = '';
-    topbar.style.borderBottomColor = '';
+  if (topbar) {
+    if (_orgContext.org_color && _orgContext.org_id !== 'org_personal') {
+      topbar.style.background = hexToRgba(_orgContext.org_color, 0.15);
+      topbar.style.borderBottomColor = hexToRgba(_orgContext.org_color, 0.3);
+    } else {
+      topbar.style.background = '';
+      topbar.style.borderBottomColor = '';
+    }
   }
-  if (_incognitoActive) {
-    lockEl.textContent = '\uD83D\uDD12';
-    lockEl.style.display = 'inline';
-  } else {
-    lockEl.style.display = 'none';
+  if (lockEl) {
+    if (_incognitoActive) {
+      lockEl.textContent = '\uD83D\uDD12';
+      lockEl.style.display = 'inline';
+    } else {
+      lockEl.style.display = 'none';
+    }
   }
 }
 
@@ -1628,14 +1666,75 @@ async function toggleIncognito() {
   }
 }
 
-// Screenshot upload — reads file, converts to base64, sends to server
-async function uploadScreenshot(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  input.value = ''; // reset so same file can be re-selected
+// ========== SESSION TABS ==========
+let activeSessionId = null; // null = auto-resolve from project name
 
+async function loadSessionTabs() {
+  try {
+    const res = await fetch(API + '/api/v1/terminal/sessions');
+    const data = await res.json();
+    const sessions = (data.sessions || []).filter(s => s.id.startsWith('dash-'));
+    if (!sessions.length) return;
+    const row = document.getElementById('session-row');
+    if (!row) return;
+    const newBtn = row.querySelector('.session-tab-new');
+    row.innerHTML = '';
+    for (const sess of sessions) {
+      const tab = document.createElement('button');
+      tab.className = 'session-tab' + (sess.id === activeSessionId ? ' active' : '');
+      tab.dataset.session = sess.id;
+      const label = sess.id.replace(/^dash-/, '').replace(/-(\d+)$/, ' $1').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      tab.textContent = label;
+      tab.addEventListener('click', () => switchSession(sess.id));
+      row.appendChild(tab);
+    }
+    if (!activeSessionId && sessions.length > 0) {
+      activeSessionId = sessions[0].id;
+      row.querySelector('.session-tab')?.classList.add('active');
+    }
+    if (newBtn) row.appendChild(newBtn);
+    else { const b = document.createElement('button'); b.className = 'session-tab-new'; b.title = 'New tab'; b.textContent = '+'; b.onclick = newSession; row.appendChild(b); }
+  } catch(e) { console.error('[PAN Mobile] session tabs error:', e); }
+}
+
+function switchSession(sessionId) {
+  activeSessionId = sessionId;
+  document.querySelectorAll('#session-row .session-tab').forEach(t => t.classList.toggle('active', t.dataset.session === sessionId));
+  _lastFingerprint = ''; _renderedMsgIds = [];
+  loadChat._forceLoad = true;
+  loadChat();
+}
+
+async function newSession() {
+  try {
+    const settingsRes = await fetch(API + '/api/v1/settings');
+    const settings = settingsRes.ok ? await settingsRes.json() : {};
+    const model = settings.terminal_ai_model || 'claude-sonnet-4-6';
+    const res = await fetch(API + '/api/v1/terminal/new', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: activeProject?.path || '', model })
+    });
+    const data = await res.json();
+    if (data.session_id || data.id) {
+      activeSessionId = data.session_id || data.id;
+      _lastFingerprint = ''; _renderedMsgIds = [];
+      await loadSessionTabs();
+      loadChat._forceLoad = true; loadChat();
+    }
+  } catch(e) { console.error('[PAN Mobile] new session error:', e); }
+}
+
+// Screenshot upload — reads file(s), converts to base64, sends to server
+async function uploadScreenshot(input) {
+  const files = input.files;
+  if (!files || !files.length) return;
+  input.value = ''; // reset so same file can be re-selected
+  for (const file of files) { await _uploadOneFile(file); }
+}
+
+async function _uploadOneFile(file) {
   const el = document.getElementById('chat-msgs');
-  el.insertAdjacentHTML('beforeend', '<div class="t-line t-tool"><span class="arrow">→</span> Uploading screenshot...</div>');
+  el.insertAdjacentHTML('beforeend', '<div class="t-line t-tool"><span class="arrow">→</span> Uploading ' + esc(file.name || 'image') + '...</div>');
   el.scrollTop = el.scrollHeight;
 
   try {
