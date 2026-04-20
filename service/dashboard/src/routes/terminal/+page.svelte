@@ -179,6 +179,12 @@
 	let selectedTeamWidget = $state(null);
 	let teamMembersWidget = $state([]);
 
+	// PAN Clients (connected secondary machines)
+	let panClientDevices = $state([]);
+	let panClientInviteCmd = $state('');
+	let panClientInviteName = $state('');
+	let panClientPollTimer = null;
+
 	// Alerts
 	let alertsData = $state([]);
 	let alertTypes = $state([]);
@@ -498,6 +504,38 @@
 	let lifeboatSwapStarted = 0; // timestamp when swap was detected
 	let lifeboatRollbackMs = 0; // total rollback window from server
 
+	// Wrapped apps state
+	let wrapServices = $state([]);
+	let wrapOpening = $state(null);
+	let wrapMsg = $state('');
+	let appsView = $state('root'); // 'root' | 'windows'
+
+	async function loadWrapServices() {
+		try {
+			const res = await fetch(`${window.location.origin}/api/v1/wrap/services`);
+			if (res.ok) {
+				const data = await res.json();
+				wrapServices = data.services || [];
+			}
+		} catch (e) { console.error('[PAN Wrap] services load failed:', e); }
+	}
+
+	async function openWrapper(serviceId) {
+		wrapOpening = serviceId;
+		wrapMsg = '';
+		try {
+			const res = await fetch(`${window.location.origin}/api/v1/wrap/open/${serviceId}`, { method: 'POST' });
+			const data = await res.json();
+			if (!res.ok || !data.ok) wrapMsg = data.error || 'Failed to open wrapper';
+			else wrapMsg = `Opened ${serviceId}`;
+		} catch (e) {
+			wrapMsg = e.message || 'Failed to open wrapper';
+		} finally {
+			wrapOpening = null;
+			setTimeout(() => { wrapMsg = ''; }, 3000);
+		}
+	}
+
 	// Atlas state
 	let atlasData = $state(null);
 	let atlasLoading = $state(false);
@@ -782,6 +820,8 @@
 	let centerChatEl;
 	let centerChatUserScrolledUp = false;
 	let voiceSettings = $state({});
+	let availableModels = $state([]);
+	let localModels = $state([]);
 	let isListening = $state(false);
 	let recognition = null;
 	let pastedImages = $state([]); // { dataUrl, path } — preview before send
@@ -2851,6 +2891,14 @@
 		} catch {}
 	}
 
+	async function loadAvailableModels() {
+		try {
+			const data = await api('/api/v1/ai/models');
+			availableModels = data?.models || [];
+			localModels = data?.local || [];
+		} catch {}
+	}
+
 	let voiceStream = null;
 	let voiceWs = null;
 	let voiceProcessor = null;
@@ -3580,6 +3628,47 @@
 		} catch {}
 	}
 
+	// ==================== PAN Clients ====================
+	async function loadClientDevices() {
+		try {
+			const resp = await fetch('/api/v1/client/devices');
+			if (resp.ok) {
+				const d = await resp.json();
+				panClientDevices = d.devices || [];
+				// Auto-poll while any device is pending approval
+				const hasPending = panClientDevices.some(dev => dev.trusted === false);
+				if (hasPending && !panClientPollTimer) {
+					panClientPollTimer = setInterval(loadClientDevices, 4000);
+				} else if (!hasPending && panClientPollTimer) {
+					clearInterval(panClientPollTimer);
+					panClientPollTimer = null;
+				}
+			}
+		} catch {}
+	}
+
+	async function approveClient(deviceId) {
+		await fetch(`/api/v1/client/${encodeURIComponent(deviceId)}/approve`, { method: 'POST' });
+		await loadClientDevices();
+	}
+
+	async function denyClient(deviceId) {
+		await fetch(`/api/v1/client/${encodeURIComponent(deviceId)}/deny`, { method: 'POST' });
+		await loadClientDevices();
+	}
+
+	async function generateClientInvite() {
+		const name = panClientInviteName.trim() || 'new-device';
+		try {
+			const resp = await fetch(`/api/v1/client/invite?name=${encodeURIComponent(name)}`);
+			if (resp.ok) {
+				const d = await resp.json();
+				const isWin = navigator.userAgent.includes('Win');
+				panClientInviteCmd = isWin ? d.install.windows : d.install.linux;
+			}
+		} catch {}
+	}
+
 	// ==================== Teams ====================
 	async function loadTeamsWidget() {
 		try {
@@ -3974,6 +4063,8 @@
 
 	onMount(() => {
 		_markLoad('mounted');
+		// Load wrapped app services for the Apps panel
+		loadWrapServices();
 		// Clear auto-launch guards on page load so Claude greets on refresh.
 		// The "existing messages" check (line ~1319) prevents double-greeting
 		// if Claude is already mid-session.
@@ -3992,11 +4083,13 @@
 		restoreChatFromStorage(); // Instantly restore chat from before refresh
 		loadTerminalProjects();
 		loadVoiceSettings();
+		loadAvailableModels();
 
 		// Load initial panel data based on what's selected
 		if (leftSection === 'usage' || rightSection === 'usage') loadUsageData();
 		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
 		if (leftSection === 'intuition' || rightSection === 'intuition') startIntuitionPolling();
+		if (leftSection === 'devices' || rightSection === 'devices') loadClientDevices();
 
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
@@ -4774,11 +4867,53 @@
 					{/each}
 				{/if}
 			{:else if leftSection === 'devices'}
-				{@const deviceServices = servicesData.filter(s => s.category === 'Devices')}
-				{#if deviceServices.length === 0}
-					<div class="empty-state">No devices connected</div>
-				{:else}
-					{#each deviceServices as svc}
+				<!-- PAN Clients (secondary machines) -->
+				{@const pendingClients = panClientDevices.filter(d => d.trusted === false)}
+				{@const approvedClients = panClientDevices.filter(d => d.trusted !== false)}
+				{#if pendingClients.length > 0}
+					<div class="svc-category" style="color:#f38ba8">⚠ Pending Approval</div>
+					{#each pendingClients as device}
+						<div class="svc-row" style="background:rgba(243,139,168,0.08);border-radius:6px;padding:4px 6px;margin-bottom:4px">
+							<span class="svc-dot unknown"></span>
+							<div class="svc-info" style="flex:1">
+								<div class="svc-name">{device.name || device.device_id}</div>
+								<div class="svc-detail">{device.platform || 'unknown platform'} — waiting for approval</div>
+							</div>
+							<div style="display:flex;gap:4px;flex-shrink:0">
+								<button class="approval-btn approve" onclick={() => approveClient(device.device_id)} title="Approve">✓</button>
+								<button class="approval-btn deny" onclick={() => denyClient(device.device_id)} title="Deny">✕</button>
+							</div>
+						</div>
+					{/each}
+				{/if}
+				{#if approvedClients.length > 0}
+					<div class="svc-category">Connected Machines</div>
+					{#each approvedClients as device}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={device.online} class:down={!device.online}></span>
+							<div class="svc-info">
+								<div class="svc-name">{device.name || device.device_id}</div>
+								<div class="svc-detail">{device.online ? 'Online' : 'Offline'}{device.platform ? ' · ' + device.platform : ''}{device.version ? ' v' + device.version : ''}</div>
+							</div>
+						</div>
+					{/each}
+				{:else if pendingClients.length === 0}
+					<div class="empty-state small">No PAN clients connected</div>
+				{/if}
+				<!-- Invite section -->
+				<div class="svc-category" style="margin-top:12px">Add Machine</div>
+				<div style="display:flex;gap:4px;padding:4px 0">
+					<input type="text" class="add-input" style="flex:1" placeholder="Machine name..." bind:value={panClientInviteName} />
+					<button class="contacts-add-btn" onclick={generateClientInvite} title="Generate invite">+</button>
+				</div>
+				{#if panClientInviteCmd}
+					<div style="font-size:10px;color:#a6adc8;padding:4px 0;word-break:break-all;cursor:pointer" onclick={() => { navigator.clipboard.writeText(panClientInviteCmd); panClientInviteCmd = '✓ Copied!'; setTimeout(() => panClientInviteCmd = '', 2000); }}>{panClientInviteCmd}</div>
+				{/if}
+				<!-- Other known devices (phone, etc.) -->
+				{@const knownDevices = servicesData.filter(s => s.category === 'Devices')}
+				{#if knownDevices.length > 0}
+					<div class="svc-category" style="margin-top:12px">Other Devices</div>
+					{#each knownDevices as svc}
 						<div class="svc-row">
 							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
 							<div class="svc-info">
@@ -4903,38 +5038,64 @@
 					</div>
 				</div>
 			{:else if leftSection === 'apps'}
-				<div class="apps-grid">
-					<button class="app-card" onclick={() => {
-							const url = `${window.location.origin}/v2/atlas`;
-							const win = window.open(url, '_blank', 'width=1400,height=900');
-							if (!win) {
+				{#if appsView === 'windows'}
+					<div class="apps-drilldown">
+						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Back to Apps</button>
+						{#if wrapServices.length === 0}
+							<div class="apps-wrap-msg" style="padding:12px">No applications discovered yet</div>
+						{:else}
+							{#each ['communication', 'productivity', 'development', 'media', 'social', 'creative', 'browsing'] as cat}
+								{#if wrapServices.filter(s => s.category === cat).length > 0}
+									<div class="apps-cat-label">{cat.charAt(0).toUpperCase() + cat.slice(1)}</div>
+									<div class="apps-grid">
+										{#each wrapServices.filter(s => s.category === cat) as svc}
+											<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
+												<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
+												<div class="app-name">{svc.title || svc.id}</div>
+												<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'PAN Module' : 'Web App'}</div>
+											</button>
+										{/each}
+									</div>
+								{/if}
+							{/each}
+						{/if}
+						{#if wrapMsg}
+							<div class="apps-wrap-msg">{wrapMsg}</div>
+						{/if}
+					</div>
+				{:else}
+					<div class="apps-grid">
+						<button class="app-card" onclick={() => {
+								const url = `${window.location.origin}/v2/atlas-v2`;
 								fetch('/api/v1/ui-commands', {
 									method: 'POST',
 									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url })
+									body: JSON.stringify({ type: 'open_window', url, title: 'Atlas', width: 1400, height: 900 })
 								});
-							}
-						}}>
-							<div class="app-icon">&#x1F5FA;</div>
-							<div class="app-name">Atlas</div>
-							<div class="app-desc">System Architecture</div>
-						</button>
-						<button class="app-card" onclick={() => {
-								const url = `${window.location.origin}/v2/kronos`;
-								const win = window.open(url, '_blank', 'width=1200,height=800');
-								if (!win) {
+							}}>
+								<div class="app-icon">&#x1F5FA;</div>
+								<div class="app-name">Atlas</div>
+								<div class="app-desc">System Architecture</div>
+							</button>
+							<button class="app-card" onclick={() => {
+									const url = `${window.location.origin}/v2/kronos`;
 									fetch('/api/v1/ui-commands', {
 										method: 'POST',
 										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'open_window', url })
+										body: JSON.stringify({ type: 'open_window', url, title: 'Kronos', width: 1200, height: 800 })
 									});
-								}
-							}}>
-							<div class="app-icon">📜</div>
-							<div class="app-name">Kronos</div>
-							<div class="app-desc">Timeline &amp; History</div>
-						</button>
-				</div>
+								}}>
+								<div class="app-icon">📜</div>
+								<div class="app-name">Kronos</div>
+								<div class="app-desc">Timeline &amp; History</div>
+							</button>
+							<button class="app-card" onclick={() => { appsView = 'windows'; loadWrapServices(); }}>
+								<div class="app-icon">🪟</div>
+								<div class="app-name">Windows</div>
+								<div class="app-desc">{wrapServices.length > 0 ? `${wrapServices.length} Apps` : 'Desktop Apps'}</div>
+							</button>
+					</div>
+				{/if}
 			{:else if leftSection === 'instances'}
 				<div class="instances-panel">
 					<div class="svc-category">Switch Between Environments</div>
@@ -5762,10 +5923,23 @@
 					} catch {}
 				}}
 			>
-				<option value="claude-sonnet-4-5">sonnet-4-5</option>
-				<option value="claude-sonnet-4-6">sonnet-4-6</option>
-				<option value="claude-opus-4-6">opus-4-6</option>
-				<option value="claude-haiku-4-5-20251001">haiku-4-5</option>
+				{#if availableModels.length > 0}
+					{#each availableModels as m}
+						<option value={m.id}>{m.id.replace(/^claude-/, '').replace(/-\d{8}$/, '')}</option>
+					{/each}
+				{:else}
+					<option value="claude-sonnet-4-6">sonnet-4-6</option>
+					<option value="claude-opus-4-7-20250415">opus-4-7</option>
+					<option value="claude-opus-4-6">opus-4-6</option>
+					<option value="claude-haiku-4-5-20251001">haiku-4-5</option>
+				{/if}
+				{#if localModels.length > 0}
+					<optgroup label="Local">
+						{#each localModels as m}
+							<option value={m.id}>{m.name}</option>
+						{/each}
+					</optgroup>
+				{/if}
 			</select>
 			<textarea
 				bind:this={terminalInputEl}
@@ -5788,7 +5962,7 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'devices') loadClientDevices(); }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
@@ -5934,38 +6108,64 @@
 					<div class="empty-state">Loading services...</div>
 				{/if}
 			{:else if rightSection === 'apps'}
-				<div class="apps-grid">
-					<button class="app-card" onclick={() => {
-							const url = `${window.location.origin}/v2/atlas`;
-							const win = window.open(url, '_blank', 'width=1400,height=900');
-							if (!win) {
+				{#if appsView === 'windows'}
+					<div class="apps-drilldown">
+						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Back to Apps</button>
+						{#if wrapServices.length === 0}
+							<div class="apps-wrap-msg" style="padding:12px">No applications discovered yet</div>
+						{:else}
+							{#each ['communication', 'productivity', 'development', 'media', 'social', 'creative', 'browsing'] as cat}
+								{#if wrapServices.filter(s => s.category === cat).length > 0}
+									<div class="apps-cat-label">{cat.charAt(0).toUpperCase() + cat.slice(1)}</div>
+									<div class="apps-grid">
+										{#each wrapServices.filter(s => s.category === cat) as svc}
+											<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
+												<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
+												<div class="app-name">{svc.title || svc.id}</div>
+												<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'PAN Module' : 'Web App'}</div>
+											</button>
+										{/each}
+									</div>
+								{/if}
+							{/each}
+						{/if}
+						{#if wrapMsg}
+							<div class="apps-wrap-msg">{wrapMsg}</div>
+						{/if}
+					</div>
+				{:else}
+					<div class="apps-grid">
+						<button class="app-card" onclick={() => {
+								const url = `${window.location.origin}/v2/atlas-v2`;
 								fetch('/api/v1/ui-commands', {
 									method: 'POST',
 									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url })
+									body: JSON.stringify({ type: 'open_window', url, title: 'Atlas', width: 1400, height: 900 })
 								});
-							}
-						}}>
-							<div class="app-icon">&#x1F5FA;</div>
-							<div class="app-name">Atlas</div>
-							<div class="app-desc">System Architecture</div>
-						</button>
-						<button class="app-card" onclick={() => {
-								const url = `${window.location.origin}/v2/kronos`;
-								const win = window.open(url, '_blank', 'width=1200,height=800');
-								if (!win) {
+							}}>
+								<div class="app-icon">&#x1F5FA;</div>
+								<div class="app-name">Atlas</div>
+								<div class="app-desc">System Architecture</div>
+							</button>
+							<button class="app-card" onclick={() => {
+									const url = `${window.location.origin}/v2/kronos`;
 									fetch('/api/v1/ui-commands', {
 										method: 'POST',
 										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'open_window', url })
+										body: JSON.stringify({ type: 'open_window', url, title: 'Kronos', width: 1200, height: 800 })
 									});
-								}
-							}}>
-							<div class="app-icon">📜</div>
-							<div class="app-name">Kronos</div>
-							<div class="app-desc">Timeline &amp; History</div>
-						</button>
-				</div>
+								}}>
+								<div class="app-icon">📜</div>
+								<div class="app-name">Kronos</div>
+								<div class="app-desc">Timeline &amp; History</div>
+							</button>
+							<button class="app-card" onclick={() => { appsView = 'windows'; loadWrapServices(); }}>
+								<div class="app-icon">🪟</div>
+								<div class="app-name">Windows</div>
+								<div class="app-desc">{wrapServices.length > 0 ? `${wrapServices.length} Apps` : 'Desktop Apps'}</div>
+							</button>
+					</div>
+				{/if}
 			{:else if rightSection === 'instances'}
 				<div class="instances-panel">
 					<div class="svc-category">Environments</div>
@@ -6551,11 +6751,53 @@
 					{/each}
 				{/if}
 			{:else if rightSection === 'devices'}
-				{@const deviceServices = servicesData.filter(s => s.category === 'Devices')}
-				{#if deviceServices.length === 0}
-					<div class="empty-state">No devices connected</div>
-				{:else}
-					{#each deviceServices as svc}
+				<!-- PAN Clients -->
+				{@const pendingClients2 = panClientDevices.filter(d => d.trusted === false)}
+				{@const approvedClients2 = panClientDevices.filter(d => d.trusted !== false)}
+				{#if pendingClients2.length > 0}
+					<div class="svc-category" style="color:#f38ba8">⚠ Pending Approval</div>
+					{#each pendingClients2 as device}
+						<div class="svc-row" style="background:rgba(243,139,168,0.08);border-radius:6px;padding:4px 6px;margin-bottom:4px">
+							<span class="svc-dot unknown"></span>
+							<div class="svc-info" style="flex:1">
+								<div class="svc-name">{device.name || device.device_id}</div>
+								<div class="svc-detail">{device.platform || 'unknown platform'} — waiting for approval</div>
+							</div>
+							<div style="display:flex;gap:4px;flex-shrink:0">
+								<button class="approval-btn approve" onclick={() => approveClient(device.device_id)} title="Approve">✓</button>
+								<button class="approval-btn deny" onclick={() => denyClient(device.device_id)} title="Deny">✕</button>
+							</div>
+						</div>
+					{/each}
+				{/if}
+				{#if approvedClients2.length > 0}
+					<div class="svc-category">Connected Machines</div>
+					{#each approvedClients2 as device}
+						<div class="svc-row">
+							<span class="svc-dot" class:up={device.online} class:down={!device.online}></span>
+							<div class="svc-info">
+								<div class="svc-name">{device.name || device.device_id}</div>
+								<div class="svc-detail">{device.online ? 'Online' : 'Offline'}{device.platform ? ' · ' + device.platform : ''}{device.version ? ' v' + device.version : ''}</div>
+							</div>
+						</div>
+					{/each}
+				{:else if pendingClients2.length === 0}
+					<div class="empty-state small">No PAN clients connected</div>
+				{/if}
+				<!-- Invite -->
+				<div class="svc-category" style="margin-top:12px">Add Machine</div>
+				<div style="display:flex;gap:4px;padding:4px 0">
+					<input type="text" class="add-input" style="flex:1" placeholder="Machine name..." bind:value={panClientInviteName} />
+					<button class="contacts-add-btn" onclick={generateClientInvite} title="Generate">+</button>
+				</div>
+				{#if panClientInviteCmd}
+					<div style="font-size:10px;color:#a6adc8;padding:4px 0;word-break:break-all;cursor:pointer" onclick={() => { navigator.clipboard.writeText(panClientInviteCmd); panClientInviteCmd = '✓ Copied!'; setTimeout(() => panClientInviteCmd = '', 2000); }}>{panClientInviteCmd}</div>
+				{/if}
+				<!-- Other devices -->
+				{@const knownDevices2 = servicesData.filter(s => s.category === 'Devices')}
+				{#if knownDevices2.length > 0}
+					<div class="svc-category" style="margin-top:12px">Other Devices</div>
+					{#each knownDevices2 as svc}
 						<div class="svc-row">
 							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
 							<div class="svc-info">
@@ -8625,6 +8867,38 @@
 	}
 
 	/* ==================== Apps Grid ==================== */
+	.apps-drilldown {
+		padding: 0;
+	}
+	.apps-back-btn {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		width: 100%;
+		padding: 8px 12px;
+		border: none;
+		border-bottom: 1px solid #313244;
+		background: transparent;
+		color: #89b4fa;
+		cursor: pointer;
+		font-size: 12px;
+		text-align: left;
+	}
+	.apps-back-btn:hover { background: rgba(137, 180, 250, 0.08); }
+	.apps-cat-label {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: #6c7086;
+		padding: 8px 12px 2px;
+	}
+	.apps-wrap-msg {
+		grid-column: 1 / -1;
+		font-size: 11px;
+		color: #a6e3a1;
+		padding: 4px 8px;
+	}
 	.instances-panel { padding: 8px; }
 	.instance-row {
 		display: flex; align-items: center; gap: 8px;

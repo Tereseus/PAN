@@ -191,3 +191,44 @@ data class LogInsertResponse(
     val ok: Boolean,
     val inserted: Int
 )
+
+// Intuition snapshot DTOs — /api/v1/intuition/current
+data class IntuitionNow(
+    val where: String? = null,
+    val activity: String? = null,
+    val social: List<String>? = null,
+    val focus: String? = null,
+    val mood: String? = null,
+    val mood_detail: String? = null,
+    val urgency: String? = null,
+    val direction: String? = null,
+    val need: String? = null,
+    val engagement: String? = null,
+    val complexity: String? = null,
+    val recent_topics: List<String>? = null,
+    val last_heard: String? = null,
+    val last_seen: String? = null
+)
+
+data class IntuitionPanService(
+    val name: String,
+    val status: String
+)
+
+data class IntuitionPan(
+    val services: List<IntuitionPanService>? = null,
+    val status: String? = null
+)
+
+data class IntuitionSnapshot(
+    val commander: String? = null,
+    val as_of: Long? = null,
+    val now: IntuitionNow? = null,
+    val pan: IntuitionPan? = null
+)
+
+data class IntuitionResponse(
+    val ok: Boolean,
+    val snapshot: IntuitionSnapshot? = null,
+    val as_of: Long? = null
+)

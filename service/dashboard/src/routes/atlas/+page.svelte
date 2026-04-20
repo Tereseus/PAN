@@ -98,6 +98,12 @@
 				dependsOn: raw?.dependsOn || [],
 				port: raw?.port || null,
 				interval: raw?.interval || null,
+				// Model info from steward registry
+				modelTier: raw?.modelTier || 'none',
+				modelTierLabel: raw?.modelTierLabel || null,
+				modelTierColor: raw?.modelTierColor || null,
+				modelCurrent: raw?.modelCurrent || null,
+				modelMinSize: raw?.modelMinSize || null,
 			};
 			nodes.push(n);
 			nodeMap[id] = n;
@@ -465,7 +471,7 @@
 							<text y="12" fill="#cdd6f4" font-size="10" font-weight="600" text-anchor="middle">PAN Server</text>
 							<text y="26" fill="#6c7086" font-size="8" text-anchor="middle">{node.detail}</text>
 						{:else}
-							<rect x="-70" y="-22" width="140" height="44" rx="8"
+							<rect x="-70" y="-22" width="140" height={node.modelCurrent && node.modelTier !== 'none' ? 56 : 44} rx="8"
 								fill={atlasHovered === node.id || atlasSelected === node.id ? '#1e1e2e' : '#11111b'}
 								stroke={atlasSelected === node.id ? nodeColor(node) : atlasHovered === node.id ? '#45475a' : nodeColor(node) + '30'}
 								stroke-width={atlasSelected === node.id ? 2 : 1}
@@ -476,6 +482,12 @@
 							{/if}
 							<text x={node.status !== 'none' ? -44 : -55} y="-2" fill="#cdd6f4" font-size="12" font-weight="600">{node.label.length > 16 ? node.label.slice(0,15)+'..' : node.label}</text>
 							<text x="-55" y="13" fill="#6c7086" font-size="8.5">{(node.detail||'').length > 24 ? (node.detail||'').slice(0,23)+'..' : (node.detail||'')}</text>
+							{#if node.modelCurrent && node.modelTier !== 'none'}
+								<rect x="-55" y="20" width={Math.min(110, node.modelCurrent.length * 5.5 + 16)} height="14" rx="3"
+									fill={node.modelTierColor ? node.modelTierColor + '20' : '#31324440'}
+								/>
+								<text x="-48" y="30" fill={node.modelTierColor || '#6c7086'} font-size="8" font-weight="500">{node.modelCurrent.length > 20 ? node.modelCurrent.slice(0,19)+'..' : node.modelCurrent}</text>
+							{/if}
 						{/if}
 					</g>
 				{/each}
@@ -502,6 +514,20 @@
 					</div>
 					{#if sel.detail}<div class="detail-info">{sel.detail}</div>{/if}
 					{#if sel.description}<div class="detail-desc">{sel.description}</div>{/if}
+					{#if sel.modelTier && sel.modelTier !== 'none'}
+						<div class="detail-section">AI Model</div>
+						<div class="detail-model">
+							<span class="model-badge" style="background:{sel.modelTierColor}20; color:{sel.modelTierColor}; border: 1px solid {sel.modelTierColor}40">
+								{sel.modelTierLabel}
+							</span>
+							{#if sel.modelCurrent}
+								<span class="model-name">{sel.modelCurrent}</span>
+							{/if}
+							{#if sel.modelMinSize}
+								<span class="model-min">Min: {sel.modelMinSize}</span>
+							{/if}
+						</div>
+					{/if}
 					{#if sel.error}
 						<div class="detail-error">
 							<div class="detail-error-label">Last error</div>
@@ -642,6 +668,12 @@
 	.detail-error-label { color: #f38ba8; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
 	.detail-error-msg { color: #fab0b9; font-family: monospace; font-size: 10.5px; word-break: break-word; }
 	.detail-meta { display: flex; gap: 10px; color: #585b70; font-size: 10px; margin-top: 6px; }
+	.detail-model { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; }
+	.model-badge { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+	.model-name { color: #cdd6f4; font-size: 11px; font-family: monospace; }
+	.model-min { color: #585b70; font-size: 9px; }
+
+	.tech-name { color: #585b70; font-size: 11px; }
 
 	.drilldown {
 		position: absolute;

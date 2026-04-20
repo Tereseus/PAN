@@ -19,7 +19,7 @@
 	let tabs = $derived(allTabs.filter(t => !(t.userOnly && getPanMode() === 'service')));
 
 	let commsOpen = $state(typeof window !== 'undefined' && localStorage.getItem('pan_comms_open') === '1');
-	let commsView = $state('contacts'); // 'contacts' | 'calendar' | 'mail' | 'wrap'
+	let commsView = $state('contacts'); // 'contacts' | 'calendar' | 'mail'
 	let unreadMessages = $state(0);
 	let commsContacts = $state([]);
 	let commsActiveContact = $state(null);   // contact object currently expanded
@@ -693,7 +693,7 @@
 	<div class="mobile-overlay" onclick={closeMobileMenu}></div>
 {/if}
 
-{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/kronos') || page.url.pathname.includes('/crucible') || page.url.pathname.includes('/compose') || page.url.pathname.includes('/call') || page.url.pathname.includes('/comms')}
+{#if page.url.pathname.includes('/atlas') || page.url.pathname.includes('/atlas-v2') || page.url.pathname.includes('/kronos') || page.url.pathname.includes('/crucible') || page.url.pathname.includes('/compose') || page.url.pathname.includes('/call') || page.url.pathname.includes('/comms')}
 	{@render children()}
 {:else}
 <div class="shell">
@@ -765,7 +765,6 @@
 							{#if unreadMessages > 0}<span class="comms-msg-badge">{unreadMessages}</span>{/if}
 						</button>
 						<button class="comms-vtab" class:active={commsView === 'calendar'} class:flash={calendarFlash} onclick={() => { commsView = 'calendar'; commsActiveContact = null; loadCalendarEvents(); }} title="Calendar">📅</button>
-						<button class="comms-vtab" class:active={commsView === 'wrap'} onclick={() => { commsView = 'wrap'; commsActiveContact = null; loadWrapServices(); }} title="Wrapped apps">🪟</button>
 						<button class="comms-vtab comms-expand-btn" onclick={() => openExpandedCommsView(commsView)} title="Open {commsView} in window">↗</button>
 					</div>
 
@@ -893,35 +892,6 @@
 										</div>
 									</div>
 								{/if}
-							{/if}
-						</div>
-					{:else if commsView === 'wrap'}
-						<div class="comms-wrap-view">
-							<div class="comms-wrap-header">Wrapped apps</div>
-							<div class="comms-wrap-hint">Opens a Tauri webview with PAN's content script injected. Messages stream back to PAN.</div>
-							{#if wrapServices.length === 0}
-								<div class="comms-empty">No services registered yet. <button class="comms-retry-btn" onclick={loadWrapServices}>Reload</button></div>
-							{:else}
-								<div class="comms-wrap-list">
-									{#each wrapServices as svc}
-										<div class="comms-wrap-item">
-											<div class="comms-wrap-info">
-												<div class="comms-wrap-name">{svc.title || svc.id}</div>
-												<div class="comms-wrap-url">{svc.url}</div>
-											</div>
-											<button
-												class="comms-wrap-open"
-												disabled={wrapOpening === svc.id}
-												onclick={() => openWrapper(svc.id)}
-											>
-												{wrapOpening === svc.id ? 'Opening…' : 'Open'}
-											</button>
-										</div>
-									{/each}
-								</div>
-							{/if}
-							{#if wrapMsg}
-								<div class="comms-wrap-msg">{wrapMsg}</div>
 							{/if}
 						</div>
 					{:else if commsLoading}

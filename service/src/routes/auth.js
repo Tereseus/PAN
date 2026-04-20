@@ -181,6 +181,9 @@ router.get('/me', (req, res) => {
   const org = get("SELECT id, slug, name, color_primary, color_secondary, logo_url FROM orgs WHERE id = :id", { ':id': activeOrgId })
             || { id: 'org_personal', slug: 'personal', name: 'Personal', color_primary: '#f5c2e7', color_secondary: null, logo_url: null };
 
+  // Personal org display name: always "Personal" in the response (prevents "Tereseus · Tereseus" in top bar)
+  const orgDisplayName = (org.id === 'org_personal') ? 'Personal' : org.name;
+
   res.json({
     id: user.id,
     email: user.email,
@@ -194,7 +197,7 @@ router.get('/me', (req, res) => {
     org: {
       id: org.id,
       slug: org.slug,
-      name: org.name,
+      name: orgDisplayName,
       color_primary: org.color_primary,
       color_secondary: org.color_secondary,
       logo_url: org.logo_url,

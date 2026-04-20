@@ -785,23 +785,24 @@ app.get('/install/:token', (req, res) => {
   const installUrl = `${proto}://${host}/install/${token}`;
 
   const ua = (req.headers['user-agent'] || '').toLowerCase();
-  const isBrowser = ua.includes('mozilla');
+  const isPowerShell = ua.includes('powershell');
+  const isBrowser = ua.includes('mozilla') && !isPowerShell; // PowerShell UA also has 'mozilla'
   const isWindows = ua.includes('windows');
   const isMac = ua.includes('mac');
-  const isPowerShell = ua.includes('powershell');
 
   // Browser → serve HTML landing page
   if (isBrowser) {
     const osLabel = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
+    const hubDisplayName = get("SELECT value FROM settings WHERE key = 'display_name'")?.value || hostname();
     const installCmd = isWindows
       ? `irm ${proto}://${host}/install/${token} | iex`
       : `curl -s ${proto}://${host}/install/${token} | bash`;
 
     // Hub-served download: personalised per invite — hub URL + token baked into filename
     const dlUrl  = `${proto}://${host}/install/${token}/download`;
-    const dlName = isWindows ? 'pan-installer-win.exe' : 'pan-installer-linux';
+    const dlName = isWindows ? 'pan-installer.bat' : 'pan-installer-linux';
     const dlHint = isWindows
-      ? 'If Windows shows a warning, click <strong>More info → Run anyway</strong>'
+      ? 'If browser warns, click <strong>Keep</strong> → then double-click to run'
       : isMac
         ? 'After downloading: <code>chmod +x ~/Downloads/pan-installer-linux && ~/Downloads/pan-installer-linux</code>'
         : 'After downloading: <code>chmod +x pan-installer-linux && ./pan-installer-linux</code>';
@@ -867,7 +868,7 @@ kbd{display:inline-block;background:#313244;border:1px solid #45475a;border-radi
   <div class="logo">ΠΑΝ</div>
   <div class="tagline">Personal AI Network</div>
   <h2>Connect this ${osLabel} computer to PAN</h2>
-  <div class="sub">Download the installer, run it — your browser opens automatically.</div>
+  <div class="sub">Download the script, then <strong>right-click → Run with PowerShell</strong>.</div>
 
   <div class="dl-box">
     <a class="dl-btn" href="${dlUrl}">⬇ Download PAN Installer</a>
@@ -877,7 +878,7 @@ kbd{display:inline-block;background:#313244;border:1px solid #45475a;border-radi
   <div class="link-box">
     <div class="link-label" id="linkLabel">Invited by</div>
     <div class="link-row">
-      <div class="link-val" style="font-size:15px;font-weight:700;color:#cdd6f4;font-family:inherit">🖥 ${hostname()}</div>
+      <div class="link-val" style="font-size:15px;font-weight:700;color:#cdd6f4;font-family:inherit">🖥 ${hubDisplayName}</div>
     </div>
     <div style="font-size:11px;color:#6c7086;margin-top:8px">Invite link auto-copied to clipboard — the installer will use it automatically.</div>
   </div>
@@ -938,101 +939,267 @@ app.get('/install/:token/download', (req, res) => {
     || host.includes('trycloudflare.com')
     || host.includes('ts.net');
   const proto   = isHttps ? 'https' : 'http';
+  const wsProto = isHttps ? 'wss' : 'ws';
   const ua      = (req.headers['user-agent'] || '').toLowerCase();
   const isWin   = ua.includes('windows');
-  const isLinux = ua.includes('linux') && !ua.includes('android');
 
-  // Encode hub host + token into filename so exe is self-configuring
-  const cfg     = JSON.stringify({ h: host, t: token, s: isHttps ? 1 : 0 });
-  const encoded = Buffer.from(cfg).toString('base64url');
-  const platform = isWin ? 'win' : 'linux';
-  const binName  = `pan-installer-${platform}${isWin ? '.exe' : ''}`;
-  const binPath  = join(__dirname, '..', 'bin', binName);
-  const dlName   = `pan-${encoded}${isWin ? '.exe' : ''}`;
-
-  if (existsSync(binPath)) {
-    // Serve the compiled binary — filename contains embedded config
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${dlName}"`);
-    res.setHeader('X-PAN-Installer', 'compiled');
-    return res.sendFile(binPath);
-  }
-
-  // Binary not built yet — fall back to script with instructions
   if (isWin) {
-    const ps1 = `# PAN Installer — paste this in PowerShell\nirm ${proto}://${host}/install/${token} | iex`;
-    res.setHeader('Content-Type', 'text/plain');
-    res.setHeader('Content-Disposition', 'attachment; filename="pan-install.ps1"');
-    return res.send(ps1);
+    // Encode config into filename — PS1 reads its own filename, no browser/server needed
+    const cfg     = JSON.stringify({ h: host, t: token, s: isHttps ? 1 : 0 });
+    const encoded = Buffer.from(cfg).toString('base64url');
+    const filename = `pan-install.bat`;
+    const bat = generateBATDownload(host, proto, wsProto, token);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(bat);
   }
+
+  // Linux/Mac: shell script
   const sh = `#!/bin/bash\ncurl -s ${proto}://${host}/install/${token} | bash`;
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', 'attachment; filename="pan-install.sh"');
   res.send(sh);
 });
 
-function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
-  // Build as array to avoid JS template-literal vs PowerShell backtick conflicts
-  const httpUrl = hubWs.replace(/^ws/, 'http');
+// Simple .bat launcher — browser allows download (warns, not blocked).
+// Double-click runs it. Fetches + executes the full install PS1 from the hub.
+// No polyglot, no escaping hell, no AV flagging.
+function generateBATDownload(host, proto, wsProto, token) {
+  const installUrl = `${proto}://${host}/install/${token}`;
   const lines = [
-    '# PAN Client Installer — Windows',
-    '# Run: irm ' + httpUrl + '/install/' + token + ' | iex',
-    '',
+    '@echo off',
+    `title PAN Installer`,
+    `PowerShell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm '${installUrl}')"`,
+    'if %ERRORLEVEL% neq 0 (',
+    '  echo.',
+    '  echo   Something went wrong. See above for details.',
+    '  pause',
+    ')',
+  ];
+  return lines.join('\r\n');
+}
+
+// ---- dead code below kept for reference, replaced by generateBATDownload above ----
+function generateBATDownload_UNUSED(host, proto, wsProto, token) {
+  const nodeVer = '22.16.0';
+  const nodeUrl = `https://nodejs.org/dist/v${nodeVer}/node-v${nodeVer}-win-x64.zip`;
+  const lines = [
+    '# PAN Installer — double-click to run',
+    '# PAN Installer',
     '$ErrorActionPreference = "Stop"',
-    '$PanDir = Join-Path $env:LOCALAPPDATA "PAN-Client"',
-    '$NodeDir = Join-Path $PanDir "node"',
-    '$NodeVersion = "22.16.0"',
-    '$NodeUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip"',
     '',
-    'function Step($m) { Write-Host "> $m" -ForegroundColor Cyan }',
-    'function Ok($m)   { Write-Host "  [OK] $m" -ForegroundColor Green }',
-    '',
-    'Step "Creating directories"',
-    'foreach ($d in @($PanDir, $NodeDir, (Join-Path $PanDir "data"))) {',
-    '  if (-not (Test-Path $d)) { New-Item -ItemType Directory $d -Force | Out-Null }',
-    '}',
-    '',
-    'Step "Downloading Node.js v$NodeVersion"',
-    '$nodeExe = Join-Path $NodeDir "node.exe"',
-    'if (-not (Test-Path $nodeExe)) {',
-    '  $tmp = Join-Path $env:TEMP "pan-node.zip"',
-    '  (New-Object System.Net.WebClient).DownloadFile($NodeUrl, $tmp)',
-    '  Expand-Archive $tmp (Join-Path $env:TEMP "pan-node-extract") -Force',
-    '  Get-ChildItem (Join-Path $env:TEMP "pan-node-extract\\node-v$NodeVersion-win-x64") | Move-Item -Destination $NodeDir -Force',
-    '  Remove-Item $tmp -Force -ErrorAction SilentlyContinue',
-    '}',
-    'Ok "Node.js ready"',
-    '',
-    'Step "Downloading pan-client.js"',
-    '$clientJs = Join-Path $PanDir "pan-client.js"',
-    '(New-Object System.Net.WebClient).DownloadFile("' + clientJsUrl + '", $clientJs)',
-    '',
-    'Step "Installing ws dependency"',
-    '$npmCli = Join-Path $NodeDir "node_modules\\npm\\bin\\npm-cli.js"',
-    'cd $PanDir',
-    '& $nodeExe $npmCli init -y 2>&1 | Out-Null',
-    '& $nodeExe $npmCli install ws --no-audit --no-fund 2>&1 | Out-Null',
-    'Ok "Dependencies installed"',
-    '',
-    'Step "Writing config"',
-    '$cfg = \'{"hub_ws":"' + hubWs + '","token":"' + token + '","device_id":"$env:COMPUTERNAME","name":"$env:COMPUTERNAME"}\'',
-    '$cfg = $cfg -replace \'"\\$env:COMPUTERNAME"\', \'"\'+ $env:COMPUTERNAME +\'"\' ',
-    '[IO.File]::WriteAllText((Join-Path $PanDir "pan-client-config.json"), $cfg)',
-    '',
-    'Step "Registering startup task"',
-    '$action = New-ScheduledTaskAction -Execute $nodeExe -Argument $clientJs -WorkingDirectory $PanDir',
-    '$trigger = New-ScheduledTaskTrigger -AtLogOn',
-    '$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)',
-    'Register-ScheduledTask -TaskName "PAN-Client" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force | Out-Null',
-    'Ok "Scheduled task registered (starts on login)"',
-    '',
-    'Step "Starting PAN Client"',
-    'Start-Process -FilePath $nodeExe -ArgumentList $clientJs -WorkingDirectory $PanDir -WindowStyle Hidden',
+    '# Read config from own filename (base64url encoded)',
+    '$self = $MyInvocation.MyCommand.Path',
+    '$b64url = [System.IO.Path]::GetFileNameWithoutExtension($self) -replace "^pan-", ""',
+    '# Convert base64url -> standard base64',
+    '$b64 = $b64url.Replace("-", "+").Replace("_", "/")',
+    'switch ($b64.Length % 4) { 2 { $b64 += "==" } 3 { $b64 += "=" } }',
+    '$cfgJson = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))',
+    '$cfg = $cfgJson | ConvertFrom-Json',
+    '$isHttps = $cfg.s -eq 1',
+    '$xProto  = if ($isHttps) { "https" } else { "http" }',
+    '$xWs     = if ($isHttps) { "wss"   } else { "ws"   }',
+    '$hubHost = $cfg.h',
+    '$token   = $cfg.t',
+    '$hubHttp = "$xProto`://$hubHost"',
+    '$hubWs   = "$xWs`://$hubHost"',
     '',
     'Write-Host ""',
-    'Write-Host "PAN Client installed!" -ForegroundColor Green',
-    'Write-Host "  Hub:   ' + hubWs + '" -ForegroundColor White',
-    'Write-Host "  Data:  $PanDir" -ForegroundColor Gray',
+    'Write-Host "  ╔═══════════════════════╗" -ForegroundColor Cyan',
+    'Write-Host "  ║       ΠΑΝ             ║" -ForegroundColor Cyan',
+    'Write-Host "  ╚═══════════════════════╝" -ForegroundColor Cyan',
+    'Write-Host ""',
+    'Write-Host "  Hub loaded from filename — connecting..." -ForegroundColor White',
+    'Write-Host ""',
+    'Write-Host "  Connecting to: $hubHttp" -ForegroundColor Gray',
+    '',
+    '# Verify hub reachable',
+    'try {',
+    '  $null = Invoke-WebRequest "$hubHttp/health" -UseBasicParsing -TimeoutSec 10',
+    '  Write-Host "  Hub OK ' + String.fromCharCode(0x2713) + '" -ForegroundColor Green',
+    '} catch {',
+    '  Write-Host "  Cannot reach hub: $hubHttp" -ForegroundColor Red',
+    '  Read-Host "  Press Enter to close"',
+    '  exit 1',
+    '}',
+    '',
+    '# PAN directory',
+    '$panDir = Join-Path $env:LOCALAPPDATA "PAN"',
+    'New-Item -ItemType Directory -Force -Path $panDir | Out-Null',
+    '',
+    '# Find or download Node.js',
+    '$nodeExe = $null',
+    'try { $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source } catch {}',
+    'if (-not $nodeExe -or -not (Test-Path $nodeExe)) {',
+    '  $nodeDir = Join-Path $panDir "node"',
+    '  $nodeExe = Join-Path $nodeDir "node.exe"',
+    '  if (-not (Test-Path $nodeExe)) {',
+    '    Write-Host "  Node.js not found — downloading..." -ForegroundColor Yellow',
+    '    $zipPath = Join-Path $env:TEMP "pan-node.zip"',
+    '    $extractDir = Join-Path $env:TEMP "pan-node-extract"',
+    '    if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }',
+    `    Invoke-WebRequest "${nodeUrl}" -OutFile $zipPath -UseBasicParsing`,
+    '    Expand-Archive $zipPath -DestinationPath $extractDir -Force',
+    `    $extracted = Get-ChildItem $extractDir | Where-Object { $_.Name -like "node-v${nodeVer}*" } | Select-Object -First 1`,
+    '    if (Test-Path $nodeDir) { Remove-Item $nodeDir -Recurse -Force }',
+    '    Move-Item $extracted.FullName $nodeDir',
+    '    Remove-Item $zipPath -ErrorAction SilentlyContinue',
+    '    Write-Host "  Node.js installed ' + String.fromCharCode(0x2713) + '" -ForegroundColor Green',
+    '  } else {',
+    '    Write-Host "  Node.js (bundled) ready ' + String.fromCharCode(0x2713) + '" -ForegroundColor Green',
+    '  }',
+    '} else {',
+    '  $ver = & $nodeExe --version 2>$null',
+    '  Write-Host "  Node.js $ver already installed ' + String.fromCharCode(0x2713) + '" -ForegroundColor Green',
+    '}',
+    '',
+    '# Find npm (bundled with node)',
+    '$npmCli = Join-Path (Split-Path $nodeExe) "node_modules\\npm\\bin\\npm-cli.js"',
+    'if (-not (Test-Path $npmCli)) {',
+    '  # Try system npm',
+    '  $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source',
+    '  if ($npmCmd) { $npmCli = $null } else { throw "npm not found" }',
+    '}',
+    '',
+    '# Download pan-client.js',
+    'Write-Host "  Downloading PAN client..." -ForegroundColor Gray',
+    '$clientPath = Join-Path $panDir "pan-client.js"',
+    'Invoke-WebRequest "$hubHttp/client/pan-client.js" -OutFile $clientPath -UseBasicParsing',
+    'Write-Host "  PAN client downloaded ' + String.fromCharCode(0x2713) + '" -ForegroundColor Green',
+    '',
+    '# Write package.json with type:module (pan-client.js uses ESM imports)',
+    'Set-Content (Join-Path $panDir "package.json") \'{"name":"pan-client","version":"1.0.0","type":"module"}\' -Encoding UTF8',
+    '',
+    '# Install ws dependency',
+    'Write-Host "  Installing dependencies..." -ForegroundColor Gray',
+    'if ($npmCli) {',
+    '  & $nodeExe $npmCli install ws --prefix $panDir --no-audit --no-fund --save 2>&1 | Out-Null',
+    '} else {',
+    '  & npm install ws --prefix $panDir --no-audit --no-fund --save 2>&1 | Out-Null',
+    '}',
+    'Write-Host "  Dependencies installed ' + String.fromCharCode(0x2713) + '" -ForegroundColor Green',
+    '',
+    '# Write client config',
+    '$clientCfg = "{""hub_ws"":""$hubWs"",""hub_http"":""$hubHttp"",""token"":""$token""}"',
+    'Set-Content (Join-Path $panDir "pan-client-config.json") $clientCfg -Encoding UTF8',
+    '',
+    '# Launch pan-client.js as a background process',
+    'Write-Host "  Starting PAN client..." -ForegroundColor Gray',
+    'Start-Process $nodeExe -ArgumentList "`"$clientPath`"" -WorkingDirectory $panDir -WindowStyle Hidden',
+    '',
+    'Write-Host ""',
+    'Write-Host "  ' + String.fromCharCode(0x2713) + ' Connected!" -ForegroundColor Green',
+    'Write-Host "  Check your PAN dashboard to approve this device." -ForegroundColor White',
+    'Write-Host "  (You can close this window)" -ForegroundColor Gray',
+    'Write-Host ""',
+    'Start-Sleep 4',
+  ];
+  return lines.join('\r\n');
+}
+
+function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
+  const httpUrl   = hubWs.replace(/^ws/, 'http');
+  const nodeVer   = '22.16.0';
+  const lines = [
+    '# PAN Client Installer',
+    '$ErrorActionPreference = "Stop"',
+    '',
+    'function Step { param($m) Write-Host "  > $m" -ForegroundColor Cyan }',
+    'function Ok   { param($m) Write-Host "  [OK] $m" -ForegroundColor Green }',
+    'function Fail { param($m) Write-Host "  [ERR] $m" -ForegroundColor Red; Read-Host "  Press Enter to close"; exit 1 }',
+    '',
+    'Write-Host ""',
+    'Write-Host "  ╔═══════════════════════╗" -ForegroundColor Cyan',
+    'Write-Host "  ║       ΠΑΝ             ║" -ForegroundColor Cyan',
+    'Write-Host "  ╚═══════════════════════╝" -ForegroundColor Cyan',
+    'Write-Host ""',
+    '',
+    '# ── Directories ─────────────────────────────────────────────────────────',
+    '$PanDir  = Join-Path $env:LOCALAPPDATA "PAN"',
+    '$NodeDir = Join-Path $PanDir "node"',
+    'New-Item -ItemType Directory -Force -Path $PanDir  | Out-Null',
+    'New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null',
+    '',
+    '# ── Node.js ──────────────────────────────────────────────────────────────',
+    '$nodeExe = $null',
+    'try { $nodeExe = (Get-Command node -ErrorAction Stop).Source } catch {}',
+    'if (-not $nodeExe) {',
+    '  $nodeExe = Join-Path $NodeDir "node.exe"',
+    '  if (-not (Test-Path $nodeExe)) {',
+    `    Step "Downloading Node.js v${nodeVer}..."`,
+    `    $nodeUrl = "https://nodejs.org/dist/v${nodeVer}/node-v${nodeVer}-win-x64.zip"`,
+    '    $tmp = Join-Path $env:TEMP "pan-node.zip"',
+    '    $ext = Join-Path $env:TEMP "pan-node-ext"',
+    '    if (Test-Path $ext) { Remove-Item $ext -Recurse -Force }',
+    '    (New-Object System.Net.WebClient).DownloadFile($nodeUrl, $tmp)',
+    '    Expand-Archive $tmp $ext -Force',
+    `    $sub = Join-Path $ext "node-v${nodeVer}-win-x64"`,
+    '    Get-ChildItem $sub | Move-Item -Destination $NodeDir -Force',
+    '    Remove-Item $tmp,$ext -Force -Recurse -ErrorAction SilentlyContinue',
+    '    Ok "Node.js installed"',
+    '  } else { Ok "Node.js (cached)" }',
+    '} else { Ok "Node.js already on system: $((& $nodeExe --version 2>$null))" }',
+    '',
+    '# ── npm (bundled with node zip) ──────────────────────────────────────────',
+    '$npmCli = Join-Path $NodeDir "node_modules" | Join-Path -ChildPath "npm" | Join-Path -ChildPath "bin" | Join-Path -ChildPath "npm-cli.js"',
+    'if (-not (Test-Path $npmCli)) {',
+    '  # Bundled node — npm-cli.js path varies; try common locations',
+    '  $npmCli = Get-ChildItem $NodeDir -Recurse -Filter "npm-cli.js" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName',
+    '}',
+    'if (-not $npmCli) { Fail "npm not found — please install Node.js from nodejs.org then re-run" }',
+    '',
+    '# ── Download pan-client.js ───────────────────────────────────────────────',
+    'Step "Downloading PAN client..."',
+    '$clientJs = Join-Path $PanDir "pan-client.js"',
+    '(New-Object System.Net.WebClient).DownloadFile("' + clientJsUrl + '", $clientJs)',
+    'Ok "PAN client downloaded"',
+    '',
+    '# ── package.json (ESM — pan-client.js uses import syntax) ───────────────',
+    '[IO.File]::WriteAllText((Join-Path $PanDir "package.json"), \'{"name":"pan-client","version":"1.0.0","type":"module"}\')',
+    '',
+    '# ── Install ws ───────────────────────────────────────────────────────────',
+    'Step "Installing dependencies..."',
+    '& $nodeExe $npmCli install ws --prefix $PanDir --no-audit --no-fund --save 2>&1 | Out-Null',
+    'Ok "ws installed"',
+    '',
+    '# ── Write config ─────────────────────────────────────────────────────────',
+    'Step "Writing config..."',
+    '$deviceName = $env:COMPUTERNAME',
+    '$cfgObj = [ordered]@{',
+    '  hub_ws   = "' + hubWs  + '"',
+    '  hub_http = "' + httpUrl + '"',
+    '  token    = "' + token   + '"',
+    '  device_id = $deviceName',
+    '  name      = $deviceName',
+    '}',
+    '$cfgJson = $cfgObj | ConvertTo-Json -Compress',
+    '[IO.File]::WriteAllText((Join-Path $PanDir "pan-client-config.json"), $cfgJson)',
+    'Ok "Config written"',
+    '',
+    '# ── Launch client in background, show first 5s of output ───────────────',
+    'Step "Starting PAN client..."',
+    '$logOut = Join-Path $PanDir "client-out.log"',
+    '$logErr = Join-Path $PanDir "client-err.log"',
+    'Remove-Item $logOut,$logErr -ErrorAction SilentlyContinue',
+    '$nodeArgs = "`"$clientJs`" --hub `"' + hubWs + '`" --token `"' + token + '`" --name `"$env:COMPUTERNAME`""',
+    '$proc = Start-Process $nodeExe -ArgumentList $nodeArgs -WorkingDirectory $PanDir -WindowStyle Hidden -RedirectStandardOutput $logOut -RedirectStandardError $logErr -PassThru',
+    'Write-Host "  Waiting for client to start..." -ForegroundColor Gray',
+    'Start-Sleep 5',
+    'if ($proc.HasExited) {',
+    '  Write-Host "  [ERR] Node crashed (exit code $($proc.ExitCode))" -ForegroundColor Red',
+    '} else {',
+    '  Write-Host "  PAN client running (PID $($proc.Id)) ✓" -ForegroundColor Green',
+    '}',
+    '$o = if (Test-Path $logOut) { Get-Content $logOut -Raw } else { "" }',
+    '$e = if (Test-Path $logErr) { Get-Content $logErr -Raw } else { "" }',
+    'if ($o) { Write-Host $o -ForegroundColor Gray }',
+    'if ($e) { Write-Host $e -ForegroundColor Red }',
+    '',
+    'Write-Host ""',
+    'Write-Host "  ✓ Connected!" -ForegroundColor Green',
+    'Write-Host "  Check your PAN dashboard to approve this device." -ForegroundColor White',
+    'Write-Host ""',
+    'Read-Host "  Press Enter to close"',
   ];
   return lines.join('\r\n');
 }
@@ -2250,6 +2417,8 @@ app.all('/api/v1/dev/proxy/*proxyPath', async (req, res) => {
 });
 
 // ── Tunnel API ────────────────────────────────────────────────────────────────
+// NOTE: /api/v1/client/register and /api/v1/client/status live in routes/client.js
+
 // GET  /api/v1/tunnel/status  — returns current public tunnel URL (or null)
 // POST /api/v1/tunnel/start   — (re)starts Cloudflare Quick Tunnel without a full server restart
 app.get('/api/v1/tunnel/status', (req, res) => {

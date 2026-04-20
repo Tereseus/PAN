@@ -229,6 +229,102 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
 
 export const claude = askAI;
 
+// --- Vision (screenshot understanding via local Qwen2.5-VL or cloud API fallback) ---
+
+const OLLAMA_URL = 'http://localhost:11434';
+const VISION_MODEL = 'qwen2.5vl:3b';
+
+export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 30000 } = {}) {
+  // Try local Qwen2.5-VL first (free, fast, no API key)
+  try {
+    const ollamaRes = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        prompt,
+        images: [imageBase64],
+        stream: false,
+        options: { num_predict: 500 },
+      }),
+      signal: AbortSignal.timeout(timeout),
+    });
+
+    if (ollamaRes.ok) {
+      const data = await ollamaRes.json();
+      const text = data.response?.trim();
+      if (text) {
+        console.log(`[PAN Vision] ${VISION_MODEL} responded (${text.length} chars)`);
+        logUsage(caller, `ollama:${VISION_MODEL}`, {
+          input_tokens: data.prompt_eval_count || 0,
+          output_tokens: data.eval_count || 0,
+        }, prompt.slice(0, 100));
+        return text;
+      }
+    }
+  } catch (e) {
+    console.warn(`[PAN Vision] ${VISION_MODEL} failed: ${e.message} — trying cloud API fallback`);
+  }
+
+  // Fallback: Claude API with vision (requires API key)
+  const apiKey = getApiKey('anthropic');
+  if (apiKey) {
+    try {
+      const res = await fetch(ANTHROPIC_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 500,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+              { type: 'text', text: prompt },
+            ],
+          }],
+        }),
+        signal: AbortSignal.timeout(timeout),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.content?.[0]?.text?.trim() || '';
+        logUsage(caller, 'claude-haiku-4-5-20251001', data.usage, prompt.slice(0, 100));
+        return text;
+      }
+    } catch (e) {
+      console.error(`[PAN Vision] Claude API fallback failed: ${e.message}`);
+    }
+  }
+
+  // Fallback: Gemini (if key available)
+  const geminiKey = getApiKey('gemini');
+  if (geminiKey) {
+    try {
+      const genAI = new GoogleGenerativeAI(geminiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const result = await model.generateContent([
+        prompt,
+        { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
+      ]);
+      const text = result.response?.text()?.trim() || '';
+      if (text) {
+        logUsage(caller, 'gemini-2.0-flash', { input_tokens: 0, output_tokens: 0 }, prompt.slice(0, 100));
+        return text;
+      }
+    } catch (e) {
+      console.error(`[PAN Vision] Gemini fallback failed: ${e.message}`);
+    }
+  }
+
+  throw new Error('No vision provider available — Moondream not running, no API keys configured');
+}
+
 export function logUsage(caller, model, usage, promptPreview) {
   try {
     const inputTokens = usage?.input_tokens || 0;
