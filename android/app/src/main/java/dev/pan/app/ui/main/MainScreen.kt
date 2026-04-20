@@ -1,9 +1,12 @@
 package dev.pan.app.ui.main
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
@@ -11,9 +14,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import dev.pan.app.network.dto.DeviceSensorConfig
+import dev.pan.app.network.dto.IntuitionSnapshot
 import dev.pan.app.ui.commands.DeviceItem
 import dev.pan.app.vpn.RemoteAccessManager
 
@@ -52,6 +61,7 @@ fun MainScreen(
             viewModel.connectTailscale()
         }
     }
+    val intuition by viewModel.intuition.collectAsState()
     val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()
     val remoteAccessStatus by viewModel.remoteAccessStatus.collectAsState()
     val remoteAccessIp by viewModel.remoteAccessIp.collectAsState()
@@ -101,6 +111,9 @@ fun MainScreen(
             ) {
                 Text("PAN Dashboard")
             }
+
+            // Intuition — JARVIS-style situational awareness card
+            IntuitionCard(snapshot = intuition)
 
             // Microphone toggle — LIVE (red) or Muted
             Card(
@@ -417,4 +430,160 @@ fun StatusDot(isActive: Boolean) {
         color = if (isActive) MaterialTheme.colorScheme.primary
                else MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
     ) {}
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun IntuitionCard(snapshot: IntuitionSnapshot?) {
+    var expanded by remember { mutableStateOf(false) }
+
+    val now = snapshot?.now
+    val activity = now?.activity ?: "Waiting for signal..."
+    val mood = now?.mood ?: "Neutral"
+    val moodEmoji = when (mood.lowercase()) {
+        "engaged", "focused", "productive", "energetic" -> "🟢"
+        "calm", "relaxed", "neutral", "normal" -> "🔵"
+        "tired", "distracted", "bored" -> "🟡"
+        "stressed", "frustrated", "anxious" -> "🟠"
+        "angry", "upset" -> "🔴"
+        else -> "🔵"
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        onClick = { expanded = !expanded }
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            // Header: mood emoji + activity
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(moodEmoji, fontSize = 20.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        activity,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (now?.where != null) {
+                        Text(
+                            now.where,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Text(
+                    if (expanded) "▲" else "▼",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Expanded details
+            if (expanded && now != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Focus + Mood + Direction
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Focus", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(now.focus ?: "—", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Mood", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("$moodEmoji $mood", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Direction", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(now.direction ?: "—", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Urgency", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(now.urgency ?: "Normal", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                // Recent topics as chips
+                val topics = now.recent_topics
+                if (!topics.isNullOrEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Recent Topics", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        topics.take(5).forEach { topic ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            ) {
+                                Text(
+                                    topic,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Services summary
+                val services = snapshot.pan?.services
+                if (!services.isNullOrEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val running = services.count { it.status == "Running" }
+                    val stopped = services.filter { it.status != "Running" }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Services", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        ) {
+                            Text(
+                                "$running running",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        stopped.forEach { svc ->
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                            ) {
+                                Text(
+                                    "${svc.name} ✕",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

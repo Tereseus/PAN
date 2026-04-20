@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS devices (
     name TEXT NOT NULL,
     device_type TEXT DEFAULT 'pc',
     capabilities TEXT DEFAULT '[]',
+    tailscale_hostname TEXT,
     last_seen TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );

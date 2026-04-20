@@ -9,6 +9,7 @@ import { resetOllamaStatus } from './embeddings.js';
 
 const EMBED_MODEL = 'qwen3-embedding';
 const INFERENCE_MODEL = 'qwen3:4b';
+const VISION_MODEL = 'qwen2.5vl:3b';
 const OLLAMA_URL = 'http://localhost:11434';
 
 async function isOllamaRunning() {
@@ -131,6 +132,23 @@ async function ensureOllama() {
         }).catch(err => console.error(`[PAN Memory] ${INFERENCE_MODEL} pull error: ${err.message}`));
       } else {
         console.log(`[PAN Memory] ${INFERENCE_MODEL} ready — local inference active`);
+      }
+
+      // Vision model for screenshot understanding (intuition, computer-use)
+      const hasVision = data.models?.some(m => m.name.startsWith(VISION_MODEL)) || false;
+      if (!hasVision) {
+        console.log(`[PAN Memory] Pulling ${VISION_MODEL} for local vision (~2GB)...`);
+        fetch(`${OLLAMA_URL}/api/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: VISION_MODEL, stream: false }),
+          signal: AbortSignal.timeout(600000),
+        }).then(r => {
+          if (r.ok) console.log(`[PAN Memory] ${VISION_MODEL} pulled successfully — local vision active`);
+          else console.error(`[PAN Memory] ${VISION_MODEL} pull failed: ${r.status}`);
+        }).catch(err => console.error(`[PAN Memory] ${VISION_MODEL} pull error: ${err.message}`));
+      } else {
+        console.log(`[PAN Memory] ${VISION_MODEL} ready — local vision active`);
       }
     }
   } catch {}

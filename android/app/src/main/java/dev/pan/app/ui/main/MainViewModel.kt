@@ -7,6 +7,7 @@ import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerApi
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.network.dto.DeviceSensorConfig
+import dev.pan.app.network.dto.IntuitionSnapshot
 import dev.pan.app.network.dto.SensorAttachRequest
 import dev.pan.app.network.dto.SensorUpdateRequest
 import dev.pan.app.sensor.SensorContext
@@ -64,6 +65,10 @@ class MainViewModel @Inject constructor(
 
     private val _sensors = MutableStateFlow<List<DeviceSensorConfig>>(emptyList())
     val sensors: StateFlow<List<DeviceSensorConfig>> = _sensors
+
+    // Intuition — live situational awareness from the server
+    private val _intuition = MutableStateFlow<IntuitionSnapshot?>(null)
+    val intuition: StateFlow<IntuitionSnapshot?> = _intuition
 
     private val _sensorsLoading = MutableStateFlow(false)
     val sensorsLoading: StateFlow<Boolean> = _sensorsLoading
@@ -134,6 +139,15 @@ class MainViewModel @Inject constructor(
             delay(5000) // offset from health poll
             while (true) {
                 pollSensorState()
+                delay(10000)
+            }
+        }
+
+        // Poll intuition snapshot every 10s
+        viewModelScope.launch {
+            delay(2000) // let server connect first
+            while (true) {
+                pollIntuition()
                 delay(10000)
             }
         }
@@ -391,6 +405,15 @@ class MainViewModel @Inject constructor(
                 remoteAccessManager.setStatus("Failed: ${e.message}")
             }
         }
+    }
+
+    private suspend fun pollIntuition() {
+        try {
+            val res = api.getIntuitionCurrent()
+            if (res.isSuccessful) {
+                _intuition.value = res.body()?.snapshot
+            }
+        } catch (_: Exception) {}
     }
 
     fun toggleRemoteAccess(context: android.content.Context, enabled: Boolean) {

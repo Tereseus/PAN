@@ -94,9 +94,9 @@
 <div class="summary-box">
   <strong style="color:var(--blue)">Quick Summary</strong>
   <div class="cols-3">
-    <div><div class="num">~1.5 GB</div><div class="lbl">Minimum Install</div></div>
-    <div><div class="num">~4 GB</div><div class="lbl">Recommended</div></div>
-    <div><div class="num">~8 GB</div><div class="lbl">Full (all models)</div></div>
+    <div><div class="num">~3.5 GB</div><div class="lbl">Minimum (no GPU)</div></div>
+    <div><div class="num">~7 GB</div><div class="lbl">Recommended (GPU)</div></div>
+    <div><div class="num">~11 GB</div><div class="lbl">Full (all models)</div></div>
   </div>
 </div>
 
@@ -195,6 +195,11 @@
     <td class="size">~0.5 GB</td><td>~0.8 GB</td>
     <td><strong>Vector embedding engine.</strong> Converts text into 1024-dimension number vectors for semantic search. When you say "remind me about the car thing," this is what finds the matching memory. Supports 100+ languages. Runs silently in background.</td>
   </tr>
+  <tr style="background:rgba(243,139,168,0.05)">
+    <td><strong>qwen2.5vl:3b</strong> <span class="badge b-req">Required</span></td><td>3.8B</td>
+    <td class="size">~3.2 GB</td><td>~2 GB VRAM</td>
+    <td><strong>Vision engine.</strong> Analyzes screenshots, pendant camera images, and phone photos. Powers Intuition (what is Commander looking at?), computer-use automation, and the <code>/vision</code> API. Best-in-class for UI understanding and OCR at this size. <strong>Requires a GPU with 2+ GB free VRAM for real-time use (~3.5s per image). On CPU-only systems, falls back to cloud vision APIs (Gemini Flash free tier or Claude Haiku).</strong></td>
+  </tr>
 </table>
 
 <h3>2b. Optional Local Models (Upgrade)</h3>
@@ -226,6 +231,44 @@
   <strong>1B models are NOT sufficient.</strong> They fail on multi-step reasoning and produce unreliable
   sensitivity classifications. PAN requires minimum 4B parameters for local inference.
   The embedding model (0.6B) is fine because embeddings are a simpler task than reasoning.
+</div>
+
+<div class="note info">
+  <strong>VRAM Management &amp; Multi-Model Loading:</strong> Ollama loads one model at a time by default, unloading after 5 minutes idle.
+  To keep multiple models loaded simultaneously, set the environment variable <code>OLLAMA_MAX_LOADED_MODELS</code>:
+  <ul>
+    <li><code>OLLAMA_MAX_LOADED_MODELS=1</code> &mdash; Default. One model at a time. ~70s swap penalty when switching.</li>
+    <li><code>OLLAMA_MAX_LOADED_MODELS=2</code> &mdash; Two models loaded. Vision + classifier = ~4.5 GB VRAM. Fits 8 GB cards.</li>
+    <li><code>OLLAMA_MAX_LOADED_MODELS=3</code> &mdash; All three models loaded. Vision + classifier + embeddings = ~8.5 GB VRAM. Needs 12+ GB card. Zero swap penalty.</li>
+  </ul>
+  PAN auto-detects available VRAM on startup and sets this value accordingly.
+</div>
+
+<div class="note">
+  <strong>GPU VRAM Tiers:</strong>
+  <table style="margin:0.5rem 0">
+    <tr><th>VRAM</th><th>Example Cards</th><th>Models Loaded</th><th>Vision Speed</th><th>Swap Penalty</th></tr>
+    <tr>
+      <td><strong>No GPU</strong></td><td>Integrated / CPU only</td>
+      <td>CPU inference (slow)</td><td>30-50s/image, use cloud instead</td><td>N/A</td>
+    </tr>
+    <tr>
+      <td><strong>4-6 GB</strong></td><td>GTX 1650, RTX 3050, RX 6600</td>
+      <td>1 at a time</td><td>~3.5s (when loaded)</td><td>~70s per swap</td>
+    </tr>
+    <tr>
+      <td><strong>8 GB</strong></td><td>RTX 3070, 4060 Ti, 4070, RX 7700</td>
+      <td>2 simultaneously</td><td>~3.5s (always loaded)</td><td>Only when 3rd model needed</td>
+    </tr>
+    <tr>
+      <td><strong>12+ GB</strong></td><td>RTX 3080, 4070 Ti, 4080, RX 7900</td>
+      <td>All 3 simultaneously</td><td>~3.5s (always loaded)</td><td>None, instant</td>
+    </tr>
+    <tr>
+      <td><strong>16+ GB</strong></td><td>RTX 4080 Super, 4090, A4000</td>
+      <td>All 3 + room for upgrades</td><td>~2-3s</td><td>None</td>
+    </tr>
+  </table>
 </div>
 
 <h3>2c. Cloud Models</h3>
@@ -336,6 +379,13 @@
     <td>Local qwen3:4b (less accurate)</td>
   </tr>
   <tr>
+    <td>Vision</td><td>&mdash;</td>
+    <td>Analyzes images from screenshots, pendant camera, and phone. Powers situational awareness and computer-use automation. Runs every 5&ndash;30s depending on scene change rate.</td>
+    <td><span class="badge b-local">qwen2.5vl:3b</span></td>
+    <td>GPU with 2+ GB free VRAM (~3.5s/image). Stays loaded as primary VRAM resident.</td>
+    <td>Cloud: Gemini Flash (free), Claude Haiku ($0.001/image)</td>
+  </tr>
+  <tr>
     <td>Voice Router</td><td>&mdash;</td>
     <td>Classifies voice commands AND generates responses in one call.</td>
     <td><span class="badge b-cloud">Claude Haiku / Cerebras</span></td>
@@ -419,11 +469,12 @@
       <li><strong>GPU:</strong> Not required (CPU inference works, slower)</li>
       <li><strong>Network:</strong> Required (Cerebras + WireGuard)</li>
       <li><strong>Local models:</strong> qwen3:4b + qwen3-embedding:0.6b</li>
+      <li><strong>Vision:</strong> No local vision &mdash; falls back to cloud (Gemini Flash free tier or Claude Haiku)</li>
       <li><strong>Cloud:</strong> Cerebras free tier handles Dream, Archivist, Scout, etc.</li>
     </ul>
     <p style="margin-top:0.5rem;font-size:0.85rem;color:var(--dim)">
-      Cannot run 8B models. All heavy reasoning goes to cloud. Local model handles
-      privacy-sensitive tasks and fallback only.
+      Cannot run 8B models or local vision. All heavy reasoning and image analysis goes to cloud.
+      Local model handles privacy-sensitive tasks and fallback only.
     </p>
   </div>
 
@@ -432,13 +483,14 @@
     <ul>
       <li><strong>RAM:</strong> 32 GB (16 GB free)</li>
       <li><strong>Disk:</strong> ~4 GB</li>
-      <li><strong>GPU:</strong> NVIDIA (CUDA) or AMD (ROCm) for 10-20x faster inference</li>
-      <li><strong>Local models:</strong> qwen3:8b (inference) + qwen3-embedding:0.6b</li>
+      <li><strong>GPU:</strong> NVIDIA (CUDA) or AMD (ROCm) with 4+ GB VRAM for 10-20x faster inference</li>
+      <li><strong>Local models:</strong> qwen3:8b (inference) + qwen3-embedding:0.6b + qwen2.5vl:3b (vision)</li>
+      <li><strong>Vision:</strong> Local qwen2.5vl:3b &mdash; ~3.5s per image on GPU. Pendant, screenshots, camera all work locally.</li>
       <li><strong>Cloud:</strong> Still uses Cerebras for Dream/Evolution (needs 70B+)</li>
     </ul>
     <p style="margin-top:0.5rem;font-size:0.85rem;color:var(--dim)">
       Can run 8B locally for better sensitivity routing, Guardian, and Intuition fallback.
-      Dream and Evolution still need cloud.
+      Vision model stays loaded in VRAM as primary resident (~2 GB). Dream and Evolution still need cloud.
     </p>
   </div>
 </div>
@@ -486,9 +538,19 @@
     <td>Adds differential privacy noise, strips PII, anonymizes data BEFORE anything goes to cloud.</td>
   </tr>
   <tr>
+    <td>Vision (screenshots, pendant, camera)</td>
+    <td><span class="badge b-local">Local (GPU)</span> / <span class="badge b-cloud">Cloud (no GPU)</span></td>
+    <td>With GPU: qwen2.5vl:3b runs locally (~3.5s/image). Screenshots and pendant images never leave your machine. Without GPU: routes to Gemini Flash (free) or Claude Haiku. Pendant captures every 5s, vision analyzes every 10-30s depending on scene change rate.</td>
+  </tr>
+  <tr>
     <td>TTS (voice output)</td>
     <td><span class="badge b-local">Always Local</span></td>
     <td>Kokoro-82M runs on your device. Your voice responses never touch a cloud server.</td>
+  </tr>
+  <tr>
+    <td>Vision (screenshots, camera)</td>
+    <td><span class="badge b-local">Local (GPU)</span> / <span class="badge b-cloud">Cloud (no GPU)</span></td>
+    <td>qwen2.5vl:3b analyzes images locally on GPU (~3.5s). Pendant captures every 5s, diffs locally, sends to vision only on scene change. No-GPU users fall back to Gemini Flash (free) or Claude Haiku.</td>
   </tr>
   <tr>
     <td>Voice routing</td>

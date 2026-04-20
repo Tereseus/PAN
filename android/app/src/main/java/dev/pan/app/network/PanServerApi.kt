@@ -87,6 +87,10 @@ interface PanServerApi {
         @Body request: SensorAttachRequest
     ): Response<Unit>
 
+    // Intuition — live situational awareness
+    @GET("/api/v1/intuition/current")
+    suspend fun getIntuitionCurrent(): Response<IntuitionResponse>
+
     @GET("/api/v1/settings")
     suspend fun getSettings(): Response<Map<String, Any>>
 

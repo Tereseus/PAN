@@ -1036,10 +1036,10 @@
 											<option value={m.id}>{m.name || m.id}</option>
 										{/each}
 									{:else}
-										<option value="claude-haiku-4-5">Haiku 4.5 (fast)</option>
-										<option value="claude-sonnet-4-5">Sonnet 4.5 (lighter)</option>
+										<option value="claude-haiku-4-5-20251001">Haiku 4.5 (fast)</option>
 										<option value="claude-sonnet-4-6">Sonnet 4.6</option>
 										<option value="claude-opus-4-6">Opus 4.6</option>
+										<option value="claude-opus-4-7">Opus 4.7</option>
 									{/if}
 								</select>
 								<button class="btn btn-sm" onclick={loadClaudeModels} title={claudeModelsSource === 'anthropic_api' ? 'Live from Anthropic API' : 'Refresh from Anthropic API'} style="padding:4px 8px;font-size:11px">

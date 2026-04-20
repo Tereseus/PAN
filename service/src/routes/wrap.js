@@ -13,6 +13,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { DISCORD_CONTENT_SCRIPT } from '../wrappers/discord.js';
+import { getLocalApps } from '../scout.js';
 
 const router = Router();
 const TAURI_SHELL = 'http://127.0.0.1:7790';
@@ -23,7 +24,7 @@ const WRAPPERS = {
   discord: {
     url: 'https://discord.com/app',
     script: DISCORD_CONTENT_SCRIPT,
-    title: 'Discord (PAN)',
+    title: 'Discord',
     label_prefix: 'wrap-discord',
   },
 };
@@ -49,15 +50,48 @@ export function ensureWrapSchema(db) {
   `);
 }
 
-// GET /api/v1/wrap/services — list supported wrappers
+// GET /api/v1/wrap/services — list supported wrappers + discovered local apps
 router.get('/services', (req, res) => {
+  // Hardcoded wrappers (have content scripts)
+  const hardcoded = Object.keys(WRAPPERS).map(k => ({
+    id: k,
+    url: WRAPPERS[k].url,
+    title: WRAPPERS[k].title,
+    category: 'communication',
+    has_module: true,
+  }));
+
+  // Discovered local apps from Scout
+  let discovered = [];
+  try {
+    const apps = getLocalApps({ installed_only: !req.query.all });
+    discovered = apps
+      .filter(a => !WRAPPERS[a.id]) // don't duplicate hardcoded ones
+      .map(a => ({
+        id: a.id,
+        url: a.url,
+        title: a.name,
+        category: a.category,
+        has_module: !!a.module_id,
+        installed: !!a.installed,
+        browser_only: !!a.browser_only,
+      }));
+  } catch {}
+
   res.json({
-    services: Object.keys(WRAPPERS).map(k => ({
-      id: k,
-      url: WRAPPERS[k].url,
-      title: WRAPPERS[k].title,
-    })),
+    services: [...hardcoded, ...discovered],
   });
+});
+
+// POST /api/v1/wrap/scan — trigger local app scan
+router.post('/scan', async (req, res) => {
+  try {
+    const { scanLocalApps } = await import('../scout.js');
+    const count = await scanLocalApps();
+    res.json({ ok: true, matched: count });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // POST /api/v1/wrap/open/:service — open a Tauri webview with the service wrapped
@@ -65,7 +99,26 @@ router.get('/services', (req, res) => {
 router.post('/open/:service', async (req, res) => {
   const { service } = req.params;
   const wrapper = WRAPPERS[service];
-  if (!wrapper) return res.status(404).json({ ok: false, error: `unknown service: ${service}` });
+
+  // If not a hardcoded wrapper, check discovered local apps
+  if (!wrapper) {
+    try {
+      const apps = getLocalApps();
+      const app = apps.find(a => a.id === service);
+      if (app) {
+        // Open in basic webview (no content script)
+        const label = `wrap-${service}-${Date.now()}`;
+        const tauriRes = await fetch(`${TAURI_SHELL}/open`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: app.url, title: app.name, label, width: 1200, height: 800 }),
+        });
+        const data = await tauriRes.json();
+        return res.json({ ok: true, windowId: data.windowId || label, label: app.name });
+      }
+    } catch {}
+    return res.status(404).json({ ok: false, error: `unknown service: ${service}` });
+  }
 
   // Close existing wrappers for this service so the new one doesn't race with stale scripts
   try {
