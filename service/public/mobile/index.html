@@ -506,6 +506,20 @@ async function init() {
   setInterval(pollAlertBadge, 30000);
   // Load current AI model setting
   loadCurrentModel();
+  // Heartbeat — ping server every 2 minutes so phone shows as Online in the Devices panel.
+  // Uses the Android device_id stored in localStorage (set by the native app or on first ping).
+  async function phonePing() {
+    try {
+      const deviceId = localStorage.getItem('pan_device_id') || null;
+      await fetch(API + '/dashboard/api/phone-ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: deviceId })
+      });
+    } catch {}
+  }
+  phonePing(); // immediate ping on load
+  setInterval(phonePing, 120000); // then every 2 minutes
 }
 
 // ========== CHAT / TERMINAL ==========

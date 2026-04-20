@@ -16,7 +16,8 @@
         "url": "http://127.0.0.1:7777/v2/",
         "width": 1280,
         "height": 800,
-        "maximized": true
+        "maximized": true,
+        "backgroundColor": { "r": 10, "g": 10, "b": 15, "a": 255 }
       }
     ],
     "security": {
