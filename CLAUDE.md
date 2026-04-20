@@ -7,6 +7,10 @@ PAN is a persistent AI operating system across all devices, projects, and conver
 > replaces, and its pre-gate. If you're about to guess what a UI element does —
 > check FEATURES.md first. Update it in the same commit as any code change.
 
+> **Transcript/terminal system: read [docs/TRANSCRIPT_SYSTEM.md](./docs/TRANSCRIPT_SYSTEM.md) FIRST**
+> before touching anything in `terminal/+page.svelte` related to messages, chat bubbles,
+> or rendering. The Svelte proxy vs raw object distinction is the #1 source of bugs here.
+
 ## Architecture
 
 ```mermaid
@@ -200,52 +204,47 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 511445f3-6a8)*
-**User** (2026-04-19 22:03:29): What are you talking about You you shouldn't respond to background task conclusions those are those are things that you're you're saying you're you're responding to your own things No we definitely were going to design the system I'm pretty sure we a
-**Claude** (2026-04-19 22:04:08): Saved. That's a real thing we need to build — agent names, status, what each one is doing, all visible in the dashboard so you always know who you're talking to and background work never floods the chat.
+### This Tab *(session: 9cb655cc-54b)*
+**Claude** (2026-04-20 18:02:22): Done. The doc now covers:
 
-**Where we got to with TED:**
+- **`_pushedMsgsCache`** — the actual fix for interval calls overwriting live data with stale HTTP responses, and why it exists
+- **Direct `bubblesFromMessages` path** in `transcript_messages` handler — no lock, no async, n
+**Claude** (2026-04-20 18:02:51): Clean. No more rejected token spam, no more accumulation. The transcript fix is deployed and these were the only real side issues from the swap flow.
+**Claude** (2026-04-20 18:04:00): Pushed. `49a67b1` — 183 files, everything from this session.
 
-HTTP polling t
-**User** (2026-04-19 22:04:14): Why don't you remove all these other devices that I have that are not relevant so I can actually see if it connects correctly
-**Claude** (2026-04-19 22:04:39): All cleared. Now go to **Add Device** in the dashboard, grab the install command, run it on TED — you'll see exactly one device appear.
-**User** (2026-04-19 22:10:49): OK I guess it's I guess it's connected now I already have the devices open on the dashboard and it didn't appear I had to go to the approvals which is a widget in the dashboard and then come back here to the devices for it to actually show the approv
-**Claude** (2026-04-19 22:11:21): TED is live and responding. `pong` came back via HTTP queue (through Cloudflare, as expected). Want me to run a shell command on it to prove it?
-**User** (2026-04-19 22:11:57): Umm so yeah I mean can you Yeah can you Yeah just run a shell command I don't know what you what are you gonna do hello world But like OK yeah just do it just so we can prove and then I have a ton a billion questions
-**Claude** (2026-04-19 22:12:15): ```
-Hello from TED
-Ted
-ted\tzuridis
+Memory Pipeline Report:
 ```
+┌─ EVENT CAPTURE + FTS5 + EMBEDDING ──────────────────┐
+│  Topics: • Transcript left panel proxy/raw bug      │
+│           • _pushedMsgsCache bypass pattern   
+**User** (2026-04-20 18:10:32): OK So on the phone I guess I'll send you a screenshot of what looks like on the the mobile I'll show it Don't reply after I send you this message so you can look at the screen shot And here I am on the dashboard of the phone as you can see at the ver
+**User** (2026-04-20 18:10:35): C:\Users\tzuri\AppData\Local\Temp\pan-screenshots\screenshot_phone_1776723030963.png
+**Claude** (2026-04-20 18:10:44): 👍
+**User** (2026-04-20 18:11:56): Well for some reason I can't send the other screenshot I don't know why it pasted in the input box and I pushed enter nothing happens
+**User** (2026-04-20 18:12:16): There is a camera button the button is there like I said it only allows you to select one screen shot from your gallery or picture It doesn't let you allow you to seck multiple and it doesn't actually open the camera which is what it should do it sho
+**User** (2026-04-20 18:14:41): What are you doing I can't I can't send you the second screenshot it just says uploading you just keep saying that you're reading the index dot HTML I can't send you another message I can't send you a screenshot what are you doing C:/Users/tzuri/AppD
 
-That's TED's actual machine responding — hostname `Ted`, user `tzuridis`. Fire away with your questions.
+### Recent Project Work *(session: 252297e3-4e5)*
+**User** (2026-04-18 21:49:15): Are you down  Claude
+21:12
+sonnet-4-6
+Claude$ Not installed. I'll install it and wire the invite endpoint to return the QR as a base64 PNG — no CDN, no client-side JS.
+→ Bash: cd /c/Users/tzuri/Desktop/PAN/service && npm install qrcode --save 2>&1 | 
+**Claude** (2026-04-18 21:49:20): Yeah, I'm here. Those errors in your PAN dashboard are coming from a `qrcode` install — the base64 PNG data URL is being passed as an image to the Claude API, which rejects it.
 
-### Recent Project Work *(session: 6238608c-d2e)*
-**Claude** (2026-04-19 16:46:08): Push via GitHub Desktop (it has full token scope). Open it, click **Push origin**, done. Then to trigger the release build:
+What were you trying to build? I'll fix it directly.
+**User** (2026-04-18 21:49:54): While I was trying to get it to update some things about you know it was it was working on something It was trying to install something for the QR code and then I kept it kept saying API error 400 and I kept telling it to retry
+**Claude** (2026-04-18 21:52:14): Good — the QR code feature was already committed successfully. The 400 errors were happening because the PAN dashboard's Claude agent was trying to pass the QR base64 image data to the Claude API as an image input, which it rejects.
 
-```
-git tag v0.3.1
-git push origin v0.3.1
-```
-
-Or push the tag from GitHub Desktop's **Repository → Push** after the main pus
-**User** (2026-04-19 16:47:06): What are you talking about your you push why am I pushing what are you talking about you push did you push And you you push to GitHub and then you restart via the settings for the carrier restart
-**Claude** (2026-04-19 16:51:22): Done. Here's what the QR flow looks like now:
-
-1. Scan QR → page loads → **"⬇ Download PAN Installer"** button at the top, links to `github.com/Tereseus/PAN/releases/latest/download/pan-installer-win.exe`
-2. GitHub is a trusted domain — Chrome and Ed
-**Claude** (2026-04-19 16:51:47): Background upload finished clean. Everything's live — the download button on the QR page now points to a real, published binary at GitHub releases.
-**User** (2026-04-19 16:55:08): OK I scan the QR code it shows the invite link but it's really fucked up Umm I have a screen shot of it on my phone if you want to look at it I clicked the download it actually downloads an EXE but windows blocks the EXE it says windows protected you
-**User** (2026-04-19 16:56:50): I can't send you the screen shot it doesn't L it doesn't work on the phone but you have access to my phone to look at the screenshots I plugged my phone in It's actually a photo not a screen shot We were supposed to have to be ability to to upload ph
+The actual featu
+**Claude** (2026-04-18 21:53:00): Those are all build artifacts or node_modules — nothing useful. The QR feature is already in git. Do you remember what you were originally trying to do before the session got stuck? That'll help me pick up where it left off.
+**User** (2026-04-20 13:06:51): Can you close the windows voice to text and the service and the task Because it's really laggy
 
 ### Open Tasks
-- [#394 backlog P2] Compose email — send returns HTTP 400, no email service wired
-- [#376 backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [#382 backlog P1] PAN.bat respawn loop failed to restart today
-- [#51 in_progress] Voice marketplace ($1-2 each)
-- [#52 todo] Voice personality packs
-- [#53 in_progress] Cloud training for no-GPU users
-- [#54 tod
+- [#421 in_progress] Pendant radio broadcast: one-way pedestrian signal for vehicles (crosswalk safety transmission)
+- [#422 in_progress] PAN-to-PAN local mesh: pendants communicate nearby presence/context without server, stay quiet in public
+- [#412 todo] Cocoro integration on phone (Tailscale Funnel setup)
+- [#415 todo]
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
