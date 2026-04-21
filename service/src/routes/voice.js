@@ -182,6 +182,38 @@ export function registerVoiceRoutes(app) {
     }
   );
 
+  // Server-side recording enrollment — mic captured by whisper-server.py (no browser permission needed)
+  app.post('/api/v1/voice/record-enroll', async (req, res) => {
+    const { label, seconds = 10 } = req.body || {};
+    if (!label) return res.status(400).json({ error: 'label required' });
+    try {
+      if (!(await whisperAvailable())) {
+        return res.status(503).json({ error: 'Whisper server not running' });
+      }
+      const r = await fetch(`${WHISPER_URL}/record-enroll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, seconds }),
+        signal: AbortSignal.timeout((seconds + 5) * 1000),
+      });
+      const data = await r.json();
+      if (!r.ok) return res.status(r.status).json(data);
+
+      // Track in DB
+      db.prepare(`
+        INSERT INTO voice_prints (label, embedding, sample_count, org_id)
+        VALUES (?, ?, 1, 'org_personal')
+        ON CONFLICT(label, org_id) DO UPDATE SET
+          sample_count = sample_count + 1,
+          updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+      `).run(label, Buffer.alloc(0));
+
+      res.json({ ok: true, label, enrolled: data.enrolled });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Remove a speaker
   app.delete('/api/v1/voice/speaker/:label', async (req, res) => {
     const { label } = req.params;

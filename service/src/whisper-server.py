@@ -251,6 +251,36 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_json(500, {"error": str(e)})
             return
 
+        # --- Record + Enroll (server-side mic recording, no browser permission needed) ---
+        if path == '/record-enroll':
+            label = body.get('label', '').strip()
+            seconds = min(int(body.get('seconds', 10)), 30)
+            if not label:
+                return self.send_json(400, {"error": "label required"})
+            try:
+                import sounddevice as sd
+                import numpy as np
+                print(f"[PAN Speaker] Recording {seconds}s for '{label}'...", flush=True)
+                audio = sd.rec(int(seconds * 16000), samplerate=16000, channels=1, dtype='int16')
+                sd.wait()
+                audio_flat = audio.flatten()
+                # Save to temp wav
+                import wave, tempfile
+                tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+                tmp.close()
+                with wave.open(tmp.name, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(audio_flat.tobytes())
+                enroll_speaker(label, tmp.name)
+                os.unlink(tmp.name)
+                print(f"[PAN Speaker] Enrolled '{label}' ({seconds}s sample, {len(_voice_prints)} total)", flush=True)
+                self.send_json(200, {"ok": True, "label": label, "enrolled": len(_voice_prints)})
+            except Exception as e:
+                self.send_json(500, {"error": str(e)})
+            return
+
         # --- Identify only ---
         if path == '/identify':
             wav_path = body.get('wav_path', '')
