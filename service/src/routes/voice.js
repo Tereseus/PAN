@@ -40,18 +40,27 @@ export function registerVoiceRoutes(app) {
   // List enrolled speakers
   app.get('/api/v1/voice/speakers', async (req, res) => {
     try {
-      // Also query DB for metadata
-      const dbSpeakers = db.prepare(
-        'SELECT label, sample_count, created_at, updated_at FROM voice_prints WHERE org_id = ? ORDER BY label'
-      ).all('org_personal');
-
-      // Cross-check with live server
+      // Get live speakers from whisper server
       let liveSpeakers = [];
       try {
         const r = await fetch(`${WHISPER_URL}/speakers`, { signal: AbortSignal.timeout(1000) });
         const d = await r.json();
         liveSpeakers = d.speakers || [];
       } catch {}
+
+      // Sync: ensure every live speaker has a DB row (catches pre-DB enrollments)
+      const upsert = db.prepare(`
+        INSERT INTO voice_prints (label, embedding, sample_count, org_id)
+        VALUES (?, ?, 1, 'org_personal')
+        ON CONFLICT(label, org_id) DO NOTHING
+      `);
+      for (const label of liveSpeakers) {
+        try { upsert.run(label, Buffer.alloc(0)); } catch {}
+      }
+
+      const dbSpeakers = db.prepare(
+        'SELECT label, sample_count, created_at, updated_at FROM voice_prints WHERE org_id = ? ORDER BY label'
+      ).all('org_personal');
 
       res.json({ speakers: dbSpeakers, live: liveSpeakers });
     } catch (e) {
