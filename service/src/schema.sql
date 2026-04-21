@@ -605,6 +605,21 @@ CREATE TABLE IF NOT EXISTS team_members (
 CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
 CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id);
 
+-- Voice prints for speaker identification
+CREATE TABLE IF NOT EXISTS voice_prints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,                          -- NULL = anonymous enrolled speaker
+  label TEXT NOT NULL,                      -- display name, e.g. "Tereseus"
+  embedding BLOB NOT NULL,                  -- 256-dim float32 numpy array, raw bytes
+  sample_count INTEGER NOT NULL DEFAULT 1,  -- number of samples averaged in
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+  updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
+  org_id TEXT REFERENCES orgs(id) ON DELETE CASCADE,
+  UNIQUE(label, org_id)
+);
+CREATE INDEX IF NOT EXISTS idx_voice_prints_org ON voice_prints(org_id);
+CREATE INDEX IF NOT EXISTS idx_voice_prints_user ON voice_prints(user_id);
+
 -- Seed personal org (idempotent)
 INSERT OR IGNORE INTO orgs (id, slug, name, color_primary)
 VALUES ('org_personal', 'personal', 'Personal', '#f5c2e7');
