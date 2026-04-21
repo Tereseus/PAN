@@ -24,8 +24,10 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 /* Session tab row — PTY sessions, fixed below topbar */
 .session-row { display:flex; align-items:center; gap:2px; padding:0 6px; border-bottom:1px solid var(--border); background:var(--bg); position:fixed; top:42px; left:0; right:0; z-index:30; height:34px; overflow-x:auto; }
 .session-row::-webkit-scrollbar { display:none; }
-.session-tab { padding:4px 10px; color:var(--text2); cursor:pointer; white-space:nowrap; border-radius:4px; font-size:12px; font-weight:500; background:none; border:none; color:var(--text2); }
+.session-tab { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; color:var(--text2); cursor:pointer; white-space:nowrap; border-radius:4px; font-size:12px; font-weight:500; background:none; border:none; }
 .session-tab.active { color:var(--accent); background:rgba(137,180,250,0.12); }
+.session-tab-close { font-size:14px; line-height:1; color:var(--text2); opacity:0.5; padding:0 2px; border:none; background:none; cursor:pointer; flex-shrink:0; }
+.session-tab-close:active { opacity:1; }
 .session-tab-new { color:var(--text2); background:none; border:1px solid var(--border); border-radius:4px; font-size:16px; padding:2px 8px; cursor:pointer; line-height:1; }
 
 /* Tabs — fixed below session row */
@@ -183,16 +185,15 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 .org-modal h3 { font-size:15px; color:var(--accent); margin-bottom:12px; }
 .org-modal-close { display:block; width:100%; margin-top:8px; padding:10px; background:var(--bg3); color:var(--text); border:none; border-radius:var(--radius); font-size:14px; cursor:pointer; }
 
-/* Model picker — bottom sheet */
-.model-sheet-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:100; }
-.model-sheet-overlay.visible { display:block; }
-.model-sheet { position:fixed; bottom:0; left:0; right:0; background:var(--bg2); border-radius:16px 16px 0 0; padding-bottom:env(safe-area-inset-bottom,16px); max-height:72vh; overflow-y:auto; z-index:101; transform:translateY(100%); transition:transform 0.22s ease-out; }
-.model-sheet-overlay.visible .model-sheet { transform:translateY(0); }
-.model-sheet-handle { width:36px; height:4px; background:var(--bg3); border-radius:2px; margin:10px auto 4px; }
-.model-sheet-title { font-size:12px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; padding:8px 16px 12px; border-bottom:1px solid var(--border); }
-.model-sheet-item { display:flex; align-items:center; justify-content:space-between; width:100%; padding:18px 20px; background:none; border:none; border-bottom:1px solid var(--border); color:var(--text); font-size:17px; text-align:left; cursor:pointer; }
+/* Model picker — bottom sheet (no CSS transition — display:none kills them in Android WebView) */
+.model-sheet-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:9999; align-items:flex-end; justify-content:center; }
+.model-sheet-overlay.visible { display:flex; }
+.model-sheet { width:100%; background:#2b2d42; border-top:2px solid var(--accent); border-radius:16px 16px 0 0; padding-bottom:env(safe-area-inset-bottom,24px); max-height:80vh; overflow-y:auto; min-height:120px; }
+.model-sheet-handle { width:36px; height:4px; background:#555; border-radius:2px; margin:12px auto 6px; }
+.model-sheet-title { font-size:13px; color:#aaa; text-transform:uppercase; letter-spacing:0.5px; padding:8px 16px 12px; border-bottom:1px solid #444; }
+.model-sheet-item { display:flex; align-items:center; justify-content:space-between; width:100%; padding:18px 20px; background:none; border:none; border-bottom:1px solid #3a3a4a; color:#e0e0f0; font-size:17px; text-align:left; cursor:pointer; }
 .model-sheet-item:last-of-type { border-bottom:none; }
-.model-sheet-item:active { background:var(--bg3); }
+.model-sheet-item:active { background:#3a3a5a; }
 .model-sheet-item.active { color:var(--accent); }
 .model-sheet-item .model-check { font-size:16px; color:var(--accent); }
 .model-sheet-close { display:block; width:calc(100% - 32px); margin:12px 16px; padding:14px; background:var(--bg3); color:var(--text); border:none; border-radius:var(--radius); font-size:15px; font-weight:600; cursor:pointer; }
@@ -278,9 +279,10 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div class="input-bar" id="input-bar">
     <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:12px;font-weight:600;white-space:nowrap;flex-shrink:0" title="Switch AI model">Model</button>
     <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
-    <input type="file" id="photo-input" accept="image/*" multiple style="display:none" onchange="uploadScreenshot(this)">
-    <button onclick="document.getElementById('photo-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:18px;align-self:flex-end;flex-shrink:0" title="Photo / Camera">&#128247;</button>
+    <button onclick="if(window.PAN&&typeof window.PAN.openCamera==='function'){panToast('📷 Calling JS bridge...');window.PAN.openCamera();}else{panToast('⚠️ window.PAN not found: '+(typeof window.PAN));document.getElementById('photo-input').click();}" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:18px;align-self:flex-end;flex-shrink:0" title="Open camera">&#128247;</button>
+    <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
     <button onclick="sendChat()" style="flex-shrink:0">Send</button>
+    <button id="stop-btn" onclick="stopChat()" style="flex-shrink:0;background:#3a1a1a;color:var(--red);border:1px solid var(--red);border-radius:var(--radius);padding:8px 12px;font-size:18px;display:none" title="Stop">■</button>
   </div>
 </div>
 
@@ -365,24 +367,24 @@ async function loadCurrentModel() {
 function updateModelButton(modelId) {
   const btn = document.getElementById('model-btn');
   if (!btn || !modelId) return;
-  // Store full ID for checkmark highlighting in sheet
   btn.dataset.modelId = modelId;
-  // Show short readable name
   const short = modelId.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/^cerebras:/, '');
   btn.textContent = short;
-  // Update active checkmark in open sheet
-  document.querySelectorAll('.model-sheet-item').forEach(el => {
-    const isActive = el.onclick?.toString().includes(modelId);
-    el.classList.toggle('active', isActive);
-    const existing = el.querySelector('.model-check');
-    if (isActive && !existing) el.insertAdjacentHTML('beforeend','<span class="model-check">✓</span>');
-    else if (!isActive && existing) existing.remove();
-  });
 }
 
 // Model picker modal
+function panToast(msg) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;bottom:120px;left:50%;transform:translateX(-50%);background:#89b4fa;color:#000;padding:8px 16px;border-radius:20px;font-size:13px;font-weight:600;z-index:99999;pointer-events:none;white-space:nowrap';
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
 function showModelPicker() {
   document.getElementById('model-modal').classList.add('visible');
+  panToast('Loading models...');
+  loadDynamicModels(); // always refresh list when opening
 }
 
 function hideModelPicker() {
@@ -394,15 +396,8 @@ async function selectModel(model) {
   hideModelPicker();
   updateModelButton(model);
 
-  // Find active session
-  let sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
-  try {
-    const sessRes = await fetch(API + '/api/v1/terminal/sessions');
-    const sessData = await sessRes.json();
-    const sessions = sessData.sessions || [];
-    const match = sessions.find(s => s.id.startsWith(sessionId)) || sessions[0];
-    if (match) sessionId = match.id;
-  } catch(err) { console.error('[PAN Mobile] session lookup failed:', err); }
+  // Use the already-known active session ID directly
+  const sessionId = activeSessionId || 'dash-pan';
 
   try {
     // 1. Set model on active session
@@ -691,6 +686,8 @@ async function sendChat() {
   el.insertAdjacentHTML('beforeend', '<div class="t-line t-assistant t-pending" id="chat-typing"><span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>thinking…</div>');
   el.scrollTop = el.scrollHeight;
   if (status) status.style.display = 'flex';
+  const stopBtn = document.getElementById('stop-btn');
+  if (stopBtn) stopBtn.style.display = 'inline-flex';
 
   // Find the best matching session — use active tab selection or fall back to project
   let sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
@@ -751,9 +748,31 @@ async function sendChat() {
     if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>error: ' + esc(e.message); t.style.color = 'var(--red)'; t.removeAttribute('id'); }
   }
   if (status) status.style.display = 'none';
+  const stopBtnEnd = document.getElementById('stop-btn');
+  if (stopBtnEnd) stopBtnEnd.style.display = 'none';
   lastSentTime = 0;
   _sendingChat = false;
   el.scrollTop = el.scrollHeight;
+}
+
+async function stopChat() {
+  let sessionId = activeSessionId;
+  if (!sessionId) {
+    try {
+      const r = await fetch(API + '/api/v1/terminal/sessions');
+      const d = await r.json();
+      sessionId = (d.sessions || []).find(s => s.id.startsWith('dash-'))?.id;
+    } catch(e) {}
+  }
+  if (!sessionId) return;
+  try {
+    await fetch(API + '/api/v1/terminal/interrupt', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: sessionId })
+    });
+    panToast('⏹ Stopped');
+  } catch(e) { panToast('Stop failed: ' + e.message); }
 }
 
 // Direct DB queries — don't waste Cerebras tokens on simple lookups
@@ -1692,11 +1711,13 @@ async function toggleIncognito() {
 // ========== SESSION TABS ==========
 let activeSessionId = null; // null = auto-resolve from project name
 
+const _closedSessions = new Set(); // client-side tombstone — survives server-side kill failures
+
 async function loadSessionTabs() {
   try {
     const res = await fetch(API + '/api/v1/terminal/sessions');
     const data = await res.json();
-    const sessions = (data.sessions || []).filter(s => s.id.startsWith('dash-'));
+    const sessions = (data.sessions || []).filter(s => !_closedSessions.has(s.id));
     if (!sessions.length) return;
     const row = document.getElementById('session-row');
     if (!row) return;
@@ -1706,8 +1727,19 @@ async function loadSessionTabs() {
       const tab = document.createElement('button');
       tab.className = 'session-tab' + (sess.id === activeSessionId ? ' active' : '');
       tab.dataset.session = sess.id;
-      const label = sess.id.replace(/^dash-/, '').replace(/-(\d+)$/, ' $1').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      tab.textContent = label;
+      const label = (sess.title || sess.id).replace(/^dash-/, '').replace(/^term-/, '').replace(/^pts-/, '').replace(/^[a-z0-9]{8}-.*/, s => s.slice(0,6)).replace(/-(\d+)$/, ' $1').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || sess.id.slice(0,8);
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = label;
+      tab.appendChild(labelSpan);
+      // Only show close button when there are multiple sessions
+      if (sessions.length > 1) {
+        const x = document.createElement('span');
+        x.className = 'session-tab-close';
+        x.textContent = '×';
+        x.title = 'Close tab';
+        x.addEventListener('click', (e) => { e.stopPropagation(); closeSession(sess.id); });
+        tab.appendChild(x);
+      }
       tab.addEventListener('click', () => switchSession(sess.id));
       row.appendChild(tab);
     }
@@ -1728,6 +1760,24 @@ function switchSession(sessionId) {
   loadChat();
 }
 
+async function closeSession(sessionId) {
+  _closedSessions.add(sessionId); // tombstone — won't reappear even if server kill fails
+  // Remove tab from DOM immediately
+  const tabEl = document.querySelector(`#session-row [data-session="${sessionId}"]`);
+  if (tabEl) tabEl.remove();
+  if (activeSessionId === sessionId) {
+    // Switch to first remaining tab
+    const next = document.querySelector('#session-row .session-tab');
+    if (next) switchSession(next.dataset.session);
+    else { activeSessionId = null; _lastFingerprint = ''; _renderedMsgIds = []; }
+  }
+  // Kill on server — don't re-fetch tabs immediately (session may still be in list briefly)
+  // The 10s interval will sync. Optimistic DOM removal above is enough for instant feedback.
+  try {
+    await fetch(API + '/api/v1/terminal/sessions/' + encodeURIComponent(sessionId), { method: 'DELETE' });
+  } catch(e) { console.error('[PAN Mobile] close session error:', e); }
+}
+
 async function newSession() {
   try {
     const settingsRes = await fetch(API + '/api/v1/settings');
@@ -1744,8 +1794,38 @@ async function newSession() {
       await loadSessionTabs();
       loadChat._forceLoad = true; loadChat();
     }
-  } catch(e) { console.error('[PAN Mobile] new session error:', e); }
+  } catch(e) {
+    console.error('[PAN Mobile] new session error:', e);
+    // Show toast — createPipeSession needs Carrier restart if this fails
+    const toast = document.createElement('div');
+    toast.textContent = 'New session unavailable — restart PAN to enable';
+    toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 18px;border-radius:20px;font-size:13px;z-index:9999;opacity:1;transition:opacity 1s';
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 1000); }, 3000);
+  }
 }
+
+// Called by Android Kotlin after ACTION_IMAGE_CAPTURE completes — receives base64 JPEG
+window.panCameraResult = function(b64) {
+  if (!b64 || !b64.length) { panToast('📷 Camera returned no image'); return; }
+  panToast('📷 Photo captured — uploading...');
+  try {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const blob = new Blob([arr], { type: 'image/jpeg' });
+    const file = new File([blob], 'camera_' + Date.now() + '.jpg', { type: 'image/jpeg' });
+    _uploadOneFile(file);
+  } catch(e) { panToast('📷 Decode error: ' + e.message); }
+};
+
+// Called by Android after camera upload completes — receives just the file path (not base64)
+window.panCameraUploadDone = function(path, filename) {
+  panToast('📷 Photo uploaded — sending to Claude');
+  const chatInput = document.getElementById('chat-input');
+  chatInput.value = path;
+  sendChat();
+};
 
 // Screenshot upload — reads file(s), converts to base64, sends to server
 async function uploadScreenshot(input) {
@@ -1828,8 +1908,9 @@ async function loadDynamicModels() {
     const local = data.local || [];
     const container = document.getElementById('model-sheet-items');
     if (!container) return;
-    container.innerHTML = '';
     const currentModel = document.getElementById('model-btn')?.dataset.modelId || '';
+    // Build new items first, then swap — no empty flash on slow connections
+    const frag = document.createDocumentFragment();
     for (const m of models) {
       const shortName = m.id.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
       const btn = document.createElement('button');
@@ -1837,23 +1918,28 @@ async function loadDynamicModels() {
       btn.textContent = shortName;
       if (m.id === currentModel) btn.insertAdjacentHTML('beforeend','<span class="model-check">✓</span>');
       btn.onclick = () => selectModel(m.id);
-      container.appendChild(btn);
+      frag.appendChild(btn);
     }
     if (local.length > 0) {
       const divider = document.createElement('div');
       divider.style.cssText = 'font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;padding:10px 20px 6px;border-top:1px solid var(--border)';
       divider.textContent = 'Local Models';
-      container.appendChild(divider);
+      frag.appendChild(divider);
       for (const m of local) {
         const btn = document.createElement('button');
         btn.className = 'model-sheet-item';
         btn.textContent = m.name;
         btn.onclick = () => selectModel(m.id);
-        container.appendChild(btn);
+        frag.appendChild(btn);
       }
     }
+    // Atomically replace content — nothing clears until we're ready to show
+    container.innerHTML = '';
+    container.appendChild(frag);
+    panToast('Models loaded (' + models.length + ')');
   } catch(e) {
     console.error('[PAN Mobile] model list load error:', e);
+    panToast('Model load failed: ' + e.message);
   }
 }
 
