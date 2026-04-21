@@ -293,6 +293,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             cleaned, action = check_trigger_words(text or '')
             speaker_id, confidence = spk_result
 
+            # Passive enrollment: silently reinforce known speaker's voiceprint
+            PASSIVE_THRESHOLD = 0.82
+            if speaker_id and confidence >= PASSIVE_THRESHOLD:
+                threading.Thread(
+                    target=_passive_enroll, args=(speaker_id, wav_path), daemon=True
+                ).start()
+
             print(f"[PAN Whisper] {elapsed}s speaker={speaker_id}({confidence}): {cleaned[:80]}", flush=True)
             self.send_json(200, {
                 "text": cleaned,
@@ -334,7 +341,12 @@ async def ws_handler(websocket):
                         loop = asyncio.get_event_loop()
                         text_task = loop.run_in_executor(None, transcribe_buffer, audio_bytes, sample_rate)
                         spk_task  = loop.run_in_executor(None, lambda: _identify_from_buffer(audio_bytes, sample_rate))
-                        (text, elapsed), (speaker_id, confidence) = await asyncio.gather(text_task, spk_task)
+                        (text, elapsed), (speaker_id, confidence, spk_emb) = await asyncio.gather(text_task, spk_task)
+
+                        # Passive enrollment: reinforce known speaker's voiceprint from WS audio
+                        PASSIVE_THRESHOLD = 0.82
+                        if speaker_id and confidence >= PASSIVE_THRESHOLD and spk_emb is not None:
+                            loop.run_in_executor(None, lambda: _passive_enroll(speaker_id, spk_emb))
 
                         if text:
                             cleaned, action = check_trigger_words(text)
@@ -362,13 +374,32 @@ async def ws_handler(websocket):
         print(f"[PAN Whisper] WS disconnected ({chunk_count} chunks, {len(audio_buffer)} bytes)", flush=True)
 
 def _identify_from_buffer(audio_bytes, sample_rate):
-    """Thread-safe wrapper for speaker ID from raw PCM."""
+    """Thread-safe wrapper for speaker ID from raw PCM. Returns (label, confidence, embedding)."""
     try:
         emb = get_embedding_from_buffer(audio_bytes, sample_rate)
-        return identify_speaker(emb)
+        label, conf = identify_speaker(emb)
+        return label, conf, emb
     except Exception as e:
         print(f"[PAN Speaker] Buffer identify error: {e}", flush=True)
-        return None, 0.0
+        return None, 0.0, None
+
+def _passive_enroll(label, source, sample_rate=16000):
+    """Silently update an enrolled speaker's voiceprint from a new sample.
+    source: wav_path string, or raw PCM bytes, or numpy embedding.
+    Does nothing if speaker is not already enrolled."""
+    with _prints_lock:
+        if label not in _voice_prints:
+            return  # only update existing prints, never create new ones passively
+    try:
+        if isinstance(source, (str, Path)):
+            enroll_speaker(label, source, update=True)
+        elif isinstance(source, bytes):
+            emb = get_embedding_from_buffer(source, sample_rate)
+            enroll_speaker(label, emb, update=True)
+        elif isinstance(source, np.ndarray):
+            enroll_speaker(label, source, update=True)
+    except Exception as e:
+        print(f"[PAN Speaker] Passive enroll error for '{label}': {e}", flush=True)
 
 def run_http():
     server = HTTPServer(('127.0.0.1', PORT), RequestHandler)
