@@ -157,14 +157,22 @@ ${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
 ${isDash ? 'Always respond.' : 'If ambient speech (not directed at you): {"intent":"ambient","response":"[AMBIENT]"}'}
 ${isDash ? '' : 'Directed at you if: says Pan/Pam, asks a question, continues recent convo.'}
 
+Every response must include "speech_act" field:
+"command" — direct instruction to execute something
+"query" — question expecting an answer
+"note" — first-person thought/diary, no action needed
+"monologue" — long stream-of-consciousness, thinking out loud
+"social" — talking to someone else in the room, not PAN
+"ambient" — background speech, not directed at anyone
+
 Response formats:
-{"intent":"query","response":"answer"} — questions/conversation
-{"intent":"terminal","action":"open|send-text|get-text|list-panes","project":"path","name":"name","pane_id":0,"text":"cmd","response":"msg"}
-{"intent":"system","command":"PowerShell cmd","response":"msg"}
-{"intent":"browser","action":"list_tabs|read_tab|activate_tab|type_text|click_element|navigate","query":"tab/URL","text":"input","response":"msg"}
-{"intent":"memory","action":"save|recall","item_type":"type","content":"data","response":"msg"}
-{"intent":"music","query":"song","service":"spotify|youtube|any","response":"msg"}
-{"intent":"calendar","response":"msg"}
+{"intent":"query","speech_act":"query","response":"answer"} — questions/conversation
+{"intent":"terminal","speech_act":"command","action":"open|send-text|get-text|list-panes","project":"path","name":"name","pane_id":0,"text":"cmd","response":"msg"}
+{"intent":"system","speech_act":"command","command":"PowerShell cmd","response":"msg"}
+{"intent":"browser","speech_act":"command","action":"list_tabs|read_tab|activate_tab|type_text|click_element|navigate","query":"tab/URL","text":"input","response":"msg"}
+{"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg"}
+{"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg"}
+{"intent":"calendar","speech_act":"command","response":"msg"}
 
 Projects: ${projectList}
 ${memoryContext}`,
@@ -190,6 +198,8 @@ ${memoryContext}`,
 // Post-process the unified response into the correct return format
 async function processUnifiedResult(action, text, context) {
   const intent = action.intent || 'query';
+  // Propagate speech_act through all return paths
+  const speech_act = action.speech_act || (intent === 'ambient' ? 'ambient' : 'command');
 
   switch (intent) {
     case 'terminal': {
@@ -406,7 +416,7 @@ async function processUnifiedResult(action, text, context) {
 
     case 'query':
     default:
-      return { intent: 'query', response: action.response || 'No response generated.' };
+      return { intent: 'query', speech_act, response: action.response || 'No response generated.' };
   }
 }
 
