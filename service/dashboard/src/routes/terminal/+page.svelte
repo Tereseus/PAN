@@ -193,8 +193,6 @@
 	let voiceEnrollSpeakers = $state([]);
 	let voiceServerOk = $state(false);
 	let voiceEnrollSeconds = $state(0);
-	let _voiceRecorder = null;
-	let _voiceChunks = [];
 	let _voiceTimer = null;
 	let deviceRenameId = $state(null);
 	let deviceRenameName = $state('');
@@ -3818,53 +3816,51 @@
 
 	async function startVoiceEnroll() {
 		if (!voiceEnrollLabel.trim()) { voiceEnrollMsg = 'Enter a name first'; return; }
+		const label = voiceEnrollLabel.trim();
+		const seconds = 10;
+		voiceEnrollStatus = 'recording';
+		voiceEnrollSeconds = 0;
+		voiceEnrollMsg = `Listening via server mic... speak for ${seconds}s`;
+
+		// Countdown while server records
+		_voiceTimer = setInterval(() => {
+			voiceEnrollSeconds++;
+			if (voiceEnrollSeconds >= seconds) {
+				if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
+			}
+		}, 1000);
+
 		try {
-			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-			_voiceChunks = [];
-			_voiceRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-			_voiceRecorder.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
-			_voiceRecorder.onstop = async () => {
-				stream.getTracks().forEach(t => t.stop());
-				voiceEnrollStatus = 'uploading';
-				voiceEnrollMsg = 'Processing...';
-				try {
-					const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
-					const r = await fetch('/api/v1/voice/enroll-browser', {
-						method: 'POST',
-						headers: { 'Content-Type': 'audio/webm', 'X-Speaker-Label': voiceEnrollLabel.trim() },
-						body: blob,
-					});
-					const d = await r.json();
-					if (d.ok) {
-						voiceEnrollStatus = 'done';
-						voiceEnrollMsg = `✓ Enrolled "${voiceEnrollLabel.trim()}" (${d.enrolled} speaker${d.enrolled !== 1 ? 's' : ''} total)`;
-						await loadVoiceSpeakers();
-					} else {
-						voiceEnrollStatus = 'error';
-						voiceEnrollMsg = d.error || 'Enroll failed';
-					}
-				} catch(e) {
-					voiceEnrollStatus = 'error';
-					voiceEnrollMsg = 'Upload error: ' + e.message;
-				}
-			};
-			_voiceRecorder.start(100);
-			voiceEnrollStatus = 'recording';
-			voiceEnrollSeconds = 0;
-			voiceEnrollMsg = 'Recording... speak naturally for 10 seconds';
-			_voiceTimer = setInterval(() => {
-				voiceEnrollSeconds++;
-				if (voiceEnrollSeconds >= 10) stopVoiceEnroll();
-			}, 1000);
+			// Server-side recording — no browser mic permission needed
+			const r = await fetch('/api/v1/voice/record-enroll', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ label, seconds }),
+			});
+			if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
+			const d = await r.json();
+			if (d.ok) {
+				voiceEnrollStatus = 'done';
+				voiceEnrollMsg = `✓ Enrolled "${label}" (${d.enrolled} speaker${d.enrolled !== 1 ? 's' : ''} total)`;
+				await loadVoiceSpeakers();
+			} else {
+				voiceEnrollStatus = 'error';
+				voiceEnrollMsg = d.error || 'Enroll failed';
+			}
 		} catch(e) {
+			if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
 			voiceEnrollStatus = 'error';
-			voiceEnrollMsg = 'Mic error: ' + e.message;
+			voiceEnrollMsg = 'Error: ' + e.message;
 		}
 	}
 
 	function stopVoiceEnroll() {
 		if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
-		if (_voiceRecorder && _voiceRecorder.state === 'recording') _voiceRecorder.stop();
+		// Server-side recording can't be interrupted mid-capture, but reset UI state
+		if (voiceEnrollStatus === 'recording') {
+			voiceEnrollStatus = '';
+			voiceEnrollMsg = 'Cancelled';
+		}
 	}
 
 	async function deleteVoiceSpeaker(label) {
