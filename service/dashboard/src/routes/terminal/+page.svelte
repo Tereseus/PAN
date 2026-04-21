@@ -6460,6 +6460,7 @@
 							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
 							<div class="svc-info">
 								<div class="svc-name">{svc.name}</div>
+								{#if svc.role}<div class="svc-detail" style="color:#cba6f7;font-size:10px">{svc.role}</div>{/if}
 								<div class="svc-detail">{svc.detail}</div>
 							</div>
 						</div>
