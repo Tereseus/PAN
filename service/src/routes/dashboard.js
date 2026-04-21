@@ -764,32 +764,47 @@ router.get('/api/services', async (req, res) => {
     uptime, detail: `Port 7777, PID ${process.pid}`
   });
 
-  // Steward
-  const stewardEvent = getScoped(req, `SELECT created_at FROM events WHERE event_type IN ('StewardHeartbeat','SessionStart') AND org_id = :org_id ORDER BY created_at DESC LIMIT 1`);
-  if (stewardEvent) {
-    const age = (Date.now() - new Date(stewardEvent.created_at).getTime()) / 1000;
-    services.push({ category: 'PAN Core', name: 'Steward', status: age < 600 ? 'up' : 'unknown', detail: age < 600 ? 'Running' : 'No recent events' });
-  } else {
-    services.push({ category: 'PAN Core', name: 'Steward', status: 'unknown', detail: 'No events recorded' });
+  // Parse latest StewardHeartbeat — single source of truth for all service statuses
+  const heartbeatRow = getScoped(req, `SELECT data, created_at FROM events WHERE event_type = 'StewardHeartbeat' AND org_id = :org_id ORDER BY created_at DESC LIMIT 1`);
+  let stewardServices = {};
+  let heartbeatAge = Infinity;
+  if (heartbeatRow) {
+    heartbeatAge = (Date.now() - new Date(heartbeatRow.created_at).getTime()) / 1000;
+    try {
+      const hb = JSON.parse(heartbeatRow.data);
+      for (const s of (hb.services || [])) stewardServices[s.id] = s;
+    } catch {}
   }
 
-  // Intuition
-  services.push({ category: 'PAN Core', name: 'Intuition', status: 'offline', detail: 'Dimensional state engine — not yet built' });
+  const stewardStatus = (id) => {
+    const s = stewardServices[id];
+    if (!s) return { status: 'unknown', detail: 'No heartbeat data' };
+    const st = s.status === 'running' ? 'up' : s.status === 'down' ? 'down' : s.status === 'stopped' ? 'down' : s.status === 'degraded' ? 'unknown' : 'unknown';
+    const note = s.lastError ? ` · ${s.lastError}` : '';
+    const label = s.status.charAt(0).toUpperCase() + s.status.slice(1);
+    return { status: st, detail: `${label}${note}` };
+  };
 
-  // Dream
-  const dreamRow = get(`SELECT value FROM settings WHERE key = 'last_dream_run'`);
-  if (dreamRow) {
-    services.push({ category: 'PAN Core', name: 'Dream', status: 'up', detail: `Last run: ${dreamRow.value}` });
-  } else {
-    services.push({ category: 'PAN Core', name: 'Dream', status: 'unknown', detail: 'No runs recorded' });
-  }
+  // Steward itself
+  services.push({ category: 'PAN Core', name: 'Steward', ...(heartbeatAge < 600 ? { status: 'up', detail: `Running · heartbeat ${Math.round(heartbeatAge)}s ago` } : { status: 'unknown', detail: 'No recent heartbeat' }) });
 
-  // Scout
-  const scoutRow = get(`SELECT value FROM settings WHERE key = 'last_scout_run'`);
-  if (scoutRow) {
-    services.push({ category: 'PAN Core', name: 'Scout', status: 'up', detail: `Last run: ${scoutRow.value}` });
-  } else {
-    services.push({ category: 'PAN Core', name: 'Scout', status: 'unknown', detail: 'No runs recorded' });
+  // All steward-managed PAN Core services
+  const coreServiceDefs = [
+    { id: 'intuition',     name: 'Intuition',       role: 'Situational awareness · who/where/what/mood' },
+    { id: 'dream',         name: 'Dream',            role: 'Memory consolidation cycle · runs every 6h' },
+    { id: 'consolidation', name: 'Archivist',        role: 'Episodic + semantic memory builder' },
+    { id: 'scout',         name: 'Scout',            role: 'Background research · Cerebras 120B' },
+    { id: 'orchestrator',  name: 'Orchestrator',     role: 'Task planning + execution coordinator' },
+    { id: 'evolution',     name: 'Evolution Engine', role: 'Memory decay + reinforcement · runs every 6h' },
+    { id: 'classifier',   name: 'Augur',             role: 'Event classification · runs every 5m' },
+    { id: 'embeddings',    name: 'Resonance',        role: 'Text embeddings · semantic memory search' },
+    { id: 'stack-scanner', name: 'Cartographer',     role: 'Codebase + project structure scanner' },
+    { id: 'voice-shell',   name: 'Voice Shell',      role: 'Voice command pipeline · dictate-vad.py' },
+    { id: 'autodev',       name: 'Forge',            role: 'Autonomous dev agent · paused unless triggered' },
+  ];
+  for (const def of coreServiceDefs) {
+    const { status, detail } = stewardStatus(def.id);
+    services.push({ category: 'PAN Core', name: def.name, role: def.role, status, detail });
   }
 
   // AI / LLM Services
