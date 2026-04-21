@@ -185,6 +185,17 @@
 	let panClientInviteName = $state('');
 	let panClientPollTimer = null;
 	let allDevices = $state([]);
+
+	// Voice enrollment
+	let voiceEnrollLabel = $state('Tereseus');
+	let voiceEnrollStatus = $state('');  // '', 'recording', 'uploading', 'done', 'error'
+	let voiceEnrollMsg = $state('');
+	let voiceEnrollSpeakers = $state([]);
+	let voiceServerOk = $state(false);
+	let voiceEnrollSeconds = $state(0);
+	let _voiceRecorder = null;
+	let _voiceChunks = [];
+	let _voiceTimer = null;
 	let deviceRenameId = $state(null);
 	let deviceRenameName = $state('');
 	let deviceDeleteConfirmId = $state(null);
@@ -1897,7 +1908,7 @@
 		} else {
 			if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
 		}
-		if (tab === 'devices') { loadClientDevices(); loadAllDevices(); }
+		if (tab === 'devices') { loadClientDevices(); loadAllDevices(); loadVoiceSpeakers(); }
 	}
 
 	function handleTranscriptScroll() {
@@ -3795,6 +3806,73 @@
 		} catch {}
 	}
 
+	async function loadVoiceSpeakers() {
+		try {
+			const d = await api('/api/v1/voice/status');
+			voiceServerOk = d.ok;
+			const s = await api('/api/v1/voice/speakers');
+			voiceEnrollSpeakers = s.speakers || [];
+		} catch { voiceServerOk = false; }
+	}
+
+	async function startVoiceEnroll() {
+		if (!voiceEnrollLabel.trim()) { voiceEnrollMsg = 'Enter a name first'; return; }
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			_voiceChunks = [];
+			_voiceRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+			_voiceRecorder.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
+			_voiceRecorder.onstop = async () => {
+				stream.getTracks().forEach(t => t.stop());
+				voiceEnrollStatus = 'uploading';
+				voiceEnrollMsg = 'Processing...';
+				try {
+					const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
+					const r = await fetch('/api/v1/voice/enroll-browser', {
+						method: 'POST',
+						headers: { 'Content-Type': 'audio/webm', 'X-Speaker-Label': voiceEnrollLabel.trim() },
+						body: blob,
+					});
+					const d = await r.json();
+					if (d.ok) {
+						voiceEnrollStatus = 'done';
+						voiceEnrollMsg = `✓ Enrolled "${voiceEnrollLabel.trim()}" (${d.enrolled} speaker${d.enrolled !== 1 ? 's' : ''} total)`;
+						await loadVoiceSpeakers();
+					} else {
+						voiceEnrollStatus = 'error';
+						voiceEnrollMsg = d.error || 'Enroll failed';
+					}
+				} catch(e) {
+					voiceEnrollStatus = 'error';
+					voiceEnrollMsg = 'Upload error: ' + e.message;
+				}
+			};
+			_voiceRecorder.start(100);
+			voiceEnrollStatus = 'recording';
+			voiceEnrollSeconds = 0;
+			voiceEnrollMsg = 'Recording... speak naturally for 10 seconds';
+			_voiceTimer = setInterval(() => {
+				voiceEnrollSeconds++;
+				if (voiceEnrollSeconds >= 10) stopVoiceEnroll();
+			}, 1000);
+		} catch(e) {
+			voiceEnrollStatus = 'error';
+			voiceEnrollMsg = 'Mic error: ' + e.message;
+		}
+	}
+
+	function stopVoiceEnroll() {
+		if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
+		if (_voiceRecorder && _voiceRecorder.state === 'recording') _voiceRecorder.stop();
+	}
+
+	async function deleteVoiceSpeaker(label) {
+		try {
+			await api(`/api/v1/voice/speaker/${encodeURIComponent(label)}`, { method: 'DELETE' });
+			await loadVoiceSpeakers();
+		} catch {}
+	}
+
 	async function renameDevicePanel(id) {
 		if (!deviceRenameName.trim()) return;
 		try {
@@ -4302,7 +4380,7 @@
 		if (leftSection === 'usage' || rightSection === 'usage') loadUsageData();
 		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
 		if (leftSection === 'intuition' || rightSection === 'intuition') startIntuitionPolling();
-		if (leftSection === 'devices' || rightSection === 'devices') { loadClientDevices(); loadAllDevices(); }
+		if (leftSection === 'devices' || rightSection === 'devices') { loadClientDevices(); loadAllDevices(); loadVoiceSpeakers(); }
 
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
@@ -7060,6 +7138,57 @@
 				{:else}
 					<div class="empty-state small">No devices registered</div>
 				{/if}
+
+				<!-- Voice Enrollment -->
+				<div style="margin-top:16px;border-top:1px solid rgba(255,255,255,0.07);padding-top:12px">
+					<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+						<span style="font-size:11px;font-weight:600;color:#cba6f7;text-transform:uppercase;letter-spacing:.06em">Voice ID</span>
+						<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}">{voiceServerOk ? 'online' : 'offline'}</span>
+					</div>
+					{#if voiceEnrollSpeakers.length > 0}
+						<div style="margin-bottom:8px">
+							{#each voiceEnrollSpeakers as sp}
+								<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
+									<span style="font-size:18px">🎤</span>
+									<span style="font-size:12px;color:#cdd6f4;flex:1">{sp.label || sp}</span>
+									{#if sp.sample_count}<span style="font-size:10px;color:#6c7086">{sp.sample_count} sample{sp.sample_count !== 1 ? 's' : ''}</span>{/if}
+									<button onclick={() => deleteVoiceSpeaker(sp.label || sp)} style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:13px;padding:1px 4px;border-radius:3px" title="Remove">✕</button>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<div style="font-size:11px;color:#6c7086;margin-bottom:8px">No speakers enrolled</div>
+					{/if}
+					<div style="display:flex;gap:5px;margin-bottom:6px">
+						<input
+							bind:value={voiceEnrollLabel}
+							placeholder="Speaker name"
+							disabled={voiceEnrollStatus === 'recording' || voiceEnrollStatus === 'uploading'}
+							style="flex:1;background:#1e1e2e;border:1px solid rgba(255,255,255,0.12);border-radius:5px;color:#cdd6f4;padding:4px 8px;font-size:12px;outline:none"
+						/>
+					</div>
+					{#if voiceEnrollStatus === 'recording'}
+						<div style="display:flex;gap:6px;align-items:center">
+							<button onclick={stopVoiceEnroll} style="flex:1;background:rgba(243,139,168,0.2);border:1px solid #f38ba8;border-radius:5px;color:#f38ba8;padding:5px;font-size:12px;cursor:pointer">
+								⏹ Stop ({voiceEnrollSeconds}s / 10s)
+							</button>
+						</div>
+						<div style="margin-top:4px;background:rgba(255,255,255,0.07);border-radius:3px;height:3px;overflow:hidden">
+							<div style="background:#cba6f7;height:100%;width:{Math.min(voiceEnrollSeconds/10*100,100)}%;transition:width 1s linear"></div>
+						</div>
+					{:else}
+						<button
+							onclick={startVoiceEnroll}
+							disabled={!voiceServerOk || voiceEnrollStatus === 'uploading'}
+							style="width:100%;background:rgba(203,166,247,0.15);border:1px solid rgba(203,166,247,0.4);border-radius:5px;color:#cba6f7;padding:5px;font-size:12px;cursor:{voiceServerOk ? 'pointer' : 'not-allowed'};opacity:{voiceServerOk ? 1 : 0.5}"
+						>
+							🎤 {voiceEnrollStatus === 'uploading' ? 'Processing...' : 'Record Voice Sample (10s)'}
+						</button>
+					{/if}
+					{#if voiceEnrollMsg}
+						<div style="font-size:11px;margin-top:5px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
+					{/if}
+				</div>
 			{:else if rightSection === 'transcript'}
 				{#if chatBubbles.length === 0}
 					<div class="empty-state">No conversation yet</div>
