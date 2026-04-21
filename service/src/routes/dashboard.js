@@ -793,18 +793,26 @@ router.get('/api/services', async (req, res) => {
   }
 
   // AI / LLM Services
+  // Pull usage counts for context (last 24h)
+  const usageRows = allScoped(req, `SELECT caller, model, COUNT(*) as calls FROM ai_usage WHERE org_id = :org_id AND created_at > datetime('now','-1 day') GROUP BY caller, model`);
+  const usageMap = {};
+  for (const r of usageRows) usageMap[`${r.caller}:${r.model}`] = r.calls;
+  const totalCalls = usageRows.reduce((s, r) => s + r.calls, 0);
+
   // Whisper STT
   try {
     const wr = await fetch('http://127.0.0.1:7782', { signal: AbortSignal.timeout(1500) });
     if (wr.ok) {
       const wd = await wr.json().catch(() => ({}));
-      const enrolled = wd.enrolled != null ? `, ${wd.enrolled} speaker${wd.enrolled !== 1 ? 's' : ''} enrolled` : '';
-      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'up', detail: `${wd.model || 'base'} model · faster-whisper${enrolled}` });
+      const enrolled = wd.enrolled != null ? `${wd.enrolled} voice${wd.enrolled !== 1 ? 's' : ''} enrolled` : '';
+      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'up',
+        role: 'Speech → text for all voice commands + passive speaker ID',
+        detail: [enrolled, `${wd.model || 'base'} model · port 7782`].filter(Boolean).join(' · ') });
     } else {
-      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', detail: 'Server returned error' });
+      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', role: 'Speech → text', detail: 'Server error' });
     }
   } catch {
-    services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', detail: 'Not running (port 7782)' });
+    services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', role: 'Speech → text', detail: 'Not running · steward will restart' });
   }
 
   // Ollama + loaded models
@@ -814,40 +822,60 @@ router.get('/api/services', async (req, res) => {
       const od = await or.json().catch(() => ({}));
       const models = od.models || [];
       if (models.length === 0) {
-        services.push({ category: 'AI Models', name: 'Ollama', status: 'up', detail: 'Running · no models loaded' });
+        services.push({ category: 'AI Models', name: 'Ollama', status: 'up', role: 'Local LLM runtime', detail: 'Running · no models loaded' });
       } else {
+        // Classify model roles by name pattern
+        const roleFor = (name) => {
+          const n = name.toLowerCase();
+          if (n.includes('embed')) return 'Text embeddings · memory search';
+          if (n.includes('qwen') && n.includes('235')) return 'Local fast router (offline fallback)';
+          if (n.includes('qwen')) return 'Local reasoning · offline capable';
+          if (n.includes('llama')) return 'Local LLM · general purpose';
+          if (n.includes('mistral')) return 'Local LLM · fast inference';
+          if (n.includes('phi')) return 'Local LLM · lightweight';
+          if (n.includes('nomic') || n.includes('mxbai')) return 'Text embeddings · memory search';
+          return 'Local LLM · offline capable';
+        };
         for (const m of models) {
           const sizeGb = m.size ? (m.size / 1e9).toFixed(1) + 'GB' : '';
-          const modified = m.modified_at ? new Date(m.modified_at).toLocaleDateString() : '';
-          services.push({ category: 'AI Models', name: m.name, status: 'up', detail: `Ollama · ${[sizeGb, modified].filter(Boolean).join(' · ')}` });
+          services.push({ category: 'AI Models', name: m.name, status: 'up',
+            role: roleFor(m.name),
+            detail: `Ollama local${sizeGb ? ' · ' + sizeGb : ''}` });
         }
       }
     } else {
-      services.push({ category: 'AI Models', name: 'Ollama', status: 'down', detail: 'Server returned error' });
+      services.push({ category: 'AI Models', name: 'Ollama', status: 'down', role: 'Local LLM runtime', detail: 'Server error' });
     }
   } catch {
-    services.push({ category: 'AI Models', name: 'Ollama', status: 'down', detail: 'Not running (port 11434)' });
+    services.push({ category: 'AI Models', name: 'Ollama', status: 'down', role: 'Local LLM runtime · embeddings', detail: 'Not running · offline features unavailable' });
   }
 
   // Cerebras — check via a settings key or just show config status
   const cerebrasKey = get(`SELECT value FROM settings WHERE key = 'cerebras_api_key'`);
   const aiModel = get(`SELECT value FROM settings WHERE key = 'ai_model'`);
   const usingCerebras = aiModel?.value?.startsWith('cerebras:');
+  const cerebrasModel = aiModel?.value?.replace('cerebras:', '') || '';
+  const cerebrasCalls = usageRows.filter(r => r.model?.includes('cerebras') || r.caller === 'router').reduce((s, r) => s + r.calls, 0);
   services.push({
     category: 'AI Models', name: 'Cerebras',
     status: cerebrasKey ? (usingCerebras ? 'up' : 'unknown') : 'unknown',
+    role: 'Voice router · classifies every voice command (~580ms)',
     detail: usingCerebras
-      ? `Active · ${aiModel.value.replace('cerebras:', '')}`
-      : (cerebrasKey ? 'Configured · not current model' : 'No API key configured')
+      ? `Active model · ${cerebrasModel}${cerebrasCalls ? ` · ${cerebrasCalls} calls today` : ''}`
+      : (cerebrasKey ? 'Configured · not current model' : 'No API key · falling back to Claude')
   });
 
   // Claude CLI
   const claudeModel = aiModel?.value;
   const isClaudeActive = claudeModel && !claudeModel.startsWith('cerebras:') && !claudeModel.startsWith('ollama:');
+  const claudeCalls = usageRows.filter(r => r.caller === 'terminal' || r.caller === 'session').reduce((s, r) => s + r.calls, 0);
   services.push({
     category: 'AI Models', name: 'Claude CLI',
     status: 'up',
-    detail: isClaudeActive ? `Active · ${claudeModel}` : 'Fallback · claude -p subscription'
+    role: 'Terminal sessions · smart tasks · code · this conversation',
+    detail: isClaudeActive
+      ? `Active model · ${claudeModel}${claudeCalls ? ` · ${claudeCalls} calls today` : ''}`
+      : `Fallback · claude -p subscription${claudeCalls ? ` · ${claudeCalls} calls today` : ''}`
   });
 
   // Devices — enrich last_seen from client_logs for devices that log but don't heartbeat
