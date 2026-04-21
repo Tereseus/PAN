@@ -21,6 +21,9 @@ async function whisperAvailable() {
   } catch { return false; }
 }
 
+// Raw audio body parser for browser enrollment
+import express from 'express';
+
 export function registerVoiceRoutes(app) {
 
   // Health / status
@@ -127,6 +130,57 @@ export function registerVoiceRoutes(app) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // Browser enrollment — accepts raw WebM audio from MediaRecorder
+  // POST with Content-Type: audio/webm and X-Speaker-Label header
+  app.post('/api/v1/voice/enroll-browser',
+    express.raw({ type: ['audio/webm', 'audio/ogg', 'application/octet-stream'], limit: '20mb' }),
+    async (req, res) => {
+      // Label can come from header or query string
+      const label = (req.headers['x-speaker-label'] || req.query.label || '').trim();
+      if (!label) return res.status(400).json({ error: 'label required (X-Speaker-Label header or ?label= query)' });
+
+      const audioBuffer = req.body;
+      if (!audioBuffer || audioBuffer.length < 1000) {
+        return res.status(400).json({ error: 'Audio too short or missing' });
+      }
+
+      const tmpFile = join(tmpdir(), `pan-enroll-${randomBytes(6).toString('hex')}.webm`);
+      let ok = false;
+      try {
+        writeFileSync(tmpFile, audioBuffer);
+
+        if (!(await whisperAvailable())) {
+          return res.status(503).json({ error: 'Voice server not running' });
+        }
+
+        const r = await fetch(`${WHISPER_URL}/enroll`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label, wav_path: tmpFile }),
+          signal: AbortSignal.timeout(20000),
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json(data);
+
+        // Track in DB
+        db.prepare(`
+          INSERT INTO voice_prints (label, embedding, sample_count, org_id)
+          VALUES (?, ?, 1, 'org_personal')
+          ON CONFLICT(label, org_id) DO UPDATE SET
+            sample_count = sample_count + 1,
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+        `).run(label, Buffer.alloc(0));
+
+        ok = true;
+        res.json({ ok: true, label, enrolled: data.enrolled });
+      } catch (e) {
+        if (!ok) res.status(500).json({ error: e.message });
+      } finally {
+        try { if (existsSync(tmpFile)) unlinkSync(tmpFile); } catch {}
+      }
+    }
+  );
 
   // Remove a speaker
   app.delete('/api/v1/voice/speaker/:label', async (req, res) => {
