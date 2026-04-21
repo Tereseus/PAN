@@ -752,7 +752,7 @@ router.get('/api/devices', (req, res) => {
 });
 
 // GET /dashboard/api/services — unified services + devices status
-router.get('/api/services', (req, res) => {
+router.get('/api/services', async (req, res) => {
   const services = [];
   const issues = [];
   const pcHost = hostname();
@@ -791,6 +791,64 @@ router.get('/api/services', (req, res) => {
   } else {
     services.push({ category: 'PAN Core', name: 'Scout', status: 'unknown', detail: 'No runs recorded' });
   }
+
+  // AI / LLM Services
+  // Whisper STT
+  try {
+    const wr = await fetch('http://127.0.0.1:7782', { signal: AbortSignal.timeout(1500) });
+    if (wr.ok) {
+      const wd = await wr.json().catch(() => ({}));
+      const enrolled = wd.enrolled != null ? `, ${wd.enrolled} speaker${wd.enrolled !== 1 ? 's' : ''} enrolled` : '';
+      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'up', detail: `${wd.model || 'base'} model · faster-whisper${enrolled}` });
+    } else {
+      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', detail: 'Server returned error' });
+    }
+  } catch {
+    services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', detail: 'Not running (port 7782)' });
+  }
+
+  // Ollama + loaded models
+  try {
+    const or = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) });
+    if (or.ok) {
+      const od = await or.json().catch(() => ({}));
+      const models = od.models || [];
+      if (models.length === 0) {
+        services.push({ category: 'AI Models', name: 'Ollama', status: 'up', detail: 'Running · no models loaded' });
+      } else {
+        for (const m of models) {
+          const sizeGb = m.size ? (m.size / 1e9).toFixed(1) + 'GB' : '';
+          const modified = m.modified_at ? new Date(m.modified_at).toLocaleDateString() : '';
+          services.push({ category: 'AI Models', name: m.name, status: 'up', detail: `Ollama · ${[sizeGb, modified].filter(Boolean).join(' · ')}` });
+        }
+      }
+    } else {
+      services.push({ category: 'AI Models', name: 'Ollama', status: 'down', detail: 'Server returned error' });
+    }
+  } catch {
+    services.push({ category: 'AI Models', name: 'Ollama', status: 'down', detail: 'Not running (port 11434)' });
+  }
+
+  // Cerebras — check via a settings key or just show config status
+  const cerebrasKey = get(`SELECT value FROM settings WHERE key = 'cerebras_api_key'`);
+  const aiModel = get(`SELECT value FROM settings WHERE key = 'ai_model'`);
+  const usingCerebras = aiModel?.value?.startsWith('cerebras:');
+  services.push({
+    category: 'AI Models', name: 'Cerebras',
+    status: cerebrasKey ? (usingCerebras ? 'up' : 'unknown') : 'unknown',
+    detail: usingCerebras
+      ? `Active · ${aiModel.value.replace('cerebras:', '')}`
+      : (cerebrasKey ? 'Configured · not current model' : 'No API key configured')
+  });
+
+  // Claude CLI
+  const claudeModel = aiModel?.value;
+  const isClaudeActive = claudeModel && !claudeModel.startsWith('cerebras:') && !claudeModel.startsWith('ollama:');
+  services.push({
+    category: 'AI Models', name: 'Claude CLI',
+    status: 'up',
+    detail: isClaudeActive ? `Active · ${claudeModel}` : 'Fallback · claude -p subscription'
+  });
 
   // Devices — enrich last_seen from client_logs for devices that log but don't heartbeat
   const allDevRaw = allScoped(req, `SELECT * FROM devices WHERE org_id = :org_id ORDER BY last_seen DESC`);
