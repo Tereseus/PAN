@@ -66,7 +66,24 @@ const services = [
     bootOrder: 1,
     dependsOn: [],
     interval: null, // always-on process
-    startFn: null,  // managed externally (ollama-boot.js)
+    startFn: async () => {
+      // Check Ollama is installed before trying to start
+      try { execSync('ollama --version', { stdio: 'pipe', timeout: 3000, windowsHide: true }); }
+      catch { throw new Error('Ollama not installed — install from ollama.com'); }
+      // Spawn detached so it survives if PAN restarts
+      const child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', shell: true, windowsHide: true });
+      child.unref();
+      // Wait up to 15s for it to come up
+      const start = Date.now();
+      while (Date.now() - start < 15000) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const r = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(2000) });
+          if (r.ok) { console.log('[Steward] Ollama started successfully'); return; }
+        } catch {}
+      }
+      throw new Error('Ollama started but not responding after 15s');
+    },
     stopFn: null,
     _status: 'unknown',
     _lastCheck: null,
