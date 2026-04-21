@@ -1,0 +1,149 @@
+// PAN Voice Routes — Speaker enrollment, identification, voice print management
+//
+// POST /api/v1/voice/enroll      — enroll a speaker from uploaded audio
+// POST /api/v1/voice/identify    — identify speaker from uploaded audio
+// GET  /api/v1/voice/speakers    — list enrolled speakers
+// DELETE /api/v1/voice/speaker/:label — remove a speaker
+// GET  /api/v1/voice/status      — whisper+speaker server health
+
+import { db } from '../db.js';
+import { writeFileSync, unlinkSync, existsSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { randomBytes } from 'crypto';
+
+const WHISPER_URL = 'http://127.0.0.1:7782';
+
+async function whisperAvailable() {
+  try {
+    const r = await fetch(WHISPER_URL, { signal: AbortSignal.timeout(1000) });
+    return r.ok;
+  } catch { return false; }
+}
+
+export function registerVoiceRoutes(app) {
+
+  // Health / status
+  app.get('/api/v1/voice/status', async (req, res) => {
+    try {
+      const r = await fetch(WHISPER_URL, { signal: AbortSignal.timeout(2000) });
+      const data = await r.json();
+      res.json({ ok: true, ...data });
+    } catch (e) {
+      res.json({ ok: false, error: 'Whisper server not reachable', detail: e.message });
+    }
+  });
+
+  // List enrolled speakers
+  app.get('/api/v1/voice/speakers', async (req, res) => {
+    try {
+      // Also query DB for metadata
+      const dbSpeakers = db.prepare(
+        'SELECT label, sample_count, created_at, updated_at FROM voice_prints WHERE org_id = ? ORDER BY label'
+      ).all('org_personal');
+
+      // Cross-check with live server
+      let liveSpeakers = [];
+      try {
+        const r = await fetch(`${WHISPER_URL}/speakers`, { signal: AbortSignal.timeout(1000) });
+        const d = await r.json();
+        liveSpeakers = d.speakers || [];
+      } catch {}
+
+      res.json({ speakers: dbSpeakers, live: liveSpeakers });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Enroll a speaker — accepts multipart audio upload or wav_path
+  app.post('/api/v1/voice/enroll', async (req, res) => {
+    const { label, wav_path } = req.body || {};
+    if (!label) return res.status(400).json({ error: 'label required' });
+
+    let filePath = wav_path;
+    let tempFile = null;
+
+    // If raw audio bytes sent as body with Content-Type audio/*
+    if (!filePath && req.headers['content-type']?.startsWith('audio/')) {
+      const chunks = [];
+      req.on('data', c => chunks.push(c));
+      await new Promise(resolve => req.on('end', resolve));
+      tempFile = join(tmpdir(), `pan-enroll-${randomBytes(8).toString('hex')}.wav`);
+      writeFileSync(tempFile, Buffer.concat(chunks));
+      filePath = tempFile;
+    }
+
+    if (!filePath || !existsSync(filePath)) {
+      return res.status(400).json({ error: 'wav_path required and must exist on server' });
+    }
+
+    try {
+      if (!(await whisperAvailable())) {
+        return res.status(503).json({ error: 'Whisper/speaker server not running' });
+      }
+
+      const r = await fetch(`${WHISPER_URL}/enroll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, wav_path: filePath }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await r.json();
+      if (!r.ok) return res.status(r.status).json(data);
+
+      // Persist to DB
+      db.prepare(`
+        INSERT INTO voice_prints (label, embedding, sample_count, org_id)
+        VALUES (?, ?, 1, 'org_personal')
+        ON CONFLICT(label, org_id) DO UPDATE SET
+          sample_count = sample_count + 1,
+          updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+      `).run(label, Buffer.alloc(0)); // embedding stored in .npz file, DB tracks metadata
+
+      res.json({ ok: true, label, enrolled: data.enrolled });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    } finally {
+      if (tempFile) try { unlinkSync(tempFile); } catch {}
+    }
+  });
+
+  // Identify speaker from audio file
+  app.post('/api/v1/voice/identify', async (req, res) => {
+    const { wav_path } = req.body || {};
+    if (!wav_path || !existsSync(wav_path)) {
+      return res.status(400).json({ error: 'wav_path required' });
+    }
+    try {
+      const r = await fetch(`${WHISPER_URL}/identify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wav_path }),
+        signal: AbortSignal.timeout(10000),
+      });
+      res.json(await r.json());
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Remove a speaker
+  app.delete('/api/v1/voice/speaker/:label', async (req, res) => {
+    const { label } = req.params;
+    try {
+      // Remove from whisper server
+      await fetch(`${WHISPER_URL}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+        signal: AbortSignal.timeout(5000),
+      });
+      // Remove from DB
+      db.prepare("DELETE FROM voice_prints WHERE label = ? AND org_id = 'org_personal'").run(label);
+      res.json({ ok: true, label });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+}

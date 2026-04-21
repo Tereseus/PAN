@@ -36,6 +36,7 @@ import teamsRouter from './routes/teams.js';
 import wrapRouter, { ensureWrapSchema } from './routes/wrap.js';
 import messagingPrefsRouter, { ensureMessagingPrefsSchema } from './routes/messaging-prefs.js';
 import intuitionRouter from './routes/intuition.js';
+import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
@@ -59,7 +60,7 @@ import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages } from './terminal-bridge.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession } from './terminal-bridge.js';
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
 import clientRouter from './routes/client.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
@@ -738,6 +739,9 @@ app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
 
 // Intuition — live situational state daemon (read by PAN voice, Forge, Atlas)
 app.use('/api/v1/intuition', intuitionRouter);
+
+// Voice — Whisper STT + speaker ID (resemblyzer)
+registerVoiceRoutes(app);
 
 // PAN Client — manages connected pan-client processes on other machines
 app.use('/api/v1/client', clientRouter);
@@ -2449,6 +2453,36 @@ app.post('/api/v1/tunnel/start', async (req, res) => {
 app.get('/api/v1/terminal/sessions', async (req, res) => {
   res.json({ sessions: await listSessions() });
 });
+
+// Create a new pipe-mode session (mobile new-tab button)
+app.post('/api/v1/terminal/new', async (req, res) => {
+  try {
+    const { project, model } = req.body || {};
+    const prefix = project ? 'dash-' + project.toLowerCase().replace(/[^a-z0-9]/g, '-') : 'dash-pan';
+    // Find the next available session ID
+    const existing = await listSessions();
+    const ids = new Set(existing.map(s => s.id));
+    let sessionId = prefix;
+    let n = 2;
+    while (ids.has(sessionId)) { sessionId = `${prefix}-${n++}`; }
+    // Resolve cwd from project path if available
+    let cwd = null;
+    if (project) {
+      try {
+        const { all: dbAll } = await import('./db.js');
+        const rows = dbAll('SELECT path FROM projects WHERE name = ? LIMIT 1', [project]);
+        if (rows?.[0]?.path) cwd = rows[0].path;
+      } catch {}
+    }
+    await createPipeSession(sessionId, { projectName: project || 'PAN', cwd });
+    if (model) await pipeSetModel(sessionId, model);
+    res.json({ ok: true, session_id: sessionId });
+  } catch (err) {
+    console.error('[PAN] /api/v1/terminal/new error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/api/v1/terminal/projects', (req, res) => {
   res.json({ projects: getTerminalProjects() });
 });
