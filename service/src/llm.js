@@ -8,7 +8,9 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-const CEREBRAS_URL = 'https://api.cerebras.ai/v1/chat/completions';
+const CEREBRAS_URL  = 'https://api.cerebras.ai/v1/chat/completions';
+const GROQ_URL      = 'https://api.groq.com/openai/v1/chat/completions';
+const OPENAI_URL    = 'https://api.openai.com/v1/chat/completions';
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 
 // Pricing per model (cents per token)
@@ -32,10 +34,23 @@ const MODEL_PRICING = {
   'cli:gemini-1.5-pro':          { input: 0, output: 0 },
   
   // Cerebras (free tier currently $0)
-  'cerebras:llama3.1-8b':        { input: 0, output: 0 },
-  'cerebras:gpt-oss-120b':       { input: 0, output: 0 },
-  'cerebras:qwen-3-235b':        { input: 0, output: 0 },
-  'cerebras:zai-glm-4.7':        { input: 0, output: 0 },
+  'cerebras:llama3.1-8b':        { input: 0,        output: 0        },
+  'cerebras:gpt-oss-120b':       { input: 0,        output: 0        },
+  'cerebras:qwen-3-235b':        { input: 0,        output: 0        },
+  'cerebras:zai-glm-4.7':        { input: 0,        output: 0        },
+
+  // Groq (free tier available)
+  'groq:gpt-oss-20b':            { input: 0.00013,  output: 0.00013  },
+  'groq:llama-3.3-70b':          { input: 0.00059,  output: 0.00079  },
+  'groq:llama-3.1-8b-instant':   { input: 0.00005,  output: 0.00008  },
+  'groq:mixtral-8x7b':           { input: 0.00027,  output: 0.00027  },
+
+  // OpenAI
+  'openai:gpt-4o-mini':          { input: 0.00015,  output: 0.0006   },
+  'openai:gpt-4o':               { input: 0.005,    output: 0.015    },
+
+  // Generic custom endpoint (OpenAI-compatible)
+  'custom:*':                    { input: 0,        output: 0        },
 };
 
 const CEREBRAS_MODELS = {
@@ -81,8 +96,10 @@ function getApiKey(provider) {
   try {
     const keyMap = {
       anthropic: 'anthropic_api_key',
-      gemini: 'gemini_api_key',
-      cerebras: 'cerebras_api_key'
+      gemini:    'gemini_api_key',
+      cerebras:  'cerebras_api_key',
+      groq:      'groq_api_key',
+      openai:    'openai_api_key',
     };
     const row = get(`SELECT value FROM settings WHERE key = '${keyMap[provider]}'`);
     if (row) return row.value.replace(/^"|"$/g, '').trim();
@@ -145,6 +162,27 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
   };
 }
 
+async function callOpenAIEndpoint(messages, modelId, url, apiKey, maxTokens, signal) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  const oaiMessages = messages.map(m => ({
+    role: m.role,
+    content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+  }));
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ model: modelId, messages: oaiMessages, max_tokens: maxTokens, stream: false }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`${url} ${response.status}: ${await response.text()}`);
+  const data = await response.json();
+  return {
+    text: data.choices?.[0]?.message?.content || '',
+    usage: { input_tokens: data.usage?.prompt_tokens || 0, output_tokens: data.usage?.completion_tokens || 0 },
+  };
+}
+
 async function callOpenAICompat(prompt, messages, config, maxTokens, signal) {
   const isOllama = config.provider === 'ollama';
   const url = (config.url || (isOllama ? 'http://localhost:11434' : 'http://localhost:1234')).replace(/\/$/, '') + (isOllama ? '/api/chat' : '/v1/chat/completions');
@@ -178,8 +216,10 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
 
   // Determine Provider
   let provider = 'sdk';
-  if (model.startsWith('gemini:')) provider = 'gemini';
+  if      (model.startsWith('gemini:'))    provider = 'gemini';
   else if (model.startsWith('cerebras:')) provider = 'cerebras';
+  else if (model.startsWith('groq:'))     provider = 'groq';
+  else if (model.startsWith('openai:'))   provider = 'openai';
   else if (model.startsWith('claude-')) {
     try {
       const row = get("SELECT value FROM settings WHERE key = 'ai_backend'");
@@ -196,6 +236,20 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       result = await callGemini(prompt, model, maxTokens, controller.signal);
     } else if (provider === 'cerebras') {
       result = await callCerebras(prompt, [{ role: 'user', content: prompt }], model, maxTokens, controller.signal);
+    } else if (provider === 'groq') {
+      const key = getApiKey('groq');
+      if (!key) throw new Error('No Groq API key in Settings. Add groq_api_key.');
+      result = await callOpenAIEndpoint(
+        [{ role: 'user', content: prompt }],
+        model.replace('groq:', ''), GROQ_URL, key, maxTokens, controller.signal
+      );
+    } else if (provider === 'openai') {
+      const key = getApiKey('openai');
+      if (!key) throw new Error('No OpenAI API key in Settings. Add openai_api_key.');
+      result = await callOpenAIEndpoint(
+        [{ role: 'user', content: prompt }],
+        model.replace('openai:', ''), OPENAI_URL, key, maxTokens, controller.signal
+      );
     } else if (provider === 'custom') {
       const config = getCustomModelConfig(model);
       if (!config) throw new Error(`Unknown model: ${model}`);
