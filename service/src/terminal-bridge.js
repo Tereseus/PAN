@@ -219,3 +219,9 @@ export async function pipeSetModel(sessionId, modelId) {
   const t = await getTerminal();
   return t.pipeSetModel(sessionId, modelId);
 }
+
+export async function createPipeSession(sessionId, opts = {}) {
+  if (IS_CRAFT) return ipcRequest('terminal:createPipeSession', { sessionId, opts });
+  const t = await getTerminal();
+  return t.createPipeSession(sessionId, opts);
+}

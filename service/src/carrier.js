@@ -252,8 +252,17 @@ function handleCraftIPC(msg, craft) {
       craft.proc.send({ type: 'terminal:pipeSend:reply', id: msg.id, result: !!result });
       break;
     }
+    case 'terminal:createPipeSession': {
+      const result = terminalServer ? terminalServer.createPipeSession(msg.sessionId, msg.opts) : null;
+      craft.proc.send({ type: 'terminal:createPipeSession:reply', id: msg.id, result: result ? { id: msg.sessionId } : null });
+      break;
+    }
     case 'terminal:pipeInterrupt': {
       if (terminalServer) terminalServer.pipeInterrupt(msg.sessionId);
+      break;
+    }
+    case 'terminal:pipeSetModel': {
+      if (terminalServer) terminalServer.pipeSetModel(msg.sessionId, msg.modelId);
       break;
     }
     case 'terminal:getSessionMessages': {

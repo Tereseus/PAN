@@ -36,7 +36,8 @@ router.post('/chat', async (req, res) => {
     const { route } = await import('../router.js');
     const result = await route(message, { source: source || 'dashboard', project_id });
     insertEvent('dashboard-chat', 'DashboardChat', JSON.stringify({
-      query: message, response: (result.response || '').slice(0, 2000), project_id, source: 'dashboard'
+      query: message, response: (result.response || '').slice(0, 2000), project_id, source: 'dashboard',
+      speech_act: result.speech_act || null, intent: result.intent || null
     }), req.user?.id);
     res.json({ response: result.response || 'No response' });
   } catch (err) {
@@ -564,9 +565,21 @@ router.post('/query', async (req, res) => {
       });
     }
 
+    // Log voice event with speech_act + speaker for Augur/Intuition
+    insertEvent(req, 'VoiceCommand', JSON.stringify({
+      text,
+      speech_act: result.speech_act || 'command',
+      intent: result.intent,
+      speaker_id: req.body.speaker_id || null,
+      speaker_confidence: req.body.speaker_confidence || null,
+      response: (result.response || '').slice(0, 500),
+      response_time_ms: result.response_time_ms || null,
+    }), req.user?.id);
+
     res.json({
       response_text: result.response,
       intent: result.intent,
+      speech_act: result.speech_act || null,
       route: result.intent || null,
       query: result.query || result.searchTerm || null,
       action: result.action || null,

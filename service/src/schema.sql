@@ -605,6 +605,19 @@ CREATE TABLE IF NOT EXISTS team_members (
 CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
 CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id);
 
+-- AI benchmark results — Intuition suite scores per model run
+CREATE TABLE IF NOT EXISTS ai_benchmark (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  suite TEXT NOT NULL,           -- 'intuition', 'memory', etc.
+  model TEXT NOT NULL,           -- 'cerebras:qwen-3-235b'
+  scores TEXT NOT NULL,          -- JSON: { hearing, reflex_ms, clarity, reasoning, memory, voice }
+  passed INTEGER NOT NULL,       -- 1 if all floors met, 0 if not
+  details TEXT,                  -- JSON: per-test results for debugging
+  ran_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_benchmark_suite ON ai_benchmark(suite, ran_at);
+CREATE INDEX IF NOT EXISTS idx_ai_benchmark_model ON ai_benchmark(model);
+
 -- Voice prints for speaker identification
 CREATE TABLE IF NOT EXISTS voice_prints (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
