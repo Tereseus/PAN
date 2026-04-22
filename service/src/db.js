@@ -374,6 +374,29 @@ if (!defaultUser) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON project_tasks(assigned_to)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_team ON project_tasks(team_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_team ON projects(team_id)`);
+
+  // Backfill Cerebras cost_cents — previous records were logged at $0 because pricing
+  // was hardcoded as free. Recalculate using current best-estimate prices.
+  // Prices in cents/token: $0.30/1M input, $0.60/1M output for qwen-3-235b
+  const CEREBRAS_PRICING = {
+    'cerebras:qwen-3-235b':  { input: 0.000030, output: 0.000060 },
+    'cerebras:gpt-oss-120b': { input: 0.000060, output: 0.000060 },
+    'cerebras:llama3.1-8b':  { input: 0.000010, output: 0.000010 },
+    'cerebras:zai-glm-4.7':  { input: 0.000060, output: 0.000060 },
+  };
+  const backfillStmt = db.prepare(`UPDATE ai_usage SET cost_cents = ? WHERE model = ? AND cost_cents = 0 AND input_tokens > 0`);
+  for (const [model, pricing] of Object.entries(CEREBRAS_PRICING)) {
+    // Use a single UPDATE with expression for efficiency
+    try {
+      const result = db.prepare(
+        `UPDATE ai_usage SET cost_cents = (input_tokens * ${pricing.input} + output_tokens * ${pricing.output})
+         WHERE model = '${model}' AND cost_cents = 0 AND input_tokens > 0`
+      ).run();
+      if (result.changes > 0) {
+        console.log(`[PAN DB] Backfilled Cerebras costs: ${result.changes} rows for ${model}`);
+      }
+    } catch {}
+  }
 }
 
 // Convert sql.js style params ({':key': val}) to better-sqlite3 style ({key: val})
