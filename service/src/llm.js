@@ -33,11 +33,12 @@ const MODEL_PRICING = {
   // Gemini (via CLI)
   'cli:gemini-1.5-pro':          { input: 0, output: 0 },
   
-  // Cerebras — charged per token (free tier has daily limit; beyond that ~$0.60/M in, $0.60/M out)
-  'cerebras:llama3.1-8b':        { input: 0.00060,  output: 0.00060  },
-  'cerebras:gpt-oss-120b':       { input: 0.00060,  output: 0.00060  },
-  'cerebras:qwen-3-235b':        { input: 0.00060,  output: 0.00060  },
-  'cerebras:zai-glm-4.7':        { input: 0.00060,  output: 0.00060  },
+  // Cerebras — cents per token (0.000030 = $0.30/1M, 0.000060 = $0.60/1M)
+  // Verify against https://cloud.cerebras.ai — these are best estimates, update if wrong
+  'cerebras:llama3.1-8b':        { input: 0.000010,  output: 0.000010  }, // ~$0.10/1M
+  'cerebras:gpt-oss-120b':       { input: 0.000060,  output: 0.000060  }, // ~$0.60/1M
+  'cerebras:qwen-3-235b':        { input: 0.000030,  output: 0.000060  }, // ~$0.30 in / $0.60 out per 1M
+  'cerebras:zai-glm-4.7':        { input: 0.000060,  output: 0.000060  }, // ~$0.60/1M
 
   // Groq (free tier available)
   'groq:gpt-oss-20b':            { input: 0.00013,  output: 0.00013  },
