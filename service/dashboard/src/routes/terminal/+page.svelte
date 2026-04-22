@@ -5351,7 +5351,7 @@
 								{@const STALE = dev.device_type === 'phone' ? 15 * 60 * 1000 : 5 * 60 * 1000}
 								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
 								{@const isOnline = dev.online === 1 && ageMs < STALE}
-								{@const isHub = dev.device_type === 'pc' && !dev.client_version && ageMs < STALE}
+								{@const isHub = dev.is_hub === true}
 								{@const isPanClient = !!dev.client_version}
 								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
 								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
@@ -7339,7 +7339,7 @@
 								{@const STALE = dev.device_type === 'phone' ? 15 * 60 * 1000 : 5 * 60 * 1000}
 								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
 								{@const isOnline = dev.online === 1 && ageMs < STALE}
-								{@const isHub = dev.device_type === 'pc' && !dev.client_version && ageMs < STALE}
+								{@const isHub = dev.is_hub === true}
 								{@const isPanClient = !!dev.client_version}
 								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
 								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
