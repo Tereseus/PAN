@@ -732,6 +732,14 @@ router.post('/api/phone-ping', (req, res) => {
   res.json({ ok: true });
 });
 
+// PATCH /dashboard/api/devices/:id — rename a device
+router.patch('/api/devices/:id', (req, res) => {
+  const { name } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name required' });
+  run('UPDATE devices SET name = :n WHERE id = :id', { ':n': name, ':id': req.params.id });
+  res.json({ ok: true, id: req.params.id, name });
+});
+
 // GET /dashboard/api/devices
 router.get('/api/devices', (req, res) => {
   const devices = allScoped(req, `SELECT * FROM devices WHERE org_id = :org_id ORDER BY last_seen DESC`);
@@ -741,12 +749,14 @@ router.get('/api/devices', (req, res) => {
     FROM client_logs WHERE org_id = :org_id
     GROUP BY device_id`);
   const logMap = Object.fromEntries(recentLogs.map(r => [r.device_id, r.last_log]));
+  const serverHost = hostname().toLowerCase();
   const enriched = devices.map(d => {
     const lastLog = logMap[d.hostname];
-    if (lastLog && (!d.last_seen || lastLog > d.last_seen)) {
-      return { ...d, last_seen: lastLog, online: 1 };
-    }
-    return d;
+    const isHub = d.hostname?.toLowerCase() === serverHost;
+    const base = lastLog && (!d.last_seen || lastLog > d.last_seen)
+      ? { ...d, last_seen: lastLog, online: 1 }
+      : { ...d };
+    return { ...base, is_hub: isHub };
   });
   res.json(enriched);
 });
