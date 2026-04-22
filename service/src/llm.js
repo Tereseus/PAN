@@ -35,12 +35,14 @@ const MODEL_PRICING = {
   'cerebras:llama3.1-8b':        { input: 0, output: 0 },
   'cerebras:gpt-oss-120b':       { input: 0, output: 0 },
   'cerebras:qwen-3-235b':        { input: 0, output: 0 },
+  'cerebras:zai-glm-4.7':        { input: 0, output: 0 },
 };
 
 const CEREBRAS_MODELS = {
-  'cerebras:llama3.1-8b':   'llama3.1-8b',
-  'cerebras:gpt-oss-120b':  'gpt-oss-120b',
-  'cerebras:qwen-3-235b':   'qwen-3-235b-a22b-instruct-2507',
+  'cerebras:llama3.1-8b':    'llama3.1-8b',
+  'cerebras:gpt-oss-120b':   'gpt-oss-120b',
+  'cerebras:qwen-3-235b':    'qwen-3-235b-a22b-instruct-2507',
+  'cerebras:zai-glm-4.7':    'zai-glm-4.7',
 };
 
 // --- Helper Functions ---
