@@ -4038,8 +4038,27 @@ function start() {
           ], { windowsHide: true, timeout: 5000 });
         } catch { /* rule may already exist or not on Windows */ }
 
-        // Daily 3am benchmark — scores the active voice router model on all Intuition axes
+        // Daily 3am benchmark — runs ALL 12 suites sequentially on the active model
         {
+          async function runDailyBenchmarks() {
+            try {
+              const { runBenchmark, BENCHMARK_SUITES } = await import('./benchmark.js');
+              const modelRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
+              const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : 'cerebras:qwen-3-235b';
+              console.log(`[PAN Benchmark] Daily 3am — running all ${BENCHMARK_SUITES.length} suites on model: ${model}`);
+              for (const suite of BENCHMARK_SUITES) {
+                try {
+                  await runBenchmark(suite, model);
+                } catch (e) {
+                  console.error(`[PAN Benchmark] Daily suite "${suite}" failed:`, e.message);
+                }
+              }
+              console.log('[PAN Benchmark] Daily run complete');
+            } catch (e) {
+              console.error('[PAN Benchmark] Daily run failed:', e.message);
+            }
+          }
+
           function scheduleDailyBenchmark() {
             const now = new Date();
             const next3am = new Date(now);
@@ -4047,28 +4066,10 @@ function start() {
             if (next3am <= now) next3am.setDate(next3am.getDate() + 1);
             const msUntil3am = next3am - now;
             setTimeout(async () => {
-              try {
-                const { runIntuitionBenchmark } = await import('./benchmark.js');
-                const modelRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
-                const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : 'cerebras:qwen-3-235b';
-                console.log(`[PAN Benchmark] Daily 3am run — model: ${model}`);
-                await runIntuitionBenchmark(model);
-              } catch (e) {
-                console.error('[PAN Benchmark] Daily run failed:', e.message);
-              }
-              // Schedule again for next day
-              setInterval(async () => {
-                try {
-                  const { runIntuitionBenchmark } = await import('./benchmark.js');
-                  const modelRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
-                  const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : 'cerebras:qwen-3-235b';
-                  await runIntuitionBenchmark(model);
-                } catch (e) {
-                  console.error('[PAN Benchmark] Daily run failed:', e.message);
-                }
-              }, 24 * 60 * 60 * 1000);
+              await runDailyBenchmarks();
+              setInterval(runDailyBenchmarks, 24 * 60 * 60 * 1000);
             }, msUntil3am);
-            console.log(`[PAN Benchmark] Daily run scheduled for 3am (in ${Math.round(msUntil3am / 60000)}m)`);
+            console.log(`[PAN Benchmark] Daily run scheduled for 3am (in ${Math.round(msUntil3am / 60000)}m) — all 12 suites`);
           }
           scheduleDailyBenchmark();
         }

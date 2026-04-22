@@ -33,11 +33,11 @@ const MODEL_PRICING = {
   // Gemini (via CLI)
   'cli:gemini-1.5-pro':          { input: 0, output: 0 },
   
-  // Cerebras (free tier currently $0)
-  'cerebras:llama3.1-8b':        { input: 0,        output: 0        },
-  'cerebras:gpt-oss-120b':       { input: 0,        output: 0        },
-  'cerebras:qwen-3-235b':        { input: 0,        output: 0        },
-  'cerebras:zai-glm-4.7':        { input: 0,        output: 0        },
+  // Cerebras — charged per token (free tier has daily limit; beyond that ~$0.60/M in, $0.60/M out)
+  'cerebras:llama3.1-8b':        { input: 0.00060,  output: 0.00060  },
+  'cerebras:gpt-oss-120b':       { input: 0.00060,  output: 0.00060  },
+  'cerebras:qwen-3-235b':        { input: 0.00060,  output: 0.00060  },
+  'cerebras:zai-glm-4.7':        { input: 0.00060,  output: 0.00060  },
 
   // Groq (free tier available)
   'groq:gpt-oss-20b':            { input: 0.00013,  output: 0.00013  },
@@ -370,7 +370,11 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
       ]);
       const text = result.response?.text()?.trim() || '';
       if (text) {
-        logUsage(caller, 'gemini-2.0-flash', { input_tokens: 0, output_tokens: 0 }, prompt.slice(0, 100));
+        const meta = result.response?.usageMetadata;
+        logUsage(caller, 'gemini-2.0-flash', {
+          input_tokens:  meta?.promptTokenCount     || 0,
+          output_tokens: meta?.candidatesTokenCount || 0,
+        }, prompt.slice(0, 100));
         return text;
       }
     } catch (e) {

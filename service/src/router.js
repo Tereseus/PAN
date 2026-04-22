@@ -26,7 +26,30 @@ function serverClassify(text) {
   if (lower.match(/(delete|remove)\s+(the\s+|a\s+)?(folder|file)/)) return 'system';
   if (lower.match(/(open|launch)\s+(the\s+)?\w+.*(project|dev|terminal)/)) return 'terminal';
   if (lower.match(/(add|put)\s+.*(list|grocery)/)) return 'memory';
+  if (lower.match(/(play|pley|plai|payl|p[la]{1,2}y)\s+(some|song|music|something|somthing|anything)/)) return 'music';
+  if (lower.match(/(open|lauch|opn|launch)\s+(spotify|youtube|music|apple\s*music)/)) return 'music';
+  if (lower.match(/\b(spotify)\b.*\b(open|play|start|launch)\b|\b(open|play|start|launch)\b.*\b(spotify)\b/)) return 'music';
+  if (lower.match(/(set|seet)\s+.*(alrm|alarm|timer|timr)/)) return 'calendar';
+  if (lower.match(/(remind|remindme|remaind)\s+(me\s+)?(to|about)/)) return 'memory';
+  if (lower.match(/^(take|jot)\s+a\s+(note|memo)/)) return 'memory';
   return null;
+}
+
+// Fast ambient pre-filter — detects speech clearly not directed at PAN without LLM call
+// Only fires for voice/mic input (dashboard input is always a command)
+function quickAmbientCheck(text) {
+  const t = text.trim();
+  // 1. Addressing someone else by name: "hey John", "hi Sarah", "hello guys"
+  if (/^(?:hey|hi|hello)\s+(?!pan\b|pam\b)[a-z]{2,}/i.test(t)) return true;
+  // 2. Common person nouns as direct address at start
+  if (/^(?:mom|dad|honey|babe|sis|bro|buddy|guys|everyone|y'all|folks)\b/i.test(t)) return true;
+  // 3. "I'll be there / meet you / call you back" — talking to someone else
+  if (/^I'(?:ll|m)\s+(?:be\s+there|meet\s+you|call\s+you\s+back|see\s+you)/i.test(t)) return true;
+  // 4. Name + "I'll meet/be/call" — "Sarah I'll meet you..."
+  if (/^[A-Z][a-z]+\s+I'(?:ll|m)\s+/i.test(t)) return true;
+  // 5. Filler acknowledgement followed by "call/meet/be" — "ok I'll call you back"
+  if (/^(?:ok|okay|alright|yeah|sure|cool|got\s*it)[,.]?\s+I'(?:ll|m)\s+/i.test(t)) return true;
+  return false;
 }
 
 // Quick system handlers that need no Claude call at all
@@ -150,13 +173,20 @@ async function handleUnified(text, context) {
     // user consented to share; the text may contain unintentional PII.
     const safeText = anonymizeForAI(text);
 
+    const hintBlock = context.intent_hint
+      ? `\nOVERRIDE: Server pattern matched — your response MUST use {"intent":"${context.intent_hint}",...}. Do not use a different intent.\n`
+      : '';
     raw = await claude(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${historyBlock}${skillBlock}${sensorBlock}
-${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
+${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
+${isDash ? `User typed: "${safeText}"` : `Mic heard (may have STT typos/garbling — infer the most likely intent): "${safeText}"`}
 
-${isDash ? 'Always respond.' : 'If ambient speech (not directed at you): {"intent":"ambient","response":"[AMBIENT]"}'}
-${isDash ? '' : 'Directed at you if: says Pan/Pam, asks a question, continues recent convo.'}
+${isDash ? 'Always respond.' : 'CRITICAL: If speech is clearly NOT directed at you (PAN), return EXACTLY: {"intent":"ambient","response":"[AMBIENT]"}'}
+${isDash ? '' : `NEVER return ambient for: questions (what/when/where/how/why/who/can you), commands (play/open/set/remind/add), anything addressed to "Pan"/"Pam".
+Return ambient for: side-conversations to another person, personal statements/thoughts NOT asking PAN anything ("I'll call you back", "I told him yesterday", "hold on let me finish this", "yeah that makes sense").
+Ambient examples: "no no I told him it was fine" → ambient. "I was thinking we could go to dinner" → ambient. "yeah that makes sense" → ambient. "the weather looks nice today" → ambient.
+Not ambient: "what the weather" (question). "remind me to buy milk" (command). "what time is it" (question). "open spotify" (command).
+Rule: if there is no question and no command for PAN — return ambient.`}
 
 Every response must include "speech_act" field:
 "command" — direct instruction to execute something
@@ -438,9 +468,23 @@ async function route(text, context = {}) {
     }
   }
 
+  // 1.5 Ambient pre-filter — voice input only, no LLM needed for obvious side-conversations
+  const isVoice = context.source === 'voice' || context.source === 'mic' || context.source === 'benchmark';
+  if (isVoice && context.source !== 'dashboard' && quickAmbientCheck(text)) {
+    logStep(cmdId, 'classified', 'ambient (quick pre-filter, no Claude)');
+    const r = { intent: 'ambient', response: '[AMBIENT]' };
+    insertRouterEvent(text, r.intent, r.response, context);
+    return r;
+  }
+
   // 2. Everything else — single unified Claude call (classify + handle in one shot)
+  // Pass serverClassify hint so LLM can use it for garbled/ambiguous text
+  const hintedContext = serverIntent && serverIntent !== 'system'
+    ? { ...context, intent_hint: serverIntent, _commandId: cmdId }
+    : { ...context, _commandId: cmdId };
+
   logStep(cmdId, 'routing', 'unified Claude call');
-  const result = await handleUnified(text, { ...context, _commandId: cmdId });
+  const result = await handleUnified(text, hintedContext);
 
   logStep(cmdId, 'completed', result.response?.slice(0, 200));
   insertRouterEvent(text, result.intent, result.response, context);
