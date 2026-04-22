@@ -59,10 +59,29 @@ let shadowStats = { mirrored: 0, errors: 0, promoted: 0, rejected: 0, startedAt:
 // Phase 7: Crucible — variant comparison data (primary vs shadow side-by-side)
 const crucibleResults = []; // { id, path, method, primary: {status, latencyMs}, shadow: {status, latencyMs}, match, ts }
 
+// ==================== Beta Pipeline State ====================
+let betaCraft = null;      // Craft being evaluated in the pipeline
+let pendingCrafts = [];    // Queue: candidates waiting for beta slot
+let pipeline = {
+  status: 'idle',          // idle | spawning | benchmarking | ready | promoting | failed
+  scores: null,            // { suiteName: { passed, scores } }
+  passedSuites: [],
+  failedSuites: [],
+  startedAt: null,
+  source: null,            // 'manual' | 'autodev' | 'scout'
+  error: null,
+  betaPort: null,
+  betaCraftId: null,
+  completedAt: null,
+};
+
 // PerfEngine — probe-driven readiness tracking (replaces health-only swap gate).
 // See service/src/perf/stages.js and service/src/perf/engine.js.
 // Lives on the Carrier so it survives Craft swaps.
 const perfEngine = new PerfEngine({ carrierPort: CARRIER_PORT });
+
+// ==================== Helpers ====================
+function tryParseJSON(s) { try { return JSON.parse(s); } catch { return {}; } }
 
 // ==================== Git Snapshot ====================
 function getGitCommit() {
@@ -142,6 +161,13 @@ function spawnCraft(port, label = 'primary') {
     }
     if (craft === shadowCraft) {
       shadowCraft = null;
+    }
+    if (craft === betaCraft) {
+      betaCraft = null;
+      if (pipeline.status === 'benchmarking' || pipeline.status === 'spawning') {
+        pipeline = { ...pipeline, status: 'failed', error: 'Beta craft exited unexpectedly', completedAt: Date.now() };
+        broadcastPipelineEvent('beta_crashed', { craftId: craft.id });
+      }
     }
   });
 
@@ -295,6 +321,187 @@ function handleCraftIPC(msg, craft) {
     default:
       console.warn(`[Carrier] Unknown IPC message type: ${msg.type}`);
   }
+}
+
+// ==================== Beta Pipeline ====================
+function broadcastPipelineEvent(type, extra = {}) {
+  if (terminalServer) {
+    terminalServer.broadcastNotification('pipeline_event', {
+      type,
+      ...extra,
+      pipeline: { ...pipeline },
+      ts: Date.now(),
+    });
+  }
+}
+
+async function startPipelineBeta(source = 'manual') {
+  if (pipeline.status !== 'idle' && pipeline.status !== 'failed') {
+    return { ok: false, error: `Pipeline already ${pipeline.status}` };
+  }
+
+  const betaPort = CRAFT_PORT_BASE + craftIdCounter + 1;
+  pipeline = { status: 'spawning', scores: null, passedSuites: [], failedSuites: [],
+    startedAt: Date.now(), source, error: null, betaPort, betaCraftId: null, completedAt: null };
+  broadcastPipelineEvent('beta_spawning', { port: betaPort, source });
+  console.log(`[Pipeline] ─── Starting beta candidate on port ${betaPort} (source=${source})`);
+
+  // Kill any stale process on the beta port
+  try { await killProcessOnPort(betaPort); await new Promise(r => setTimeout(r, 500)); } catch {}
+
+  betaCraft = spawnCraft(betaPort, 'beta');
+  pipeline.betaCraftId = betaCraft.id;
+  broadcastPipelineEvent('beta_spawned', { port: betaPort, craftId: betaCraft.id });
+
+  const healthy = await waitForCraftHealth(betaCraft, 60000);
+  if (!healthy) {
+    betaCraft.proc.kill();
+    betaCraft = null;
+    pipeline = { ...pipeline, status: 'failed', error: 'Beta craft failed health check', completedAt: Date.now() };
+    broadcastPipelineEvent('beta_failed', { reason: 'health_check' });
+    console.error('[Pipeline] Beta craft failed health check — aborting');
+    return { ok: false, error: 'Beta craft failed to start' };
+  }
+
+  broadcastPipelineEvent('beta_healthy', { port: betaPort, craftId: betaCraft.id });
+  console.log(`[Pipeline] Beta Craft-${betaCraft.id} healthy — starting benchmarks`);
+
+  // Run benchmarks async — don't block the HTTP response
+  runPipelineBenchmarks().catch(err => {
+    console.error('[Pipeline] Benchmark error:', err.message);
+    pipeline = { ...pipeline, status: 'failed', error: err.message, completedAt: Date.now() };
+    broadcastPipelineEvent('benchmark_error', { error: err.message });
+    if (betaCraft) { try { betaCraft.proc.kill(); } catch {} betaCraft = null; }
+  });
+
+  return { ok: true, status: 'spawning', port: betaPort, craftId: betaCraft.id };
+}
+
+async function runPipelineBenchmarks() {
+  if (!betaCraft?.healthy) throw new Error('Beta craft not healthy');
+  pipeline = { ...pipeline, status: 'benchmarking' };
+  broadcastPipelineEvent('benchmarks_started');
+
+  const body = JSON.stringify({ model: 'cerebras:qwen-3-235b' });
+  const result = await new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: betaCraft.port,
+      path: '/api/v1/ai/benchmark/all',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 900000,  // 15min — all 12 suites
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { resolve({ ok: false, error: 'Invalid JSON from beta benchmark' }); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Benchmark timeout after 15min')); });
+    req.write(body);
+    req.end();
+  });
+
+  const passedSuites = [];
+  const failedSuites = [];
+  for (const [suite, r] of Object.entries(result.results || {})) {
+    if (r.passed) passedSuites.push(suite);
+    else failedSuites.push(suite);
+  }
+  const allPassed = result.allPassed && failedSuites.length === 0;
+
+  pipeline = {
+    ...pipeline,
+    status: allPassed ? 'ready' : 'failed',
+    scores: result.results || {},
+    passedSuites,
+    failedSuites,
+    error: allPassed ? null : `Failed: ${failedSuites.join(', ')}`,
+    completedAt: Date.now(),
+  };
+
+  broadcastPipelineEvent(allPassed ? 'benchmarks_passed' : 'benchmarks_failed', {
+    allPassed, passedSuites, failedSuites,
+  });
+  console.log(`[Pipeline] Benchmarks ${allPassed ? 'PASSED ✅' : 'FAILED ❌'} — ${passedSuites.length}/${passedSuites.length + failedSuites.length} suites passed`);
+
+  if (allPassed) {
+    await promoteBetaToProduction('auto');
+  } else {
+    // Kill failed beta, pull next from queue if any
+    if (betaCraft) { try { betaCraft.proc.kill(); } catch {} betaCraft = null; }
+    if (pendingCrafts.length > 0) {
+      console.log(`[Pipeline] Pulling next candidate from queue (${pendingCrafts.length} pending)`);
+      pendingCrafts.shift(); // For future: handle pending queue
+    }
+    pipeline = { ...pipeline, status: 'failed' };
+  }
+}
+
+async function promoteBetaToProduction(trigger = 'manual') {
+  if (!betaCraft?.healthy) return { ok: false, error: 'No healthy beta to promote' };
+  if (pipeline.status !== 'ready' && trigger !== 'manual') {
+    return { ok: false, error: 'Benchmarks must pass before promotion (or use manual override)' };
+  }
+
+  pipeline = { ...pipeline, status: 'promoting' };
+  broadcastPipelineEvent('promoting', { trigger, betaCraftId: betaCraft.id });
+  console.log(`[Pipeline] ═══ PROMOTING beta Craft-${betaCraft.id} (trigger=${trigger}) ═══`);
+
+  // Swap beta → primary (same as performSwap but using the pre-spawned betaCraft)
+  if (swapPending && previousCraft) confirmSwap(); // clear old rollback window first
+
+  const oldPrimary = primaryCraft;
+  const promoted = betaCraft;
+  promoted.label = 'primary';
+
+  previousCraft = oldPrimary;
+  primaryCraft = promoted;
+  betaCraft = null;
+  perfEngine.primaryCraftPort = promoted.port;
+  swapPending = true;
+  perfEngine.markSwapStart();
+
+  pipeline = { ...pipeline, status: 'idle', betaPort: null, betaCraftId: null };
+  broadcastPipelineEvent('promoted', { trigger, newPrimaryId: promoted.id, oldPrimaryId: oldPrimary?.id });
+
+  if (terminalServer) {
+    terminalServer.broadcastNotification('server_swap', {
+      oldCraftId: oldPrimary?.id,
+      newCraftId: promoted.id,
+      rollbackAvailable: true,
+      rollbackTimeoutMs: ROLLBACK_TIMEOUT_MS,
+      pipelinePromotion: true,
+    });
+  }
+
+  if (rollbackTimer) clearTimeout(rollbackTimer);
+  rollbackTimer = setTimeout(() => {
+    if (swapPending) {
+      console.log(`[Carrier] ⏱️  Pipeline-promoted Craft-${primaryCraft?.id} auto-confirmed`);
+      confirmSwap();
+    }
+  }, ROLLBACK_TIMEOUT_MS);
+
+  console.log(`[Pipeline] ═══ Craft-${promoted.id} is now PRIMARY on port ${promoted.port} ═══`);
+  return { ok: true, newPrimaryId: promoted.id, port: promoted.port };
+}
+
+function abortPipeline() {
+  if (betaCraft) {
+    console.log(`[Pipeline] Aborting — killing beta Craft-${betaCraft.id}`);
+    try { betaCraft.proc.kill(); } catch {}
+    betaCraft = null;
+  }
+  pendingCrafts.forEach(c => { try { c.proc.kill(); } catch {} });
+  pendingCrafts = [];
+  pipeline = { status: 'idle', scores: null, passedSuites: [], failedSuites: [],
+    startedAt: null, source: null, error: null, betaPort: null, betaCraftId: null, completedAt: null };
+  broadcastPipelineEvent('aborted');
+  return { ok: true };
 }
 
 // ==================== HTTP Proxy ====================
@@ -555,6 +762,8 @@ const carrierServer = http.createServer((req, res) => {
         if (primaryCraft?.proc) primaryCraft.proc.kill();
         if (previousCraft?.proc) previousCraft.proc.kill();
         if (shadowCraft?.proc) shadowCraft.proc.kill();
+        if (betaCraft?.proc) betaCraft.proc.kill();
+        pendingCrafts.forEach(c => { try { c.proc.kill(); } catch {} });
       } catch {}
       process.exit(1);
     }, RESTART_DELAY_MS);
@@ -680,6 +889,57 @@ const carrierServer = http.createServer((req, res) => {
     res.end(JSON.stringify({ results, total: crucibleResults.length }));
     return;
   }
+
+  // ── Beta Pipeline endpoints ──────────────────────────────────────────────
+  if (url.pathname === '/api/carrier/pipeline/start' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      const { source = 'manual' } = body ? tryParseJSON(body) : {};
+      // Respond immediately — spawning + benchmarks run async
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, status: 'starting', source }));
+      startPipelineBeta(source).catch(err => {
+        console.error('[Pipeline] startPipelineBeta error:', err.message);
+      });
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/carrier/pipeline/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      pipeline,
+      beta: betaCraft ? {
+        id: betaCraft.id, port: betaCraft.port, healthy: betaCraft.healthy,
+        uptimeMs: Date.now() - betaCraft.startedAt, gitCommit: betaCraft.gitCommit,
+      } : null,
+      production: primaryCraft ? {
+        id: primaryCraft.id, port: primaryCraft.port, healthy: primaryCraft.healthy,
+        uptimeMs: Date.now() - primaryCraft.startedAt, gitCommit: primaryCraft.gitCommit,
+      } : null,
+      pending: pendingCrafts.length,
+    }));
+    return;
+  }
+
+  if (url.pathname === '/api/carrier/pipeline/promote' && req.method === 'POST') {
+    res.writeHead(202, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, status: 'promoting' }));
+    promoteBetaToProduction('manual').catch(err => {
+      console.error('[Pipeline] promote error:', err.message);
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/carrier/pipeline/abort' && req.method === 'POST') {
+    const result = abortPipeline();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   // Shutdown — kills Carrier and all children (used by PAN.bat quit path)
   if (url.pathname === '/api/carrier/shutdown' && req.method === 'POST') {
@@ -977,6 +1237,8 @@ async function shutdown(signal) {
   }
   if (primaryCraft) try { primaryCraft.proc.kill(); } catch {}
   if (shadowCraft) try { shadowCraft.proc.kill(); } catch {}
+  if (betaCraft) try { betaCraft.proc.kill(); } catch {}
+  pendingCrafts.forEach(c => { try { c.proc.kill(); } catch {} });
   carrierServer.close();
   process.exit(0);
 }

@@ -2646,8 +2646,32 @@ app.post('/api/v1/terminal/pipe', async (req, res) => {
     }
   }
 
-  const ok = await pipeSend(session_id, text);
+  let ok = await pipeSend(session_id, text);
   console.log(`[PAN Pipe] pipeSend result: ok=${ok} session=${session_id}`);
+
+  // Auto-recreate session if it was lost (e.g. Carrier restart killed PTY sessions)
+  if (!ok) {
+    console.log(`[PAN Pipe] Session ${session_id} not found — auto-creating and retrying`);
+    try {
+      // Derive project name from session ID: "dash-pan-1" → "PAN", "dash-woe-2" → "woe"
+      const match = session_id.match(/^dash-([a-z0-9-]+?)(?:-\d+)?$/);
+      const projectSlug = match?.[1] || 'pan';
+      const projectName = projectSlug.toUpperCase();
+      let cwd = null;
+      try {
+        const { all: dbAll } = await import('./db.js');
+        const rows = dbAll('SELECT path FROM projects WHERE LOWER(REPLACE(name, \' \', \'-\')) = ? OR LOWER(name) = ? LIMIT 1',
+          [projectSlug, projectSlug]);
+        if (rows?.[0]?.path) cwd = rows[0].path;
+      } catch {}
+      await createPipeSession(session_id, { projectName, cwd });
+      ok = await pipeSend(session_id, text);
+      console.log(`[PAN Pipe] Auto-recreate + retry: ok=${ok} session=${session_id} cwd=${cwd}`);
+    } catch (err) {
+      console.error(`[PAN Pipe] Auto-recreate failed: ${err.message}`);
+    }
+  }
+
   res.json({ ok: !!ok, session: session_id });
 });
 

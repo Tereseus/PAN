@@ -321,6 +321,51 @@
 		return MAP[key] || key;
 	}
 
+	// ─── Beta Pipeline state ───
+	let pipelineData = $state(null);  // { pipeline, beta, production, pending }
+	let pipelinePolling = null;
+	let pipelineStarting = $state(false);
+
+	async function loadPipeline() {
+		try {
+			pipelineData = await api('/api/carrier/pipeline/status');
+		} catch {}
+	}
+	function startPipelinePolling() {
+		loadPipeline();
+		if (pipelinePolling) clearInterval(pipelinePolling);
+		pipelinePolling = setInterval(loadPipeline, 5000);  // poll every 5s during active run
+	}
+	function stopPipelinePolling() {
+		if (pipelinePolling) { clearInterval(pipelinePolling); pipelinePolling = null; }
+	}
+	async function triggerPipeline() {
+		pipelineStarting = true;
+		try {
+			await api('/api/carrier/pipeline/start', { method: 'POST', body: JSON.stringify({ source: 'manual' }) });
+			await loadPipeline();
+		} catch (e) { console.error('[Pipeline] start failed', e); }
+		finally { pipelineStarting = false; }
+	}
+	async function abortPipelineAction() {
+		try {
+			await api('/api/carrier/pipeline/abort', { method: 'POST', body: '{}' });
+			await loadPipeline();
+		} catch (e) { console.error('[Pipeline] abort failed', e); }
+	}
+	async function promotePipelineManual() {
+		try {
+			await api('/api/carrier/pipeline/promote', { method: 'POST', body: '{}' });
+			await loadPipeline();
+		} catch (e) { console.error('[Pipeline] promote failed', e); }
+	}
+	function pipelineStatusColor(status) {
+		if (!status || status === 'idle') return '#666';
+		if (status === 'failed') return '#e55';
+		if (status === 'ready' || status === 'promoting') return '#5e5';
+		return '#f90';  // spawning, benchmarking
+	}
+
 	// ─── Chat / Contacts state ───
 	let contactsData = $state([]);
 	let chatThreads = $state([]);
@@ -1551,6 +1596,17 @@
 							break;
 						}
 						case 'permission_prompt':
+							break;
+						case 'pipeline_event':
+							// Beta Pipeline state change from Carrier — update panel live
+							if (msg.pipeline) {
+								if (pipelineData) pipelineData = { ...pipelineData, pipeline: msg.pipeline };
+								else pipelineData = { pipeline: msg.pipeline, beta: null, production: null, pending: 0 };
+							}
+							// Refresh full status on terminal events (beta healthy, promoted, etc.)
+							if (['beta_healthy', 'promoted', 'aborted', 'benchmarks_passed', 'benchmarks_failed'].includes(msg.type)) {
+								loadPipeline();
+							}
 							break;
 						case 'server_swap':
 							// Carrier hot-swapped a new Craft — wait until it's healthy then reload
@@ -6393,11 +6449,12 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'devices') { loadClientDevices(); loadAllDevices(); } }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices') { loadClientDevices(); loadAllDevices(); } }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="benchmarks">Benchmarks</option>
+				<option value="pipeline">Beta Pipeline</option>
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
@@ -7648,6 +7705,94 @@
 								{/if}
 							</div>
 						{/each}
+					{/if}
+				</div>
+			{:else if rightSection === 'pipeline'}
+				<div class="pipeline-panel">
+					{#if !pipelineData}
+						<div class="empty-state">Loading pipeline...</div>
+					{:else}
+						{@const pl = pipelineData.pipeline || {}}
+						{@const beta = pipelineData.beta}
+						{@const prod = pipelineData.production}
+						{@const status = pl.status || 'idle'}
+						<!-- Status header -->
+						<div class="pl-header">
+							<div class="pl-status-dot" style="background:{pipelineStatusColor(status)}"></div>
+							<span class="pl-status-label">{status.toUpperCase()}</span>
+							{#if pl.source && status !== 'idle'}
+								<span class="pl-source">({pl.source})</span>
+							{/if}
+							<div class="pl-spacer"></div>
+							{#if status === 'idle' || status === 'failed'}
+								<button class="pl-btn pl-btn-run" onclick={triggerPipeline} disabled={pipelineStarting}>
+									{pipelineStarting ? 'Starting…' : '▶ Run Pipeline'}
+								</button>
+							{:else}
+								<button class="pl-btn pl-btn-abort" onclick={abortPipelineAction}>✕ Abort</button>
+							{/if}
+						</div>
+						{#if pl.error}
+							<div class="pl-error">{pl.error}</div>
+						{/if}
+						<!-- Production slot -->
+						<div class="pl-slot-label">PRODUCTION</div>
+						<div class="pl-slot pl-slot-prod">
+							{#if prod}
+								<span class="pl-slot-id">Craft-{prod.id}</span>
+								<span class="pl-slot-port">:{prod.port}</span>
+								<span class="pl-slot-health" class:healthy={prod.healthy}>{prod.healthy ? '●' : '○'}</span>
+								<span class="pl-slot-uptime">{prod.uptimeMs ? (prod.uptimeMs / 60000).toFixed(0) + 'm' : ''}</span>
+							{:else}
+								<span class="pl-slot-none">—</span>
+							{/if}
+						</div>
+						<!-- Beta slot -->
+						<div class="pl-slot-label">BETA {status === 'benchmarking' ? '(benchmarking…)' : status === 'spawning' ? '(spawning…)' : ''}</div>
+						<div class="pl-slot pl-slot-beta" class:active={!!beta}>
+							{#if beta}
+								<span class="pl-slot-id">Craft-{beta.id}</span>
+								<span class="pl-slot-port">:{beta.port}</span>
+								<span class="pl-slot-health" class:healthy={beta.healthy}>{beta.healthy ? '●' : '○'}</span>
+								{#if status === 'ready'}
+									<button class="pl-btn pl-btn-promote" onclick={promotePipelineManual}>Promote ↑</button>
+								{/if}
+							{:else}
+								<span class="pl-slot-none">{status === 'idle' ? '—' : '…'}</span>
+							{/if}
+						</div>
+						<!-- Pending queue -->
+						{#if pipelineData.pending > 0}
+							<div class="pl-slot-label">PENDING ({pipelineData.pending})</div>
+						{/if}
+						<!-- Benchmark results (if available) -->
+						{#if pl.scores && Object.keys(pl.scores).length > 0}
+							<div class="pl-bench-title">Benchmark Results</div>
+							{#each Object.entries(pl.scores) as [suite, result]}
+								<div class="pl-bench-row" class:pl-pass={result?.passed} class:pl-fail={result && !result.passed}>
+									<span class="pl-bench-suite">{suite}</span>
+									<span class="pl-bench-result">{result?.passed ? '✓' : '✗'}</span>
+									{#if result?.scores?.composite != null}
+										<span class="pl-bench-score">{result.scores.composite.toFixed(1)}</span>
+									{/if}
+								</div>
+							{/each}
+						{:else if pl.passedSuites?.length > 0 || pl.failedSuites?.length > 0}
+							<div class="pl-bench-title">Results</div>
+							{#each pl.passedSuites as s}
+								<div class="pl-bench-row pl-pass"><span class="pl-bench-suite">{s}</span><span class="pl-bench-result">✓</span></div>
+							{/each}
+							{#each pl.failedSuites as s}
+								<div class="pl-bench-row pl-fail"><span class="pl-bench-suite">{s}</span><span class="pl-bench-result">✗</span></div>
+							{/each}
+						{/if}
+						<!-- Elapsed time -->
+						{#if pl.startedAt}
+							<div class="pl-elapsed">
+								Started {new Date(pl.startedAt).toLocaleTimeString()}
+								{#if pl.completedAt}→ {((pl.completedAt - pl.startedAt) / 1000).toFixed(0)}s{/if}
+							</div>
+						{/if}
 					{/if}
 				</div>
 			{:else if rightSection.startsWith('custom-')}
@@ -9687,6 +9832,59 @@
 		font-size: 10px; color: #6c7086; font-style: italic;
 	}
 	.bench-scout-more { color: #89b4fa; }
+
+	/* ==================== Beta Pipeline ==================== */
+	.pipeline-panel { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+	.pl-header {
+		display: flex; align-items: center; gap: 6px;
+		padding: 8px; background: rgba(137,180,250,0.06);
+		border: 1px solid rgba(137,180,250,0.12); border-radius: 6px;
+	}
+	.pl-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+	.pl-status-label { font-size: 12px; font-weight: 700; color: #cdd6f4; }
+	.pl-source { font-size: 10px; color: #6c7086; }
+	.pl-spacer { flex: 1; }
+	.pl-error { font-size: 11px; color: #f38ba8; padding: 4px 8px; background: rgba(243,139,168,0.08); border-radius: 4px; }
+	.pl-slot-label { font-size: 10px; font-weight: 700; color: #6c7086; text-transform: uppercase; letter-spacing: 0.8px; padding: 4px 0 2px; }
+	.pl-slot {
+		display: flex; align-items: center; gap: 6px;
+		padding: 6px 8px; background: rgba(30,30,46,0.8);
+		border: 1px solid rgba(69,71,90,0.4); border-radius: 4px;
+		font-size: 12px;
+	}
+	.pl-slot.active { border-color: rgba(249,144,0,0.3); background: rgba(249,144,0,0.05); }
+	.pl-slot-prod { border-color: rgba(94,205,107,0.3); background: rgba(94,205,107,0.05); }
+	.pl-slot-id { font-family: monospace; color: #cdd6f4; font-weight: 600; }
+	.pl-slot-port { font-family: monospace; color: #6c7086; font-size: 11px; }
+	.pl-slot-health { font-size: 10px; color: #45475a; }
+	.pl-slot-health.healthy { color: #a6e3a1; }
+	.pl-slot-uptime { font-size: 10px; color: #6c7086; margin-left: auto; }
+	.pl-slot-none { color: #45475a; font-size: 12px; }
+	.pl-bench-title { font-size: 10px; font-weight: 700; color: #6c7086; text-transform: uppercase; letter-spacing: 0.8px; padding: 6px 0 2px; }
+	.pl-bench-row {
+		display: flex; align-items: center; gap: 6px;
+		padding: 3px 8px; border-radius: 3px; font-size: 11px;
+	}
+	.pl-bench-row.pl-pass { background: rgba(94,205,107,0.07); }
+	.pl-bench-row.pl-fail { background: rgba(243,139,168,0.07); }
+	.pl-bench-suite { flex: 1; color: #a6adc8; font-family: monospace; }
+	.pl-bench-result { font-size: 11px; font-weight: 700; }
+	.pl-bench-row.pl-pass .pl-bench-result { color: #a6e3a1; }
+	.pl-bench-row.pl-fail .pl-bench-result { color: #f38ba8; }
+	.pl-bench-score { font-size: 10px; color: #6c7086; }
+	.pl-elapsed { font-size: 10px; color: #45475a; text-align: right; margin-top: 4px; }
+	/* Pipeline buttons */
+	.pl-btn {
+		padding: 4px 10px; border-radius: 4px; border: none; cursor: pointer;
+		font-size: 11px; font-weight: 600; transition: opacity 0.15s;
+	}
+	.pl-btn:disabled { opacity: 0.5; cursor: default; }
+	.pl-btn-run { background: #89b4fa; color: #1e1e2e; }
+	.pl-btn-run:hover:not(:disabled) { opacity: 0.85; }
+	.pl-btn-abort { background: rgba(243,139,168,0.15); color: #f38ba8; border: 1px solid rgba(243,139,168,0.3); }
+	.pl-btn-abort:hover { background: rgba(243,139,168,0.25); }
+	.pl-btn-promote { background: rgba(94,205,107,0.15); color: #a6e3a1; border: 1px solid rgba(94,205,107,0.3); font-size: 10px; padding: 3px 7px; margin-left: auto; }
+	.pl-btn-promote:hover { background: rgba(94,205,107,0.25); }
 
 	/* ==================== Lifeboat ==================== */
 	.lifeboat-panel {
