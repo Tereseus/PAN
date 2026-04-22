@@ -122,9 +122,10 @@ export class GeminiAdapter {
     } else if (event.type === 'result') {
       if (event.session_id) this.geminiSessionId = event.session_id;
       
-      // Log usage to database
+      // Log usage to database — use real model name (not cli: prefix) so pricing applies
       if (event.usage) {
-        logUsage('terminal', `cli:${event.model || 'gemini-1.5-pro'}`, event.usage, originalPrompt);
+        const model = event.model || 'gemini-1.5-pro';
+        logUsage('terminal', model, event.usage, originalPrompt);
       }
       
       this._push();

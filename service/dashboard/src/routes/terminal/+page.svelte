@@ -249,25 +249,30 @@
 	let approvalsData = $state([]);
 
 	// Benchmarks
-	let benchmarksData = $state(null); // { runs: [...] }
+	let benchmarksData = $state(null); // { latest: {suite: run|null}, suites_run, suites_passed, total_suites, suites }
 	let benchmarkRunning = $state(false);
+	let benchmarkRunningSuite = $state(null);
 	let benchmarkPolling = null;
 
 	async function loadBenchmarks() {
 		try {
-			benchmarksData = await api('/dashboard/api/benchmarks');
+			[benchmarksData, autodevReport] = await Promise.all([
+				api('/dashboard/api/benchmarks/latest'),
+				api('/dashboard/api/autodev/report').catch(() => null),
+			]);
 		} catch {}
 	}
 	function startBenchmarkPolling() {
 		loadBenchmarks();
 		if (benchmarkPolling) clearInterval(benchmarkPolling);
-		benchmarkPolling = setInterval(loadBenchmarks, 60000);
+		benchmarkPolling = setInterval(loadBenchmarks, 30000);
 	}
 	function stopBenchmarkPolling() {
 		if (benchmarkPolling) { clearInterval(benchmarkPolling); benchmarkPolling = null; }
 	}
 	async function runBenchmark(suite) {
 		benchmarkRunning = true;
+		benchmarkRunningSuite = suite;
 		try {
 			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || 'cerebras:qwen-3-235b';
 			await api('/api/v1/ai/benchmark', { method: 'POST', body: JSON.stringify({ suite, model }) });
@@ -276,7 +281,44 @@
 			console.error('[Benchmarks] run failed', e);
 		} finally {
 			benchmarkRunning = false;
+			benchmarkRunningSuite = null;
 		}
+	}
+	async function runAllBenchmarks() {
+		benchmarkRunning = true;
+		benchmarkRunningSuite = 'all';
+		try {
+			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || 'cerebras:qwen-3-235b';
+			await api('/api/v1/ai/benchmark/all', { method: 'POST', body: JSON.stringify({ model }) });
+			await loadBenchmarks();
+		} catch (e) {
+			console.error('[Benchmarks] run-all failed', e);
+		} finally {
+			benchmarkRunning = false;
+			benchmarkRunningSuite = null;
+		}
+	}
+	// AutoDev report
+	let autodevReport = $state(null);
+	async function loadAutodevReport() {
+		try {
+			autodevReport = await api('/dashboard/api/autodev/report');
+		} catch {}
+	}
+
+	// Returns display-friendly label for a score key
+	function benchScoreLabel(key) {
+		const MAP = {
+			hearing: 'Hearing', reflex_ms: 'Reflex', clarity: 'Clarity', reasoning: 'Reasoning',
+			memory: 'Memory', voice: 'Voice', coherence: 'Coherence', novelty: 'Novelty',
+			accuracy: 'Accuracy', store: 'Store', recall: 'Recall', associative: 'Assoc',
+			relevance: 'Relevance', coverage: 'Coverage', freshness: 'Freshness',
+			pattern_det: 'Pattern', inference: 'Infer', auth_accuracy: 'Auth',
+			persona_consistency: 'Persona', hit_rate: 'Hit Rate', e2e_pass: 'E2E',
+			multi_intent: 'Multi-Intent', decay_ok: 'Decay', bump_ok: 'Bump',
+			policy_ok: 'Policy', scope_ok: 'Scope',
+		};
+		return MAP[key] || key;
 	}
 
 	// ─── Chat / Contacts state ───
@@ -7506,92 +7548,106 @@
 					{#if !benchmarksData}
 						<div class="empty-state">Loading benchmarks...</div>
 					{:else}
-						{@const runs = benchmarksData.runs || []}
-						{#if runs.length === 0}
-							<div class="empty-state">No benchmark runs yet</div>
-							<div class="empty-state small">Click Run to evaluate a model</div>
-						{/if}
-						{#each runs as run}
-							{@const s = run.scores || {}}
-							{@const floors = { hearing: 8, clarity: 9, reasoning: 9, memory: 8, voice: 8 }}
-							{@const reflexFloor = 400}
-							<div class="bench-suite">
-								<div class="bench-suite-header">
-									<span class="bench-suite-name">{run.suite?.toUpperCase() ?? 'SUITE'}</span>
-									<span class="bench-suite-status" class:pass={run.passed} class:fail={!run.passed}>
-										{run.passed ? '✅ PASSED' : '❌ FAILED'}
-									</span>
-								</div>
-								<div class="bench-model">{run.model || '—'}</div>
-								{#if s.hearing != null}
-									<div class="bench-row">
-										<span class="bench-label">Hearing</span>
-										<div class="bench-bar-wrap">
-											<div class="bench-bar" class:green={s.hearing >= floors.hearing} class:red={s.hearing < floors.hearing} style="width:{Math.min(s.hearing / 10 * 100, 100)}%"></div>
-										</div>
-										<span class="bench-val">{s.hearing.toFixed(1)}/10</span>
-									</div>
-								{/if}
-								{#if s.reflex_ms != null}
-									<div class="bench-row">
-										<span class="bench-label">Reflex</span>
-										<div class="bench-bar-wrap">
-											<div class="bench-bar" class:green={s.reflex_ms <= reflexFloor} class:red={s.reflex_ms > reflexFloor} style="width:{Math.min(Math.max(100 - (s.reflex_ms / 800 * 100), 0), 100)}%"></div>
-										</div>
-										<span class="bench-val">{s.reflex_ms}ms{s.reflex_ms <= reflexFloor ? ' (B)' : ''}</span>
-									</div>
-								{/if}
-								{#if s.clarity != null}
-									<div class="bench-row">
-										<span class="bench-label">Clarity</span>
-										<div class="bench-bar-wrap">
-											<div class="bench-bar" class:green={s.clarity >= floors.clarity} class:red={s.clarity < floors.clarity} style="width:{Math.min(s.clarity / 10 * 100, 100)}%"></div>
-										</div>
-										<span class="bench-val">{s.clarity.toFixed(1)}/10</span>
-									</div>
-								{/if}
-								{#if s.reasoning != null}
-									<div class="bench-row">
-										<span class="bench-label">Reasoning</span>
-										<div class="bench-bar-wrap">
-											<div class="bench-bar" class:green={s.reasoning >= floors.reasoning} class:red={s.reasoning < floors.reasoning} style="width:{Math.min(s.reasoning / 10 * 100, 100)}%"></div>
-										</div>
-										<span class="bench-val">{s.reasoning.toFixed(1)}/10</span>
-									</div>
-								{/if}
-								{#if s.memory != null}
-									<div class="bench-row">
-										<span class="bench-label">Memory</span>
-										<div class="bench-bar-wrap">
-											<div class="bench-bar" class:green={s.memory >= floors.memory} class:red={s.memory < floors.memory} style="width:{Math.min(s.memory / 10 * 100, 100)}%"></div>
-										</div>
-										<span class="bench-val">{s.memory.toFixed(1)}/10</span>
-									</div>
-								{/if}
-								{#if s.voice != null}
-									<div class="bench-row">
-										<span class="bench-label">Voice</span>
-										<div class="bench-bar-wrap">
-											<div class="bench-bar" class:green={s.voice >= floors.voice} class:red={s.voice < floors.voice} style="width:{Math.min(s.voice / 10 * 100, 100)}%"></div>
-										</div>
-										<span class="bench-val">{s.voice.toFixed(1)}/10</span>
-									</div>
-								{/if}
-								<div class="bench-ran-at">{run.ran_at ? new Date(run.ran_at).toLocaleString() : ''}</div>
+						{@const suites = benchmarksData.suites || []}
+						{@const latest = benchmarksData.latest || {}}
+						<!-- Summary header -->
+						<div class="bench-summary">
+							<div class="bench-summary-score">
+								<span class="bench-summary-num" class:all-pass={benchmarksData.suites_passed === benchmarksData.total_suites}>
+									{benchmarksData.suites_passed ?? 0}/{benchmarksData.total_suites ?? 12}
+								</span>
+								<span class="bench-summary-label">suites passing</span>
 							</div>
-						{/each}
-						<div class="bench-actions">
-							<div class="bench-last-run">
-								{#if (benchmarksData.runs || []).length > 0}
-									Last run: {new Date(benchmarksData.runs[0].ran_at).toLocaleString()}
-								{:else}
-									Not yet run
-								{/if}
-							</div>
-							<button class="bench-run-btn" onclick={() => runBenchmark('intuition')} disabled={benchmarkRunning}>
-								{benchmarkRunning ? 'Running...' : 'Run Now'}
+							<button class="bench-run-btn bench-run-all" onclick={() => runAllBenchmarks()} disabled={benchmarkRunning}>
+								{benchmarkRunningSuite === 'all' ? 'Running All...' : 'Run All'}
 							</button>
 						</div>
+						<!-- AutoDev report -->
+						{#if autodevReport && (autodevReport.recommendations?.length > 0)}
+							<div class="bench-autodev-report">
+								<div class="bench-report-title">AutoDev Findings</div>
+								{#each autodevReport.recommendations as rec}
+									<div class="bench-rec" class:rec-fix={rec.action === 'fix'} class:rec-research={rec.action === 'research'}>
+										<span class="bench-rec-badge" class:fix={rec.action === 'fix'} class:research={rec.action === 'research'}>
+											{rec.action === 'fix' ? 'FIX' : 'RESEARCH'}
+										</span>
+										<span class="bench-rec-text">{rec.label}</span>
+										<span class="bench-rec-score">{rec.suite} {rec.axis}={rec.score}</span>
+									</div>
+								{/each}
+								{#if autodevReport.scout_topics?.length > 0}
+									<div class="bench-scout-topics">
+										Scout researching: {autodevReport.scout_topics.slice(0, 2).join(' · ')}
+										{#if autodevReport.scout_topics.length > 2}
+											<span class="bench-scout-more">+{autodevReport.scout_topics.length - 2} more</span>
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/if}
+						<!-- Per-suite cards -->
+						{#each suites as suite}
+							{@const run = latest[suite]}
+							{@const s = run?.scores || {}}
+							{@const composite = s.composite ?? null}
+							{@const isRunning = benchmarkRunningSuite === suite}
+							<div class="bench-suite" class:bench-not-run={!run}>
+								<div class="bench-suite-header">
+									<span class="bench-suite-name">{suite.toUpperCase()}</span>
+									<div class="bench-suite-right">
+										{#if run}
+											<span class="bench-suite-status" class:pass={run.passed} class:fail={!run.passed}>
+												{run.passed ? '✓' : '✗'}
+											</span>
+										{:else}
+											<span class="bench-suite-status bench-unrun">—</span>
+										{/if}
+										<button class="bench-mini-run" onclick={() => runBenchmark(suite)} disabled={benchmarkRunning}>
+											{isRunning ? '…' : '▶'}
+										</button>
+									</div>
+								</div>
+								{#if run}
+									<!-- Composite score bar -->
+									{#if composite != null}
+										<div class="bench-row bench-composite-row">
+											<span class="bench-label">Score</span>
+											<div class="bench-bar-wrap">
+												<div class="bench-bar"
+													class:green={composite >= 8}
+													class:yellow={composite >= 6 && composite < 8}
+													class:red={composite < 6}
+													style="width:{Math.min(composite / 10 * 100, 100)}%">
+												</div>
+											</div>
+											<span class="bench-val bench-composite-val" class:pass={composite >= 8} class:warn={composite >= 6 && composite < 8} class:fail={composite < 6}>
+												{composite.toFixed(1)}
+											</span>
+										</div>
+									{/if}
+									<!-- Secondary metrics (non-composite numerics) -->
+									{@const secKeys = Object.keys(s).filter(k => k !== 'composite' && typeof s[k] === 'number')}
+									{#if secKeys.length > 0}
+										<div class="bench-metrics">
+											{#each secKeys.slice(0, 4) as key}
+												{#if key === 'reflex_ms'}
+													<span class="bench-chip" class:chip-ok={s[key] <= 400} class:chip-warn={s[key] > 400}>
+														{s[key]}ms
+													</span>
+												{:else}
+													<span class="bench-chip" class:chip-ok={s[key] >= 8} class:chip-warn={s[key] >= 6 && s[key] < 8} class:chip-fail={s[key] < 6}>
+														{benchScoreLabel(key)}: {typeof s[key] === 'number' && s[key] % 1 !== 0 ? s[key].toFixed(1) : s[key]}
+													</span>
+												{/if}
+											{/each}
+										</div>
+									{/if}
+									<div class="bench-ran-at">{run.ran_at ? new Date(run.ran_at).toLocaleString() : ''}</div>
+								{:else}
+									<div class="bench-not-run-label">not yet run</div>
+								{/if}
+							</div>
+						{/each}
 					{/if}
 				</div>
 			{:else if rightSection.startsWith('custom-')}
@@ -9519,38 +9575,79 @@
 
 	/* ==================== Benchmarks ==================== */
 	.benchmarks-panel { padding: 8px; }
+	/* Summary header */
+	.bench-summary {
+		display: flex; justify-content: space-between; align-items: center;
+		background: rgba(255,255,255,0.04);
+		border: 1px solid #313244;
+		border-radius: 6px;
+		padding: 8px 12px;
+		margin-bottom: 10px;
+	}
+	.bench-summary-score { display: flex; align-items: baseline; gap: 6px; }
+	.bench-summary-num { font-size: 22px; font-weight: 700; color: #f38ba8; }
+	.bench-summary-num.all-pass { color: #a6e3a1; }
+	.bench-summary-label { font-size: 11px; color: #6c7086; }
+	/* Suite cards */
 	.bench-suite {
 		background: rgba(255,255,255,0.04);
 		border: 1px solid #313244;
 		border-radius: 6px;
-		padding: 8px 10px;
-		margin-bottom: 10px;
+		padding: 7px 10px;
+		margin-bottom: 8px;
 	}
+	.bench-suite.bench-not-run { opacity: 0.6; }
 	.bench-suite-header {
 		display: flex; justify-content: space-between; align-items: center;
-		margin-bottom: 2px;
+		margin-bottom: 4px;
 	}
-	.bench-suite-name { font-size: 11px; font-weight: 700; color: #a6adc8; letter-spacing: 0.04em; }
-	.bench-suite-status { font-size: 11px; }
+	.bench-suite-name { font-size: 11px; font-weight: 700; color: #a6adc8; letter-spacing: 0.05em; }
+	.bench-suite-right { display: flex; align-items: center; gap: 6px; }
+	.bench-suite-status { font-size: 13px; font-weight: 700; }
 	.bench-suite-status.pass { color: #a6e3a1; }
 	.bench-suite-status.fail { color: #f38ba8; }
-	.bench-model { font-size: 11px; color: #6c7086; margin-bottom: 6px; }
+	.bench-suite-status.bench-unrun { color: #45475a; }
+	.bench-mini-run {
+		background: rgba(137,180,250,0.12);
+		border: 1px solid rgba(137,180,250,0.3);
+		border-radius: 4px;
+		color: #89b4fa;
+		padding: 1px 6px;
+		font-size: 10px;
+		cursor: pointer;
+		line-height: 16px;
+	}
+	.bench-mini-run:disabled { opacity: 0.4; cursor: not-allowed; }
+	.bench-mini-run:not(:disabled):hover { background: rgba(137,180,250,0.22); }
+	/* Score row */
 	.bench-row {
 		display: flex; align-items: center; gap: 6px;
 		padding: 2px 0; font-size: 11px;
 	}
-	.bench-label { color: #6c7086; min-width: 64px; flex-shrink: 0; }
+	.bench-composite-row { margin-bottom: 4px; }
+	.bench-label { color: #6c7086; min-width: 40px; flex-shrink: 0; }
 	.bench-bar-wrap { flex: 1; height: 5px; background: #1e1e2e; border-radius: 3px; overflow: hidden; }
-	.bench-bar { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+	.bench-bar { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
 	.bench-bar.green { background: #a6e3a1; }
+	.bench-bar.yellow { background: #f9e2af; }
 	.bench-bar.red { background: #f38ba8; }
-	.bench-val { color: #cdd6f4; min-width: 60px; text-align: right; flex-shrink: 0; }
-	.bench-ran-at { font-size: 10px; color: #585b70; margin-top: 6px; text-align: right; }
-	.bench-actions {
-		display: flex; justify-content: space-between; align-items: center;
-		padding: 6px 0 2px;
+	.bench-val { color: #cdd6f4; min-width: 32px; text-align: right; flex-shrink: 0; font-size: 12px; font-weight: 600; }
+	.bench-val.pass { color: #a6e3a1; }
+	.bench-val.warn { color: #f9e2af; }
+	.bench-val.fail { color: #f38ba8; }
+	/* Metric chips */
+	.bench-metrics { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 3px; }
+	.bench-chip {
+		font-size: 10px; padding: 1px 5px; border-radius: 3px;
+		background: rgba(255,255,255,0.06); color: #6c7086;
+		border: 1px solid #313244;
 	}
-	.bench-last-run { font-size: 11px; color: #6c7086; }
+	.bench-chip.chip-ok { color: #a6e3a1; border-color: rgba(166,227,161,0.25); background: rgba(166,227,161,0.08); }
+	.bench-chip.chip-warn { color: #f9e2af; border-color: rgba(249,226,175,0.25); background: rgba(249,226,175,0.08); }
+	.bench-chip.chip-fail { color: #f38ba8; border-color: rgba(243,139,168,0.25); background: rgba(243,139,168,0.08); }
+	.bench-not-run-label { font-size: 10px; color: #45475a; padding: 2px 0; }
+	.bench-ran-at { font-size: 10px; color: #45475a; text-align: right; margin-top: 2px; }
+	/* Run buttons */
 	.bench-run-btn {
 		background: rgba(137,180,250,0.15);
 		border: 1px solid rgba(137,180,250,0.4);
@@ -9560,8 +9657,36 @@
 		font-size: 12px;
 		cursor: pointer;
 	}
+	.bench-run-btn.bench-run-all { padding: 5px 14px; font-size: 12px; }
 	.bench-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.bench-run-btn:not(:disabled):hover { background: rgba(137,180,250,0.25); }
+	/* AutoDev report section */
+	.bench-autodev-report {
+		background: rgba(249,226,175,0.06);
+		border: 1px solid rgba(249,226,175,0.2);
+		border-radius: 6px;
+		padding: 8px 10px;
+		margin-bottom: 10px;
+	}
+	.bench-report-title { font-size: 10px; font-weight: 700; color: #f9e2af; letter-spacing: 0.05em; margin-bottom: 6px; }
+	.bench-rec {
+		display: flex; align-items: flex-start; gap: 6px;
+		padding: 3px 0; font-size: 10px;
+	}
+	.bench-rec-badge {
+		font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+		flex-shrink: 0; margin-top: 1px;
+	}
+	.bench-rec-badge.fix { background: rgba(166,227,161,0.2); color: #a6e3a1; border: 1px solid rgba(166,227,161,0.3); }
+	.bench-rec-badge.research { background: rgba(137,180,250,0.15); color: #89b4fa; border: 1px solid rgba(137,180,250,0.3); }
+	.bench-rec-text { color: #cdd6f4; flex: 1; line-height: 1.4; }
+	.bench-rec-score { color: #45475a; flex-shrink: 0; font-size: 9px; margin-top: 1px; }
+	.bench-scout-topics {
+		margin-top: 6px; padding-top: 5px;
+		border-top: 1px solid rgba(249,226,175,0.15);
+		font-size: 10px; color: #6c7086; font-style: italic;
+	}
+	.bench-scout-more { color: #89b4fa; }
 
 	/* ==================== Lifeboat ==================== */
 	.lifeboat-panel {
