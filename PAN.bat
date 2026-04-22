@@ -11,7 +11,7 @@ if %ERRORLEVEL% EQU 0 goto ALREADY_RUNNING
 :: ── Fresh start ─────────────────────────────────────────────
 echo [PAN] Starting server...
 cd /d "%PAN_SERVICE%"
-start "PAN Server" node pan.js start
+start "PAN Server" cmd /c pan-loop.bat
 
 echo [PAN] Waiting for Carrier...
 set ATTEMPTS=0
