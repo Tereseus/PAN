@@ -36,6 +36,7 @@ import teamsRouter from './routes/teams.js';
 import wrapRouter, { ensureWrapSchema } from './routes/wrap.js';
 import messagingPrefsRouter, { ensureMessagingPrefsSchema } from './routes/messaging-prefs.js';
 import intuitionRouter from './routes/intuition.js';
+import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
 import guardianRouter from './routes/guardian.js';
@@ -739,6 +740,9 @@ app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
 
 // Intuition — live situational state daemon (read by PAN voice, Forge, Atlas)
 app.use('/api/v1/intuition', intuitionRouter);
+
+// Benchmark — AI model scoring suite (Intuition: Hearing/Reflex/Clarity/Reasoning/Memory/Voice)
+app.use('/api/v1/ai', benchmarkApiRouter);
 
 // Voice — Whisper STT + speaker ID (resemblyzer)
 registerVoiceRoutes(app);
@@ -1994,6 +1998,8 @@ app.get('/api/v1/voice/pack/:name', async (req, res) => {
 
 // Dashboard (web UI + API) — privacy middleware noises stats/counts on GET responses
 app.use('/dashboard', privacyMiddleware({ caller: 'dashboard' }), dashboardRouter);
+// Benchmark dashboard API — no privacy middleware needed (benchmark data only)
+app.use('/dashboard/api', benchmarkDashRouter);
 
 // Redirect /dashboard/ to /v2/ (Svelte dashboard)
 app.get('/dashboard', (req, res) => res.redirect('/v2/'));
@@ -4031,6 +4037,41 @@ function start() {
             'protocol=TCP', `localport=${PORT}`, 'profile=private,domain'
           ], { windowsHide: true, timeout: 5000 });
         } catch { /* rule may already exist or not on Windows */ }
+
+        // Daily 3am benchmark — scores the active voice router model on all Intuition axes
+        {
+          function scheduleDailyBenchmark() {
+            const now = new Date();
+            const next3am = new Date(now);
+            next3am.setHours(3, 0, 0, 0);
+            if (next3am <= now) next3am.setDate(next3am.getDate() + 1);
+            const msUntil3am = next3am - now;
+            setTimeout(async () => {
+              try {
+                const { runIntuitionBenchmark } = await import('./benchmark.js');
+                const modelRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
+                const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : 'cerebras:qwen-3-235b';
+                console.log(`[PAN Benchmark] Daily 3am run — model: ${model}`);
+                await runIntuitionBenchmark(model);
+              } catch (e) {
+                console.error('[PAN Benchmark] Daily run failed:', e.message);
+              }
+              // Schedule again for next day
+              setInterval(async () => {
+                try {
+                  const { runIntuitionBenchmark } = await import('./benchmark.js');
+                  const modelRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
+                  const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : 'cerebras:qwen-3-235b';
+                  await runIntuitionBenchmark(model);
+                } catch (e) {
+                  console.error('[PAN Benchmark] Daily run failed:', e.message);
+                }
+              }, 24 * 60 * 60 * 1000);
+            }, msUntil3am);
+            console.log(`[PAN Benchmark] Daily run scheduled for 3am (in ${Math.round(msUntil3am / 60000)}m)`);
+          }
+          scheduleDailyBenchmark();
+        }
 
         // Steward boots all background services in dependency order.
         bootAll().catch(err => console.error('[Steward] Boot error:', err.message));

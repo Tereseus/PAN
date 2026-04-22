@@ -248,6 +248,37 @@
 	}
 	let approvalsData = $state([]);
 
+	// Benchmarks
+	let benchmarksData = $state(null); // { runs: [...] }
+	let benchmarkRunning = $state(false);
+	let benchmarkPolling = null;
+
+	async function loadBenchmarks() {
+		try {
+			benchmarksData = await api('/dashboard/api/benchmarks');
+		} catch {}
+	}
+	function startBenchmarkPolling() {
+		loadBenchmarks();
+		if (benchmarkPolling) clearInterval(benchmarkPolling);
+		benchmarkPolling = setInterval(loadBenchmarks, 60000);
+	}
+	function stopBenchmarkPolling() {
+		if (benchmarkPolling) { clearInterval(benchmarkPolling); benchmarkPolling = null; }
+	}
+	async function runBenchmark(suite) {
+		benchmarkRunning = true;
+		try {
+			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || 'cerebras:qwen-3-235b';
+			await api('/api/v1/ai/benchmark', { method: 'POST', body: JSON.stringify({ suite, model }) });
+			await loadBenchmarks();
+		} catch (e) {
+			console.error('[Benchmarks] run failed', e);
+		} finally {
+			benchmarkRunning = false;
+		}
+	}
+
 	// ─── Chat / Contacts state ───
 	let contactsData = $state([]);
 	let chatThreads = $state([]);
@@ -4378,6 +4409,7 @@
 		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
 		if (leftSection === 'intuition' || rightSection === 'intuition') { startIntuitionPolling(); loadVoiceSpeakers(); }
 		if (leftSection === 'devices' || rightSection === 'devices') { loadClientDevices(); loadAllDevices(); }
+		if (leftSection === 'benchmarks' || rightSection === 'benchmarks') startBenchmarkPolling();
 
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
@@ -6319,10 +6351,11 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'devices') { loadClientDevices(); loadAllDevices(); } }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'devices') { loadClientDevices(); loadAllDevices(); } }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
+				<option value="benchmarks">Benchmarks</option>
 				<option value="bugs">Bugs</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
@@ -7466,6 +7499,99 @@
 								{/if}
 							</div>
 						{/if}
+					{/if}
+				</div>
+			{:else if rightSection === 'benchmarks'}
+				<div class="benchmarks-panel">
+					{#if !benchmarksData}
+						<div class="empty-state">Loading benchmarks...</div>
+					{:else}
+						{@const runs = benchmarksData.runs || []}
+						{#if runs.length === 0}
+							<div class="empty-state">No benchmark runs yet</div>
+							<div class="empty-state small">Click Run to evaluate a model</div>
+						{/if}
+						{#each runs as run}
+							{@const s = run.scores || {}}
+							{@const floors = { hearing: 8, clarity: 9, reasoning: 9, memory: 8, voice: 8 }}
+							{@const reflexFloor = 400}
+							<div class="bench-suite">
+								<div class="bench-suite-header">
+									<span class="bench-suite-name">{run.suite?.toUpperCase() ?? 'SUITE'}</span>
+									<span class="bench-suite-status" class:pass={run.passed} class:fail={!run.passed}>
+										{run.passed ? '✅ PASSED' : '❌ FAILED'}
+									</span>
+								</div>
+								<div class="bench-model">{run.model || '—'}</div>
+								{#if s.hearing != null}
+									<div class="bench-row">
+										<span class="bench-label">Hearing</span>
+										<div class="bench-bar-wrap">
+											<div class="bench-bar" class:green={s.hearing >= floors.hearing} class:red={s.hearing < floors.hearing} style="width:{Math.min(s.hearing / 10 * 100, 100)}%"></div>
+										</div>
+										<span class="bench-val">{s.hearing.toFixed(1)}/10</span>
+									</div>
+								{/if}
+								{#if s.reflex_ms != null}
+									<div class="bench-row">
+										<span class="bench-label">Reflex</span>
+										<div class="bench-bar-wrap">
+											<div class="bench-bar" class:green={s.reflex_ms <= reflexFloor} class:red={s.reflex_ms > reflexFloor} style="width:{Math.min(Math.max(100 - (s.reflex_ms / 800 * 100), 0), 100)}%"></div>
+										</div>
+										<span class="bench-val">{s.reflex_ms}ms{s.reflex_ms <= reflexFloor ? ' (B)' : ''}</span>
+									</div>
+								{/if}
+								{#if s.clarity != null}
+									<div class="bench-row">
+										<span class="bench-label">Clarity</span>
+										<div class="bench-bar-wrap">
+											<div class="bench-bar" class:green={s.clarity >= floors.clarity} class:red={s.clarity < floors.clarity} style="width:{Math.min(s.clarity / 10 * 100, 100)}%"></div>
+										</div>
+										<span class="bench-val">{s.clarity.toFixed(1)}/10</span>
+									</div>
+								{/if}
+								{#if s.reasoning != null}
+									<div class="bench-row">
+										<span class="bench-label">Reasoning</span>
+										<div class="bench-bar-wrap">
+											<div class="bench-bar" class:green={s.reasoning >= floors.reasoning} class:red={s.reasoning < floors.reasoning} style="width:{Math.min(s.reasoning / 10 * 100, 100)}%"></div>
+										</div>
+										<span class="bench-val">{s.reasoning.toFixed(1)}/10</span>
+									</div>
+								{/if}
+								{#if s.memory != null}
+									<div class="bench-row">
+										<span class="bench-label">Memory</span>
+										<div class="bench-bar-wrap">
+											<div class="bench-bar" class:green={s.memory >= floors.memory} class:red={s.memory < floors.memory} style="width:{Math.min(s.memory / 10 * 100, 100)}%"></div>
+										</div>
+										<span class="bench-val">{s.memory.toFixed(1)}/10</span>
+									</div>
+								{/if}
+								{#if s.voice != null}
+									<div class="bench-row">
+										<span class="bench-label">Voice</span>
+										<div class="bench-bar-wrap">
+											<div class="bench-bar" class:green={s.voice >= floors.voice} class:red={s.voice < floors.voice} style="width:{Math.min(s.voice / 10 * 100, 100)}%"></div>
+										</div>
+										<span class="bench-val">{s.voice.toFixed(1)}/10</span>
+									</div>
+								{/if}
+								<div class="bench-ran-at">{run.ran_at ? new Date(run.ran_at).toLocaleString() : ''}</div>
+							</div>
+						{/each}
+						<div class="bench-actions">
+							<div class="bench-last-run">
+								{#if (benchmarksData.runs || []).length > 0}
+									Last run: {new Date(benchmarksData.runs[0].ran_at).toLocaleString()}
+								{:else}
+									Not yet run
+								{/if}
+							</div>
+							<button class="bench-run-btn" onclick={() => runBenchmark('intuition')} disabled={benchmarkRunning}>
+								{benchmarkRunning ? 'Running...' : 'Run Now'}
+							</button>
+						</div>
 					{/if}
 				</div>
 			{:else if rightSection.startsWith('custom-')}
@@ -9390,6 +9516,52 @@
 	}
 	.svc-healthy { color: #a6e3a1; }
 	.svc-down { color: #f38ba8; }
+
+	/* ==================== Benchmarks ==================== */
+	.benchmarks-panel { padding: 8px; }
+	.bench-suite {
+		background: rgba(255,255,255,0.04);
+		border: 1px solid #313244;
+		border-radius: 6px;
+		padding: 8px 10px;
+		margin-bottom: 10px;
+	}
+	.bench-suite-header {
+		display: flex; justify-content: space-between; align-items: center;
+		margin-bottom: 2px;
+	}
+	.bench-suite-name { font-size: 11px; font-weight: 700; color: #a6adc8; letter-spacing: 0.04em; }
+	.bench-suite-status { font-size: 11px; }
+	.bench-suite-status.pass { color: #a6e3a1; }
+	.bench-suite-status.fail { color: #f38ba8; }
+	.bench-model { font-size: 11px; color: #6c7086; margin-bottom: 6px; }
+	.bench-row {
+		display: flex; align-items: center; gap: 6px;
+		padding: 2px 0; font-size: 11px;
+	}
+	.bench-label { color: #6c7086; min-width: 64px; flex-shrink: 0; }
+	.bench-bar-wrap { flex: 1; height: 5px; background: #1e1e2e; border-radius: 3px; overflow: hidden; }
+	.bench-bar { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+	.bench-bar.green { background: #a6e3a1; }
+	.bench-bar.red { background: #f38ba8; }
+	.bench-val { color: #cdd6f4; min-width: 60px; text-align: right; flex-shrink: 0; }
+	.bench-ran-at { font-size: 10px; color: #585b70; margin-top: 6px; text-align: right; }
+	.bench-actions {
+		display: flex; justify-content: space-between; align-items: center;
+		padding: 6px 0 2px;
+	}
+	.bench-last-run { font-size: 11px; color: #6c7086; }
+	.bench-run-btn {
+		background: rgba(137,180,250,0.15);
+		border: 1px solid rgba(137,180,250,0.4);
+		border-radius: 5px;
+		color: #89b4fa;
+		padding: 4px 12px;
+		font-size: 12px;
+		cursor: pointer;
+	}
+	.bench-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.bench-run-btn:not(:disabled):hover { background: rgba(137,180,250,0.25); }
 
 	/* ==================== Lifeboat ==================== */
 	.lifeboat-panel {

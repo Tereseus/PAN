@@ -1171,7 +1171,7 @@ function killSession(sessionId) {
   const session = sessions.get(sessionId);
   if (session) {
     session._plannedShutdown = true;  // suppress crash alert in onExit handler
-    session.pty.kill();
+    if (session.pty) session.pty.kill();  // pipe sessions have pty:null — skip
     sessions.delete(sessionId);
     return true;
   }
@@ -1343,4 +1343,38 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages };
+// Create a lightweight pipe-only session (no PTY) for mobile new-tab flow.
+// The ClaudeAdapter is created lazily on first pipeSend — no PTY needed.
+function createPipeSession(sessionId, { cwd = null, projectName = '' } = {}) {
+  if (sessions.has(sessionId)) return sessions.get(sessionId);
+  const resolvedCwd = cwd || process.env.USERPROFILE || 'C:\\Users\\tzuri\\Desktop';
+  const term = new ScreenBufferClass(120, 30);
+  const logFile = join(TERMINAL_LOG_DIR, sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') + '.jsonl');
+  term.setLogFile(logFile);
+  term.loadLogFile();
+  const session = {
+    pty: null,
+    term,
+    clients: new Set(),
+    project: projectName,
+    cwd: resolvedCwd,
+    createdAt: Date.now(),
+    renderTimer: null,
+    lastRendered: '',
+    systemMessages: [],
+    lastInputTs: 0,
+    lastOutputTs: Date.now(),
+    claudeRunning: false,
+    claudeExited: false,
+    pipeMode: true,
+    claudeSessionIds: [],
+    _streamMessages: [],
+    _jsonBuf: '',
+    _claudeSessionId: null,
+  };
+  sessions.set(sessionId, session);
+  console.log(`[PAN Terminal] Created pipe session: ${sessionId} cwd=${resolvedCwd}`);
+  return session;
+}
+
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession };

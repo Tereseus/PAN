@@ -135,6 +135,7 @@ async function handleUnified(text, context) {
 
   logStep(cmdId, 'unified_call', 'single Claude call for classify+handle');
 
+  let raw = '';
   try {
     const isDash = context.source === 'dashboard';
     // Load personality from settings
@@ -149,7 +150,7 @@ async function handleUnified(text, context) {
     // user consented to share; the text may contain unintentional PII.
     const safeText = anonymizeForAI(text);
 
-    const raw = await claude(
+    raw = await claude(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
 ${historyBlock}${skillBlock}${sensorBlock}
 ${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
