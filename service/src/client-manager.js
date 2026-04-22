@@ -122,7 +122,11 @@ function upsertDevice({ device_id, name, platform, capabilities, version, pendin
   if (existing) {
     // Never downgrade trust — if already approved (1) keep it; only set pending (0) on first-ever pan-client registration
     const newTrust = existing.trusted !== null ? existing.trusted : (pending ? 0 : 1);
-    run(`UPDATE devices SET name = :n, capabilities = :c, client_version = :v, online = 1, trusted = :t,
+    // Don't let the client registration overwrite a human-set name (name column is set by the user via the dashboard).
+    // Only set the name if there isn't one already, or if the existing name IS the device_id (never manually renamed).
+    const existingRow = get("SELECT name FROM devices WHERE hostname = :h", { ':h': device_id });
+    const keepName = existingRow?.name && existingRow.name !== device_id;
+    run(`UPDATE devices SET ${keepName ? '' : 'name = :n,'} capabilities = :c, client_version = :v, online = 1, trusted = :t,
          last_seen = datetime('now','localtime') WHERE hostname = :h`,
       { ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': newTrust, ':h': device_id });
   } else {
