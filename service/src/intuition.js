@@ -24,6 +24,7 @@ import path from 'path';
 import http from 'http';
 import { db, get, all } from './db.js';
 import { askAI } from './llm.js';
+import { getLatestScreenContext, getLatestScreenContextFromDB } from './screen-watcher.js';
 
 // ─── Config ───
 const PAN_PORT = parseInt(process.env.PAN_CARRIER_PORT || '7777');
@@ -372,14 +373,22 @@ function buildSnapshot(trigger = 'heartbeat') {
     where = 'mobile';
   }
 
+  // ─── SCREEN CONTEXT — vision-based activity (highest priority signal) ───
+  // Screen watcher captures a screenshot every 30s and runs it through vision AI.
+  // In-memory cache first (fastest), DB fallback for first tick after restart.
+  const screenCtx = getLatestScreenContext() || getLatestScreenContextFromDB();
+
   // ─── ACTIVITY — what Commander is actually doing ───
-  // Priority: active Claude session > active tasks > wrapper apps > idle
+  // Priority: screen vision > active Claude session > active tasks > wrapper apps > idle
   // A session is "active" if Claude is running OR a client (dashboard) is connected.
   let activity = 'idle';
   const activeSessions = panSessions.filter(s => s.claudeRunning || s.clients > 0);
   const activeProject = activeSessions.find(s => s.project);
   const inProgressTasks = activeTasks.filter(t => t.status === 'in_progress');
-  if (activeProject) {
+  if (screenCtx?.description) {
+    // Vision wins — it sees reality, not inferred state
+    activity = screenCtx.description;
+  } else if (activeProject) {
     const proj = (activeProject.project || '').toLowerCase();
     const verb = activeProject.thinking ? 'building (thinking)' : 'building';
     activity = `${verb} ${proj}`;
@@ -603,6 +612,7 @@ function buildSnapshot(trigger = 'heartbeat') {
       device_source: lastDeviceSource,
       sensors_active: [...sensorsActive],
       active_apps: [...activeApps],
+      screen_context: screenCtx ? { description: screenCtx.description, age_ms: now - screenCtx.ts } : null,
       events_sampled: recentEvents.length,
       wrap_messages_sampled: recentWrap.length,
       terminal_messages_sampled: recentTerminalMsgs.length,
