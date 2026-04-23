@@ -29,7 +29,7 @@ graph TB
         DB[(SQLite/SQLCipher)]
         Steward[Steward: process health]
         Hooks[SessionStart/End hooks]
-        MCP[MCP Server: 15 tools]
+        MCP[MCP Server: 8 tools + router]
         Whisper["Whisper STT :7782/:7783"]
         Dashboard[Dashboard + Terminal UI]
     end
@@ -159,7 +159,7 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 | `service/src/reap-orphans.js` | Kills orphaned bash/claude processes from prior runs |
 | `service/src/routes/dashboard.js` | Dashboard API (events, projects, jobs, conversations) |
 | `service/src/routes/tests.js` | Test runner — sequential suites with screenshot verification |
-| `service/src/mcp-server.js` | MCP server — 15 tools for Claude to interact with PAN |
+| `service/src/mcp-server.js` | MCP server — 8 tools + unified router (20+ actions) for Claude to interact with PAN |
 | `service/src/router.js` | Unified voice command router — classifies + handles in one Claude/Cerebras call |
 | `service/src/claude.js` | AI backend selector — routes to Cerebras/Claude/custom based on settings |
 | `service/src/carrier.js` | Carrier runtime — owns port 7777, WebSocket, PTY; spawns Craft on 17700 |
@@ -204,25 +204,22 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 9cb655cc-54b)*
-**Claude** (2026-04-20 18:02:22): Done. The doc now covers:
+### This Tab *(session: f15cf5a4-a23)*
+**User** (2026-04-22 20:24:28): Can you fix the PI symbol to be like the same length of the other one this one is like longer for some reason C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776903858873.png
+**User** (2026-04-22 20:26:04): It's at the sidebar
+**Claude** (2026-04-22 20:27:38): Done. The logo Π no longer has the vertical stretch — it'll match the height of the Π in the PAN contact avatar. Swap Craft to see it.
+**Claude** (2026-04-22 20:29:27): Done. Now the sidebar shows the full **ΠΑΝ** with the scaleY applied equally to all three characters — so Π, Α, and Ν are all the same height. Swap Craft to pick it up.
+**User** (2026-04-22 20:33:29): Add these as well C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776904327037.png C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776904350802.png C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776904358433.png
+**Claude** (2026-04-22 20:34:39): Done — 7 images in the carousel now (4 original + your 3 new retrowave ones). They cycle every 9s. Swap Craft to see them.
+**User** (2026-04-22 20:37:27): What should I write i'm gonna put it in the vibe coding discord this is my first time showing this to the world the entirety of the application C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776904641232.png
+**Claude** (2026-04-22 20:37:47): You're in the #showcase channel — vibe coding crowd will appreciate the aesthetic. Here's a caption that fits the energy:
 
-- **`_pushedMsgsCache`** — the actual fix for interval calls overwriting live data with stale HTTP responses, and why it exists
-- **Direct `bubblesFromMessages` path** in `transcript_messages` handler — no lock, no async, n
-**Claude** (2026-04-20 18:02:51): Clean. No more rejected token spam, no more accumulation. The transcript fix is deployed and these were the only real side issues from the swap flow.
-**Claude** (2026-04-20 18:04:00): Pushed. `49a67b1` — 183 files, everything from this session.
+---
 
-Memory Pipeline Report:
-```
-┌─ EVENT CAPTURE + FTS5 + EMBEDDING ──────────────────┐
-│  Topics: • Transcript left panel proxy/raw bug      │
-│           • _pushedMsgsCache bypass pattern   
-**User** (2026-04-20 18:10:32): OK So on the phone I guess I'll send you a screenshot of what looks like on the the mobile I'll show it Don't reply after I send you this message so you can look at the screen shot And here I am on the dashboard of the phone as you can see at the ver
-**User** (2026-04-20 18:10:35): C:\Users\tzuri\AppData\Local\Temp\pan-screenshots\screenshot_phone_1776723030963.png
-**Claude** (2026-04-20 18:10:44): 👍
-**User** (2026-04-20 18:11:56): Well for some reason I can't send the other screenshot I don't know why it pasted in the input box and I pushed enter nothing happens
-**User** (2026-04-20 18:12:16): There is a camera button the button is there like I said it only allows you to select one screen shot from your gallery or picture It doesn't let you allow you to seck multiple and it doesn't actually open the camera which is what it should do it sho
-**User** (2026-04-20 18:14:41): What are you doing I can't I can't send you the second screenshot it just says uploading you just keep saying that you're reading the index dot HTML I can't send you another message I can't send you a screenshot what are you doing C:/Users/tzuri/AppD
+**built my own personal AI operating system 🌴**
+
+PAN (Personal AI Network) — persistent AI that lives across all my devic
+**User** (2026-04-22 20:38:18): So actually I kind of wanted to just leave it like a mystery I don't I wanted I want to see if people in will engage because they they want to know about the program or just the vibe or just how it looks so that's how I want to frame it and then I ca
 
 ### Recent Project Work *(session: 252297e3-4e5)*
 **User** (2026-04-18 21:49:15): Are you down  Claude
@@ -239,12 +236,11 @@ What were you trying to build? I'll fix it directly.
 The actual featu
 **Claude** (2026-04-18 21:53:00): Those are all build artifacts or node_modules — nothing useful. The QR feature is already in git. Do you remember what you were originally trying to do before the session got stuck? That'll help me pick up where it left off.
 **User** (2026-04-20 13:06:51): Can you close the windows voice to text and the service and the task Because it's really laggy
+**User** (2026-04-22 18:21:47): end windows voice tot ext
+**Claude** (2026-04-22 18:22:04): Processes not found — voice to text may already be stopped, or it's running under a different process name. You can also just press **Win + H** to toggle it off directly.
 
 ### Open Tasks
-- [#421 in_progress] Pendant radio broadcast: one-way pedestrian signal for vehicles (crosswalk safety transmission)
-- [#422 in_progress] PAN-to-PAN local mesh: pendants communicate nearby presence/context without server, stay quiet in public
-- [#412 todo] Cocoro integration on phone (Tailscale Funnel setup)
-- [#415 todo]
+- [#422 in_progress] PAN-to-PAN local mesh: pendants communicate nearby presence/conte
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
