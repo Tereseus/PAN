@@ -39,6 +39,7 @@ import intuitionRouter from './routes/intuition.js';
 import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
+import { startScreenWatcher } from './screen-watcher.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
 import { privacyMiddleware } from './privacy.js';
@@ -1571,12 +1572,12 @@ app.get('/api/v1/claude-usage', async (req, res) => {
     }).filter(Boolean);
 
     // Find JSONL files for sessions and sum tokens
-    function sumJsonlTokens(filePath, maxBytes = 10 * 1024 * 1024) {
+    function sumJsonlTokens(filePath, maxBytes = 10 * 1024 * 1024, skipSizeLimit = false) {
       const result = { input: 0, output: 0, cache_read: 0, cache_create: 0, messages: 0, model: '' };
       try {
-        // Skip files larger than maxBytes (10MB default) — they're old giant sessions
+        // Skip files larger than maxBytes — but never skip active sessions regardless of size
         const fstat = statSync(filePath);
-        if (fstat.size > maxBytes) return result;
+        if (!skipSizeLimit && fstat.size > maxBytes) return result;
         const data = readFileSync(filePath, 'utf8');
         for (const line of data.split('\n')) {
           if (!line.trim()) continue;
@@ -1629,7 +1630,7 @@ app.get('/api/v1/claude-usage', async (req, res) => {
         // Current session (matches active session files)
         if (session) {
           activeSessions++;
-          const tokens = sumJsonlTokens(filePath);
+          const tokens = sumJsonlTokens(filePath, 10 * 1024 * 1024, true); // no size limit for active sessions
           if (tokens.model) model = tokens.model;
 
           // This is an active session — count its tokens
@@ -3620,6 +3621,21 @@ for (const name of [
 
 // Health check
 let _serverStartedAt = Date.now();
+// Internal: Carrier posts ΠΑΝ notifications here (Carrier has no DB, Craft does)
+app.post('/api/internal/pan-notify', async (req, res) => {
+  try {
+    const { panNotify, ensurePanContact } = await import('./pan-notify.js');
+    ensurePanContact();
+    const { service, subject, body, severity } = req.body || {};
+    if (!service || !subject || !body) return res.status(400).json({ error: 'service, subject, body required' });
+    const id = panNotify(service, subject, body, { severity });
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('[pan-notify] internal endpoint failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   const uptimeMs = Date.now() - _serverStartedAt;
   const secs = Math.floor(uptimeMs / 1000);
@@ -3982,6 +3998,9 @@ function start() {
 
       // Auto-detect local model providers (Ollama, LM Studio)
       autoDetectLocalModels();
+
+      // Screen watcher — screenshot every 30s → vision AI → activity signal for intuition
+      if (!IS_DEV) startScreenWatcher();
 
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
