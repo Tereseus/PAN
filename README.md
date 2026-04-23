@@ -76,7 +76,7 @@ All data stays on your devices. Not in the cloud, not on anyone else's servers.
 - **Delete anything** — single events, entire days, bulk search results, or everything
 - **Every action logged** — what PAN heard, how it classified it, what API it called, response time
 
-### Data Dividends
+### Data Dividends *(Roadmap — not yet built)*
 
 PAN captures your data. You own it. You can sell it.
 
@@ -94,12 +94,12 @@ Your name, home address, and personal identifiers are permanently removed at eve
 ```
 Phone (Android)                    PC (Windows)
 ├── Google Streaming STT           ├── Carrier (port 7777) ─── owns HTTP, WebSocket, PTY
-├── On-device AI (MediaPipe GPU)   │   ├── Craft (server.js) ─── swappable, zero-downtime
-├── Gemma 3n (classify + chat)     │   ├── Lifeboat ─── rollback safety (30s auto-revert)
+├── Voice → Server → Cerebras/     │   ├── Craft (server.js) ─── swappable, zero-downtime
+│   Claude response                │   ├── Lifeboat ─── rollback safety (30s auto-revert)
 ├── Camera + Vision                │   └── Crucible ─── variant comparison (shadow traffic)
 ├── Tailscale (encrypted tunnel)   ├── Claude Code (via Agent SDK, pipe mode)
-├── Voice commands                 ├── SvelteKit Dashboard (11 pages)
-└── BLE ↔ Pendant                  ├── MCP Server (7 tools + 1 router, 20+ actions)
+├── Voice commands                 ├── SvelteKit Dashboard (17 pages)
+└── BLE ↔ Pendant                  ├── MCP Server (8 tools + unified router, 20+ actions)
                                    ├── SQLite + FTS5 Search
 Pendant (ESP32-S3)                 ├── Data Anonymization Layer
 ├── Camera (OV2640)                ├── Tailscale Auto-Auth
@@ -186,8 +186,6 @@ Size of a Zippo lighter. €155 total cost. 22 sensor slots — use all or just 
 | Accelerometer + Gyro (BMI270) | Fall detection, step counting |
 | + 14 more | UV, magnetometer, air quality, color, distance, EMF, radiation... |
 
-Full sensor specifications: [docs/SENSOR-ARRAY.md](docs/SENSOR-ARRAY.md)
-
 **Build it yourself** — full parts list, 3D printable case, assembly guide, firmware. All open source.
 
 ---
@@ -220,7 +218,7 @@ PAN_DEV=1 PAN_PORT=7781 node pan.js start --no-carrier
 2. Install on phone
 3. Set server URL → your PC's IP, port 7777
 4. Grant microphone + camera permissions
-5. Start talking — on-device AI responds in ~5s, server queries in ~7s
+5. Start talking — voice goes to server, Cerebras/Claude responds in ~1-2s
 
 ### Browser Extension
 1. `chrome://extensions/` → Developer Mode → Load unpacked → select `browser-extension/`
@@ -228,7 +226,7 @@ PAN_DEV=1 PAN_PORT=7781 node pan.js start --no-carrier
 
 ### Desktop App (Tauri)
 ```bash
-cd desktop && cargo tauri dev
+cd service/tauri && npm run tauri dev
 ```
 
 ---
@@ -237,13 +235,13 @@ cd desktop && cargo tauri dev
 
 | Layer | Technology |
 |-------|-----------|
-| Phone | Kotlin, Jetpack Compose, MediaPipe GPU, Gemma 3n, Google STT, Hilt DI, Tailscale (tsnet) |
+| Phone | Kotlin, Jetpack Compose, Google STT, Hilt DI, Tailscale (tsnet) |
 | Server | Node.js, Express, SQLite (better-sqlite3 + SQLCipher), Claude Agent SDK, MCP Server |
 | Runtime | Carrier/Craft hot-swap architecture, Lifeboat rollback, Crucible variant comparison |
-| Dashboard | SvelteKit 2, Svelte 5, WebSocket terminals, 11 pages |
+| Dashboard | SvelteKit 2, Svelte 5, WebSocket terminals, 17 pages |
 | Desktop | Tauri, multi-window manager, global hotkeys |
 | Browser | WebExtension API (Manifest V3) — Chrome, Edge, Brave |
-| AI | Claude Code (terminal, pipe mode), Gemma 3n (phone, on-device), MediaPipe (GPU inference) |
+| AI | Claude Code (terminal, pipe mode), Cerebras (fast voice routing), Claude (smart tasks) |
 | Memory | Dream Cycle (6h consolidation), ΠΑΝ Remembers (session continuity), reconnect tokens |
 | Security | Tailscale (WireGuard), auto-auth keys, data anonymization, SQLCipher |
 | Pendant | ESP32-S3, I2C/SPI sensors, BLE 5.0 |
@@ -272,7 +270,7 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 | `service/src/carrier.js` | Carrier runtime — owns HTTP, PTY, WebSocket. Hot-swap orchestrator. |
 | `service/src/server.js` | Craft (swappable server) — routes, API, boot sequence |
 | `service/src/terminal.js` | PTY sessions, WebSocket server, reconnect tokens, pipe mode |
-| `service/src/mcp-server.js` | MCP server — 7 tools + router for Claude Code integration |
+| `service/src/mcp-server.js` | MCP server — 8 tools + unified router (20+ actions) for Claude Code integration |
 | `service/src/steward.js` | Service orchestrator — health checks every 60s, auto-restart |
 | `service/src/platform.js` | Cross-platform abstractions (paths, shell, process management) |
 | `service/src/reap-orphans.js` | Kills orphaned bash/claude processes from prior runs |
@@ -285,8 +283,8 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 ## Status
 
 ### Working
-- Voice conversation across phone + PC (on-device + server)
-- SvelteKit dashboard with 11 pages (terminal, atlas, crucible, projects, sensors, data, settings, automation, conversations, chat)
+- Voice conversation across phone + PC (phone mic → server → Cerebras/Claude → response)
+- SvelteKit dashboard with 17 pages (terminal, atlas, atlas-v2, crucible, projects, sensors, data, settings, automation, conversations, comms, compose, call, kanban, kronos, timeline, terminal-dev)
 - Carrier/Craft zero-downtime hot-swap with 30s auto-rollback
 - Lifeboat rollback system (dashboard overlay, API, phone button)
 - Crucible shadow traffic comparison (launch shadow, mirror traffic, promote/reject)
@@ -294,7 +292,6 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 - ΠΑΝ Remembers session continuity (briefing injection, reconnect tokens)
 - Cross-device command routing (phone → PC → browser)
 - Remote access via Tailscale with auto-authentication
-- On-device AI (Gemma 3n via MediaPipe GPU, ~5s responses)
 - FTS5 full-text search across all events and conversations
 - Data anonymization (PII stripping before cloud AI calls)
 - Project tracking with milestones, tasks, drag-and-drop
