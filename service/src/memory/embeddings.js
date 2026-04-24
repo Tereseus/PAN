@@ -4,7 +4,7 @@
 // 0.6B params, 100+ languages, ~0.5 GB download.
 // Falls back to simple TF-IDF-like keyword vectors when Ollama is down.
 
-const OLLAMA_URL = 'http://localhost:11434';
+import { getOllamaUrl } from '../db.js';
 const EMBED_MODEL = 'qwen3-embedding';
 const EMBED_DIM = 1024;
 
@@ -13,7 +13,7 @@ let ollamaAvailable = null; // null = unknown, true/false = cached
 // Check if Ollama is running and has the embedding model
 async function checkOllama() {
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) return false;
     const data = await res.json();
     const hasModel = data.models?.some(m => m.name.startsWith(EMBED_MODEL));
@@ -28,7 +28,7 @@ async function checkOllama() {
 
 // Get embedding from Ollama
 async function embedOllama(text) {
-  const res = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+  const res = await fetch(`${getOllamaUrl()}/api/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 8000) }),

@@ -264,7 +264,7 @@ async function scout() {
 
       for (const search of uniqueSearches) {
         try {
-          const { stdout } = await execAsync('npx', ['a2asearch', search.topic, '--json'], { timeout: 15000, shell: true });
+          const { stdout } = await execAsync('npx', ['a2asearch', search.topic, '--json'], { timeout: 15000, shell: true, windowsHide: true });
           if (!stdout.trim()) continue;
 
           let results = [];

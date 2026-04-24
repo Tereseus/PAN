@@ -97,6 +97,7 @@ Implement the task now.`;
     const proc = spawn('claude', ['-p', '--model', 'haiku', '--permission-mode', 'auto', prompt], {
       cwd: projectPath,
       shell: true,
+      windowsHide: true,
       timeout: 300000, // 5 minute max
       env: { ...process.env }
     });
