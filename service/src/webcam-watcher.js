@@ -16,6 +16,13 @@ import { tmpdir } from 'os';
 import { analyzeImage } from './llm.js';
 import { run, get } from './db.js';
 
+function getCommanderName() {
+  try {
+    const u = get("SELECT display_nickname, display_name FROM users WHERE id = 1");
+    return u?.display_nickname || u?.display_name || 'the user';
+  } catch { return 'the user'; }
+}
+
 const INTERVAL_MS    = 60_000;   // webcam frame every 60s (less aggressive than screen)
 const STALE_MS       = 120_000;  // context older than 2min is stale for intuition
 const IDLE_THRESH    = 10 * 60_000; // skip if idle >10min (away from desk)
@@ -91,7 +98,7 @@ async function runCapture() {
       '"emotion": "focused|relaxed|tired|stressed|happy|neutral|away", ' +
       '"people_count": 0, "note": "one short observation"}\n\n' +
       'Rules: presence=yes only if a person is clearly visible. ' +
-      'identity=Tzuri if you recognize the user (young man, home office). ' +
+      `identity=${getCommanderName()} if you recognize the user (young man, home office). ` +
       'emotion from face/posture. people_count = total visible people. ' +
       'note = one detail (glasses on, leaning back, looking away, etc). ' +
       'Reply with ONLY the JSON object, no other text.',
