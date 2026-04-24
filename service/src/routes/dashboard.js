@@ -1,8 +1,7 @@
 import { Router } from 'express';
 import { all, get, run, insert, DB_PATH, allScoped, getScoped, runScoped, insertScoped, getOllamaUrl } from '../db.js';
 import { getAtlasData } from '../steward.js';
-import { getScreenWatcherStatus } from '../screen-watcher.js';
-import { getWebcamStatus } from '../webcam-watcher.js';
+// screen-watcher and webcam-watcher status shown in Intuition panel, not Services
 import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -896,43 +895,6 @@ router.get('/api/services', async (req, res) => {
   for (const def of coreServiceDefs) {
     const { status, detail } = stewardStatus(def.id);
     services.push({ category: 'PAN Core', name: def.name, role: def.role, status, detail });
-  }
-
-  // Screen Watcher — vision pipeline (Tauri→FFmpeg→AI)
-  try {
-    const sw = getScreenWatcherStatus();
-    const swDetail = sw.running
-      ? (sw.lastCapture
-          ? `Last capture ${sw.lastCapture.ageSec}s ago${sw.lastCapture.windowTitle ? ` · ${sw.lastCapture.windowTitle.slice(0,30)}` : ''}`
-          : 'Running · no captures yet')
-      : 'Stopped';
-    services.push({
-      category: 'PAN Core', name: 'Screen Watcher',
-      role: 'Desktop vision · screenshot every 30s → AI context',
-      status: sw.running ? 'up' : 'down',
-      detail: swDetail,
-    });
-  } catch {
-    services.push({ category: 'PAN Core', name: 'Screen Watcher', role: 'Desktop vision pipeline', status: 'unknown', detail: 'Status unavailable' });
-  }
-
-  // Webcam Watcher — presence + identity via PC webcam
-  try {
-    const wc = getWebcamStatus();
-    const lastCtx = wc.lastCapture;
-    const wcDetail = wc.running
-      ? (lastCtx
-          ? `${lastCtx.presence === 'yes' ? `${lastCtx.identity ?? 'unknown'} at desk` : lastCtx.presence === 'no' ? 'Desk empty' : 'Unclear'} · ${Math.round((lastCtx.ageMs || 0) / 1000)}s ago`
-          : 'Running · no captures yet')
-      : 'Stopped';
-    services.push({
-      category: 'PAN Core', name: 'Webcam Watcher',
-      role: 'Presence + identity · webcam frame every 60s → AI context',
-      status: wc.running ? 'up' : 'down',
-      detail: wcDetail,
-    });
-  } catch {
-    services.push({ category: 'PAN Core', name: 'Webcam Watcher', role: 'Presence + identity pipeline', status: 'unknown', detail: 'Status unavailable' });
   }
 
   // AI / LLM Services

@@ -4549,6 +4549,7 @@ app.get('/api/v1/logs/summary', (req, res) => {
 });
 
 // Restart endpoint — always does a full process restart that reloads all code from disk.
+
 // The node-windows wrapper automatically revives the process after exit.
 app.post('/api/admin/restart', async (req, res) => {
   if (IS_CRAFT) {
