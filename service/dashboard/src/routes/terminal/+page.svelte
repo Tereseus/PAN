@@ -5912,28 +5912,31 @@
 							</div>
 						{/if}
 
-						<!-- Screen Vision -->
-						{#if data.camera}
-							<div class="svc-category">Screen Vision</div>
-							<div class="int-axes">
-								<div class="int-axis" style="flex-wrap:wrap">
-									<span class="int-label">👁 Seeing</span>
-									<span class="int-val small" style="color:#cba6f7;white-space:normal">{data.camera}</span>
-								</div>
-							</div>
-						{/if}
-
-						<!-- Data Sources -->
-						<div class="svc-category">Data Sources</div>
+						<!-- Identity — who is here, what are they doing -->
+						<div class="svc-category">Identity</div>
 						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Terminal</span><span class="int-val small">{data.terminal || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Chat</span><span class="int-val small">{data.conversations || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Events</span><span class="int-val small">{data.events || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Apps</span><span class="int-val small">{data.apps || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Sensors</span><span class="int-val small">{data.sensors || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Screen</span><span class="int-val small">{data.camera || '⏳ no capture yet'}</span></div>
-							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
-							<div class="int-axis"><span class="int-label">Location</span><span class="int-val small">{data.location || '—'}</span></div>
+							{@const wc = sig.webcam_context}
+							{@const sc = sig.screen_context}
+							<!-- Webcam presence + face ID -->
+							<div class="int-axis">
+								<span class="int-label">Present</span>
+								<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
+									{wc ? (wc.presence === 'yes' ? (wc.identity || 'someone') : wc.presence === 'no' ? 'desk empty' : 'unclear') : '⏳ no capture yet'}
+								</span>
+							</div>
+							{#if wc?.emotion && wc.presence === 'yes'}
+								<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
+							{/if}
+							{#if wc?.people_count > 1}
+								<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
+							{/if}
+							<!-- Screen activity -->
+							<div class="int-axis" style="flex-wrap:wrap">
+								<span class="int-label">Screen</span>
+								<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : (data.camera || '⏳ no capture yet')}</span>
+							</div>
+							{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
+							{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
 						</div>
 
 						<!-- Voice Identity -->
@@ -7113,16 +7116,29 @@
 							</div>
 						{/if}
 
-						<div class="svc-category">Data Sources</div>
+						<!-- Identity — who is here, what are they doing -->
+						<div class="svc-category">Identity</div>
 						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Terminal</span><span class="int-val small">{data.terminal || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Chat</span><span class="int-val small">{data.conversations || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Events</span><span class="int-val small">{data.events || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Apps</span><span class="int-val small">{data.apps || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Sensors</span><span class="int-val small">{data.sensors || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Screen</span><span class="int-val small">{data.camera || '⏳ no capture yet'}</span></div>
-							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
-							<div class="int-axis"><span class="int-label">Location</span><span class="int-val small">{data.location || '—'}</span></div>
+							{@const wc = sig.webcam_context}
+							{@const sc = sig.screen_context}
+							<div class="int-axis">
+								<span class="int-label">Present</span>
+								<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
+									{wc ? (wc.presence === 'yes' ? (wc.identity || 'someone') : wc.presence === 'no' ? 'desk empty' : 'unclear') : '⏳ no capture yet'}
+								</span>
+							</div>
+							{#if wc?.emotion && wc.presence === 'yes'}
+								<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
+							{/if}
+							{#if wc?.people_count > 1}
+								<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
+							{/if}
+							<div class="int-axis" style="flex-wrap:wrap">
+								<span class="int-label">Screen</span>
+								<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : (data.camera || '⏳ no capture yet')}</span>
+							</div>
+							{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
+							{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
 						</div>
 
 						<!-- Voice Identity -->
