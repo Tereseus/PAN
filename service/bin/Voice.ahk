@@ -7,6 +7,63 @@ panTriggerFile := A_Temp "\pan_voice_trigger"
 panStopFile := A_Temp "\pan_dictate.wav.stop"
 panBusy := false
 
+; === Blank-screen watchdog ===
+; Checks every 2s if ANY PAN Tauri window went blank (Craft swap reload stuck).
+; Watches: "PAN Dashboard", "PAN Terminal", "PAN Comms", or any "PAN " Tauri window.
+; Logic: search center area for near-white pixels (text/UI elements).
+;   - Loaded page always has bright elements (tabs, text, icons).
+;   - Blank/loading page shows only the #0A0A0F Tauri background (R=10, G=10, B=15).
+; After 6 consecutive seconds of blank following a loaded state → auto F5.
+dashBlankTicks := 0
+dashWasLoaded  := false
+SetTimer(WatchDashboard, 2000)
+
+; Find any open PAN Tauri window — checks known titles + falls back to any "PAN " window
+FindPanWindow() {
+    for title in ["PAN Dashboard", "PAN Terminal", "PAN Comms", "PAN Settings", "PAN "] {
+        hwnd := WinExist(title)
+        if hwnd
+            return hwnd
+    }
+    return 0
+}
+
+WatchDashboard() {
+    global dashBlankTicks, dashWasLoaded
+    hwnd := FindPanWindow()
+    if (!hwnd) {
+        dashBlankTicks := 0
+        return
+    }
+    if (DashHasContent(hwnd)) {
+        dashBlankTicks := 0
+        dashWasLoaded  := true
+    } else if (dashWasLoaded) {
+        ; Was loaded, now blank — possible stuck reload
+        dashBlankTicks++
+        if (dashBlankTicks >= 3) {  ; 3 × 2s = 6 seconds blank
+            WinActivate("ahk_id " hwnd)
+            Sleep(120)
+            Send "{F5}"
+            dashBlankTicks := 0
+        }
+    }
+    ; If never loaded yet, don't auto-press (could be intentional startup)
+}
+
+; Returns true if the window has bright content (text, UI elements).
+; Near-white threshold (variation 75): catches #cdd6f4 text (R205,G214,B244)
+; but NOT the #0A0A0F blank background (R=10, too far from 255).
+DashHasContent(hwnd) {
+    WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
+    if (!ww || ww < 100) return true  ; can't measure — assume OK
+    x1 := wx + 60
+    y1 := wy + 40   ; skip OS title bar
+    x2 := wx + ww - 60
+    y2 := wy + wh - 40
+    return PixelSearch(&px, &py, x1, y1, x2, y2, 0xFFFFFF, 75, "Fast")
+}
+
 ; === Signal file for dashboard mic button ===
 SetTimer(CheckDashboardMicTrigger, 250)
 

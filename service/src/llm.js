@@ -2,7 +2,7 @@
 // Supports Anthropic, Gemini, Cerebras, Ollama, and LM Studio.
 // Routes based on Settings > AI & Usage.
 
-import { insert, get } from './db.js';
+import { insert, get, getOllamaUrl } from './db.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
@@ -186,7 +186,7 @@ async function callOpenAIEndpoint(messages, modelId, url, apiKey, maxTokens, sig
 
 async function callOpenAICompat(prompt, messages, config, maxTokens, signal) {
   const isOllama = config.provider === 'ollama';
-  const url = (config.url || (isOllama ? 'http://localhost:11434' : 'http://localhost:1234')).replace(/\/$/, '') + (isOllama ? '/api/chat' : '/v1/chat/completions');
+  const url = (config.url || (isOllama ? getOllamaUrl() : 'http://localhost:1234')).replace(/\/$/, '') + (isOllama ? '/api/chat' : '/v1/chat/completions');
   
   const headers = { 'Content-Type': 'application/json' };
   if (config.api_key) headers['Authorization'] = `Bearer ${config.api_key}`;
@@ -288,41 +288,10 @@ export const claude = askAI;
 
 // --- Vision (screenshot understanding via local Qwen2.5-VL or cloud API fallback) ---
 
-const OLLAMA_URL = 'http://localhost:11434';
 const VISION_MODEL = 'qwen2.5vl:3b';
 
 export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 30000 } = {}) {
-  // Try local Qwen2.5-VL first (free, fast, no API key)
-  try {
-    const ollamaRes = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        prompt,
-        images: [imageBase64],
-        stream: false,
-        options: { num_predict: 500 },
-      }),
-      signal: AbortSignal.timeout(timeout),
-    });
-
-    if (ollamaRes.ok) {
-      const data = await ollamaRes.json();
-      const text = data.response?.trim();
-      if (text) {
-        console.log(`[PAN Vision] ${VISION_MODEL} responded (${text.length} chars)`);
-        logUsage(caller, `ollama:${VISION_MODEL}`, {
-          input_tokens: data.prompt_eval_count || 0,
-          output_tokens: data.eval_count || 0,
-        }, prompt.slice(0, 100));
-        return text;
-      }
-    }
-  } catch (e) {
-    console.warn(`[PAN Vision] ${VISION_MODEL} failed: ${e.message} — trying cloud API fallback`);
-  }
-
+  // Ollama/local vision DISABLED — consumes too much memory. Using cloud API directly.
   // Fallback: Claude API with vision (requires API key)
   const apiKey = getApiKey('anthropic');
   if (apiKey) {

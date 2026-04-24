@@ -60,6 +60,25 @@ CREATE TABLE IF NOT EXISTS devices (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- Device resource metrics — CPU, RAM, disk pushed by agent scripts every 30s.
+-- One row per device per sample. Keep last 24h via scheduled cleanup.
+CREATE TABLE IF NOT EXISTS device_metrics (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id   TEXT NOT NULL,
+    cpu_pct     REAL,
+    ram_pct     REAL,
+    ram_used_mb INTEGER,
+    ram_total_mb INTEGER,
+    disk_pct    REAL,
+    disk_free_gb REAL,
+    net_up_kbps REAL,
+    net_down_kbps REAL,
+    platform    TEXT,               -- 'windows' | 'linux' | 'macos'
+    extra       TEXT DEFAULT '{}',  -- JSON blob for future fields
+    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_device_metrics_device ON device_metrics(device_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS command_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_device TEXT NOT NULL,

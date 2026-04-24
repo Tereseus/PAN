@@ -185,7 +185,19 @@ function send(obj) {
   }
 }
 
-function sendHeartbeat() {
+function probeServices() {
+  return new Promise((resolve) => {
+    const req = http.get('http://localhost:11434/api/tags', { timeout: 2000 }, (res) => {
+      res.resume(); // drain response
+      resolve([{ name: 'ollama', port: 11434, status: 'up', url: 'http://localhost:11434' }]);
+    });
+    req.on('error', () => resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434' }]));
+    req.on('timeout', () => { req.destroy(); resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434' }]); });
+  });
+}
+
+async function sendHeartbeat() {
+  const services = await probeServices();
   send({
     type: 'heartbeat',
     device_id: DEVICE_ID,
@@ -193,6 +205,7 @@ function sendHeartbeat() {
     mem_total_mb: Math.round(totalmem() / 1024 / 1024),
     uptime_s: Math.round(process.uptime()),
     timestamp: Date.now(),
+    services,
   });
 }
 
@@ -622,7 +635,14 @@ function startHttpMode() {
   (async function heartbeatLoop() {
     while (true) {
       try {
-        await httpRequest('POST', '/api/v1/client/heartbeat', { device_id: DEVICE_ID });
+        const services = await probeServices();
+        await httpRequest('POST', '/api/v1/client/heartbeat', {
+          device_id: DEVICE_ID,
+          mem_free_mb: Math.round(freemem() / 1024 / 1024),
+          mem_total_mb: Math.round(totalmem() / 1024 / 1024),
+          uptime_s: Math.round(process.uptime()),
+          services,
+        });
       } catch {}
       await new Promise(r => setTimeout(r, 20_000));
     }

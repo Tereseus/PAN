@@ -22,9 +22,19 @@
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
-import { db, get, all } from './db.js';
+import { db, get, all, getOllamaUrl } from './db.js';
 import { askAI } from './llm.js';
 import { getLatestScreenContext, getLatestScreenContextFromDB } from './screen-watcher.js';
+// Lazy import — terminal server may not be initialized when intuition.js is first loaded.
+// We call it at runtime (after first snapshot) so the WS server is always ready by then.
+let _broadcast = null;
+async function getBroadcast() {
+  if (!_broadcast) {
+    const { broadcastNotification } = await import('./terminal.js');
+    _broadcast = broadcastNotification;
+  }
+  return _broadcast;
+}
 
 // ─── Config ───
 const PAN_PORT = parseInt(process.env.PAN_CARRIER_PORT || '7777');
@@ -546,7 +556,9 @@ function buildSnapshot(trigger = 'heartbeat') {
     events: recentEvents.length > 0
       ? `${recentEvents.length} Events (${[...new Set(recentEvents.map(e => e.event_type))].slice(0, 5).join(', ')})`
       : 'No Recent Events',
-    camera: null,                            // ⏳ pendant
+    camera: screenCtx
+      ? `${screenCtx.description} (${Math.round((Date.now() - screenCtx.ts) / 1000)}s ago)`
+      : null,                                // ⏳ pendant fallback
     audio: null,                             // ⏳ pendant
     sensors: sensorsActive.size > 0 ? `Active: ${[...sensorsActive].join(', ')}` : 'None Active',
     location: where ? titleCase(where) : null,
@@ -751,6 +763,9 @@ function persistSnapshot(snap, trigger) {
     _writeErrors++;
     console.warn('[Intuition] file write failed:', e.message);
   }
+
+  // Push to dashboard over WebSocket — no polling needed, widgets update instantly.
+  getBroadcast().then(fn => fn('widget_update', { widget: 'intuition' })).catch(() => {});
 }
 
 // ─── Cerebras axis classification (async, non-blocking) ───
@@ -798,7 +813,7 @@ Classify:
 
 // Call Ollama directly (bypass askAI for local models)
 async function callOllama(prompt, model = 'qwen3:4b') {
-  const resp = await fetch('http://localhost:11434/api/chat', {
+  const resp = await fetch(`${getOllamaUrl()}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -899,6 +914,7 @@ export function tickIntuition(trigger = 'heartbeat') {
     // Fire async classification (non-blocking, updates snapshot later)
     classifyAxes(snap).catch(e => console.warn('[Intuition] classifyAxes unhandled:', e.message));
 
+    if (_onTickCallback) _onTickCallback();
     return snap;
   } catch (e) {
     console.warn('[Intuition] tick failed:', e.message);
@@ -935,9 +951,12 @@ export function getSnapshotHistory(limit = 50) {
   });
 }
 
+let _onTickCallback = null;
+
 // ─── Service lifecycle (for Steward) ───
-export function startIntuition(intervalMs = INTUITION_TICK_MS) {
+export function startIntuition(intervalMs = INTUITION_TICK_MS, onTick = null) {
   if (_running) return;
+  _onTickCallback = onTick;
   ensureIntuitionSchema(db);
   _running = true;
   // Immediate tick so dashboards aren't empty

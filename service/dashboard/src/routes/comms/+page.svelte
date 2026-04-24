@@ -37,6 +37,40 @@
 		view = params.get('view') || 'mail';
 		document.title = view === 'contacts' ? 'Contacts' : view === 'mail' ? 'Mail' : 'Calendar';
 		loadData();
+
+		// ─── Live polling ───
+		// Poll active thread for new messages every 3s; refresh contact list every 10s.
+		let pollTick = 0;
+		const pollInterval = setInterval(async () => {
+			pollTick++;
+			// Refresh active thread
+			if (chatThreadId) {
+				try {
+					const msgs = await api(`/api/v1/chat/threads/${chatThreadId}/messages`);
+					if (Array.isArray(msgs) && msgs.length !== chatMessages.length) {
+						const atBottom = !messagesEl || messagesEl.scrollTop + messagesEl.clientHeight >= messagesEl.scrollHeight - 40;
+						chatMessages = msgs;
+						if (atBottom) {
+							await tick();
+							if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+						}
+					}
+				} catch {}
+			}
+			// Refresh contact list + mail unread counts every 10s
+			if (pollTick % (10000 / 3000) === 0) {
+				try {
+					if (view === 'contacts') {
+						const fresh = await api('/api/v1/chat/contacts');
+						contacts = fresh;
+					} else if (view === 'mail') {
+						await loadMail();
+					}
+				} catch {}
+			}
+		}, 3000);
+
+		return () => clearInterval(pollInterval);
 	});
 
 	async function api(path, opts) {
@@ -103,6 +137,30 @@
 			chatMessages = [...chatMessages, { id: res.id, sender_id: 'self', body, body_type: 'text', created_at: res.created_at }];
 			await tick();
 			if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+
+			// ΠΑΝ persona reply
+			if (chatThreadId === 'thread-pan-system') {
+				try {
+					const reply = await api('/api/v1/chat/pan-reply', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ message: body })
+					});
+					if (reply?.reply) {
+						chatMessages = [...chatMessages, {
+							id: reply.reply.id,
+							sender_id: 'contact-pan-system',
+							body: reply.reply.body,
+							body_type: 'text',
+							created_at: reply.reply.created_at
+						}];
+						await tick();
+						if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+					}
+				} catch (e) {
+					console.error('ΠΑΝ reply failed:', e);
+				}
+			}
 		} catch (e) {
 			console.error('Send failed:', e);
 		}
@@ -142,7 +200,10 @@
 
 	function formatDate(ts) {
 		if (!ts) return '';
-		const d = new Date(ts);
+		// SQLite datetime('now') returns "2026-04-22 21:13:10" (UTC, no timezone suffix).
+		// V8/Chromium parses space-separated datetimes as LOCAL time — append 'Z' to force UTC.
+		const normalized = typeof ts === 'string' ? ts.replace(' ', 'T').replace(/Z?$/, 'Z') : ts;
+		const d = new Date(normalized);
 		const now = new Date();
 		if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 		return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });

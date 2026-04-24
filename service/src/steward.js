@@ -14,7 +14,7 @@
 //
 // Atlas reads from Steward's registry to render the service graph.
 
-import { get, all, run, insert } from './db.js';
+import { get, all, run, insert, getOllamaUrl } from './db.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startIntuition, stopIntuition } from './intuition.js';
 import { startScout, stopScout } from './scout.js';
@@ -56,33 +56,20 @@ const services = [
     id: 'ollama',
     name: 'Local Intelligence',
     technicalName: 'Ollama',
-    description: 'Local model server for embeddings + inference (qwen3-embedding, qwen3:4b)',
+    get description() { return `Ollama model server at ${getOllamaUrl()} — embeddings + inference`; },
     modelTier: 'none',
     modelMinSize: 'N/A',
     modelCurrent: 'N/A (serves models, not a consumer)',
     port: 11434,
-    healthCheck: 'port',
+    healthCheck: 'url',
     healthEndpoint: '/api/tags',
     bootOrder: 1,
     dependsOn: [],
     interval: null, // always-on process
     startFn: async () => {
-      // Check Ollama is installed before trying to start
-      try { execSync('ollama --version', { stdio: 'pipe', timeout: 3000, windowsHide: true }); }
-      catch { throw new Error('Ollama not installed — install from ollama.com'); }
-      // Spawn detached so it survives if PAN restarts
-      const child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', shell: true, windowsHide: true });
-      child.unref();
-      // Wait up to 15s for it to come up
-      const start = Date.now();
-      while (Date.now() - start < 15000) {
-        await new Promise(r => setTimeout(r, 1000));
-        try {
-          const r = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(2000) });
-          if (r.ok) { console.log('[Steward] Ollama started successfully'); return; }
-        } catch {}
-      }
-      throw new Error('Ollama started but not responding after 15s');
+      // AUTO-START DISABLED — Ollama consumes too much memory. Start manually if needed.
+      console.log('[Steward] Ollama auto-start disabled. Run `ollama serve` manually if needed.');
+      throw new Error('Ollama auto-start disabled — run `ollama serve` manually');
     },
     stopFn: null,
     _status: 'unknown',
@@ -182,9 +169,9 @@ const services = [
     name: 'Augur',
     technicalName: 'Classifier',
     description: 'Event processor — marks events, triggers Dream when enough accumulate',
-    modelTier: 'none',
-    modelMinSize: 'N/A',
-    modelCurrent: 'N/A',
+    modelTier: 'reasoning',
+    modelMinSize: '8B',
+    modelCurrent: 'cerebras:qwen-3-235b',
     port: null,
     healthCheck: 'interval',
     bootOrder: 5,
@@ -203,16 +190,16 @@ const services = [
     name: 'Intuition',
     technicalName: 'Dimensional State Daemon',
     description: 'Live situational state — fuses events+wrap+sensors into what Commander is doing right now. Read by PAN voice layer, Forge/AutoDev, and Atlas.',
-    modelTier: 'none',                                // v1 = dumb aggregator; v2 adds Cerebras classification
-    modelMinSize: 'N/A',
-    modelCurrent: 'N/A',
+    modelTier: 'reasoning',
+    modelMinSize: '8B',
+    modelCurrent: 'cerebras:qwen-3-235b',
     port: null,
     healthCheck: 'interval',
     bootOrder: 5,
     dependsOn: [],
     interval: '30s',
     intervalMs: 30 * 1000,
-    startFn: () => startIntuition(30 * 1000),
+    startFn: () => startIntuition(30 * 1000, () => reportServiceRun('intuition')),
     stopFn: () => stopIntuition(),
     _status: 'stopped',
     _lastCheck: null,
@@ -226,7 +213,7 @@ const services = [
     description: 'Tech stack discovery from project files (package.json, Cargo.toml, etc.)',
     modelTier: 'none',
     modelMinSize: 'N/A',
-    modelCurrent: 'N/A',
+    modelCurrent: 'code analysis only · no model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 6,
@@ -482,6 +469,17 @@ async function checkServiceHealth(svc) {
       case 'port': {
         const result = await checkPortHealth(svc.port, svc.healthEndpoint || '/');
         svc._status = result.up ? 'running' : 'down';
+        break;
+      }
+      case 'url': {
+        // Health check against a full URL — supports remote hosts (e.g. Ollama on mini PC)
+        try {
+          const url = getOllamaUrl() + (svc.healthEndpoint || '/');
+          const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+          svc._status = res.ok ? 'running' : 'down';
+        } catch {
+          svc._status = 'down';
+        }
         break;
       }
       case 'process': {
@@ -747,7 +745,9 @@ async function healthCheck() {
       ':data': JSON.stringify({
         timestamp: Date.now(),
         services: services.map(s => ({
-          id: s.id, status: s._status, lastCheck: s._lastCheck, lastError: s._lastError
+          id: s.id, status: s._status, lastCheck: s._lastCheck, lastError: s._lastError,
+          modelCurrent: (s.modelTier === 'reasoning' ? getConfiguredModel(s.id) : null) || s.modelCurrent,
+          modelTier: s.modelTier,
         })),
         summary
       })

@@ -3,6 +3,7 @@
 	import { base } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { isSidebarCollapsed, toggleSidebar, setPanMode, getPanMode } from '$lib/stores.svelte.js';
+	import { loadTheme, applyTheme } from '$lib/theme.js';
 
 	let { children } = $props();
 
@@ -274,7 +275,25 @@
 
 	// Load contacts on mount if panel was left open
 	onMount(() => {
+		currentTheme = loadTheme();
 		if (commsOpen) loadCommsContacts();
+
+		// Vibe theme: cycle background images every 9s with crossfade
+		let vibeInterval = null;
+		const startVibeCycle = () => {
+			if (vibeInterval) clearInterval(vibeInterval);
+			vibeInterval = setInterval(() => { vibeBgIndex = (vibeBgIndex + 1) % VIBE_IMAGES.length; }, 9000);
+		};
+		if (currentTheme === 'vibe') startVibeCycle();
+		// Re-start cycle when theme changes to vibe
+		const origApply = window.__panApplyTheme;
+		window.__panApplyTheme = (name) => {
+			if (origApply) origApply(name);
+			currentTheme = name;
+			if (name === 'vibe') startVibeCycle();
+			else if (vibeInterval) { clearInterval(vibeInterval); vibeInterval = null; }
+		};
+		return () => { if (vibeInterval) clearInterval(vibeInterval); };
 	});
 
 	async function commsClickContact(contact) {
@@ -554,11 +573,14 @@
 	}
 
 	// Branding — customizable logo image or text (cached in localStorage)
-	let brandingLogo = $state('Π');
+	let currentTheme = $state('cool-guy');
+	let vibeBgIndex = $state(0);
+	const VIBE_IMAGES = ['/dashboard/vibe-1.png', '/dashboard/vibe-2.png', '/dashboard/vibe-3.png', '/dashboard/vibe-4.png', '/dashboard/vibe-5.png', '/dashboard/vibe-6.png', '/dashboard/vibe-7.png'];
+	let brandingLogo = $state('ΠΑΝ');
 	let brandingImage = $state('');
 	if (typeof window !== 'undefined') {
 		const bl = localStorage.getItem('pan_branding_logo');
-		if (bl) brandingLogo = bl.charAt(0);
+		if (bl) brandingLogo = bl;
 		const bi = localStorage.getItem('pan_branding_image');
 		if (bi) brandingImage = bi;
 	}
@@ -566,7 +588,7 @@
 	function handleBrandingChange(e) {
 		const logo = e.detail?.logo;
 		const image = e.detail?.image;
-		if (logo) brandingLogo = logo.charAt(0);
+		if (logo) brandingLogo = logo;
 		brandingImage = image || '';
 	}
 
@@ -697,12 +719,22 @@
 	{@render children()}
 {:else}
 <div class="shell">
+	{#if currentTheme === 'vibe'}
+		<div class="vibe-bg-carousel" aria-hidden="true">
+			{#each VIBE_IMAGES as src, i}
+				<div class="vibe-bg-slide" class:active={vibeBgIndex === i} style="background-image: url('{src}')"></div>
+			{/each}
+		</div>
+	{/if}
 	<nav class="sidebar" class:collapsed class:mobile-open={mobileMenuOpen} style={collapsed ? '' : `width: ${sidebarWidth}px; min-width: ${sidebarWidth}px`}>
 		<div class="logo">
 			{#if brandingImage}
 				<img class="logo-img" src={brandingImage} alt="Logo" />
 			{:else}
 				<span class="logo-pi">{brandingLogo}</span>
+			{/if}
+			{#if currentTheme === 'vibe'}
+				<span class="vibe-palm" title="It's a Vibe 🌴">🌴</span>
 			{/if}
 			<span
 				class="status"
@@ -1055,8 +1087,8 @@
 
 	:global(body) {
 		font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-		background: #0a0a0f;
-		color: #cdd6f4;
+		background: var(--pan-bg, #0a0a0f);
+		color: var(--pan-text, #cdd6f4);
 		overflow: hidden;
 		height: 100%;
 	}
@@ -1076,7 +1108,7 @@
 	.sidebar {
 		width: 210px;
 		min-width: 210px;
-		background: #12121a;
+		background: var(--pan-surface, #12121a);
 		border-right: none;
 		display: flex;
 		flex-direction: column;
@@ -1087,12 +1119,12 @@
 	.sidebar-resize-handle {
 		width: 4px;
 		cursor: col-resize;
-		background: #1e1e2e;
+		background: var(--pan-base, #1e1e2e);
 		flex-shrink: 0;
 		transition: background 0.15s;
 	}
 	.sidebar-resize-handle:hover {
-		background: #89b4fa;
+		background: var(--pan-accent, #89b4fa);
 	}
 
 	.sidebar.collapsed {
@@ -1105,7 +1137,7 @@
 		align-items: center;
 		gap: 6px;
 		padding: 18px 14px 16px;
-		border-bottom: 1px solid #1e1e2e;
+		border-bottom: 1px solid var(--pan-base, #1e1e2e);
 		overflow: hidden;
 	}
 
@@ -1115,11 +1147,16 @@
 	}
 
 	.logo-pi {
-		font-family: serif;
-		font-size: 24px;
-		font-weight: 700;
-		color: #89b4fa;
+		font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+		font-size: 28px;
+		font-weight: 900;
+		color: var(--pan-logo-color, #89b4fa);
+		text-shadow: var(--pan-logo-shadow, 0 0 18px rgba(137,180,250,0.5));
 		flex-shrink: 0;
+		letter-spacing: 3px;
+		line-height: 1;
+		user-select: none;
+		display: inline-block;
 	}
 
 	.logo-img {
@@ -1139,13 +1176,13 @@
 		cursor: pointer;
 		padding: 2px 4px;
 		font-size: 14px;
-		color: #6c7086;
+		color: var(--pan-faint, #6c7086);
 		transition: color 0.15s, transform 0.2s;
 		margin-left: auto;
 	}
 
-	.logo-refresh:hover { color: #89b4fa; transform: rotate(90deg); }
-	.logo-refresh:active { color: #cdd6f4; }
+	.logo-refresh:hover { color: var(--pan-accent, #89b4fa); transform: rotate(90deg); }
+	.logo-refresh:active { color: var(--pan-text, #cdd6f4); }
 
 	.status {
 		width: 8px;
@@ -2471,6 +2508,16 @@
 		flex: 1;
 	}
 
+	.vibe-sticker {
+		height: 30px;
+		width: auto;
+		opacity: 0.88;
+		flex-shrink: 0;
+		border-radius: 4px;
+		pointer-events: none;
+		user-select: none;
+	}
+
 	.topbar-btn {
 		background: none;
 		border: 1px solid #1e1e2e;
@@ -2580,5 +2627,505 @@
 		.topbar-title {
 			font-size: 14px;
 		}
+	}
+
+	/* ── Vibe palm decoration ── */
+	.vibe-palm {
+		font-size: 18px;
+		margin-left: 4px;
+		animation: sway 3s ease-in-out infinite;
+	}
+	@keyframes sway {
+		0%, 100% { transform: rotate(-5deg); }
+		50% { transform: rotate(5deg); }
+	}
+
+	/* ══════════════════════════════════════════════
+	   THEME OVERRIDES
+	   ══════════════════════════════════════════════ */
+
+	/* ── BLINDING LIGHT: filter inversion trick ──
+	   One rule covers all 250+ classes instantly.
+	   filter: invert+hue-rotate flips dark→light.
+	   Terminal gets double-invert to stay dark.
+	   Images/canvas get double-invert to restore.  */
+	:global([data-theme="blinding-light"] .shell) {
+		filter: invert(1) hue-rotate(180deg);
+	}
+	:global([data-theme="blinding-light"] .term-container) {
+		filter: invert(1) hue-rotate(180deg); /* cancel parent = stays dark */
+	}
+	:global([data-theme="blinding-light"] .shell img),
+	:global([data-theme="blinding-light"] .shell video),
+	:global([data-theme="blinding-light"] .shell canvas:not(.term-screen)),
+	:global([data-theme="blinding-light"] .vibe-palm) {
+		filter: invert(1) hue-rotate(180deg); /* cancel for media */
+	}
+
+	/* ── SILVER PLATTER: comprehensive targeted overrides ── */
+
+	/* Topbar ("Terminal" title bar) */
+	:global([data-theme="silver-platter"] .topbar) {
+		background: var(--pan-surface) !important;
+		border-bottom: 1px solid var(--pan-base) !important;
+	}
+	:global([data-theme="silver-platter"] .topbar-title) {
+		color: var(--pan-faint) !important;
+	}
+
+	/* Toolbar & tab bar */
+	:global([data-theme="silver-platter"] .toolbar) {
+		background: var(--pan-surface) !important; color: var(--pan-text) !important;
+		border-bottom: 1px solid var(--pan-base) !important;
+	}
+	:global([data-theme="silver-platter"] .tab-bar) {
+		background: var(--pan-surface) !important;
+		border-bottom: 1px solid var(--pan-base) !important;
+	}
+	:global([data-theme="silver-platter"] .term-tab) { color: var(--pan-faint) !important; }
+	:global([data-theme="silver-platter"] .term-tab.active) {
+		color: var(--pan-accent) !important; border-bottom-color: var(--pan-accent) !important;
+	}
+	:global([data-theme="silver-platter"] .add-tab) {
+		background: var(--pan-surface2) !important; color: var(--pan-text) !important;
+	}
+
+	/* Main layout */
+	:global([data-theme="silver-platter"] .terminal-layout),
+	:global([data-theme="silver-platter"] .left-panel),
+	:global([data-theme="silver-platter"] .right-panel) {
+		background: var(--pan-bg) !important; border-color: var(--pan-base) !important;
+	}
+
+	/* Panel headers & scrollable content areas */
+	:global([data-theme="silver-platter"] .left-content),
+	:global([data-theme="silver-platter"] .right-content),
+	:global([data-theme="silver-platter"] .left-header),
+	:global([data-theme="silver-platter"] .right-header) {
+		background: var(--pan-surface) !important; color: var(--pan-text) !important;
+		border-color: var(--pan-base) !important;
+	}
+
+	/* All widget panel wrappers */
+	:global([data-theme="silver-platter"] .contacts-panel),
+	:global([data-theme="silver-platter"] .alerts-panel),
+	:global([data-theme="silver-platter"] .benchmarks-panel),
+	:global([data-theme="silver-platter"] .instances-panel),
+	:global([data-theme="silver-platter"] .pipeline-panel),
+	:global([data-theme="silver-platter"] .perf-widget),
+	:global([data-theme="silver-platter"] .tests-panel),
+	:global([data-theme="silver-platter"] .library-panel),
+	:global([data-theme="silver-platter"] .intuition-panel),
+	:global([data-theme="silver-platter"] .messages-panel),
+	:global([data-theme="silver-platter"] .mail-panel),
+	:global([data-theme="silver-platter"] .mail-list),
+	:global([data-theme="silver-platter"] .lifeboat-panel),
+	:global([data-theme="silver-platter"] .usage-section),
+	:global([data-theme="silver-platter"] .apps-grid),
+	:global([data-theme="silver-platter"] .apps-drilldown) {
+		background: var(--pan-surface) !important; color: var(--pan-text) !important;
+	}
+
+	/* Rows, cards, list items */
+	:global([data-theme="silver-platter"] .contact-row),
+	:global([data-theme="silver-platter"] .mail-row),
+	:global([data-theme="silver-platter"] .bench-row),
+	:global([data-theme="silver-platter"] .bench-suite),
+	:global([data-theme="silver-platter"] .instance-row),
+	:global([data-theme="silver-platter"] .task-row),
+	:global([data-theme="silver-platter"] .svc-row),
+	:global([data-theme="silver-platter"] .test-row),
+	:global([data-theme="silver-platter"] .alert-card),
+	:global([data-theme="silver-platter"] .library-row),
+	:global([data-theme="silver-platter"] .usage-row),
+	:global([data-theme="silver-platter"] .msg-thread-row),
+	:global([data-theme="silver-platter"] .app-card),
+	:global([data-theme="silver-platter"] .perf-proc),
+	:global([data-theme="silver-platter"] .bench-composite-row) {
+		background: var(--pan-surface2) !important; color: var(--pan-text) !important;
+		border-color: var(--pan-base) !important;
+	}
+	:global([data-theme="silver-platter"] .contact-row:hover),
+	:global([data-theme="silver-platter"] .mail-row:hover),
+	:global([data-theme="silver-platter"] .task-row:hover),
+	:global([data-theme="silver-platter"] .svc-row:hover) {
+		background: var(--pan-base) !important;
+	}
+
+	/* Center panel */
+	:global([data-theme="silver-platter"] .center-tabs) {
+		background: var(--pan-surface) !important; border-color: var(--pan-base) !important;
+	}
+	:global([data-theme="silver-platter"] .center-tab) { color: var(--pan-faint) !important; }
+	:global([data-theme="silver-platter"] .center-tab.active) { color: var(--pan-accent) !important; }
+	:global([data-theme="silver-platter"] .center-chat) {
+		background: var(--pan-bg) !important; color: var(--pan-text) !important;
+	}
+	:global([data-theme="silver-platter"] .center-input-bar) {
+		background: var(--pan-surface) !important; border-top: 1px solid var(--pan-base) !important;
+	}
+	:global([data-theme="silver-platter"] .center-input) {
+		background: var(--pan-surface2) !important; color: var(--pan-text) !important;
+		border-color: var(--pan-base) !important;
+	}
+
+	/* Chat bubbles */
+	:global([data-theme="silver-platter"] .chat-bubble),
+	:global([data-theme="silver-platter"] .dm-bubble-pan),
+	:global([data-theme="silver-platter"] .msg-bubble),
+	:global([data-theme="silver-platter"] .msg-other),
+	:global([data-theme="silver-platter"] .cc-bubble),
+	:global([data-theme="silver-platter"] .cc-tool) {
+		background: var(--pan-surface2) !important; color: var(--pan-text) !important;
+	}
+	:global([data-theme="silver-platter"] .chat-bubble.user),
+	:global([data-theme="silver-platter"] .dm-bubble-self),
+	:global([data-theme="silver-platter"] .dm-msg-self),
+	:global([data-theme="silver-platter"] .msg-self) {
+		background: var(--pan-overlay) !important; color: var(--pan-text) !important;
+	}
+
+	/* DM / messaging panels */
+	:global([data-theme="silver-platter"] .dm-thread),
+	:global([data-theme="silver-platter"] .dm-messages),
+	:global([data-theme="silver-platter"] .dm-input-bar),
+	:global([data-theme="silver-platter"] .msg-messages),
+	:global([data-theme="silver-platter"] .msg-input-bar),
+	:global([data-theme="silver-platter"] .msg-header) {
+		background: var(--pan-surface) !important; color: var(--pan-text) !important;
+		border-color: var(--pan-base) !important;
+	}
+
+	/* Selects, inputs */
+	:global([data-theme="silver-platter"] .project-select),
+	:global([data-theme="silver-platter"] .tab-history-select),
+	:global([data-theme="silver-platter"] .right-select),
+	:global([data-theme="silver-platter"] input),
+	:global([data-theme="silver-platter"] textarea),
+	:global([data-theme="silver-platter"] select) {
+		background: var(--pan-surface2) !important; color: var(--pan-text) !important;
+		border-color: var(--pan-base) !important;
+	}
+
+	/* Secondary text */
+	:global([data-theme="silver-platter"] .host-label),
+	:global([data-theme="silver-platter"] .sessions-count),
+	:global([data-theme="silver-platter"] .svc-detail),
+	:global([data-theme="silver-platter"] .bench-label),
+	:global([data-theme="silver-platter"] .usage-label),
+	:global([data-theme="silver-platter"] .contact-status),
+	:global([data-theme="silver-platter"] .dm-time),
+	:global([data-theme="silver-platter"] .mail-date) {
+		color: var(--pan-faint) !important;
+	}
+
+	/* ── VIBE: comprehensive panel coverage ── */
+	:global([data-theme="vibe"] .toolbar) {
+		background: var(--pan-surface) !important; color: var(--pan-text) !important;
+		border-bottom: 1px solid var(--pan-base) !important;
+	}
+	:global([data-theme="vibe"] .tab-bar) {
+		background: var(--pan-bg) !important; border-bottom: 1px solid var(--pan-base) !important;
+	}
+	:global([data-theme="vibe"] .term-tab) { color: var(--pan-faint) !important; }
+	:global([data-theme="vibe"] .term-tab.active) {
+		color: var(--pan-accent) !important; border-bottom-color: var(--pan-accent) !important;
+	}
+	:global([data-theme="vibe"] .left-panel),
+	:global([data-theme="vibe"] .right-panel) {
+		background: var(--pan-surface) !important; border-color: var(--pan-base) !important;
+	}
+	:global([data-theme="vibe"] .left-content),
+	:global([data-theme="vibe"] .right-content),
+	:global([data-theme="vibe"] .left-header),
+	:global([data-theme="vibe"] .right-header),
+	:global([data-theme="vibe"] .contacts-panel),
+	:global([data-theme="vibe"] .alerts-panel),
+	:global([data-theme="vibe"] .benchmarks-panel),
+	:global([data-theme="vibe"] .instances-panel),
+	:global([data-theme="vibe"] .pipeline-panel),
+	:global([data-theme="vibe"] .perf-widget),
+	:global([data-theme="vibe"] .tests-panel),
+	:global([data-theme="vibe"] .library-panel),
+	:global([data-theme="vibe"] .intuition-panel),
+	:global([data-theme="vibe"] .messages-panel),
+	:global([data-theme="vibe"] .mail-panel),
+	:global([data-theme="vibe"] .usage-section) {
+		background: rgba(8, 3, 18, 0.35) !important;
+		color: var(--pan-text) !important;
+		border-color: rgba(255, 105, 180, 0.12) !important;
+		backdrop-filter: blur(6px);
+		-webkit-backdrop-filter: blur(6px);
+	}
+	:global([data-theme="vibe"] .center-tabs) {
+		background: var(--pan-surface) !important; border-color: var(--pan-base) !important;
+	}
+	:global([data-theme="vibe"] .center-tab) { color: var(--pan-faint) !important; }
+	:global([data-theme="vibe"] .center-tab.active) { color: var(--pan-accent) !important; }
+	:global([data-theme="vibe"] .center-input-bar) {
+		background: var(--pan-surface) !important; border-top: 1px solid var(--pan-base) !important;
+	}
+	:global([data-theme="vibe"] .project-select),
+	:global([data-theme="vibe"] .tab-history-select),
+	:global([data-theme="vibe"] .right-select),
+	:global([data-theme="vibe"] input),
+	:global([data-theme="vibe"] textarea),
+	:global([data-theme="vibe"] select) {
+		background: var(--pan-surface2) !important; color: var(--pan-text) !important;
+		border-color: var(--pan-base) !important;
+	}
+	:global([data-theme="vibe"] .contact-row),
+	:global([data-theme="vibe"] .mail-row),
+	:global([data-theme="vibe"] .svc-row),
+	:global([data-theme="vibe"] .bench-row) {
+		background: rgba(255, 105, 180, 0.05) !important;
+		border-color: rgba(255, 105, 180, 0.08) !important;
+		color: var(--pan-text) !important;
+	}
+	:global([data-theme="vibe"] .contact-row:hover),
+	:global([data-theme="vibe"] .contact-row.active),
+	:global([data-theme="vibe"] .mail-row:hover) {
+		background: rgba(255, 105, 180, 0.14) !important;
+	}
+	:global([data-theme="vibe"] .dm-bubble-pan),
+	:global([data-theme="vibe"] .msg-bubble),
+	:global([data-theme="vibe"] .cc-bubble) {
+		background: rgba(255, 105, 180, 0.10) !important; color: var(--pan-text) !important;
+	}
+	:global([data-theme="vibe"] .dm-bubble-self),
+	:global([data-theme="vibe"] .dm-msg-self),
+	:global([data-theme="vibe"] .msg-self) {
+		background: rgba(255, 20, 147, 0.6) !important; color: #fff !important;
+	}
+	/* Vibe accent glow on active elements */
+	:global([data-theme="vibe"] .sidebar-resize-handle:hover),
+	:global([data-theme="vibe"] .center-panel::before) {
+		background: var(--pan-accent) !important;
+		box-shadow: 0 0 12px var(--pan-glow) !important;
+	}
+
+	/* ── VIBE: full glassmorphism — everything transparent so beach shows through ── */
+
+	/* Center panel (terminal + transcript area) */
+	:global([data-theme="vibe"] .center-panel) {
+		background: rgba(4, 2, 10, 0.28) !important;
+	}
+	/* Terminal output */
+	:global([data-theme="vibe"] .term-container) {
+		background: rgba(4, 2, 10, 0.32) !important;
+	}
+	:global([data-theme="vibe"] .term-screen),
+	:global([data-theme="vibe"] .term-output),
+	:global([data-theme="vibe"] .term-scrollback) {
+		background: transparent !important;
+	}
+	/* Terminal empty state */
+	:global([data-theme="vibe"] .term-empty) {
+		background: transparent !important;
+	}
+	/* Tab strip at top of center */
+	:global([data-theme="vibe"] .center-tabs) {
+		background: rgba(4, 2, 10, 0.45) !important;
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
+	}
+	/* Chat / transcript area */
+	:global([data-theme="vibe"] .center-chat) {
+		background: rgba(4, 2, 10, 0.22) !important;
+	}
+	/* Chat bubbles — glassy tint */
+	:global([data-theme="vibe"] .chat-bubble),
+	:global([data-theme="vibe"] .cc-bubble),
+	:global([data-theme="vibe"] .cc-tool) {
+		background: rgba(255, 105, 180, 0.08) !important;
+		backdrop-filter: blur(6px);
+		-webkit-backdrop-filter: blur(6px);
+		border: 1px solid rgba(255, 105, 180, 0.12) !important;
+	}
+	:global([data-theme="vibe"] .chat-bubble.user),
+	:global([data-theme="vibe"] .cc-user) {
+		background: rgba(255, 20, 147, 0.14) !important;
+	}
+	/* Input bar at bottom */
+	:global([data-theme="vibe"] .center-input-bar) {
+		background: rgba(4, 2, 10, 0.50) !important;
+		backdrop-filter: blur(14px);
+		-webkit-backdrop-filter: blur(14px);
+		border-top: 1px solid rgba(255, 105, 180, 0.15) !important;
+	}
+	:global([data-theme="vibe"] .center-input) {
+		background: rgba(255, 255, 255, 0.06) !important;
+		color: var(--pan-text) !important;
+		border-color: rgba(255, 105, 180, 0.2) !important;
+	}
+	/* Status bar */
+	:global([data-theme="vibe"] .pty-status-bar) {
+		background: rgba(4, 2, 10, 0.55) !important;
+	}
+	/* Left + right panels — more transparent */
+	:global([data-theme="vibe"] .left-panel),
+	:global([data-theme="vibe"] .right-panel) {
+		background: rgba(4, 2, 10, 0.30) !important;
+		backdrop-filter: blur(14px);
+		-webkit-backdrop-filter: blur(14px);
+	}
+	/* Widget panel headers */
+	:global([data-theme="vibe"] .right-header),
+	:global([data-theme="vibe"] .left-header) {
+		background: rgba(4, 2, 10, 0.40) !important;
+		backdrop-filter: blur(10px);
+		-webkit-backdrop-filter: blur(10px);
+		border-color: rgba(255, 105, 180, 0.10) !important;
+	}
+	/* All widget panel bodies */
+	:global([data-theme="vibe"] .left-content),
+	:global([data-theme="vibe"] .right-content) {
+		background: transparent !important;
+	}
+	:global([data-theme="vibe"] .contacts-panel),
+	:global([data-theme="vibe"] .benchmarks-panel),
+	:global([data-theme="vibe"] .alerts-panel),
+	:global([data-theme="vibe"] .instances-panel),
+	:global([data-theme="vibe"] .pipeline-panel),
+	:global([data-theme="vibe"] .perf-widget),
+	:global([data-theme="vibe"] .tests-panel),
+	:global([data-theme="vibe"] .library-panel),
+	:global([data-theme="vibe"] .intuition-panel),
+	:global([data-theme="vibe"] .messages-panel),
+	:global([data-theme="vibe"] .mail-panel),
+	:global([data-theme="vibe"] .usage-section) {
+		background: transparent !important;
+		backdrop-filter: none !important;
+	}
+	/* Widget rows — subtle pink glass */
+	:global([data-theme="vibe"] .bench-suite),
+	:global([data-theme="vibe"] .bench-row),
+	:global([data-theme="vibe"] .svc-row),
+	:global([data-theme="vibe"] .instance-row),
+	:global([data-theme="vibe"] .alert-card) {
+		background: rgba(255, 105, 180, 0.06) !important;
+		border-color: rgba(255, 105, 180, 0.10) !important;
+	}
+	/* Tab bar */
+	:global([data-theme="vibe"] .tab-bar) {
+		background: rgba(4, 2, 10, 0.42) !important;
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
+	}
+	/* Toolbar (project/thread picker row) */
+	:global([data-theme="vibe"] .toolbar) {
+		background: rgba(4, 2, 10, 0.45) !important;
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
+	}
+	/* Topbar ("Terminal" title) */
+	:global([data-theme="vibe"] .topbar) {
+		background: rgba(4, 2, 10, 0.50) !important;
+		backdrop-filter: blur(14px);
+		-webkit-backdrop-filter: blur(14px);
+	}
+	/* Sidebar */
+	:global([data-theme="vibe"] .sidebar) {
+		background: rgba(4, 2, 10, 0.45) !important;
+		backdrop-filter: blur(16px);
+		-webkit-backdrop-filter: blur(16px);
+	}
+	/* Resize handle between panels */
+	:global([data-theme="vibe"] .resize-handle) {
+		background: rgba(255, 105, 180, 0.08) !important;
+	}
+
+	/* Text legibility — dark halo on all text so it reads over the beach image */
+	:global([data-theme="vibe"] .term-container *),
+	:global([data-theme="vibe"] .center-chat *),
+	:global([data-theme="vibe"] .left-content *),
+	:global([data-theme="vibe"] .right-content *),
+	:global([data-theme="vibe"] .topbar-title),
+	:global([data-theme="vibe"] .tab-label),
+	:global([data-theme="vibe"] .term-tab),
+	:global([data-theme="vibe"] .center-tab) {
+		text-shadow: 0 0 6px rgba(0,0,0,1), 0 1px 4px rgba(0,0,0,0.95) !important;
+	}
+
+	/* ── VIBE: cycling background carousel ── */
+	.vibe-bg-carousel {
+		position: fixed;
+		inset: 0;
+		z-index: -1;
+		pointer-events: none;
+	}
+	.vibe-bg-slide {
+		position: absolute;
+		inset: 0;
+		background-size: cover;
+		background-position: center;
+		opacity: 0;
+		transition: opacity 2.5s ease-in-out;
+	}
+	.vibe-bg-slide.active { opacity: 1; }
+
+	:global([data-theme="vibe"] body) {
+		background: #0a0410 !important; /* fallback while images load */
+	}
+	/* Glassmorphism: dark-neutral tint (not purple) so gradient shows warmly */
+	:global([data-theme="vibe"] .sidebar) {
+		background: rgba(5, 2, 12, 0.82) !important;
+		backdrop-filter: blur(14px);
+		-webkit-backdrop-filter: blur(14px);
+	}
+	:global([data-theme="vibe"] .left-panel),
+	:global([data-theme="vibe"] .right-panel) {
+		background: rgba(5, 2, 12, 0.76) !important;
+		backdrop-filter: blur(10px);
+		-webkit-backdrop-filter: blur(10px);
+	}
+	:global([data-theme="vibe"] .tab-bar) {
+		background: rgba(5, 2, 12, 0.72) !important;
+		backdrop-filter: blur(8px);
+		-webkit-backdrop-filter: blur(8px);
+	}
+	:global([data-theme="vibe"] .toolbar) {
+		background: rgba(5, 2, 12, 0.68) !important;
+		color: var(--pan-text) !important;
+		border-bottom: 1px solid rgba(255, 105, 180, 0.15) !important;
+	}
+
+	/* Vibe: topbar ("Terminal" title bar) — styled like the toolbar */
+	:global([data-theme="vibe"] .topbar) {
+		background: rgba(5, 2, 12, 0.72) !important;
+		border-bottom: 1px solid rgba(255, 105, 180, 0.2) !important;
+	}
+	:global([data-theme="vibe"] .topbar-title) {
+		color: rgba(255, 180, 220, 0.7) !important;
+		letter-spacing: 1px;
+	}
+
+	/* Vibe: Π logo gradient (hot pink → electric teal) */
+	:global([data-theme="vibe"] .logo-pi) {
+		background: linear-gradient(135deg, #ff1493 30%, #00e5ff 100%);
+		-webkit-background-clip: text;
+		-webkit-text-fill-color: transparent;
+		background-clip: text;
+		text-shadow: none;
+		filter: drop-shadow(0 0 10px rgba(255,20,147,0.9)) drop-shadow(0 0 22px rgba(0,229,255,0.5));
+	}
+
+	/* ── COOL GUY: large Π column watermark behind terminal content ── */
+	/* The ::before is taken (crossbar line), use ::after for the watermark */
+	:global([data-theme="cool-guy"] .center-panel::after) {
+		content: 'Π';
+		font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+		font-size: 360px;
+		font-weight: 900;
+		color: rgba(137, 180, 250, 0.032);
+		position: absolute;
+		top: 48%;
+		left: 50%;
+		transform: translate(-50%, -55%) scaleY(1.4) scaleX(0.85);
+		pointer-events: none;
+		z-index: 0;
+		line-height: 1;
+		letter-spacing: 8px;
+		user-select: none;
 	}
 </style>
