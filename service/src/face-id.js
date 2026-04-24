@@ -20,7 +20,7 @@ const REFERENCE_DIR   = 'C:/Users/tzuri/Desktop/Me_pics';
 const REFERENCE_FILES = ['portait.png', 'me_London.png', 'me_club.png', 'me_island.png'];
 
 const MATCH_THRESHOLD      = 0.60; // L2 distance; lower = stricter
-const AUTOENROLL_THRESHOLD = 0.80; // confidence % to auto-enroll a live frame
+const AUTOENROLL_THRESHOLD = 0.35; // confidence % to auto-enroll a live frame (face-api 30-50% is a solid match)
 const AUTOENROLL_MAX       = 20;   // cap in-memory auto-enrolled descriptors
 
 let modelsLoaded   = false;
