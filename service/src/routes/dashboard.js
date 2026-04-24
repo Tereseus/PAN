@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { all, get, run, insert, DB_PATH, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
+import { all, get, run, insert, DB_PATH, allScoped, getScoped, runScoped, insertScoped, getOllamaUrl } from '../db.js';
+import { getAtlasData } from '../steward.js';
+import { getScreenWatcherStatus } from '../screen-watcher.js';
 import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -542,7 +544,7 @@ router.get('/api/stats', (req, res) => {
   }
   const stats = getScoped(req, `SELECT
     (SELECT COUNT(*) FROM events WHERE org_id = :org_id) as total_events,
-    (SELECT COUNT(*) FROM memory_items WHERE org_id = :org_id) as total_memory,
+    (SELECT COUNT(*) FROM memory_items WHERE org_id = :org_id) as total_memory_items,
     (SELECT COUNT(*) FROM sessions WHERE org_id = :org_id) as total_sessions,
     (SELECT COUNT(*) FROM projects WHERE org_id = :org_id) as total_projects,
     (SELECT COUNT(*) FROM devices WHERE org_id = :org_id) as total_devices,
@@ -590,6 +592,7 @@ router.get('/api/stats', (req, res) => {
   const result = {
     ...stats,
     db_size_bytes: dbSize,
+    db_size: dbSize ? `${(dbSize / 1048576).toFixed(1)} MB` : '--',
     event_types: eventTypes,
     total_restarts: totalRestarts,
     restarts_by_project: restartsByProject,
@@ -734,10 +737,38 @@ router.post('/api/phone-ping', (req, res) => {
 
 // PATCH /dashboard/api/devices/:id — rename a device
 router.patch('/api/devices/:id', (req, res) => {
-  const { name } = req.body || {};
-  if (!name) return res.status(400).json({ error: 'name required' });
-  run('UPDATE devices SET name = :n WHERE id = :id', { ':n': name, ':id': req.params.id });
-  res.json({ ok: true, id: req.params.id, name });
+  const { name, tailscale_hostname } = req.body || {};
+  if (!name && !tailscale_hostname) return res.status(400).json({ error: 'name or tailscale_hostname required' });
+  if (name) run('UPDATE devices SET name = :n WHERE id = :id', { ':n': name, ':id': req.params.id });
+  if (tailscale_hostname) run('UPDATE devices SET tailscale_hostname = :ts WHERE id = :id', { ':ts': tailscale_hostname, ':id': req.params.id });
+  res.json({ ok: true, id: req.params.id });
+});
+
+// DELETE /dashboard/api/devices/:id — remove a device record
+router.delete('/api/devices/:id', (req, res) => {
+  run('DELETE FROM devices WHERE id = :id', { ':id': req.params.id });
+  res.json({ ok: true, id: req.params.id });
+});
+
+// POST /dashboard/api/devices — register or update a device (admin/manual)
+router.post('/api/devices', (req, res) => {
+  const { hostname: devHost, name, device_type = 'pc', tailscale_hostname, capabilities } = req.body || {};
+  if (!devHost || !name) return res.status(400).json({ error: 'hostname and name required' });
+  const existing = get('SELECT id FROM devices WHERE hostname = :h', { ':h': devHost });
+  if (existing) {
+    run(`UPDATE devices SET name = :n, device_type = :t, tailscale_hostname = :ts, last_seen = datetime('now','localtime')
+         WHERE hostname = :h`,
+      { ':n': name, ':t': device_type, ':ts': tailscale_hostname || null, ':h': devHost });
+    res.json({ ok: true, id: existing.id, updated: true });
+  } else {
+    const id = insert(
+      `INSERT INTO devices (hostname, name, device_type, capabilities, tailscale_hostname, last_seen, org_id)
+       VALUES (:h, :n, :t, :caps, :ts, datetime('now','localtime'), 'org_personal')`,
+      { ':h': devHost, ':n': name, ':t': device_type,
+        ':caps': capabilities || '[]', ':ts': tailscale_hostname || null }
+    );
+    res.json({ ok: true, id, created: true });
+  }
 });
 
 // GET /dashboard/api/devices
@@ -761,18 +792,54 @@ router.get('/api/devices', (req, res) => {
   res.json(enriched);
 });
 
+// GET /dashboard/api/status — lightweight Craft health check (used by swap-reload polling)
+router.get('/api/status', (req, res) => {
+  res.json({ ok: true, pid: process.pid, ts: Date.now() });
+});
+
 // GET /dashboard/api/services — unified services + devices status
 router.get('/api/services', async (req, res) => {
   const services = [];
   const issues = [];
   const pcHost = hostname();
 
-  // PAN Server — always up if this code is running
+  // Process layer stack — Super-Carrier → Carrier → Craft
   const uptime = process.uptime();
-  services.push({
-    category: 'PAN Core', name: 'PAN Server', status: 'up',
-    uptime, detail: `Port 7777, PID ${process.pid}`
-  });
+  let scPid = null, carrierPid = null, scReady = false;
+  try {
+    const hRes = await fetch('http://127.0.0.1:7777/health', { signal: AbortSignal.timeout(1500) });
+    if (hRes.ok) {
+      const hData = await hRes.json();
+      scPid    = hData.superCarrierPid ?? null;
+      carrierPid = hData.carrierPid ?? null;
+      scReady  = !!hData.superCarrier;
+    }
+  } catch {}
+
+  if (scReady && scPid) {
+    services.push({
+      category: 'PAN Core', name: 'Super-Carrier', status: 'up',
+      role: 'Immortal process layer · owns :7777 + all browser connections',
+      detail: `PID ${scPid} · port 7777 · never restarts`,
+    });
+    services.push({
+      category: 'PAN Core', name: 'Carrier', status: 'up',
+      role: 'Hot-swap coordinator · PTY sessions + WebSocket routing',
+      detail: carrierPid ? `PID ${carrierPid} · port 17760 · restarts freely` : 'port 17760 · restarts freely',
+    });
+    services.push({
+      category: 'PAN Core', name: 'Craft', status: 'up',
+      role: 'HTTP server · all routes + API · hot-swappable',
+      detail: `PID ${process.pid} · port 17700 · uptime ${Math.round(uptime)}s`,
+    });
+  } else {
+    // Fallback — no Super-Carrier (dev mode or direct launch)
+    services.push({
+      category: 'PAN Core', name: 'PAN Server', status: 'up',
+      role: 'HTTP server · all routes + API',
+      detail: `PID ${process.pid} · port 7777 · uptime ${Math.round(uptime)}s`,
+    });
+  }
 
   // Parse latest StewardHeartbeat — single source of truth for all service statuses
   const heartbeatRow = getScoped(req, `SELECT data, created_at FROM events WHERE event_type = 'StewardHeartbeat' AND org_id = :org_id ORDER BY created_at DESC LIMIT 1`);
@@ -786,13 +853,26 @@ router.get('/api/services', async (req, res) => {
     } catch {}
   }
 
+  // Build Atlas model map (live, always current)
+  let atlasModelMap = {};
+  try {
+    const atlas = getAtlasData();
+    for (const s of (atlas.services || [])) {
+      const mc = s.modelCurrent;
+      if (mc && mc !== 'N/A' && !mc.startsWith('N/A')) atlasModelMap[s.id] = mc;
+    }
+  } catch {}
+
   const stewardStatus = (id) => {
     const s = stewardServices[id];
     if (!s) return { status: 'unknown', detail: 'No heartbeat data' };
     const st = s.status === 'running' ? 'up' : s.status === 'down' ? 'down' : s.status === 'stopped' ? 'down' : s.status === 'degraded' ? 'unknown' : 'unknown';
     const note = s.lastError ? ` · ${s.lastError}` : '';
     const label = s.status.charAt(0).toUpperCase() + s.status.slice(1);
-    return { status: st, detail: `${label}${note}` };
+    // Pull model from live Atlas data (always accurate, not from stale heartbeat)
+    const mc = atlasModelMap[id] || null;
+    const modelTag = mc ? ` · ${mc}` : '';
+    return { status: st, detail: `${label}${modelTag}${note}`, model: mc };
   };
 
   // Steward itself
@@ -815,6 +895,24 @@ router.get('/api/services', async (req, res) => {
   for (const def of coreServiceDefs) {
     const { status, detail } = stewardStatus(def.id);
     services.push({ category: 'PAN Core', name: def.name, role: def.role, status, detail });
+  }
+
+  // Screen Watcher — vision pipeline (Tauri→FFmpeg→AI)
+  try {
+    const sw = getScreenWatcherStatus();
+    const swDetail = sw.running
+      ? (sw.lastCapture
+          ? `Last capture ${sw.lastCapture.ageSec}s ago${sw.lastCapture.windowTitle ? ` · ${sw.lastCapture.windowTitle.slice(0,30)}` : ''}`
+          : 'Running · no captures yet')
+      : 'Stopped';
+    services.push({
+      category: 'PAN Core', name: 'Screen Watcher',
+      role: 'Desktop vision · screenshot every 30s → AI context',
+      status: sw.running ? 'up' : 'down',
+      detail: swDetail,
+    });
+  } catch {
+    services.push({ category: 'PAN Core', name: 'Screen Watcher', role: 'Desktop vision pipeline', status: 'unknown', detail: 'Status unavailable' });
   }
 
   // AI / LLM Services
@@ -841,8 +939,13 @@ router.get('/api/services', async (req, res) => {
   }
 
   // Ollama + loaded models
+  const deviceWithOllama = allScoped(req, `SELECT name, hostname, reported_services FROM devices WHERE reported_services IS NOT NULL AND org_id = :org_id`)
+    .map(d => { try { return { ...d, services: JSON.parse(d.reported_services) }; } catch { return null; } })
+    .filter(Boolean)
+    .find(d => d.services.some(s => s.name === 'ollama' && s.status === 'up'));
+
   try {
-    const or = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) });
+    const or = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(3000) });
     if (or.ok) {
       const od = await or.json().catch(() => ({}));
       const models = od.models || [];
@@ -872,7 +975,14 @@ router.get('/api/services', async (req, res) => {
       services.push({ category: 'AI Models', name: 'Ollama', status: 'down', role: 'Local LLM runtime', detail: 'Server error' });
     }
   } catch {
-    services.push({ category: 'AI Models', name: 'Ollama', status: 'down', role: 'Local LLM runtime · embeddings', detail: 'Not running · offline features unavailable' });
+    if (deviceWithOllama) {
+      services.push({ category: 'AI Models', name: 'Ollama', status: 'up',
+        role: 'Local LLM runtime · embeddings',
+        detail: `Running on ${deviceWithOllama.name}`,
+        deviceName: deviceWithOllama.name });
+    } else {
+      services.push({ category: 'AI Models', name: 'Ollama', status: 'down', role: 'Local LLM runtime · embeddings', detail: 'Not running · offline features unavailable' });
+    }
   }
 
   // Cerebras — check via a settings key or just show config status
@@ -924,6 +1034,38 @@ router.get('/api/services', async (req, res) => {
       status: isOnline ? 'up' : 'down',
       detail: `${d.device_type === 'phone' ? 'Phone' : 'PC'} — last seen ${isThisPC ? '0s ago' : ageStr}`
     });
+  }
+
+  // Annotate services with the device that runs them
+  const hubDevice = devices.find(d => d.hostname?.toLowerCase() === pcHost.toLowerCase());
+  const hubName = hubDevice?.name || pcHost;
+  const ollamaUrl = getOllamaUrl();
+  const ollamaIsLocal = /localhost|127\.0\.0\.1/.test(ollamaUrl);
+  let ollamaDeviceName = ollamaIsLocal ? hubName : null;
+  let ollamaDeviceHost = ollamaIsLocal ? pcHost : null;
+  if (!ollamaIsLocal) {
+    try {
+      const u = new URL(ollamaUrl);
+      const urlHost = u.hostname.toLowerCase();
+      const match = devices.find(d =>
+        d.hostname?.toLowerCase() === urlHost || d.tailscale_hostname?.toLowerCase() === urlHost
+      );
+      ollamaDeviceName = match?.name || urlHost;
+      ollamaDeviceHost = match?.hostname || urlHost;
+    } catch {}
+  }
+  for (const s of services) {
+    if (s.category === 'Devices') continue;
+    if (s.category === 'PAN Core') {
+      s.device = pcHost; s.deviceName = hubName;
+    } else if (s.category === 'AI Models') {
+      if (s.name === 'Whisper STT' || s.name === 'Claude CLI') {
+        s.device = pcHost; s.deviceName = hubName;
+      } else if (s.name === 'Ollama' || s.detail?.startsWith('Ollama local')) {
+        s.device = ollamaDeviceHost; s.deviceName = ollamaDeviceName;
+      }
+      // Cerebras / Claude API = remote cloud, no device
+    }
   }
 
   res.json({ services, issues });

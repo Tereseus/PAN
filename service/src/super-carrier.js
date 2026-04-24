@@ -208,6 +208,7 @@ const server = createServer((req, res) => {
       carrier:         _carrierReady,  // dashboard checks this field
       superCarrier:    true,
       superCarrierPid: process.pid,
+      carrierPid:      carrierProc?.pid ?? null,
       craftHealthy:    _carrierReady,  // optimistic — carrier will report accurately
     }));
     return;
