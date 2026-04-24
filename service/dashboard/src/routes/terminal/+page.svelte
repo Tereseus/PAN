@@ -5287,6 +5287,185 @@
 	{/each}
 {/snippet}
 
+{#snippet intuitionPanelContents()}
+	{#if !intuitionData}
+		<div class="empty-state">Loading Intuition...</div>
+	{:else}
+		{@const snap = intuitionData.snapshot || intuitionData}
+		{@const n = snap.now || {}}
+		{@const pan = snap.pan || {}}
+		{@const data = snap.data || {}}
+		{@const sig = snap.signals || {}}
+		{@const preds = pan.predictions || []}
+		{@const wc = sig.webcam_context}
+		{@const sc = sig.screen_context}
+
+		<!-- Commander + Timestamp -->
+		<div class="int-header">
+			<span class="int-commander">{snap.commander || 'Commander'}</span>
+			<span class="int-ago">{snap.as_of ? new Date(snap.as_of).toLocaleTimeString() : '—'}</span>
+		</div>
+
+		<!-- State -->
+		<div class="svc-category">State</div>
+		<div class="int-axes">
+			<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{n.where || '⏳ pendant'}</span></div>
+			<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{n.activity || '—'}</span></div>
+			<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{n.focus || '—'}</span></div>
+			<div class="int-axis"><span class="int-label">Direction</span><span class="int-val">{n.direction || '—'}</span></div>
+			<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{n.engagement || '—'}</span></div>
+			<div class="int-axis"><span class="int-label">Social</span><span class="int-val">{(n.social || []).join(', ') || 'alone'}</span></div>
+			<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{n.urgency || 'normal'}</span></div>
+		</div>
+
+		<!-- Mood + Assumption -->
+		<div class="svc-category">Mood & Assumption</div>
+		<div class="int-axes">
+			<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{n.mood || '—'}</span></div>
+			{#if n.mood_detail}
+				<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.mood_detail}</span></div>
+			{/if}
+			<div class="int-axis">
+				<span class="int-label">Assumption</span>
+				<span class="int-val" class:wellbeing-ok={n.assumption === 'ok'} class:wellbeing-notok={n.assumption === 'not_ok'} class:wellbeing-emergency={n.assumption === 'emergency'}>{n.assumption || '—'}</span>
+			</div>
+			{#if n.assumption_detail}
+				<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.assumption_detail}</span></div>
+			{/if}
+			<div class="int-disclaimer">⚠ Not medical advice — PAN's assumptions only</div>
+		</div>
+
+		<!-- PAN Activity -->
+		<div class="svc-category">PAN Activity</div>
+		<div class="int-axes">
+			<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'Idle'}</span></div>
+			{#each (pan.sessions || []) as sess}
+				<div class="int-axis"><span class="int-label">Session</span><span class="int-val small">{sess.description || sess.id}</span></div>
+			{/each}
+			{#each (pan.services || []) as svc}
+				<div class="int-axis"><span class="int-label">{svc.name}</span><span class="int-val small" class:svc-healthy={svc.status === 'Running'} class:svc-down={svc.status === 'Down'}>{svc.status}</span></div>
+			{/each}
+		</div>
+		{#if (pan.recent_actions || []).length > 0}
+			<div class="svc-category">Recent Actions</div>
+			<div class="int-axes">
+				{#each (pan.recent_actions || []).slice(0, 5) as act}
+					<div class="int-axis"><span class="int-val small">{act.action}</span></div>
+				{/each}
+			</div>
+		{/if}
+		{#if (pan.active_tasks || []).length > 0}
+			<div class="svc-category">Tasks</div>
+			<div class="int-axes">
+				{#each (pan.active_tasks || []).slice(0, 5) as task}
+					<div class="int-axis task">
+						<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
+						<span class="int-val">{task.title}</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
+		{#if preds.length > 0}
+			<div class="svc-category">Predictions</div>
+			<div class="int-axes">
+				{#each preds as p}
+					<div class="int-axis pred">
+						<span class="int-val">{p.what}</span>
+						<span class="int-confidence">{Math.round((p.confidence || 0) * 100)}%</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
+
+		<!-- Identity -->
+		<div class="svc-category">Identity</div>
+		<div class="int-axes">
+			<!-- Voice identity — who is here based on enrolled speakers -->
+			{#if voiceEnrollSpeakers.length > 0}
+				<div class="int-axis">
+					<span class="int-label">Voice</span>
+					<span class="int-val small" style="color:#a6e3a1">🎤 {voiceEnrollSpeakers.map(s => s.label || s).join(', ')}</span>
+				</div>
+			{/if}
+			<!-- Camera presence -->
+			<div class="int-axis">
+				<span class="int-label">Camera</span>
+				<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
+					{wc ? (wc.presence === 'yes' ? (wc.identity || 'someone') : wc.presence === 'no' ? 'desk empty' : 'unclear') : '⏳ no capture yet'}
+				</span>
+			</div>
+			{#if wc?.emotion && wc.presence === 'yes'}
+				<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
+			{/if}
+			{#if wc?.people_count > 1}
+				<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
+			{/if}
+			<!-- Screen vision -->
+			<div class="int-axis" style="flex-wrap:wrap">
+				<span class="int-label">Screen</span>
+				<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : (data.camera || '⏳ no capture yet')}</span>
+			</div>
+			{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
+			{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
+		</div>
+
+		<!-- Voice Identity -->
+		<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+			Voice Identity
+			<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}">{voiceServerOk ? 'online' : 'offline'}</span>
+		</div>
+		{#if voiceEnrollSpeakers.length > 0}
+			<div style="margin-bottom:6px">
+				{#each voiceEnrollSpeakers as sp}
+					<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
+						<span style="font-size:15px">🎤</span>
+						<span style="font-size:12px;color:#cdd6f4;flex:1">{sp.label || sp}</span>
+						{#if sp.sample_count}<span style="font-size:10px;color:#6c7086">{sp.sample_count} sample{sp.sample_count !== 1 ? 's' : ''}</span>{/if}
+						<button onclick={() => deleteVoiceSpeaker(sp.label || sp)} style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:12px;padding:1px 4px;border-radius:3px" title="Remove">✕</button>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<div style="font-size:11px;color:#6c7086;margin-bottom:6px">No speakers enrolled — voice IDs passively as you speak</div>
+		{/if}
+		<div style="display:flex;gap:5px;margin-bottom:5px">
+			<input bind:value={voiceEnrollLabel} placeholder="Speaker name" disabled={voiceEnrollStatus === 'recording' || voiceEnrollStatus === 'uploading'} style="flex:1;background:#1e1e2e;border:1px solid rgba(255,255,255,0.12);border-radius:5px;color:#cdd6f4;padding:4px 8px;font-size:12px;outline:none" />
+		</div>
+		{#if voiceEnrollStatus === 'recording'}
+			<div style="display:flex;gap:6px;align-items:center">
+				<button onclick={stopVoiceEnroll} style="flex:1;background:rgba(243,139,168,0.2);border:1px solid #f38ba8;border-radius:5px;color:#f38ba8;padding:5px;font-size:12px;cursor:pointer">⏹ Stop ({voiceEnrollSeconds}s / 10s)</button>
+			</div>
+			<div style="margin-top:4px;background:rgba(255,255,255,0.07);border-radius:3px;height:3px;overflow:hidden">
+				<div style="background:#cba6f7;height:100%;width:{Math.min(voiceEnrollSeconds/10*100,100)}%;transition:width 1s linear"></div>
+			</div>
+		{:else}
+			<button onclick={startVoiceEnroll} disabled={!voiceServerOk || voiceEnrollStatus === 'uploading'} style="width:100%;background:rgba(203,166,247,0.15);border:1px solid rgba(203,166,247,0.4);border-radius:5px;color:#cba6f7;padding:5px;font-size:12px;cursor:{voiceServerOk ? 'pointer' : 'not-allowed'};opacity:{voiceServerOk ? 1 : 0.5}">
+				🎤 {voiceEnrollStatus === 'uploading' ? 'Processing...' : 'Record Sample (10s)'}
+			</button>
+		{/if}
+		{#if voiceEnrollMsg}
+			<div style="font-size:11px;margin-top:4px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
+		{/if}
+
+		{#if (n.recent_topics || []).length > 0}
+			<div class="svc-category">Recent Topics</div>
+			<div class="int-topics">
+				{#each (n.recent_topics || []).slice(0, 5) as topic}
+					<div class="int-topic">{topic}</div>
+				{/each}
+			</div>
+		{/if}
+		{#if n.last_heard}
+			<div class="svc-category">Last Heard</div>
+			<div class="int-last-heard">"{n.last_heard}"</div>
+		{/if}
+		<div class="int-footer">
+			<span>Confidence: {Math.round((sig.confidence || 0) * 100)}%</span>
+			<span>{sig.events_sampled || 0} events · {sig.wrap_messages_sampled || 0} msgs</span>
+		</div>
+	{/if}
+{/snippet}
+
 <!-- TOOLBAR -->
 <div class="toolbar">
 	<select class="project-select" value={selectedProjectValue} onchange={(e) => {
@@ -5377,8 +5556,11 @@
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
 			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (leftSection === 'users') loadUsers(); if (leftSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (leftSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (leftSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); } else { stopAllDevicesPolling(); } if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
+				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
+				<option value="benchmarks">Benchmarks</option>
+				<option value="pipeline">Beta Pipeline</option>
 				<option value="bugs">Bugs</option>
 				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
 				<option value="devices">Devices</option>
@@ -5819,186 +6001,7 @@
 				</div>
 			{:else if leftSection === 'intuition'}
 				<div class="intuition-panel">
-					{#if !intuitionData}
-						<div class="empty-state">Loading Intuition...</div>
-					{:else}
-						{@const snap = intuitionData.snapshot || intuitionData}
-						{@const n = snap.now || {}}
-						{@const pan = snap.pan || {}}
-						{@const data = snap.data || {}}
-						{@const sig = snap.signals || {}}
-						{@const preds = pan.predictions || []}
-
-						<!-- Commander + Timestamp -->
-						<div class="int-header">
-							<span class="int-commander">{snap.commander || 'Commander'}</span>
-							<span class="int-ago">{snap.as_of ? new Date(snap.as_of).toLocaleTimeString() : '—'}</span>
-						</div>
-
-						<!-- Dimensional Axes -->
-						<div class="svc-category">State</div>
-						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{n.where || '⏳ pendant'}</span></div>
-							<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{n.activity || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{n.focus || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Direction</span><span class="int-val">{n.direction || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{n.engagement || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Social</span><span class="int-val">{(n.social || []).join(', ') || 'alone'}</span></div>
-							<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{n.urgency || 'normal'}</span></div>
-						</div>
-
-						<!-- Mood + Assumption -->
-						<div class="svc-category">Mood & Assumption</div>
-						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{n.mood || '—'}</span></div>
-							{#if n.mood_detail}
-								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.mood_detail}</span></div>
-							{/if}
-							<div class="int-axis">
-								<span class="int-label">Assumption</span>
-								<span class="int-val" class:wellbeing-ok={n.assumption === 'ok'} class:wellbeing-notok={n.assumption === 'not_ok'} class:wellbeing-emergency={n.assumption === 'emergency'}>{n.assumption || '—'}</span>
-							</div>
-							{#if n.assumption_detail}
-								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.assumption_detail}</span></div>
-							{/if}
-							<div class="int-disclaimer">⚠ Not medical advice — PAN's assumptions only</div>
-						</div>
-
-						<!-- PAN Status -->
-						<div class="svc-category">PAN Activity</div>
-						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'Idle'}</span></div>
-							{#each (pan.sessions || []) as sess}
-								<div class="int-axis"><span class="int-label">Session</span><span class="int-val small">{sess.description || sess.id}</span></div>
-							{/each}
-							{#if (pan.services || []).length > 0}
-								{#each (pan.services || []) as svc}
-									<div class="int-axis"><span class="int-label">{svc.name}</span><span class="int-val small" class:svc-healthy={svc.status === 'Running'} class:svc-down={svc.status === 'Down'}>{svc.status}</span></div>
-								{/each}
-							{/if}
-						</div>
-						<!-- Recent PAN Actions -->
-						{#if (pan.recent_actions || []).length > 0}
-							<div class="svc-category">Recent Actions</div>
-							<div class="int-axes">
-								{#each (pan.recent_actions || []).slice(0, 5) as act}
-									<div class="int-axis"><span class="int-val small">{act.action}</span></div>
-								{/each}
-							</div>
-						{/if}
-						<!-- Tasks -->
-						{#if (pan.active_tasks || []).length > 0}
-							<div class="svc-category">Tasks</div>
-							<div class="int-axes">
-								{#each (pan.active_tasks || []).slice(0, 5) as task}
-									<div class="int-axis task">
-										<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
-										<span class="int-val">{task.title}</span>
-									</div>
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Predictions -->
-						{#if preds.length > 0}
-							<div class="svc-category">Predictions</div>
-							<div class="int-axes">
-								{#each preds as p}
-									<div class="int-axis pred">
-										<span class="int-val">{p.what}</span>
-										<span class="int-confidence">{Math.round((p.confidence || 0) * 100)}%</span>
-									</div>
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Identity — who is here, what are they doing -->
-						<div class="svc-category">Identity</div>
-						<div class="int-axes">
-							{@const wc = sig.webcam_context}
-							{@const sc = sig.screen_context}
-							<!-- Webcam presence + face ID -->
-							<div class="int-axis">
-								<span class="int-label">Present</span>
-								<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
-									{wc ? (wc.presence === 'yes' ? (wc.identity || 'someone') : wc.presence === 'no' ? 'desk empty' : 'unclear') : '⏳ no capture yet'}
-								</span>
-							</div>
-							{#if wc?.emotion && wc.presence === 'yes'}
-								<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
-							{/if}
-							{#if wc?.people_count > 1}
-								<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
-							{/if}
-							<!-- Screen activity -->
-							<div class="int-axis" style="flex-wrap:wrap">
-								<span class="int-label">Screen</span>
-								<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : (data.camera || '⏳ no capture yet')}</span>
-							</div>
-							{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
-							{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
-						</div>
-
-						<!-- Voice Identity -->
-						<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-							Voice Identity
-							<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}">{voiceServerOk ? 'online' : 'offline'}</span>
-						</div>
-						{#if voiceEnrollSpeakers.length > 0}
-							<div style="margin-bottom:6px">
-								{#each voiceEnrollSpeakers as sp}
-									<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
-										<span style="font-size:15px">🎤</span>
-										<span style="font-size:12px;color:#cdd6f4;flex:1">{sp.label || sp}</span>
-										{#if sp.sample_count}<span style="font-size:10px;color:#6c7086">{sp.sample_count} sample{sp.sample_count !== 1 ? 's' : ''}</span>{/if}
-										<button onclick={() => deleteVoiceSpeaker(sp.label || sp)} style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:12px;padding:1px 4px;border-radius:3px" title="Remove">✕</button>
-									</div>
-								{/each}
-							</div>
-						{:else}
-							<div style="font-size:11px;color:#6c7086;margin-bottom:6px">No speakers enrolled — voice IDs passively as you speak</div>
-						{/if}
-						<div style="display:flex;gap:5px;margin-bottom:5px">
-							<input bind:value={voiceEnrollLabel} placeholder="Speaker name" disabled={voiceEnrollStatus === 'recording' || voiceEnrollStatus === 'uploading'} style="flex:1;background:#1e1e2e;border:1px solid rgba(255,255,255,0.12);border-radius:5px;color:#cdd6f4;padding:4px 8px;font-size:12px;outline:none" />
-						</div>
-						{#if voiceEnrollStatus === 'recording'}
-							<div style="display:flex;gap:6px;align-items:center">
-								<button onclick={stopVoiceEnroll} style="flex:1;background:rgba(243,139,168,0.2);border:1px solid #f38ba8;border-radius:5px;color:#f38ba8;padding:5px;font-size:12px;cursor:pointer">⏹ Stop ({voiceEnrollSeconds}s / 10s)</button>
-							</div>
-							<div style="margin-top:4px;background:rgba(255,255,255,0.07);border-radius:3px;height:3px;overflow:hidden">
-								<div style="background:#cba6f7;height:100%;width:{Math.min(voiceEnrollSeconds/10*100,100)}%;transition:width 1s linear"></div>
-							</div>
-						{:else}
-							<button onclick={startVoiceEnroll} disabled={!voiceServerOk || voiceEnrollStatus === 'uploading'} style="width:100%;background:rgba(203,166,247,0.15);border:1px solid rgba(203,166,247,0.4);border-radius:5px;color:#cba6f7;padding:5px;font-size:12px;cursor:{voiceServerOk ? 'pointer' : 'not-allowed'};opacity:{voiceServerOk ? 1 : 0.5}">
-								🎤 {voiceEnrollStatus === 'uploading' ? 'Processing...' : 'Record Sample (10s)'}
-							</button>
-						{/if}
-						{#if voiceEnrollMsg}
-							<div style="font-size:11px;margin-top:4px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
-						{/if}
-
-						<!-- Recent Topics -->
-						{#if (n.recent_topics || []).length > 0}
-							<div class="svc-category">Recent Topics</div>
-							<div class="int-topics">
-								{#each (n.recent_topics || []).slice(0, 5) as topic}
-									<div class="int-topic">{topic}</div>
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Last Heard -->
-						{#if n.last_heard}
-							<div class="svc-category">Last Heard</div>
-							<div class="int-last-heard">"{n.last_heard}"</div>
-						{/if}
-
-						<!-- Signals footer -->
-						<div class="int-footer">
-							<span>Confidence: {Math.round((sig.confidence || 0) * 100)}%</span>
-							<span>{sig.events_sampled || 0} events · {sig.wrap_messages_sampled || 0} msgs</span>
-						</div>
-					{/if}
+					{@render intuitionPanelContents()}
 				</div>
 			{:else if leftSection === 'lifeboat'}
 				<div class="lifeboat-panel">
@@ -6760,13 +6763,14 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); } else { stopAllDevicesPolling(); } }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'contacts') loadContacts(); if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); } else { stopAllDevicesPolling(); } }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="benchmarks">Benchmarks</option>
 				<option value="pipeline">Beta Pipeline</option>
 				<option value="bugs">Bugs</option>
+				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
 				<option value="devices">Devices</option>
 				<option value="instances">Instances</option>
 				<option value="intuition">Intuition</option>
@@ -7038,166 +7042,7 @@
 				</div>
 			{:else if rightSection === 'intuition'}
 				<div class="intuition-panel">
-					{#if !intuitionData}
-						<div class="empty-state">Loading Intuition...</div>
-					{:else}
-						{@const snap = intuitionData.snapshot || intuitionData}
-						{@const n = snap.now || {}}
-						{@const pan = snap.pan || {}}
-						{@const data = snap.data || {}}
-						{@const sig = snap.signals || {}}
-						{@const preds = pan.predictions || []}
-
-						<div class="int-header">
-							<span class="int-commander">{snap.commander || 'Commander'}</span>
-							<span class="int-ago">{snap.as_of ? new Date(snap.as_of).toLocaleTimeString() : '—'}</span>
-						</div>
-
-						<div class="svc-category">State</div>
-						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{n.where || '⏳ pendant'}</span></div>
-							<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{n.activity || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{n.focus || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Direction</span><span class="int-val">{n.direction || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{n.engagement || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Social</span><span class="int-val">{(n.social || []).join(', ') || 'alone'}</span></div>
-							<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{n.urgency || 'normal'}</span></div>
-						</div>
-
-						<!-- Mood + Assumption -->
-						<div class="svc-category">Mood & Assumption</div>
-						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{n.mood || '—'}</span></div>
-							{#if n.mood_detail}
-								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.mood_detail}</span></div>
-							{/if}
-							<div class="int-axis">
-								<span class="int-label">Assumption</span>
-								<span class="int-val" class:wellbeing-ok={n.assumption === 'ok'} class:wellbeing-notok={n.assumption === 'not_ok'} class:wellbeing-emergency={n.assumption === 'emergency'}>{n.assumption || '—'}</span>
-							</div>
-							{#if n.assumption_detail}
-								<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.assumption_detail}</span></div>
-							{/if}
-							<div class="int-disclaimer">Not medical advice — PAN's assumptions only</div>
-						</div>
-
-						<div class="svc-category">PAN</div>
-						<div class="int-axes">
-							<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'idle'}</span></div>
-							<div class="int-axis"><span class="int-label">Sessions</span><span class="int-val">{(pan.sessions || []).length}</span></div>
-							{#each (pan.active_tasks || []).slice(0, 5) as task}
-								<div class="int-axis task">
-									<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
-									<span class="int-val">{task.title}</span>
-								</div>
-							{/each}
-						</div>
-
-						{#if preds.length > 0}
-							<div class="svc-category">Predictions</div>
-							<div class="int-axes">
-								{#each preds as p}
-									<div class="int-axis pred">
-										<span class="int-val">{p.what}</span>
-										<span class="int-confidence">{Math.round((p.confidence || 0) * 100)}%</span>
-									</div>
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Screen Vision -->
-						{#if data.camera}
-							<div class="svc-category">Screen Vision</div>
-							<div class="int-axes">
-								<div class="int-axis" style="flex-wrap:wrap">
-									<span class="int-label">👁 Seeing</span>
-									<span class="int-val small" style="color:#cba6f7;white-space:normal">{data.camera}</span>
-								</div>
-							</div>
-						{/if}
-
-						<!-- Identity — who is here, what are they doing -->
-						<div class="svc-category">Identity</div>
-						<div class="int-axes">
-							{@const wc = sig.webcam_context}
-							{@const sc = sig.screen_context}
-							<div class="int-axis">
-								<span class="int-label">Present</span>
-								<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
-									{wc ? (wc.presence === 'yes' ? (wc.identity || 'someone') : wc.presence === 'no' ? 'desk empty' : 'unclear') : '⏳ no capture yet'}
-								</span>
-							</div>
-							{#if wc?.emotion && wc.presence === 'yes'}
-								<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
-							{/if}
-							{#if wc?.people_count > 1}
-								<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
-							{/if}
-							<div class="int-axis" style="flex-wrap:wrap">
-								<span class="int-label">Screen</span>
-								<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : (data.camera || '⏳ no capture yet')}</span>
-							</div>
-							{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
-							{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
-						</div>
-
-						<!-- Voice Identity -->
-						<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-							Voice Identity
-							<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}">{voiceServerOk ? 'online' : 'offline'}</span>
-						</div>
-						{#if voiceEnrollSpeakers.length > 0}
-							<div style="margin-bottom:6px">
-								{#each voiceEnrollSpeakers as sp}
-									<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
-										<span style="font-size:15px">🎤</span>
-										<span style="font-size:12px;color:#cdd6f4;flex:1">{sp.label || sp}</span>
-										{#if sp.sample_count}<span style="font-size:10px;color:#6c7086">{sp.sample_count} sample{sp.sample_count !== 1 ? 's' : ''}</span>{/if}
-										<button onclick={() => deleteVoiceSpeaker(sp.label || sp)} style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:12px;padding:1px 4px;border-radius:3px" title="Remove">✕</button>
-									</div>
-								{/each}
-							</div>
-						{:else}
-							<div style="font-size:11px;color:#6c7086;margin-bottom:6px">No speakers enrolled — voice IDs passively as you speak</div>
-						{/if}
-						<div style="display:flex;gap:5px;margin-bottom:5px">
-							<input bind:value={voiceEnrollLabel} placeholder="Speaker name" disabled={voiceEnrollStatus === 'recording' || voiceEnrollStatus === 'uploading'} style="flex:1;background:#1e1e2e;border:1px solid rgba(255,255,255,0.12);border-radius:5px;color:#cdd6f4;padding:4px 8px;font-size:12px;outline:none" />
-						</div>
-						{#if voiceEnrollStatus === 'recording'}
-							<div style="display:flex;gap:6px;align-items:center">
-								<button onclick={stopVoiceEnroll} style="flex:1;background:rgba(243,139,168,0.2);border:1px solid #f38ba8;border-radius:5px;color:#f38ba8;padding:5px;font-size:12px;cursor:pointer">⏹ Stop ({voiceEnrollSeconds}s / 10s)</button>
-							</div>
-							<div style="margin-top:4px;background:rgba(255,255,255,0.07);border-radius:3px;height:3px;overflow:hidden">
-								<div style="background:#cba6f7;height:100%;width:{Math.min(voiceEnrollSeconds/10*100,100)}%;transition:width 1s linear"></div>
-							</div>
-						{:else}
-							<button onclick={startVoiceEnroll} disabled={!voiceServerOk || voiceEnrollStatus === 'uploading'} style="width:100%;background:rgba(203,166,247,0.15);border:1px solid rgba(203,166,247,0.4);border-radius:5px;color:#cba6f7;padding:5px;font-size:12px;cursor:{voiceServerOk ? 'pointer' : 'not-allowed'};opacity:{voiceServerOk ? 1 : 0.5}">
-								🎤 {voiceEnrollStatus === 'uploading' ? 'Processing...' : 'Record Sample (10s)'}
-							</button>
-						{/if}
-						{#if voiceEnrollMsg}
-							<div style="font-size:11px;margin-top:4px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
-						{/if}
-
-						{#if (n.recent_topics || []).length > 0}
-							<div class="svc-category">Recent Topics</div>
-							<div class="int-topics">
-								{#each (n.recent_topics || []).slice(0, 5) as topic}
-									<div class="int-topic">{topic}</div>
-								{/each}
-							</div>
-						{/if}
-
-						{#if n.last_heard}
-							<div class="svc-category">Last Heard</div>
-							<div class="int-last-heard">"{n.last_heard}"</div>
-						{/if}
-
-						<div class="int-footer">
-							<span>Confidence: {Math.round((sig.confidence || 0) * 100)}%</span>
-							<span>{sig.events_sampled || 0} events · {sig.wrap_messages_sampled || 0} msgs</span>
-						</div>
-					{/if}
+					{@render intuitionPanelContents()}
 				</div>
 			{:else if rightSection === 'lifeboat'}
 				<div class="lifeboat-panel">
