@@ -6334,6 +6334,178 @@
 				{/each}
 				{/if}<!-- end contacts list {:else} -->
 				</div>
+			{:else if leftSection === 'alerts'}
+				<div class="alerts-panel">
+					<div class="alerts-filters">
+						<select class="alert-filter-select" bind:value={alertFilterStatus} onchange={loadAlerts}>
+							<option value="open">Open</option>
+							<option value="acknowledged">Acknowledged</option>
+							<option value="resolved">Resolved</option>
+							<option value="dismissed">Dismissed</option>
+							<option value="all">All</option>
+						</select>
+						<select class="alert-filter-select" bind:value={alertFilterType} onchange={loadAlerts}>
+							<option value="all">All Types</option>
+							{#each alertTypes as t}
+								<option value={t.id}>{t.label}</option>
+							{/each}
+						</select>
+					</div>
+					{#if alertsData.length === 0}
+						<div class="empty-state">No {alertFilterStatus === 'all' ? '' : alertFilterStatus} alerts</div>
+					{:else}
+						{#each alertsData as alert}
+							<div class="alert-card" class:critical={alert.severity === 'critical'} class:warning={alert.severity === 'warning'} class:info={alert.severity === 'info'}>
+								<div class="alert-header">
+									<span class="alert-severity-dot {alert.severity}"></span>
+									<span class="alert-type-badge">{alert.alert_type.replace(/_/g, ' ')}</span>
+									<span class="alert-time">{new Date(alert.created_at).toLocaleTimeString()}</span>
+								</div>
+								<div class="alert-title">{alert.title}</div>
+								{#if alert.detail}
+									{@const parsed = (() => { try { return JSON.parse(alert.detail); } catch { return null; } })()}
+									{#if parsed}
+										<div class="alert-detail">
+											{#if parsed.orphans}{#each parsed.orphans as o}<div class="alert-detail-line">PID {o.pid} — {o.ageMin}min old</div>{/each}{/if}
+											{#if parsed.hint}<div class="alert-hint">{parsed.hint}</div>{/if}
+											{#if parsed.message}<div class="alert-detail-line">{parsed.message}</div>{/if}
+											{#if parsed.stack}<details class="alert-stack"><summary>Stack trace</summary><pre>{parsed.stack}</pre></details>{/if}
+										</div>
+									{:else}
+										<div class="alert-detail"><div class="alert-detail-line">{alert.detail}</div></div>
+									{/if}
+								{/if}
+								{#if alert.resolution}<div class="alert-resolution">Resolution: {alert.resolution}</div>{/if}
+								{#if alert.status === 'open'}
+									<div class="alert-actions">
+										<button class="alert-btn ack" onclick={() => updateAlertStatus(alert.id, 'acknowledged')}>Acknowledge</button>
+										<button class="alert-btn resolve" onclick={() => { const res = prompt('Resolution notes (optional):'); if (res !== null) updateAlertStatus(alert.id, 'resolved', res); }}>Resolve</button>
+										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
+									</div>
+								{:else if alert.status === 'acknowledged'}
+									<div class="alert-actions">
+										<button class="alert-btn resolve" onclick={() => { const res = prompt('Resolution notes (optional):'); if (res !== null) updateAlertStatus(alert.id, 'resolved', res); }}>Resolve</button>
+										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
+									</div>
+								{:else if alert.status === 'resolved' || alert.status === 'dismissed'}
+									<div class="alert-actions">
+										<button class="alert-btn reopen" onclick={() => updateAlertStatus(alert.id, 'open')}>Reopen</button>
+									</div>
+								{/if}
+								<div class="alert-meta">{alert.status}{#if alert.resolved_at} — resolved {new Date(alert.resolved_at).toLocaleString()}{/if}{#if alert.resolved_by} by {alert.resolved_by}{/if}</div>
+							</div>
+						{/each}
+					{/if}
+				</div>
+			{:else if leftSection === 'benchmarks'}
+				<div class="benchmarks-panel">
+					{#if !benchmarksData}
+						<div class="empty-state">Loading benchmarks...</div>
+					{:else}
+						{@const suites = benchmarksData.suites || []}
+						{@const latest = benchmarksData.latest || {}}
+						<div class="bench-summary">
+							<div class="bench-summary-score">
+								<span class="bench-summary-num" class:all-pass={benchmarksData.suites_passed === benchmarksData.total_suites}>{benchmarksData.suites_passed ?? 0}/{benchmarksData.total_suites ?? 12}</span>
+								<span class="bench-summary-label">suites passing</span>
+							</div>
+							<button class="bench-run-btn bench-run-all" onclick={() => runAllBenchmarks()} disabled={benchmarkRunning}>{benchmarkRunningSuite === 'all' ? 'Running All...' : 'Run All'}</button>
+						</div>
+						{#if autodevReport && (autodevReport.recommendations?.length > 0)}
+							<div class="bench-autodev-report">
+								<div class="bench-report-title">AutoDev Findings</div>
+								{#each autodevReport.recommendations as rec}
+									<div class="bench-rec" class:rec-fix={rec.action === 'fix'} class:rec-research={rec.action === 'research'}>
+										<span class="bench-rec-badge" class:fix={rec.action === 'fix'} class:research={rec.action === 'research'}>{rec.action === 'fix' ? 'FIX' : 'RESEARCH'}</span>
+										<span class="bench-rec-text">{rec.label}</span>
+										<span class="bench-rec-score">{rec.suite} {rec.axis}={rec.score}</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
+						{#each suites as suite}
+							{@const run = latest[suite]}
+							{@const s = run?.scores || {}}
+							{@const composite = s.composite ?? null}
+							{@const isRunning = benchmarkRunningSuite === suite}
+							<div class="bench-suite" class:bench-not-run={!run}>
+								<div class="bench-suite-header">
+									<span class="bench-suite-name">{suite.toUpperCase()}</span>
+									<div class="bench-suite-right">
+										{#if run}<span class="bench-suite-status" class:pass={run.passed} class:fail={!run.passed}>{run.passed ? '✓' : '✗'}</span>{:else}<span class="bench-suite-status bench-unrun">—</span>{/if}
+										<button class="bench-mini-run" onclick={() => runBenchmark(suite)} disabled={benchmarkRunning}>{isRunning ? '…' : '▶'}</button>
+									</div>
+								</div>
+								{#if run}
+									{#if composite != null}
+										<div class="bench-row bench-composite-row">
+											<span class="bench-label">Score</span>
+											<div class="bench-bar-wrap"><div class="bench-bar" class:green={composite >= 8} class:yellow={composite >= 6 && composite < 8} class:red={composite < 6} style="width:{Math.min(composite / 10 * 100, 100)}%"></div></div>
+											<span class="bench-val bench-composite-val" class:pass={composite >= 8} class:warn={composite >= 6 && composite < 8} class:fail={composite < 6}>{composite.toFixed(1)}</span>
+										</div>
+									{/if}
+									{@const secKeys = Object.keys(s).filter(k => k !== 'composite' && typeof s[k] === 'number')}
+									{#if secKeys.length > 0}
+										<div class="bench-metrics">
+											{#each secKeys.slice(0, 4) as key}
+												{#if key === 'reflex_ms'}
+													<span class="bench-chip" class:chip-ok={s[key] <= 400} class:chip-warn={s[key] > 400}>{s[key]}ms</span>
+												{:else}
+													<span class="bench-chip" class:chip-ok={s[key] >= 8} class:chip-warn={s[key] >= 6 && s[key] < 8} class:chip-fail={s[key] < 6}>{benchScoreLabel(key)}: {typeof s[key] === 'number' && s[key] % 1 !== 0 ? s[key].toFixed(1) : s[key]}</span>
+												{/if}
+											{/each}
+										</div>
+									{/if}
+									<div class="bench-ran-at">{run.ran_at ? new Date(typeof run.ran_at === 'string' ? run.ran_at.replace(' ','T')+'Z' : run.ran_at).toLocaleString() : ''}</div>
+								{:else}
+									<div class="bench-not-run-label">not yet run</div>
+								{/if}
+							</div>
+						{/each}
+					{/if}
+				</div>
+			{:else if leftSection === 'pipeline'}
+				<div class="pipeline-panel">
+					{#if !pipelineData}
+						<div class="empty-state">Loading pipeline...</div>
+					{:else}
+						{@const pl = pipelineData.pipeline || {}}
+						{@const beta = pipelineData.beta}
+						{@const prod = pipelineData.production}
+						{@const status = pl.status || 'idle'}
+						<div class="pl-header">
+							<div class="pl-status-dot" style="background:{pipelineStatusColor(status)}"></div>
+							<span class="pl-status-label">{status.toUpperCase()}</span>
+							{#if pl.source && status !== 'idle'}<span class="pl-source">({pl.source})</span>{/if}
+							<div class="pl-spacer"></div>
+							{#if status === 'idle' || status === 'failed'}
+								<button class="pl-btn pl-btn-run" onclick={triggerPipeline} disabled={pipelineStarting}>{pipelineStarting ? 'Starting…' : '▶ Run Pipeline'}</button>
+							{:else}
+								<button class="pl-btn pl-btn-abort" onclick={abortPipelineAction}>✕ Abort</button>
+							{/if}
+						</div>
+						{#if pl.error}<div class="pl-error">{pl.error}</div>{/if}
+						<div class="pl-slot-label">PRODUCTION</div>
+						<div class="pl-slot pl-slot-prod">
+							{#if prod}<span class="pl-slot-id">Craft-{prod.id}</span><span class="pl-slot-port">:{prod.port}</span><span class="pl-slot-health" class:healthy={prod.healthy}>{prod.healthy ? '●' : '○'}</span><span class="pl-slot-uptime">{prod.uptimeMs ? (prod.uptimeMs / 60000).toFixed(0) + 'm' : ''}</span>{:else}<span class="pl-slot-none">—</span>{/if}
+						</div>
+						<div class="pl-slot-label">BETA {status === 'benchmarking' ? '(benchmarking…)' : status === 'spawning' ? '(spawning…)' : ''}</div>
+						<div class="pl-slot pl-slot-beta" class:active={!!beta}>
+							{#if beta}<span class="pl-slot-id">Craft-{beta.id}</span><span class="pl-slot-port">:{beta.port}</span><span class="pl-slot-health" class:healthy={beta.healthy}>{beta.healthy ? '●' : '○'}</span>{#if status === 'ready'}<button class="pl-btn pl-btn-promote" onclick={promotePipelineManual}>Promote ↑</button>{/if}{:else}<span class="pl-slot-none">{status === 'idle' ? '—' : '…'}</span>{/if}
+						</div>
+						{#if pipelineData.pending > 0}<div class="pl-slot-label">PENDING ({pipelineData.pending})</div>{/if}
+						{#if pl.scores && Object.keys(pl.scores).length > 0}
+							<div class="pl-bench-title">Benchmark Results</div>
+							{#each Object.entries(pl.scores) as [suite, result]}
+								<div class="pl-bench-row" class:pl-pass={result?.passed} class:pl-fail={result && !result.passed}>
+									<span class="pl-bench-suite">{suite}</span><span class="pl-bench-result">{result?.passed ? '✓' : '✗'}</span>
+									{#if result?.scores?.composite != null}<span class="pl-bench-score">{result.scores.composite.toFixed(1)}</span>{/if}
+								</div>
+							{/each}
+						{/if}
+						{#if pl.startedAt}<div class="pl-elapsed">Started {new Date(pl.startedAt).toLocaleTimeString()}{#if pl.completedAt} → {((pl.completedAt - pl.startedAt) / 1000).toFixed(0)}s{/if}</div>{/if}
+					{/if}
+				</div>
 			{:else if leftSection === 'mail'}
 				<div class="mail-panel">
 					<div class="contacts-toolbar">
@@ -7768,6 +7940,128 @@
 							}
 						}} />
 					</div>
+				</div>
+			{:else if rightSection === 'contacts'}
+				<div class="contacts-panel">
+
+					<!-- ── DM Thread View (shown when a contact is open) ── -->
+					{#if chatActiveThread}
+						<div class="dm-thread">
+							<div class="dm-header">
+								<button class="dm-back" onclick={() => { chatActiveThread = null; chatMessages = []; centerView = 'terminal'; }}>←</button>
+								<span class="dm-contact-avatar" class:pan-avatar={chatActiveThread.contact?.id === 'contact-pan-system'}>
+									{chatActiveThread.contact?.display_name?.charAt(0)?.toUpperCase() || '?'}
+								</span>
+								<span class="dm-contact-name">{chatActiveThread.contact?.display_name || 'Chat'}</span>
+							</div>
+							<div class="dm-messages" bind:this={chatMessagesEl}>
+								{#if chatMessages.length === 0}
+									<div class="dm-empty">
+										{#if chatActiveThread.contact?.id === 'contact-pan-system'}
+											<div style="color:#a6adc8;text-align:center;padding:20px 12px;font-size:13px;">
+												<div style="font-size:24px;margin-bottom:8px;">Π</div>
+												ΠΑΝ is listening. Ask anything about what's going on, or wait for system reports.
+											</div>
+										{:else}
+											No messages yet
+										{/if}
+									</div>
+								{:else}
+									{#each chatMessages as msg}
+										{@const meta = (() => { try { return JSON.parse(msg.metadata || '{}'); } catch { return {}; } })()}
+										{@const isSelf = msg.sender_id === 'self'}
+										<div class="dm-msg-wrap" class:dm-msg-self={isSelf}>
+											{#if !isSelf && meta.service}
+												<div class="dm-service-tag">{meta.service}</div>
+											{/if}
+											<div class="dm-bubble" class:dm-bubble-self={isSelf} class:dm-bubble-pan={msg.sender_id === 'contact-pan-system'}>
+												{#if msg.subject && msg.subject !== msg.body}
+													<div class="dm-subject">{msg.subject}</div>
+												{/if}
+												<div class="dm-body">{msg.body}</div>
+												<div class="dm-time">{new Date(msg.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
+											</div>
+										</div>
+									{/each}
+								{/if}
+							</div>
+							<div class="dm-input-bar">
+								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask ΠΑΝ anything…' : 'Message…'}
+									bind:value={chatInputText}
+									onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} />
+								<button class="dm-send" onclick={sendChatMessage} disabled={!chatInputText.trim()}>↑</button>
+							</div>
+						</div>
+
+					{:else}
+					<!-- ── Contacts List ── -->
+					<div class="contacts-toolbar">
+						<input type="text" class="contacts-search" placeholder="Search contacts..." bind:value={chatSearchQuery} />
+						<button class="contacts-add-btn" onclick={() => openCompose(null)} title="Compose message">&#9998;</button>
+						<button class="contacts-add-btn" onclick={() => { addContactModal = true; }} title="Add contact">+</button>
+					</div>
+
+					{#if addContactModal}
+						<div class="contact-add-form">
+							<input type="text" placeholder="Name *" bind:value={newContactName} class="contact-input" />
+							<input type="text" placeholder="PAN Instance ID (pan_xxxx)" bind:value={newContactPanId} class="contact-input" />
+							<input type="text" placeholder="Phone" bind:value={newContactPhone} class="contact-input" />
+							<input type="text" placeholder="Email" bind:value={newContactEmail} class="contact-input" />
+							<div class="contact-add-actions">
+								<button class="contact-btn-save" onclick={addContact}>Add</button>
+								<button class="contact-btn-cancel" onclick={() => { addContactModal = false; }}>Cancel</button>
+							</div>
+						</div>
+					{/if}
+
+					{#each [contactsData.filter(c => !chatSearchQuery || c.display_name.toLowerCase().includes(chatSearchQuery.toLowerCase()))] as filtered}
+					{#each [filtered.find(c => c.id === 'contact-pan-system')] as panContact}
+						{#if panContact}
+							<div class="svc-category">ΠΑΝ</div>
+							<div class="svc-row contact-row pan-contact-row" onclick={() => openChat(panContact)} role="button" tabindex="0">
+								<span class="contact-avatar pan-avatar">Π</span>
+								<div class="svc-info">
+									<div class="svc-name">ΠΑΝ {#if panContact.unread_count > 0}<span class="contact-badge">{panContact.unread_count}</span>{/if}</div>
+									<div class="svc-detail"><span class="contact-status online"></span> System · always on</div>
+								</div>
+							</div>
+						{/if}
+					{/each}
+					{#each [filtered.filter(c => c.favorited && c.id !== 'contact-pan-system')] as favorites}
+						{#if favorites.length > 0}
+							<div class="svc-category">Favorites</div>
+							{#each favorites as contact}
+								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
+									<span class="contact-avatar">{contact.display_name.charAt(0).toUpperCase()}</span>
+									<div class="svc-info">
+										<div class="svc-name">{contact.display_name}{#if contact.unread_count > 0}<span class="contact-badge">{contact.unread_count}</span>{/if}</div>
+										<div class="svc-detail">{contact.phone || contact.email || 'No PAN ID'}</div>
+									</div>
+									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }}>&#9733;</button>
+								</div>
+							{/each}
+						{/if}
+					{/each}
+					{#each [filtered.filter(c => !c.favorited && c.id !== 'contact-pan-system')] as others}
+						{#if others.length > 0}
+							<div class="svc-category">Contacts</div>
+							{#each others as contact}
+								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
+									<span class="contact-avatar">{contact.display_name.charAt(0).toUpperCase()}</span>
+									<div class="svc-info">
+										<div class="svc-name">{contact.display_name}{#if contact.unread_count > 0}<span class="contact-badge">{contact.unread_count}</span>{/if}</div>
+										<div class="svc-detail">{contact.phone || contact.email || 'No PAN ID'}</div>
+									</div>
+									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }}>&#9734;</button>
+								</div>
+							{/each}
+						{/if}
+					{/each}
+					{#if filtered.length === 0 && !addContactModal}
+						<div class="empty-state">{chatSearchQuery ? 'No matches' : 'No contacts yet — click + to add'}</div>
+					{/if}
+					{/each}
+					{/if}
 				</div>
 			{:else if rightSection === 'mail'}
 				<div class="mail-panel">
