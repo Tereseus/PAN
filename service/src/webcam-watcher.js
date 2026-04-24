@@ -1,144 +1,157 @@
-// PAN Webcam Watcher — periodic webcam frame → vision AI → presence + identity signal
+// PAN Webcam Watcher — periodic webcam frame → face-api → presence + identity
 //
-// Captures from PC webcam (and optionally phone virtual camera) every 60s.
-// Detects: presence (is user at desk?), identity (who is it?), emotion/state.
-// Feeds into intuition.js as 'webcam_context' events — highest trust for
-// "is the user here?" questions since screen activity can be automated.
-//
-// Cameras (auto-detected via FFmpeg dshow):
-//   Primary:   Integrated Webcam
-//   Secondary: Pixel 10 Pro (Windows Virtual Camera) — phone as camera source
+// Identity via face embeddings (local, <1s) — NOT a vision LLM.
+// Cameras are auto-detected at runtime via FFmpeg dshow listing.
+// Uses pipe output to avoid FFmpeg 8+ single-frame file write bug.
 
-import { spawn } from 'child_process';
-import { join } from 'path';
-import { unlinkSync, readFileSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
-import { analyzeImage } from './llm.js';
+import { spawn, spawnSync } from 'child_process';
+import { initFaceId, identifyFromFrame, getFaceIdStatus } from './face-id.js';
 import { run, get } from './db.js';
 
-function getCommanderName() {
-  try {
-    const u = get("SELECT display_nickname, display_name FROM users WHERE id = 1");
-    return u?.display_nickname || u?.display_name || 'the user';
-  } catch { return 'the user'; }
-}
+const INTERVAL_MS   = 30_000;   // capture every 30s (fast enough now)
+const STALE_MS      = 90_000;   // context stale after 90s
+const BURST_FRAMES  = 3;        // capture N frames, use best (most likely to catch a face)
+const MISS_REQUIRED = 2;        // consecutive no-face captures before declaring "desk empty"
 
-const INTERVAL_MS    = 60_000;   // webcam frame every 60s (less aggressive than screen)
-const STALE_MS       = 120_000;  // context older than 2min is stale for intuition
-const IDLE_THRESH    = 10 * 60_000; // skip if idle >10min (away from desk)
-const SNAP_PATH      = join(tmpdir(), 'pan-webcam-snap.jpg');
-
-// Cameras to try in priority order
-const CAMERAS = [
-  { name: 'Integrated Webcam',                    id: 'integrated' },
-  { name: 'Pixel 10 Pro (Windows Virtual Camera)', id: 'pixel-phone' },
-];
+// Virtual camera keywords — exclude software cameras that open system dialogs
+// Note: "phone/pixel" are NOT excluded — pendant images come over HTTP, not dshow
+const VIRTUAL_CAM_HINTS = ['virtual', 'obs', 'steam', 'snap', 'manycam', 'droidcam', 'ivcam', 'epoccam', 'phone link'];
 
 let watcherTimer  = null;
 let isCapturing   = false;
-let lastContext   = null; // { presence, identity, emotion, ts, source, camera }
-let activeCameraIdx = 0;  // which camera we're currently using
+let lastContext   = null;
+let detectedCams  = null;
+let consecutiveMisses = 0;   // no-face frames in a row — need MISS_REQUIRED before "desk empty"
 
-// ── Capture one frame from a named DirectShow camera ─────────────────────────
+// ── Camera detection ──────────────────────────────────────────────────────────
+
+function detectCameras() {
+  if (detectedCams) return detectedCams;
+  try {
+    const result = spawnSync('ffmpeg', ['-f', 'dshow', '-list_devices', 'true', '-i', 'dummy'],
+      { windowsHide: true, timeout: 5000, encoding: 'utf8' });
+    const output = (result.stderr || '') + (result.stdout || '');
+    const names = [];
+    for (const line of output.split('\n')) {
+      const m = line.match(/"([^"]+)"\s+\(video\)/);
+      if (m) names.push(m[1]);
+    }
+    // Prefer integrated/built-in cameras first, then others, skip known virtual
+    const real = names.filter(n => !VIRTUAL_CAM_HINTS.some(h => n.toLowerCase().includes(h)));
+    const integrated = real.filter(n => /integrated|built.?in|internal/i.test(n));
+    const others     = real.filter(n => !/integrated|built.?in|internal/i.test(n));
+    detectedCams = [...integrated, ...others];
+    console.log(`[WebcamWatcher] Cameras: ${detectedCams.join(', ') || '(none)'}`);
+  } catch (e) {
+    console.warn(`[WebcamWatcher] Camera detection failed: ${e.message}`);
+    detectedCams = [];
+  }
+  return detectedCams;
+}
+
+// ── Frame capture (FFmpeg pipe — avoids FFmpeg 8+ file write bug) ─────────────
+
 function captureFrame(cameraName) {
   return new Promise((resolve, reject) => {
-    const args = [
-      '-f', 'dshow',
-      '-i', `video=${cameraName}`,
+    const proc = spawn('ffmpeg', [
+      '-f', 'dshow', '-i', `video=${cameraName}`,
       '-vframes', '1',
-      '-vf', 'scale=640:-1',   // keep it small — just need face, not 4K
+      '-vf', 'scale=640:-2',
       '-q:v', '3',
-      '-y', SNAP_PATH,
-    ];
-    const proc = spawn('ffmpeg', args, { windowsHide: true, shell: false });
+      '-f', 'image2', '-vcodec', 'mjpeg', 'pipe:1',
+    ], { windowsHide: true, shell: false });
+
+    const chunks = [];
     let stderr = '';
-    proc.stderr?.on('data', d => { stderr += d.toString(); });
+    proc.stdout.on('data', d => chunks.push(d));
+    proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('close', code => {
-      if (code === 0 && existsSync(SNAP_PATH)) {
-        try { resolve(readFileSync(SNAP_PATH).toString('base64')); }
-        catch (e) { reject(new Error(`Read frame failed: ${e.message}`)); }
-      } else {
-        reject(new Error(`FFmpeg exited ${code}: ${stderr.slice(-200)}`));
-      }
+      const buf = Buffer.concat(chunks);
+      if (buf.length > 1000) resolve(buf.toString('base64'));
+      else reject(new Error(`FFmpeg exit ${code}. ${stderr.slice(-120)}`));
     });
     proc.on('error', e => reject(new Error(`FFmpeg spawn: ${e.message}`)));
   });
 }
 
-// ── One capture cycle ─────────────────────────────────────────────────────────
+// ── Capture cycle ─────────────────────────────────────────────────────────────
+
 async function runCapture() {
   if (isCapturing) return;
   isCapturing = true;
 
   try {
-    // Try cameras in order, fall back on error
-    let base64 = null;
+    const cameras = detectCameras();
+    if (!cameras.length) { console.warn('[WebcamWatcher] No cameras — skipping'); return; }
+
     let usedCamera = null;
+    for (const cam of cameras) {
+      try { await captureFrame(cam); usedCamera = cam; break; }
+      catch (e) { console.warn(`[WebcamWatcher] "${cam}" failed: ${e.message.slice(0, 80)}`); }
+    }
+    if (!usedCamera) { console.warn('[WebcamWatcher] All cameras failed'); return; }
 
-    for (let i = 0; i < CAMERAS.length; i++) {
-      const cam = CAMERAS[(activeCameraIdx + i) % CAMERAS.length];
-      try {
-        base64 = await captureFrame(cam.name);
-        usedCamera = cam;
-        activeCameraIdx = (activeCameraIdx + i) % CAMERAS.length;
-        break;
-      } catch (e) {
-        console.warn(`[WebcamWatcher] ${cam.name} failed: ${e.message.slice(0, 80)}`);
+    // Burst: capture up to BURST_FRAMES, stop as soon as we get a face
+    const t0 = Date.now();
+    let face = null;
+    for (let i = 0; i < BURST_FRAMES; i++) {
+      let b64;
+      try { b64 = await captureFrame(usedCamera); }
+      catch (e) { console.warn(`[WebcamWatcher] burst frame ${i+1} failed: ${e.message.slice(0, 60)}`); continue; }
+      const result = await identifyFromFrame(b64);
+      if (result.present) { face = result; break; }  // got a face — stop bursting
+      if (!face || result.confidence > (face.confidence || 0)) face = result; // keep best
+    }
+    if (!face) face = { present: false, identity: 'unknown', confidence: 0, expression: 'none' };
+    const elapsed = Date.now() - t0;
+
+    // Debounce: don't flip to "desk empty" on a single missed frame
+    if (!face.present) {
+      consecutiveMisses++;
+      if (consecutiveMisses < MISS_REQUIRED) {
+        console.log(`[WebcamWatcher] No face — miss ${consecutiveMisses}/${MISS_REQUIRED}, holding last presence state`);
+        return;
       }
+    } else {
+      consecutiveMisses = 0;
     }
 
-    if (!base64 || !usedCamera) {
-      console.warn('[WebcamWatcher] All cameras failed — skipping cycle');
-      return;
-    }
+    const ctx = {
+      presence:   face.present ? 'yes' : 'no',
+      identity:   face.identity,
+      confidence: face.confidence,
+      emotion:    face.expression,
+      ts:         Date.now(),
+      camera:     usedCamera,
+      elapsed_ms: elapsed,
+    };
 
-    const result = await analyzeImage(
-      'Look at this webcam frame and answer in JSON:\n' +
-      '{"presence": "yes|no|unclear", "identity": "Tzuri|unknown|empty", ' +
-      '"emotion": "focused|relaxed|tired|stressed|happy|neutral|away", ' +
-      '"people_count": 0, "note": "one short observation"}\n\n' +
-      'Rules: presence=yes only if a person is clearly visible. ' +
-      `identity=${getCommanderName()} if you recognize the user (young man, home office). ` +
-      'emotion from face/posture. people_count = total visible people. ' +
-      'note = one detail (glasses on, leaning back, looking away, etc). ' +
-      'Reply with ONLY the JSON object, no other text.',
-      base64,
-      { caller: 'webcam-watcher', timeout: 15_000 },
-    );
-
-    // Parse the JSON response
-    let parsed = {};
-    try {
-      const jsonMatch = (result || '').match(/\{[\s\S]*\}/);
-      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-    } catch { parsed = { presence: 'unclear', raw: result }; }
-
-    const ts = Date.now();
-    lastContext = { ...parsed, ts, camera: usedCamera.id };
+    lastContext = ctx;
 
     run(
-      `INSERT INTO events (event_type, session_id, data, created_at)
-       VALUES (:type, NULL, :data, datetime('now'))`,
-      { type: 'webcam_context', data: JSON.stringify({ ...parsed, ts, camera: usedCamera.id }) }
+      `INSERT INTO events (event_type, session_id, data, created_at) VALUES (:type, 'system', :data, datetime('now'))`,
+      { type: 'webcam_context', data: JSON.stringify(ctx) }
     );
 
-    const presenceTag = parsed.presence === 'yes' ? '👤' : parsed.presence === 'no' ? '🪑' : '❓';
-    console.log(`[WebcamWatcher] (${usedCamera.id}) ${presenceTag} presence=${parsed.presence} identity=${parsed.identity ?? '?'} emotion=${parsed.emotion ?? '?'}${parsed.note ? ` · ${parsed.note}` : ''}`);
+    const tag = face.present ? '👤' : '🪑';
+    console.log(`[WebcamWatcher] ${tag} presence=${ctx.presence} identity=${ctx.identity}${face.confidence ? ` (${face.confidence}%)` : ''} expression=${ctx.emotion} — ${elapsed}ms`);
 
   } catch (e) {
     console.warn(`[WebcamWatcher] cycle error: ${e.message}`);
   } finally {
     isCapturing = false;
-    try { if (existsSync(SNAP_PATH)) unlinkSync(SNAP_PATH); } catch {}
   }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export function startWebcamWatcher() {
+export async function startWebcamWatcher() {
   if (watcherTimer) return;
-  console.log(`[WebcamWatcher] Started — every ${INTERVAL_MS / 1000}s · cameras: ${CAMERAS.map(c => c.name).join(', ')}`);
-  setTimeout(runCapture, 20_000); // first capture 20s after boot (let screen watcher go first)
+  detectCameras();
+  // Init face-id in background — first capture waits for it automatically
+  initFaceId().catch(e => console.warn(`[WebcamWatcher] face-id init failed: ${e.message}`));
+  console.log(`[WebcamWatcher] Started — every ${INTERVAL_MS / 1000}s`);
+  setTimeout(runCapture, 5_000);   // first capture in 5s (face-id loads fast)
   watcherTimer = setInterval(runCapture, INTERVAL_MS);
 }
 
@@ -148,18 +161,24 @@ export function stopWebcamWatcher() {
 
 export function getWebcamContext() {
   if (!lastContext) return null;
-  const age = Date.now() - lastContext.ts;
-  if (age > STALE_MS) return null;
-  return { ...lastContext, ageMs: age };
+  if (Date.now() - lastContext.ts > STALE_MS) return null;
+  return { ...lastContext, age_ms: Date.now() - lastContext.ts };
+}
+
+export async function forceCapture() {
+  if (isCapturing) return { ok: false, error: 'capture already in progress' };
+  const before = lastContext;
+  await runCapture();
+  const after = lastContext;
+  if (after && after !== before) return { ok: true, result: after };
+  return { ok: false, error: 'capture produced no output — check server logs' };
 }
 
 export function getWebcamStatus() {
   return {
-    running: !!watcherTimer,
-    lastCapture: lastContext
-      ? { ageMs: Date.now() - lastContext.ts, ...lastContext }
-      : null,
-    cameras: CAMERAS,
-    activeCameraIdx,
+    running:     !!watcherTimer,
+    lastCapture: lastContext ? { age_ms: Date.now() - lastContext.ts, ...lastContext } : null,
+    cameras:     detectedCams || [],
+    faceId:      getFaceIdStatus(),
   };
 }
