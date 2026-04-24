@@ -55,10 +55,15 @@ function panNotify(service, subject, body, opts = {}) {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ==================== Configuration ====================
-const CARRIER_PORT = parseInt(process.env.PAN_PORT) || 7777;
+// When running under Super-Carrier, Carrier listens on an internal port (17760)
+// instead of the public port (7777). Super-Carrier owns 7777 and proxies to us.
+const IS_UNDER_SUPER_CARRIER = !!process.env.PAN_UNDER_SUPER_CARRIER;
+const CARRIER_PORT = IS_UNDER_SUPER_CARRIER
+  ? (parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760)
+  : (parseInt(process.env.PAN_PORT) || 7777);
 // Derive internal Craft port from Carrier port — prevents multi-instance conflicts.
 // Default: 7777 → 17700, Dev (7781) → 17704, Docker/custom → CARRIER_PORT + 9923
-const CRAFT_PORT_BASE = parseInt(process.env.PAN_CRAFT_PORT_BASE) || (CARRIER_PORT + 9923);
+const CRAFT_PORT_BASE = parseInt(process.env.PAN_CRAFT_PORT_BASE) || (IS_UNDER_SUPER_CARRIER ? 17700 : (CARRIER_PORT + 9923));
 const HOST = '0.0.0.0';
 const ROLLBACK_TIMEOUT_MS = 30_000; // 30s auto-rollback if not confirmed
 
@@ -1361,17 +1366,18 @@ async function boot() {
     }
   });
 
-  // Kill any zombie carrier holding our own port (e.g. after sleep/wake where old carrier
-  // lost the port but its process kept running with live intervals burning CPU).
-  // Must happen BEFORE we try to listen — otherwise we'd get EADDRINUSE.
-  try {
-    const zombies = await killProcessOnPort(CARRIER_PORT);
-    if (zombies.size > 0) {
-      console.log(`[Carrier] ⚰️  Killed zombie carrier(s) on port ${CARRIER_PORT}: ${[...zombies].join(', ')}`);
-      await new Promise(r => setTimeout(r, 500));
+  // Kill any zombie carrier holding our own port — only when running standalone.
+  // Under Super-Carrier, port cleanup is Super-Carrier's responsibility.
+  if (!IS_UNDER_SUPER_CARRIER) {
+    try {
+      const zombies = await killProcessOnPort(CARRIER_PORT);
+      if (zombies.size > 0) {
+        console.log(`[Carrier] ⚰️  Killed zombie carrier(s) on port ${CARRIER_PORT}: ${[...zombies].join(', ')}`);
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch (e) {
+      console.warn(`[Carrier] Could not clean carrier port ${CARRIER_PORT}: ${e.message}`);
     }
-  } catch (e) {
-    console.warn(`[Carrier] Could not clean carrier port ${CARRIER_PORT}: ${e.message}`);
   }
 
   // Kill any stale process holding the Craft port from a prior crash
@@ -1434,6 +1440,9 @@ async function boot() {
   await waitForCraftHealth(primaryCraft);
 
   // ── Zombie self-detector ────────────────────────────────────────────────
+  // Only needed in standalone mode. Under Super-Carrier, SC owns port 7777
+  // and manages our lifecycle directly — no zombie scenario is possible.
+  if (IS_UNDER_SUPER_CARRIER) return;
   // After sleep/wake or a forced restart, a new Carrier can steal port 7777
   // while this process keeps running with live intervals (burning CPU).
   // Every 60s: hit /health and check if the PID that responds is OUR PID.
