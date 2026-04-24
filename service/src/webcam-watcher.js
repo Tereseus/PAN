@@ -16,7 +16,7 @@ const INTERVAL_MS      = 30_000;   // base polling interval (when not locked)
 const STALE_MS         = 90_000;   // context stale after 90s
 const BURST_FRAMES     = 3;        // capture N frames, use best
 const MISS_REQUIRED    = 2;        // consecutive misses before "desk empty"
-const LOCK_CONF_MIN    = 80;       // min confidence % to lock identity
+const LOCK_CONF_MIN    = 35;       // min confidence % to lock identity (face-api 30-50% is normal for a good match)
 const LOCK_RECHECK_MS  = 5 * 60_000; // recheck every 5min when locked (prove still there)
 
 // Virtual camera keywords — exclude software cameras that open system dialogs
