@@ -39,7 +39,7 @@ import intuitionRouter from './routes/intuition.js';
 import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
-import { startScreenWatcher } from './screen-watcher.js';
+import { startScreenWatcher, startBurst } from './screen-watcher.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
 import { privacyMiddleware } from './privacy.js';
@@ -56,7 +56,7 @@ export { getTunnelURL }; // re-export so client.js can import it
 import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir } from './platform.js';
-import { syncProjects, get, all, insert, run, indexEventFTS, db } from './db.js';
+import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl } from './db.js';
 import { searchMemory, backfillEmbeddings } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
@@ -560,7 +560,7 @@ app.get('/dashboard/api/perf', async (req, res) => {
   });
 });
 
-app.get('/dashboard/api/processes', (req, res) => {
+app.get('/dashboard/api/processes', async (req, res) => {
   // Single source of truth: the steward service registry. Each registered
   // PAN service either runs in the main pan-server process (interval/function
   // health checks) or as its own OS process (port/process health checks).
@@ -624,28 +624,72 @@ app.get('/dashboard/api/processes', (req, res) => {
       return null;
     }
 
+    // Inject Super-Carrier + Carrier at the top — they live outside the Atlas
+    // registry but are the most critical processes in the stack.
+    const layerEntries = [];
+    try {
+      const hRes = await fetch('http://127.0.0.1:7777/health', { signal: AbortSignal.timeout(1500) });
+      if (hRes.ok) {
+        const hData = await hRes.json();
+        if (hData.superCarrier && hData.superCarrierPid) {
+          const scProc = enriched.find(p => p.pid === hData.superCarrierPid);
+          layerEntries.push({
+            id: 'super-carrier', name: 'Super-Carrier', status: 'running',
+            role: 'Immortal process · owns :7777 + browser connections',
+            port: 7777, pid: hData.superCarrierPid,
+            cpuSec: scProc?.cpuSec ?? null, memMB: scProc?.memMB ?? null,
+            uptimeHrs: scProc?.uptimeHrs ?? null, createdAt: scProc?.createdAt || null,
+            inProcess: false, modelTierLabel: null,
+          });
+        }
+        if (hData.carrierPid) {
+          const cProc = enriched.find(p => p.pid === hData.carrierPid);
+          layerEntries.push({
+            id: 'carrier', name: 'Carrier', status: 'running',
+            role: 'Hot-swap coordinator · PTY + WebSocket',
+            port: 17760, pid: hData.carrierPid,
+            cpuSec: cProc?.cpuSec ?? null, memMB: cProc?.memMB ?? null,
+            uptimeHrs: cProc?.uptimeHrs ?? null, createdAt: cProc?.createdAt || null,
+            inProcess: false, modelTierLabel: null,
+          });
+        }
+        // Craft = this process (server.js)
+        const craftProc = enriched.find(p => p.exe === 'node.exe' && /server\.js/i.test(p.cmd));
+        layerEntries.push({
+          id: 'craft', name: 'Craft', status: 'running',
+          role: 'HTTP server · all routes + API',
+          port: 17700, pid: process.pid,
+          cpuSec: craftProc?.cpuSec ?? null, memMB: craftProc?.memMB ?? null,
+          uptimeHrs: craftProc?.uptimeHrs ?? null, createdAt: craftProc?.createdAt || null,
+          inProcess: false, modelTierLabel: null,
+        });
+      }
+    } catch {}
+
     const atlas = getAtlasData();
-    const services = (atlas.services || []).map(svc => {
-      const proc = matchProcForService(svc);
-      const inProcess = !proc && (svc.healthCheck === 'interval' || svc.healthCheck === 'function');
-      return {
-        id: svc.id,
-        name: svc.name,
-        status: svc.status,
-        lastError: svc.lastError,
-        lastRun: svc.lastRun,
-        port: svc.port,
-        modelTier: svc.modelTier,
-        modelTierLabel: svc.modelTierLabel,
-        // Real OS metrics (or null if in-process / not running)
-        pid: proc?.pid || null,
-        cpuSec: proc?.cpuSec ?? null,
-        memMB: proc?.memMB ?? null,
-        uptimeHrs: proc?.uptimeHrs ?? null,
-        createdAt: proc?.createdAt || null,
-        inProcess,
-      };
-    });
+    const services = [
+      ...layerEntries,
+      ...(atlas.services || []).map(svc => {
+        const proc = matchProcForService(svc);
+        const inProcess = !proc && (svc.healthCheck === 'interval' || svc.healthCheck === 'function');
+        return {
+          id: svc.id,
+          name: svc.name,
+          status: svc.status,
+          lastError: svc.lastError,
+          lastRun: svc.lastRun,
+          port: svc.port,
+          modelTier: svc.modelTier,
+          modelTierLabel: svc.modelTierLabel,
+          pid: proc?.pid || null,
+          cpuSec: proc?.cpuSec ?? null,
+          memMB: proc?.memMB ?? null,
+          uptimeHrs: proc?.uptimeHrs ?? null,
+          createdAt: proc?.createdAt || null,
+          inProcess,
+        };
+      }),
+    ];
 
     // Anything else eating >10% CPU that ISN'T claimed by a PAN service —
     // surfaced separately as "other" so zombie processes are visible without
@@ -741,6 +785,15 @@ app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
 
 // Intuition — live situational state daemon (read by PAN voice, Forge, Atlas)
 app.use('/api/v1/intuition', intuitionRouter);
+
+// Screen-watcher burst mode — called by carrier after a craft swap to get rapid
+// screenshots (every 5s for 60s) so intuition sees the swap stages in real time.
+app.post('/api/v1/screen-watcher/burst', (req, res) => {
+  const duration = Math.min(parseInt(req.body?.duration_ms) || 60_000, 300_000);
+  const interval = Math.min(parseInt(req.body?.interval_ms) || 5_000, 30_000);
+  startBurst(duration, interval);
+  res.json({ ok: true, duration_ms: duration, interval_ms: interval });
+});
 
 // Benchmark — AI model scoring suite (Intuition: Hearing/Reflex/Clarity/Reasoning/Memory/Voice)
 app.use('/api/v1/ai', benchmarkApiRouter);
@@ -1062,12 +1115,18 @@ function generateBATDownload_UNUSED(host, proto, wsProto, token) {
     '  Write-Host "  Node.js $ver already installed ' + String.fromCharCode(0x2713) + '" -ForegroundColor Green',
     '}',
     '',
-    '# Find npm (bundled with node)',
-    '$npmCli = Join-Path (Split-Path $nodeExe) "node_modules\\npm\\bin\\npm-cli.js"',
+    '# Find npm — check alongside node.exe first, then PATH, then nvm dirs',
+    '$nodeDir = Split-Path $nodeExe',
+    '$npmCli = Join-Path $nodeDir "node_modules\\npm\\bin\\npm-cli.js"',
     'if (-not (Test-Path $npmCli)) {',
-    '  # Try system npm',
-    '  $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source',
-    '  if ($npmCmd) { $npmCli = $null } else { throw "npm not found" }',
+    '  # Try npm.cmd next to node.exe (nvm-style installs)',
+    '  $npmCmd = Join-Path $nodeDir "npm.cmd"',
+    '  if (Test-Path $npmCmd) { $npmCli = $null; $env:PATH = "$nodeDir;$env:PATH" }',
+    '  else {',
+    '    # Fall back to system PATH',
+    '    $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source',
+    '    if ($npmCmd) { $npmCli = $null } else { throw "npm not found — install Node.js from nodejs.org" }',
+    '  }',
     '}',
     '',
     '# Download pan-client.js',
@@ -3636,6 +3695,17 @@ app.post('/api/internal/pan-notify', async (req, res) => {
   }
 });
 
+// Debug: check what Ollama URL is configured
+app.get('/api/v1/ollama-url', async (req, res) => {
+  const url = getOllamaUrl();
+  let reachable = false;
+  try {
+    const r = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    reachable = r.ok;
+  } catch {}
+  res.json({ url, reachable });
+});
+
 app.get('/health', (req, res) => {
   const uptimeMs = Date.now() - _serverStartedAt;
   const secs = Math.floor(uptimeMs / 1000);
@@ -3778,7 +3848,8 @@ async function autoDetectLocalModels() {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch('http://localhost:11434/api/tags', { signal: controller.signal });
+    const ollamaUrl = getOllamaUrl();
+    const res = await fetch(`${ollamaUrl}/api/tags`, { signal: controller.signal });
     clearTimeout(timer);
     if (res.ok) {
       const data = await res.json();
@@ -3789,7 +3860,7 @@ async function autoDetectLocalModels() {
           id: m.name || m.model,
           name: (m.name || m.model).split(':')[0] + ' (Ollama)',
           provider: 'ollama',
-          url: 'http://localhost:11434',
+          url: ollamaUrl,
         });
       }
     }
