@@ -78,8 +78,7 @@ export default async function cmdStart(args) {
   // Boot via Super-Carrier in prod mode (zero-downtime Carrier restarts)
   // Dev mode and --no-carrier flag skip Super-Carrier and boot server.js directly
   if (!isDev && !noCarrier) {
-    console.log('[PAN] Booting via Super-Carrier (zero-downtime carrier restarts)...');
-    // Super-Carrier is a self-booting module — it spawns Carrier underneath
+    console.log('[PAN] Booting via Super-Carrier (zero-downtime Carrier restarts)...');
     await import('../super-carrier.js');
   } else {
     if (isDev) console.log('[PAN] Dev mode — booting server directly (no Carrier)');
