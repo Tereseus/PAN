@@ -146,7 +146,7 @@ export async function killProcessOnPort(port) {
     if (isWindows) {
       const result = execSync(
         `netstat -ano | findstr :${port} | findstr LISTENING`,
-        { encoding: 'utf8', timeout: 5000 }
+        { encoding: 'utf8', timeout: 5000, windowsHide: true }
       );
       pids = new Set();
       for (const line of result.trim().split('\n')) {

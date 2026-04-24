@@ -7,6 +7,7 @@
 import { Router } from 'express';
 import { all, get } from '../db.js';
 import { runBenchmark, BENCHMARK_SUITES } from '../benchmark.js';
+import { panNotify } from '../pan-notify.js';
 
 export const benchmarkApiRouter = Router();
 export const benchmarkDashRouter = Router();
@@ -62,6 +63,33 @@ benchmarkApiRouter.post('/benchmark/all', async (req, res) => {
       }
     }
     const allPassed = Object.values(results).every(r => r.passed);
+    const passed = Object.entries(results).filter(([,r]) => r.passed).map(([s]) => s);
+    const failed = Object.entries(results).filter(([,r]) => !r.passed).map(([s]) => s);
+
+    // Notify user via ΠΑΝ thread
+    try {
+      if (allPassed) {
+        panNotify('Benchmark · 📊',
+          `All ${BENCHMARK_SUITES.length} suites passed ✅`,
+          `Full benchmark run completed. All suites passed.\n\n✅ ${passed.join(', ')}\n\nModel tested: ${model}`,
+          { severity: 'info' }
+        );
+      } else {
+        const scoreLines = failed.map(s => {
+          const r = results[s];
+          const scores = r.scores ? Object.entries(r.scores).map(([k,v]) => `${k}: ${v}`).join(', ') : 'no scores';
+          return `• ${s}: ${scores}`;
+        }).join('\n');
+        panNotify('Benchmark · 📊',
+          `${failed.length}/${BENCHMARK_SUITES.length} suite(s) below floor ⚠️`,
+          `Benchmark run complete — some suites need attention.\n\n❌ Failed:\n${scoreLines}\n\n✅ Passed: ${passed.join(', ') || 'none'}\n\nModel: ${model}`,
+          { severity: 'warning' }
+        );
+      }
+    } catch (notifyErr) {
+      console.warn('[Benchmark] panNotify failed:', notifyErr.message);
+    }
+
     res.json({ ok: true, allPassed, results, model });
   } catch (e) {
     console.error('[PAN Benchmark] All-suite run failed:', e.message);

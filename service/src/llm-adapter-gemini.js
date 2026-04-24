@@ -49,6 +49,7 @@ export class GeminiAdapter {
       cwd: this.cwd,
       env: { ...process.env, NO_COLOR: '1' },
       shell: true, // Needed for .cmd/.ps1 resolution on Windows
+      windowsHide: true,
     });
 
     let buffer = '';

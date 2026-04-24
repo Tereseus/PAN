@@ -327,8 +327,14 @@ router.delete('/:id', (req, res) => {
 router.post('/:id/approve', (req, res) => {
   const { id } = req.params;
   try {
-    approveDevice(id);
-    res.json({ ok: true, device_id: id, trusted: true });
+    // id may be a numeric DB id or a hostname — resolve to hostname
+    const isNumeric = /^\d+$/.test(id);
+    const row = isNumeric
+      ? get('SELECT hostname FROM devices WHERE id = :id', { ':id': id })
+      : get('SELECT hostname FROM devices WHERE hostname = :h', { ':h': id });
+    if (!row) return res.status(404).json({ ok: false, error: `Device '${id}' not found` });
+    approveDevice(row.hostname);
+    res.json({ ok: true, device_id: row.hostname, trusted: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -338,8 +344,13 @@ router.post('/:id/approve', (req, res) => {
 router.post('/:id/deny', (req, res) => {
   const { id } = req.params;
   try {
-    denyDevice(id);
-    res.json({ ok: true, device_id: id, trusted: false });
+    const isNumeric = /^\d+$/.test(id);
+    const row = isNumeric
+      ? get('SELECT hostname FROM devices WHERE id = :id', { ':id': id })
+      : get('SELECT hostname FROM devices WHERE hostname = :h', { ':h': id });
+    if (!row) return res.status(404).json({ ok: false, error: `Device '${id}' not found` });
+    denyDevice(row.hostname);
+    res.json({ ok: true, device_id: row.hostname, trusted: false });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -408,6 +419,74 @@ router.get('/status', (req, res) => {
   if (!device) return res.json({ ok: true, status: 'unknown' });
   const status = device.trusted === 1 ? 'approved' : device.trusted === -1 ? 'denied' : 'pending';
   res.json({ ok: true, status, name: device.name });
+});
+
+// ── POST /api/v1/client/metrics ───────────────────────────────────────────────
+// Agent script on any device POSTs resource metrics every 30s.
+// Body: { device_id, cpu_pct, ram_pct, ram_used_mb, ram_total_mb,
+//         disk_pct?, disk_free_gb?, net_up_kbps?, net_down_kbps?, platform? }
+router.post('/metrics', (req, res) => {
+  const { device_id, cpu_pct, ram_pct, ram_used_mb, ram_total_mb,
+          disk_pct, disk_free_gb, net_up_kbps, net_down_kbps, platform, extra } = req.body || {};
+  if (!device_id) return res.status(400).json({ ok: false, error: 'device_id required' });
+
+  try {
+    run(`INSERT INTO device_metrics
+         (device_id, cpu_pct, ram_pct, ram_used_mb, ram_total_mb,
+          disk_pct, disk_free_gb, net_up_kbps, net_down_kbps, platform, extra)
+         VALUES (:d, :cpu, :ram, :ru, :rt, :dp, :dfg, :nu, :nd, :pl, :ex)`,
+      { ':d': device_id, ':cpu': cpu_pct ?? null, ':ram': ram_pct ?? null,
+        ':ru': ram_used_mb ?? null, ':rt': ram_total_mb ?? null,
+        ':dp': disk_pct ?? null, ':dfg': disk_free_gb ?? null,
+        ':nu': net_up_kbps ?? null, ':nd': net_down_kbps ?? null,
+        ':pl': platform || null, ':ex': JSON.stringify(extra || {}) });
+
+    // Keep last 24h only — prune old rows for this device
+    run(`DELETE FROM device_metrics WHERE device_id = :d
+         AND created_at < datetime('now', '-24 hours', 'localtime')`, { ':d': device_id });
+
+    // Touch last_seen so device shows online
+    run(`UPDATE devices SET online = 1, last_seen = datetime('now','localtime')
+         WHERE hostname = :h`, { ':h': device_id });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+
+  res.json({ ok: true });
+});
+
+// ── GET /api/v1/client/metrics ────────────────────────────────────────────────
+// Returns latest metric snapshot per device (for the dashboard Devices widget).
+// Optional ?device_id=xxx for a single device. Optional ?history=1 for last hour.
+router.get('/metrics', (req, res) => {
+  try {
+    const { device_id, history } = req.query;
+
+    if (history && device_id) {
+      // Last 60 samples for sparkline / graph
+      const rows = all(`SELECT * FROM device_metrics WHERE device_id = :d
+                        ORDER BY created_at DESC LIMIT 60`, { ':d': device_id });
+      return res.json({ ok: true, history: rows.reverse() });
+    }
+
+    // Latest sample per device (within last 2 min = still live)
+    const rows = all(`
+      SELECT m.*
+      FROM device_metrics m
+      INNER JOIN (
+        SELECT device_id, MAX(created_at) AS max_ts
+        FROM device_metrics
+        WHERE created_at > datetime('now', '-2 minutes', 'localtime')
+        GROUP BY device_id
+      ) latest ON m.device_id = latest.device_id AND m.created_at = latest.max_ts
+      ${device_id ? 'WHERE m.device_id = :d' : ''}
+      ORDER BY m.device_id
+    `, device_id ? { ':d': device_id } : {});
+
+    res.json({ ok: true, metrics: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 export default router;

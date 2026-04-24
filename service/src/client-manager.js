@@ -104,6 +104,7 @@ export function checkInviteToken(token) {
       completed_at INTEGER
     )`,
     `CREATE INDEX IF NOT EXISTS idx_ccq_device_pending ON client_command_queue(device_id, picked_up_at)`,
+    "ALTER TABLE devices ADD COLUMN reported_services TEXT",
   ];
   for (const sql of migrations) {
     try { run(sql); } catch {} // Ignore duplicate column errors
@@ -217,6 +218,7 @@ export function startClientServer(httpServer) {
       console.log(`[PAN Clients] Disconnected: ${deviceId}`);
       clients.delete(deviceId);
       setDeviceOnline(deviceId, false);
+      broadcastNotification('widget_update', { widget: 'devices' });
     });
 
     ws.on('error', (err) => {
@@ -335,6 +337,7 @@ function handleRegister(ws, deviceId, msg) {
   } else {
     ws.send(JSON.stringify({ type: 'registered', device_id: deviceId, ok: true }));
     console.log(`[PAN Clients] Registered: ${msg.name || deviceId} (${msg.platform}, v${msg.version})`);
+    broadcastNotification('widget_update', { widget: 'devices' }).catch(() => {});
   }
 }
 
@@ -343,8 +346,13 @@ function handleHeartbeat(deviceId, msg) {
   if (entry) {
     entry.last_heartbeat = msg.timestamp;
     entry.mem_free_mb = msg.mem_free_mb;
+    if (msg.services) entry.reported_services = msg.services;
   }
   setDeviceOnline(deviceId, true);
+  if (msg.services) {
+    run("UPDATE devices SET reported_services = :s WHERE hostname = :h",
+      { ':s': JSON.stringify(msg.services), ':h': deviceId });
+  }
 }
 
 // Pending command replies: commandId → { resolve, reject, timer }

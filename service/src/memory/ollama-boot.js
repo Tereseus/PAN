@@ -85,73 +85,9 @@ async function waitForOllama(maxWaitMs = 15000) {
 }
 
 // Main entry point — called on server startup
+// DISABLED: Ollama auto-start causes RAM exhaustion. Using keyword fallback only.
 async function ensureOllama() {
-  if (!isOllamaInstalled()) {
-    console.log('[PAN Memory] Ollama not installed — vector memory using keyword fallback');
-    return;
-  }
-
-  const running = await isOllamaRunning();
-  if (!running) {
-    startOllama();
-    const ready = await waitForOllama();
-    if (!ready) {
-      console.log('[PAN Memory] Ollama failed to start — using keyword fallback');
-      return;
-    }
-  }
-
-  console.log('[PAN Memory] Ollama running');
-
-  if (!await hasModel()) {
-    // Pull in background — don't block server startup
-    pullModel().then(success => {
-      if (success) resetOllamaStatus(); // tell embeddings.js to retry
-    });
-  } else {
-    console.log(`[PAN Memory] ${EMBED_MODEL} ready — neural embeddings active`);
-    resetOllamaStatus();
-  }
-
-  // Also ensure inference model is available (for sensitivity, routing, etc.)
-  try {
-    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      const hasInference = data.models?.some(m => m.name.startsWith(INFERENCE_MODEL)) || false;
-      if (!hasInference) {
-        console.log(`[PAN Memory] Pulling ${INFERENCE_MODEL} for local inference (~3GB)...`);
-        fetch(`${OLLAMA_URL}/api/pull`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: INFERENCE_MODEL, stream: false }),
-          signal: AbortSignal.timeout(600000), // 10 min for larger model
-        }).then(r => {
-          if (r.ok) console.log(`[PAN Memory] ${INFERENCE_MODEL} pulled successfully`);
-          else console.error(`[PAN Memory] ${INFERENCE_MODEL} pull failed: ${r.status}`);
-        }).catch(err => console.error(`[PAN Memory] ${INFERENCE_MODEL} pull error: ${err.message}`));
-      } else {
-        console.log(`[PAN Memory] ${INFERENCE_MODEL} ready — local inference active`);
-      }
-
-      // Vision model for screenshot understanding (intuition, computer-use)
-      const hasVision = data.models?.some(m => m.name.startsWith(VISION_MODEL)) || false;
-      if (!hasVision) {
-        console.log(`[PAN Memory] Pulling ${VISION_MODEL} for local vision (~2GB)...`);
-        fetch(`${OLLAMA_URL}/api/pull`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: VISION_MODEL, stream: false }),
-          signal: AbortSignal.timeout(600000),
-        }).then(r => {
-          if (r.ok) console.log(`[PAN Memory] ${VISION_MODEL} pulled successfully — local vision active`);
-          else console.error(`[PAN Memory] ${VISION_MODEL} pull failed: ${r.status}`);
-        }).catch(err => console.error(`[PAN Memory] ${VISION_MODEL} pull error: ${err.message}`));
-      } else {
-        console.log(`[PAN Memory] ${VISION_MODEL} ready — local vision active`);
-      }
-    }
-  } catch {}
+  console.log('[PAN Memory] Ollama auto-start DISABLED (RAM protection) — using keyword fallback');
 }
 
 export { ensureOllama };

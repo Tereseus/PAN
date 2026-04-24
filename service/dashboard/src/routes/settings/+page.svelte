@@ -1,7 +1,9 @@
 <script>
 	import { api } from '$lib/api.js';
+	import { THEMES, THEME_META, applyTheme, loadTheme } from '$lib/theme.js';
 
 	let activeTab = $state('general');
+	let currentTheme = $state(typeof window !== 'undefined' ? (localStorage.getItem('pan-theme') || 'cool-guy') : 'cool-guy');
 	let settings = $state({});
 	let health = $state(null);
 	let devices = $state([]);
@@ -216,6 +218,7 @@
 	let teamMsg = $state('');
 
 	const tabs = [
+		{ id: 'appearance', label: 'Appearance' },
 		{ id: 'general', label: 'General' },
 		{ id: 'ai', label: 'AI & Usage' },
 		{ id: 'controls', label: 'Controls' },
@@ -228,6 +231,11 @@
 		{ id: 'email', label: 'Email' },
 	];
 
+	function selectTheme(name) {
+		currentTheme = name;
+		applyTheme(name);
+	}
+
 	const jobDefs = [
 		{ key: 'router', name: 'Ferry', tech: 'Router', desc: 'Voice command classification + response' },
 		{ key: 'scout', name: 'Scout', tech: 'Scout', desc: 'Discovers new tools & CLIs' },
@@ -236,6 +244,7 @@
 		{ key: 'classifier', name: 'Augur', tech: 'Classifier', desc: 'Extracts memories from events' },
 		{ key: 'recall', name: 'Remembrance', tech: 'Recall', desc: 'On-demand memory search' },
 		{ key: 'vision', name: 'Vision', tech: 'Vision', desc: 'Photo/image analysis' },
+		{ key: 'benchmark_judge', name: 'Judge', tech: 'Benchmark', desc: 'Scores benchmark results — default: claude-sonnet-4-5-20250514 (free via Max plan)' },
 	];
 
 	function fmtTime(ts) {
@@ -830,6 +839,30 @@
 	<div class="panel">
 		{#if statusMsg}
 			<div class="toast">{statusMsg}</div>
+		{/if}
+
+		<!-- Appearance -->
+		{#if activeTab === 'appearance'}
+			<h2>Appearance</h2>
+			<section class="section">
+				<h3>Theme</h3>
+				<div class="theme-grid">
+					{#each Object.entries(THEME_META) as [id, meta]}
+						<button
+							class="theme-card"
+							class:active={currentTheme === id}
+							onclick={() => selectTheme(id)}
+							data-theme-preview={id}
+						>
+							<span class="theme-emoji">{meta.emoji}</span>
+							<span class="theme-label">{meta.label}</span>
+							{#if currentTheme === id}
+								<span class="theme-check">✓</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+			</section>
 		{/if}
 
 		<!-- General -->
@@ -2667,5 +2700,61 @@
 		color: #89b4fa;
 		font-size: 12px;
 		margin-bottom: 12px;
+	}
+
+	/* ── Theme picker ── */
+	.theme-grid {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: 12px;
+		margin-top: 8px;
+	}
+
+	.theme-card {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		padding: 20px 16px;
+		border-radius: 10px;
+		border: 2px solid #1e1e2e;
+		background: #12121a;
+		color: #cdd6f4;
+		cursor: pointer;
+		font-family: 'Inter', -apple-system, sans-serif;
+		transition: border-color 0.15s, background 0.15s, transform 0.1s;
+	}
+
+	.theme-card:hover {
+		border-color: #89b4fa;
+		transform: translateY(-2px);
+	}
+
+	.theme-card.active {
+		border-color: var(--pan-accent, #89b4fa);
+		background: var(--pan-surface2, #1a1a25);
+		box-shadow: 0 0 12px var(--pan-glow, rgba(137,180,250,0.2));
+	}
+
+	.theme-emoji {
+		font-size: 28px;
+		line-height: 1;
+	}
+
+	.theme-label {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--pan-text, #cdd6f4);
+	}
+
+	.theme-check {
+		position: absolute;
+		top: 8px;
+		right: 10px;
+		font-size: 14px;
+		color: var(--pan-accent, #89b4fa);
+		font-weight: 700;
 	}
 </style>

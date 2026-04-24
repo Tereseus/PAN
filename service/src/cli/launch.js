@@ -320,7 +320,8 @@ export default function cmdLaunch() {
   const child = spawn(wtCmd, [], {
     detached: true,
     stdio: 'ignore',
-    shell: true
+    shell: true,
+    windowsHide: true,
   });
   child.unref();
 
