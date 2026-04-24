@@ -25,6 +25,7 @@ import http from 'http';
 import { db, get, all, getOllamaUrl } from './db.js';
 import { askAI } from './llm.js';
 import { getLatestScreenContext, getLatestScreenContextFromDB } from './screen-watcher.js';
+import { getWebcamContext } from './webcam-watcher.js';
 // Lazy import — terminal server may not be initialized when intuition.js is first loaded.
 // We call it at runtime (after first snapshot) so the WS server is always ready by then.
 let _broadcast = null;
@@ -596,7 +597,11 @@ function buildSnapshot(trigger = 'heartbeat') {
       complexity: null,                         // needs classifier
       recent_topics: recentTopics.slice(0, 5),
       last_heard: lastHeard || null,
-      last_seen: null,                          // ⏳ pendant camera
+      last_seen: (() => {
+        const wc = getWebcamContext();
+        if (!wc) return null;
+        return wc.presence === 'yes' ? `${wc.identity ?? 'unknown'} at desk` : wc.presence === 'no' ? 'desk empty' : null;
+      })(),
     },
     pan: {
       sessions: panSessions.map(s => ({
@@ -625,6 +630,11 @@ function buildSnapshot(trigger = 'heartbeat') {
       sensors_active: [...sensorsActive],
       active_apps: [...activeApps],
       screen_context: screenCtx ? { description: screenCtx.description, age_ms: now - screenCtx.ts } : null,
+      webcam_context: (() => {
+        const wc = getWebcamContext();
+        if (!wc) return null;
+        return { presence: wc.presence, identity: wc.identity, emotion: wc.emotion, people_count: wc.people_count, note: wc.note, age_ms: now - wc.ts, camera: wc.camera };
+      })(),
       events_sampled: recentEvents.length,
       wrap_messages_sampled: recentWrap.length,
       terminal_messages_sampled: recentTerminalMsgs.length,

@@ -40,6 +40,7 @@ import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
 import { startScreenWatcher, startBurst } from './screen-watcher.js';
+import { startWebcamWatcher, getWebcamStatus, getWebcamContext } from './webcam-watcher.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
 import { privacyMiddleware } from './privacy.js';
@@ -788,6 +789,11 @@ app.use('/api/v1/intuition', intuitionRouter);
 
 // Screen-watcher burst mode — called by carrier after a craft swap to get rapid
 // screenshots (every 5s for 60s) so intuition sees the swap stages in real time.
+// GET /api/v1/webcam-watcher/status
+app.get('/api/v1/webcam-watcher/status', (req, res) => {
+  res.json({ ok: true, ...getWebcamStatus() });
+});
+
 app.post('/api/v1/screen-watcher/burst', (req, res) => {
   const duration = Math.min(parseInt(req.body?.duration_ms) || 60_000, 300_000);
   const interval = Math.min(parseInt(req.body?.interval_ms) || 5_000, 30_000);
@@ -4072,6 +4078,9 @@ function start() {
 
       // Screen watcher — screenshot every 30s → vision AI → activity signal for intuition
       if (!IS_DEV) startScreenWatcher();
+
+      // Webcam watcher — frame every 60s → vision AI → presence + identity signal
+      if (!IS_DEV) startWebcamWatcher();
 
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
