@@ -69,7 +69,6 @@ const services = [
     startFn: async () => {
       // AUTO-START DISABLED — Ollama consumes too much memory. Start manually if needed.
       console.log('[Steward] Ollama auto-start disabled. Run `ollama serve` manually if needed.');
-      throw new Error('Ollama auto-start disabled — run `ollama serve` manually');
     },
     stopFn: null,
     _status: 'unknown',
@@ -197,9 +196,9 @@ const services = [
     healthCheck: 'interval',
     bootOrder: 5,
     dependsOn: [],
-    interval: '30s',
-    intervalMs: 30 * 1000,
-    startFn: () => startIntuition(30 * 1000, () => reportServiceRun('intuition')),
+    interval: '60s',
+    intervalMs: 60 * 1000,
+    startFn: () => startIntuition(60 * 1000, () => reportServiceRun('intuition')),
     stopFn: () => stopIntuition(),
     _status: 'stopped',
     _lastCheck: null,
