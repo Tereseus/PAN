@@ -56,7 +56,7 @@ export { getTunnelURL }; // re-export so client.js can import it
 import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir } from './platform.js';
-import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl } from './db.js';
+import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, logDecision } from './db.js';
 import { searchMemory, backfillEmbeddings } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
@@ -4399,6 +4399,43 @@ app.post('/api/v1/windows/close', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════
 // Client Logs — universal telemetry from all devices
 // ═══════════════════════════════════════════════════════════════════
+
+// POST /api/v1/decisions — log a significant decision to PAN memory
+// Called by the pan_decide MCP tool so Claude can record architectural/design choices.
+app.post('/api/v1/decisions', (req, res) => {
+  try {
+    const { decision, rationale = '', options = [], domain = 'general', reversible = null } = req.body;
+    if (!decision || typeof decision !== 'string') {
+      return res.status(400).json({ ok: false, error: 'decision field required' });
+    }
+    const sessionId = req.headers['x-session-id'] || 'mcp-tool';
+    const id = logDecision(sessionId, decision, { rationale, options, domain, reversible });
+    res.json({ ok: true, id, decision, domain });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/decisions — query recent decisions
+app.get('/api/v1/decisions', (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const domain = req.query.domain;
+    let q = `SELECT id, data, created_at FROM events WHERE event_type = 'Decision'`;
+    const params = [];
+    if (domain) { q += ` AND json_extract(data, '$.domain') = ?`; params.push(domain); }
+    q += ` ORDER BY created_at DESC LIMIT ?`;
+    params.push(limit);
+    const rows = db.prepare(q).all(...params);
+    const decisions = rows.map(r => {
+      try { return { id: r.id, created_at: r.created_at, ...JSON.parse(r.data) }; }
+      catch { return { id: r.id, created_at: r.created_at, raw: r.data }; }
+    });
+    res.json({ ok: true, decisions });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // POST /api/v1/logs — accept single or batch logs
 app.post('/api/v1/logs', (req, res) => {

@@ -151,9 +151,10 @@ async function handleUnified(text, context) {
   }
 
   // NanoClaw: check for matching skill before calling Claude
-  const matchedSkill = findSkill(text);
-  const skillBlock = matchedSkill
-    ? (logStep(cmdId, 'skill_matched', matchedSkill.name), getSkillPrompt(matchedSkill))
+  // findSkill returns { skill, params } or null
+  const skillMatch = findSkill(text);
+  const skillBlock = skillMatch
+    ? (logStep(cmdId, 'skill_matched', `${skillMatch.skill.name}${Object.keys(skillMatch.params).length ? ' params:' + JSON.stringify(skillMatch.params) : ''}`), getSkillPrompt(skillMatch))
     : '';
 
   logStep(cmdId, 'unified_call', 'single Claude call for classify+handle');

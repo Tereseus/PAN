@@ -61,6 +61,26 @@ server.tool(
 );
 
 server.tool(
+  'pan_decide',
+  'Log a significant decision to PAN memory. Use when choosing between approaches, architectures, or designs — so future sessions know what was decided and why.',
+  {
+    decision:   z.string().describe('What was decided — short summary'),
+    rationale:  z.string().optional().describe('Why this option was chosen'),
+    options:    z.array(z.string()).optional().describe('Alternatives that were considered'),
+    domain:     z.string().optional().describe('Category, e.g. architecture, ux, ai, infra'),
+    reversible: z.boolean().optional().describe('Was this easily reversible?'),
+  },
+  async ({ decision, rationale, options, domain, reversible }) => {
+    try {
+      return ok(await panFetch('/api/v1/decisions', {
+        method: 'POST',
+        body: { decision, rationale, options, domain, reversible },
+      }));
+    } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
   'pan_restart',
   'Restart PAN server. ONLY safe way to restart — never use Bash to run node pan.js or server.js.',
   {},
