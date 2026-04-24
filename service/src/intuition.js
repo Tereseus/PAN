@@ -39,7 +39,7 @@ async function getBroadcast() {
 
 // ─── Config ───
 const PAN_PORT = parseInt(process.env.PAN_CARRIER_PORT || '7777');
-const INTUITION_TICK_MS = 30 * 1000;                // passive heartbeat
+const INTUITION_TICK_MS = 60 * 1000;                // passive heartbeat (was 30s)
 const INTUITION_FILE = path.join(
   process.env.LOCALAPPDATA || process.env.HOME || '.',
   'PAN', 'data', 'intuition.json'
@@ -784,7 +784,9 @@ function persistSnapshot(snap, trigger) {
 let _classifyPending = false;
 const CLASSIFY_MODELS = ['cerebras:qwen-3-235b', 'ollama:qwen3:4b']; // try in order
 const CLASSIFY_COOLDOWN_MS = 15000;         // min gap between classify calls
+const CLASSIFY_FORCE_MS = 5 * 60_000;      // force classify at least every 5min even if unchanged
 let _lastClassifyTime = 0;
+let _lastSignalFingerprint = '';            // hash of key signals — skip classify if unchanged
 
 function buildClassifyPrompt(snap) {
   const n = snap.now;
@@ -839,10 +841,34 @@ async function callOllama(prompt, model = 'qwen3:4b') {
   return data.message?.content || '';
 }
 
+function buildSignalFingerprint(snap) {
+  const n = snap.now || {};
+  return [
+    n.activity || '',
+    n.focus || '',
+    n.where || '',
+    n.engagement || '',
+    (n.social || []).join(','),
+    n.last_heard?.slice(0, 60) || '',
+    snap.data?.webcam_context?.identity || '',
+    snap.data?.webcam_context?.presence || '',
+  ].join('|');
+}
+
 async function classifyAxes(snap) {
   if (_classifyPending) { console.log('[Intuition] classify skipped: pending'); return; }
   const now = Date.now();
   if (now - _lastClassifyTime < CLASSIFY_COOLDOWN_MS) { console.log('[Intuition] classify skipped: cooldown'); return; }
+
+  // Skip if signals haven't changed AND we classified recently (within CLASSIFY_FORCE_MS)
+  const fingerprint = buildSignalFingerprint(snap);
+  const unchanged = fingerprint === _lastSignalFingerprint;
+  const forceDue  = (now - _lastClassifyTime) >= CLASSIFY_FORCE_MS;
+  if (unchanged && !forceDue) {
+    console.log('[Intuition] classify skipped: signals unchanged');
+    return;
+  }
+  _lastSignalFingerprint = fingerprint;
 
   _classifyPending = true;
   _lastClassifyTime = now;

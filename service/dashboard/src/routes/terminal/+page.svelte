@@ -219,6 +219,35 @@
 	let allDevicesPollTimer = null;
 	let allDevices = $state([]);
 
+	// Webcam force capture
+	let forcingCapture = $state(false);
+	async function forceCamCapture() {
+		if (forcingCapture) return;
+		forcingCapture = true;
+		try {
+			await fetch(`${window.location.origin}/api/v1/webcam-watcher/force`, { method: 'POST' });
+			// Poll status every 3s; stop when a fresh capture appears (ts < 10s ago)
+			const start = Date.now();
+			while (Date.now() - start < 120_000) {
+				await new Promise(r => setTimeout(r, 3000));
+				const s = await fetch(`${window.location.origin}/api/v1/webcam-watcher/status`).then(r => r.json()).catch(() => null);
+				if (s?.lastCapture?.ts && Date.now() - s.lastCapture.ts < 10_000) {
+					// Capture landed — push it into intuitionData directly so display updates immediately
+					if (intuitionData) {
+						const snap = intuitionData.snapshot || intuitionData;
+						const signals = snap.signals || snap;
+						signals.webcam_context = { ...s.lastCapture };
+						intuitionData = { ...intuitionData }; // trigger reactivity
+					}
+					await loadIntuition(); // full refresh
+					break;
+				}
+			}
+		} finally {
+			forcingCapture = false;
+		}
+	}
+
 	// Voice enrollment
 	let voiceEnrollLabel = $state('Tereseus');
 	let voiceEnrollStatus = $state('');  // '', 'recording', 'uploading', 'done', 'error'
@@ -2962,7 +2991,13 @@
 		let text = explicit;
 		if (domValue.length > text.length) text = domValue;
 		if (stateValue.length > text.length) text = stateValue;
-		const imgPaths = pastedImages.filter(img => img.path).map(img => img.path.replace(/\\\\/g, '/').replace(/\\/g, '/'));
+		// Use /clipboard/<filename> web URL instead of raw Windows file path.
+		// Raw paths (C:/Users/.../clipboard_*.png) cause Claude Code to call Read on them,
+		// which triggers the OS file handler (Windows Photos) instead of rendering inline.
+		const imgPaths = pastedImages.filter(img => img.path).map(img => {
+			const filename = img.path.replace(/\\/g, '/').split('/').pop();
+			return `/clipboard/${filename}`;
+		});
 		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
 
 		const active = getActiveTab();
@@ -5393,6 +5428,9 @@
 				<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
 					{wc ? (wc.presence === 'yes' ? (wc.identity || 'someone') : wc.presence === 'no' ? 'desk empty' : 'unclear') : '⏳ no capture yet'}
 				</span>
+				<button onclick={forceCamCapture} disabled={forcingCapture} title="Force capture now" style="margin-left:4px;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:{forcingCapture ? '#6c7086' : '#cba6f7'};cursor:{forcingCapture ? 'default' : 'pointer'};font-size:10px;padding:1px 5px;line-height:1.4">
+					{forcingCapture ? '⏳' : '📷'}
+				</button>
 			</div>
 			{#if wc?.emotion && wc.presence === 'yes'}
 				<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
