@@ -6,16 +6,16 @@
 //
 // Falls back to FFmpeg gdigrab if Tauri shell is not running.
 
-import { spawn, execFileSync } from 'child_process';
+import { spawn, execFileSync, spawnSync } from 'child_process';
 import { join } from 'path';
 import { unlinkSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { analyzeImage } from './llm.js';
 import { run, all } from './db.js';
 
-const INTERVAL_MS  = 30_000;   // screenshot every 30s when active
-const STALE_MS     = 90_000;   // context older than 90s ignored by intuition
-const IDLE_THRESH  = 5 * 60_000; // user is "away" after 5 min no input
+const INTERVAL_MS  = 60_000;   // screenshot every 60s when active (was 30s)
+const STALE_MS     = 120_000;  // context older than 120s ignored by intuition
+const IDLE_THRESH  = 3 * 60_000; // skip capture if no input for 3min (was 5min)
 const TAURI_PORT   = 7790;
 const SNAP_PATH    = join(tmpdir(), 'pan-screen-snap.jpg');
 
@@ -78,14 +78,38 @@ async function captureViaTauri() {
   return json.base64; // already base64, PNG
 }
 
+// ── Resize base64 image to 640px wide JPEG for vision inference ───────────────
+// Full HD PNG → 640px JPEG cuts CPU inference from >60s to ~10-15s
+function resizeForVision(base64Input) {
+  try {
+    const inputBuf = Buffer.from(base64Input, 'base64');
+    const result = spawnSync('ffmpeg', [
+      '-i', 'pipe:0',
+      '-vf', 'scale=640:-2',
+      '-q:v', '5',
+      '-vframes', '1',
+      '-f', 'image2',
+      '-vcodec', 'mjpeg',
+      'pipe:1',
+    ], { input: inputBuf, windowsHide: true, timeout: 8000, maxBuffer: 10 * 1024 * 1024 });
+    if (result.status === 0 && result.stdout?.length > 0) {
+      return result.stdout.toString('base64');
+    }
+  } catch (e) {
+    console.warn(`[ScreenWatcher] resize failed: ${e.message}`);
+  }
+  return base64Input; // fallback: send original
+}
+
 // ── Screenshot via FFmpeg gdigrab (fallback) ──────────────────────────────────
 function captureViaFFmpeg() {
   return new Promise((resolve, reject) => {
     const args = [
       '-f', 'gdigrab', '-i', 'desktop',
       '-vframes', '1',
-      '-vf', 'scale=1280:-1',
-      '-q:v', '4',
+      '-update', '1',          // required by FFmpeg 8+ for single-frame image output
+      '-vf', 'scale=640:-2',
+      '-q:v', '5',
       '-y', SNAP_PATH,
     ];
     const proc = spawn('ffmpeg', args, { windowsHide: true, shell: false });
@@ -137,15 +161,14 @@ async function runCapture() {
       source = 'ffmpeg';
     }
 
-    const titleHint = windowTitle ? `Active window: "${windowTitle}"\n\n` : '';
+    // Resize to 640px wide JPEG — full HD is too large for CPU vision inference
+    base64 = resizeForVision(base64);
+
+    const titleHint = windowTitle ? `Active window: "${windowTitle}". ` : '';
     const description = await analyzeImage(
-      `${titleHint}What is the user currently doing on their computer? ` +
-      'Reply in 1 concise sentence (max 15 words). Be specific — name the app, game, or site. ' +
-      'Examples: "Playing League of Legends", "Writing code in VS Code", ' +
-      '"Watching YouTube", "Browsing Discord in the vibecoding server", ' +
-      '"Idle at desktop". If you can see a game/project/video title, include it.',
+      `${titleHint}Describe what is on this computer screen in one short sentence.`,
       base64,
-      { caller: 'screen-watcher', timeout: 20_000 },
+      { caller: 'screen-watcher', timeout: 120_000 },
     );
 
     if (description) {
