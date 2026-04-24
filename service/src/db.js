@@ -570,6 +570,13 @@ function extractEventText(eventType, dataStr) {
     const desc = data.description || data.result || '';
     if (desc) return desc;
   }
+  if (eventType === 'Decision') {
+    const parts = [data.decision];
+    if (data.rationale) parts.push(data.rationale);
+    if (Array.isArray(data.options) && data.options.length) parts.push(`Options: ${data.options.join(', ')}`);
+    if (data.domain) parts.push(`Domain: ${data.domain}`);
+    return parts.filter(Boolean).join(' — ');
+  }
   return null;
 }
 
@@ -695,6 +702,33 @@ function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_person
   return eventId;
 }
 
+// Log a significant decision — distinct from generic events so the dream cycle
+// and search can treat decisions as first-class memory items.
+//
+//   decision:  short summary of what was decided (required)
+//   options:   array of alternatives that were considered (optional)
+//   rationale: why this option was chosen (optional)
+//   domain:    category string, e.g. 'architecture', 'ai', 'ux' (optional)
+//   reversible: true/false — was this easily reversible? (optional)
+//
+// Usage:
+//   logDecision(sessionId, 'Use Super-Carrier instead of bare Carrier', {
+//     options: ['nginx', 'Super-Carrier', 'bare Carrier'],
+//     rationale: 'Zero-downtime restarts without nginx complexity',
+//     domain: 'architecture',
+//     reversible: false,
+//   });
+function logDecision(sessionId, decision, { options = [], rationale = '', domain = 'general', reversible = null } = {}) {
+  return logEvent(sessionId, 'Decision', {
+    decision,
+    options,
+    rationale,
+    domain,
+    reversible,
+    decided_at: new Date().toISOString(),
+  });
+}
+
 // Helper used by extractEventText so scoped writes can produce the same
 // FTS5 text content as main writes. Kept here so external scope-aware
 // callers (events.js) can reuse it without duplication.
@@ -718,4 +752,18 @@ function insertScoped(req, sql, params = {}) {
   return insert(sql, { ...params, ':org_id': req?.org_id || 'org_personal' });
 }
 
-export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, anonymize, anonymizeEventData, _extractEventText, allScoped, getScoped, runScoped, insertScoped };
+// ── Ollama URL ─────────────────────────────────────────────────────────────
+// Single source of truth for where Ollama lives. Defaults to localhost but
+// can be pointed at a remote machine (e.g. mini PC over Tailscale) via the
+// 'ollama_url' setting in the DB or the PAN_OLLAMA_URL env var.
+export function getOllamaUrl() {
+  const envUrl = process.env.PAN_OLLAMA_URL;
+  if (envUrl) return envUrl.replace(/\/$/, '');
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'ollama_url'");
+    if (row?.value) return row.value.replace(/\/$/, '');
+  } catch {}
+  return 'http://localhost:11434';
+}
+
+export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, logDecision, anonymize, anonymizeEventData, _extractEventText, allScoped, getScoped, runScoped, insertScoped };

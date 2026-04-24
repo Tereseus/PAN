@@ -1,6 +1,9 @@
 // NanoClaw — PAN skill loader
 // Reads .md and .json skill files from skills/ directory
 // Skills teach PAN new integrations without hardcoding them in router.js
+//
+// Supports parameterized triggers: "play {song} by {artist}"
+// Extracted params are injected into skill instructions as {{song}}, {{artist}}
 
 import { readFileSync, readdirSync, watch } from 'fs';
 import { join, extname, basename } from 'path';
@@ -51,6 +54,7 @@ function loadSkillFile(filePath) {
         name: data.name || basename(filePath, ext),
         triggers: Array.isArray(data.triggers) ? data.triggers : [],
         requires: Array.isArray(data.requires) ? data.requires : [],
+        conditions: data.conditions || {},
         instructions: data.instructions || '',
         file: filePath,
       };
@@ -62,6 +66,7 @@ function loadSkillFile(filePath) {
         name: meta.name || basename(filePath, ext),
         triggers: Array.isArray(meta.triggers) ? meta.triggers : [],
         requires: Array.isArray(meta.requires) ? meta.requires : [],
+        conditions: meta.conditions ? (typeof meta.conditions === 'string' ? { requires_setting: meta.conditions } : meta.conditions) : {},
         instructions: body,
         file: filePath,
       };
@@ -96,32 +101,93 @@ function loadAllSkills() {
   }
 }
 
-// Match user text against skill triggers — returns the best matching skill or null
+// ── Parameterized trigger matching ───────────────────────────────────────────
+// Converts "play {song} by {artist}" to a named-group regex.
+// Returns extracted params object, or null if no match.
+function matchWithParams(text, trigger) {
+  const lowerText = text.toLowerCase();
+  const lowerTrigger = trigger.toLowerCase();
+
+  // Fast path: no params — plain substring match
+  if (!lowerTrigger.includes('{')) {
+    return lowerText.includes(lowerTrigger) ? {} : null;
+  }
+
+  // Build named-capture regex from the trigger template
+  // {song} → (?<song>.+?)   (lazy so multiple slots don't eat each other)
+  const regexStr = lowerTrigger
+    .replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === '{' || c === '}' ? c : `\\${c}`))
+    .replace(/\{(\w+)\}/g, '(?<$1>.+)');
+
+  try {
+    const regex = new RegExp(regexStr, 'i');
+    const match = lowerText.match(regex);
+    if (!match) return null;
+    // Return named groups, trimmed
+    const params = {};
+    if (match.groups) {
+      for (const [k, v] of Object.entries(match.groups)) {
+        params[k] = v?.trim() ?? '';
+      }
+    }
+    return params;
+  } catch {
+    // Malformed trigger regex — fall back to plain match
+    return lowerText.includes(lowerTrigger.replace(/\{.*?\}/g, '').trim()) ? {} : null;
+  }
+}
+
+// Score a trigger match — parameterized triggers score by literal character count
+// (slots don't count), so "play {song} by {artist}" beats "play {song}" beats "play".
+function triggerScore(trigger) {
+  return trigger.replace(/\{.*?\}/g, '').replace(/\s+/g, ' ').trim().length;
+}
+
+// Match user text against skill triggers — returns { skill, params } or null
 function findSkill(text) {
-  const lower = text.toLowerCase();
-  let bestMatch = null;
+  let bestSkill = null;
+  let bestParams = null;
   let bestScore = 0;
 
   for (const skill of skills) {
     for (const trigger of skill.triggers) {
-      const triggerLower = trigger.toLowerCase();
-      if (lower.includes(triggerLower)) {
-        // Longer trigger matches are more specific, so score by length
-        const score = triggerLower.length;
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = skill;
-        }
+      const params = matchWithParams(text, trigger);
+      if (params === null) continue;
+
+      const score = triggerScore(trigger);
+      if (score > bestScore) {
+        bestScore = score;
+        bestSkill = skill;
+        bestParams = params;
       }
     }
   }
 
-  return bestMatch;
+  if (!bestSkill) return null;
+  return { skill: bestSkill, params: bestParams };
 }
 
 // Build a prompt injection block for a matched skill
-function getSkillPrompt(skill) {
-  return `\n--- SKILL: ${skill.name} ---\nPAN has a loaded skill for this request. Follow these instructions:\n\n${skill.instructions}\n\nRequired tools: ${(skill.requires || []).join(', ') || 'none'}\n--- END SKILL ---\n`;
+// Substitutes {{param}} placeholders in instructions with extracted values
+function getSkillPrompt(skillMatch) {
+  // Accept both legacy skill object and new { skill, params } shape
+  const skill  = skillMatch?.skill ?? skillMatch;
+  const params = skillMatch?.params ?? {};
+
+  let instructions = skill.instructions;
+
+  // Substitute {{param}} → extracted value
+  if (Object.keys(params).length > 0) {
+    instructions = instructions.replace(/\{\{(\w+)\}\}/g, (_, key) =>
+      params[key] !== undefined ? params[key] : `{{${key}}}`
+    );
+  }
+
+  const paramNote = Object.keys(params).length > 0
+    ? `\nExtracted parameters: ${JSON.stringify(params)}\n`
+    : '';
+
+  return `\n--- SKILL: ${skill.name} ---\nPAN has a loaded skill for this request.${paramNote}Follow these instructions:\n\n${instructions}\n\nRequired tools: ${(skill.requires || []).join(', ') || 'none'}\n--- END SKILL ---\n`;
 }
 
 // Get all loaded skills (for debugging/status)
@@ -136,7 +202,6 @@ loadAllSkills();
 try {
   let reloadTimer = null;
   watch(SKILLS_DIR, { persistent: false }, (eventType, filename) => {
-    // Debounce rapid changes
     if (reloadTimer) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
       console.log(`[NanoClaw] Skill file changed (${filename}), reloading...`);
