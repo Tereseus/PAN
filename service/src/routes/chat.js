@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { db } from '../db.js';
+import { ensurePanContact, panReply, PAN_THREAD_ID } from '../pan-notify.js';
 
 const router = Router();
 
@@ -123,7 +124,23 @@ export function ensureChatSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_call_signals_call ON chat_call_signals(call_id, consumed);
   `);
+
+  // Seed the ΠΑΝ system contact + thread (idempotent)
+  ensurePanContact();
 }
+
+// ─── ΠΑΝ persona reply ───
+// Called when user sends a message in the ΠΑΝ thread — generates a context-aware reply
+router.post('/pan-reply', async (req, res) => {
+  const { message } = req.body || {};
+  if (!message) return res.status(400).json({ error: 'message required' });
+  try {
+    const reply = await panReply(message);
+    res.json({ ok: true, reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── Contacts CRUD ───
 
@@ -271,8 +288,8 @@ router.get('/threads/:threadId/messages', (req, res) => {
 });
 
 // Send a message
-router.post('/threads/:threadId/messages', (req, res) => {
-  
+router.post('/threads/:threadId/messages', async (req, res) => {
+
   const { body, body_type, reply_to, metadata } = req.body;
   if (!body) return res.status(400).json({ error: 'body required' });
 
@@ -286,6 +303,10 @@ router.post('/threads/:threadId/messages', (req, res) => {
 
   // Update thread timestamp
   db.prepare('UPDATE chat_threads SET updated_at = ? WHERE id = ?').run(now, req.params.threadId);
+
+  // NOTE: ΠΑΝ auto-replies are triggered by the client via POST /api/v1/chat/pan-reply.
+  // Do NOT also fire panReply() here — that causes duplicate replies.
+  // The /pan-reply endpoint is the single source of truth for PAN responses.
 
   // TODO: Send through Hub relay to recipient's PAN instance
 

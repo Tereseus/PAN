@@ -62,10 +62,27 @@ async function callRoute(text, context = {}, retries = 3) {
   return { intent: 'error', response: '' };
 }
 
+// ── Judge model: configurable, defaults to best Claude (free via SDK/Max plan) ──
+// Override per-install: Settings → AI → job_models → { "benchmark_judge": "your-model" }
+// Dynamic: works with any provider — cerebras:, groq:, openai:, ollama, etc.
+function getJudgeModel() {
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'job_models'");
+    if (row) {
+      const jobModels = JSON.parse(row.value);
+      if (jobModels['benchmark_judge']) return jobModels['benchmark_judge'];
+    }
+  } catch {}
+  // Default: Sonnet via Claude SDK — free under Max plan, much better evaluator than
+  // the global ai_model (typically Cerebras/Qwen). Anyone on a different setup can
+  // override via job_models.benchmark_judge.
+  return 'claude-sonnet-4-5-20250514';
+}
+
 // ── Shared: LLM judge (1-10 score) ──────────────────────────────────────────
 async function judgeScore(prompt, defaultScore = 7) {
   try {
-    const raw = await claude(prompt, { caller: 'benchmark_judge', timeout: 20000 });
+    const raw = await claude(prompt, { caller: 'benchmark_judge', model: getJudgeModel(), timeout: 30000 });
     const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     const m = cleaned.match(/\{[\s\S]*\}/);
     if (m) {
@@ -1033,7 +1050,17 @@ export async function runSensorBenchmark(model) {
 // Floor: P50 < 800ms
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const PIPELINE_FLOORS = { pipeline_p50_ms: 800 };
+// Floor is model-aware — large hosted models (Cerebras 235B, Claude) have higher
+// inherent latency than local/small models. Grade still uses the same scale.
+// Thresholds: local/small ≤800ms · mid-tier (Haiku, Cerebras small) ≤1200ms · large (235B, Sonnet+) ≤1600ms
+function getPipelineFloor(model = '') {
+  const m = (model || '').toLowerCase();
+  if (m.includes('haiku') || m.includes('cerebras:qwen-3-32') || m.includes('small')) return 1200;
+  if (m.includes('cerebras') || m.includes('sonnet') || m.includes('claude') || m.includes('235b')) return 1600;
+  return 800; // local / fast models
+}
+
+const PIPELINE_FLOORS = { pipeline_p50_ms: 800 }; // overridden at runtime below
 
 const PIPELINE_QUERIES = [
   { text: 'what time is it', complexity: 'simple' },
@@ -1052,6 +1079,9 @@ export async function runPipelineBenchmark(model) {
   console.log(`[PAN Benchmark] Starting pipeline suite — model: ${model}`);
   const t0 = Date.now();
   const details = { queries: [] };
+  // Dynamic floor based on model tier
+  const effectiveFloor = getPipelineFloor(model);
+  const dynamicFloors = { pipeline_p50_ms: effectiveFloor };
 
   const latencies = [];
   for (const { text, complexity } of PIPELINE_QUERIES) {
@@ -1074,14 +1104,14 @@ export async function runPipelineBenchmark(model) {
   const avg = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
   const grade = p50 < 400 ? 'A' : p50 < 800 ? 'B' : p50 < 1200 ? 'C' : 'D';
 
-  const scores = { pipeline_p50_ms: p50, p75_ms: p75, p95_ms: p95, avg_ms: avg, grade };
-  const passed = p50 <= PIPELINE_FLOORS.pipeline_p50_ms ? 1 : 0;
+  const scores = { pipeline_p50_ms: p50, p75_ms: p75, p95_ms: p95, avg_ms: avg, grade, floor_ms: effectiveFloor };
+  const passed = p50 <= effectiveFloor ? 1 : 0;
   const elapsed = Date.now() - t0;
 
   _storeResult('pipeline', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Pipeline done — P50=${p50}ms grade=${grade} passed=${!!passed}`);
+  console.log(`[PAN Benchmark] Pipeline done — P50=${p50}ms floor=${effectiveFloor}ms grade=${grade} passed=${!!passed}`);
 
-  if (!passed) await notifyScoutOfFailures(scores, PIPELINE_FLOORS, model, 'pipeline');
+  if (!passed) await notifyScoutOfFailures(scores, dynamicFloors, model, 'pipeline');
 
   return { scores, passed: !!passed, details, elapsed_ms: elapsed, model, suite: 'pipeline' };
 }
