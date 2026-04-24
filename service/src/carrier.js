@@ -23,14 +23,34 @@
 //   7 ✅ Crucible: variant comparison data collection + dashboard UI
 
 import http from 'http';
-import { fork, execSync } from 'child_process';
+import { fork, execSync, execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { hostname } from 'os';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync } from 'fs';
+import { hostname, tmpdir } from 'os';
 import { killProcessOnPort } from './platform.js';
 import { PerfEngine } from './perf/engine.js';
 import { toMarkdown as perfToMarkdown } from './perf/stages.js';
+
+// Carrier has no DB — send ΠΑΝ notifications via HTTP to the Craft
+function panNotify(service, subject, body, opts = {}) {
+  const port = primaryCraft?.port;
+  if (!port) return;
+  const payload = JSON.stringify({ service, subject, body, severity: opts.severity || 'info' });
+  try {
+    const req = http.request({
+      hostname: '127.0.0.1', port,
+      path: '/api/internal/pan-notify',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, () => {});
+    req.on('error', () => {});
+    req.write(payload);
+    req.end();
+  } catch {}
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -84,15 +104,19 @@ const perfEngine = new PerfEngine({ carrierPort: CARRIER_PORT });
 function tryParseJSON(s) { try { return JSON.parse(s); } catch { return {}; } }
 
 // ==================== Git Snapshot ====================
+// Cached once at startup — never run git on the event loop during a request.
+let _gitCommit = null;
 function getGitCommit() {
+  if (_gitCommit) return _gitCommit;
   try {
-    return execSync('git rev-parse --short HEAD', {
+    _gitCommit = execSync('git rev-parse --short HEAD', {
       cwd: join(__dirname, '..'),
       timeout: 3000,
       windowsHide: true,
       encoding: 'utf8',
     }).trim();
-  } catch { return 'unknown'; }
+  } catch { _gitCommit = 'unknown'; }
+  return _gitCommit;
 }
 
 // ==================== Client WebSocket (PAN Client devices) ====================
@@ -119,6 +143,12 @@ async function initTerminal(httpServer) {
 // ==================== Craft Management ====================
 function spawnCraft(port, label = 'primary') {
   const id = ++craftIdCounter;
+
+  // Defensively kill anything still holding this port before we spawn.
+  // Rapid back-to-back swaps can leave a dying Craft's socket in TIME_WAIT,
+  // which would cause the new Craft to fail its health check and abort the swap.
+  killProcessOnPort(port).catch(() => {});
+
   const craftEnv = {
     ...process.env,
     PAN_CRAFT: '1',
@@ -427,6 +457,26 @@ async function runPipelineBenchmarks() {
     allPassed, passedSuites, failedSuites,
   });
   console.log(`[Pipeline] Benchmarks ${allPassed ? 'PASSED ✅' : 'FAILED ❌'} — ${passedSuites.length}/${passedSuites.length + failedSuites.length} suites passed`);
+
+  // Notify user via ΠΑΝ contact thread
+  try {
+    const total = passedSuites.length + failedSuites.length;
+    if (allPassed) {
+      panNotify('Pipeline · 🔬',
+        `All ${total} benchmarks passed ✅`,
+        `Pipeline completed successfully. Every suite passed and the new Craft has been promoted to production.\n\nSuites: ${passedSuites.join(', ')}.`,
+        { severity: 'info' }
+      );
+    } else {
+      panNotify('Pipeline · 🔬',
+        `${failedSuites.length}/${total} benchmark(s) failed ❌`,
+        `Pipeline validation failed. The beta Craft was rejected and the current primary remains live.\n\n❌ Failed: ${failedSuites.join(', ')}\n✅ Passed: ${passedSuites.join(', ') || 'none'}\n\nScout has been notified and will research fixes.`,
+        { severity: 'warning' }
+      );
+    }
+  } catch (err) {
+    console.warn('[Pipeline] panNotify failed:', err.message);
+  }
 
   if (allPassed) {
     await promoteBetaToProduction('auto');
@@ -993,7 +1043,10 @@ async function performSwap() {
 
   if (!healthy) {
     console.error('[Carrier] New Craft failed /health — aborting swap, keeping old Craft');
-    newCraft.proc.kill();
+    try { newCraft.proc.kill(); } catch {}
+    // Reset swap state so the next swap attempt starts clean
+    if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
+    swapPending = false;
     return;
   }
 
@@ -1053,7 +1106,123 @@ function confirmSwap() {
   if (terminalServer) {
     terminalServer.broadcastNotification('swap_confirmed', { craftId: primaryCraft.id });
   }
+
+  // Swap recovery watchdog — detects black/blank Tauri window and sends F5
+  startSwapRecovery();
+
+  // Screen-watcher burst — rapid screenshots every 5s for 60s so intuition
+  // can see the swap stages (loading, reconnecting, live) instead of waiting 30s.
+  fetch(`http://127.0.0.1:${primaryCraft.port}/api/v1/screen-watcher/burst`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ duration_ms: 60_000, interval_ms: 5_000 }),
+    signal: AbortSignal.timeout(3000),
+  }).catch(e => console.warn('[Carrier] Screen burst trigger failed:', e.message));
+
+  // Auto-trigger pipeline benchmarks after a confirmed swap — validates new code
+  // against all 12 suites. If all pass, beta auto-promotes; if any fail, current
+  // primary stays live and pipeline status goes to 'failed' for Scout to pick up.
+  if (pipeline.status === 'idle') {
+    console.log(`[Carrier] 🔬 Auto-triggering benchmark pipeline on Craft-${primaryCraft.id} (post-swap validation)`);
+    startPipelineBeta('autodev').catch(err =>
+      console.error('[Carrier] Auto-pipeline start failed:', err.message)
+    );
+  } else {
+    console.log(`[Carrier] ⏭️  Pipeline already ${pipeline.status} — skipping auto-trigger`);
+  }
+
   return { ok: true, activeCraft: primaryCraft.id, commit: primaryCraft.gitCommit };
+}
+
+// ── Swap recovery watchdog ────────────────────────────────────────────────────
+// After a Craft swap the Tauri WebView sometimes ends up black (missed reload
+// signal or reloaded into a still-booting Craft). This watchdog takes a tiny
+// FFmpeg thumbnail every 3 s for up to 30 s and sends F5 to the PAN window if
+// the screen looks black, so the user never has to manually mash F5.
+
+const BLACK_SNAP = join(tmpdir(), 'pan-swap-check.jpg');
+// A 4×4 black JPEG is ≤ 500 B; any real UI content is much larger.
+const BLACK_SIZE_THRESHOLD = 600;
+
+async function isDashboardBlack() {
+  try {
+    // First try: ask Tauri shell for a screenshot (faster, window-specific)
+    const tr = await fetch('http://127.0.0.1:7790/screenshot', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: '{}', signal: AbortSignal.timeout(4000),
+    });
+    if (tr.ok) {
+      const { base64 } = await tr.json();
+      if (base64) {
+        // base64 PNG — rough size proxy: a black 1280×720 PNG is < 5 KB encoded
+        return base64.length < 7000;
+      }
+    }
+  } catch {}
+  // Fallback: FFmpeg tiny thumbnail (async — must not block event loop)
+  try {
+    await execFileAsync('ffmpeg', [
+      '-f', 'gdigrab', '-i', 'desktop',
+      '-vframes', '1', '-vf', 'scale=4:4', '-q:v', '2', '-y', BLACK_SNAP,
+    ], { windowsHide: true, timeout: 5000 });
+    if (!existsSync(BLACK_SNAP)) return false;
+    const { size } = statSync(BLACK_SNAP);
+    try { unlinkSync(BLACK_SNAP); } catch {}
+    return size < BLACK_SIZE_THRESHOLD;
+  } catch { return false; }
+}
+
+async function sendF5ToPanWindow() {
+  try {
+    await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `
+      $proc = Get-Process | Where-Object { $_.MainWindowTitle -like 'PAN*' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+      if ($proc) {
+        Add-Type @'
+using System.Runtime.InteropServices;
+public class W32 { [DllImport("user32")] public static extern bool SetForegroundWindow(System.IntPtr h); }
+'@
+        [W32]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+        Start-Sleep -Milliseconds 150
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.SendKeys]::SendWait('{F5}')
+        Write-Host "F5 sent to $($proc.MainWindowTitle)"
+      }
+    `], { windowsHide: true, timeout: 6000 });
+    console.log('[Carrier] Swap recovery: sent F5 to PAN window');
+  } catch (e) {
+    console.warn('[Carrier] Swap recovery: F5 send failed:', e.message);
+  }
+}
+
+let swapRecoveryTimer = null;
+function startSwapRecovery() {
+  if (swapRecoveryTimer) { clearInterval(swapRecoveryTimer); swapRecoveryTimer = null; }
+  let checks = 0;
+  let f5Sent = false;
+  // Start checking after 3 s (give browser reload logic a chance to fire first)
+  setTimeout(() => {
+    swapRecoveryTimer = setInterval(async () => {
+      checks++;
+      if (checks > 9) { // 3 s * 9 = 27 s max
+        clearInterval(swapRecoveryTimer); swapRecoveryTimer = null;
+        return;
+      }
+      const black = await isDashboardBlack();
+      console.log(`[Carrier] Swap recovery check ${checks}: ${black ? '⬛ BLACK — reloading' : '✅ OK'}`);
+      if (black) {
+        sendF5ToPanWindow();
+        f5Sent = true;
+        // Wait 4 s after F5 before checking again (page is loading)
+        clearInterval(swapRecoveryTimer);
+        swapRecoveryTimer = null;
+        setTimeout(() => startSwapRecovery(), 4000);
+      } else if (f5Sent) {
+        // Was black, now OK — done
+        clearInterval(swapRecoveryTimer); swapRecoveryTimer = null;
+        console.log('[Carrier] Swap recovery: window restored ✅');
+      }
+    }, 3000);
+  }, 3000);
 }
 
 function performRollback() {
@@ -1192,6 +1361,19 @@ async function boot() {
     }
   });
 
+  // Kill any zombie carrier holding our own port (e.g. after sleep/wake where old carrier
+  // lost the port but its process kept running with live intervals burning CPU).
+  // Must happen BEFORE we try to listen — otherwise we'd get EADDRINUSE.
+  try {
+    const zombies = await killProcessOnPort(CARRIER_PORT);
+    if (zombies.size > 0) {
+      console.log(`[Carrier] ⚰️  Killed zombie carrier(s) on port ${CARRIER_PORT}: ${[...zombies].join(', ')}`);
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } catch (e) {
+    console.warn(`[Carrier] Could not clean carrier port ${CARRIER_PORT}: ${e.message}`);
+  }
+
   // Kill any stale process holding the Craft port from a prior crash
   const craftPort = CRAFT_PORT_BASE;
   const portCleanStart = Date.now();
@@ -1212,20 +1394,70 @@ async function boot() {
   // Spawn primary Craft
   primaryCraft = spawnCraft(craftPort, 'primary');
 
-  // Listen on main port
-  carrierServer.listen(CARRIER_PORT, HOST, () => {
-    console.log(`[Carrier] ═══════════════════════════════════════════`);
-    console.log(`[Carrier] Carrier listening on port ${CARRIER_PORT}`);
-    console.log(`[Carrier] PTY sessions owned by Carrier (PID ${process.pid})`);
-    console.log(`[Carrier] Lifeboat active: /lifeboat/status, /lifeboat/rollback, /lifeboat/confirm`);
-    console.log(`[Carrier] Rollback window: ${ROLLBACK_TIMEOUT_MS / 1000}s after each swap`);
-    console.log(`[Carrier] Git: ${getGitCommit()}`);
-    console.log(`[Carrier] Primary Craft starting on port ${craftPort}...`);
-    console.log(`[Carrier] ═══════════════════════════════════════════`);
-  });
+  // Listen on main port — with retry + hard exit so pan-loop.bat can respawn cleanly
+  let listenAttempts = 0;
+  const MAX_LISTEN_ATTEMPTS = 8;
+  const tryListen = () => {
+    listenAttempts++;
+    carrierServer.listen(CARRIER_PORT, HOST, () => {
+      console.log(`[Carrier] ═══════════════════════════════════════════`);
+      console.log(`[Carrier] Carrier listening on port ${CARRIER_PORT}`);
+      console.log(`[Carrier] PTY sessions owned by Carrier (PID ${process.pid})`);
+      console.log(`[Carrier] Lifeboat active: /lifeboat/status, /lifeboat/rollback, /lifeboat/confirm`);
+      console.log(`[Carrier] Rollback window: ${ROLLBACK_TIMEOUT_MS / 1000}s after each swap`);
+      console.log(`[Carrier] Git: ${getGitCommit()}`);
+      console.log(`[Carrier] Primary Craft starting on port ${craftPort}...`);
+      console.log(`[Carrier] ═══════════════════════════════════════════`);
+    });
+    carrierServer.once('error', async (err) => {
+      if (err.code === 'EADDRINUSE') {
+        if (listenAttempts < MAX_LISTEN_ATTEMPTS) {
+          console.warn(`[Carrier] Port ${CARRIER_PORT} in use (attempt ${listenAttempts}/${MAX_LISTEN_ATTEMPTS}) — killing holder and retrying in 2s...`);
+          try { await killProcessOnPort(CARRIER_PORT); } catch {}
+          await new Promise(r => setTimeout(r, 2000));
+          carrierServer.close(() => tryListen());
+        } else {
+          console.error(`[Carrier] ❌ Port ${CARRIER_PORT} still occupied after ${MAX_LISTEN_ATTEMPTS} attempts — exiting so pan-loop can respawn`);
+          try { const _d = join(process.env.LOCALAPPDATA||'','PAN','data'); mkdirSync(_d,{recursive:true}); writeFileSync(join(_d,'.restart-pending'),Date.now().toString()); } catch {}
+          process.exit(1);
+        }
+      } else {
+        console.error(`[Carrier] ❌ Fatal listen error: ${err.message} — exiting`);
+        try { const _d = join(process.env.LOCALAPPDATA||'','PAN','data'); mkdirSync(_d,{recursive:true}); writeFileSync(join(_d,'.restart-pending'),Date.now().toString()); } catch {}
+        process.exit(1);
+      }
+    });
+  };
+  tryListen();
 
   // Wait for Craft to be healthy
   await waitForCraftHealth(primaryCraft);
+
+  // ── Zombie self-detector ────────────────────────────────────────────────
+  // After sleep/wake or a forced restart, a new Carrier can steal port 7777
+  // while this process keeps running with live intervals (burning CPU).
+  // Every 60s: hit /health and check if the PID that responds is OUR PID.
+  // If it's a different PID, we are the zombie — exit so we stop wasting resources.
+  let _zombieCheckFailures = 0;
+  setInterval(async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${CARRIER_PORT}/health`, { signal: AbortSignal.timeout(4000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      const activePid = body.carrier?.pid;
+      if (activePid && activePid !== process.pid) {
+        console.error(`[Carrier] ⚰️  Zombie detected — port ${CARRIER_PORT} is owned by PID ${activePid}, I am PID ${process.pid}. Exiting.`);
+        process.exit(0); // exit(0) = clean, don't trigger pan-loop respawn for this zombie
+      }
+      _zombieCheckFailures = 0;
+    } catch {
+      _zombieCheckFailures++;
+      if (_zombieCheckFailures >= 3) {
+        console.error('[Carrier] ❌ Self-health check failed 3× — event loop may be blocked, exiting for respawn');
+        process.exit(1);
+      }
+    }
+  }, 60_000);
 }
 
 // ==================== Graceful Shutdown ====================

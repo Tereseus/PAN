@@ -73,6 +73,38 @@
 		}
 	}
 
+	// ── Widget Health Tracker ──────────────────────────────────────────────────
+	// Records when each widget was last updated and whether it came from a WS push
+	// or a fallback poll. Displayed in the Performance panel so we can see in real
+	// time what's actually refreshing and what's stale or stuck.
+	const _widgetHealth = $state({
+		intuition:  { ts: 0, source: null, pushes: 0, polls: 0 },
+		approvals:  { ts: 0, source: null, pushes: 0, polls: 0 },
+		alerts:     { ts: 0, source: null, pushes: 0, polls: 0 },
+		services:   { ts: 0, source: null, pushes: 0, polls: 0 },
+		pipeline:   { ts: 0, source: null, pushes: 0, polls: 0 },
+		devices:    { ts: 0, source: null, pushes: 0, polls: 0 },
+		transcript: { ts: 0, source: null, pushes: 0, polls: 0 },
+		lifeboat:   { ts: 0, source: null, pushes: 0, polls: 0 },
+	});
+	// WS message type counter — how many messages of each type we've received
+	const _wsMsgCounts = $state({});
+	let _wsTotalMsgs = $state(0);
+	let _wsLastMsgTs = $state(0);
+
+	function _trackWidget(name, source) {
+		const w = _widgetHealth[name];
+		if (!w) return;
+		w.ts = Date.now();
+		w.source = source;
+		if (source === 'push') w.pushes++; else w.polls++;
+	}
+	function _trackWsMsg(type) {
+		_wsMsgCounts[type] = (_wsMsgCounts[type] || 0) + 1;
+		_wsTotalMsgs++;
+		_wsLastMsgTs = Date.now();
+	}
+
 	// Ordered list of load stages for the Performance panel.
 	// Shown in the order the user experiences them.
 	const LOAD_STAGE_ORDER = [
@@ -184,6 +216,7 @@
 	let panClientInviteCmd = $state('');
 	let panClientInviteName = $state('');
 	let panClientPollTimer = null;
+	let allDevicesPollTimer = null;
 	let allDevices = $state([]);
 
 	// Voice enrollment
@@ -241,7 +274,8 @@
 	function startIntuitionPolling() {
 		loadIntuition();
 		if (intuitionPolling) clearInterval(intuitionPolling);
-		intuitionPolling = setInterval(loadIntuition, 5000);
+		// 30s fallback only — real-time updates come via widget_update WS push from intuition.js
+		intuitionPolling = setInterval(() => { _trackWidget('intuition', 'poll'); loadIntuition(); }, 30_000);
 	}
 	function stopIntuitionPolling() {
 		if (intuitionPolling) { clearInterval(intuitionPolling); intuitionPolling = null; }
@@ -334,7 +368,8 @@
 	function startPipelinePolling() {
 		loadPipeline();
 		if (pipelinePolling) clearInterval(pipelinePolling);
-		pipelinePolling = setInterval(loadPipeline, 5000);  // poll every 5s during active run
+		// 10s fallback — pipeline_event WS push is the primary real-time path
+		pipelinePolling = setInterval(loadPipeline, 10_000);
 	}
 	function stopPipelinePolling() {
 		if (pipelinePolling) { clearInterval(pipelinePolling); pipelinePolling = null; }
@@ -445,6 +480,7 @@
 		if (!chatInputText.trim() || !chatActiveThread) return;
 		const body = chatInputText.trim();
 		chatInputText = '';
+		const isPan = chatActiveThread.id === 'thread-pan-system';
 		try {
 			const res = await api(`/api/v1/chat/threads/${chatActiveThread.id}/messages`, {
 				method: 'POST',
@@ -454,6 +490,27 @@
 			chatMessages = [...chatMessages, { id: res.id, thread_id: chatActiveThread.id, sender_id: 'self', body, body_type: 'text', created_at: res.created_at }];
 			await tick();
 			if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+
+			// ΠΑΝ persona — poll for server-generated reply
+			if (isPan) {
+				const sentAt = Date.now();
+				let attempts = 0;
+				const pollForReply = async () => {
+					attempts++;
+					try {
+						const msgs = await api(`/api/v1/chat/threads/${chatActiveThread?.id}/messages`);
+						if (Array.isArray(msgs)) {
+							const hasNewReply = msgs.some(m => m.sender_id === 'contact-pan-system' && m.created_at >= sentAt);
+							chatMessages = msgs;
+							await tick();
+							if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+							if (hasNewReply || attempts >= 8) return; // got it or gave up
+						}
+					} catch {}
+					if (attempts < 8) setTimeout(pollForReply, 2000);
+				};
+				setTimeout(pollForReply, 2000);
+			}
 		} catch (e) {
 			console.error('Failed to send message:', e);
 		}
@@ -1350,6 +1407,8 @@
 					const msg = JSON.parse(event.data);
 					// Any server message after wsOpen proves the PTY session is attached.
 					_markLoad('ptyAttached');
+					// Track all incoming WS message types for the perf panel
+					if (msg.type && msg.type !== 'screen-v2' && msg.type !== 'screen') _trackWsMsg(msg.type);
 					switch (msg.type) {
 						case 'user_echo': {
 							_markSendPhase('echo');
@@ -1649,16 +1708,20 @@
 							break;
 						}
 						case 'widget_update': {
-							// Server pushed a change notification — refetch the affected widget
+							// Server pushed a change notification — refetch the affected widget.
+							// This is the PRIMARY update path — polling intervals are long fallbacks only.
 							const w = msg.widget;
+							_trackWidget(w, 'push'); // record WS push in perf panel
 							if (w === 'alerts') {
 								loadAlertCount();
 								if (leftSection === 'alerts' || rightSection === 'alerts') loadAlerts();
 							} else if (w === 'services') {
-								// Services data is global (devices widget also reads it)
 								api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 							} else if (w === 'approvals') {
 								loadApprovals();
+							} else if (w === 'intuition') {
+								// Intuition snapshot ready — update immediately regardless of which panel is open
+								loadIntuition();
 							} else if (w === 'library') {
 								if (leftSection === 'library' || rightSection === 'library') loadLibrary();
 							} else if (w === 'users') {
@@ -1667,6 +1730,9 @@
 								if (leftSection === 'teams' || rightSection === 'teams') loadTeamsWidget();
 							} else if (w === 'tests') {
 								if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
+							} else if (w === 'devices') {
+								loadClientDevices();
+								loadAllDevices();
 							}
 							break;
 						}
@@ -1743,6 +1809,9 @@
 						serverRestarting = false;
 						tabData.ws = newWs;
 						prevLines = [];
+						// Refresh all panels immediately on reconnect (after swap or restart)
+						if (leftSection === 'intuition' || rightSection === 'intuition') loadIntuition();
+						api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 						// Clear the global "PAN restarting…" banner now that we're reconnected.
 						if (typeof window !== 'undefined' && window._panCarrierRestartBanner) {
 							document.querySelectorAll('div').forEach(d => { if (d.textContent && d.textContent.startsWith('⟳ PAN restarting')) d.remove(); });
@@ -3463,7 +3532,11 @@
 			'services', 660, 80, 'faster-whisper voice transcription on port 7782.', null);
 		addNode('ahk', 'Voice Hotkeys', 'service', svcStatus('ahk'), svcDetail('ahk') || 'AHK',
 			'services', 470, 150, 'AutoHotkey voice dictation hotkeys.', null);
-		addNode('ollama', 'Ollama', 'service', svcStatus('ollama'), svcDetail('ollama') || 'Port 11434',
+		const ollamaDash = dashServices.find(s => s.name === 'Ollama');
+		const ollamaStatus = svcStatus('ollama') !== 'unknown' ? svcStatus('ollama') : (ollamaDash?.status === 'up' ? 'up' : 'unknown');
+		const ollamaDetail = svcDetail('ollama') || ollamaDash?.detail || 'Port 11434';
+		const ollamaLabel = ollamaDash?.deviceName ? `Ollama @ ${ollamaDash.deviceName}` : 'Ollama';
+		addNode('ollama', ollamaLabel, 'service', ollamaStatus, ollamaDetail,
 			'services', 660, 150, 'Local model server for embeddings.', null);
 		addNode('tailscale', 'Tailscale', 'service', svcStatus('tailscale'), 'VPN mesh',
 			'services', 565, 150, 'Encrypted VPN tunnel for remote access.', null);
@@ -3927,11 +4000,29 @@
 	}
 
 	// ==================== PAN Clients ====================
+	let deviceMetrics = $state({}); // device_id → latest metric snapshot
+
 	async function loadAllDevices() {
 		try {
 			const d = await api('/dashboard/api/devices');
 			allDevices = Array.isArray(d) ? d : (d.devices || []);
 		} catch {}
+		// Fetch live resource metrics alongside device list
+		try {
+			const m = await api('/api/v1/client/metrics');
+			const map = {};
+			for (const row of (m.metrics || [])) map[row.device_id] = row;
+			deviceMetrics = map;
+		} catch {}
+	}
+	function startAllDevicesPolling() {
+		loadAllDevices();
+		if (allDevicesPollTimer) clearInterval(allDevicesPollTimer);
+		// 30s fallback — widget_update: 'devices' WS push handles real-time changes
+		allDevicesPollTimer = setInterval(loadAllDevices, 30_000);
+	}
+	function stopAllDevicesPolling() {
+		if (allDevicesPollTimer) { clearInterval(allDevicesPollTimer); allDevicesPollTimer = null; }
 	}
 
 	async function loadVoiceSpeakers() {
@@ -4024,9 +4115,10 @@
 			if (resp.ok) {
 				const d = await resp.json();
 				panClientDevices = d.devices || [];
-				// Poll at 4s when pending approvals, 10s otherwise (so status stays live)
+				// WS widget_update:'devices' is the primary real-time path.
+				// Poll at 8s when pending approvals (urgent), 30s otherwise (fallback only).
 				const hasPending = panClientDevices.some(dev => dev.trusted === false);
-				const targetInterval = hasPending ? 4000 : 10000;
+				const targetInterval = hasPending ? 8000 : 30_000;
 				if (!panClientPollTimer) {
 					panClientPollTimer = setInterval(loadClientDevices, targetInterval);
 				}
@@ -4457,22 +4549,33 @@
 	function waitForServerAndReload() {
 		if (window._panSwapPolling) return;
 		window._panSwapPolling = true;
-		const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-		const healthUrl = `${window.location.protocol}//${window.location.hostname}:${port}/health`;
+		const base = `${window.location.protocol}//${window.location.hostname}:${window.location.port || (window.location.protocol === 'https:' ? '443' : '80')}`;
+		const pageUrl = `${base}${window.location.pathname}`;
+		// Poll /dashboard/api/status — a Craft-proxied API endpoint (not a static file).
+		// Static files are served by Carrier and always return 200 even mid-swap.
+		// Only /dashboard/api/status returning 200 proves the new Craft is actually live.
+		const craftStatusUrl = `${base}/dashboard/api/status`;
 		let consecutiveOk = 0;
-		const poll = setInterval(async () => {
-			try {
-				const r = await fetch(healthUrl, { cache: 'no-store' });
-				if (r.ok) {
-					consecutiveOk++;
-					// Two consecutive healthy responses before reload — avoids reloading
-					// when health passes momentarily before WS endpoint is fully ready.
-					if (consecutiveOk >= 2) { clearInterval(poll); window._panSwapPolling = false; window.location.reload(); }
-				} else { consecutiveOk = 0; }
-			} catch { consecutiveOk = 0; }
-		}, 600);
-		// Safety: clear stale polling flag after 30s so the next swap is never blocked
-		setTimeout(() => { clearInterval(poll); window._panSwapPolling = false; }, 30_000);
+		// Wait 1.5s before starting to poll — give Craft time to bind and initialize
+		// before we hammer it, so we don't get a false 200 from a half-ready Craft.
+		setTimeout(() => {
+			const poll = setInterval(async () => {
+				try {
+					const r = await fetch(craftStatusUrl, { cache: 'no-store' });
+					if (r.ok) {
+						consecutiveOk++;
+						// Two consecutive 200s on the Craft API → it's truly ready
+						if (consecutiveOk >= 2) {
+							clearInterval(poll);
+							window._panSwapPolling = false;
+							window.location.href = pageUrl + '?t=' + Date.now();
+						}
+					} else { consecutiveOk = 0; }
+				} catch { consecutiveOk = 0; }
+			}, 600);
+			// Safety: clear stale polling flag after 30s so the next swap is never blocked
+			setTimeout(() => { clearInterval(poll); window._panSwapPolling = false; }, 30_000);
+		}, 1500);
 	}
 
 	// ==================== Init ====================
@@ -4506,7 +4609,7 @@
 		if (leftSection === 'usage' || rightSection === 'usage') loadUsageData();
 		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
 		if (leftSection === 'intuition' || rightSection === 'intuition') { startIntuitionPolling(); loadVoiceSpeakers(); }
-		if (leftSection === 'devices' || rightSection === 'devices') { loadClientDevices(); loadAllDevices(); }
+		if (leftSection === 'devices' || rightSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); }
 		if (leftSection === 'benchmarks' || rightSection === 'benchmarks') startBenchmarkPolling();
 
 		// Load org context
@@ -4531,14 +4634,16 @@
 			if (_pageVisible && leftSection === 'transcript') loadChatHistory();
 		}, 15000);
 
-		// Refresh services every 60s, approvals every 10s, lifeboat every 10s
+		// Emergency fallback polls — WS push (widget_update) is the primary real-time path.
+		// These fire rarely and only exist to recover from missed WS events (reconnect gap, etc.).
 		const svcInterval = setInterval(() => {
 			if (!_pageVisible) return;
+			_trackWidget('services', 'poll');
 			api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
-		}, 60000);
-		const approvalInterval = setInterval(() => { if (_pageVisible) loadApprovals(); }, 10000);
-		const lifeboatInterval = setInterval(() => { if (_pageVisible) loadLifeboat(); }, 10000);
-		const alertCountInterval = setInterval(() => { if (_pageVisible) loadAlertCount(); }, 30000);
+		}, 180_000); // 3 min — WS push handles real-time
+		const approvalInterval = setInterval(() => { if (_pageVisible) { _trackWidget('approvals', 'poll'); loadApprovals(); } }, 120_000); // 2 min fallback
+		const lifeboatInterval = setInterval(() => { if (_pageVisible) { _trackWidget('lifeboat', 'poll'); loadLifeboat(); } }, 30_000);   // 30s — lifeboat is critical, keep tighter
+		const alertCountInterval = setInterval(() => { if (_pageVisible) { _trackWidget('alerts', 'poll'); loadAlertCount(); } }, 120_000); // 2 min fallback
 
 		// Transcript heartbeat — fallback poll every 15s.
 		// The primary path is adapter → WS push (real-time). But if a push is missed
@@ -4560,7 +4665,9 @@
 			} catch {}
 		}, 15000);
 
-		// Poll live PTY status for the active tab every 3s (was 1.5s).
+		// PTY status fallback poll — 8s. The screen-v2 WS frames already update claudeReady
+		// in real-time (see handleMessage 'screen-v2' case). This poll just syncs ptyStatus
+		// for the info display and catches edge cases (session reconnect, tab switch).
 		const ptyStatusInterval = setInterval(async () => {
 			if (!_pageVisible) return;
 			try {
@@ -4576,8 +4683,8 @@
 					if (tab.claudeReady !== realReady) tab.claudeReady = realReady;
 				}
 			} catch {}
-		}, 3000);
-		// 2s ticker for "Xs ago" labels (was 1s)
+		}, 8000);
+		// 2s ticker for "Xs ago" labels
 		const ptyTicker = setInterval(() => { ptyStatusNow = Date.now(); }, 2000);
 
 		// Poll for UI commands (window opens, etc.)
@@ -4774,9 +4881,36 @@
 				return;
 			}
 
-			// Skip if user is typing in a non-terminal input (e.g. rename, search)
+			// Skip if user is typing in a non-terminal input (e.g. rename, search, voice enroll)
 			const tag = e.target?.tagName;
 			if ((tag === 'INPUT' || tag === 'TEXTAREA') && e.target !== terminalInputEl) return;
+
+			// Enter — send terminal input even if the textarea has lost focus
+			if (e.key === 'Enter' && !e.shiftKey) {
+				e.preventDefault();
+				if (terminalInputEl) terminalInputEl.focus();
+				sendTerminalInput(terminalInputEl?.value || terminalInputText || '');
+				return;
+			}
+
+			// Printable character typed while focus is NOT in the input box →
+			// steal focus back to the terminal input and append the character.
+			// Mirrors real terminal emulator behaviour: you can never "lose" your typing.
+			const isPrintable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+			if (isPrintable && document.activeElement !== terminalInputEl) {
+				e.preventDefault();
+				if (terminalInputEl) {
+					terminalInputEl.focus();
+					// Append character at cursor position
+					const start = terminalInputEl.selectionStart ?? terminalInputEl.value.length;
+					const end   = terminalInputEl.selectionEnd   ?? terminalInputEl.value.length;
+					const cur   = terminalInputEl.value;
+					terminalInputEl.value = cur.slice(0, start) + e.key + cur.slice(end);
+					terminalInputText = terminalInputEl.value;
+					terminalInputEl.selectionStart = terminalInputEl.selectionEnd = start + 1;
+				}
+				return;
+			}
 
 			const active = getActiveTab();
 			if (!active?.ws || active.ws.readyState !== 1) return;
@@ -5103,6 +5237,54 @@
 			</div>
 		{/each}
 	{/if}
+
+	<!-- Widget Health — live view of what's refreshing and how -->
+	{@const _now = Date.now()}
+	{@const _wEntries = Object.entries(_widgetHealth)}
+	{@const _wStale = _wEntries.filter(([, w]) => w.ts > 0 && (_now - w.ts) > 120_000)}
+	<div class="perf-section-title" style="margin-top:12px">Widget Health
+		{#if _wStale.length > 0}<span style="color:#f38ba8;font-size:9px;margin-left:6px">⚠ {_wStale.length} stale</span>{/if}
+	</div>
+	{#each _wEntries as [name, w]}
+		{@const ageSec = w.ts ? Math.round((_now - w.ts) / 1000) : null}
+		{@const isStale = w.ts > 0 && (_now - w.ts) > 120_000}
+		{@const isPush = w.source === 'push'}
+		{@const neverUpdated = w.ts === 0}
+		<div class="perf-metric" style="font-size:10px">
+			<span class="perf-label" style="text-transform:capitalize">{name}</span>
+			<span style="display:flex;align-items:center;gap:5px">
+				{#if neverUpdated}
+					<span style="color:#6c7086">—</span>
+				{:else}
+					<span style="color:{isStale ? '#f38ba8' : isPush ? '#a6e3a1' : '#fab387'}" title="{isPush ? '📡 WS push' : '🔄 fallback poll'} · {w.pushes}p/{w.polls}x">
+						{isPush ? '📡' : '🔄'} {ageSec < 60 ? ageSec + 's' : Math.round(ageSec/60) + 'm'} ago
+					</span>
+					{#if w.pushes > 0 || w.polls > 0}
+						<span style="color:#6c7086;font-size:9px" title="WS push count / fallback poll count">{w.pushes}p/{w.polls}x</span>
+					{/if}
+				{/if}
+			</span>
+		</div>
+	{/each}
+
+	<!-- WS Message Rates -->
+	<div class="perf-section-title" style="margin-top:10px">WS Messages</div>
+	<div class="perf-metric" style="font-size:10px">
+		<span class="perf-label">Total received</span>
+		<span class="perf-value">{_wsTotalMsgs}</span>
+	</div>
+	{#if _wsLastMsgTs > 0}
+		<div class="perf-metric" style="font-size:10px">
+			<span class="perf-label">Last message</span>
+			<span class="perf-value">{Math.round((_now - _wsLastMsgTs)/1000)}s ago</span>
+		</div>
+	{/if}
+	{#each Object.entries(_wsMsgCounts).sort((a,b) => b[1]-a[1]).slice(0, 8) as [type, count]}
+		<div class="perf-metric" style="font-size:10px">
+			<span class="perf-label" style="opacity:0.7">{type}</span>
+			<span style="color:#cba6f7;font-size:10px">{count}×</span>
+		</div>
+	{/each}
 {/snippet}
 
 <!-- TOOLBAR -->
@@ -5194,7 +5376,7 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (leftSection === 'users') loadUsers(); if (leftSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (leftSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (leftSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); } else { stopAllDevicesPolling(); } if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
 				<option value="bugs">Bugs</option>
@@ -5354,6 +5536,7 @@
 								{@const isHub = dev.is_hub === true}
 								{@const isPanClient = !!dev.client_version}
 								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
+								{@const metrics = deviceMetrics[dev.hostname] || deviceMetrics[dev.name] || null}
 								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
 									<div style="display:flex;align-items:center;gap:6px">
 										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
@@ -5361,9 +5544,49 @@
 											{dev.name || dev.hostname}
 											{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
 											{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
 										</div>
 										<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
 									</div>
+									{#if metrics}
+										{@const cpuColor = (metrics.cpu_pct||0) > 85 ? '#f38ba8' : (metrics.cpu_pct||0) > 60 ? '#fab387' : '#a6e3a1'}
+										{@const ramColor = (metrics.ram_pct||0) > 85 ? '#f38ba8' : (metrics.ram_pct||0) > 70 ? '#fab387' : '#89b4fa'}
+										<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px;padding-left:16px">
+											<div>
+												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
+													<span>CPU</span><span style="color:{cpuColor}">{Math.round(metrics.cpu_pct||0)}%</span>
+												</div>
+												<div style="height:3px;background:#313244;border-radius:2px">
+													<div style="height:100%;width:{Math.min(metrics.cpu_pct||0,100)}%;background:{cpuColor};border-radius:2px;transition:width 0.5s"></div>
+												</div>
+											</div>
+											<div>
+												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
+													<span>RAM</span>
+													<span style="color:{ramColor}">
+														{#if metrics.ram_used_mb && metrics.ram_total_mb}
+															{metrics.ram_used_mb > 1024 ? (metrics.ram_used_mb/1024).toFixed(1)+'G' : metrics.ram_used_mb+'M'}/{metrics.ram_total_mb > 1024 ? (metrics.ram_total_mb/1024).toFixed(1)+'G' : metrics.ram_total_mb+'M'}
+														{:else}{Math.round(metrics.ram_pct||0)}%{/if}
+													</span>
+												</div>
+												<div style="height:3px;background:#313244;border-radius:2px">
+													<div style="height:100%;width:{Math.min(metrics.ram_pct||0,100)}%;background:{ramColor};border-radius:2px;transition:width 0.5s"></div>
+												</div>
+											</div>
+											{#if metrics.disk_pct != null}
+												{@const diskColor = (metrics.disk_pct||0) > 90 ? '#f38ba8' : (metrics.disk_pct||0) > 75 ? '#fab387' : '#6c7086'}
+												<div style="grid-column:1/-1">
+													<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
+														<span>Disk</span>
+														<span style="color:{diskColor}">{Math.round(metrics.disk_pct||0)}%{metrics.disk_free_gb != null ? ` · ${metrics.disk_free_gb.toFixed(0)}G free` : ''}</span>
+													</div>
+													<div style="height:3px;background:#313244;border-radius:2px">
+														<div style="height:100%;width:{Math.min(metrics.disk_pct||0,100)}%;background:{diskColor};border-radius:2px;transition:width 0.5s"></div>
+													</div>
+												</div>
+											{/if}
+										</div>
+									{/if}
 								</div>
 							{/each}
 						{/if}
@@ -5689,6 +5912,17 @@
 							</div>
 						{/if}
 
+						<!-- Screen Vision -->
+						{#if data.camera}
+							<div class="svc-category">Screen Vision</div>
+							<div class="int-axes">
+								<div class="int-axis" style="flex-wrap:wrap">
+									<span class="int-label">👁 Seeing</span>
+									<span class="int-val small" style="color:#cba6f7;white-space:normal">{data.camera}</span>
+								</div>
+							</div>
+						{/if}
+
 						<!-- Data Sources -->
 						<div class="svc-category">Data Sources</div>
 						<div class="int-axes">
@@ -5697,8 +5931,8 @@
 							<div class="int-axis"><span class="int-label">Events</span><span class="int-val small">{data.events || '—'}</span></div>
 							<div class="int-axis"><span class="int-label">Apps</span><span class="int-val small">{data.apps || '—'}</span></div>
 							<div class="int-axis"><span class="int-label">Sensors</span><span class="int-val small">{data.sensors || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.camera || '⏳ pendant'}</span></div>
-							<div class="int-axis"><span class="int-label">Audio</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Screen</span><span class="int-val small">{data.camera || '⏳ no capture yet'}</span></div>
+							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
 							<div class="int-axis"><span class="int-label">Location</span><span class="int-val small">{data.location || '—'}</span></div>
 						</div>
 
@@ -5931,6 +6165,58 @@
 				</div>
 			{:else if leftSection === 'contacts'}
 				<div class="contacts-panel">
+
+					<!-- ── DM Thread View (shown when a contact is open) ── -->
+					{#if chatActiveThread}
+						<div class="dm-thread">
+							<div class="dm-header">
+								<button class="dm-back" onclick={() => { chatActiveThread = null; chatMessages = []; centerView = 'terminal'; }}>←</button>
+								<span class="dm-contact-avatar" class:pan-avatar={chatActiveThread.contact?.id === 'contact-pan-system'}>
+									{chatActiveThread.contact?.display_name?.charAt(0)?.toUpperCase() || '?'}
+								</span>
+								<span class="dm-contact-name">{chatActiveThread.contact?.display_name || 'Chat'}</span>
+							</div>
+							<div class="dm-messages" bind:this={chatMessagesEl}>
+								{#if chatMessages.length === 0}
+									<div class="dm-empty">
+										{#if chatActiveThread.contact?.id === 'contact-pan-system'}
+											<div style="color:#a6adc8;text-align:center;padding:20px 12px;font-size:13px;">
+												<div style="font-size:24px;margin-bottom:8px;">Π</div>
+												ΠΑΝ is listening. Ask anything about what's going on, or wait for system reports.
+											</div>
+										{:else}
+											No messages yet
+										{/if}
+									</div>
+								{:else}
+									{#each chatMessages as msg}
+										{@const meta = (() => { try { return JSON.parse(msg.metadata || '{}'); } catch { return {}; } })()}
+										{@const isSelf = msg.sender_id === 'self'}
+										<div class="dm-msg-wrap" class:dm-msg-self={isSelf}>
+											{#if !isSelf && meta.service}
+												<div class="dm-service-tag">{meta.service}</div>
+											{/if}
+											<div class="dm-bubble" class:dm-bubble-self={isSelf} class:dm-bubble-pan={msg.sender_id === 'contact-pan-system'}>
+												{#if msg.subject && msg.subject !== msg.body}
+													<div class="dm-subject">{msg.subject}</div>
+												{/if}
+												<div class="dm-body">{msg.body}</div>
+												<div class="dm-time">{new Date(msg.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
+											</div>
+										</div>
+									{/each}
+								{/if}
+							</div>
+							<div class="dm-input-bar">
+								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask ΠΑΝ anything…' : 'Message…'}
+									bind:value={chatInputText}
+									onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} />
+								<button class="dm-send" onclick={sendChatMessage} disabled={!chatInputText.trim()}>↑</button>
+							</div>
+						</div>
+
+					{:else}
+					<!-- ── Contacts List (shown when no thread is open) ── -->
 					<!-- Search + Add -->
 					<div class="contacts-toolbar">
 						<input type="text" class="contacts-search" placeholder="Search contacts..." bind:value={chatSearchQuery} />
@@ -5953,8 +6239,29 @@
 					{/if}
 
 					{#each [contactsData.filter(c => !chatSearchQuery || c.display_name.toLowerCase().includes(chatSearchQuery.toLowerCase()))] as filtered}
-					<!-- Favorites -->
-					{#each [filtered.filter(c => c.favorited)] as favorites}
+					<!-- ΠΑΝ system contact — always pinned at top -->
+					{#each [filtered.find(c => c.id === 'contact-pan-system')] as panContact}
+						{#if panContact}
+							<div class="svc-category">ΠΑΝ</div>
+							<div class="svc-row contact-row pan-contact-row" onclick={() => openChat(panContact)} role="button" tabindex="0">
+								<span class="contact-avatar pan-avatar">Π</span>
+								<div class="svc-info">
+									<div class="svc-name">
+										ΠΑΝ
+										{#if panContact.unread_count > 0}
+											<span class="contact-badge">{panContact.unread_count}</span>
+										{/if}
+									</div>
+									<div class="svc-detail">
+										<span class="contact-status online"></span> System · always on
+									</div>
+								</div>
+							</div>
+						{/if}
+					{/each}
+
+					<!-- Favorites (excluding ΠΑΝ which is pinned above) -->
+					{#each [filtered.filter(c => c.favorited && c.id !== 'contact-pan-system')] as favorites}
 						{#if favorites.length > 0}
 							<div class="svc-category">Favorites</div>
 							{#each favorites as contact}
@@ -5984,8 +6291,8 @@
 						{/if}
 					{/each}
 
-					<!-- All contacts -->
-					{#each [filtered.filter(c => !c.favorited)] as others}
+					<!-- All contacts (excluding ΠΑΝ which is always pinned at top) -->
+					{#each [filtered.filter(c => !c.favorited && c.id !== 'contact-pan-system')] as others}
 						{#if others.length > 0}
 							<div class="svc-category">Contacts</div>
 							{#each others as contact}
@@ -6019,6 +6326,7 @@
 						<div class="empty-state">{chatSearchQuery ? 'No matches' : 'No contacts yet — click + to add'}</div>
 					{/if}
 				{/each}
+				{/if}<!-- end contacts list {:else} -->
 				</div>
 			{:else if leftSection === 'mail'}
 				<div class="mail-panel">
@@ -6449,7 +6757,7 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices') { loadClientDevices(); loadAllDevices(); } }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); } else { stopAllDevicesPolling(); } }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
@@ -6576,7 +6884,7 @@
 						<div class="svc-row">
 							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down' || svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
 							<div class="svc-info">
-								<div class="svc-name">{svc.name}</div>
+								<div class="svc-name">{svc.name}{#if svc.deviceName}<span class="svc-device-badge">@ {svc.deviceName}</span>{/if}</div>
 								{#if svc.role}<div class="svc-detail" style="color:#cba6f7;font-size:10px">{svc.role}</div>{/if}
 								<div class="svc-detail">{svc.detail}</div>
 							</div>
@@ -6589,7 +6897,7 @@
 						<div class="svc-row">
 							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
 							<div class="svc-info">
-								<div class="svc-name">{svc.name}</div>
+								<div class="svc-name">{svc.name}{#if svc.deviceName}<span class="svc-device-badge">@ {svc.deviceName}</span>{/if}</div>
 								{#if svc.role}<div class="svc-detail" style="color:#cba6f7;font-size:10px">{svc.role}</div>{/if}
 								<div class="svc-detail">{svc.detail}</div>
 							</div>
@@ -6794,6 +7102,17 @@
 							</div>
 						{/if}
 
+						<!-- Screen Vision -->
+						{#if data.camera}
+							<div class="svc-category">Screen Vision</div>
+							<div class="int-axes">
+								<div class="int-axis" style="flex-wrap:wrap">
+									<span class="int-label">👁 Seeing</span>
+									<span class="int-val small" style="color:#cba6f7;white-space:normal">{data.camera}</span>
+								</div>
+							</div>
+						{/if}
+
 						<div class="svc-category">Data Sources</div>
 						<div class="int-axes">
 							<div class="int-axis"><span class="int-label">Terminal</span><span class="int-val small">{data.terminal || '—'}</span></div>
@@ -6801,8 +7120,8 @@
 							<div class="int-axis"><span class="int-label">Events</span><span class="int-val small">{data.events || '—'}</span></div>
 							<div class="int-axis"><span class="int-label">Apps</span><span class="int-val small">{data.apps || '—'}</span></div>
 							<div class="int-axis"><span class="int-label">Sensors</span><span class="int-val small">{data.sensors || '—'}</span></div>
-							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.camera || '⏳ pendant'}</span></div>
-							<div class="int-axis"><span class="int-label">Audio</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
+							<div class="int-axis"><span class="int-label">Screen</span><span class="int-val small">{data.camera || '⏳ no capture yet'}</span></div>
+							<div class="int-axis"><span class="int-label">Camera</span><span class="int-val small">{data.audio || '⏳ pendant'}</span></div>
 							<div class="int-axis"><span class="int-label">Location</span><span class="int-val small">{data.location || '—'}</span></div>
 						</div>
 
@@ -7342,6 +7661,7 @@
 								{@const isHub = dev.is_hub === true}
 								{@const isPanClient = !!dev.client_version}
 								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
+								{@const metrics = deviceMetrics[dev.hostname] || deviceMetrics[dev.name] || null}
 								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
 									<div style="display:flex;align-items:center;gap:6px">
 										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
@@ -7349,9 +7669,49 @@
 											{dev.name || dev.hostname}
 											{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
 											{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
 										</div>
 										<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
 									</div>
+									{#if metrics}
+										{@const cpuColor = (metrics.cpu_pct||0) > 85 ? '#f38ba8' : (metrics.cpu_pct||0) > 60 ? '#fab387' : '#a6e3a1'}
+										{@const ramColor = (metrics.ram_pct||0) > 85 ? '#f38ba8' : (metrics.ram_pct||0) > 70 ? '#fab387' : '#89b4fa'}
+										<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px;padding-left:16px">
+											<div>
+												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
+													<span>CPU</span><span style="color:{cpuColor}">{Math.round(metrics.cpu_pct||0)}%</span>
+												</div>
+												<div style="height:3px;background:#313244;border-radius:2px">
+													<div style="height:100%;width:{Math.min(metrics.cpu_pct||0,100)}%;background:{cpuColor};border-radius:2px;transition:width 0.5s"></div>
+												</div>
+											</div>
+											<div>
+												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
+													<span>RAM</span>
+													<span style="color:{ramColor}">
+														{#if metrics.ram_used_mb && metrics.ram_total_mb}
+															{metrics.ram_used_mb > 1024 ? (metrics.ram_used_mb/1024).toFixed(1)+'G' : metrics.ram_used_mb+'M'}/{metrics.ram_total_mb > 1024 ? (metrics.ram_total_mb/1024).toFixed(1)+'G' : metrics.ram_total_mb+'M'}
+														{:else}{Math.round(metrics.ram_pct||0)}%{/if}
+													</span>
+												</div>
+												<div style="height:3px;background:#313244;border-radius:2px">
+													<div style="height:100%;width:{Math.min(metrics.ram_pct||0,100)}%;background:{ramColor};border-radius:2px;transition:width 0.5s"></div>
+												</div>
+											</div>
+											{#if metrics.disk_pct != null}
+												{@const diskColor = (metrics.disk_pct||0) > 90 ? '#f38ba8' : (metrics.disk_pct||0) > 75 ? '#fab387' : '#6c7086'}
+												<div style="grid-column:1/-1">
+													<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
+														<span>Disk</span>
+														<span style="color:{diskColor}">{Math.round(metrics.disk_pct||0)}%{metrics.disk_free_gb != null ? ` · ${metrics.disk_free_gb.toFixed(0)}G free` : ''}</span>
+													</div>
+													<div style="height:3px;background:#313244;border-radius:2px">
+														<div style="height:100%;width:{Math.min(metrics.disk_pct||0,100)}%;background:{diskColor};border-radius:2px;transition:width 0.5s"></div>
+													</div>
+												</div>
+											{/if}
+										</div>
+									{/if}
 								</div>
 							{/each}
 						{/if}
@@ -7699,7 +8059,7 @@
 											{/each}
 										</div>
 									{/if}
-									<div class="bench-ran-at">{run.ran_at ? new Date(run.ran_at).toLocaleString() : ''}</div>
+									<div class="bench-ran-at">{run.ran_at ? new Date(typeof run.ran_at === 'string' ? run.ran_at.replace(' ','T')+'Z' : run.ran_at).toLocaleString() : ''}</div>
 								{:else}
 									<div class="bench-not-run-label">not yet run</div>
 								{/if}
@@ -9177,6 +9537,14 @@
 		font-size: 11px;
 		color: #6c7086;
 	}
+	.svc-device-badge {
+		margin-left: 6px;
+		font-size: 10px;
+		font-weight: 400;
+		color: #89b4fa;
+		opacity: 0.7;
+		letter-spacing: 0.02em;
+	}
 
 	/* ==================== Tasks ==================== */
 	.task-group-header {
@@ -10092,6 +10460,34 @@
 		background: none; border: none; color: #585b70; cursor: pointer; font-size: 14px; padding: 2px 4px;
 	}
 	.contact-action-btn:hover { color: #f9e2af; }
+
+	/* ── ΠΑΝ contact special styling ── */
+	.pan-contact-row { border-bottom: 1px solid #313244; margin-bottom: 4px; }
+	.pan-avatar { background: linear-gradient(135deg, #cba6f7, #89b4fa) !important; color: #1e1e2e !important; font-weight: 900; font-size: 15px; }
+
+	/* ── DM Thread View ── */
+	.dm-thread { display: flex; flex-direction: column; height: 100%; }
+	.dm-header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #313244; background: #181825; flex-shrink: 0; }
+	.dm-back { background: none; border: none; color: #a6adc8; font-size: 16px; cursor: pointer; padding: 2px 6px; }
+	.dm-back:hover { color: #cdd6f4; }
+	.dm-contact-avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: bold; color: #cdd6f4; background: #585b70; flex-shrink: 0; }
+	.dm-contact-name { font-weight: 600; font-size: 13px; color: #cdd6f4; }
+	.dm-messages { flex: 1; overflow-y: auto; padding: 10px 8px; display: flex; flex-direction: column; gap: 6px; }
+	.dm-empty { color: #585b70; font-size: 12px; padding: 20px 8px; }
+	.dm-msg-wrap { display: flex; flex-direction: column; }
+	.dm-msg-self { align-items: flex-end; }
+	.dm-service-tag { font-size: 10px; color: #89b4fa; margin-bottom: 2px; padding-left: 4px; }
+	.dm-bubble { max-width: 88%; padding: 7px 10px; border-radius: 10px; background: #313244; color: #cdd6f4; font-size: 12px; line-height: 1.4; border-bottom-left-radius: 3px; white-space: pre-wrap; word-break: break-word; }
+	.dm-bubble-self { background: #45475a; border-bottom-left-radius: 10px; border-bottom-right-radius: 3px; }
+	.dm-bubble-pan { background: #1e1e2e; border: 1px solid #45475a; }
+	.dm-subject { font-weight: 600; font-size: 12px; color: #cba6f7; margin-bottom: 4px; }
+	.dm-body { font-size: 12px; }
+	.dm-time { font-size: 10px; color: #585b70; margin-top: 3px; text-align: right; }
+	.dm-input-bar { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #313244; background: #181825; flex-shrink: 0; }
+	.dm-input { flex: 1; background: #313244; border: 1px solid #45475a; color: #cdd6f4; border-radius: 16px; padding: 6px 12px; font-size: 12px; outline: none; }
+	.dm-input:focus { border-color: #cba6f7; }
+	.dm-send { background: #cba6f7; color: #1e1e2e; border: none; border-radius: 50%; width: 30px; height: 30px; font-size: 14px; cursor: pointer; font-weight: bold; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+	.dm-send:disabled { background: #45475a; color: #585b70; cursor: default; }
 
 	/* ─── Messages Panel (Center) ─── */
 	.messages-panel {
