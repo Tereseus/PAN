@@ -170,8 +170,9 @@ async function runCapture(forced = false) {
     } else {
       consecutiveMisses = 0;
 
-      // Lock identity once confidence is high enough
-      if (!identityLocked && face.confidence >= LOCK_CONF_MIN && face.identity !== 'unknown') {
+      // Lock identity as soon as we recognize someone.
+      // Single-person system: any recognition = it's them, confidence % is irrelevant.
+      if (!identityLocked && face.identity !== 'unknown') {
         identityLocked  = true;
         lockLastRecheck = Date.now();
         console.log(`[WebcamWatcher] 🔒 Identity locked: ${face.identity} (${face.confidence}%) — checking every ${LOCK_RECHECK_MS/60000}min`);
