@@ -8,9 +8,30 @@
 //
 // This cuts captures from ~103/day → ~20/day with no loss in accuracy.
 
-import { spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync, execFileSync } from 'child_process';
 import { initFaceId, identifyFromFrame, getFaceIdStatus } from './face-id.js';
 import { run, get } from './db.js';
+
+// How long since last mouse/keyboard input (Windows only).
+// Returns milliseconds. Returns 0 on error (assume active).
+function getIdleMs() {
+  try {
+    const ps = [
+      'Add-Type @"',
+      'using System;using System.Runtime.InteropServices;',
+      'public class IL{',
+      '  [StructLayout(LayoutKind.Sequential)]public struct LII{public uint cbSize;public uint dwTime;}',
+      '  [DllImport("user32")]public static extern bool GetLastInputInfo(ref LII p);',
+      '  public static uint IdleMs(){var l=new LII();l.cbSize=(uint)System.Runtime.InteropServices.Marshal.SizeOf(l);GetLastInputInfo(ref l);return(uint)Environment.TickCount-l.dwTime;}',
+      '}',
+      '"@',
+      'Write-Output ([IL]::IdleMs())',
+    ].join('\n');
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, timeout: 3000 }).toString().trim();
+    return parseInt(out) || 0;
+  } catch { return 0; }
+}
 
 const INTERVAL_MS      = 30_000;   // base polling interval (when not locked)
 const STALE_MS         = 90_000;   // context stale after 90s
@@ -127,6 +148,15 @@ async function runCapture(forced = false) {
 
     // Debounce: don't flip to "desk empty" on a single missed frame
     if (!face.present) {
+      // If user has been typing/clicking recently, they're clearly still here — camera just missed them
+      const idleMs = getIdleMs();
+      const activeAtKeyboard = idleMs < 2 * 60_000; // active within last 2min
+      if (activeAtKeyboard) {
+        console.log(`[WebcamWatcher] No face but keyboard active ${Math.round(idleMs/1000)}s ago — staying locked`);
+        consecutiveMisses = 0; // reset misses, user is here
+        return;
+      }
+
       consecutiveMisses++;
       if (consecutiveMisses < MISS_REQUIRED) {
         console.log(`[WebcamWatcher] No face — miss ${consecutiveMisses}/${MISS_REQUIRED}, holding last presence state`);
@@ -135,7 +165,7 @@ async function runCapture(forced = false) {
       // Confirmed empty — unlock so we poll at normal rate waiting for return
       if (identityLocked) {
         identityLocked = false;
-        console.log(`[WebcamWatcher] 🔓 Identity unlocked — desk empty, resuming normal polling`);
+        console.log(`[WebcamWatcher] 🔓 Identity unlocked — desk empty (idle ${Math.round(idleMs/60000)}min), resuming normal polling`);
       }
     } else {
       consecutiveMisses = 0;
