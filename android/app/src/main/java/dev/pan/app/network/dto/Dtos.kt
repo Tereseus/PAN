@@ -55,13 +55,36 @@ data class QueryRequest(
     val sensors: String? = null  // JSON string of sensor envelope
 )
 
+data class Action(
+    val target: String,          // "device", "server", "user", "org"
+    val device_id: String? = null,
+    val device_type: String? = null,
+    val type: String,            // "play_music", "navigate", "run_command", "terminal", "show_notification"
+    val args: Map<String, String>? = null
+)
+
 data class QueryResponse(
     val response_text: String,
     val audio_url: String? = null,
     val route: String? = null,
     val query: String? = null,
-    val response_time_ms: Long? = null
+    val response_time_ms: Long? = null,
+    val intent: String? = null,
+    val actions: List<Action>? = null
 )
+
+data class DeviceRegisterRequest(
+    val device_id: String,
+    val device_name: String,
+    val device_type: String = "phone",
+    val user_id: String? = null  // links device to a user in multi-user orgs
+)
+
+data class HistoryRequest(val role: String, val text: String, val device_id: String)
+
+data class HistoryTurn(val role: String, val text: String, val created_at: String)
+
+data class HistoryResponse(val turns: List<HistoryTurn>)
 
 data class SyncBatch(
     val uploads: List<PendingItem>

@@ -107,4 +107,18 @@ interface PanServerApi {
     // Telemetry — ship logs to server
     @POST("/api/v1/logs")
     suspend fun shipLogs(@Body logs: List<LogEntry>): Response<LogInsertResponse>
+
+    // Device registration — links device to user/org
+    @POST("/api/v1/devices/register")
+    suspend fun registerDevice(@Body request: DeviceRegisterRequest): Response<Unit>
+
+    // Conversation history persistence
+    @POST("/api/v1/history")
+    suspend fun appendHistory(@Body request: HistoryRequest): Response<Unit>
+
+    @GET("/api/v1/history")
+    suspend fun getHistory(
+        @Query("device_id") deviceId: String,
+        @Query("limit") limit: Int = 10
+    ): Response<HistoryResponse>
 }

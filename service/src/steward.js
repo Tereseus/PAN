@@ -31,7 +31,7 @@ import http from 'http';
 import { spawn, execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { writeFileSync } from 'fs';
+import { writeFileSync, existsSync } from 'fs';
 import { IS_USER_MODE, IS_SERVICE_MODE } from './mode.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1040,6 +1040,49 @@ function reportServiceRun(serviceId, error = null) {
   }
 }
 
+// ==================== APP CAPABILITY SCANNER ====================
+// Detects which apps are installed on this PC and updates the devices table.
+// Runs once at startup (after 10s) and every 24h thereafter.
+
+const APP_CHECKS = [
+  { name: 'vlc',     paths: ['C:/Program Files/VideoLAN/VLC/vlc.exe', 'C:/Program Files (x86)/VideoLAN/VLC/vlc.exe'] },
+  { name: 'chrome',  paths: ['C:/Program Files/Google/Chrome/Application/chrome.exe'] },
+  { name: 'firefox', paths: ['C:/Program Files/Mozilla Firefox/firefox.exe'] },
+  { name: 'spotify', paths: [`${process.env.APPDATA}/Spotify/Spotify.exe`] },
+  { name: 'mpv',     paths: ['C:/Program Files/mpv/mpv.exe', 'C:/tools/mpv/mpv.exe'] },
+  { name: 'discord', paths: [`${process.env.LOCALAPPDATA}/Discord/Update.exe`] },
+  { name: 'obs',     paths: ['C:/Program Files/obs-studio/bin/64bit/obs64.exe'] },
+  { name: 'steam',   paths: ['C:/Program Files (x86)/Steam/steam.exe'] },
+  { name: 'code',    paths: [`${process.env.LOCALAPPDATA}/Programs/Microsoft VS Code/Code.exe`] },
+];
+
+async function scanInstalledApps() {
+  try {
+    const host = hostname();
+    const detectedApps = APP_CHECKS.filter(app => app.paths.some(p => existsSync(p))).map(a => a.name);
+
+    const device = get(`SELECT capabilities FROM devices WHERE hostname = :h`, { ':h': host });
+    const existing = JSON.parse(device?.capabilities || '[]');
+    const apps = detectedApps.map(a => `app:${a}`);
+    const merged = [...new Set([...existing, ...apps])];
+
+    run(`UPDATE devices SET capabilities = :c WHERE hostname = :h`, {
+      ':c': JSON.stringify(merged),
+      ':h': host,
+    });
+
+    console.log(`[Steward] App scan complete: ${detectedApps.length} apps detected (${detectedApps.join(', ') || 'none'})`);
+  } catch (err) {
+    console.error(`[Steward] App scan failed: ${err.message}`);
+  }
+}
+
+// Schedule: first run 10s after boot, then every 24h
+setTimeout(() => {
+  scanInstalledApps();
+  setInterval(scanInstalledApps, 24 * 60 * 60 * 1000);
+}, 10 * 1000);
+
 export {
   bootAll,
   shutdownAll,
@@ -1047,6 +1090,7 @@ export {
   getAtlasData,
   getServiceStatus,
   reportServiceRun,
+  scanInstalledApps,
   services,
   MODEL_TIERS,
 };

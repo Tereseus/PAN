@@ -306,6 +306,28 @@ async function runInstall(cfg) {
   const hubWS   = `${wsProto}://${hubHost}`;
   const deviceId = os.hostname();
 
+  // Auto-detect hardware model for a meaningful device name
+  let deviceName = deviceId;
+  try {
+    if (process.platform === 'win32') {
+      const raw = require('child_process').execSync('wmic computersystem get model /value', { encoding: 'utf8', timeout: 3000, windowsHide: true });
+      const model = raw.match(/Model=(.+)/)?.[1]?.trim();
+      if (model && model !== 'System Product Name' && model !== 'To Be Filled By O.E.M.' && model.length > 2) {
+        deviceName = `${model}-${deviceId}`;
+      }
+    } else if (process.platform === 'darwin') {
+      const raw = require('child_process').execSync("system_profiler SPHardwareDataType | grep 'Model Name'", { encoding: 'utf8', timeout: 3000 });
+      const model = raw.match(/Model Name:\s*(.+)/)?.[1]?.trim();
+      if (model && model.length > 2) deviceName = `${model}-${deviceId}`;
+    } else {
+      // Linux: try DMI
+      try {
+        const model = require('fs').readFileSync('/sys/devices/virtual/dmi/id/product_name', 'utf8').trim();
+        if (model && model !== 'System Product Name' && model.length > 2) deviceName = `${model}-${deviceId}`;
+      } catch {}
+    }
+  } catch {}
+
   status('installing');
   log(`Connecting to: ${hubHTTP}`);
 
@@ -384,7 +406,7 @@ async function runInstall(cfg) {
     hub_http:  hubHTTP,
     token,
     device_id: deviceId,
-    name:      deviceId,
+    name:      deviceName,
   }, null, 2));
   log('Config saved ✓');
 

@@ -11,6 +11,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { get, all, run, insert } from './db.js';
 import crypto from 'crypto';
+import { hostname } from 'os';
 import { broadcastNotification } from './terminal-bridge.js';
 
 // In-memory client registry: device_id → { ws, info }
@@ -169,7 +170,8 @@ let wss = null;
 export function startClientServer(httpServer) {
   // Mark all devices offline at startup — they'll reconnect if live.
   // Without this, ungraceful disconnects (power-off, crash) leave online=1 forever.
-  run("UPDATE devices SET online = 0 WHERE online = 1");
+  // Exclude the hub itself — it doesn't reconnect via WS, it runs the heartbeat interval instead.
+  run("UPDATE devices SET online = 0 WHERE online = 1 AND hostname != :h", { ':h': hostname() });
 
   wss = new WebSocketServer({ noServer: true });
 

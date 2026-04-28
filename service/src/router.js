@@ -5,6 +5,7 @@ import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
 import { findSkill, getSkillPrompt, listSkills } from './skills.js';
+import { resolvePreference, resolveDeviceAlias } from './routes/preferences.js';
 
 // Log a step in the command processing pipeline
 function logStep(commandId, step, detail) {
@@ -452,6 +453,91 @@ async function processUnifiedResult(action, text, context) {
   }
 }
 
+/**
+ * Given a classified intent + the request context, determine WHERE and HOW to execute it.
+ * Checks preference store first (user → org → unknown).
+ * Returns { device_id, device_type, app, needsClarification, clarifyQuestion }
+ */
+async function resolveActionTarget(intent, text, user_id, org_id, activeDevices = []) {
+  const ACTION_MAP = {
+    'play_music':   'play_music',
+    'play_movie':   'play_movie',
+    'play_video':   'play_movie',
+    'browse':       'open_browser',
+    'browser':      'open_browser',
+    'open_app':     'open_app',
+    'navigate':     'navigate',
+    'notification': 'show_notification',
+    'terminal':     'terminal',
+    'system':       'run_command',
+  };
+  const action_type = ACTION_MAP[intent] || intent;
+
+  // Check preference store (user → org)
+  const pref = resolvePreference(null, action_type, user_id, org_id);
+  if (pref) {
+    return {
+      device_id: pref.device_id,
+      device_type: pref.device_type,
+      app: pref.app,
+      action_type,
+      needsClarification: false,
+      source: pref.source,
+    };
+  }
+
+  // Hard defaults that need no preference
+  if (intent === 'terminal') return { device_type: 'desktop', action_type, needsClarification: false, source: 'default' };
+  if (intent === 'system')   return { device_type: 'desktop', action_type, needsClarification: false, source: 'default' };
+  if (intent === 'navigate') return { device_type: 'phone',   action_type, needsClarification: false, source: 'default' };
+  if (intent === 'music')    return { device_type: 'phone',   action_type: 'play_music', needsClarification: false, source: 'default' };
+
+  const pcDevices = activeDevices.filter(d => d.device_type === 'pc' || d.device_type === 'desktop');
+
+  if (intent === 'play_movie' || intent === 'play_video') {
+    if (pcDevices.length === 1) {
+      const apps = getAvailableAppsForAction(action_type, pcDevices[0]);
+      if (apps.length <= 1) {
+        return { device_id: pcDevices[0].hostname, app: apps[0] || null, action_type, needsClarification: false, source: 'inferred' };
+      }
+      return {
+        needsClarification: true,
+        action_type,
+        device_id: pcDevices[0].hostname,
+        clarifyQuestion: `I can play that with ${apps.join(', ')} on ${pcDevices[0].name || pcDevices[0].hostname}. Which would you like?`,
+        options: apps,
+      };
+    }
+    if (pcDevices.length > 1) {
+      const names = pcDevices.map(d => d.name || d.hostname).join(', ');
+      return {
+        needsClarification: true,
+        action_type,
+        clarifyQuestion: `Which device should I play it on? ${names}`,
+        options: pcDevices.map(d => d.name || d.hostname),
+      };
+    }
+  }
+
+  // Fallback — no targeting info
+  return { action_type, needsClarification: false, source: 'fallback' };
+}
+
+function getAvailableAppsForAction(action_type, device) {
+  let caps = [];
+  try { caps = JSON.parse(device.capabilities || '[]'); } catch {}
+  const appCaps = caps.filter(c => c.startsWith('app:')).map(c => c.replace('app:', ''));
+
+  const APP_AFFINITY = {
+    'play_movie':   ['vlc', 'mpv', 'chrome', 'firefox'],
+    'open_browser': ['chrome', 'firefox'],
+    'play_music':   ['spotify', 'chrome', 'firefox'],
+  };
+  const preferred = APP_AFFINITY[action_type] || [];
+  const available = preferred.filter(a => appCaps.includes(a));
+  return available.length > 0 ? available : appCaps;
+}
+
 async function route(text, context = {}) {
   const cmdId = context._commandId || null;
 
@@ -486,6 +572,39 @@ async function route(text, context = {}) {
 
   logStep(cmdId, 'routing', 'unified Claude call');
   const result = await handleUnified(text, hintedContext);
+
+  // Resolve where the action should execute (preference store → defaults → clarify)
+  if (result.intent && result.intent !== 'ambient' && result.intent !== 'query') {
+    try {
+      let activeDevices = [];
+      try {
+        activeDevices = all(
+          `SELECT hostname, name, device_type, capabilities FROM devices
+           WHERE last_seen >= datetime('now', '-5 minutes', 'localtime') AND org_id = :o`,
+          { ':o': context.org_id || 'org_personal' }
+        ) || [];
+      } catch {}
+
+      const user_id = context.user_id || context.device_id || 'default';
+      const org_id  = context.org_id  || 'org_personal';
+
+      const target = await resolveActionTarget(result.intent, text, user_id, org_id, activeDevices);
+
+      if (target.needsClarification) {
+        result.response = target.clarifyQuestion;
+        result.intent   = 'clarification';
+        result.clarification = {
+          action_type:   target.action_type,
+          options:       target.options,
+          pending_query: text,
+        };
+      } else if (target.device_id || target.device_type) {
+        result.action_target = target;
+      }
+    } catch (e) {
+      console.error('[PAN Router] resolveActionTarget failed:', e.message);
+    }
+  }
 
   logStep(cmdId, 'completed', result.response?.slice(0, 200));
   insertRouterEvent(text, result.intent, result.response, context);

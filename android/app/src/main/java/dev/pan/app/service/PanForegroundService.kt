@@ -31,7 +31,9 @@ import dev.pan.app.data.DataRepository
 import dev.pan.app.network.LogShipper
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.network.SyncManager
+import dev.pan.app.network.dto.Action
 import dev.pan.app.network.dto.AudioUpload
+import dev.pan.app.network.dto.HistoryRequest
 // GeminiBrain/MediaPipe REMOVED — all AI via server (Cerebras/Gemini through Tailscale)
 import dev.pan.app.audio.VoiceCollector
 import dev.pan.app.stt.GoogleStreamingStt
@@ -97,6 +99,83 @@ class PanForegroundService : Service() {
         return conversationHistory.joinToString("\n") { (role, text) ->
             "$role: ${text.take(200)}"
         }
+    }
+
+    private fun getPanDeviceId(): String =
+        android.os.Build.MODEL.lowercase().replace(" ", "-")
+
+    /** Dispatch actions from server response — handles new actions[] and backward-compat route field */
+    private fun dispatchActions(actions: List<Action>?, route: String?, query: String?, text: String) {
+        val deviceId = getPanDeviceId()
+        // Handle new actions[] first — filter to phone-targeted actions
+        actions?.filter { action ->
+            action.device_type == "phone" ||
+            (action.target == "device" && (action.device_id == null || action.device_id == deviceId))
+        }?.forEach { action ->
+            when (action.type) {
+                "play_music" -> {
+                    val q = action.args?.get("query") ?: query ?: text
+                    val explicitService = when {
+                        text.lowercase().contains("youtube") -> "youtube"
+                        text.lowercase().contains("spotify") -> "spotify"
+                        else -> null
+                    }
+                    resistanceClient.tryPlayMusic(applicationContext, q, explicitService)
+                }
+                "navigate" -> {
+                    val dest = action.args?.get("destination") ?: query ?: text
+                    try {
+                        val navIntent = Intent(Intent.ACTION_VIEW,
+                            Uri.parse("google.navigation:q=${Uri.encode(dest)}"))
+                        navIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        startActivity(navIntent)
+                    } catch (e: Exception) {
+                        panLog("Navigation failed: ${e.message}")
+                    }
+                }
+                "show_notification" -> {
+                    // Future: show system notification with action.args["title"] / action.args["body"]
+                    panLog("show_notification action received (not yet implemented)")
+                }
+                else -> panLog("Unknown action type: ${action.type}")
+            }
+        }
+        // Backward compat: fall back to route field if no actions were provided
+        if (actions.isNullOrEmpty() && (route == "music" || route == "play_music")) {
+            val songQuery = query ?: text
+            val explicitService = when {
+                text.lowercase().contains("youtube") -> "youtube"
+                text.lowercase().contains("spotify") -> "spotify"
+                else -> null
+            }
+            resistanceClient.tryPlayMusic(applicationContext, songQuery, explicitService)
+        }
+    }
+
+    /** Best-effort: ship one conversation turn to server for persistent history */
+    private fun persistHistoryTurn(role: String, text: String) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                serverClient.api.appendHistory(
+                    HistoryRequest(role = role, text = text, device_id = getPanDeviceId())
+                )
+            } catch (_: Exception) { /* best effort */ }
+        }
+    }
+
+    /** Load recent history from server into in-memory conversationHistory on startup */
+    private suspend fun loadHistory() {
+        try {
+            val resp = serverClient.api.getHistory(getPanDeviceId(), limit = 10)
+            if (resp.isSuccessful) {
+                resp.body()?.turns?.forEach { turn ->
+                    conversationHistory.add(Pair(turn.role, turn.text))
+                }
+                if (conversationHistory.isNotEmpty()) {
+                    panLog("Loaded ${conversationHistory.size} history turns from server")
+                }
+            }
+        } catch (_: Exception) { /* best effort */ }
     }
 
     // Persistent log — ships to PAN server via batched telemetry endpoint
@@ -223,6 +302,13 @@ class PanForegroundService : Service() {
         acquireWakeLock()
         logShipper.start()
         serviceScope.launch { syncManager.start() }
+        serviceScope.launch { loadHistory() }
+        serviceScope.launch {
+            serverClient.registerDevice(
+                deviceId = getPanDeviceId(),
+                deviceName = android.os.Build.MODEL
+            )
+        }
 
         // Notification updater
         serviceScope.launch {
@@ -377,6 +463,7 @@ class PanForegroundService : Service() {
         }
 
         // Always save transcript and user message for conversation screen
+        persistHistoryTurn("user", text)
         serviceScope.launch {
             dataRepository.addUserMessage(text)
             dataRepository.queueAudioUpload(
@@ -707,18 +794,19 @@ class PanForegroundService : Service() {
                     val responseText = response.response_text
                     panLog("Server (${elapsed}ms): ${responseText.take(100)}")
 
-                    // Check if server returned a phone-executable action
-                    val route = response.route ?: ""
-                    if (route == "music" || route == "play_music" || responseText.startsWith("Playing ")) {
-                        val songQuery = response.query ?: responseText.removePrefix("Playing ").removeSuffix(".")
-                        val explicitService = when {
-                            lower.contains("youtube") -> "youtube"
-                            lower.contains("spotify") -> "spotify"
-                            else -> null
-                        }
-                        val result = resistanceClient.tryPlayMusic(this@PanForegroundService, songQuery, explicitService)
-                        val msg = result.message ?: result.error ?: responseText
+                    // Dispatch phone-targeted actions (new actions[] + backward-compat route)
+                    val hasPhoneAction = !response.actions.isNullOrEmpty() ||
+                        response.route == "music" || response.route == "play_music" ||
+                        responseText.startsWith("Playing ")
+                    if (hasPhoneAction) {
+                        // For legacy music route with no actions, derive query from response text
+                        val legacyQuery = if (response.actions.isNullOrEmpty() && responseText.startsWith("Playing "))
+                            responseText.removePrefix("Playing ").removeSuffix(".")
+                        else response.query
+                        dispatchActions(response.actions, response.route, legacyQuery, text)
+                        val msg = responseText
                         addToHistory("PAN", "$msg (${elapsed}ms)")
+                        persistHistoryTurn("assistant", msg)
                         dataRepository.addPanResponse(msg)
                         feedbackSounds.onCommandSent()
                         mainHandler.post { panSpeak(msg) }
@@ -726,6 +814,7 @@ class PanForegroundService : Service() {
                     }
 
                     addToHistory("PAN", "$responseText (${elapsed}ms)")
+                    persistHistoryTurn("assistant", responseText)
                     dataRepository.addPanResponse(responseText)
                     if (responseText != "[AMBIENT]" && responseText.isNotBlank()) {
                         mainHandler.post { panSpeak(responseText) }
