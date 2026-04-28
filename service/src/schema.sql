@@ -652,6 +652,36 @@ CREATE TABLE IF NOT EXISTS voice_prints (
 CREATE INDEX IF NOT EXISTS idx_voice_prints_org ON voice_prints(org_id);
 CREATE INDEX IF NOT EXISTS idx_voice_prints_user ON voice_prints(user_id);
 
+-- Action preferences — remember which device+app to use for each action type
+CREATE TABLE IF NOT EXISTS action_preferences (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL DEFAULT 'default',
+  org_id TEXT NOT NULL DEFAULT 'org_personal',
+  action_type TEXT NOT NULL,      -- "play_movie", "play_music", "open_browser", "show_notification", "run_app"
+  device_id TEXT,                  -- target device hostname (null = any)
+  device_type TEXT,                -- "phone", "desktop", "pc" (fallback if no device_id)
+  app TEXT,                        -- "vlc", "chrome", "spotify", "mpv" etc
+  args TEXT,                       -- JSON, extra args specific to this preference
+  confidence REAL DEFAULT 1.0,     -- increases with use
+  use_count INTEGER DEFAULT 1,
+  last_used TEXT DEFAULT (datetime('now','localtime')),
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  UNIQUE(user_id, org_id, action_type)
+);
+CREATE INDEX IF NOT EXISTS idx_action_prefs_org ON action_preferences(org_id);
+CREATE INDEX IF NOT EXISTS idx_action_prefs_user ON action_preferences(user_id, org_id);
+
+-- Device aliases — map friendly names ("projector", "living room tv") to hostnames
+CREATE TABLE IF NOT EXISTS device_aliases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL DEFAULT 'org_personal',
+  alias TEXT NOT NULL,             -- "projector", "living room tv", "dell", "mini pc"
+  device_id TEXT NOT NULL,         -- hostname from devices table
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  UNIQUE(org_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_device_aliases_org ON device_aliases(org_id);
+
 -- Seed personal org (idempotent)
 INSERT OR IGNORE INTO orgs (id, slug, name, color_primary)
 VALUES ('org_personal', 'personal', 'Personal', '#f5c2e7');

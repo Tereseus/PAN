@@ -204,66 +204,51 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 3bec4b5c-cd5)*
-**Claude** (2026-04-23 21:32:11): **ΠΑΝ Remembers:**
+### This Tab *(session: 8a30d44f-82e)*
+**User** (2026-04-28 14:57:35): What the fuck are you doing what the fuck is this legion what the fuck is this what what is this where are you getting your no like what do you not understand what you're doing we literally just added this device and it's gone now Predator PH315-51-T
+**Claude** (2026-04-28 15:04:26): Predator PH315-51-TED is back (ID 44, hostname `TED`, online). 
 
-- **Screen vision** — built a 30s desktop capture pipeline (Tauri shell, not FFmpeg), feeding Qwen2.5-VL → Haiku → Gemini fallback. This replaced `intuition.js`'s DB-inference approach with actual visual awareness.
-- **AHK** — you
-**User** (2026-04-23 21:33:13): Type a whole bunch type a whole bunch of cool stuff here so that I can take a cool screenshot of the terminal I need a whole have a whole bunch of stuff here about I don't know a quick snapshot or something but what it is capabilities of pan and what
-**Claude** (2026-04-23 21:33:42): ```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║      ██████╗  █████╗ ███╗   ██╗                                             ║
-║   
-**User** (2026-04-23 21:43:38): But why would you ride it with without the PI symbol why would you write pan without the PI symbol you had it so close to being correct And then you did that man God damn it Can he just fix that Also don't put built by TZURI get rid of that That whol
-**Claude** (2026-04-23 21:44:02): ```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║      ██████╗  █████╗ ███╗   ██╗                                             ║
-║   
-**User** (2026-04-23 21:44:41): ══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║      ██████╗  █████╗ ███╗   ██╗                                             ║
-║      ██
-**Claude** (2026-04-23 21:46:07): Got it — the P needs to look like **Π** (two legs, flat top, no curve closing on the right). And the box alignment was broken. Fixed:
+Now the fix that caused this to happen again: the server.js startup code was overwriting device 42 because the Predator (hostname `TED`) and the hub (hostname `TedGL`) are different — t
+**User** (2026-04-28 15:34:03): did we ever install a client on prodesk2?
+**Claude** (2026-04-28 15:34:30): Can't SSH in right now (no key auth). But yes — last session we did SSH into tedprodesk2 and ran the PAN installer on it. That's the only reason it exists in the DB at all. The record shows it was last seen `2026-04-27 18:55:46` (yesterday evening) a
+**User** (2026-04-28 15:34:52): Ok it isnt the legion then why did you name it legion
+**Claude** (2026-04-28 15:35:40): That was from the previous session — the name "Legion" got assigned to `tedprodesk2` by mistake. Here's the full device list right now, because it's a mess:
 
-```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                             
+| ID | Hostname | Name | Online |
+|----|----------|------|--------|
+| 21 | phone-pixel-10-pr
+**User** (2026-04-28 15:37:15): ID	Hostname	Name	Online
+21	phone-pixel-10-pro	Pixel 10 Pro	
+39	Minipc-Ted	Mini PC	
+42	TedGL	TEDGL	
+43	tedprodesk2	tedprodesk2	
+44	TED	Predator PH315-51-TED	
 
-### Recent Project Work *(session: 8f6e1ac9-75b)*
-**Claude** (2026-04-23 20:55:39): Super-Carrier is already running. `superCarrier: true` is in the health response — the `bb29cdc` commit was already deployed. The stack right now is:
+These are the correct names, change these
+**Claude** (2026-04-28 15:37:52): Good — line 4257 already checks: only overwrites the name if it equals the raw hostname. "TEDGL" ≠ "TedGL" so it will be preserved.
 
-```
-PAN.bat → pan-loop.bat
-  └─ pan.js start
-       └─ super-carrier.js  :7777  (PID 90516)  ← perm
-**User** (2026-04-23 21:06:36): OK put everything in the services and the performance and all that stuff Look at those widgets
-**Claude** (2026-04-23 21:13:12): Already mid-session — not repeating the summary. What did you want to do with the services/perf widgets?
-**User** (2026-04-23 21:13:28): Yeah I wanted you to put the Super carrier in the services and widgets
-**Claude** (2026-04-23 21:18:41): Done. Here's what's live now:
+Devices are now:
 
-**Services widget** — PAN Core now leads with the process stack:
-```
-● Super-Carrier  PID 49768 · port 7777 · never restarts
-● Carrier        port 17760 · restarts freely  (PID shows next full restart)
-● Craft          
-**User** (2026-04-23 21:19:14): OK great now look at this stuff:
+| ID | Hostname | Name |
+|---|---|---|
+| 21 | phone-pixel-10-pro | Pixel 10 Pro |
+| 39 | Minipc-Ted
 
-how do you think I can add skills like openclaw7:24 PMClaude responded: Good question — let me look at what you already have in the skills system before suggesting anything.Good question — let me look at what you alr
-**Claude** (2026-04-23 21:23:22): Done. Here's what landed:
+### Recent Project Work *(session: 4c3527ed-173)*
+**User** (2026-04-28 07:27:23): You are evaluating an event classifier. For each event below, would a competent classifier
+correctly identify at least one of the expected types? Score overall accuracy 1-10.
+Return ONLY JSON: {"score": N, "reason": "..."}
 
----
-
-**NanoClaw parameterized triggers**
-
-Spotify skill now matches:
-- `"play Bohemian Rhapsody by Queen"` → extracts `{song: "Bohemian Rhapsody", artist: "Queen"}`
-- `"listen to Blinding Lights"` → extracts `{song: "Blindi
-**User** (2026-04-23 21:25:54): C:/Users/tzuri/AppData/Local/Temp/pan-clipboard/clipboard_1776993947528.png
+Events:
+1. "User asked: re
 
 ### Open Tasks
-- [#422 in_progress] PAN-to-PAN local mesh: pendants communicate nearby presence/context without server, stay quiet in pu
+- [#394 backlog P2] Compose email — send returns HTTP 400, no email service wired
+- [#376 backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
+- [#382 backlog P1] PAN.bat respawn loop failed to restart today
+- [#56 in_progress] 3D print case design (~52x42x25mm)
+- [#57 in_progress] Solder I2C sensor board + GPIO expander
+- [#60 in_progress] Laser aiming system ("what is this?")
+- [#387 backlog] Task notifications overflow chat width
 
-[... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

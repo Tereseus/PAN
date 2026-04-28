@@ -36,11 +36,13 @@ import teamsRouter from './routes/teams.js';
 import wrapRouter, { ensureWrapSchema } from './routes/wrap.js';
 import messagingPrefsRouter, { ensureMessagingPrefsSchema } from './routes/messaging-prefs.js';
 import intuitionRouter from './routes/intuition.js';
+import preferencesRouter from './routes/preferences.js';
 import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
 import { startScreenWatcher, startBurst } from './screen-watcher.js';
 import { startWebcamWatcher, getWebcamStatus, getWebcamContext } from './webcam-watcher.js';
+import { startWatchdog, notifyDashboardLoaded } from './dashboard-watchdog.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
 import { privacyMiddleware } from './privacy.js';
@@ -65,6 +67,7 @@ import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
 import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession } from './terminal-bridge.js';
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
+import { WebSocketServer as WsServer } from 'ws';
 import clientRouter from './routes/client.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
@@ -77,6 +80,30 @@ const HOST = '0.0.0.0'; // Listen on all interfaces (phone needs LAN access)
 // Skips steward, device registration, service boots — just
 // Express + API + DB (read-safe via WAL) + test runner. Safe to run alongside prod.
 const IS_DEV = process.env.PAN_DEV === '1' || process.env.PAN_DEV === 'true';
+
+// ── Per-device push WebSocket registry ───────────────────────────────────────
+// Devices connect to WS /api/v1/device/push?device_id=X for real-time action delivery.
+export const devicePushSockets = new Map(); // device_id → WebSocket
+
+export function pushToDevice(device_id, payload) {
+  const ws = devicePushSockets.get(device_id);
+  if (ws && ws.readyState === 1) { // OPEN
+    ws.send(JSON.stringify(payload));
+    return true;
+  }
+  return false;
+}
+
+export function pushToDeviceType(device_type, org_id, payload) {
+  let sent = 0;
+  for (const [, ws] of devicePushSockets) {
+    if (ws.deviceType === device_type && ws.orgId === org_id && ws.readyState === 1) {
+      ws.send(JSON.stringify(payload));
+      sent++;
+    }
+  }
+  return sent;
+}
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -309,9 +336,20 @@ app.post('/api/v1/clipboard-image', async (req, res) => {
     const ext = (mimeType || 'image/png').split('/')[1] || 'png';
     const filename = `clipboard_${Date.now()}.${ext}`;
     const { join } = await import('path');
-    const { writeFileSync, mkdirSync } = await import('fs');
+    const { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } = await import('fs');
     const dir = join(process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan-clipboard');
     mkdirSync(dir, { recursive: true });
+
+    // Purge clipboard files older than 2 hours to prevent accumulation
+    try {
+      const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+      for (const f of readdirSync(dir)) {
+        if (!/^clipboard_\d+\.\w+$/.test(f)) continue;
+        const fp = join(dir, f);
+        if (statSync(fp).mtimeMs < cutoff) { try { unlinkSync(fp); } catch {} }
+      }
+    } catch {}
+
     const filePath = join(dir, filename);
     writeFileSync(filePath, Buffer.from(data, 'base64'));
     res.json({ ok: true, path: filePath });
@@ -787,11 +825,21 @@ app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
 // Intuition — live situational state daemon (read by PAN voice, Forge, Atlas)
 app.use('/api/v1/intuition', intuitionRouter);
 
+// Action preferences — remember which device+app handles each action type
+app.use('/api/v1/preferences', preferencesRouter);
+
 // Screen-watcher burst mode — called by carrier after a craft swap to get rapid
 // screenshots (every 5s for 60s) so intuition sees the swap stages in real time.
 // GET /api/v1/webcam-watcher/status
 app.get('/api/v1/webcam-watcher/status', (req, res) => {
   res.json({ ok: true, ...getWebcamStatus() });
+});
+
+// POST /api/v1/webcam-watcher/force — trigger immediate capture, return result
+app.post('/api/v1/webcam-watcher/force', async (req, res) => {
+  const { forceCapture } = await import('./webcam-watcher.js');
+  const result = await forceCapture();
+  res.json(result);
 });
 
 app.post('/api/v1/screen-watcher/burst', (req, res) => {
@@ -1147,7 +1195,7 @@ function generateBATDownload_UNUSED(host, proto, wsProto, token) {
     '# Install ws dependency',
     'Write-Host "  Installing dependencies..." -ForegroundColor Gray',
     'if ($npmCli) {',
-    '  & $nodeExe $npmCli install ws --prefix $panDir --no-audit --no-fund --save 2>&1 | Out-Null',
+    '  try { & $nodeExe $npmCli install ws --prefix $panDir --no-audit --no-fund --save --loglevel=silent 2>&1 | Out-Null } catch {}',
     '} else {',
     '  & npm install ws --prefix $panDir --no-audit --no-fund --save 2>&1 | Out-Null',
     '}',
@@ -1233,17 +1281,23 @@ function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
     '',
     '# ── Install ws ───────────────────────────────────────────────────────────',
     'Step "Installing dependencies..."',
-    '& $nodeExe $npmCli install ws --prefix $PanDir --no-audit --no-fund --save 2>&1 | Out-Null',
+    'try { & $nodeExe $npmCli install ws --prefix $PanDir --no-audit --no-fund --save --loglevel=silent 2>&1 | Out-Null } catch {}',
     'Ok "ws installed"',
     '',
     '# ── Write config ─────────────────────────────────────────────────────────',
     'Step "Writing config..."',
     '$deviceName = $env:COMPUTERNAME',
+    'try {',
+    '  $model = (Get-WmiObject Win32_ComputerSystem).Model',
+    '  if ($model -and $model -ne "System Product Name" -and $model -ne "To Be Filled By O.E.M." -and $model.Trim().Length -gt 2) {',
+    '    $deviceName = "$($model.Trim())-$env:COMPUTERNAME"',
+    '  }',
+    '} catch {}',
     '$cfgObj = [ordered]@{',
     '  hub_ws   = "' + hubWs  + '"',
     '  hub_http = "' + httpUrl + '"',
     '  token    = "' + token   + '"',
-    '  device_id = $deviceName',
+    '  device_id = $env:COMPUTERNAME',
     '  name      = $deviceName',
     '}',
     '$cfgJson = $cfgObj | ConvertTo-Json -Compress',
@@ -1255,7 +1309,7 @@ function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
     '$logOut = Join-Path $PanDir "client-out.log"',
     '$logErr = Join-Path $PanDir "client-err.log"',
     'Remove-Item $logOut,$logErr -ErrorAction SilentlyContinue',
-    '$nodeArgs = "`"$clientJs`" --hub `"' + hubWs + '`" --token `"' + token + '`" --name `"$env:COMPUTERNAME`""',
+    '$nodeArgs = "`"$clientJs`" --hub `"' + hubWs + '`" --token `"' + token + '`" --name `"$deviceName`""',
     '$proc = Start-Process $nodeExe -ArgumentList $nodeArgs -WorkingDirectory $PanDir -WindowStyle Hidden -RedirectStandardOutput $logOut -RedirectStandardError $logErr -PassThru',
     'Write-Host "  Waiting for client to start..." -ForegroundColor Gray',
     'Start-Sleep 5',
@@ -1329,12 +1383,20 @@ function generateLinuxClientInstaller(token, hubWs, clientJsUrl) {
     '',
     'log "Writing config"',
     'DEVICE_ID="$(hostname)"',
+    'DEVICE_NAME="${DEVICE_ID}"',
+    'if [ "$(uname)" = "Darwin" ]; then',
+    '  HW_MODEL="$(system_profiler SPHardwareDataType 2>/dev/null | awk -F: \'/Model Name/{gsub(/^ +/,"",$2); print $2; exit}\')"',
+    '  [ -n "${HW_MODEL}" ] && DEVICE_NAME="${HW_MODEL}-${DEVICE_ID}"',
+    'elif [ -f /sys/devices/virtual/dmi/id/product_name ]; then',
+    '  HW_MODEL="$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null | tr -d \'\\n\')"',
+    '  [ -n "${HW_MODEL}" ] && [ "${HW_MODEL}" != "System Product Name" ] && DEVICE_NAME="${HW_MODEL}-${DEVICE_ID}"',
+    'fi',
     'cat > "${PAN_DIR}/pan-client-config.json" <<PANCFGEOF',
     '{',
     '  "hub_ws": "' + hubWs + '",',
     '  "token": "' + token + '",',
     '  "device_id": "${DEVICE_ID}",',
-    '  "name": "${DEVICE_ID}"',
+    '  "name": "${DEVICE_NAME}"',
     '}',
     'PANCFGEOF',
     '',
@@ -3265,6 +3327,8 @@ app.post('/api/v1/inject-context', async (req, res) => {
     const tabIds = Array.isArray(tab_session_ids) ? tab_session_ids : [];
     injectSessionContext(cwd, 'org_personal', tabIds);
     res.json({ ok: true, message: 'Context injected into CLAUDE.md' });
+    // Dashboard loaded successfully — reset watchdog strike counter
+    notifyDashboardLoaded();
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3941,6 +4005,36 @@ function start() {
         startClientServer(server);
       }
 
+      // Per-device push WS channel — /api/v1/device/push?device_id=X
+      // Registered after client server so /ws/client is already claimed.
+      {
+        const devicePushWss = new WsServer({ noServer: true });
+        server.on('upgrade', (req, socket, head) => {
+          const pathname = new URL(req.url, 'http://localhost').pathname;
+          if (pathname !== '/api/v1/device/push') return;
+          const params = new URL(req.url, 'http://localhost').searchParams;
+          const device_id = params.get('device_id') || 'unknown';
+          const org_id = params.get('org_id') || 'org_personal';
+          const device_type = params.get('device_type') || 'phone';
+          devicePushWss.handleUpgrade(req, socket, head, (ws) => {
+            ws.deviceId = device_id;
+            ws.orgId = org_id;
+            ws.deviceType = device_type;
+            devicePushSockets.set(device_id, ws);
+            ws.on('close', () => devicePushSockets.delete(device_id));
+            ws.on('message', (msg) => {
+              try {
+                const data = JSON.parse(msg);
+                if (data.type === 'ping') ws.send(JSON.stringify({ type: 'pong' }));
+              } catch {}
+            });
+            ws.send(JSON.stringify({ type: 'connected', device_id }));
+            console.log(`[PAN Push] Device connected: ${device_id} (${device_type})`);
+          });
+        });
+        console.log('[PAN Push] Device push WS ready on /api/v1/device/push');
+      }
+
       // Start WebSocket terminal server (PTY sessions).
       // Gated to user-session mode only — node-pty's ConPTY backend
       // crashes with "AttachConsole failed" when there's no real
@@ -4070,11 +4164,47 @@ function start() {
       // Intuition schema — snapshots of live situational state
       ensureIntuitionSchema(db);
 
+      // Identity schema — clusters + per-frame observations for multi-modal person identification
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS identity_clusters (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          label TEXT,
+          hair_length TEXT, hair_color TEXT, hair_type TEXT,
+          skin_tone TEXT, facial_hair TEXT, age_range TEXT,
+          eye_color TEXT, lip_fullness TEXT, nose_bridge TEXT,
+          forehead TEXT, build TEXT, distinctive TEXT,
+          voice_profile TEXT,
+          observation_count INTEGER DEFAULT 0,
+          confidence REAL DEFAULT 0.0,
+          last_seen_at TEXT,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS identity_observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          cluster_id INTEGER REFERENCES identity_clusters(id),
+          camera TEXT,
+          hair_length TEXT, hair_color TEXT, hair_type TEXT,
+          skin_tone TEXT, facial_hair TEXT, age_range TEXT,
+          eye_color TEXT, lip_fullness TEXT, nose_bridge TEXT,
+          forehead TEXT, build TEXT, distinctive TEXT,
+          emotion TEXT, note TEXT,
+          match_score REAL,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_identity_obs_cluster ON identity_observations(cluster_id);
+        CREATE INDEX IF NOT EXISTS idx_identity_obs_created ON identity_observations(created_at);
+      `);
+
       // Seed sensor definitions (22 sensors)
       seedSensors();
 
       // Auto-detect local model providers (Ollama, LM Studio)
       autoDetectLocalModels();
+
+      // Plugin setup — install Claude Code plugins + wire hooks (idempotent, runs in background)
+      import('./setup-plugins.js').then(m => m.setupPlugins()).catch(e =>
+        console.warn('[PAN] Plugin setup skipped:', e.message)
+      );
 
       // Screen watcher — screenshot every 30s → vision AI → activity signal for intuition
       if (!IS_DEV) startScreenWatcher();
@@ -4082,8 +4212,49 @@ function start() {
       // Webcam watcher — frame every 60s → vision AI → presence + identity signal
       if (!IS_DEV) startWebcamWatcher();
 
+      // Dashboard watchdog — polls Tauri every 10s, auto-recovers black/stuck loading screen
+      if (!IS_DEV) startWatchdog();
+
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
+
+      // ── Hub PC heartbeat — runs in ALL modes (Craft, non-Craft, prod) ──────────
+      // The hub machine is always online since it's running the server. We update
+      // last_seen every 30s so the dashboard never shows it as stale (STALE=5min).
+      // This must NOT be in the !IS_CRAFT block — server.js always runs as a Craft.
+      if (!IS_DEV) {
+        const pcHost = hostname();
+        const existingHub = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
+        let pcModel = pcHost;
+        try {
+          const raw = execSync('wmic computersystem get model /value', { windowsHide: true, encoding: 'utf8', timeout: 3000 });
+          const model = raw.match(/Model=(.+)/)?.[1]?.trim();
+          if (model && model !== 'System Product Name' && model.length > 2) pcModel = model;
+        } catch {}
+
+        if (!existingHub) {
+          // First time: use hardware model as name only if we got one, else use hostname
+          insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen, org_id, online)
+            VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'), 'org_personal', 1)`,
+            { ':h': pcHost, ':name': pcModel });
+          console.log(`[PAN] Registered hub PC: ${pcHost} (${pcModel})`);
+        } else {
+          // NEVER overwrite a name that was manually set — only update last_seen + online
+          // Only auto-fill name if it's still the raw hostname (never been named)
+          if (existingHub.name === existingHub.hostname) {
+            run("UPDATE devices SET last_seen = datetime('now','localtime'), online = 1, device_type = 'pc', name = :name WHERE hostname = :h",
+              { ':h': pcHost, ':name': pcModel });
+          } else {
+            run("UPDATE devices SET last_seen = datetime('now','localtime'), online = 1 WHERE hostname = :h", { ':h': pcHost });
+          }
+        }
+
+        _startupIntervals.push(setInterval(() => {
+          try {
+            run("UPDATE devices SET last_seen = datetime('now','localtime'), online = 1 WHERE hostname = :h", { ':h': pcHost });
+          } catch {}
+        }, 30 * 1000)); // 30s — well under 5min STALE threshold
+      }
 
       if (IS_DEV) {
         // ── DEV-ONLY ──────────────────────────────────────────────────
@@ -4092,8 +4263,8 @@ function start() {
         console.log('[PAN DEV] Full server on port ' + PORT + ' (terminal + dashboard + API)');
         console.log('[PAN DEV] Skipping: steward, device heartbeat');
         console.log(`[PAN DEV] Dashboard: http://localhost:${PORT}`);
-      } else {
-        // ── PROD-ONLY ─────────────────────────────────────────────────
+      } else if (!IS_CRAFT) {
+        // ── PROD-ONLY (main server only — NOT Craft subprocesses) ─────
 
         // Hybrid memory search: backfill embeddings
         setImmediate(() => {
@@ -4101,26 +4272,6 @@ function start() {
             .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
             .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
         });
-
-        // Auto-register this PC as a device
-        const pcHost = hostname();
-        const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
-        if (!existing) {
-          insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen, org_id)
-            VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'), 'org_personal')`, {
-            ':h': pcHost, ':name': pcHost
-          });
-          console.log(`[PAN] Registered PC: ${pcHost}`);
-        } else {
-          run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
-        }
-
-        // Keep PC device heartbeat alive (every 60 seconds)
-        _startupIntervals.push(setInterval(() => {
-          try {
-            run("UPDATE devices SET last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': pcHost });
-          } catch {}
-        }, 60 * 1000));
 
         // Clean up stale Tailscale pan-* nodes on startup (delay to let Tailscale stabilize)
         setTimeout(() => cleanupStaleTailscaleNodes(), 30000);

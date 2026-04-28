@@ -342,5 +342,162 @@ pipeline runs for your application automatically.
 
 ---
 
+---
+
+## Identity System (Spec — not yet built)
+
+### Philosophy
+PAN identifies people through accumulated multi-modal evidence — never by
+comparing against external face databases. All identity data lives in PAN's
+own DB. The system builds confidence over time, not from a single image.
+
+### Identity Panel (dashboard Intuition section)
+The current split between "Identity" and "Voice Identity" is wrong. There is
+one concept: **Identity**. Voice is one signal among many. The panel should
+show a single unified identity block per detected person with confidence score.
+
+---
+
+### Visual Identity Schema
+Every time the webcam watcher captures a frame containing a face, minicpm-v
+fills in the following structured fields (not prose). These get stored as an
+`identity_observation` event in the DB:
+
+```json
+{
+  "hair_length":   "shaved|very_short|short|medium|long|unclear",
+  "hair_color":    "black|brown|blonde|red|gray|white|dyed|unclear",
+  "hair_type":     "straight|wavy|curly|coily|unclear",
+  "skin_tone":     "very_light|light|medium|olive|dark|very_dark|unclear",
+  "facial_hair":   "none|stubble|beard|mustache|unclear",
+  "age_range":     "child|teen|20s|30s|40s|50s|60s+|unclear",
+  "eye_color":     "brown|blue|green|hazel|gray|unclear",
+  "lip_fullness":  "thin|medium|full|unclear",
+  "nose_bridge":   "narrow|medium|wide|bumped|straight|unclear",
+  "forehead":      "small|medium|large|unclear",
+  "build":         "slim|medium|heavyset|unclear",
+  "distinctive":   ["glasses","beard","tattoo_visible","headwear","earrings"]
+}
+```
+
+**Matching:** When a new observation arrives, compare field-by-field against
+all existing identity clusters. Count matching fields / total non-unclear
+fields = similarity score. Score ≥ 0.75 → same cluster. New cluster created
+below 0.5. 0.5–0.75 → ambiguous, accumulate more observations.
+
+**Rolling window:** Only observations from the last 6 months are used for
+matching. Older data is archived, not deleted — if someone is gone for a year
+and returns, the archived schema can be re-activated with enough new evidence.
+
+---
+
+### Voice Identity Schema
+Every utterance transcribed from a known session contributes:
+- Fundamental frequency range (pitch)
+- Speech cadence / pace
+- Vocabulary fingerprint (common words, phrasing patterns)
+- Language and accent markers
+
+Voice is stored per identity cluster, not separately.
+
+---
+
+### Context Identity (transcript inference)
+When a transcript contains a name or relationship word spoken **toward** someone
+visible in a contemporaneous webcam frame:
+- "Hey mom" → label the currently-visible cluster as "Mom" (if unlabeled)
+- "Tereseus come here" → attempt to match "Tereseus" cluster to the visible person
+- Confidence weighted by how directly the utterance is addressed
+
+This is the primary way unknown clusters get labeled. No manual tagging required
+in normal use.
+
+---
+
+### Setup Flow (family / multi-person onboarding)
+On first run or via Settings → Identity Setup:
+1. Each person sits in front of the camera and says their name aloud
+2. System captures 5 frames + voice sample, creates a labeled anchor cluster
+3. Future observations auto-merge into the nearest cluster above threshold
+4. Reference photos from a designated folder (e.g. `~/me/`) are ingested as
+   additional observations to bootstrap the commander's cluster at install time
+
+---
+
+### Anti-Spoofing
+No single modality is authoritative. Identity confidence requires agreement
+across ≥2 of: visual schema, voice profile, behavioral context. A face alone
+or a voice alone is insufficient for high-trust identity assertion. The system
+reports confidence level, not binary identity, everywhere it's displayed.
+
+---
+
+### Child Detection
+A cluster tagged as "child" (age_range = child|teen) + appearing on a device
+session → session gets a `child_present` flag. This can gate content, commands,
+or permissions. Determined by visual schema alone (voice is secondary since
+children can have adult-sounding voices and vice versa).
+
+---
+
+### Storage
+- `identity_clusters` table: one row per person, stores current schema fields,
+  confidence scores, label (if known), anchor image reference, last seen ts
+- `identity_observations` table: one row per webcam capture, FK to cluster,
+  raw schema fields, frame timestamp — used for cluster refinement
+- `identity_voice_samples` table: FK to cluster, audio feature vector
+
+---
+
+## Dashboard Refresh Recovery (Spec — not yet built)
+
+### Problem
+When the PAN dashboard (Tauri shell) refreshes or gets stuck loading, the
+user is locked out until the page finishes loading. Current worst-case: ~2min.
+Target: ≤15 seconds.
+
+### Detection
+The PAN dashboard always displays the π symbol visually when fully loaded
+(top-left, near the palm tree logo). The loading screen is plain black — no π.
+
+**Detection logic (no vision model needed):**
+1. Trigger: WebSocket from Tauri disconnects and reconnects (page refresh)
+2. Start a 15-second timer
+3. At T+15s: capture a screenshot of the Tauri window
+4. Check average pixel brightness of the frame:
+   - Mostly black (brightness < threshold) AND π not found in frame → **stuck**
+   - π symbol visible OR significant UI content → **loaded OK**
+5. If stuck: trigger recovery action (see below)
+
+**Why pixel brightness, not vision model:** Brightness check is instant (<5ms).
+No need to send to minicpm-v for a binary loaded/stuck determination.
+
+### Recovery Actions (in order)
+1. `POST /api/carrier/swap` — replaces Craft, which re-serves the page
+2. If swap doesn't resolve within 15s: send WebSocket `force_reload` message
+   to Tauri shell
+3. If still stuck: log incident, alert user via TTS
+
+### π Detection Method
+The π symbol in the dashboard uses a specific Unicode character (π, U+03C0)
+rendered at a known position. After capturing the frame:
+- Crop the top-left region (~150×80px)
+- Run OCR or template match for π character
+- Match = dashboard loaded; no match on black frame = stuck
+
+### Timing Target
+- T+0: WebSocket disconnect detected
+- T+0 to T+15: page reloading normally (don't interfere)
+- T+15: brightness check + π scan (~5ms)
+- T+15 to T+20: recovery action executes
+- T+30: user is back in the dashboard
+
+### Code Location (when built)
+- Trigger hook: `service/src/carrier.js` WebSocket reconnect handler
+- Detection: new `service/src/dashboard-watchdog.js`
+- Calls into: `service/src/screen-watcher.js` `captureViaTauri()`
+
+---
+
 _Add new features at the bottom when you build them. Update this file in the
 same commit as the code change._
