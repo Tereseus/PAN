@@ -520,6 +520,10 @@ router.post('/sensor', (req, res) => {
 router.post('/query', async (req, res) => {
   const { text, context, intent_hint, sensors } = req.body;
 
+  // Extract device identity from headers (phone sends these)
+  const device_id = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
+  const device_type = 'phone';
+
   if (!text) {
     return res.status(400).json({ error: 'missing text' });
   }
@@ -540,7 +544,14 @@ router.post('/query', async (req, res) => {
     if (typeof sensors === 'string') {
       try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; }
     }
-    const result = await route(text, { source: 'phone', intent_hint, _commandId: cmdId, conversation_history: context, sensors: parsedSensors });
+    const result = await route(text, {
+      source: 'phone',
+      device_id,
+      intent_hint,
+      _commandId: cmdId,
+      conversation_history: context,
+      sensors: parsedSensors
+    });
 
     // Update the command record with results
     if (result.intent === 'terminal' && result.terminalResult) {
@@ -576,6 +587,63 @@ router.post('/query', async (req, res) => {
       response_time_ms: result.response_time_ms || null,
     }), req.user?.id);
 
+    // Build actions array — describes where each intent should be executed
+    const actions = [];
+    if (result.route === 'music' || result.intent === 'music') {
+      actions.push({ target: 'device', device_type: 'phone', type: 'play_music', args: { query: result.query || result.searchTerm || text } });
+    }
+    if (result.intent === 'navigate') {
+      actions.push({ target: 'device', device_type: 'phone', type: 'navigate', args: { destination: result.query || text } });
+    }
+    if (result.intent === 'system' && result.command) {
+      actions.push({ target: 'device', device_type: 'desktop', type: 'run_command', args: { command: result.command } });
+    }
+    if (result.intent === 'terminal') {
+      actions.push({ target: 'server', type: 'terminal', args: { action: result.action, project: result.project } });
+    }
+
+    // Use router-resolved action_target (preference store / smart defaults) to enhance actions
+    if (result.action_target && !result.action_target.needsClarification) {
+      const t = result.action_target;
+      const existing = actions.find(a => a.type === t.action_type);
+      if (existing) {
+        if (t.device_id)   existing.device_id   = t.device_id;
+        if (t.device_type) existing.device_type  = t.device_type;
+        if (t.app)         existing.app          = t.app;
+        existing.source = t.source;
+      } else if (t.device_id || t.device_type) {
+        actions.push({
+          target:      'device',
+          device_id:   t.device_id   || null,
+          device_type: t.device_type || null,
+          type:        t.action_type,
+          app:         t.app         || null,
+          args:        { query: result.query || text },
+          source:      t.source,
+        });
+      }
+    }
+
+    // Clarification — store pending intent so the next reply can resume
+    if (result.intent === 'clarification' && result.clarification) {
+      try {
+        insertScoped(req, `INSERT INTO events (event_type, session_id, data, created_at)
+          VALUES ('pending_clarification', :sid, :data, datetime('now','localtime'))`,
+          { ':sid': device_id || 'unknown', ':data': JSON.stringify(result.clarification) }
+        );
+      } catch {}
+    }
+
+    // Push actions to device via WS push channel if connected
+    if (actions.length > 0 && device_id) {
+      try {
+        const { pushToDevice } = await import('../server.js');
+        pushToDevice(device_id, { type: 'actions', actions, response_text: result.response });
+      } catch (e) {
+        // Non-fatal — device may not be connected via WS push channel
+      }
+    }
+
     res.json({
       response_text: result.response,
       intent: result.intent,
@@ -583,11 +651,94 @@ router.post('/query', async (req, res) => {
       route: result.intent || null,
       query: result.query || result.searchTerm || null,
       action: result.action || null,
-      response_time_ms: result.response_time_ms || null
+      response_time_ms: result.response_time_ms || null,
+      actions
     });
   } catch (err) {
     console.error('[PAN] Query error:', err.message);
     res.json({ response_text: 'PAN is having trouble thinking right now. Try again.' });
+  }
+});
+
+// POST /api/v1/devices/capabilities — phone/other devices self-report their capabilities
+router.post('/devices/capabilities', (req, res) => {
+  const { capabilities } = req.body;
+  const device_id = req.headers['x-device-id'] || req.headers['x-device-name'];
+  if (!capabilities || !device_id) {
+    return res.status(400).json({ error: 'capabilities and device id required' });
+  }
+  try {
+    const existing = getScoped(req, `SELECT capabilities FROM devices WHERE hostname = :h OR name = :h AND org_id = :org_id`, { ':h': device_id });
+    const merged = [...new Set([...(JSON.parse(existing?.capabilities || '[]')), ...capabilities])];
+    runScoped(req, `UPDATE devices SET capabilities = :c WHERE (hostname = :h OR name = :h) AND org_id = :org_id`, {
+      ':c': JSON.stringify(merged),
+      ':h': device_id,
+    });
+    res.json({ ok: true, capabilities: merged });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Active devices — online in last 5 minutes
+router.get('/devices/active', (req, res) => {
+  const devices = allScoped(req, `
+    SELECT id, hostname, name, device_type, capabilities, last_seen, tailscale_hostname
+    FROM devices
+    WHERE last_seen >= datetime('now', '-5 minutes', 'localtime')
+    AND org_id = :org_id
+    ORDER BY last_seen DESC
+  `);
+  res.json({ devices: devices.map(d => ({
+    ...d,
+    capabilities: (() => { try { return JSON.parse(d.capabilities || '[]'); } catch { return []; } })(),
+    online: true
+  }))});
+});
+
+// ── Conversation history (per device, persisted across restarts) ─────────────
+
+// POST /api/v1/history — phone ships each turn as it happens
+router.post('/history', (req, res) => {
+  const { role, text, device_id } = req.body;
+  if (!role || !text) return res.status(400).json({ error: 'role and text required' });
+  try {
+    insertScoped(req, `INSERT INTO events (event_type, session_id, transcript, response, data, created_at)
+      VALUES ('conversation_turn', :session_id, :transcript, :response, :data, datetime('now','localtime'))`, {
+      ':session_id': device_id || 'phone',
+      ':transcript': role === 'user' ? text : '',
+      ':response': role === 'assistant' ? text : '',
+      ':data': JSON.stringify({ role, device_id }),
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/v1/history?device_id=X&limit=10 — phone loads history on startup
+router.get('/history', (req, res) => {
+  const { device_id, limit = 10 } = req.query;
+  const session_id = device_id || 'phone';
+  try {
+    const rows = allScoped(req, `
+      SELECT transcript, response, data, created_at FROM events
+      WHERE event_type = 'conversation_turn'
+        AND session_id = :session_id
+        AND org_id = :org_id
+      ORDER BY created_at DESC
+      LIMIT :limit
+    `, { ':session_id': session_id, ':org_id': req.org_id || 'org_personal', ':limit': parseInt(limit) });
+
+    const turns = rows.reverse().flatMap(r => {
+      const out = [];
+      if (r.transcript) out.push({ role: 'user', text: r.transcript, created_at: r.created_at });
+      if (r.response) out.push({ role: 'assistant', text: r.response, created_at: r.created_at });
+      return out;
+    });
+    res.json({ turns });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

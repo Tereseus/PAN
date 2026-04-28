@@ -129,6 +129,23 @@ class PanServerClient @Inject constructor(
         }
     }
 
+    suspend fun registerDevice(deviceId: String, deviceName: String): Boolean {
+        return try {
+            val resp = api.registerDevice(
+                dev.pan.app.network.dto.DeviceRegisterRequest(
+                    device_id = deviceId,
+                    device_name = deviceName,
+                    device_type = "phone",
+                    user_id = android.os.Build.MODEL  // placeholder — replaced by org login later
+                )
+            )
+            resp.isSuccessful
+        } catch (e: Exception) {
+            Log.e(TAG, "Device registration failed: ${e.message}")
+            false
+        }
+    }
+
     suspend fun askPanWithContext(
         text: String, intentHint: String?, conversationHistory: String,
         sensors: Map<String, Any?>? = null
