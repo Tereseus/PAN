@@ -4007,6 +4007,20 @@
 		} catch {}
 	}
 
+	async function openChildView(user) {
+		const url = `${window.location.origin}/child/?user=${encodeURIComponent(user.display_name || user.name || 'Child')}`;
+		const title = `PAN — ${user.display_name || 'Child View'}`;
+		try {
+			await fetch(`http://127.0.0.1:${typeof TAURI_PORT !== 'undefined' ? TAURI_PORT : 7790}/open`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url, title, width: 480, height: 700, kiosk: true })
+			});
+		} catch {
+			window.open(url, '_blank', 'width=480,height=700,menubar=no,toolbar=no,location=no,status=no');
+		}
+	}
+
 	async function addUserSubmit(e) {
 		e.preventDefault();
 		const form = e.target;
@@ -6227,6 +6241,9 @@
 										<div class="svc-name">{user.display_name || user.name || 'Unknown'}</div>
 										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.power_lvl != null ? ` · lvl ${user.power_lvl}` : ''}</div>
 									</div>
+									{#if user.role === 'child' || (user.power_lvl != null && user.power_lvl <= 5)}
+										<button class="svc-action-btn" title="Open child view" onclick={() => openChildView(user)}>🧒</button>
+									{/if}
 									{#if user.id !== 1}
 										<button class="svc-action-btn danger" title="Remove" onclick={async () => {
 											if (!confirm(`Remove ${user.display_name}?`)) return;
@@ -8174,6 +8191,9 @@
 										<div class="svc-name">{user.display_name || user.email || 'Unknown'}</div>
 										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.power_lvl != null ? ` · lvl ${user.power_lvl}` : ''}</div>
 									</div>
+									{#if user.role === 'child' || (user.power_lvl != null && user.power_lvl <= 5)}
+										<button class="svc-action-btn" title="Open child view" onclick={() => openChildView(user)}>🧒</button>
+									{/if}
 									{#if user.id !== 1}
 										<button class="svc-action-btn danger" title="Remove" onclick={async () => {
 											if (!confirm(`Remove ${user.display_name}?`)) return;
