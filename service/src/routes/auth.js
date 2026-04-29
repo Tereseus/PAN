@@ -450,6 +450,45 @@ router.post('/dev-token', (req, res) => {
   });
 });
 
+// POST /api/v1/auth/users — create a new family/household member (owner only)
+// Body: { display_name, role: 'child'|'guest'|'user'|'manager'|'admin', email? }
+router.post('/users', requireRole('owner'), (req, res) => {
+  const { display_name, role, email } = req.body || {};
+  if (!display_name || !display_name.trim()) {
+    return res.status(400).json({ error: 'display_name is required' });
+  }
+  const validRoles = ['child', 'guest', 'user', 'manager', 'admin'];
+  const userRole = validRoles.includes(role) ? role : 'user';
+  // Power levels for each role (matching permissions.js)
+  const rolePower = { child: 5, guest: 15, user: 25, manager: 50, admin: 75 };
+  const power = rolePower[userRole] ?? 25;
+  // Generate a synthetic email if not provided (not used for auth, just for uniqueness)
+  const userEmail = (email && email.trim()) ? email.trim() :
+    `${display_name.trim().toLowerCase().replace(/\s+/g, '.')}.${Date.now()}@local`;
+  try {
+    const result = run(
+      `INSERT INTO users (email, display_name, role, power_lvl, is_active) VALUES (:email, :name, :role, :power, 1)`,
+      { ':email': userEmail, ':name': display_name.trim(), ':role': userRole, ':power': power }
+    );
+    const newUser = get('SELECT id, email, display_name, role, power_lvl, is_active, created_at FROM users WHERE id = :id', { ':id': result.lastInsertRowid });
+    res.json({ ok: true, user: newUser });
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'A user with that email already exists' });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/v1/auth/users/:id — remove a user (owner only, cannot delete self)
+router.delete('/users/:id', requireRole('owner'), (req, res) => {
+  const userId = parseInt(req.params.id);
+  if (userId === req.user?.id) return res.status(400).json({ error: 'Cannot delete yourself' });
+  if (userId === 1) return res.status(400).json({ error: 'Cannot delete the primary owner' });
+  run('DELETE FROM users WHERE id = :id', { ':id': userId });
+  res.json({ ok: true });
+});
+
 // GET /api/v1/auth/users — list all instance users
 router.get('/users', (req, res) => {
   const users = all("SELECT id, email, display_name, avatar_url, role, power_lvl, is_active, created_at, last_login FROM users ORDER BY id");

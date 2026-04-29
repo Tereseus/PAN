@@ -246,8 +246,10 @@ async function cleanupStaleTailscaleNode(staleHostname) {
 
 // Auth routes (some endpoints skip auth — login-related stuff)
 app.use('/api/v1/auth', (req, res, next) => {
-  const publicPaths = ['/oauth', '/google-callback', '/github-callback', '/dev-token', '/users'];
+  const publicPaths = ['/oauth', '/google-callback', '/github-callback', '/dev-token'];
   if (publicPaths.includes(req.path)) return next();
+  // GET /users is public (list users for login chooser), mutations need auth
+  if (req.path === '/users' && req.method === 'GET') return next();
   // GET /providers is public (login page needs it), POST needs auth
   if (req.path === '/providers' && req.method === 'GET') return next();
   // Auto-auth for localhost/Tailscale (same as general middleware)
