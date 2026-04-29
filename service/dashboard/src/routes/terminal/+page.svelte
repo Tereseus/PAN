@@ -169,6 +169,35 @@
 	// Persist panel selections on change
 	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_left_section', leftSection); });
 	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_right_section', rightSection); });
+
+	// ── Permission matrix ────────────────────────────────────────────────────
+	// Fetched once on load. Controls which panel options are visible in dropdowns.
+	let permsMatrix = $state(/** @type {{power:number, widgets:Record<string,{visible:boolean}>}} */ (null));
+
+	// Map panel option values → widget permission keys (absent = always visible)
+	const PANEL_WIDGET_MAP = {
+		devices:   'devices',
+		instances: 'instances',
+		tests:     'tests',
+		users:     'users',
+		project:   'projects',
+		tasks:     'projects',
+	};
+
+	/** Returns true if the panel option should be visible for the current user. */
+	function widgetVisible(optionValue) {
+		if (!permsMatrix) return true; // not yet loaded — show everything
+		const key = PANEL_WIDGET_MAP[optionValue];
+		if (!key) return true; // no gating rule → always show
+		return permsMatrix.widgets[key]?.visible !== false;
+	}
+
+	// If a hidden panel is currently selected, fall back to a safe default.
+	$effect(() => {
+		if (!permsMatrix) return;
+		if (!widgetVisible(leftSection))  leftSection  = 'transcript';
+		if (!widgetVisible(rightSection)) rightSection = 'services';
+	});
 	
 	// Sync LLM name with provider if not manually customized
 	$effect(() => {
@@ -260,6 +289,7 @@
 	let deviceRenameName = $state('');
 	let deviceDeleteConfirmId = $state(null);
 	let deviceFilter = $state('all'); // 'all' | 'computers' | 'phones' | 'pendants' | 'other'
+	let deviceExpandedIds = $state(new Set()); // set of hostname strings that are expanded
 
 	// Alerts
 	let alertsData = $state([]);
@@ -726,7 +756,43 @@
 	let wrapServices = $state([]);
 	let wrapOpening = $state(null);
 	let wrapMsg = $state('');
-	let appsView = $state('root'); // 'root' | 'windows'
+	let appsView = $state('root'); // 'root' | 'apps'
+
+	// App metadata: what PAN knows about each detected app
+	const APP_META = {
+		vlc:      { label: 'VLC',        cat: 'Media',    icon: '🎬', actions: ['Play / Pause', 'Volume', 'Open file'], setup: 'none' },
+		mpv:      { label: 'MPV',        cat: 'Media',    icon: '▶️', actions: ['Play / Pause', 'Seek', 'Volume'],      setup: 'none' },
+		spotify:  { label: 'Spotify',    cat: 'Media',    icon: '🎵', actions: ['Play / Pause', 'Next', 'Search song'], setup: 'none' },
+		chrome:   { label: 'Chrome',     cat: 'Browser',  icon: '🌐', actions: ['Open URL', 'Search', 'New tab'],       setup: 'none' },
+		firefox:  { label: 'Firefox',    cat: 'Browser',  icon: '🦊', actions: ['Open URL', 'Search', 'New tab'],       setup: 'none' },
+		discord:  { label: 'Discord',    cat: 'Comms',    icon: '💬', actions: ['Send message', 'Join call', 'Mute'],   setup: 'none' },
+		obs:      { label: 'OBS',        cat: 'Creative', icon: '📺', actions: ['Start stream', 'Switch scene', 'Record'], setup: 'none' },
+		steam:    { label: 'Steam',      cat: 'Gaming',   icon: '🎮', actions: ['Launch game', 'View library'],         setup: 'none' },
+		code:     { label: 'VS Code',    cat: 'Dev',      icon: '💻', actions: ['Open file', 'Open folder', 'Run task'], setup: 'none' },
+		'windows-media-player': { label: 'Windows Media', cat: 'Media', icon: '🎞️', actions: ['Play', 'Volume'], setup: 'none' },
+		rustdesk: { label: 'RustDesk',   cat: 'Remote',   icon: '🖥️', actions: ['Remote control'], setup: 'none' },
+	};
+
+	// Aggregate detected apps from all devices
+	const detectedApps = $derived(() => {
+		const map = {};
+		for (const dev of allDevices) {
+			const caps = Array.isArray(dev.capabilities) ? dev.capabilities
+				: (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : []);
+			for (const cap of caps) {
+				if (!cap.startsWith('app:')) continue;
+				const key = cap.slice(4);
+				if (!map[key]) map[key] = { key, devices: [] };
+				map[key].devices.push({ name: dev.name || dev.hostname, hostname: dev.hostname, online: dev.online });
+			}
+		}
+		return Object.values(map).sort((a, b) => {
+			// Known apps first, then alphabetical
+			const aKnown = APP_META[a.key] ? 0 : 1;
+			const bKnown = APP_META[b.key] ? 0 : 1;
+			return aKnown - bKnown || a.key.localeCompare(b.key);
+		});
+	});
 
 	async function loadWrapServices() {
 		try {
@@ -763,6 +829,9 @@
 	let atlasHovered = $state(null);
 	let atlasSelected = $state(null);
 	let atlasSvgEl;
+	let atlasElapsed = $state(0);
+	let atlasAnimTimer = null;
+	let atlasAnimT0 = 0;
 	let chatBubbles = $state([]);
 	let chatCurrentProject = $state('');
 
@@ -3469,7 +3538,7 @@
 	// --- Atlas ---
 	let atlasRefreshTimer = null;
 	async function loadAtlasData() {
-		atlasLoading = !atlasData; // only show loading on first load
+		atlasLoading = !atlasData;
 		try {
 			const [svcResp, atlasResp, statsResp, projResp] = await Promise.all([
 				api('/dashboard/api/services'),
@@ -3482,202 +3551,106 @@
 			console.error('Atlas load failed:', e);
 		}
 		atlasLoading = false;
-		// Auto-refresh every 30s
-		if (!atlasRefreshTimer) {
-			atlasRefreshTimer = setInterval(loadAtlasData, 30000);
+		if (!atlasRefreshTimer) atlasRefreshTimer = setInterval(loadAtlasData, 30000);
+		// Start animation loop
+		if (!atlasAnimTimer) {
+			atlasAnimT0 = Date.now();
+			atlasAnimTimer = setInterval(() => { atlasElapsed = (Date.now() - atlasAnimT0) / 1000; }, 50);
 		}
 	}
 
 	function buildAtlasGraph(svcResp, atlasResp, statsResp, projResp) {
-		const nodes = [];
-		const edges = [];
-		const nodeMap = {};
-		const zones = [];
-
-		function addNode(id, label, type, status, detail, group, x, y, description, navigate) {
-			const n = { id, label, type, status: status || 'unknown', detail: detail || '', group, x, y, description: description || '', navigate: navigate || null };
-			nodes.push(n);
-			nodeMap[id] = n;
-			return n;
-		}
-
-		function addZone(id, label, x, y, w, h, color) {
-			zones.push({ id, label, x, y, w, h, color });
-		}
-
-		// Use Atlas API for rich service data (status, interval, lastRun, port, model)
 		const atlasSvcs = atlasResp?.services || [];
-		const atlasMap = Object.fromEntries(atlasSvcs.map(s => [s.id, s]));
+		const am = Object.fromEntries(atlasSvcs.map(s => [s.id, s]));
+		const projs = projResp || [];
 
-		// Dashboard services for device info
-		const dashServices = svcResp?.services || [];
-		const devices = dashServices.filter(s => s.category === 'Devices');
-
-		function svcStatus(id) {
-			const s = atlasMap[id];
+		function ss(id) {
+			const s = am[id];
 			if (!s) return 'unknown';
 			if (s.status === 'running') return 'up';
 			if (s.status === 'stopped') return 'idle';
-			if (s.status === 'down' || s.status === 'error') return 'down';
-			return 'unknown';
+			return (s.status === 'down' || s.status === 'error') ? 'down' : 'unknown';
 		}
-
-		function svcDetail(id) {
-			const s = atlasMap[id];
-			if (!s) return '';
-			const parts = [];
-			if (s.port) parts.push(`Port ${s.port}`);
-			if (s.interval) parts.push(`Every ${s.interval}`);
-			if (s.lastRun) {
-				const ago = Math.round((Date.now() - s.lastRun) / 60000);
-				parts.push(ago < 60 ? `${ago}m ago` : `${Math.round(ago/60)}h ago`);
+		function sd(id) {
+			const s = am[id]; if (!s) return '';
+			const p = [];
+			if (s.port) p.push(`Port ${s.port}`);
+			if (s.interval) p.push(`Every ${s.interval}`);
+			if (s.lastRun) { const a = Math.round((Date.now()-s.lastRun)/60000); p.push(a < 60 ? `${a}m ago` : `${Math.round(a/60)}h ago`); }
+			return p.join(' · ') || s.status;
+		}
+		function rv(id) {
+			switch(id) {
+				case 'pan-server': return statsResp ? `${(statsResp.total_events/1000).toFixed(1)}K events` : null;
+				case 'database': return statsResp ? `${(statsResp.db_size_bytes/1048576).toFixed(0)}MB` : null;
+				case 'embeddings': return '1024D';
+				case 'memory-hub': return statsResp ? `${(statsResp.total_memory||0)/1000|0}K mem` : null;
+				default: { const s = am[id]; return s?.lastRun ? (() => { const m=Math.round((Date.now()-s.lastRun)/60000); return m<1?'Just Now':m<60?`${m}m ago`:`${Math.round(m/60)}h ago`; })() : null; }
 			}
-			if (s.modelTierLabel && s.modelTier !== 'none') parts.push(s.modelTierLabel);
-			return parts.join(' \u2014 ') || s.status;
 		}
 
-		const EC = {
-			intel: '#89b4fa', core: '#f5c2e7', svc: '#a6e3a1',
-			mem: '#cba6f7', proc: '#f9e2af', dev: '#fab387', proj: '#94e2d5'
-		};
+		const PLANETS = [
+			{
+				id: 'database', label: 'Vault', type: 'data', orbitR: 190, baseAngle: 45, orbitSpeed: 0.28,
+				moonR: 0, moonSpeed: 0, moons: [],
+			},
+			{
+				id: 'steward', label: 'Steward', type: 'service', orbitR: 380, baseAngle: 200, orbitSpeed: -0.13,
+				moonR: 90, moonSpeed: 0.32,
+				moons: [
+					{ id: 'whisper',    label: 'Listener', type: 'service', baseAngle: 0 },
+					{ id: 'ahk',        label: 'Hotkeys',  type: 'service', baseAngle: 90 },
+					{ id: 'ollama',     label: 'Oracle',   type: 'service', baseAngle: 180 },
+					{ id: 'tailscale',  label: 'Tether',   type: 'service', baseAngle: 270 },
+				],
+			},
+			{
+				id: 'memory-hub', label: 'Memoria', type: 'memory', orbitR: 570, baseAngle: 110, orbitSpeed: 0.09,
+				moonR: 95, moonSpeed: -0.27,
+				moons: [
+					{ id: 'mem-episodic',  label: 'Episodes',  type: 'memory', baseAngle: 0 },
+					{ id: 'mem-semantic',  label: 'Knowledge', type: 'memory', baseAngle: 72 },
+					{ id: 'mem-procedural',label: 'Habits',    type: 'memory', baseAngle: 144 },
+					{ id: 'embeddings',    label: 'Resonance', type: 'memory', baseAngle: 216 },
+					{ id: 'inject-ctx',    label: 'Injector',  type: 'memory', baseAngle: 288 },
+				],
+			},
+			{
+				id: 'dream-cycle', label: 'Dream', type: 'process', orbitR: 760, baseAngle: 300, orbitSpeed: -0.07,
+				moonR: 95, moonSpeed: 0.23,
+				moons: [
+					{ id: 'classifier',   label: 'Augur',     type: 'process', baseAngle: 0 },
+					{ id: 'consolidation',label: 'Archivist', type: 'process', baseAngle: 90 },
+					{ id: 'evolution',    label: 'Evolution', type: 'process', baseAngle: 180 },
+				],
+			},
+			{
+				id: 'autodev', label: 'Forge', type: 'ai', orbitR: 960, baseAngle: 160, orbitSpeed: 0.05,
+				moonR: 95, moonSpeed: -0.18,
+				moons: [
+					{ id: 'claude',      label: 'Nexus',        type: 'ai', baseAngle: 0 },
+					{ id: 'orchestrator',label: 'Orchestrator', type: 'ai', baseAngle: 120 },
+					{ id: 'scout',       label: 'Scout',        type: 'ai', baseAngle: 240 },
+				],
+			},
+		];
 
-		// ==================== ZONES ====================
-		addZone('z-core', 'Core', 20, 20, 340, 180, '#f5c2e7');
-		addZone('z-services', 'Services', 380, 20, 440, 180, '#a6e3a1');
-		addZone('z-processing', 'Processing', 840, 20, 440, 180, '#f9e2af');
-		addZone('z-memory', 'Memory', 20, 220, 560, 200, '#cba6f7');
-		addZone('z-intel', 'Intelligence', 600, 220, 340, 200, '#89b4fa');
-		addZone('z-devices', 'Devices', 960, 220, 320, 200, '#fab387');
-		addZone('z-projects', 'Projects', 20, 440, 560, 130, '#94e2d5');
+		const COLORS = { core:'#89b4fa', data:'#fab387', service:'#a6e3a1', memory:'#cba6f7', process:'#f9e2af', ai:'#f38ba8', device:'#89dceb', project:'#94e2d5' };
 
-		// ==================== CORE ====================
-		addNode('pan-server', 'PAN Server', 'core', 'up',
-			statsResp ? `${statsResp.total_events} events, ${statsResp.total_sessions} sessions` : 'Port 7777',
-			'core', 110, 80, 'Central PAN server on port 7777. Node.js/Express.', { page: 'settings' });
-		addNode('database', 'SQLite DB', 'data', 'up',
-			statsResp ? `${(statsResp.db_size_bytes / 1048576).toFixed(1)}MB encrypted` : 'SQLCipher',
-			'core', 280, 80, 'SQLCipher AES-256 encrypted database.', { page: 'data' });
-		addNode('dashboard', 'Dashboard', 'ui', 'up', 'Svelte v2 @ /v2/', 'core', 110, 150, 'Svelte dashboard with terminal, chat, atlas.', null);
-		addNode('tauri', 'Tauri Shell', 'ui', 'up', 'Port 7790 \u2014 desktop app', 'core', 280, 150, 'Lightweight native desktop shell.', null);
+		const projs3 = projs.slice(0, 3).map((p, i) => ({
+			id: `proj-${p.id}`, label: p.name, type: 'project', baseAngle: i * 120 + 30,
+		}));
 
-		// ==================== SERVICES ====================
-		addNode('steward', 'Steward', 'service', svcStatus('pan-server'), svcDetail('pan-server') || 'Health monitor',
-			'services', 470, 80, 'Monitors all services, auto-restarts on failure. Heartbeat every 60s.', { page: 'services' });
-		addNode('whisper', 'Whisper STT', 'service', svcStatus('whisper'), svcDetail('whisper') || 'Port 7782',
-			'services', 660, 80, 'faster-whisper voice transcription on port 7782.', null);
-		addNode('ahk', 'Voice Hotkeys', 'service', svcStatus('ahk'), svcDetail('ahk') || 'AHK',
-			'services', 470, 150, 'AutoHotkey voice dictation hotkeys.', null);
-		const ollamaDash = dashServices.find(s => s.name === 'Ollama');
-		const ollamaStatus = svcStatus('ollama') !== 'unknown' ? svcStatus('ollama') : (ollamaDash?.status === 'up' ? 'up' : 'unknown');
-		const ollamaDetail = svcDetail('ollama') || ollamaDash?.detail || 'Port 11434';
-		const ollamaLabel = ollamaDash?.deviceName ? `Ollama @ ${ollamaDash.deviceName}` : 'Ollama';
-		addNode('ollama', ollamaLabel, 'service', ollamaStatus, ollamaDetail,
-			'services', 660, 150, 'Local model server for embeddings.', null);
-		addNode('tailscale', 'Tailscale', 'service', svcStatus('tailscale'), 'VPN mesh',
-			'services', 565, 150, 'Encrypted VPN tunnel for remote access.', null);
+		const dashSvcs = svcResp?.services || [];
+		const devices = [...new Map(dashSvcs.filter(s => s.category === 'Devices').map(d => [d.name, d])).values()].slice(0, 4);
+		const devNodes = devices.map((d, i) => ({ id: `dev-${d.name}`, label: d.name, type: 'device', baseAngle: i * 90, status: d.status === 'up' ? 'up' : 'unknown' }));
 
-		edges.push({ from: 'steward', to: 'whisper', label: 'monitors', color: EC.svc });
-		edges.push({ from: 'steward', to: 'ahk', label: 'launches', color: EC.svc });
-		edges.push({ from: 'steward', to: 'ollama', label: 'checks', color: EC.svc });
-		edges.push({ from: 'pan-server', to: 'steward', label: '', color: EC.core });
-		edges.push({ from: 'pan-server', to: 'whisper', label: 'transcribe', color: EC.core });
-		edges.push({ from: 'pan-server', to: 'dashboard', label: 'serves', color: EC.core });
-		edges.push({ from: 'pan-server', to: 'tauri', label: 'IPC', color: EC.core });
-		edges.push({ from: 'pan-server', to: 'database', label: '', color: EC.core });
-
-		// ==================== PROCESSING ====================
-		addNode('classifier', 'Classifier', 'process', svcStatus('classifier'), svcDetail('classifier'),
-			'processing', 940, 80, 'Marks events as processed every 5 minutes.', null);
-		addNode('dream-cycle', 'Dream Cycle', 'process', svcStatus('dream'), svcDetail('dream'),
-			'processing', 1130, 80, 'Rewrites .pan-state.md every 6 hours.', null);
-		addNode('consolidation', 'Consolidation', 'process', svcStatus('consolidation'), svcDetail('consolidation'),
-			'processing', 940, 150, 'Extracts episodic/semantic/procedural memories.', null);
-		addNode('evolution', 'Evolution', 'process', svcStatus('evolution'), svcDetail('evolution'),
-			'processing', 1130, 150, '6-step config optimization pipeline.', null);
-
-		edges.push({ from: 'database', to: 'classifier', label: 'events', color: EC.proc });
-		edges.push({ from: 'classifier', to: 'dream-cycle', label: 'triggers', color: EC.proc });
-		edges.push({ from: 'dream-cycle', to: 'consolidation', label: '', color: EC.proc });
-		edges.push({ from: 'dream-cycle', to: 'evolution', label: '', color: EC.proc });
-
-		// ==================== MEMORY ====================
-		addNode('memory-hub', 'Memory Hub', 'memory', 'up', 'Vector stores + context builder',
-			'memory', 120, 290, 'Assembles memories for Claude session injection.', null);
-		addNode('mem-episodic', 'Episodic', 'memory', 'up', 'Events + outcomes',
-			'memory', 300, 290, 'What happened. Importance-weighted recall.', null);
-		addNode('mem-semantic', 'Semantic', 'memory', 'up', 'Knowledge triples',
-			'memory', 450, 290, 'Subject/predicate/object facts with contradiction detection.', null);
-		addNode('embeddings', 'Embeddings', 'memory', svcStatus('embeddings'), svcDetail('embeddings') || 'Keyword fallback',
-			'memory', 300, 370, 'Vector encoding for memory search.', null);
-		addNode('inject-ctx', 'Context Inject', 'process', 'up', 'CLAUDE.md \u2190 memory',
-			'memory', 120, 370, 'Injects memory into CLAUDE.md before each session.', null);
-		addNode('mem-procedural', 'Procedural', 'memory', 'up', 'Learned workflows',
-			'memory', 450, 370, 'Multi-step procedures with success tracking.', null);
-
-		edges.push({ from: 'pan-server', to: 'memory-hub', label: '', color: EC.core });
-		edges.push({ from: 'memory-hub', to: 'mem-episodic', label: '', color: EC.mem });
-		edges.push({ from: 'memory-hub', to: 'mem-semantic', label: '', color: EC.mem });
-		edges.push({ from: 'memory-hub', to: 'mem-procedural', label: '', color: EC.mem });
-		edges.push({ from: 'mem-episodic', to: 'embeddings', label: '', color: EC.mem });
-		edges.push({ from: 'mem-semantic', to: 'embeddings', label: '', color: EC.mem });
-		edges.push({ from: 'memory-hub', to: 'inject-ctx', label: '', color: EC.mem });
-		edges.push({ from: 'consolidation', to: 'memory-hub', label: 'writes', color: EC.proc });
-
-		// ==================== INTELLIGENCE ====================
-		addNode('claude', 'Claude Code', 'ai', 'up', 'CLI sessions via hooks',
-			'intel', 700, 290, 'Claude Code CLI. Memory injected via hooks.', null);
-		addNode('scout', 'Scout', 'ai', svcStatus('scout'), svcDetail('scout'),
-			'intel', 850, 290, 'Tool discovery \u2014 GitHub trending, MCP servers.', null);
-		addNode('orchestrator', 'Orchestrator', 'ai', svcStatus('orchestrator'), svcDetail('orchestrator'),
-			'intel', 700, 370, 'Autonomous agent \u2014 processes findings, generates tasks.', null);
-		addNode('autodev', 'AutoDev', 'ai', svcStatus('autodev'), svcDetail('autodev'),
-			'intel', 850, 370, 'Spawns headless Claude sessions for tasks.', null);
-
-		edges.push({ from: 'inject-ctx', to: 'claude', label: 'CLAUDE.md', color: EC.intel });
-		edges.push({ from: 'scout', to: 'orchestrator', label: 'findings', color: EC.intel });
-		edges.push({ from: 'orchestrator', to: 'autodev', label: 'tasks', color: EC.intel });
-
-		// ==================== DEVICES ====================
-		const seenDevices = new Set();
-		devices.forEach((d, i) => {
-			if (seenDevices.has(d.name)) return;
-			seenDevices.add(d.name);
-			const x = 1060 + (i % 2) * 160;
-			const y = 290 + Math.floor(i / 2) * 70;
-			addNode(`dev-${d.name}`, d.name, 'device', d.status === 'up' ? 'up' : 'down', d.detail, 'devices', x, y, d.detail || d.name, { page: 'devices', device: d.name });
-			edges.push({ from: 'pan-server', to: `dev-${d.name}`, label: '', color: EC.dev });
-		});
-		if (!seenDevices.has('Phone') && !devices.find(d => d.name?.includes('Pixel'))) {
-			addNode('dev-phone', 'Phone', 'device', 'unknown', 'Android', 'devices', 1060, 290, 'Android phone.', { page: 'devices' });
-			edges.push({ from: 'pan-server', to: 'dev-phone', label: '', color: EC.dev });
-		}
-
-		// ==================== PROJECTS ====================
-		const projs = projResp || [];
-		projs.forEach((p, i) => {
-			const x = 100 + (i % 5) * 120;
-			const y = 490 + Math.floor(i / 5) * 50;
-			addNode(`proj-${p.id}`, p.name, 'project', 'up', p.path || '', 'projects', x, y, `Project: ${p.name}`, { page: 'projects', project: p.name });
-		});
-
-		return { nodes, edges, nodeMap, zones, stats: statsResp, atlas: atlasResp };
+		return { planets: PLANETS, projs: projs3, devNodes, stats: statsResp, CX: 1150, CY: 800, ss, sd, rv, COLORS, am };
 	}
 
-	function atlasNodeColor(node) {
-		const typeColors = {
-			core: '#89b4fa',
-			service: '#a6e3a1',
-			device: '#f9e2af',
-			job: '#cba6f7',
-			data: '#fab387',
-			project: '#74c7ec',
-			ui: '#89dceb',
-			ai: '#f38ba8',
-			memory: '#f5c2e7',
-			process: '#cba6f7',
-			injection: '#94e2d5',
-		};
-		return typeColors[node.type] || '#6c7086';
+	function atlasNodeColor(type) {
+		const c = { core:'#89b4fa', data:'#fab387', service:'#a6e3a1', memory:'#cba6f7', process:'#f9e2af', ai:'#f38ba8', device:'#89dceb', project:'#94e2d5' };
+		return c[type] || '#6c7086';
 	}
 
 	function atlasStatusDot(status) {
@@ -4647,6 +4620,9 @@
 		if (leftSection === 'devices' || rightSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); }
 		if (leftSection === 'benchmarks' || rightSection === 'benchmarks') startBenchmarkPolling();
 
+		// Load permission matrix (gates which panel options are visible)
+		api('/api/v1/permissions/matrix').then(r => { permsMatrix = r; }).catch(() => { permsMatrix = { power: 100, widgets: {} }; });
+
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
 
@@ -4979,6 +4955,7 @@
 			if (termResizeObserver) termResizeObserver.disconnect();
 			window.removeEventListener('beforeunload', handleBeforeUnload);
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
+			if (atlasAnimTimer) { clearInterval(atlasAnimTimer); atlasAnimTimer = null; }
 			clearInterval(svcInterval);
 			clearInterval(approvalInterval);
 			clearInterval(lifeboatInterval);
@@ -5593,7 +5570,7 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (leftSection === 'users') loadUsers(); if (leftSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (leftSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (leftSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); } else { stopAllDevicesPolling(); } if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (leftSection === 'users') loadUsers(); if (leftSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (leftSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (leftSection === 'devices' || leftSection === 'apps') { startAllDevicesPolling(); if (leftSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); } if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
@@ -5601,22 +5578,22 @@
 				<option value="pipeline">Beta Pipeline</option>
 				<option value="bugs">Bugs</option>
 				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
-				<option value="devices">Devices</option>
-				<option value="instances">Instances</option>
+				{#if widgetVisible('devices')}<option value="devices">Devices</option>{/if}
+				{#if widgetVisible('instances')}<option value="instances">Instances</option>{/if}
 				<option value="intuition">Intuition</option>
 				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
 				<option value="mail">Mail</option>
 				<option value="perf">Performance</option>
-				<option value="project">Project</option>
+				{#if widgetVisible('project')}<option value="project">Project</option>{/if}
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
-				<option value="tasks">Tasks</option>
+				{#if widgetVisible('tasks')}<option value="tasks">Tasks</option>{/if}
 				<option value="teams">Teams</option>
-				<option value="tests">Tests</option>
+				{#if widgetVisible('tests')}<option value="tests">Tests</option>{/if}
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
-				<option value="users">Users</option>
+				{#if widgetVisible('users')}<option value="users">Users</option>{/if}
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
@@ -5750,24 +5727,50 @@
 						{#if catDevs.length > 0}
 							<div class="svc-category" style="color:{catColor};margin-top:6px">{catLabel} · {catDevs.length}</div>
 							{#each catDevs as dev}
-								{@const STALE = dev.device_type === 'phone' ? 15 * 60 * 1000 : 5 * 60 * 1000}
+								{@const STALE = dev.device_type === 'phone' ? 30 * 60 * 1000 : 5 * 60 * 1000}
 								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
 								{@const isOnline = dev.online === 1 && ageMs < STALE}
 								{@const isHub = dev.is_hub === true}
 								{@const isPanClient = !!dev.client_version}
 								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
 								{@const metrics = deviceMetrics[dev.hostname] || deviceMetrics[dev.name] || null}
+								{@const caps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
+								{@const isExpanded = deviceExpandedIds.has(dev.hostname)}
 								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
-									<div style="display:flex;align-items:center;gap:6px">
+									<div style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick={() => { const s = new Set(deviceExpandedIds); s.has(dev.hostname) ? s.delete(dev.hostname) : s.add(dev.hostname); deviceExpandedIds = s; }}>
 										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
-										<div class="svc-name" style="display:flex;align-items:center;gap:4px">
-											{dev.name || dev.hostname}
-											{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
-											{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
-											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
+										<div style="flex:1;min-width:0">
+											<div class="svc-name" style="display:flex;align-items:center;gap:4px">
+												{dev.name || dev.hostname}
+												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
+												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+											</div>
+											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
 										</div>
-										<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+										<div style="display:flex;align-items:center;gap:4px">
+											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
+											<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+											<span style="font-size:10px;color:#585b70;transition:transform 0.15s;display:inline-block;transform:rotate({isExpanded?'90deg':'0deg'})">&rsaquo;</span>
+										</div>
 									</div>
+									{#if isExpanded}
+										<div style="padding:6px 0 4px 16px;border-left:1px solid #313244;margin-left:5px;margin-top:4px">
+											<div style="font-size:9px;color:#6c7086;margin-bottom:4px">
+												<span style="color:#cdd6f4">Hostname:</span> {dev.hostname}
+												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
+												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
+											</div>
+											{#if caps.length > 0}
+												<div style="font-size:9px;color:#6c7086;margin-bottom:3px"><span style="color:#cdd6f4">Capabilities:</span></div>
+												<div style="display:flex;flex-wrap:wrap;gap:3px">
+													{#each caps as cap}
+														<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:{cap.startsWith('app:') ? '#a6e3a122' : '#89b4fa11'};color:{cap.startsWith('app:') ? '#a6e3a1' : '#89b4fa'};border:1px solid {cap.startsWith('app:') ? '#a6e3a133' : '#89b4fa22'}">{cap.startsWith('app:') ? cap.slice(4) : cap}</span>
+													{/each}
+												</div>
+											{/if}
+											{#if dev.last_seen}<div style="font-size:9px;color:#585b70;margin-top:4px">Last seen: {dev.last_seen}</div>{/if}
+										</div>
+									{/if}
 									{#if metrics}
 										{@const cpuColor = (metrics.cpu_pct||0) > 85 ? '#f38ba8' : (metrics.cpu_pct||0) > 60 ? '#fab387' : '#a6e3a1'}
 										{@const ramColor = (metrics.ram_pct||0) > 85 ? '#f38ba8' : (metrics.ram_pct||0) > 70 ? '#fab387' : '#89b4fa'}
@@ -5930,62 +5933,105 @@
 					</div>
 				</div>
 			{:else if leftSection === 'apps'}
-				{#if appsView === 'windows'}
+				{#if appsView.startsWith('device:')}
+					{@const devHostname = appsView.slice(7)}
+					{@const dev = allDevices.find(d => d.hostname === devHostname)}
+					{@const devCaps = dev ? (Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])) : []}
+					{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
+					{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
 					<div class="apps-drilldown">
-						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Back to Apps</button>
-						{#if wrapServices.length === 0}
-							<div class="apps-wrap-msg" style="padding:12px">No applications discovered yet</div>
-						{:else}
-							{#each ['communication', 'productivity', 'development', 'media', 'social', 'creative', 'browsing'] as cat}
-								{#if wrapServices.filter(s => s.category === cat).length > 0}
-									<div class="apps-cat-label">{cat.charAt(0).toUpperCase() + cat.slice(1)}</div>
-									<div class="apps-grid">
-										{#each wrapServices.filter(s => s.category === cat) as svc}
-											<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
-												<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
-												<div class="app-name">{svc.title || svc.id}</div>
-												<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'PAN Module' : 'Web App'}</div>
-											</button>
-										{/each}
-									</div>
-								{/if}
-							{/each}
-						{/if}
-						{#if wrapMsg}
-							<div class="apps-wrap-msg">{wrapMsg}</div>
+						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Devices</button>
+						<div style="padding:8px 12px 4px">
+							<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">
+								<span class="svc-dot {dev?.online ? 'up' : ''}"></span>
+								<span style="font-size:13px;font-weight:700;color:#eee">{dev?.name || devHostname}</span>
+								<span style="font-size:9px;opacity:.45;margin-left:auto">{dev?.device_type || 'pc'}</span>
+							</div>
+							{#if devAppKeys.length > 0}
+								<div class="apps-cat-label">Installed Apps</div>
+								<div class="apps-grid">
+									{#each devAppKeys as appKey}
+										{@const meta = APP_META[appKey]}
+										<div class="app-card" style="opacity:{dev?.online ? 1 : 0.55}">
+											<div class="app-icon">{meta?.icon || '📦'}</div>
+											<div class="app-name">{meta?.label || appKey}</div>
+										</div>
+									{/each}
+								</div>
+							{/if}
+							{#if devOtherCaps.length > 0}
+								<div class="apps-cat-label" style="margin-top:8px">Capabilities</div>
+								<div style="display:flex;gap:4px;flex-wrap:wrap;padding-bottom:8px">
+									{#each devOtherCaps as cap}
+										<span style="font-size:9px;background:rgba(255,255,255,.07);border-radius:3px;padding:2px 6px;color:#bbb">{cap}</span>
+									{/each}
+								</div>
+							{/if}
+							{#if devAppKeys.length === 0 && devOtherCaps.length === 0}
+								<div style="font-size:10px;opacity:.45;padding:8px 0">No capabilities detected yet.</div>
+							{/if}
+						</div>
+						{#if wrapServices.length > 0}
+							<div class="apps-cat-label" style="margin-top:4px">Web Apps</div>
+							<div class="apps-grid" style="padding:0 8px 8px">
+								{#each wrapServices as svc}
+									<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
+										<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
+										<div class="app-name">{svc.title || svc.id}</div>
+										<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'Module' : 'Web'}</div>
+									</button>
+								{/each}
+							</div>
 						{/if}
 					</div>
 				{:else}
-					<div class="apps-grid">
-						<button class="app-card" onclick={() => {
-								const url = `${window.location.origin}/v2/atlas-v2`;
-								fetch('/api/v1/ui-commands', {
-									method: 'POST',
-									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url, title: 'Atlas', width: 1400, height: 900 })
-								});
+					<!-- Root: utility buttons + device-first app list -->
+					<div style="display:flex;gap:5px;padding:6px 8px 0;flex-wrap:wrap">
+						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
+								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
+								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/atlas-v2`, title:'Atlas', width:1400, height:900 }) });
 							}}>
-								<div class="app-icon">&#x1F5FA;</div>
-								<div class="app-name">Atlas</div>
-								<div class="app-desc">System Architecture</div>
+							<div class="app-icon">
+								<img src="/atlas-icon.png" width="36" height="36" style="object-fit:cover;border-radius:4px;" alt="Atlas"/>
+							</div>
+							<div class="app-name">Atlas</div>
+						</button>
+						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
+								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
+								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/kronos`, title:'Kronos', width:1200, height:800 }) });
+							}}>
+							<div class="app-icon">📜</div>
+							<div class="app-name">Kronos</div>
+						</button>
+					</div>
+					<!-- Device rows -->
+					<div style="padding:6px 8px 0">
+						{#each allDevices as dev}
+							{@const devCaps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
+							{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
+							{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
+							<button onclick={() => { appsView = 'device:' + dev.hostname; loadWrapServices(); }}
+								style="width:100%;text-align:left;background:none;border:none;border-bottom:1px solid rgba(255,255,255,.06);padding:7px 0;cursor:pointer">
+								<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
+									<span class="svc-dot {dev.online ? 'up' : ''}"></span>
+									<span style="font-size:11px;font-weight:600;color:#e0e0e0">{dev.name || dev.hostname}</span>
+									<span style="font-size:9px;opacity:.4;margin-left:auto">{dev.device_type || 'pc'}</span>
+								</div>
+								{#if devAppKeys.length > 0}
+									<div style="display:flex;gap:5px;flex-wrap:wrap;padding-left:16px">
+										{#each devAppKeys as appKey}
+											{@const meta = APP_META[appKey]}
+											<span title="{meta?.label || appKey}" style="font-size:15px;opacity:{dev.online ? 1 : 0.45}">{meta?.icon || '📦'}</span>
+										{/each}
+									</div>
+								{:else if devOtherCaps.length > 0}
+									<div style="padding-left:16px;font-size:9px;opacity:.35;line-height:1.4">{devOtherCaps.slice(0,4).join(' · ')}</div>
+								{/if}
 							</button>
-							<button class="app-card" onclick={() => {
-									const url = `${window.location.origin}/v2/kronos`;
-									fetch('/api/v1/ui-commands', {
-										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'open_window', url, title: 'Kronos', width: 1200, height: 800 })
-									});
-								}}>
-								<div class="app-icon">📜</div>
-								<div class="app-name">Kronos</div>
-								<div class="app-desc">Timeline &amp; History</div>
-							</button>
-							<button class="app-card" onclick={() => { appsView = 'windows'; loadWrapServices(); }}>
-								<div class="app-icon">🪟</div>
-								<div class="app-name">Windows</div>
-								<div class="app-desc">{wrapServices.length > 0 ? `${wrapServices.length} Apps` : 'Desktop Apps'}</div>
-							</button>
+						{/each}
+						{#if allDevices.length === 0}
+							<div style="padding:16px 0;text-align:center;font-size:10px;opacity:.4">No devices found</div>
+						{/if}
 					</div>
 				{/if}
 			{:else if leftSection === 'instances'}
@@ -6661,172 +6707,271 @@
 			>
 				{#if atlasLoading}
 					<div class="term-empty">
-						<div class="term-empty-title">Loading Atlas...</div>
+						<div class="term-empty-title">Initializing Orrery...</div>
 					</div>
 				{:else if atlasData}
 					<div class="atlas-toolbar">
-						<button class="atlas-btn" onclick={atlasResetView} title="Reset View">Reset</button>
+						<button class="atlas-btn" onclick={atlasResetView}>Reset</button>
 						<button class="atlas-btn" onclick={() => { atlasTransform = { ...atlasTransform, scale: atlasTransform.scale * 1.2 }; }}>+</button>
-						<button class="atlas-btn" onclick={() => { atlasTransform = { ...atlasTransform, scale: Math.max(0.3, atlasTransform.scale * 0.8) }; }}>-</button>
+						<button class="atlas-btn" onclick={() => { atlasTransform = { ...atlasTransform, scale: Math.max(0.2, atlasTransform.scale * 0.8) }; }}>-</button>
 						<span class="atlas-zoom">{Math.round(atlasTransform.scale * 100)}%</span>
 						{#if atlasData.stats}
 							<span class="atlas-stat">{atlasData.stats.total_events || 0} events</span>
 							<span class="atlas-stat">{atlasData.stats.total_sessions || 0} sessions</span>
-							<span class="atlas-stat">{atlasData.nodes.length} nodes</span>
 						{/if}
+						<span class="atlas-live">● LIVE</span>
 					</div>
-					<svg bind:this={atlasSvgEl} class="atlas-svg" viewBox="0 0 1320 590" preserveAspectRatio="xMidYMid meet">
+					<svg class="atlas-svg" viewBox="0 0 2300 1600" preserveAspectRatio="xMidYMid meet">
 						<defs>
-							<filter id="glow">
-								<feGaussianBlur stdDeviation="2" result="blur"/>
-								<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+							<filter id="ag"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+							<filter id="ag2"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+							<radialGradient id="asg" cx="50%" cy="50%" r="50%">
+								<stop offset="0%" stop-color="#89b4fa" stop-opacity="0.10"/>
+								<stop offset="100%" stop-color="#89b4fa" stop-opacity="0"/>
+							</radialGradient>
+							<filter id="mapglow">
+								<feGaussianBlur stdDeviation="1.5" result="b"/>
+								<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
 							</filter>
 						</defs>
+						<!-- World map background — dark landmasses, no ocean -->
+						<image href="/world-map.svg" x="0" y="50" width="2300" height="1500" opacity="0.75" preserveAspectRatio="xMidYMid meet"/>
 						<g transform="translate({atlasTransform.x},{atlasTransform.y}) scale({atlasTransform.scale})">
-							<!-- Zone backgrounds -->
-							{#each atlasData.zones || [] as zone}
-								<rect
-									x={zone.x} y={zone.y} width={zone.w} height={zone.h}
-									rx="16" fill="{zone.color}0a" stroke="{zone.color}40"
-									stroke-width="1.5" stroke-dasharray="8,4"
-								/>
-								<text
-									x={zone.x + 14} y={zone.y + 22}
-									fill="{zone.color}bb" font-size="14" font-weight="700"
-									letter-spacing="1.5"
-								>{zone.label.toUpperCase()}</text>
+							<!-- Starfield -->
+							{#each [45,123,234,367,489,521,648,712,834,956,1067,1178,1289,1345,1423,1567,1689,1789,1867,1934,201,302,412,534,645,756,867,978,1089,1190,1312,1456,1578,1645,1723,1823,1912,1978,2034,2112,2156,2234] as sx, si}
+								<circle cx={sx} cy={[89,178,267,356,445,89,134,223,312,401,490,579,89,134,223,312,401,490,579,668,757,89,134,223,312,401,490,579,668,757,89,134,223,312,401,490,579,668,757,89,134,223][si] % 1600} r={[0.8,1.2,0.6,1.0,0.7,1.1,0.9,0.6,1.3,0.8,0.7,1.0,0.9,1.1,0.6,0.8,1.2,0.7,1.0,0.6,0.8,0.9,1.1,0.7,1.0,0.8,0.6,1.2,0.9,0.7,1.0,0.8,0.6,1.1,0.9,0.7,1.0,0.8,1.2,0.6,0.9,0.7][si]} fill="#cdd6f4" opacity={[0.15,0.25,0.10,0.20,0.12,0.18,0.22,0.08,0.30,0.15,0.12,0.20,0.18,0.25,0.10,0.15,0.22,0.12,0.18,0.08,0.15,0.20,0.25,0.10,0.18,0.15,0.08,0.22,0.18,0.12,0.20,0.15,0.10,0.25,0.18,0.12,0.20,0.15,0.22,0.08,0.18,0.12][si]}/>
 							{/each}
-							<!-- Edges -->
-							{#each atlasData.edges as edge}
-								{@const fromNode = atlasData.nodeMap[edge.from]}
-								{@const toNode = atlasData.nodeMap[edge.to]}
-								{#if fromNode && toNode}
-									<line
-										x1={fromNode.x} y1={fromNode.y}
-										x2={toNode.x} y2={toNode.y}
-										stroke={edge.color || '#313244'}
-										stroke-width={edge.label ? 2 : 1.2}
-										stroke-dasharray={edge.label ? '' : '5,5'}
-										stroke-opacity={edge.label ? 0.6 : 0.3}
-									/>
-									{#if edge.label}
-										<rect
-											x={(fromNode.x + toNode.x) / 2 - edge.label.length * 3.5}
-											y={(fromNode.y + toNode.y) / 2 - 14}
-											width={edge.label.length * 7 + 8}
-											height="16" rx="4"
-											fill="#11111b" fill-opacity="0.85"
-										/>
-										<text
-											x={(fromNode.x + toNode.x) / 2}
-											y={(fromNode.y + toNode.y) / 2 - 3}
-											fill={edge.color || '#6c7086'}
-											font-size="10"
-											text-anchor="middle"
-										>{edge.label}</text>
-									{/if}
+
+							<!-- Sun corona glow -->
+							<circle cx={atlasData.CX} cy={atlasData.CY} r="380" fill="url(#asg)"/>
+
+							<!-- Planetary orbit rings -->
+							{#each atlasData.planets as planet}
+								<circle cx={atlasData.CX} cy={atlasData.CY} r={planet.orbitR}
+									fill="none" stroke={atlasNodeColor(planet.type)}
+									stroke-width="1" stroke-opacity="0.07" stroke-dasharray="4,14"/>
+							{/each}
+
+							<!-- Data flow particles (animated with SVG animateMotion) -->
+							{#each [['database','memory-hub','#cba6f7',6],['memory-hub','autodev','#f38ba8',8],['database','dream-cycle','#f9e2af',7]] as hw, hi}
+								{@const pa = atlasData.planets.find(p => p.id === hw[0])}
+								{@const pb = atlasData.planets.find(p => p.id === hw[1])}
+								{#if pa && pb}
+									{@const pax = atlasData.CX + pa.orbitR * Math.cos((pa.baseAngle + pa.orbitSpeed * atlasElapsed) * Math.PI / 180)}
+									{@const pay = atlasData.CY + pa.orbitR * Math.sin((pa.baseAngle + pa.orbitSpeed * atlasElapsed) * Math.PI / 180)}
+									{@const pbx = atlasData.CX + pb.orbitR * Math.cos((pb.baseAngle + pb.orbitSpeed * atlasElapsed) * Math.PI / 180)}
+									{@const pby = atlasData.CY + pb.orbitR * Math.sin((pb.baseAngle + pb.orbitSpeed * atlasElapsed) * Math.PI / 180)}
+									<line x1={pax} y1={pay} x2={pbx} y2={pby} stroke={hw[2]} stroke-width="1" stroke-opacity="0.08"/>
+									<circle r="4" fill={hw[2]} opacity="0.5" filter="url(#ag2)">
+										<animateMotion dur="{hw[3]}s" repeatCount="indefinite"
+											path="M{pax},{pay} L{pbx},{pby}"/>
+									</circle>
 								{/if}
 							{/each}
-							<!-- Nodes -->
-							{#each atlasData.nodes as node}
-								<g
-									class="atlas-node"
-									transform="translate({node.x},{node.y})"
-									onpointerenter={() => { atlasHovered = node.id; }}
+
+							<!-- PLANETS + MOONS -->
+							{#each atlasData.planets as planet}
+								{@const pAngle = (planet.baseAngle + planet.orbitSpeed * atlasElapsed) * Math.PI / 180}
+								{@const px = atlasData.CX + planet.orbitR * Math.cos(pAngle)}
+								{@const py = atlasData.CY + planet.orbitR * Math.sin(pAngle)}
+								{@const pColor = atlasNodeColor(planet.type)}
+								{@const pStatus = atlasData.ss(planet.id)}
+								{@const pSelOrHov = atlasSelected === planet.id || atlasHovered === planet.id}
+
+								<!-- Moon orbital ring -->
+								{#if planet.moonR > 0}
+									<circle cx={px} cy={py} r={planet.moonR}
+										fill="none" stroke={pColor}
+										stroke-width="0.5" stroke-opacity="0.08" stroke-dasharray="2,6"/>
+								{/if}
+
+								<!-- Moons -->
+								{#each planet.moons as moon}
+									{@const mAngle = (moon.baseAngle + planet.moonSpeed * atlasElapsed) * Math.PI / 180}
+									{@const mx = px + planet.moonR * Math.cos(mAngle)}
+									{@const my = py + planet.moonR * Math.sin(mAngle)}
+									{@const mColor = atlasNodeColor(moon.type)}
+									{@const mStatus = atlasData.ss(moon.id)}
+									{@const mSel = atlasSelected === moon.id}
+									{@const mHov = atlasHovered === moon.id}
+									<g class="atlas-node"
+										onpointerenter={() => { atlasHovered = moon.id; }}
+										onpointerleave={() => { atlasHovered = null; }}
+										onclick={() => { atlasSelected = atlasSelected === moon.id ? null : moon.id; }}
+										style="cursor:pointer"
+									>
+										<rect x={mx - 52} y={my - 16} width="104" height="32" rx="6"
+											fill={mSel || mHov ? '#1a1a24' : '#0c0c12dd'}
+											stroke={mSel ? mColor : mHov ? '#45475a' : mColor + '25'}
+											stroke-width={mSel ? 1.8 : 0.8}
+											filter={mSel ? 'url(#ag2)' : ''}
+										/>
+										{#if mStatus !== 'unknown'}
+											<circle cx={mx - 40} cy={my - 3} r="3.5"
+												fill={mStatus === 'up' ? '#a6e3a1' : mStatus === 'down' ? '#f38ba8' : '#f9e2af'}/>
+										{/if}
+										<text x={mx - 30} y={my + 2} fill="#cdd6f4" font-size="10" font-weight="600">{moon.label.length > 12 ? moon.label.slice(0,11)+'..' : moon.label}</text>
+										{#if atlasData.rv(moon.id)}
+											<text x={mx - 42} y={my + 13} fill={mColor + '88'} font-size="8" font-family="monospace">{atlasData.rv(moon.id)}</text>
+										{/if}
+									</g>
+								{/each}
+
+								<!-- Planet body -->
+								{@const pr = planet.moons.length > 3 ? 40 : 34}
+								<g class="atlas-node"
+									onpointerenter={() => { atlasHovered = planet.id; }}
 									onpointerleave={() => { atlasHovered = null; }}
-									onclick={() => {
-									if (atlasSelected === node.id && node.navigate) {
-										// Double-click navigates
-										if (node.navigate.page === 'services') { leftSection = 'services'; }
-										else if (node.navigate.page === 'devices') { leftSection = 'devices'; }
-										else if (node.navigate.page === 'data') { leftSection = 'data'; }
-										else if (node.navigate.page === 'settings') { leftSection = 'settings'; }
-										else if (node.navigate.page === 'projects') { leftSection = 'projects'; }
-									}
-									atlasSelected = atlasSelected === node.id ? null : node.id;
-								}}
+									onclick={() => { atlasSelected = atlasSelected === planet.id ? null : planet.id; }}
 									style="cursor:pointer"
 								>
-									<!-- Node bg -->
-									<rect
-										x="-75" y="-24" width="150" height="48" rx="10"
-										fill={atlasHovered === node.id || atlasSelected === node.id ? '#1e1e2e' : '#11111b'}
-										stroke={atlasSelected === node.id ? atlasNodeColor(node) : atlasHovered === node.id ? '#45475a' : atlasNodeColor(node) + '30'}
-										stroke-width={atlasSelected === node.id ? 2.5 : 1}
-										filter={atlasSelected === node.id ? 'url(#glow)' : ''}
+									<circle cx={px} cy={py} r={pr}
+										fill="#0c0c12"
+										stroke={pSelOrHov ? pColor : pColor + '30'}
+										stroke-width={pSelOrHov ? 2.2 : 1.5}
+										filter={pSelOrHov ? 'url(#ag2)' : ''}
 									/>
-									<!-- Status dot -->
-									<circle cx="-60" cy="-8" r="5" fill={atlasStatusDot(node.status)} />
-									<!-- Label -->
-									<text x="-48" y="-4" fill="#cdd6f4" font-size="13" font-weight="600">{node.label.length > 18 ? node.label.slice(0,17) + '..' : node.label}</text>
-									<!-- Detail line -->
-									<text x="-60" y="14" fill="#6c7086" font-size="9">{(node.detail || '').length > 26 ? (node.detail || '').slice(0,25) + '..' : (node.detail || '')}</text>
+									{#if pStatus !== 'unknown'}
+										<circle cx={px} cy={py - pr + 8} r="4.5"
+											fill={pStatus === 'up' ? '#a6e3a1' : pStatus === 'down' ? '#f38ba8' : '#f9e2af'}/>
+									{/if}
+									<text x={px} y={py + 4} fill="#cdd6f4" font-size="11" font-weight="700" text-anchor="middle">{planet.label.length > 10 ? planet.label.slice(0,9)+'..' : planet.label}</text>
+									{#if atlasData.rv(planet.id)}
+										<text x={px} y={py + 17} fill={pColor + '99'} font-size="8" font-family="monospace" text-anchor="middle">{atlasData.rv(planet.id)}</text>
+									{/if}
 								</g>
 							{/each}
+
+							<!-- DEVICES — outer belt at fixed angle arc -->
+							{#each atlasData.devNodes as devNode, di}
+								{@const devAngle = (devNode.baseAngle + 0.04 * atlasElapsed) * Math.PI / 180}
+								{@const dR = 1100}
+								{@const dx = atlasData.CX + dR * Math.cos(devAngle)}
+								{@const dy = atlasData.CY + dR * Math.sin(devAngle)}
+								{@const dColor = atlasNodeColor('device')}
+								{@const dSel = atlasSelected === devNode.id}
+								{@const dHov = atlasHovered === devNode.id}
+								<g class="atlas-node"
+									onpointerenter={() => { atlasHovered = devNode.id; }}
+									onpointerleave={() => { atlasHovered = null; }}
+									onclick={() => { atlasSelected = atlasSelected === devNode.id ? null : devNode.id; if (dSel) { leftSection = 'devices'; atlasSelected = null; } }}
+									style="cursor:pointer"
+								>
+									<rect x={dx - 55} y={dy - 17} width="110" height="34" rx="7"
+										fill={dSel || dHov ? '#1a1a24' : '#0c0c12dd'}
+										stroke={dSel ? dColor : dHov ? '#45475a' : dColor + '30'}
+										stroke-width={dSel ? 2 : 1}
+										filter={dSel ? 'url(#ag2)' : ''}
+									/>
+									<circle cx={dx - 42} cy={dy} r="4"
+										fill={devNode.status === 'up' ? '#a6e3a1' : '#6c7086'}/>
+									<text x={dx - 32} y={dy + 4} fill="#cdd6f4" font-size="10.5" font-weight="600">{devNode.label.length > 12 ? devNode.label.slice(0,11)+'..' : devNode.label}</text>
+								</g>
+							{/each}
+
+							<!-- PROJECTS — outermost, gravitating near Forge -->
+							{#each atlasData.projs as proj, pi}
+								{@const projAngle = (proj.baseAngle + 0.03 * atlasElapsed) * Math.PI / 180}
+								{@const projR = 1250 + pi * 60}
+								{@const prjx = atlasData.CX + projR * Math.cos(projAngle)}
+								{@const prjy = atlasData.CY + projR * Math.sin(projAngle)}
+								{@const pjColor = atlasNodeColor('project')}
+								{@const pjSel = atlasSelected === proj.id}
+								{@const pjHov = atlasHovered === proj.id}
+								<g class="atlas-node"
+									onpointerenter={() => { atlasHovered = proj.id; }}
+									onpointerleave={() => { atlasHovered = null; }}
+									onclick={() => { atlasSelected = atlasSelected === proj.id ? null : proj.id; }}
+									style="cursor:pointer"
+								>
+									<rect x={prjx - 58} y={prjy - 15} width="116" height="30" rx="6"
+										fill={pjSel || pjHov ? '#1a1a24' : '#0c0c12bb'}
+										stroke={pjSel ? pjColor : pjHov ? '#45475a' : pjColor + '20'}
+										stroke-width={pjSel ? 2 : 0.8}
+										stroke-dasharray={pjSel ? 'none' : '3,3'}
+									/>
+									<text x={prjx} y={prjy + 4} fill={pjColor + 'bb'} font-size="10" font-weight="500" text-anchor="middle">{proj.label.length > 15 ? proj.label.slice(0,14)+'..' : proj.label}</text>
+								</g>
+							{/each}
+
+							<!-- SUN (PAN Server) -->
+							<g class="atlas-node"
+								onpointerenter={() => { atlasHovered = 'pan-server'; }}
+								onpointerleave={() => { atlasHovered = null; }}
+								onclick={() => { atlasSelected = atlasSelected === 'pan-server' ? null : 'pan-server'; }}
+								style="cursor:pointer"
+							>
+								<circle cx={atlasData.CX} cy={atlasData.CY} r="72"
+									fill="#090912" stroke={atlasSelected === 'pan-server' ? '#89b4fa' : '#89b4fa30'}
+									stroke-width={atlasSelected === 'pan-server' ? 3 : 1.5} filter="url(#ag)"/>
+								<text x={atlasData.CX} y={atlasData.CY - 14} fill="#89b4fa" font-size="32" font-weight="700" text-anchor="middle" font-family="serif">Π</text>
+								<text x={atlasData.CX} y={atlasData.CY + 12} fill="#cdd6f4" font-size="12" font-weight="600" text-anchor="middle">PAN Server</text>
+								{#if atlasData.stats}
+									<text x={atlasData.CX} y={atlasData.CY + 28} fill="#89b4fa99" font-size="9" text-anchor="middle" font-family="monospace">{(atlasData.stats.total_events/1000).toFixed(1)}K events</text>
+								{/if}
+							</g>
+
+							<!-- Sector labels (faint, rotate with time very slowly) -->
+							<text x={atlasData.CX + 1050} y={atlasData.CY - 20} fill="#89b4fa18" font-size="11" font-weight="700" letter-spacing="3" text-anchor="middle">DEVICES</text>
+							<text x={atlasData.CX} y={atlasData.CY - 1050} fill="#cba6f718" font-size="11" font-weight="700" letter-spacing="3" text-anchor="middle">MEMORY</text>
 						</g>
 					</svg>
-					<!-- Detail panel for selected node -->
-					{#if atlasSelected && atlasData.nodeMap[atlasSelected]}
-						{@const sel = atlasData.nodeMap[atlasSelected]}
-						{@const connectedEdges = atlasData.edges.filter(e => e.from === atlasSelected || e.to === atlasSelected)}
-						{@const filePaths = sel.description ? (sel.description.match(/File:\s*([^\n]+)/) || [])[1]?.split(',').map(f => f.trim()) || [] : []}
-						<div class="atlas-detail">
-							<div class="atlas-detail-header">
-								<span class="atlas-detail-dot" style="background:{atlasStatusDot(sel.status)}"></span>
-								<strong>{sel.label}</strong>
-								<span class="atlas-detail-type" style="color:{atlasNodeColor(sel)}">{sel.type}</span>
-								<button class="atlas-detail-close" onclick={() => { atlasSelected = null; }}>&times;</button>
-							</div>
-							<div class="atlas-detail-body">
-								<div class="atlas-detail-status">
-									<span class="atlas-detail-status-dot" style="background:{atlasStatusDot(sel.status)}"></span>
-									{sel.status === 'up' ? 'Running' : sel.status === 'down' ? 'Offline' : sel.status === 'warn' ? 'Warning' : sel.status === 'idle' ? 'Idle' : 'Unknown'}
+
+					<!-- Detail panel -->
+					{#if atlasSelected}
+						{@const selPlanet = atlasData.planets.find(p => p.id === atlasSelected)}
+						{@const selMoon = atlasData.planets.flatMap(p => p.moons).find(m => m.id === atlasSelected)}
+						{@const selDev = atlasData.devNodes.find(d => d.id === atlasSelected)}
+						{@const selProj = atlasData.projs.find(p => p.id === atlasSelected)}
+						{@const selAny = selPlanet || selMoon || selDev || selProj || (atlasSelected === 'pan-server' ? { label: 'PAN Server', type: 'core' } : null)}
+						{#if selAny}
+							<div class="atlas-detail">
+								<div class="atlas-detail-header">
+									<span class="atlas-detail-dot" style="background:{atlasNodeColor(selAny.type)}"></span>
+									<strong>{selAny.label}</strong>
+									<span class="atlas-detail-type" style="color:{atlasNodeColor(selAny.type)}">{selAny.type}</span>
+									<button class="atlas-detail-close" onclick={() => { atlasSelected = null; }}>&times;</button>
 								</div>
-								{#if sel.detail}<div class="atlas-detail-info">{sel.detail}</div>{/if}
-								{#if sel.description}
-									<div class="atlas-detail-desc">{sel.description.replace(/\s*File:.*$/, '')}</div>
-								{/if}
-								{#if connectedEdges.length > 0}
-									<div class="atlas-detail-section-title">Connected To</div>
-									<div class="atlas-detail-connections">
-										{#each connectedEdges as edge}
-											{@const otherId = edge.from === atlasSelected ? edge.to : edge.from}
-											{@const otherNode = atlasData.nodeMap[otherId]}
-											{#if otherNode}
-												<button class="atlas-detail-conn" onclick={() => { atlasSelected = otherId; }}>
-													<span class="atlas-detail-conn-dot" style="background:{atlasStatusDot(otherNode.status)}"></span>
-													<span class="atlas-detail-conn-name">{otherNode.label}</span>
-													{#if edge.label}<span class="atlas-detail-conn-label">{edge.label}</span>{/if}
-													<span class="atlas-detail-conn-dir">{edge.from === atlasSelected ? '\u2192' : '\u2190'}</span>
+								<div class="atlas-detail-body">
+									{#if selPlanet || selMoon}
+										{@const sid = selAny.id}
+										{@const status = atlasData.ss(sid)}
+										<div class="atlas-detail-status">
+											<span class="atlas-detail-status-dot" style="background:{status === 'up' ? '#a6e3a1' : status === 'down' ? '#f38ba8' : '#6c7086'}"></span>
+											{status === 'up' ? 'Running' : status === 'down' ? 'Offline' : status === 'idle' ? 'Idle' : 'Unknown'}
+										</div>
+										{#if atlasData.sd(sid)}<div class="atlas-detail-info">{atlasData.sd(sid)}</div>{/if}
+										{#if atlasData.rv(sid)}<div class="atlas-detail-info">{atlasData.rv(sid)}</div>{/if}
+										{#if selPlanet && selPlanet.moons.length > 0}
+											<div class="atlas-detail-section-title">Moons ({selPlanet.moons.length})</div>
+											{#each selPlanet.moons as moon}
+												<button class="atlas-detail-conn" onclick={() => { atlasSelected = moon.id; }}>
+													<span class="atlas-detail-conn-dot" style="background:{atlasData.ss(moon.id) === 'up' ? '#a6e3a1' : '#6c7086'}"></span>
+													<span class="atlas-detail-conn-name">{moon.label}</span>
 												</button>
-											{/if}
-										{/each}
-									</div>
-								{/if}
-								{#if sel.navigate}
-									<button class="atlas-nav-btn" onclick={() => {
-										if (sel.navigate.page === 'services') { leftSection = 'services'; }
-										else if (sel.navigate.page === 'devices') { leftSection = 'devices'; }
-										else if (sel.navigate.page === 'data') { leftSection = 'data'; }
-										else if (sel.navigate.page === 'settings') { leftSection = 'settings'; }
-										else if (sel.navigate.page === 'projects') { leftSection = 'projects'; }
-										atlasSelected = null;
-									}}>Go to {sel.navigate.page} &rarr;</button>
-								{/if}
-								{#if filePaths.length > 0}
-									<div class="atlas-detail-section-title">Files</div>
-									{#each filePaths as fp}
-										<code class="atlas-detail-file">{fp}</code>
-									{/each}
-								{/if}
+											{/each}
+										{/if}
+									{:else if selDev}
+										<div class="atlas-detail-status">
+											<span class="atlas-detail-status-dot" style="background:{selDev.status === 'up' ? '#a6e3a1' : '#6c7086'}"></span>
+											{selDev.status === 'up' ? 'Online' : 'Offline'}
+										</div>
+										<button class="atlas-nav-btn" onclick={() => { leftSection = 'devices'; atlasSelected = null; }}>Go to Devices &rarr;</button>
+									{:else if selProj}
+										<button class="atlas-nav-btn" onclick={() => { leftSection = 'projects'; atlasSelected = null; }}>Go to Projects &rarr;</button>
+									{:else}
+										<div class="atlas-detail-info">Central server. Port 7777.</div>
+										{#if atlasData.stats}<div class="atlas-detail-info">{atlasData.stats.total_events} events · {atlasData.stats.total_sessions} sessions</div>{/if}
+									{/if}
+								</div>
 							</div>
-						</div>
+						{/if}
 					{/if}
 				{:else}
 					<div class="term-empty">
 						<div class="term-empty-icon">&#x1F5FA;</div>
 						<div class="term-empty-title">Atlas</div>
-						<div class="term-empty-sub">System architecture diagram</div>
+						<div class="term-empty-sub">System orrery</div>
 					</div>
 				{/if}
 			</div>
@@ -6973,7 +7118,7 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'contacts') loadContacts(); if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); } else { stopAllDevicesPolling(); } }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'contacts') loadContacts(); if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices' || rightSection === 'apps') { startAllDevicesPolling(); if (rightSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); } }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
 				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
 				<option value="apps">Apps</option>
@@ -6981,22 +7126,22 @@
 				<option value="pipeline">Beta Pipeline</option>
 				<option value="bugs">Bugs</option>
 				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
-				<option value="devices">Devices</option>
-				<option value="instances">Instances</option>
+				{#if widgetVisible('devices')}<option value="devices">Devices</option>{/if}
+				{#if widgetVisible('instances')}<option value="instances">Instances</option>{/if}
 				<option value="intuition">Intuition</option>
 				<option value="lifeboat">Lifeboat</option>
 				<option value="library">Library</option>
 				<option value="mail">Mail</option>
 				<option value="perf">Performance</option>
-				<option value="project">Project</option>
+				{#if widgetVisible('project')}<option value="project">Project</option>{/if}
 				<option value="services">Services</option>
 				<option value="setup">Setup Guide</option>
-				<option value="tasks">Tasks</option>
+				{#if widgetVisible('tasks')}<option value="tasks">Tasks</option>{/if}
 				<option value="teams">Teams</option>
-				<option value="tests">Tests</option>
+				{#if widgetVisible('tests')}<option value="tests">Tests</option>{/if}
 				<option value="transcript">Transcript</option>
 				<option value="usage">Usage</option>
-				<option value="users">Users</option>
+				{#if widgetVisible('users')}<option value="users">Users</option>{/if}
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
 				{/each}
@@ -7137,62 +7282,105 @@
 					<div class="empty-state">Loading services...</div>
 				{/if}
 			{:else if rightSection === 'apps'}
-				{#if appsView === 'windows'}
+				{#if appsView.startsWith('device:')}
+					{@const devHostname = appsView.slice(7)}
+					{@const dev = allDevices.find(d => d.hostname === devHostname)}
+					{@const devCaps = dev ? (Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])) : []}
+					{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
+					{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
 					<div class="apps-drilldown">
-						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Back to Apps</button>
-						{#if wrapServices.length === 0}
-							<div class="apps-wrap-msg" style="padding:12px">No applications discovered yet</div>
-						{:else}
-							{#each ['communication', 'productivity', 'development', 'media', 'social', 'creative', 'browsing'] as cat}
-								{#if wrapServices.filter(s => s.category === cat).length > 0}
-									<div class="apps-cat-label">{cat.charAt(0).toUpperCase() + cat.slice(1)}</div>
-									<div class="apps-grid">
-										{#each wrapServices.filter(s => s.category === cat) as svc}
-											<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
-												<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
-												<div class="app-name">{svc.title || svc.id}</div>
-												<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'PAN Module' : 'Web App'}</div>
-											</button>
-										{/each}
-									</div>
-								{/if}
-							{/each}
-						{/if}
-						{#if wrapMsg}
-							<div class="apps-wrap-msg">{wrapMsg}</div>
+						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Devices</button>
+						<div style="padding:8px 12px 4px">
+							<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">
+								<span class="svc-dot {dev?.online ? 'up' : ''}"></span>
+								<span style="font-size:13px;font-weight:700;color:#eee">{dev?.name || devHostname}</span>
+								<span style="font-size:9px;opacity:.45;margin-left:auto">{dev?.device_type || 'pc'}</span>
+							</div>
+							{#if devAppKeys.length > 0}
+								<div class="apps-cat-label">Installed Apps</div>
+								<div class="apps-grid">
+									{#each devAppKeys as appKey}
+										{@const meta = APP_META[appKey]}
+										<div class="app-card" style="opacity:{dev?.online ? 1 : 0.55}">
+											<div class="app-icon">{meta?.icon || '📦'}</div>
+											<div class="app-name">{meta?.label || appKey}</div>
+										</div>
+									{/each}
+								</div>
+							{/if}
+							{#if devOtherCaps.length > 0}
+								<div class="apps-cat-label" style="margin-top:8px">Capabilities</div>
+								<div style="display:flex;gap:4px;flex-wrap:wrap;padding-bottom:8px">
+									{#each devOtherCaps as cap}
+										<span style="font-size:9px;background:rgba(255,255,255,.07);border-radius:3px;padding:2px 6px;color:#bbb">{cap}</span>
+									{/each}
+								</div>
+							{/if}
+							{#if devAppKeys.length === 0 && devOtherCaps.length === 0}
+								<div style="font-size:10px;opacity:.45;padding:8px 0">No capabilities detected yet.</div>
+							{/if}
+						</div>
+						{#if wrapServices.length > 0}
+							<div class="apps-cat-label" style="margin-top:4px">Web Apps</div>
+							<div class="apps-grid" style="padding:0 8px 8px">
+								{#each wrapServices as svc}
+									<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
+										<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
+										<div class="app-name">{svc.title || svc.id}</div>
+										<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'Module' : 'Web'}</div>
+									</button>
+								{/each}
+							</div>
 						{/if}
 					</div>
 				{:else}
-					<div class="apps-grid">
-						<button class="app-card" onclick={() => {
-								const url = `${window.location.origin}/v2/atlas-v2`;
-								fetch('/api/v1/ui-commands', {
-									method: 'POST',
-									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url, title: 'Atlas', width: 1400, height: 900 })
-								});
+					<!-- Root: utility buttons + device-first app list -->
+					<div style="display:flex;gap:5px;padding:6px 8px 0;flex-wrap:wrap">
+						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
+								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
+								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/atlas-v2`, title:'Atlas', width:1400, height:900 }) });
 							}}>
-								<div class="app-icon">&#x1F5FA;</div>
-								<div class="app-name">Atlas</div>
-								<div class="app-desc">System Architecture</div>
+							<div class="app-icon">
+								<img src="/atlas-icon.png" width="36" height="36" style="object-fit:cover;border-radius:4px;" alt="Atlas"/>
+							</div>
+							<div class="app-name">Atlas</div>
+						</button>
+						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
+								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
+								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/kronos`, title:'Kronos', width:1200, height:800 }) });
+							}}>
+							<div class="app-icon">📜</div>
+							<div class="app-name">Kronos</div>
+						</button>
+					</div>
+					<!-- Device rows -->
+					<div style="padding:6px 8px 0">
+						{#each allDevices as dev}
+							{@const devCaps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
+							{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
+							{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
+							<button onclick={() => { appsView = 'device:' + dev.hostname; loadWrapServices(); }}
+								style="width:100%;text-align:left;background:none;border:none;border-bottom:1px solid rgba(255,255,255,.06);padding:7px 0;cursor:pointer">
+								<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
+									<span class="svc-dot {dev.online ? 'up' : ''}"></span>
+									<span style="font-size:11px;font-weight:600;color:#e0e0e0">{dev.name || dev.hostname}</span>
+									<span style="font-size:9px;opacity:.4;margin-left:auto">{dev.device_type || 'pc'}</span>
+								</div>
+								{#if devAppKeys.length > 0}
+									<div style="display:flex;gap:5px;flex-wrap:wrap;padding-left:16px">
+										{#each devAppKeys as appKey}
+											{@const meta = APP_META[appKey]}
+											<span title="{meta?.label || appKey}" style="font-size:15px;opacity:{dev.online ? 1 : 0.45}">{meta?.icon || '📦'}</span>
+										{/each}
+									</div>
+								{:else if devOtherCaps.length > 0}
+									<div style="padding-left:16px;font-size:9px;opacity:.35;line-height:1.4">{devOtherCaps.slice(0,4).join(' · ')}</div>
+								{/if}
 							</button>
-							<button class="app-card" onclick={() => {
-									const url = `${window.location.origin}/v2/kronos`;
-									fetch('/api/v1/ui-commands', {
-										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'open_window', url, title: 'Kronos', width: 1200, height: 800 })
-									});
-								}}>
-								<div class="app-icon">📜</div>
-								<div class="app-name">Kronos</div>
-								<div class="app-desc">Timeline &amp; History</div>
-							</button>
-							<button class="app-card" onclick={() => { appsView = 'windows'; loadWrapServices(); }}>
-								<div class="app-icon">🪟</div>
-								<div class="app-name">Windows</div>
-								<div class="app-desc">{wrapServices.length > 0 ? `${wrapServices.length} Apps` : 'Desktop Apps'}</div>
-							</button>
+						{/each}
+						{#if allDevices.length === 0}
+							<div style="padding:16px 0;text-align:center;font-size:10px;opacity:.4">No devices found</div>
+						{/if}
 					</div>
 				{/if}
 			{:else if rightSection === 'instances'}
@@ -7726,24 +7914,50 @@
 						{#if catDevices.length > 0}
 							<div class="svc-category" style="color:{catColor};margin-top:6px">{catLabel} · {catDevices.length}</div>
 							{#each catDevices as dev}
-								{@const STALE = dev.device_type === 'phone' ? 15 * 60 * 1000 : 5 * 60 * 1000}
+								{@const STALE = dev.device_type === 'phone' ? 30 * 60 * 1000 : 5 * 60 * 1000}
 								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
 								{@const isOnline = dev.online === 1 && ageMs < STALE}
 								{@const isHub = dev.is_hub === true}
 								{@const isPanClient = !!dev.client_version}
 								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
 								{@const metrics = deviceMetrics[dev.hostname] || deviceMetrics[dev.name] || null}
+								{@const caps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
+								{@const isExpanded = deviceExpandedIds.has(dev.hostname)}
 								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
-									<div style="display:flex;align-items:center;gap:6px">
+									<div style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick={() => { const s = new Set(deviceExpandedIds); s.has(dev.hostname) ? s.delete(dev.hostname) : s.add(dev.hostname); deviceExpandedIds = s; }}>
 										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
-										<div class="svc-name" style="display:flex;align-items:center;gap:4px">
-											{dev.name || dev.hostname}
-											{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
-											{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
-											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
+										<div style="flex:1;min-width:0">
+											<div class="svc-name" style="display:flex;align-items:center;gap:4px">
+												{dev.name || dev.hostname}
+												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
+												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+											</div>
+											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
 										</div>
-										<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+										<div style="display:flex;align-items:center;gap:4px">
+											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
+											<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+											<span style="font-size:10px;color:#585b70;transition:transform 0.15s;display:inline-block;transform:rotate({isExpanded?'90deg':'0deg'})">&rsaquo;</span>
+										</div>
 									</div>
+									{#if isExpanded}
+										<div style="padding:6px 0 4px 16px;border-left:1px solid #313244;margin-left:5px;margin-top:4px">
+											<div style="font-size:9px;color:#6c7086;margin-bottom:4px">
+												<span style="color:#cdd6f4">Hostname:</span> {dev.hostname}
+												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
+												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
+											</div>
+											{#if caps.length > 0}
+												<div style="font-size:9px;color:#6c7086;margin-bottom:3px"><span style="color:#cdd6f4">Capabilities:</span></div>
+												<div style="display:flex;flex-wrap:wrap;gap:3px">
+													{#each caps as cap}
+														<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:{cap.startsWith('app:') ? '#a6e3a122' : '#89b4fa11'};color:{cap.startsWith('app:') ? '#a6e3a1' : '#89b4fa'};border:1px solid {cap.startsWith('app:') ? '#a6e3a133' : '#89b4fa22'}">{cap.startsWith('app:') ? cap.slice(4) : cap}</span>
+													{/each}
+												</div>
+											{/if}
+											{#if dev.last_seen}<div style="font-size:9px;color:#585b70;margin-top:4px">Last seen: {dev.last_seen}</div>{/if}
+										</div>
+									{/if}
 									{#if metrics}
 										{@const cpuColor = (metrics.cpu_pct||0) > 85 ? '#f38ba8' : (metrics.cpu_pct||0) > 60 ? '#fab387' : '#a6e3a1'}
 										{@const ramColor = (metrics.ram_pct||0) > 85 ? '#f38ba8' : (metrics.ram_pct||0) > 70 ? '#fab387' : '#89b4fa'}
@@ -10010,6 +10224,8 @@
 		font-size: 11px;
 		margin-left: 4px;
 	}
+	.atlas-live { color: #a6e3a1; font-size: 10px; margin-left: auto; animation: atlasPulse 2s infinite; }
+	@keyframes atlasPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 	.atlas-stat {
 		color: #585b70;
 		font-size: 10px;
