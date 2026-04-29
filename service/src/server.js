@@ -48,6 +48,7 @@ import { guardianMiddleware } from './guardian.js';
 import { privacyMiddleware } from './privacy.js';
 import privacyRouter from './routes/privacy.js';
 import { extractUser } from './middleware/auth.js';
+import { requireFeature, requireNotChild, getPermissionsMatrix } from './permissions.js';
 import { requireOrg, auditLog, verifyAllAuditChains, resignAuditChain } from './middleware/org-context.js';
 import { evolve } from './evolution/engine.js';
 import { buildContext as buildMemoryContext } from './memory/index.js';
@@ -1470,8 +1471,8 @@ app.get('/api/automation/status', (req, res) => {
   res.json({ features });
 });
 
-// POST /api/automation/toggle — toggle a feature on/off
-app.post('/api/automation/toggle', (req, res) => {
+// POST /api/automation/toggle — toggle a feature on/off (manager+ only)
+app.post('/api/automation/toggle', requireFeature('automations:toggle'), (req, res) => {
   const { feature, enabled } = req.body;
   if (!feature || !featureRegistry[feature]) {
     return res.status(400).json({ error: 'Invalid feature. Valid: ' + Object.keys(featureRegistry).join(', ') });
@@ -2407,6 +2408,23 @@ app.use('/dashboard', express.static(join(__dirname, '..', 'public'), {
   }
 }));
 
+// Permissions matrix — feature → min power level + widget visibility
+// Dashboard uses this to gate widgets and actions based on req.user.power
+app.get('/api/v1/permissions/matrix', (req, res) => {
+  const matrix = getPermissionsMatrix();
+  const power = req.user?.power ?? 100;
+  // Annotate each feature: can this user do it?
+  const features = {};
+  for (const [feature, required] of Object.entries(matrix.features)) {
+    features[feature] = { required, allowed: power >= required };
+  }
+  const widgets = {};
+  for (const [widget, required] of Object.entries(matrix.widgets)) {
+    widgets[widget] = { required, visible: power >= required };
+  }
+  res.json({ power, features, widgets });
+});
+
 // Auth check — returns current user (used by SvelteKit dashboard layout)
 app.get('/auth/me', (req, res) => {
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
@@ -2459,6 +2477,9 @@ app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
 
 // Serve clipboard images (pasted screenshots from dashboard)
 app.use('/clipboard', express.static(join(process.env.TEMP || 'C:\\Users\\tzuri\\AppData\\Local\\Temp', 'pan-clipboard')));
+
+// Serve root-level static assets (icons, images referenced by the dashboard)
+app.use(express.static(join(__dirname, '..', 'public'), { etag: false }));
 
 // Dev instance — detect running dev server (dev-server.js on 7781 or Vite on 5173+)
 app.post('/api/v1/dev/start', async (req, res) => {
@@ -2644,7 +2665,7 @@ app.delete('/api/v1/terminal/permissions/:id', (req, res) => {
 // Send text to active terminal (phone voice commands → terminal, or
 // the desktop dashboard's own input — same endpoint, different source).
 // Falls back to pipe mode if PTY send fails (mobile dashboard uses pipe mode now).
-app.post('/api/v1/terminal/send', async (req, res) => {
+app.post('/api/v1/terminal/send', requireNotChild, async (req, res) => {
   const { text, session_id, raw, source: bodySource } = req.body;
   if (!text) return res.status(400).json({ error: 'text required' });
 
@@ -2751,7 +2772,7 @@ app.post('/api/v1/terminal/interrupt', (req, res) => {
 // Spawns claude -p as a child process, returns clean JSON responses.
 // Dedup: reject identical text to same session within 5 seconds
 const _pipeDedup = new Map(); // key: `${session_id}:${text}` → timestamp
-app.post('/api/v1/terminal/pipe', async (req, res) => {
+app.post('/api/v1/terminal/pipe', requireNotChild, async (req, res) => {
   const { text, session_id } = req.body;
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
   console.log(`[PAN Pipe] POST /pipe session_id=${session_id} text=${(text||'').slice(0,50)} ip=${ip} user=${req.user?.email || 'NONE'}`);
