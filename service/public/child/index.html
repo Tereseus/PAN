@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PAN — Hi!</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+:root {
+  --bg: #0a0a0f;
+  --bg2: #1e1e2e;
+  --text: #cdd6f4;
+  --accent: #89b4fa;
+  --green: #a6e3a1;
+  --red: #f38ba8;
+  --yellow: #f9e2af;
+  --purple: #cba6f7;
+  --teal: #94e2d5;
+  --orange: #fab387;
+}
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid rgba(205,214,244,0.08);
+}
+.header-greeting {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.header-time {
+  font-size: 13px;
+  color: rgba(205,214,244,0.4);
+}
+
+/* Toast feedback */
+#toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(80px);
+  background: var(--bg2);
+  border: 1px solid rgba(205,214,244,0.15);
+  border-radius: 12px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1), opacity 0.3s;
+  opacity: 0;
+  z-index: 100;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+/* Grid layout */
+.grid-container {
+  padding: 20px 16px;
+  height: calc(100vh - 70px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(205,214,244,0.35);
+  font-weight: 600;
+  padding: 4px 4px 0;
+}
+
+.btn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.btn-grid.wide { grid-template-columns: 1fr; }
+.btn-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+
+/* Big action button */
+.act-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 22px 12px;
+  background: var(--bg2);
+  border: 2px solid transparent;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.act-btn:active { transform: scale(0.95); }
+.act-btn.blue   { border-color: rgba(137,180,250,0.3); }
+.act-btn.green  { border-color: rgba(166,227,161,0.3); }
+.act-btn.red    { border-color: rgba(243,139,168,0.3); }
+.act-btn.yellow { border-color: rgba(249,226,175,0.3); }
+.act-btn.purple { border-color: rgba(203,166,247,0.3); }
+.act-btn.teal   { border-color: rgba(148,226,213,0.3); }
+.act-btn.orange { border-color: rgba(250,179,135,0.3); }
+
+.act-btn:hover.blue   { background: rgba(137,180,250,0.08); }
+.act-btn:hover.green  { background: rgba(166,227,161,0.08); }
+.act-btn:hover.red    { background: rgba(243,139,168,0.08); }
+.act-btn:hover.yellow { background: rgba(249,226,175,0.08); }
+.act-btn:hover.purple { background: rgba(203,166,247,0.08); }
+.act-btn:hover.teal   { background: rgba(148,226,213,0.08); }
+.act-btn:hover.orange { background: rgba(250,179,135,0.08); }
+
+.act-btn .emoji { font-size: 36px; line-height: 1; }
+.act-btn .label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+  line-height: 1.3;
+}
+.act-btn .sublabel {
+  font-size: 10px;
+  color: rgba(205,214,244,0.4);
+  text-align: center;
+}
+
+/* Spinner for pending */
+.act-btn.pending { opacity: 0.6; pointer-events: none; }
+.act-btn.pending .emoji { animation: spin 0.8s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Timer row */
+.timer-row {
+  display: flex;
+  gap: 8px;
+}
+.timer-row .act-btn { flex: 1; padding: 16px 8px; }
+.timer-row .act-btn .emoji { font-size: 24px; }
+.timer-row .act-btn .label { font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-greeting" id="greeting">Hi! 👋</div>
+  <div class="header-time" id="clock"></div>
+</div>
+
+<div id="toast"></div>
+
+<div class="grid-container">
+
+  <!-- Lights -->
+  <div class="section-label">Lights</div>
+  <div class="btn-grid">
+    <button class="act-btn yellow" onclick="doAction('turn on the lights', this)">
+      <span class="emoji">💡</span>
+      <span class="label">Lights On</span>
+    </button>
+    <button class="act-btn blue" onclick="doAction('turn off the lights', this)">
+      <span class="emoji">🌙</span>
+      <span class="label">Lights Off</span>
+    </button>
+    <button class="act-btn orange" onclick="doAction('set lights to 50 percent', this)">
+      <span class="emoji">🔆</span>
+      <span class="label">Dim Lights</span>
+      <span class="sublabel">Half brightness</span>
+    </button>
+    <button class="act-btn purple" onclick="doAction('set lights to night mode', this)">
+      <span class="emoji">🌃</span>
+      <span class="label">Night Mode</span>
+      <span class="sublabel">Soft + warm</span>
+    </button>
+  </div>
+
+  <!-- Music -->
+  <div class="section-label" style="margin-top:4px">Music</div>
+  <div class="btn-grid">
+    <button class="act-btn green" onclick="doAction('play music', this)">
+      <span class="emoji">▶️</span>
+      <span class="label">Play Music</span>
+    </button>
+    <button class="act-btn red" onclick="doAction('pause music', this)">
+      <span class="emoji">⏸️</span>
+      <span class="label">Pause</span>
+    </button>
+    <button class="act-btn teal" onclick="doAction('next song', this)">
+      <span class="emoji">⏭️</span>
+      <span class="label">Next Song</span>
+    </button>
+    <button class="act-btn blue" onclick="doAction('play kids music', this)">
+      <span class="emoji">🎵</span>
+      <span class="label">Kids Music</span>
+    </button>
+  </div>
+
+  <!-- Timer -->
+  <div class="section-label" style="margin-top:4px">Timers</div>
+  <div class="timer-row">
+    <button class="act-btn yellow" onclick="doAction('set a timer for 5 minutes', this)">
+      <span class="emoji">⏱️</span>
+      <span class="label">5 min</span>
+    </button>
+    <button class="act-btn yellow" onclick="doAction('set a timer for 15 minutes', this)">
+      <span class="emoji">⏱️</span>
+      <span class="label">15 min</span>
+    </button>
+    <button class="act-btn yellow" onclick="doAction('set a timer for 30 minutes', this)">
+      <span class="emoji">⏱️</span>
+      <span class="label">30 min</span>
+    </button>
+    <button class="act-btn yellow" onclick="doAction('set a timer for 1 hour', this)">
+      <span class="emoji">⏱️</span>
+      <span class="label">1 hour</span>
+    </button>
+  </div>
+
+  <!-- Fun -->
+  <div class="section-label" style="margin-top:4px">Quick Questions</div>
+  <div class="btn-grid">
+    <button class="act-btn teal" onclick="doAsk('What time is it?', this)">
+      <span class="emoji">🕐</span>
+      <span class="label">Time?</span>
+    </button>
+    <button class="act-btn blue" onclick="doAsk('What is the weather like today?', this)">
+      <span class="emoji">🌤️</span>
+      <span class="label">Weather?</span>
+    </button>
+    <button class="act-btn purple" onclick="doAsk('Tell me a fun fact', this)">
+      <span class="emoji">🧠</span>
+      <span class="label">Fun Fact</span>
+    </button>
+    <button class="act-btn orange" onclick="doAsk('Tell me a joke', this)">
+      <span class="emoji">😂</span>
+      <span class="label">Joke!</span>
+    </button>
+  </div>
+
+</div>
+
+<script>
+// ── Clock ────────────────────────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+updateClock();
+setInterval(updateClock, 10000);
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg, duration = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+// ── API helper ────────────────────────────────────────────────────────────────
+const PORT = window.location.port || 7777;
+const BASE = `${window.location.protocol}//${window.location.hostname}:${PORT}`;
+
+async function sendCommand(text) {
+  // Try the active terminal session first, then fall back to the router
+  let sessionId = null;
+  try {
+    const s = await fetch(`${BASE}/api/v1/terminal/sessions`).then(r => r.json());
+    const sessions = Array.isArray(s) ? s : (s.sessions || []);
+    const active = sessions.find(x => x.active) || sessions[0];
+    if (active) sessionId = active.id;
+  } catch {}
+
+  if (sessionId) {
+    const resp = await fetch(`${BASE}/api/v1/terminal/pipe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, text, source: 'child-ui' })
+    });
+    if (resp.ok) return await resp.json();
+  }
+
+  // Fallback: direct router call
+  const resp = await fetch(`${BASE}/api/v1/router`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, source: 'child-ui', caller: 'child' })
+  });
+  return await resp.json();
+}
+
+// ── Action button handler ─────────────────────────────────────────────────────
+async function doAction(command, btn) {
+  btn.classList.add('pending');
+  const originalEmoji = btn.querySelector('.emoji').textContent;
+  btn.querySelector('.emoji').textContent = '⌛';
+  try {
+    await sendCommand(command);
+    showToast('✓ Done!');
+  } catch (e) {
+    showToast('⚠️ Couldn\'t connect — try again');
+  } finally {
+    btn.classList.remove('pending');
+    btn.querySelector('.emoji').textContent = originalEmoji;
+  }
+}
+
+// ── Ask button handler (shows response in toast) ──────────────────────────────
+async function doAsk(question, btn) {
+  btn.classList.add('pending');
+  const originalEmoji = btn.querySelector('.emoji').textContent;
+  btn.querySelector('.emoji').textContent = '⌛';
+  try {
+    const result = await sendCommand(question);
+    const answer = result?.response || result?.text || result?.message || '✓ Asked!';
+    showToast(answer.slice(0, 80) + (answer.length > 80 ? '…' : ''), 4000);
+  } catch {
+    showToast('⚠️ Couldn\'t connect — try again');
+  } finally {
+    btn.classList.remove('pending');
+    btn.querySelector('.emoji').textContent = originalEmoji;
+  }
+}
+
+// ── Greeting ──────────────────────────────────────────────────────────────────
+const hour = new Date().getHours();
+const timeGreet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+const timeEmoji = hour < 12 ? '☀️' : hour < 18 ? '🌤️' : '🌙';
+const userName = new URLSearchParams(window.location.search).get('user');
+const greet = userName ? `${timeGreet}, ${userName}! ${timeEmoji}` : `${timeGreet}! ${timeEmoji}`;
+document.getElementById('greeting').textContent = greet;
+</script>
+</body>
+</html>
