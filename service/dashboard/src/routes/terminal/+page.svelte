@@ -4007,6 +4007,23 @@
 		} catch {}
 	}
 
+	async function addUserSubmit(e) {
+		e.preventDefault();
+		const form = e.target;
+		const name = form.querySelector('[name=uname]').value.trim();
+		const role = form.querySelector('[name=urole]').value;
+		if (!name) return;
+		try {
+			const r = await api('/api/v1/auth/users', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ display_name: name, role })
+			});
+			if (r.ok) { form.reset(); loadUsers(); }
+			else alert(r.error || 'Failed to add user');
+		} catch (err) { alert(String(err)); }
+	}
+
 	// ==================== PAN Clients ====================
 	let deviceMetrics = $state({}); // device_id → latest metric snapshot
 
@@ -6198,7 +6215,7 @@
 			{:else if leftSection === 'users'}
 				<div class="users-panel">
 					{#if usersData.length === 0}
-						<div class="empty-state">No users registered</div>
+						<div class="empty-state">No users yet</div>
 					{:else}
 						{@const groups = [...new Set(usersData.map(u => u.role || u.group || 'Default'))]}
 						{#each groups as group}
@@ -6208,12 +6225,33 @@
 									<span class="svc-dot" class:up={user.is_active !== 0 || user.status === 'active' || user.status === 'online'} class:unknown={user.is_active === 0 && !user.status}></span>
 									<div class="svc-info">
 										<div class="svc-name">{user.display_name || user.name || 'Unknown'}</div>
-										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}</div>
+										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.power_lvl != null ? ` · lvl ${user.power_lvl}` : ''}</div>
 									</div>
+									{#if user.id !== 1}
+										<button class="svc-action-btn danger" title="Remove" onclick={async () => {
+											if (!confirm(`Remove ${user.display_name}?`)) return;
+											await api(`/api/v1/auth/users/${user.id}`, { method: 'DELETE' });
+											loadUsers();
+										}}>✕</button>
+									{/if}
 								</div>
 							{/each}
 						{/each}
 					{/if}
+					{#if permsMatrix?.power >= 75}
+					<div class="svc-category" style="margin-top:12px">Add Member</div>
+					<form class="add-user-form" onsubmit={addUserSubmit} style="display:flex;flex-direction:column;gap:6px;padding:6px 0">
+						<input name="uname" class="settings-input" placeholder="Name (e.g. Emma)" autocomplete="off" style="font-size:11px;padding:4px 8px" />
+						<select name="urole" class="right-select" style="font-size:11px">
+							<option value="child">Child (lvl 5 — actions only)</option>
+							<option value="guest">Guest (lvl 15 — chat + browse)</option>
+							<option value="user" selected>User (lvl 25 — standard)</option>
+							<option value="manager">Manager (lvl 50)</option>
+							<option value="admin">Admin (lvl 75)</option>
+						</select>
+						<button class="action-btn" type="submit" style="font-size:11px;padding:4px 10px">+ Add</button>
+					</form>
+				{/if}
 				</div>
 			{:else if leftSection === 'teams'}
 				<div class="teams-panel">
@@ -8124,8 +8162,7 @@
 			{:else if rightSection === 'users'}
 				<div class="users-panel">
 					{#if usersData.length === 0}
-						<div class="empty-state">No users registered</div>
-						<div class="empty-state small">Users are added when devices connect or through Settings &gt; Organizations</div>
+						<div class="empty-state">No users yet</div>
 					{:else}
 						{@const groups = [...new Set(usersData.map(u => u.role || 'user'))]}
 						{#each groups as group}
@@ -8135,12 +8172,34 @@
 									<span class="svc-dot" class:up={user.is_active !== 0} class:unknown={user.is_active === 0}></span>
 									<div class="svc-info">
 										<div class="svc-name">{user.display_name || user.email || 'Unknown'}</div>
-										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.email && !user.email.endsWith('@localhost') ? ` — ${user.email}` : ''}</div>
+										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.power_lvl != null ? ` · lvl ${user.power_lvl}` : ''}</div>
 									</div>
+									{#if user.id !== 1}
+										<button class="svc-action-btn danger" title="Remove" onclick={async () => {
+											if (!confirm(`Remove ${user.display_name}?`)) return;
+											await api(`/api/v1/auth/users/${user.id}`, { method: 'DELETE' });
+											loadUsers();
+										}}>✕</button>
+									{/if}
 								</div>
 							{/each}
 						{/each}
 					{/if}
+					<!-- Add member form -->
+					{#if permsMatrix?.power >= 75}
+					<div class="svc-category" style="margin-top:12px">Add Member</div>
+					<form class="add-user-form" onsubmit={addUserSubmit} style="display:flex;flex-direction:column;gap:6px;padding:6px 0">
+						<input name="uname" class="settings-input" placeholder="Name (e.g. Emma)" autocomplete="off" style="font-size:11px;padding:4px 8px" />
+						<select name="urole" class="right-select" style="font-size:11px">
+							<option value="child">Child (lvl 5 — actions only)</option>
+							<option value="guest">Guest (lvl 15 — chat + browse)</option>
+							<option value="user" selected>User (lvl 25 — standard)</option>
+							<option value="manager">Manager (lvl 50)</option>
+							<option value="admin">Admin (lvl 75)</option>
+						</select>
+						<button class="action-btn" type="submit" style="font-size:11px;padding:4px 10px">+ Add</button>
+					</form>
+				{/if}
 				</div>
 			{:else if rightSection === 'teams'}
 				<div class="teams-panel">
@@ -9917,6 +9976,9 @@
 	.svc-row.clickable { cursor: pointer; border-radius: 4px; padding: 6px 4px; margin: 0 -4px; }
 	.svc-row.clickable:hover { background: rgba(137,180,250,0.08); }
 	.svc-row.selected { background: rgba(137,180,250,0.12); }
+	.svc-action-btn { margin-left: auto; background: none; border: none; cursor: pointer; padding: 2px 6px; font-size: 12px; border-radius: 4px; color: rgba(205,214,244,0.4); transition: color 0.15s, background 0.15s; }
+	.svc-action-btn:hover { background: rgba(205,214,244,0.08); color: rgba(205,214,244,0.8); }
+	.svc-action-btn.danger:hover { background: rgba(243,139,168,0.15); color: #f38ba8; }
 	.team-dot-widget {
 		width: 10px;
 		height: 10px;
