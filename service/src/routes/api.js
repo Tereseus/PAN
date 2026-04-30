@@ -634,7 +634,55 @@ router.post('/query', async (req, res) => {
       } catch {}
     }
 
-    // Push actions to device via WS push channel if connected
+    // Dispatch actions to remote pan-client PCs via sendToClient
+    // Any action whose device_id points to a connected trusted client gets sent directly.
+    for (const action of actions) {
+      if (!action.device_id || action.target === 'server' || action.device_type === 'phone') continue;
+      try {
+        const { sendToClient, getConnectedClients } = await import('../client-manager.js');
+        const connected = getConnectedClients();
+        const match = connected.find(c => c.trusted && c.online &&
+          (c.device_id === action.device_id || c.device_id?.toLowerCase() === action.device_id?.toLowerCase()));
+        if (!match) continue;
+
+        // Map action type → sendToClient command
+        const args = action.args || {};
+        switch (action.type) {
+          case 'open_app':
+            sendToClient(match.device_id, 'open_app', { app: action.app || args.app || args.query }).catch(() => {});
+            break;
+          case 'open_url':
+          case 'open_browser':
+            sendToClient(match.device_id, 'open_url', { url: args.url || args.query }).catch(() => {});
+            break;
+          case 'play_music':
+            sendToClient(match.device_id, 'open_app', { app: action.app || 'spotify' }).catch(() => {});
+            break;
+          case 'play_movie':
+            sendToClient(match.device_id, 'open_app', { app: action.app || 'vlc' }).catch(() => {});
+            break;
+          case 'notification':
+          case 'tts_speak':
+            sendToClient(match.device_id, action.type, { text: args.text || args.message || result.response }).catch(() => {});
+            break;
+          case 'shell_exec':
+          case 'run_command':
+            sendToClient(match.device_id, 'shell_exec', { command: args.command || args.query }).catch(() => {});
+            break;
+          case 'screenshot':
+            sendToClient(match.device_id, 'screenshot', {}).catch(() => {});
+            break;
+          default:
+            // Forward anything else as-is
+            sendToClient(match.device_id, action.type, args).catch(() => {});
+        }
+        console.log(`[PAN Router] Dispatched ${action.type} → ${match.device_id}`);
+      } catch (e) {
+        // Non-fatal
+      }
+    }
+
+    // Push actions back to originating device via WS push channel
     if (actions.length > 0 && device_id) {
       try {
         const { pushToDevice } = await import('../server.js');
