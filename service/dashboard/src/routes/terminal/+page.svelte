@@ -172,16 +172,117 @@
 
 	// ── Permission matrix ────────────────────────────────────────────────────
 	// Fetched once on load. Controls which panel options are visible in dropdowns.
-	let permsMatrix = $state(/** @type {{power:number, widgets:Record<string,{visible:boolean}>}} */ (null));
+	let permsMatrix = $state(/** @type {{power:number, realPower:number, isImpersonating:boolean, widgets:Record<string,{visible:boolean}>}} */ (null));
+
+	// ── Impersonation ─────────────────────────────────────────────────────────
+	// Owner-only: preview the UI as a different power level, specific user, or org group.
+	const IMPERSONATE_PRESETS = [
+		{ label: 'Child',   power: 5  },
+		{ label: 'Guest',   power: 15 },
+		{ label: 'User',    power: 25 },
+		{ label: 'Manager', power: 50 },
+		{ label: 'Admin',   power: 75 },
+	];
+
+	// Modal state
+	let impersonateOpen = $state(false);
+	let impersonateTab  = $state('power'); // 'power' | 'user' | 'group'
+	let impPowerSlider  = $state(25);
+	let impUsers        = $state([]);
+	let impUsersLoaded  = $state(false);
+	let impSelectedUser = $state(null);
+	let impOrgs         = $state([]);
+	let impOrgsLoaded   = $state(false);
+	let impSelectedOrg  = $state(null);
+	let impGroupPower   = $state(25);
+	let impGroupRole    = $state('Member');
+	let impRoles        = $state([]);
+	let impApplying     = $state(false);
+
+	async function reloadPermsMatrix() {
+		try {
+			const r = await api('/api/v1/permissions/matrix');
+			permsMatrix = r;
+		} catch { permsMatrix = { power: 100, realPower: 100, isImpersonating: false, widgets: {} }; }
+	}
+
+	async function openImpersonateModal() {
+		impersonateOpen = true;
+		// Lazy-load users + orgs + roles on first open
+		if (!impUsersLoaded) {
+			try {
+				const r = await api('/api/v1/users');
+				impUsers = (r.users || []).filter(u => (u.power_lvl ?? 0) < 100);
+			} catch { impUsers = []; }
+			impUsersLoaded = true;
+		}
+		if (!impOrgsLoaded) {
+			try {
+				const r = await api('/api/v1/orgs');
+				impOrgs = r.orgs || [];
+				if (impOrgs.length) impSelectedOrg = impOrgs[0].id;
+				const rr = await api('/api/v1/roles');
+				impRoles = rr.roles || [];
+			} catch { impOrgs = []; impRoles = []; }
+			impOrgsLoaded = true;
+		}
+	}
+
+	async function applyImpersonation() {
+		impApplying = true;
+		try {
+			if (impersonateTab === 'power') {
+				await api('/api/v1/impersonate', { method: 'POST', body: JSON.stringify({ type: 'power', power: impPowerSlider }), headers: { 'Content-Type': 'application/json' } });
+			} else if (impersonateTab === 'user') {
+				if (!impSelectedUser) return;
+				await api('/api/v1/impersonate', { method: 'POST', body: JSON.stringify({ type: 'user', userId: impSelectedUser.id }), headers: { 'Content-Type': 'application/json' } });
+			} else if (impersonateTab === 'group') {
+				if (!impSelectedOrg) return;
+				const roleName = impRoles.find(r => r.level === impGroupPower)?.name || impGroupRole;
+				await api('/api/v1/impersonate', { method: 'POST', body: JSON.stringify({ type: 'group', orgId: impSelectedOrg, power: impGroupPower, roleName }), headers: { 'Content-Type': 'application/json' } });
+			}
+			await reloadPermsMatrix();
+			impersonateOpen = false;
+		} finally { impApplying = false; }
+	}
+
+	async function stopImpersonation() {
+		await api('/api/v1/impersonate', { method: 'DELETE' });
+		await reloadPermsMatrix();
+	}
+
+	// Derive banner label from rich impersonation object
+	function impersonationLabel(imp) {
+		if (!imp) return '';
+		if (imp.type === 'user') return `👤 ${imp.label} (lvl ${imp.power})`;
+		if (imp.type === 'group') return `🏢 ${imp.label} (lvl ${imp.power})`;
+		return `👁 ${imp.label} (lvl ${imp.power})`;
+	}
 
 	// Map panel option values → widget permission keys (absent = always visible)
 	const PANEL_WIDGET_MAP = {
-		devices:   'devices',
-		instances: 'instances',
-		tests:     'tests',
-		users:     'users',
-		project:   'projects',
-		tasks:     'projects',
+		devices:    'devices',
+		instances:  'instances',
+		tests:      'tests',
+		users:      'users',
+		project:    'projects',
+		tasks:      'projects',
+		// additional gated panels
+		transcript: 'transcript',
+		contacts:   'contacts',
+		library:    'library',
+		mail:       'mail',
+		teams:      'teams',
+		approvals:  'approvals',
+		bugs:       'bugs',
+		setup:      'setup',
+		benchmarks: 'benchmarks',
+		pipeline:   'pipeline',
+		intuition:  'intuition',
+		perf:       'perf',
+		usage:      'usage',
+		services:   'services',
+		lifeboat:   'lifeboat',
 	};
 
 	/** Returns true if the panel option should be visible for the current user. */
@@ -327,7 +428,39 @@
 
 	async function loadIntuition() {
 		try {
-			intuitionData = await api('/api/v1/intuition/current');
+			const indData = await api('/api/v1/intuition/current');
+			const iSnap = indData.snapshot || indData;
+			let orgData = null;
+			try { orgData = await api('/api/v1/intuition/org/current'); } catch {}
+			if (orgData?.members) {
+				intuitionData = { ...orgData, individualSnap: iSnap };
+			} else {
+				// Org snapshot not built yet — synthesize a single-member view from individual snap
+				const n = iSnap.now || {};
+				intuitionData = {
+					org_name: iSnap.commander || 'Personal',
+					as_of: iSnap.as_of,
+					members: [{
+						commander: iSnap.commander,
+						as_of: iSnap.as_of,
+						age_ms: 0,
+						is_active: true,
+						activity: n.activity,
+						focus: n.focus,
+						mood: n.mood,
+						where: n.where,
+						last_seen: n.last_seen,
+						last_heard: n.last_heard,
+						urgency: n.urgency,
+						engagement: n.engagement,
+						recent_topics: n.recent_topics || [],
+						assumption: n.assumption,
+						confidence: iSnap.signals?.confidence ?? 0
+					}],
+					org_state: {},
+					individualSnap: iSnap
+				};
+			}
 		} catch {}
 	}
 	function startIntuitionPolling() {
@@ -4652,7 +4785,7 @@
 		if (leftSection === 'benchmarks' || rightSection === 'benchmarks') startBenchmarkPolling();
 
 		// Load permission matrix (gates which panel options are visible)
-		api('/api/v1/permissions/matrix').then(r => { permsMatrix = r; }).catch(() => { permsMatrix = { power: 100, widgets: {} }; });
+		reloadPermsMatrix();
 
 		// Load org context
 		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
@@ -5334,51 +5467,54 @@
 	{#if !intuitionData}
 		<div class="empty-state">Loading Intuition...</div>
 	{:else}
-		{@const snap = intuitionData.snapshot || intuitionData}
-		{@const n = snap.now || {}}
-		{@const pan = snap.pan || {}}
-		{@const data = snap.data || {}}
-		{@const sig = snap.signals || {}}
+		{@const members = intuitionData.members || []}
+		{@const orgState = intuitionData.org_state || {}}
+		{@const iSnap = intuitionData.individualSnap || {}}
+		{@const pan = iSnap.pan || {}}
+		{@const iSig = iSnap.signals || {}}
 		{@const preds = pan.predictions || []}
-		{@const wc = sig.webcam_context}
-		{@const sc = sig.screen_context}
+		{@const wc = iSig.webcam_context}
+		{@const sc = iSig.screen_context}
 
-		<!-- Commander + Timestamp -->
+		<!-- Org header -->
 		<div class="int-header">
-			<span class="int-commander">{snap.commander || 'Commander'}</span>
-			<span class="int-ago">{snap.as_of ? new Date(snap.as_of).toLocaleTimeString() : '—'}</span>
+			<span class="int-commander">{intuitionData.org_name || 'Org'}</span>
+			<span class="int-ago">{intuitionData.as_of ? new Date(intuitionData.as_of).toLocaleTimeString() : '—'}</span>
 		</div>
 
-		<!-- State -->
-		<div class="svc-category">State</div>
-		<div class="int-axes">
-			<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{n.where || '⏳ pendant'}</span></div>
-			<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{n.activity || '—'}</span></div>
-			<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{n.focus || '—'}</span></div>
-			<div class="int-axis"><span class="int-label">Direction</span><span class="int-val">{n.direction || '—'}</span></div>
-			<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{n.engagement || '—'}</span></div>
-			<div class="int-axis"><span class="int-label">Social</span><span class="int-val">{(n.social || []).join(', ') || 'alone'}</span></div>
-			<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{n.urgency || 'normal'}</span></div>
-		</div>
-
-		<!-- Mood + Assumption -->
-		<div class="svc-category">Mood & Assumption</div>
-		<div class="int-axes">
-			<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{n.mood || '—'}</span></div>
-			{#if n.mood_detail}
-				<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.mood_detail}</span></div>
-			{/if}
-			<div class="int-axis">
-				<span class="int-label">Assumption</span>
-				<span class="int-val" class:wellbeing-ok={n.assumption === 'ok'} class:wellbeing-notok={n.assumption === 'not_ok'} class:wellbeing-emergency={n.assumption === 'emergency'}>{n.assumption || '—'}</span>
+		<!-- Per-member cards -->
+		{#if members.length === 0}
+			<div class="empty-state" style="font-size:12px">No members detected</div>
+		{/if}
+		{#each members as m}
+			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+				{m.commander || 'Unknown'}
+				<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{m.is_active ? 'rgba(166,227,161,0.15)' : 'rgba(108,112,134,0.15)'};color:{m.is_active ? '#a6e3a1' : '#6c7086'}">{m.is_active ? '● active' : '○ idle'}</span>
+				{#if m.age_ms}<span style="font-size:10px;color:#6c7086">{Math.round(m.age_ms/60000)}m ago</span>{/if}
 			</div>
-			{#if n.assumption_detail}
-				<div class="int-axis"><span class="int-label"></span><span class="int-val small">{n.assumption_detail}</span></div>
-			{/if}
+			<div class="int-axes">
+				<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{m.where || '—'}</span></div>
+				<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{m.activity || '—'}</span></div>
+				<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{m.focus || '—'}</span></div>
+				<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{m.mood || '—'}</span></div>
+				<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{m.urgency || 'normal'}</span></div>
+				<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{m.engagement || '—'}</span></div>
+				<div class="int-axis">
+					<span class="int-label">Assumption</span>
+					<span class="int-val" class:wellbeing-ok={m.assumption === 'ok'} class:wellbeing-notok={m.assumption === 'not_ok'} class:wellbeing-emergency={m.assumption === 'emergency'}>{m.assumption || '—'}</span>
+				</div>
+				{#if m.last_heard}
+					<div class="int-axis"><span class="int-label">Last heard</span><span class="int-val small">"{m.last_heard}"</span></div>
+				{/if}
+				{#if (m.recent_topics || []).length > 0}
+					<div class="int-axis"><span class="int-label">Topics</span><span class="int-val small">{m.recent_topics.slice(0, 3).join(', ')}</span></div>
+				{/if}
+				<div class="int-axis"><span class="int-label">Confidence</span><span class="int-val small">{Math.round((m.confidence || 0) * 100)}%</span></div>
+			</div>
 			<div class="int-disclaimer">⚠ Not medical advice — PAN's assumptions only</div>
-		</div>
+		{/each}
 
-		<!-- PAN Activity -->
+		<!-- PAN Activity (from individual snapshot) -->
 		<div class="svc-category">PAN Activity</div>
 		<div class="int-axes">
 			<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'Idle'}</span></div>
@@ -5420,17 +5556,15 @@
 			</div>
 		{/if}
 
-		<!-- Identity -->
+		<!-- Identity (from individual snapshot) -->
 		<div class="svc-category">Identity</div>
 		<div class="int-axes">
-			<!-- Voice identity — who is here based on enrolled speakers -->
 			{#if voiceEnrollSpeakers.length > 0}
 				<div class="int-axis">
 					<span class="int-label">Voice</span>
 					<span class="int-val small" style="color:#a6e3a1">🎤 {voiceEnrollSpeakers.map(s => s.label || s).join(', ')}</span>
 				</div>
 			{/if}
-			<!-- Camera presence -->
 			<div class="int-axis">
 				<span class="int-label">Camera</span>
 				<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
@@ -5446,16 +5580,15 @@
 			{#if wc?.people_count > 1}
 				<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
 			{/if}
-			<!-- Screen vision -->
 			<div class="int-axis" style="flex-wrap:wrap">
 				<span class="int-label">Screen</span>
-				<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : (data.camera || '⏳ no capture yet')}</span>
+				<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : '⏳ no capture yet'}</span>
 			</div>
 			{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
 			{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
 		</div>
 
-		<!-- Voice Identity -->
+		<!-- Voice Identity enrollment -->
 		<div class="svc-category" style="display:flex;align-items:center;gap:6px">
 			Voice Identity
 			<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}">{voiceServerOk ? 'online' : 'offline'}</span>
@@ -5492,23 +5625,6 @@
 		{#if voiceEnrollMsg}
 			<div style="font-size:11px;margin-top:4px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
 		{/if}
-
-		{#if (n.recent_topics || []).length > 0}
-			<div class="svc-category">Recent Topics</div>
-			<div class="int-topics">
-				{#each (n.recent_topics || []).slice(0, 5) as topic}
-					<div class="int-topic">{topic}</div>
-				{/each}
-			</div>
-		{/if}
-		{#if n.last_heard}
-			<div class="svc-category">Last Heard</div>
-			<div class="int-last-heard">"{n.last_heard}"</div>
-		{/if}
-		<div class="int-footer">
-			<span>Confidence: {Math.round((sig.confidence || 0) * 100)}%</span>
-			<span>{sig.events_sampled || 0} events · {sig.wrap_messages_sampled || 0} msgs</span>
-		</div>
 	{/if}
 {/snippet}
 
@@ -5556,6 +5672,14 @@
 	{/if}
 	<span class="host-label">{hostLabel}</span>
 	<div style="flex:1"></div>
+	{#if permsMatrix?.isImpersonating}
+		<div class="impersonate-banner">
+			<span><strong>{impersonationLabel(permsMatrix.impersonation)}</strong></span>
+			<button class="impersonate-stop" onclick={stopImpersonation} title="Exit impersonation">✕ Exit</button>
+		</div>
+	{:else if permsMatrix?.realPower >= 100}
+		<button class="impersonate-btn" onclick={openImpersonateModal} title="Impersonate a user, power level, or group">👁 Impersonate…</button>
+	{/if}
 	<span class="sessions-count">
 		{#if sessionsCount > 0}{sessionsCount} tab{sessionsCount > 1 ? 's' : ''}{/if}
 	</span>
@@ -5603,27 +5727,27 @@
 		<div class="right-header">
 			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (leftSection === 'users') loadUsers(); if (leftSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (leftSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (leftSection === 'devices' || leftSection === 'apps') { startAllDevicesPolling(); if (leftSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); } if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
-				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
+				{#if widgetVisible('approvals')}<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>{/if}
 				<option value="apps">Apps</option>
-				<option value="benchmarks">Benchmarks</option>
-				<option value="pipeline">Beta Pipeline</option>
-				<option value="bugs">Bugs</option>
-				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
+				{#if widgetVisible('benchmarks')}<option value="benchmarks">Benchmarks</option>{/if}
+				{#if widgetVisible('pipeline')}<option value="pipeline">Beta Pipeline</option>{/if}
+				{#if widgetVisible('bugs')}<option value="bugs">Bugs</option>{/if}
+				{#if widgetVisible('contacts')}<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>{/if}
 				{#if widgetVisible('devices')}<option value="devices">Devices</option>{/if}
 				{#if widgetVisible('instances')}<option value="instances">Instances</option>{/if}
-				<option value="intuition">Intuition</option>
-				<option value="lifeboat">Lifeboat</option>
-				<option value="library">Library</option>
-				<option value="mail">Mail</option>
-				<option value="perf">Performance</option>
+				{#if widgetVisible('intuition')}<option value="intuition">Intuition</option>{/if}
+				{#if widgetVisible('lifeboat')}<option value="lifeboat">Lifeboat</option>{/if}
+				{#if widgetVisible('library')}<option value="library">Library</option>{/if}
+				{#if widgetVisible('mail')}<option value="mail">Mail</option>{/if}
+				{#if widgetVisible('perf')}<option value="perf">Performance</option>{/if}
 				{#if widgetVisible('project')}<option value="project">Project</option>{/if}
-				<option value="services">Services</option>
-				<option value="setup">Setup Guide</option>
+				{#if widgetVisible('services')}<option value="services">Services</option>{/if}
+				{#if widgetVisible('setup')}<option value="setup">Setup Guide</option>{/if}
 				{#if widgetVisible('tasks')}<option value="tasks">Tasks</option>{/if}
-				<option value="teams">Teams</option>
+				{#if widgetVisible('teams')}<option value="teams">Teams</option>{/if}
 				{#if widgetVisible('tests')}<option value="tests">Tests</option>{/if}
-				<option value="transcript">Transcript</option>
-				<option value="usage">Usage</option>
+				{#if widgetVisible('transcript')}<option value="transcript">Transcript</option>{/if}
+				{#if widgetVisible('usage')}<option value="usage">Usage</option>{/if}
 				{#if widgetVisible('users')}<option value="users">Users</option>{/if}
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
@@ -7047,6 +7171,114 @@
 				</div>
 			</div>
 		{/if}
+
+		<!-- ── Impersonate Modal ──────────────────────────────────────────────── -->
+		{#if impersonateOpen}
+			<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+			<div class="imp-backdrop" onclick={() => impersonateOpen = false}></div>
+			<div class="imp-modal" role="dialog" aria-label="Impersonate">
+				<div class="imp-header">
+					<span class="imp-title">👁 Impersonate</span>
+					<button class="imp-close" onclick={() => impersonateOpen = false}>✕</button>
+				</div>
+
+				<!-- Tab selector -->
+				<div class="imp-tabs">
+					<button class="imp-tab" class:active={impersonateTab === 'power'} onclick={() => impersonateTab = 'power'}>⚡ Power Level</button>
+					<button class="imp-tab" class:active={impersonateTab === 'user'}  onclick={() => impersonateTab = 'user'}>👤 User</button>
+					<button class="imp-tab" class:active={impersonateTab === 'group'} onclick={() => impersonateTab = 'group'}>🏢 Group</button>
+				</div>
+
+				<!-- Power Level tab -->
+				{#if impersonateTab === 'power'}
+					<div class="imp-body">
+						<p class="imp-desc">Preview the dashboard as any power level (0–99). Use the presets or drag the slider.</p>
+						<div class="imp-presets">
+							{#each IMPERSONATE_PRESETS as p}
+								<button class="imp-preset" class:active={impPowerSlider === p.power} onclick={() => impPowerSlider = p.power}>
+									{p.label}<br><span class="imp-preset-sub">lvl {p.power}</span>
+								</button>
+							{/each}
+						</div>
+						<div class="imp-slider-row">
+							<span class="imp-slider-label">0</span>
+							<input type="range" min="0" max="99" bind:value={impPowerSlider} class="imp-slider" />
+							<span class="imp-slider-label">99</span>
+							<span class="imp-slider-val">{impPowerSlider}</span>
+						</div>
+					</div>
+
+				<!-- User tab -->
+				{:else if impersonateTab === 'user'}
+					<div class="imp-body">
+						<p class="imp-desc">View the dashboard as a specific registered user.</p>
+						{#if !impUsersLoaded}
+							<div class="imp-loading">Loading users…</div>
+						{:else if impUsers.length === 0}
+							<div class="imp-empty">No non-owner users registered yet.</div>
+						{:else}
+							<div class="imp-user-list">
+								{#each impUsers as u}
+									<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+									<div class="imp-user-row" class:selected={impSelectedUser?.id === u.id} onclick={() => impSelectedUser = u}>
+										<span class="imp-user-avatar">{(u.display_nickname || u.display_name || '?').charAt(0).toUpperCase()}</span>
+										<div class="imp-user-info">
+											<span class="imp-user-name">{u.display_nickname || u.display_name || `User #${u.id}`}</span>
+											{#if u.email}<span class="imp-user-email">{u.email}</span>{/if}
+										</div>
+										<span class="imp-user-power">lvl {u.power_lvl ?? 0}</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</div>
+
+				<!-- Group tab -->
+				{:else if impersonateTab === 'group'}
+					<div class="imp-body">
+						<p class="imp-desc">Preview as a member of an org at a specific role/power level.</p>
+						{#if !impOrgsLoaded}
+							<div class="imp-loading">Loading orgs…</div>
+						{:else}
+							<div class="imp-field">
+								<label class="imp-label">Organisation</label>
+								<select class="imp-select" bind:value={impSelectedOrg}>
+									{#each impOrgs as o}
+										<option value={o.id}>{o.name}</option>
+									{/each}
+								</select>
+							</div>
+							<div class="imp-field">
+								<label class="imp-label">Role / Power Level</label>
+								{#if impRoles.length}
+									<div class="imp-presets">
+										{#each impRoles as r}
+											<button class="imp-preset" class:active={impGroupPower === r.level} onclick={() => { impGroupPower = r.level; impGroupRole = r.name; }}>
+												{r.name}<br><span class="imp-preset-sub">lvl {r.level}</span>
+											</button>
+										{/each}
+									</div>
+								{/if}
+								<div class="imp-slider-row">
+									<span class="imp-slider-label">0</span>
+									<input type="range" min="0" max="99" bind:value={impGroupPower} class="imp-slider" />
+									<span class="imp-slider-label">99</span>
+									<span class="imp-slider-val">{impGroupPower}</span>
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/if}
+
+				<div class="imp-footer">
+					<button class="imp-cancel" onclick={() => impersonateOpen = false}>Cancel</button>
+					<button class="imp-apply" onclick={applyImpersonation} disabled={impApplying || (impersonateTab === 'user' && !impSelectedUser) || (impersonateTab === 'group' && !impSelectedOrg)}>
+						{impApplying ? 'Applying…' : '👁 Apply'}
+					</button>
+				</div>
+			</div>
+		{/if}
+
 		{#if pastedImages.length > 0}
 			<div class="image-preview-bar">
 				{#each pastedImages as img, idx}
@@ -7175,27 +7407,27 @@
 		<div class="right-header">
 			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'contacts') loadContacts(); if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices' || rightSection === 'apps') { startAllDevicesPolling(); if (rightSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); } }}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
-				<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>
+				{#if widgetVisible('approvals')}<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>{/if}
 				<option value="apps">Apps</option>
-				<option value="benchmarks">Benchmarks</option>
-				<option value="pipeline">Beta Pipeline</option>
-				<option value="bugs">Bugs</option>
-				<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>
+				{#if widgetVisible('benchmarks')}<option value="benchmarks">Benchmarks</option>{/if}
+				{#if widgetVisible('pipeline')}<option value="pipeline">Beta Pipeline</option>{/if}
+				{#if widgetVisible('bugs')}<option value="bugs">Bugs</option>{/if}
+				{#if widgetVisible('contacts')}<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>{/if}
 				{#if widgetVisible('devices')}<option value="devices">Devices</option>{/if}
 				{#if widgetVisible('instances')}<option value="instances">Instances</option>{/if}
-				<option value="intuition">Intuition</option>
-				<option value="lifeboat">Lifeboat</option>
-				<option value="library">Library</option>
-				<option value="mail">Mail</option>
-				<option value="perf">Performance</option>
+				{#if widgetVisible('intuition')}<option value="intuition">Intuition</option>{/if}
+				{#if widgetVisible('lifeboat')}<option value="lifeboat">Lifeboat</option>{/if}
+				{#if widgetVisible('library')}<option value="library">Library</option>{/if}
+				{#if widgetVisible('mail')}<option value="mail">Mail</option>{/if}
+				{#if widgetVisible('perf')}<option value="perf">Performance</option>{/if}
 				{#if widgetVisible('project')}<option value="project">Project</option>{/if}
-				<option value="services">Services</option>
-				<option value="setup">Setup Guide</option>
+				{#if widgetVisible('services')}<option value="services">Services</option>{/if}
+				{#if widgetVisible('setup')}<option value="setup">Setup Guide</option>{/if}
 				{#if widgetVisible('tasks')}<option value="tasks">Tasks</option>{/if}
-				<option value="teams">Teams</option>
+				{#if widgetVisible('teams')}<option value="teams">Teams</option>{/if}
 				{#if widgetVisible('tests')}<option value="tests">Tests</option>{/if}
-				<option value="transcript">Transcript</option>
-				<option value="usage">Usage</option>
+				{#if widgetVisible('transcript')}<option value="transcript">Transcript</option>{/if}
+				{#if widgetVisible('usage')}<option value="usage">Usage</option>{/if}
 				{#if widgetVisible('users')}<option value="users">Users</option>{/if}
 				{#each sectionsData as s}
 					<option value="custom-{s.id}">{s.name}</option>
@@ -9071,6 +9303,208 @@
 		color: #6c7086;
 		font-size: 12px;
 	}
+
+	/* ── Impersonation toolbar controls ───────────────────────────────── */
+	.impersonate-btn {
+		background: #1e1e2e;
+		border: 1px solid #45475a;
+		border-radius: 5px;
+		color: #cdd6f4;
+		font-size: 11px;
+		padding: 3px 10px;
+		cursor: pointer;
+		margin-right: 4px;
+		white-space: nowrap;
+	}
+	.impersonate-btn:hover { border-color: #f9e2af; color: #f9e2af; }
+
+	.impersonate-banner {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		background: rgba(249,226,175,0.12);
+		border: 1px solid rgba(249,226,175,0.4);
+		border-radius: 5px;
+		padding: 3px 10px;
+		font-size: 11px;
+		color: #f9e2af;
+		margin-right: 6px;
+	}
+	.impersonate-stop {
+		background: rgba(243,139,168,0.15);
+		border: 1px solid rgba(243,139,168,0.4);
+		border-radius: 4px;
+		color: #f38ba8;
+		font-size: 10px;
+		padding: 1px 6px;
+		cursor: pointer;
+	}
+	.impersonate-stop:hover { background: rgba(243,139,168,0.3); }
+
+	/* ── Impersonate Modal ─────────────────────────────────────────────── */
+	.imp-backdrop {
+		position: fixed; inset: 0;
+		background: rgba(0,0,0,0.55);
+		z-index: 3000;
+	}
+	.imp-modal {
+		position: fixed;
+		top: 50%; left: 50%;
+		transform: translate(-50%, -50%);
+		z-index: 3001;
+		background: #181825;
+		border: 1px solid #45475a;
+		border-radius: 12px;
+		width: 420px;
+		max-width: calc(100vw - 32px);
+		max-height: 80vh;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+		font-size: 13px;
+	}
+	.imp-header {
+		display: flex; align-items: center;
+		padding: 14px 16px 10px;
+		border-bottom: 1px solid #313244;
+	}
+	.imp-title { font-size: 14px; font-weight: 600; color: #cdd6f4; flex: 1; }
+	.imp-close {
+		background: none; border: none;
+		color: #6c7086; cursor: pointer; font-size: 14px; padding: 0 2px;
+	}
+	.imp-close:hover { color: #f38ba8; }
+
+	.imp-tabs {
+		display: flex;
+		gap: 4px;
+		padding: 10px 16px 0;
+	}
+	.imp-tab {
+		background: none;
+		border: 1px solid transparent;
+		border-radius: 6px;
+		color: #6c7086;
+		cursor: pointer;
+		font-size: 12px;
+		padding: 5px 12px;
+		transition: all .15s;
+	}
+	.imp-tab:hover { color: #cdd6f4; border-color: #45475a; }
+	.imp-tab.active { background: #313244; color: #cdd6f4; border-color: #45475a; }
+
+	.imp-body {
+		padding: 14px 16px;
+		overflow-y: auto;
+		flex: 1;
+	}
+	.imp-desc { color: #6c7086; font-size: 12px; margin: 0 0 12px; line-height: 1.4; }
+	.imp-loading, .imp-empty { color: #6c7086; font-size: 12px; text-align: center; padding: 20px 0; }
+
+	/* Preset pills */
+	.imp-presets {
+		display: flex; flex-wrap: wrap; gap: 6px;
+		margin-bottom: 14px;
+	}
+	.imp-preset {
+		background: #1e1e2e;
+		border: 1px solid #45475a;
+		border-radius: 8px;
+		color: #a6adc8;
+		cursor: pointer;
+		font-size: 11px;
+		padding: 6px 12px;
+		text-align: center;
+		transition: all .15s;
+		line-height: 1.3;
+	}
+	.imp-preset:hover { border-color: #89b4fa; color: #89b4fa; }
+	.imp-preset.active { background: rgba(137,180,250,0.15); border-color: #89b4fa; color: #89b4fa; }
+	.imp-preset-sub { font-size: 10px; opacity: .7; }
+
+	/* Slider */
+	.imp-slider-row {
+		display: flex; align-items: center; gap: 8px;
+	}
+	.imp-slider {
+		flex: 1;
+		accent-color: #89b4fa;
+		cursor: pointer;
+	}
+	.imp-slider-label { font-size: 11px; color: #6c7086; min-width: 14px; text-align: center; }
+	.imp-slider-val {
+		background: #313244;
+		border-radius: 5px;
+		color: #89b4fa;
+		font-size: 13px; font-weight: 600;
+		min-width: 34px;
+		padding: 2px 6px;
+		text-align: center;
+	}
+
+	/* User list */
+	.imp-user-list { display: flex; flex-direction: column; gap: 4px; }
+	.imp-user-row {
+		display: flex; align-items: center; gap: 10px;
+		padding: 8px 10px;
+		border: 1px solid transparent;
+		border-radius: 8px;
+		cursor: pointer;
+		transition: all .15s;
+	}
+	.imp-user-row:hover { background: #1e1e2e; border-color: #45475a; }
+	.imp-user-row.selected { background: rgba(137,180,250,0.1); border-color: #89b4fa; }
+	.imp-user-avatar {
+		background: #313244;
+		border-radius: 50%;
+		color: #89b4fa;
+		font-size: 13px; font-weight: 600;
+		width: 30px; height: 30px;
+		display: flex; align-items: center; justify-content: center;
+		flex-shrink: 0;
+	}
+	.imp-user-info { flex: 1; display: flex; flex-direction: column; gap: 1px; }
+	.imp-user-name { font-size: 13px; color: #cdd6f4; }
+	.imp-user-email { font-size: 11px; color: #6c7086; }
+	.imp-user-power {
+		font-size: 11px; color: #a6adc8;
+		background: #313244; border-radius: 4px; padding: 1px 6px;
+	}
+
+	/* Group/Org fields */
+	.imp-field { margin-bottom: 14px; }
+	.imp-label { display: block; font-size: 11px; color: #6c7086; margin-bottom: 5px; }
+	.imp-select {
+		width: 100%;
+		background: #1e1e2e; border: 1px solid #45475a; border-radius: 6px;
+		color: #cdd6f4; font-size: 12px; padding: 6px 8px; cursor: pointer;
+	}
+	.imp-select:focus { border-color: #89b4fa; outline: none; }
+
+	/* Footer */
+	.imp-footer {
+		display: flex; justify-content: flex-end; gap: 8px;
+		padding: 12px 16px;
+		border-top: 1px solid #313244;
+	}
+	.imp-cancel {
+		background: none; border: 1px solid #45475a; border-radius: 6px;
+		color: #6c7086; cursor: pointer; font-size: 12px; padding: 6px 14px;
+	}
+	.imp-cancel:hover { border-color: #cdd6f4; color: #cdd6f4; }
+	.imp-apply {
+		background: rgba(137,180,250,0.15);
+		border: 1px solid #89b4fa;
+		border-radius: 6px;
+		color: #89b4fa;
+		cursor: pointer;
+		font-size: 12px;
+		font-weight: 600;
+		padding: 6px 18px;
+		transition: all .15s;
+	}
+	.imp-apply:hover:not(:disabled) { background: rgba(137,180,250,0.25); }
+	.imp-apply:disabled { opacity: .45; cursor: not-allowed; }
 
 	.org-badge {
 		display: inline-flex;
