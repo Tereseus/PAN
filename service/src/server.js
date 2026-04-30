@@ -47,7 +47,7 @@ import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
 import { privacyMiddleware } from './privacy.js';
 import privacyRouter from './routes/privacy.js';
-import { extractUser } from './middleware/auth.js';
+import { extractUser, setImpersonation, clearImpersonation, getImpersonation } from './middleware/auth.js';
 import { requireFeature, requireNotChild, getPermissionsMatrix } from './permissions.js';
 import { requireOrg, auditLog, verifyAllAuditChains, resignAuditChain } from './middleware/org-context.js';
 import { evolve } from './evolution/engine.js';
@@ -539,13 +539,17 @@ app.use('/api', (req, res, next) => {
   const isTailscale = ip.startsWith('100.') || ip.startsWith('::ffff:100.');
   const isLan = ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.');
   if (deviceName && (isLocalhost || isTailscale || isLan)) {
-    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
+    const imp = getImpersonation();
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner',
+      realPower: 100, power: imp !== null ? imp.power : 100, isImpersonating: imp !== null, impersonation: imp };
     return next();
   }
   if (isLocalhost || isTailscale) {
     // Tailscale connections are trusted — already behind WireGuard mesh VPN.
     // Browser dashboard on phone doesn't send X-Device-Name header.
-    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
+    const imp = getImpersonation();
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner',
+      realPower: 100, power: imp !== null ? imp.power : 100, isImpersonating: imp !== null, impersonation: imp };
     return next();
   }
   extractUser(req, res, next);
@@ -2424,7 +2428,109 @@ app.get('/api/v1/permissions/matrix', (req, res) => {
   for (const [widget, required] of Object.entries(matrix.widgets)) {
     widgets[widget] = { required, visible: power >= required };
   }
-  res.json({ power, features, widgets });
+  res.json({
+    power,
+    realPower: req.user?.realPower ?? power,
+    isImpersonating: req.user?.isImpersonating ?? false,
+    impersonation: req.user?.impersonation ?? null,
+    features,
+    widgets
+  });
+});
+
+// Impersonation — owner-only: temporarily preview the dashboard as a different power level, user, or group.
+//
+// POST /api/v1/impersonate { type: 'power', power: 25 }          — power-level preview
+// POST /api/v1/impersonate { type: 'user', userId: 3 }           — preview as specific user
+// POST /api/v1/impersonate { type: 'group', orgId: '...', power: 25, roleName: 'Member' } — group preview
+// DELETE /api/v1/impersonate                                      — stop impersonating
+// GET /api/v1/impersonate                                         — check current state
+const IMPERSONATE_PRESETS = [
+  { label: 'Child',   power: 5  },
+  { label: 'Guest',   power: 15 },
+  { label: 'User',    power: 25 },
+  { label: 'Manager', power: 50 },
+  { label: 'Admin',   power: 75 },
+];
+
+function isOwner(req) {
+  return req.user?.role === 'owner' || (req.user?.realPower ?? req.user?.power ?? 0) >= 100;
+}
+
+app.get('/api/v1/impersonate', (req, res) => {
+  const current = getImpersonation();
+  res.json({
+    active: current !== null,
+    impersonation: current,
+    realPower: req.user?.realPower ?? 100,
+    presets: IMPERSONATE_PRESETS,
+  });
+});
+
+app.post('/api/v1/impersonate', (req, res) => {
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
+  const { type = 'power', power, userId, orgId, roleName } = req.body || {};
+
+  if (type === 'power') {
+    // Impersonate by raw power level (0–99)
+    const p = Number(power);
+    if (isNaN(p) || p < 0 || p >= 100) return res.status(400).json({ error: 'power must be 0–99' });
+    const preset = IMPERSONATE_PRESETS.find(l => l.power === p);
+    setImpersonation({ type: 'power', power: p, label: preset?.label ?? `Level ${p}` });
+    return res.json({ ok: true, impersonation: getImpersonation() });
+  }
+
+  if (type === 'user') {
+    // Impersonate a specific registered user
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const u = db.prepare(`SELECT id, display_name, display_nickname, power_lvl, role FROM users WHERE id = ?`).get(userId);
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    const p = u.power_lvl ?? 0;
+    if (p >= 100) return res.status(400).json({ error: 'Cannot impersonate an owner-level user' });
+    setImpersonation({ type: 'user', power: p, label: u.display_nickname || u.display_name || `User #${u.id}`, userId: u.id });
+    return res.json({ ok: true, impersonation: getImpersonation() });
+  }
+
+  if (type === 'group') {
+    // Impersonate as a member of an org at a given role level
+    if (!orgId) return res.status(400).json({ error: 'orgId required' });
+    const org = db.prepare(`SELECT id, name FROM orgs WHERE id = ?`).get(orgId);
+    if (!org) return res.status(404).json({ error: 'Org not found' });
+    const p = Number(power);
+    if (isNaN(p) || p < 0 || p >= 100) return res.status(400).json({ error: 'power must be 0–99' });
+    setImpersonation({ type: 'group', power: p, label: `${org.name} → ${roleName ?? `Level ${p}`}`, orgId, orgName: org.name, roleName: roleName ?? `Level ${p}` });
+    return res.json({ ok: true, impersonation: getImpersonation() });
+  }
+
+  return res.status(400).json({ error: 'type must be power | user | group' });
+});
+
+app.delete('/api/v1/impersonate', (req, res) => {
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
+  clearImpersonation();
+  res.json({ ok: true });
+});
+
+// Users list — for impersonation user picker (owner-only)
+app.get('/api/v1/users', (req, res) => {
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
+  try {
+    const users = db.prepare(`SELECT id, display_name, display_nickname, email, role, power_lvl, is_active FROM users ORDER BY power_lvl DESC, display_name ASC`).all();
+    res.json({ users });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Roles list — for group/role picker in impersonation
+app.get('/api/v1/roles', (req, res) => {
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
+  try {
+    const roles = db.prepare(`SELECT id, name, level FROM roles ORDER BY level ASC`).all();
+    res.json({ roles: roles.length ? roles : IMPERSONATE_PRESETS.map((p, i) => ({ id: i+1, name: p.label, level: p.power })) });
+  } catch {
+    res.json({ roles: IMPERSONATE_PRESETS.map((p, i) => ({ id: i+1, name: p.label, level: p.power })) });
+  }
 });
 
 // Auth check — returns current user (used by SvelteKit dashboard layout)
@@ -4286,8 +4392,8 @@ function start() {
         console.log('[PAN DEV] Full server on port ' + PORT + ' (terminal + dashboard + API)');
         console.log('[PAN DEV] Skipping: steward, device heartbeat');
         console.log(`[PAN DEV] Dashboard: http://localhost:${PORT}`);
-      } else if (!IS_CRAFT) {
-        // ── PROD-ONLY (main server only — NOT Craft subprocesses) ─────
+      } else {
+        // ── PROD-ONLY (always runs as Craft in the three-tier architecture) ─────
 
         // Hybrid memory search: backfill embeddings
         setImmediate(() => {
