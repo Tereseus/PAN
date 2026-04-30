@@ -8,8 +8,10 @@ const router = Router();
 // Devices are identified by their hostname + a user-set friendly name
 
 router.post('/register', (req, res) => {
-  const { name, device_type, capabilities } = req.body;
-  const deviceHostname = hostname();
+  const { device_id, name, device_type, capabilities } = req.body;
+  // Use device_id from body if provided (phone/remote devices).
+  // Fall back to server hostname only for local self-registration.
+  const deviceHostname = device_id || hostname();
 
   const existing = getScoped(req, "SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id", { ':h': deviceHostname });
 

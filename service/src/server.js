@@ -4345,6 +4345,9 @@ function start() {
       // Screen watcher — screenshot every 30s → vision AI → activity signal for intuition
       if (!IS_DEV) startScreenWatcher();
 
+      // Remote screen watcher — same as above but for connected pan-client devices
+      if (!IS_DEV) { import('./remote-screen-watcher.js').then(m => m.startRemoteScreenWatcher()); }
+
       // Webcam watcher — frame every 60s → vision AI → presence + identity signal
       if (!IS_DEV) startWebcamWatcher();
 
