@@ -8,6 +8,18 @@
 
 import { get, all, run } from '../db.js';
 
+// Impersonation state — owner can temporarily preview as a different power level, user, or group.
+// Stored in memory; cleared on server restart.
+//
+// Shape: null | { type: 'power'|'user'|'group', power: number, label: string,
+//                 userId?: number, userName?: string,
+//                 orgId?: string, orgName?: string, roleName?: string }
+let _impersonation = null;
+
+export function setImpersonation(obj) { _impersonation = obj; }
+export function clearImpersonation() { _impersonation = null; }
+export function getImpersonation() { return _impersonation; }
+
 // Default hierarchy — used as fallback if roles table is empty or missing
 const DEFAULT_ROLES = { viewer: 0, user: 25, manager: 50, admin: 75, owner: 100 };
 
@@ -56,7 +68,13 @@ function extractUser(req, res, next) {
   if (authMode === 'none') {
     // No auth — everyone is the default owner
     const u = get("SELECT power_lvl FROM users WHERE id = 1");
-    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner', power: u?.power_lvl ?? getRoleLevel('owner') };
+    const realPower = u?.power_lvl ?? getRoleLevel('owner');
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner',
+      power: (_impersonation !== null && realPower >= 100) ? _impersonation.power : realPower,
+      realPower,
+      isImpersonating: _impersonation !== null && realPower >= 100,
+      impersonation: (_impersonation !== null && realPower >= 100) ? _impersonation : null
+    };
     return next();
   }
 
@@ -89,12 +107,16 @@ function extractUser(req, res, next) {
     run("UPDATE api_tokens SET last_used = datetime('now','localtime') WHERE id = :id", { ':id': tokenRow.id });
   } catch {}
 
+  const realPower2 = tokenRow.power_lvl ?? getRoleLevel(tokenRow.role);
   req.user = {
     id: tokenRow.user_id,
     email: tokenRow.email,
     display_name: tokenRow.display_name,
     role: tokenRow.role,
-    power: tokenRow.power_lvl ?? getRoleLevel(tokenRow.role),
+    power: (_impersonation !== null && realPower2 >= 100) ? _impersonation.power : realPower2,
+    realPower: realPower2,
+    isImpersonating: _impersonation !== null && realPower2 >= 100,
+    impersonation: (_impersonation !== null && realPower2 >= 100) ? _impersonation : null,
     token_id: tokenRow.id,
     token_name: tokenRow.name
   };

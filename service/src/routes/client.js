@@ -23,6 +23,7 @@ import {
   denyDevice,
 } from '../client-manager.js';
 import { get, all, run } from '../db.js';
+import { upsertDevicePresence } from '../intuition.js';
 import { broadcastNotification } from '../terminal-bridge.js';
 import crypto from 'crypto';
 import os from 'os';
@@ -134,14 +135,25 @@ router.post('/command', async (req, res) => {
     return res.status(404).json({ ok: false, error: `Device '${device_id}' not found or not approved` });
   }
 
-  // Try WS first (works when on same network)
-  if (isClientConnected(device_id)) {
-    try {
-      const result = await sendToClient(device_id, type, params, timeout_ms);
-      return res.json({ ok: true, result, via: 'websocket' });
-    } catch (err) {
-      // WS failed — fall through to HTTP queue
+  // Try WS via Carrier relay (Carrier owns all WS connections — Craft's client-manager is empty)
+  try {
+    const carrierPort = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
+    const relayRes = await fetch(`http://127.0.0.1:${carrierPort}/api/carrier/client-send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id, type, timeout_ms, ...params }),
+      signal: AbortSignal.timeout(timeout_ms + 2000),
+    });
+    const relayData = await relayRes.json();
+    if (relayRes.ok && relayData.ok) {
+      return res.json({ ok: true, result: relayData.result, via: 'websocket' });
     }
+    // 404 = client not on WS → fall through to DB queue
+    if (relayRes.status !== 404) {
+      return res.status(relayRes.status).json(relayData);
+    }
+  } catch (err) {
+    // Carrier relay failed (timeout, network) — fall through to DB queue
   }
 
   // Queue via DB for HTTP-polling clients (Cloudflare tunnel scenario)
@@ -314,10 +326,27 @@ router.get('/invite', (req, res) => {
 
 // ── DELETE /api/v1/client/:id ────────────────────────────────────────────────
 router.delete('/:id', (req, res) => {
+  // Guard: allow from localhost or authenticated sessions only.
+  const callerIp = req.ip || req.socket?.remoteAddress || '';
+  const isLocalhost = callerIp === '127.0.0.1' || callerIp === '::1' || callerIp === '::ffff:127.0.0.1';
+  const hasAuth = req.user && req.user.power >= 75; // admin or owner
+
+  if (!isLocalhost && !hasAuth) {
+    return res.status(403).json({ ok: false, error: 'Forbidden — localhost or admin session required' });
+  }
+
   const { id } = req.params;
   try {
-    run("DELETE FROM devices WHERE hostname = :h", { ':h': id });
-    res.json({ ok: true, device_id: id, deleted: true });
+    // Look up hostname before deleting (id may come in as hostname or numeric id)
+    const row = get("SELECT hostname FROM devices WHERE hostname = :h OR CAST(id AS TEXT) = :h", { ':h': id });
+    const hostname = row?.hostname || id;
+    run("DELETE FROM devices WHERE hostname = :h", { ':h': hostname });
+    try {
+      run(`INSERT INTO device_audit_log (action, hostname, caller_ip, endpoint, notes)
+           VALUES ('deleted', :h, :ip, 'DELETE /api/v1/client/:id', NULL)`,
+        { ':h': hostname, ':ip': callerIp });
+    } catch {}
+    res.json({ ok: true, device_id: hostname, deleted: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -343,13 +372,14 @@ router.post('/:id/approve', (req, res) => {
 // ── POST /api/v1/client/:id/deny ─────────────────────────────────────────────
 router.post('/:id/deny', (req, res) => {
   const { id } = req.params;
+  const callerIp = req.ip || req.socket?.remoteAddress || 'unknown';
   try {
     const isNumeric = /^\d+$/.test(id);
     const row = isNumeric
       ? get('SELECT hostname FROM devices WHERE id = :id', { ':id': id })
       : get('SELECT hostname FROM devices WHERE hostname = :h', { ':h': id });
     if (!row) return res.status(404).json({ ok: false, error: `Device '${id}' not found` });
-    denyDevice(row.hostname);
+    denyDevice(row.hostname, callerIp);
     res.json({ ok: true, device_id: row.hostname, trusted: false });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -367,19 +397,38 @@ router.post('/heartbeat', (req, res) => {
   res.json({ ok: true, connected: isClientConnected(device_id) });
 });
 
+// ── POST /api/v1/client/presence ──────────────────────────────────────────────
+// Lightweight presence signal from pan-client devices. Called every 30s.
+// Body: { device_id, user_id, activity, screen_title, confidence, platform }
+router.post('/presence', (req, res) => {
+  const { device_id, user_id, activity, screen_title, confidence, platform } = req.body || {};
+  if (!device_id) return res.status(400).json({ ok: false, error: 'device_id required' });
+  try {
+    upsertDevicePresence({ device_id, user_id, activity, screen_title, confidence, platform });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── POST /api/v1/client/register ─────────────────────────────────────────────
 // Called by pan-client.js on first connect. Works through Cloudflare (no WebSocket needed).
 // Creates a pending device record and broadcasts approval request to dashboard.
 router.post('/register', (req, res) => {
   const { token, device_id, name, platform, arch, version, capabilities, hostname: dHostname } = req.body || {};
-  if (!checkInviteToken(token)) return res.status(401).json({ ok: false, error: 'Invalid or expired token' });
-
   const deviceId = device_id || dHostname || 'unknown';
   const deviceName = name || deviceId;
 
   try {
     const existing = get("SELECT id, trusted FROM devices WHERE hostname = :h", { ':h': deviceId });
     if (existing?.trusted === -1) return res.status(403).json({ ok: false, error: 'Device was denied' });
+
+    // Already-approved devices can re-register without a fresh invite token (e.g. after token expiry).
+    // New devices (not in DB) always require a valid token.
+    const alreadyApproved = existing?.trusted === 1;
+    if (!alreadyApproved && !checkInviteToken(token)) {
+      return res.status(401).json({ ok: false, error: 'Invalid or expired token' });
+    }
 
     if (existing) {
       const newTrust = existing.trusted !== null ? existing.trusted : 0;
@@ -413,9 +462,12 @@ router.post('/register', (req, res) => {
 router.get('/status', (req, res) => {
   const { device_id, token } = req.query;
   if (!device_id) return res.status(400).json({ ok: false, error: 'device_id required' });
-  // Allow token-less status check if device is already in DB (idempotent re-registration)
-  if (token && !checkInviteToken(token)) return res.status(401).json({ ok: false, error: 'Invalid token' });
   const device = get("SELECT trusted, name FROM devices WHERE hostname = :h", { ':h': device_id });
+  // Already-approved devices can check status without a valid token (e.g. after token expiry on reconnect).
+  const alreadyApproved = device?.trusted === 1;
+  if (!alreadyApproved && token && !checkInviteToken(token)) {
+    return res.status(401).json({ ok: false, error: 'Invalid token' });
+  }
   if (!device) return res.json({ ok: true, status: 'unknown' });
   const status = device.trusted === 1 ? 'approved' : device.trusted === -1 ? 'denied' : 'pending';
   res.json({ ok: true, status, name: device.name });
@@ -486,6 +538,20 @@ router.get('/metrics', (req, res) => {
     res.json({ ok: true, metrics: rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /api/v1/client/audit-log ─────────────────────────────────────────────
+// Returns the last 50 device audit log entries (deletions, denials, approvals).
+router.get('/audit-log', (req, res) => {
+  try {
+    const rows = all(
+      `SELECT id, created_at, action, hostname, caller_ip, endpoint, notes
+       FROM device_audit_log ORDER BY id DESC LIMIT 50`
+    );
+    res.json({ ok: true, entries: rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

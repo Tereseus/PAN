@@ -69,10 +69,16 @@ router.post('/PermissionRequest', async (req, res) => {
     const startTime = Date.now();
 
     const result = await new Promise((resolve) => {
-      const timer = setInterval(() => {
+      let isPolling = false; // prevent concurrent IPC calls from piling up
+      const timer = setInterval(async () => {
+        if (isPolling) return; // skip tick if previous IPC call still in flight
+        isPolling = true;
+        try {
         // Find our permission in the pending list and check if it has a response
-        const pending = getPendingPermissions();
-        const perm = pending.find(p => p.id === permId);
+        // getPendingPermissions() may return a Promise (Craft IPC mode) or an array
+        const pendingRaw = getPendingPermissions();
+        const pending = Array.isArray(pendingRaw) ? pendingRaw : await Promise.resolve(pendingRaw).catch(() => []);
+        const perm = Array.isArray(pending) ? pending.find(p => p.id === permId) : undefined;
 
         if (perm && perm.response) {
           // User responded!
@@ -92,6 +98,7 @@ router.post('/PermissionRequest', async (req, res) => {
           console.log(`[PAN Hook] PermissionRequest timed out after ${MAX_WAIT}ms — denying`);
           resolve('deny');
         }
+        } finally { isPolling = false; }
       }, POLL_INTERVAL);
     });
 
@@ -200,6 +207,7 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
        AND (data LIKE :pp1 OR data LIKE :pp2)
        AND org_id = :org_id
        AND context_safe = 1
+       AND session_id IN (SELECT DISTINCT session_id FROM events WHERE event_type = 'Stop')
        ${excludeIds}
        ORDER BY created_at DESC LIMIT 1`,
       { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%', ':org_id': orgId, ...excludeParams }

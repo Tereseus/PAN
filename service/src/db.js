@@ -624,14 +624,46 @@ function backfillFTS() {
   if (indexed > 0) console.log(`[PAN FTS] Indexed ${indexed} new events`);
 }
 
-// Run backfill asynchronously — do NOT block server startup.
-// With a 600MB+ DB, the SELECT of all events can take 30-60s on a cold disk,
-// which exceeds PAN.bat's health-check timeout and prevents the carrier from
-// ever listening on port 7777. Deferring to setImmediate lets the event loop
-// finish module initialization first, so the server starts before backfill runs.
-setImmediate(() => {
-  try { backfillFTS(); } catch (err) { console.error('[PAN FTS] Backfill error:', err.message); }
-});
+// Run backfill after a 6s delay so the server is already listening and
+// responding to health checks before any DB writes happen.
+// setImmediate fired BEFORE I/O events, which blocked the health-check response
+// and caused every Craft swap to fail (carrier timeout → rollback).
+// Processing in async batches (setTimeout between each) yields the event loop
+// so health checks respond normally even during large backfills.
+async function backfillFTSAsync() {
+  const maxIndexed = db.prepare('SELECT MAX(rowid) as m FROM events_fts').get().m || 0;
+  const maxEvent   = db.prepare('SELECT MAX(id)   as m FROM events').get().m || 0;
+  if (maxIndexed >= maxEvent) return;
+
+  console.log(`[PAN FTS] Backfilling events after id ${maxIndexed} (up to ${maxEvent})...`);
+  const BATCH = 500;
+  let cursor = maxIndexed, indexed = 0;
+
+  while (true) {
+    const events = db.prepare(
+      'SELECT id, event_type, data FROM events WHERE id > ? ORDER BY id LIMIT ?'
+    ).all(cursor, BATCH);
+    if (events.length === 0) break;
+
+    for (const e of events) {
+      const text = extractEventText(e.event_type, e.data);
+      if (text) {
+        try {
+          db.prepare('INSERT OR IGNORE INTO events_fts(rowid, content_text) VALUES (?, ?)').run(e.id, text.slice(0, 2000));
+          indexed++;
+        } catch {}
+      }
+      cursor = e.id;
+    }
+    if (events.length < BATCH) break;
+    // Yield to event loop between batches — keeps health checks responsive
+    await new Promise(r => setTimeout(r, 0));
+  }
+  if (indexed > 0) console.log(`[PAN FTS] Indexed ${indexed} new events`);
+}
+setTimeout(() => {
+  backfillFTSAsync().catch(err => console.error('[PAN FTS] Backfill error:', err.message));
+}, 6000);
 
 // --- Centralized event logging ---
 // All event inserts should go through this function.

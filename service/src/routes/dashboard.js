@@ -10,6 +10,7 @@ import { readTranscript as readPtyTranscript, renameTranscript, setSessionName }
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
+import { execSync as _execSync } from 'child_process';
 
 const __dirname2 = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = join(__dirname2, '..', 'data', 'photos');
@@ -746,7 +747,15 @@ router.patch('/api/devices/:id', (req, res) => {
 
 // DELETE /dashboard/api/devices/:id — remove a device record
 router.delete('/api/devices/:id', (req, res) => {
+  const callerIp = req.ip || req.socket?.remoteAddress || 'unknown';
+  // Capture hostname before deleting
+  const devRow = get('SELECT hostname FROM devices WHERE id = :id', { ':id': req.params.id });
   run('DELETE FROM devices WHERE id = :id', { ':id': req.params.id });
+  try {
+    run(`INSERT INTO device_audit_log (action, hostname, caller_ip, endpoint, notes)
+         VALUES ('deleted', :h, :ip, 'DELETE /dashboard/api/devices/:id', NULL)`,
+      { ':h': devRow?.hostname || null, ':ip': callerIp });
+  } catch {}
   res.json({ ok: true, id: req.params.id });
 });
 
@@ -780,10 +789,16 @@ router.get('/api/devices', (req, res) => {
     FROM client_logs WHERE org_id = :org_id
     GROUP BY device_id`);
   const logMap = Object.fromEntries(recentLogs.map(r => [r.device_id, r.last_log]));
-  const serverHost = hostname().toLowerCase();
+  // Hub detection: match by hostname OR by Windows COMPUTERNAME (may differ from os.hostname() in some envs)
+  const serverHosts = new Set([hostname().toLowerCase()]);
+  try {
+    const cn = _execSync('wmic computersystem get name /value', { encoding: 'utf8', windowsHide: true, timeout: 2000 });
+    const cn2 = cn.match(/Name=(.+)/)?.[1]?.trim().toLowerCase();
+    if (cn2) serverHosts.add(cn2);
+  } catch {}
   const enriched = devices.map(d => {
     const lastLog = logMap[d.hostname];
-    const isHub = d.hostname?.toLowerCase() === serverHost;
+    const isHub = serverHosts.has(d.hostname?.toLowerCase());
     const base = lastLog && (!d.last_seen || lastLog > d.last_seen)
       ? { ...d, last_seen: lastLog, online: 1 }
       : { ...d };
