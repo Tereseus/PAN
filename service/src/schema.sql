@@ -689,3 +689,19 @@ VALUES ('org_personal', 'personal', 'Personal', '#f5c2e7');
 -- Seed default owner into personal org
 INSERT OR IGNORE INTO memberships (user_id, org_id, role_id)
 SELECT 1, 'org_personal', r.id FROM roles r WHERE r.name = 'owner';
+
+-- Activity events — foreground window tracking for app usage + voice matching
+CREATE TABLE IF NOT EXISTS activity_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at DATETIME DEFAULT (datetime('now','localtime')),
+  source TEXT DEFAULT 'desktop',
+  device_id TEXT,
+  event_type TEXT,
+  app_name TEXT,
+  window_title TEXT,
+  process_name TEXT,
+  duration_ms INTEGER,
+  metadata TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_app ON activity_events(app_name, created_at DESC);

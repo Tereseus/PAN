@@ -115,3 +115,24 @@ DoPanDictation() {
     ToolTip()
     panBusy := false
 }
+
+; ── PAN Activity Shell Hook ──────────────────────────────────────────────────
+; Track window focus changes and report to PAN for activity history
+PAN_ACTIVITY_URL := "http://127.0.0.1:7777/api/v1/activity"
+
+MsgNum := DllCall("RegisterWindowMessage", "Str", "SHELLHOOK", "UInt")
+DllCall("RegisterShellHookWindow", "Ptr", A_ScriptHwnd)
+OnMessage(MsgNum, PAN_ShellMsg)
+
+PAN_ShellMsg(wParam, lParam, *) {
+    if (wParam = 4 or wParam = 32772) {
+        try {
+            title := WinGetTitle("ahk_id " lParam)
+            procName := WinGetProcessName("ahk_id " lParam)
+            if (procName != "" && procName != "explorer.exe" && procName != "ShellExperienceHost.exe") {
+                body := '{"event_type":"app_focus","app_name":"' . procName . '","window_title":"' . StrReplace(title, '"', '\"') . '","source":"desktop_ahk"}'
+                Run('powershell -NoProfile -WindowStyle Hidden -Command "Invoke-RestMethod -Uri ''' PAN_ACTIVITY_URL ''' -Method POST -ContentType ''application/json'' -Body ''' body ''' | Out-Null"',, "Hide")
+            }
+        }
+    }
+}

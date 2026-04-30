@@ -14,7 +14,7 @@
 //   ble_scan (stub), smart_home (stub)
 
 import { WebSocket } from 'ws';
-import { execFile, exec, execSync } from 'child_process';
+import { execFile, exec, execSync, spawn } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -196,8 +196,65 @@ function probeServices() {
   });
 }
 
+// ── Ollama watchdog ───────────────────────────────────────────────────────────
+// Throttle: don't attempt restart more than once every 5 minutes.
+let _ollamaLastRestartAttempt = 0;
+const OLLAMA_RESTART_THROTTLE_MS = 5 * 60 * 1000;
+
+function restartOllama() {
+  if (IS_WINDOWS) {
+    // Try the desktop shortcut first (launches the tray app + server)
+    try {
+      spawn('cmd', ['/c', 'start', '', 'C:\\Users\\Public\\Desktop\\Ollama.lnk'], {
+        windowsHide: true,
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      console.log('[Watchdog] Ollama restart attempted via desktop shortcut');
+      return;
+    } catch {}
+    // Fallback: ollama serve directly
+    try {
+      spawn('ollama', ['serve'], {
+        windowsHide: true,
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      console.log('[Watchdog] Ollama restart attempted via `ollama serve`');
+    } catch (err) {
+      console.error('[Watchdog] Ollama restart failed:', err.message);
+    }
+  } else {
+    // Linux / macOS
+    try {
+      spawn('ollama', ['serve'], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      console.log('[Watchdog] Ollama restart attempted via `ollama serve`');
+    } catch (err) {
+      console.error('[Watchdog] Ollama restart failed:', err.message);
+    }
+  }
+}
+
 async function sendHeartbeat() {
-  const services = await probeServices();
+  let services = await probeServices();
+
+  // Watchdog: if Ollama is down, attempt to start it (throttled to once per 5 min)
+  const ollamaDown = services.some(s => s.name === 'ollama' && s.status === 'down');
+  if (ollamaDown) {
+    const now = Date.now();
+    if (now - _ollamaLastRestartAttempt >= OLLAMA_RESTART_THROTTLE_MS) {
+      _ollamaLastRestartAttempt = now;
+      console.log('[Watchdog] Ollama down — attempting restart');
+      restartOllama();
+      // Wait 8s then re-probe so the heartbeat carries fresh status
+      await new Promise(r => setTimeout(r, 8000));
+      services = await probeServices();
+    }
+  }
+
   send({
     type: 'heartbeat',
     device_id: DEVICE_ID,
@@ -207,6 +264,72 @@ async function sendHeartbeat() {
     timestamp: Date.now(),
     services,
   });
+}
+
+// Returns the title of the currently focused window, or null.
+async function getActiveWindow() {
+  try {
+    if (IS_WINDOWS) {
+      const script = `
+        Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Win32 {
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+            public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+          }
+"@
+        $h = [Win32]::GetForegroundWindow()
+        $s = New-Object System.Text.StringBuilder 256
+        [Win32]::GetWindowText($h, $s, 256) | Out-Null
+        $s.ToString()
+      `.trim();
+      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${script.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`,
+        { timeout: 3000, windowsHide: true }).toString().trim();
+      return out || null;
+    } else if (PLATFORM === 'linux') {
+      const out = execSync('xdotool getactivewindow getwindowname 2>/dev/null || wmctrl -a :ACTIVE: -v 2>&1 | head -1',
+        { timeout: 2000 }).toString().trim();
+      return out || null;
+    } else if (PLATFORM === 'darwin') {
+      const out = execSync(`osascript -e 'tell application "System Events" to get name of first process whose frontmost is true'`,
+        { timeout: 2000 }).toString().trim();
+      return out || null;
+    }
+  } catch {}
+  return null;
+}
+
+// Infer a short activity label from window title
+function inferActivity(title) {
+  if (!title) return 'idle';
+  const t = title.toLowerCase();
+  if (t.includes('visual studio') || t.includes('vs code') || t.includes('cursor') || t.includes('.js') || t.includes('.py') || t.includes('.ts')) return 'coding';
+  if (t.includes('chrome') || t.includes('firefox') || t.includes('edge') || t.includes('brave')) return 'browsing';
+  if (t.includes('slack') || t.includes('discord') || t.includes('teams') || t.includes('zoom')) return 'communicating';
+  if (t.includes('terminal') || t.includes('cmd') || t.includes('powershell') || t.includes('bash')) return 'terminal';
+  if (t.includes('youtube') || t.includes('netflix') || t.includes('vlc') || t.includes('mpv')) return 'watching';
+  if (t.includes('figma') || t.includes('photoshop') || t.includes('illustrator')) return 'designing';
+  if (t.includes('word') || t.includes('docs') || t.includes('notion') || t.includes('obsidian')) return 'writing';
+  if (t.includes('excel') || t.includes('sheets') || t.includes('numbers')) return 'spreadsheets';
+  return 'active';
+}
+
+async function sendPresence() {
+  try {
+    const screenTitle = await getActiveWindow();
+    const activity = inferActivity(screenTitle);
+    const userId = config.owner || NAME;
+    await httpRequest('POST', '/api/v1/client/presence', {
+      device_id: DEVICE_ID,
+      user_id: userId,
+      activity,
+      screen_title: screenTitle,
+      confidence: screenTitle ? 70 : 20,  // lower confidence if we only have heartbeat-level data
+      platform: PLATFORM,
+    });
+  } catch {}  // non-critical — don't crash heartbeat loop
 }
 
 // ── Command handlers ──────────────────────────────────────────────────────────
@@ -273,6 +396,26 @@ async function handleCommand(msg) {
       case 'file_transfer':
         await cmdFileTransfer(params, reply);
         break;
+
+      case 'restart_service': {
+        const service = params.service || params.action?.replace('restart_', '');
+        if (service === 'ollama') {
+          try {
+            console.log('[Watchdog] restart_service command received — restarting Ollama immediately');
+            restartOllama();
+            // Wait 8s then re-probe for accurate status
+            await new Promise(r => setTimeout(r, 8000));
+            const services = await probeServices();
+            const ollamaSvc = services.find(s => s.name === 'ollama');
+            reply({ ok: true, service: 'ollama', action: 'restart_attempted', status: ollamaSvc?.status || 'unknown' });
+          } catch (err) {
+            reply(null, `Failed to restart ollama: ${err.message}`);
+          }
+        } else {
+          reply(null, `Unknown service: ${service}`);
+        }
+        break;
+      }
 
       case 'eval_window':
       case 'wrap_app':
@@ -608,7 +751,17 @@ async function boot() {
 
   if (wsWorking) {
     console.log('[PAN Client] WebSocket connected ✓ — using real-time mode');
-    // Normal WS path — reconnect on drop
+    // Send register immediately for the initial connection (ws.once('open') already fired,
+    // so the ws.on('open') handler below won't run until the next reconnect).
+    connected = true;
+    send({ type: 'register', device_id: DEVICE_ID, name: NAME, version: VERSION,
+           platform: PLATFORM, arch: arch(), capabilities, hostname: hostname(), token: TOKEN });
+    heartbeatTimer = setInterval(sendHeartbeat, 30_000);
+    pingTimer = setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.ping(); }, 15_000);
+    setInterval(sendPresence, 30_000);
+    sendPresence();
+
+    // Normal WS path — reconnect on drop (also re-registers on every reconnect)
     ws.on('open', () => {
       connected = true;
       reconnectDelay = 2000;
@@ -616,6 +769,8 @@ async function boot() {
              platform: PLATFORM, arch: arch(), capabilities, hostname: hostname(), token: TOKEN });
       heartbeatTimer = setInterval(sendHeartbeat, 30_000);
       pingTimer = setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.ping(); }, 15_000);
+      setInterval(sendPresence, 30_000);
+      sendPresence(); // initial presence on connect
     });
     ws.on('message', async (data) => { let msg; try { msg = JSON.parse(data); } catch { return; } await handleCommand(msg); });
     ws.on('close', () => { connected = false; clearInterval(heartbeatTimer); clearInterval(pingTimer); scheduleReconnect(); });
@@ -635,7 +790,19 @@ function startHttpMode() {
   (async function heartbeatLoop() {
     while (true) {
       try {
-        const services = await probeServices();
+        let services = await probeServices();
+        // Watchdog: attempt to restart Ollama if down (same throttle as WS mode)
+        const ollamaDown = services.some(s => s.name === 'ollama' && s.status === 'down');
+        if (ollamaDown) {
+          const now = Date.now();
+          if (now - _ollamaLastRestartAttempt >= OLLAMA_RESTART_THROTTLE_MS) {
+            _ollamaLastRestartAttempt = now;
+            console.log('[Watchdog] Ollama down — attempting restart');
+            restartOllama();
+            await new Promise(r => setTimeout(r, 8000));
+            services = await probeServices();
+          }
+        }
         await httpRequest('POST', '/api/v1/client/heartbeat', {
           device_id: DEVICE_ID,
           mem_free_mb: Math.round(freemem() / 1024 / 1024),
@@ -645,6 +812,15 @@ function startHttpMode() {
         });
       } catch {}
       await new Promise(r => setTimeout(r, 20_000));
+    }
+  })();
+
+  // Presence loop — reports active window + activity every 30s
+  (async function presenceLoop() {
+    await sendPresence(); // initial
+    while (true) {
+      await new Promise(r => setTimeout(r, 30_000));
+      await sendPresence();
     }
   })();
 

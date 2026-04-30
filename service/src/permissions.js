@@ -86,6 +86,24 @@ export const WIDGET_POWER = {
   dream:          50,   // manager+
   privacy:        50,   // manager+
   audit:          75,   // admin+
+
+  // Dashboard panels
+  transcript:     15,   // guest+ (chat history; child can't chat so nothing to show)
+  contacts:       15,   // guest+ (communication)
+  library:        15,   // guest+
+  mail:           15,   // guest+
+  teams:          25,   // user+
+  approvals:      25,   // user+
+  bugs:           25,   // user+
+  setup:          25,   // user+
+  benchmarks:     50,   // manager+
+  pipeline:       50,   // manager+ (beta pipeline)
+  intuition:      50,   // manager+ (presence / cam data — private)
+  perf:           50,   // manager+ (performance metrics)
+  usage:          50,   // manager+ (AI token cost data)
+  services:       75,   // admin+ (system services)
+  lifeboat:      100,   // owner only (system recovery)
+  // alerts and apps are ungated — visible to everyone
 };
 
 /**

@@ -15,6 +15,7 @@
 // Atlas reads from Steward's registry to render the service graph.
 
 import { get, all, run, insert, getOllamaUrl } from './db.js';
+import { sendToClient, getConnectedClients } from './client-manager.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startIntuition, stopIntuition } from './intuition.js';
 import { startScout, stopScout } from './scout.js';
@@ -735,6 +736,11 @@ async function healthCheck() {
     }
   }
 
+  // ── Remote Ollama watchdog ────────────────────────────────────────────────
+  // When a remote device reports Ollama as down for 2+ consecutive heartbeats,
+  // send a restart_service command to that device.
+  await checkRemoteOllama();
+
   // Log a heartbeat event
   try {
     const summary = services.map(s => `${s.id}:${s._status}`).join(',');
@@ -752,6 +758,68 @@ async function healthCheck() {
       })
     });
   } catch {}
+}
+
+// ── Remote Ollama watchdog helpers ──────────────────────────────────────────
+// Per-device consecutive "ollama down" counter.
+// Resets to 0 when Ollama is seen as up for that device.
+const _remoteOllamaDownCounts = new Map(); // deviceId → count
+// Per-device last-restart timestamp to avoid re-spamming.
+const _remoteOllamaLastRestart = new Map(); // deviceId → timestamp
+const REMOTE_OLLAMA_RESTART_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const REMOTE_OLLAMA_DOWN_THRESHOLD = 2; // consecutive heartbeats before acting
+
+async function checkRemoteOllama() {
+  try {
+    const clients = getConnectedClients();
+    for (const client of clients) {
+      if (!client.trusted) continue;
+      const deviceId = client.device_id;
+      const services = client.reported_services;
+      if (!Array.isArray(services)) continue;
+
+      const ollamaSvc = services.find(s => s.name === 'ollama');
+      if (!ollamaSvc) continue;
+
+      if (ollamaSvc.status === 'up' || ollamaSvc.status === 'running') {
+        // Recovered — reset counter
+        if (_remoteOllamaDownCounts.get(deviceId)) {
+          console.log(`[Steward] Remote Ollama recovered on ${deviceId}`);
+        }
+        _remoteOllamaDownCounts.set(deviceId, 0);
+        continue;
+      }
+
+      if (ollamaSvc.status === 'down') {
+        const count = (_remoteOllamaDownCounts.get(deviceId) || 0) + 1;
+        _remoteOllamaDownCounts.set(deviceId, count);
+        console.log(`[Steward] Remote Ollama down on ${deviceId} (${count} consecutive)`);
+
+        if (count >= REMOTE_OLLAMA_DOWN_THRESHOLD) {
+          const now = Date.now();
+          const lastRestart = _remoteOllamaLastRestart.get(deviceId) || 0;
+          if (now - lastRestart < REMOTE_OLLAMA_RESTART_COOLDOWN_MS) continue;
+
+          console.log(`[Steward] Sending restart_service(ollama) to ${deviceId}`);
+          _remoteOllamaLastRestart.set(deviceId, now);
+          // Reset count so we don't spam on the next cycle
+          _remoteOllamaDownCounts.set(deviceId, 0);
+
+          sendToClient(deviceId, 'restart_service', { service: 'ollama' }, 60_000)
+            .then(result => {
+              console.log(`[Steward] restart_service(ollama) result from ${deviceId}:`, result?.status || 'ok');
+              logServiceEvent('remote-ollama-watchdog', 'restart_sent', { deviceId, result });
+            })
+            .catch(err => {
+              console.error(`[Steward] restart_service(ollama) failed for ${deviceId}: ${err.message}`);
+              logServiceEvent('remote-ollama-watchdog', 'restart_failed', { deviceId, error: err.message });
+            });
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[Steward] checkRemoteOllama error: ${err.message}`);
+  }
 }
 
 async function cleanZombieSessions() {

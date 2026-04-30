@@ -68,9 +68,11 @@ graph TB
 
 ### Key components
 - **Phone**: Google STT, Gemini Nano classification (fallback to server), local commands, TTS with echo prevention
-- **Server**: Unified router, SQLite/SQLCipher DB, project sync via .pan files, MCP server
+- **Server**: Three-tier process hierarchy — Super-Carrier (7777, permanent) → Carrier (17760, restartable) → Craft (17700, hot-swappable). Unified router, SQLite/SQLCipher DB, project sync via .pan files, MCP server
 - **Desktop**: Tauri shell, AHK hotkeys, live PTY terminals, persistent tabs
 - **AI tiers**: Qwen (phone) → Cerebras 120B (fast) → Claude (smart), shared state
+- **Client devices**: pan-client.js installed on other PCs, registers via WS, receives commands. See `docs/MULTI-DEVICE-ROUTING.md`
+- **Presence**: Webcam watcher (face ID, 30s) + Screen watcher (vision AI, 60s) → intuition.js context
 
 ### Current Projects (auto-detected from .pan files)
 - **PAN** — this project
@@ -162,7 +164,17 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 | `service/src/mcp-server.js` | MCP server — 8 tools + unified router (20+ actions) for Claude to interact with PAN |
 | `service/src/router.js` | Unified voice command router — classifies + handles in one Claude/Cerebras call |
 | `service/src/claude.js` | AI backend selector — routes to Cerebras/Claude/custom based on settings |
-| `service/src/carrier.js` | Carrier runtime — owns port 7777, WebSocket, PTY; spawns Craft on 17700 |
+| `service/src/super-carrier.js` | Super-Carrier — permanent outer process, owns port 7777, WS buffering, spawns Carrier |
+| `service/src/carrier.js` | Carrier — owns port 17760, WebSocket, PTY sessions, reconnect tokens; spawns Craft on 17700 |
+| `service/src/client-manager.js` | Client WS server — handles pan-client connections, command queue, device registry |
+| `service/src/routes/preferences.js` | Action preference store — user→org fallback chain, device aliases |
+| `service/src/routes/client.js` | Client API — device approval, command dispatch, metrics, heartbeat |
+| `service/src/webcam-watcher.js` | Webcam presence — face ID every 30s, identity lock, auto-enroll |
+| `service/src/screen-watcher.js` | Screen watcher — vision AI screenshot every 60s, primary activity signal |
+| `service/src/pan-notify.js` | Service messaging — Scout/Dream/Pipeline → user via ΠΑΝ chat thread |
+| `service/src/hooks/skill-learner.js` | Stop hook — auto-generates SKILL.md for novel sessions |
+| `service/installer/pan-installer.cjs` | Browser-based client installer with hardware model detection |
+| `pan-client/pan-client.js` | Client agent — runs on remote PCs, receives + executes commands |
 | `service/pan-loop.bat` | Windows respawn loop — restarts node on crash, stops on clean exit (code 0) |
 | `service/public/mobile/index.html` | Phone dashboard — static HTML, no build step, served at /mobile/ |
 | `dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (6000+ lines, both prod and dev) |
@@ -188,13 +200,14 @@ Phone mic → Google STT (on-device) → text → server `/api/v1/terminal/send`
 - **Phone logs**: `LogShipper.kt` batches every 5s → `POST /api/v1/logs`. Pull with `curl /api/v1/logs?device_type=phone`
 - **Browser telemetry**: Ship from mobile page JS via `fetch('/api/v1/logs', { body: { device_id: 'phone-dashboard', ... } })`
 
-### Carrier/Craft Architecture
-- **Carrier** (long-lived): owns port 7777, WebSocket, PTY sessions, reconnect tokens. Never restarts for code changes.
-- **Craft** (replaceable): `server.js` running on internal port (17700+). Carrier proxies HTTP to Craft.
-- **Swap**: `POST /api/carrier/swap` → new Craft spawns, health-checked, proxy switches, 30s rollback window
+### Super-Carrier / Carrier / Craft Architecture
+Three-tier hierarchy. See `docs/SUPER-CARRIER.md` for full details.
+- **Super-Carrier** (permanent): owns port **7777**, buffers WS frames during restarts, never dies
+- **Carrier** (restartable): owns port **17760**, WebSocket, PTY sessions, reconnect tokens. Restart via `POST /api/carrier/restart`
+- **Craft** (hot-swappable): `server.js` on port **17700+**. Swap via `POST /api/carrier/swap` (Lifeboat widget)
 - **Port cleanup**: Carrier kills stale processes on port 17700 before spawning new Craft (prevents crash loops)
-- **PAN.bat**: Launches `pan-loop.bat` in visible CMD window. Loop restarts on crash (exit code ≠ 0), stops on clean exit (code 0)
-- **Sleep/wake**: After system sleep, old Craft may hold port 17700. Carrier cleanup + PAN.bat exit-on-healthy prevents infinite crash loop
+- **PAN.bat**: Launches `pan-loop.bat` → spawns `node super-carrier.js`. Loop restarts on crash (exit ≠ 0), stops on clean exit
+- **Sleep/wake**: After system sleep, old Craft may hold port 17700. Carrier cleanup + PAN.bat exit-on-healthy prevents loops
 
 <!-- PAN-CONTEXT-START -->
 ## PAN Session Context
@@ -204,51 +217,68 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 8a30d44f-82e)*
-**User** (2026-04-28 14:57:35): What the fuck are you doing what the fuck is this legion what the fuck is this what what is this where are you getting your no like what do you not understand what you're doing we literally just added this device and it's gone now Predator PH315-51-T
-**Claude** (2026-04-28 15:04:26): Predator PH315-51-TED is back (ID 44, hostname `TED`, online). 
+### This Tab *(session: 12ef44d1-ec1)*
+**Claude** (2026-04-30 17:51:37): **ΠΑΝ Remembers:**
+- Fixed SQLite migration (org_id index ordering bug)
+- Disabled Windows Voice Typing cache / confirmed SpeechRuntime not running
+- SSH'd into **Minipc-Ted** (success) and **TedGL** (key auth failed — pubkey not in authorized_keys)
 
-Now the fix that caused this to happen again: the server.js startup code was overwriting device 42 because the Predator (hostname `TED`) and the hub (hostname `TedGL`) are different — t
-**User** (2026-04-28 15:34:03): did we ever install a client on prodesk2?
-**Claude** (2026-04-28 15:34:30): Can't SSH in right now (no key auth). But yes — last session we did SSH into tedprodesk2 and ran the PAN installer on it. That's the only reason it exists in the DB at all. The record shows it was last seen `2026-04-27 18:55:46` (yesterday evening) a
-**User** (2026-04-28 15:34:52): Ok it isnt the legion then why did you name it legion
-**Claude** (2026-04-28 15:35:40): That was from the previous session — the name "Legion" got assigned to `tedprodesk2` by mistake. Here's the full device list right now, because it's a mess:
+**User** (2026-04-30 17:55:22): So do you now have access to my Predator computer
+**Claude** (2026-04-30 17:55:39): Not yet — only **TedGL** and **Minipc-Ted** are registered. The Predator hasn't connected.
 
-| ID | Hostname | Name | Online |
-|----|----------|------|--------|
-| 21 | phone-pixel-10-pr
-**User** (2026-04-28 15:37:15): ID	Hostname	Name	Online
-21	phone-pixel-10-pro	Pixel 10 Pro	
-39	Minipc-Ted	Mini PC	
-42	TedGL	TEDGL	
-43	tedprodesk2	tedprodesk2	
-44	TED	Predator PH315-51-TED	
+Did the installer run on it? If so, it may need to be approved here. If you haven't run it yet, grab a fresh token (the last one likely expired) and run this 
+**User** (2026-04-30 17:58:27): It says invalid token why wouldn't you give me an actual one
+**Claude** (2026-04-30 17:59:51): Fresh token, good for 60 minutes. Run this on the Predator:
 
-These are the correct names, change these
-**Claude** (2026-04-28 15:37:52): Good — line 4257 already checks: only overwrites the name if it equals the raw hostname. "TEDGL" ≠ "TedGL" so it will be preserved.
+```powershell
+irm https://click-douglas-dow-corporate.trycloudflare.com/install/pan-167a127a1d5d74dacccbc69cc029d7c0 | iex
+```
 
-Devices are now:
+It'll open a browser, type **Predator** as the name, hit conn
+**User** (2026-04-30 18:01:25): OK I guess it's up now right
+**Claude** (2026-04-30 18:01:42): Yep — **Predator PH315-51-TED** is online and trusted. All 3 machines connected:
 
-| ID | Hostname | Name |
-|---|---|---|
-| 21 | phone-pixel-10-pro | Pixel 10 Pro |
-| 39 | Minipc-Ted
+| Device | Status |
+|--------|--------|
+| Predator PH315-51-TED | ✅ Online |
+| TED Hub (TedGL) | ✅ Online |
+| Minipc-Ted | ✅ Online |
 
-### Recent Project Work *(session: 4c3527ed-173)*
-**User** (2026-04-28 07:27:23): You are evaluating an event classifier. For each event below, would a competent classifier
-correctly identify at least one of the expected types? Score overall accuracy 1-10.
-Return ONLY JSON: {"score": N, "reason": "..."}
+I can now send commands to it — o
 
-Events:
-1. "User asked: re
+### Recent Project Work *(session: ebcc1b6c-e91)*
+**Claude** (2026-04-30 17:11:39): Cloudflare tunnel is still dead. Use the Tailscale IP directly instead — **run this on the Predator:**
+
+```powershell
+irm http://100.127.71.114:7777/install/pan-3921b5616208cfbf11cd15ea760d86e8 | iex
+```
+
+That hits the hub via Tailscale, no tunnel ne
+**User** (2026-04-30 17:12:42): Well it's kind of dangerous adding SSH to everything is it not Especially for people and users who have no idea what the fuck they're doing Well I guess the server is difficult to compromise the server We have a separation between client and server n
+**Claude** (2026-04-30 17:16:52): That URL is on the local LAN IP — Predator needs Tailscale. **Run this on the Predator:**
+
+```powershell
+irm http://100.127.71.114:7777/install/pan-ef7e4d7d373ac8f7997d30516a61fd58 | iex
+```
+
+Token expires in 30 min. The installer will now ask you to
+**User** (2026-04-30 17:19:51): What do I do to install it Why am I running it there can't you can't you remotely run it
+**Claude** (2026-04-30 17:21:29): Every port is blocked. Here's the honest answer:
+
+**The Windows Firewall on the Predator is blocking all inbound connections.** Tailscale gives us network routing (that's why ping works) but it can't get through the firewall to execute anything. SSH,
+**User** (2026-04-30 17:22:08): Add it to the installer add it add it to the installer and then I'll fucking run the PowerShell on the other computer
+**Claude** (2026-04-30 17:22:49): Done. Go run this on the Predator:
+
+```powershell
+irm http://100.127.71.114:7777/install/pan-ef7e4d7d373ac8f7997d30516a61fd58 | iex
+```
+
+Browser will open, type **Predator** in the name field, hit connect. It'll register, set the Tailscale hostname, 
 
 ### Open Tasks
 - [#394 backlog P2] Compose email — send returns HTTP 400, no email service wired
 - [#376 backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
 - [#382 backlog P1] PAN.bat respawn loop failed to restart today
-- [#56 in_progress] 3D print case design (~52x42x25mm)
-- [#57 in_progress] Solder I2C sensor board + GPIO expander
-- [#60 in_progress] Laser aiming system ("what is this?")
 - [#387 backlog] Task notifications overflow chat width
 
 <!-- PAN-CONTEXT-END -->

@@ -1,8 +1,9 @@
 // PAN Dream Cycle — evolution pipeline + state maintenance
 //
-// Runs periodically (every 6h). Two phases:
+// Runs periodically (every 6h). Three phases:
 //   1. Evolution pipeline — observe/critique/generate/validate/apply config changes
 //   2. State update — rewrite the living .pan-state.md document
+//   3. Memory compression — run caveman-compress on MEMORY.md (~46% token savings)
 //
 // The evolution pipeline also triggers memory consolidation (episodic/semantic/procedural).
 
@@ -10,6 +11,7 @@ import { all, get, logEvent } from './db.js';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 import { evolve } from './evolution/engine.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -145,6 +147,32 @@ Output ONLY the markdown document, nothing else.`,
     writeFileSync(STATE_FILE, finalResult, 'utf8');
     lastDreamTime = Date.now();
     console.log(`[PAN Dream] State file updated (${finalResult.length} chars) from ${entries.length} events`);
+
+    // === Phase 3: Memory Compression (caveman-compress) ===
+    // Compresses MEMORY.md prose ~46% — preserves all code blocks, rules, and structure.
+    try {
+      const cavePath = join(__dirname, '..', '..', '.agents', 'skills', 'caveman-compress');
+      const memoryFile = join(
+        process.env.USERPROFILE || process.env.HOME,
+        '.claude', 'projects', 'C--Users-tzuri-Desktop-PAN', 'memory', 'MEMORY.md'
+      );
+      if (existsSync(cavePath) && existsSync(memoryFile)) {
+        const before = readFileSync(memoryFile, 'utf8').length;
+        execSync(`python -m scripts "${memoryFile}"`, {
+          cwd: cavePath,
+          windowsHide: true,
+          timeout: 90000,
+          stdio: 'pipe',
+        });
+        const after = readFileSync(memoryFile, 'utf8').length;
+        const saved = Math.round((1 - after / before) * 100);
+        console.log(`[PAN Dream] Memory compressed: ${before} → ${after} chars (${saved}% saved)`);
+      } else {
+        console.log(`[PAN Dream] Skipping compression — caveman-compress or MEMORY.md not found`);
+      }
+    } catch (err) {
+      console.warn(`[PAN Dream] Compression skipped: ${err.message}`);
+    }
 
     logDreamCycle(events.length, entries.length, evolutionResult, result.length);
 

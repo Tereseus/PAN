@@ -288,10 +288,44 @@ export const claude = askAI;
 
 // --- Vision (screenshot understanding via local Qwen2.5-VL or cloud API fallback) ---
 
-const VISION_MODEL = 'qwen2.5vl:3b';
+// qwen2.5vl:3b crashes on CPU vision. moondream generates empty responses.
+// llava-phi3 (2.9GB) is proven reliable with Ollama's API on CPU.
+// moondream: 1.7GB, purpose-built CPU vision. Uses /api/generate (not /api/chat).
+// qwen2.5vl:3b crashes on vision inference on CPU-only — text works, images don't.
+const VISION_MODEL = 'minicpm-v';
 
-export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 30000 } = {}) {
-  // Ollama/local vision DISABLED — consumes too much memory. Using cloud API directly.
+export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [] } = {}) {
+  // referenceImages: optional array of base64 strings prepended before the main image.
+  // Ollama /api/generate supports images[] — first image(s) are reference, last is live frame.
+  const allImages = [...referenceImages, imageBase64];
+
+  // Primary: mini PC Ollama (100.72.237.137:11434) — getOllamaUrl() returns that address
+  try {
+    const ollamaUrl = (getOllamaUrl() || 'http://localhost:11434').replace(/\/$/, '');
+    const res = await fetch(`${ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        prompt,
+        images: allImages,
+        stream: false,
+        keep_alive: -1,   // never unload — vision model stays hot between captures
+      }),
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const text = data.response?.trim() || '';
+      if (text) {
+        logUsage(caller, VISION_MODEL, { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 }, prompt.slice(0, 100));
+        return text;
+      }
+    }
+  } catch (e) {
+    console.error(`[PAN Vision] Ollama ${VISION_MODEL} failed: ${e.message}`);
+  }
+
   // Fallback: Claude API with vision (requires API key)
   const apiKey = getApiKey('anthropic');
   if (apiKey) {
@@ -309,7 +343,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
           messages: [{
             role: 'user',
             content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+              ...allImages.map(img => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } })),
               { type: 'text', text: prompt },
             ],
           }],
@@ -352,7 +386,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
     }
   }
 
-  throw new Error('No vision provider available — Moondream not running, no API keys configured');
+  throw new Error(`No vision provider available — ${VISION_MODEL} unreachable on mini PC and no API keys configured`);
 }
 
 export function logUsage(caller, model, usage, promptPreview) {

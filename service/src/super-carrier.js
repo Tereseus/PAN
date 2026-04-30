@@ -115,7 +115,7 @@ function proxyHttp(req, res) {
     port:     CARRIER_PORT,
     path:     req.url,
     method:   req.method,
-    headers:  { ...req.headers, host: `127.0.0.1:${CARRIER_PORT}` },
+    headers:  { ...req.headers, host: `127.0.0.1:${CARRIER_PORT}`, 'x-forwarded-host': req.headers.host || '' },
   };
 
   const proxy = httpRequest(options, proxyRes => {
@@ -141,12 +141,29 @@ function proxyWs(browserWs, url) {
   let   internal  = null;
   let   dead      = false;   // true once browser disconnects
 
+  // Pan-clients (/ws/client) must re-register after Carrier restarts — their state
+  // (clients Map entry) is lost. We track whether internal has connected before so
+  // that on reconnect we close the browser WS, forcing pan-client to reconnect fresh
+  // and re-send its register message to the new Carrier.
+  // Browser dashboard connections (/ws/terminal etc.) keep the buffering behavior.
+  const isPanClient = url.startsWith('/ws/client');
+  let   hasConnectedBefore = false;
+
   function connectInternal() {
     if (dead) return;
 
     internal = new WebSocket(`ws://127.0.0.1:${CARRIER_PORT}${url}`);
 
     internal.on('open', () => {
+      // Pan-client reconnecting after Carrier restart: close so it re-registers fresh.
+      if (isPanClient && hasConnectedBefore) {
+        dead = true;
+        try { internal.close(); } catch {}
+        try { browserWs.close(1001, 'Carrier restarted — reconnect to re-register'); } catch {}
+        return;
+      }
+      hasConnectedBefore = true;
+
       // Drain any frames that arrived while Carrier was restarting
       const pending = outBuffer.splice(0);
       for (const { data, isBinary } of pending) {

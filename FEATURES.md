@@ -499,5 +499,160 @@ rendered at a known position. After capturing the frame:
 
 ---
 
+---
+
+## Super-Carrier Layer
+
+- **Purpose:** Permanent outer process that owns port 7777 forever. Carrier and
+  Craft can restart without browsers seeing a disconnect.
+- **File:** `service/src/super-carrier.js`
+- **Port:** 7777 (public). Proxies to Carrier on 17760.
+- **WebSocket buffering:** Holds up to 200 WS frames in memory during Carrier
+  restarts. Browser connection stays open; frames replay when Carrier comes back.
+- **Spawns:** Carrier via `fork()`. Auto-respawns on non-zero exit.
+- **See:** `docs/SUPER-CARRIER.md` for full architecture.
+
+---
+
+## Multi-Device Routing
+
+- **Purpose:** Route actions (play movie, open app, run command) to the correct
+  device automatically based on user preferences, device capabilities, and aliases.
+- **Entry point:** `POST /api/v1/query` — phone/client sends voice query
+- **Action envelope:** Response includes `actions[]` array with `device_id`, `app`,
+  `type`, `args` for each action to execute
+- **Preference store:** `action_preferences` table — user → org fallback chain.
+  Confidence grows with use. `POST /api/v1/preferences` to set.
+- **Device aliases:** `device_aliases` table — maps "projector" → hostname.
+  `POST /api/v1/preferences/aliases` to manage.
+- **Capabilities:** Each device reports its capabilities (apps, platform, features)
+  on registration. Stored in `devices.capabilities` JSON array.
+- **Active devices:** `GET /api/v1/devices/active` — devices seen in last 5 min
+- **See:** `docs/MULTI-DEVICE-ROUTING.md` for full routing flow.
+
+---
+
+## Installer — Smart Device Naming
+
+- **Purpose:** When a client device installs PAN, name it from hardware model
+  instead of raw hostname (e.g. "Dell G16-tedprodesk2" not just "tedprodesk2").
+- **Windows:** `wmic computersystem get model` → prepended to hostname
+- **macOS:** `system_profiler SPHardwareDataType` Model Name field
+- **Linux:** `/sys/devices/virtual/dmi/id/product_name`
+- **Fallback:** Raw hostname if model detection fails or returns generic string
+- **Where:** `pan-installer.cjs` (browser-based installer) and
+  `generateWindowsClientInstaller()` in `server.js` (PowerShell installer)
+
+---
+
+## Webcam Watcher
+
+- **Purpose:** Continuous presence detection via the PC webcam. Primary signal
+  for "who is at the desk" in the identity system.
+- **File:** `service/src/webcam-watcher.js`
+- **Polling:** Every 30s (unlocked) or every 5 min (identity locked)
+- **Burst mode:** Up to 3 frames per cycle; stops on first face detection
+- **Debounce:** Needs 2 consecutive misses before flipping to "desk empty"
+- **Idle gate:** If keyboard/mouse active in last 2 min, stays locked even if
+  camera misses a face (prevents false "desk empty" from momentary occlusion)
+- **Auto-enroll:** High-confidence frames (≥80%) are added to descriptor pool
+  (max 20 per identity cluster)
+- **DB:** Stores `webcam_context` events with presence, identity, confidence, emotion
+- **Status endpoint:** `GET /api/v1/webcam-watcher/status`
+
+---
+
+## Screen Watcher
+
+- **Purpose:** Vision AI analysis of what's on screen every 60s. Used by
+  intuition.js as the #1 activity signal (overrides webcam context).
+- **File:** `service/src/screen-watcher.js`
+- **Capture:** FFmpeg gdigrab (Windows) or Tauri shell (port 7790 if available)
+- **Analysis:** Resizes to 640px wide JPEG → minicpm-v → stores `screen_context` event
+- **Idle skip:** After 3 min inactivity, stops capturing
+- **Stale timeout:** Context older than 120s is ignored by intuition.js
+- **Burst mode:** `startBurst(durationMs, burstMs)` — rapid captures during Craft
+  swap / reload events (default: every 5s for 60s)
+- **Status endpoint:** `GET /api/v1/screen-watcher/status`
+
+---
+
+## PAN Notify (Service Messaging)
+
+- **Purpose:** Unified channel for PAN's own services to message the user.
+  Scout, Dream, Pipeline, Memory all drop messages into a single ΠΑΝ thread.
+- **File:** `service/src/pan-notify.js`
+- **API:**
+  - `panNotify(service, subject, body, opts)` — post a message from a service
+  - `panReply(userMessage)` — user replies in ΠΑΝ thread → Cerebras Qwen responds
+  - `ensurePanContact()` — idempotent boot setup (creates ΠΑΝ contact + thread)
+- **Severity:** `info` | `warning` | `critical`
+- **Storage:** `chat_messages` table with service, severity, metadata fields
+- **Service sign-offs:** Scout · 🔍, Dream · ✨, Pipeline · 🔬, Memory · 🧠
+- **Where visible:** Comms panel (chat thread from ΠΑΝ contact)
+
+---
+
+## Skill Learner (Auto-Skill Generation)
+
+- **Purpose:** After every Claude session, evaluate if a novel reusable skill
+  was demonstrated. If yes, auto-generate a SKILL.md and add it to the
+  pan-local plugin marketplace.
+- **File:** `service/src/hooks/skill-learner.js`
+- **Trigger:** Claude Code Stop hook (runs after every session ends)
+- **Flow:**
+  1. Reads session transcript from stdin
+  2. Calls Cerebras (fast, cheap) to evaluate if session was novel + reusable
+  3. If yes (min 4 turns, clear skill demonstrated): generates SKILL.md
+  4. Saves to `~/.claude/plugins/local/<skill-name>/`
+  5. Updates `marketplace.json` with new skill entry
+  6. Logs to PAN server (best-effort)
+- **Format:** SKILL.md = YAML frontmatter + Markdown instructions + optional JS
+- **Threshold:** Session must have ≥4 turns and demonstrate a reusable capability
+
+---
+
 _Add new features at the bottom when you build them. Update this file in the
 same commit as the code change._
+
+---
+
+## Impersonate Widget (dashboard toolbar)
+
+- **Purpose:** Owner-only tool to temporarily preview the dashboard as a different
+  power level, specific user, or org group — for testing permissions, parental controls,
+  and child-profile UX without logging out.
+- **Gate:** `realPower >= 100` (owner only). Requires power 80+ in future multi-owner setups.
+- **Trigger:** "👁 Impersonate…" button in toolbar (only visible to owners).
+  While active: yellow banner shows current impersonation label + "✕ Exit" button.
+
+### Three impersonation modes
+
+| Mode | API body | What changes |
+|------|----------|-------------|
+| **Power Level** | `{ type: 'power', power: 25 }` | Effective `power` drops to N; presets (Child/Guest/User/Manager/Admin) + slider (0–99) |
+| **User** | `{ type: 'user', userId: N }` | Uses that user's `power_lvl`; banner shows their name |
+| **Group** | `{ type: 'group', orgId: '...', power: N, roleName: '...' }` | Simulates membership in an org at a given role level |
+
+### Endpoints
+- `GET /api/v1/impersonate` — current state: `{ active, impersonation, realPower, presets }`
+- `POST /api/v1/impersonate` — start (see modes above); 403 if not owner; power must be 0–99
+- `DELETE /api/v1/impersonate` — stop; restores real power immediately
+- `GET /api/v1/users` — user picker list (owner-only); returns non-owner users for the User tab
+- `GET /api/v1/roles` — role list for group picker; falls back to built-in presets if roles table is empty
+
+### Impersonation object shape (in memory + permsMatrix response)
+```json
+{ "type": "power|user|group", "power": 25, "label": "User",
+  "userId": null, "orgId": null, "orgName": null, "roleName": null }
+```
+
+### Preserves
+- Real `power` and `role` of the owner — stored in `realPower` / `role='owner'`.
+- All PTY sessions, tabs, Claude processes — impersonation only affects the HTTP permission layer.
+- Clears on Craft restart (in-memory only by design).
+
+### Banner label format
+- Power: `👁 User (lvl 25)`
+- User: `👤 Tzuri Jr (lvl 15)`
+- Group: `🏢 ΠΑΝ → Member (lvl 25)`

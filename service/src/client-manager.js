@@ -106,6 +106,16 @@ export function checkInviteToken(token) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_ccq_device_pending ON client_command_queue(device_id, picked_up_at)`,
     "ALTER TABLE devices ADD COLUMN reported_services TEXT",
+    "ALTER TABLE devices ADD COLUMN tailscale_ip TEXT",
+    `CREATE TABLE IF NOT EXISTS device_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      action TEXT NOT NULL,
+      hostname TEXT,
+      caller_ip TEXT,
+      endpoint TEXT,
+      notes TEXT
+    )`,
   ];
   for (const sql of migrations) {
     try { run(sql); } catch {} // Ignore duplicate column errors
@@ -119,7 +129,7 @@ function getDeviceTrust(device_id) {
   return row ? row.trusted : null;
 }
 
-function upsertDevice({ device_id, name, platform, capabilities, version, pending = false }) {
+function upsertDevice({ device_id, name, platform, capabilities, version, pending = false, tailscale_ip = null }) {
   const existing = get("SELECT id, trusted FROM devices WHERE hostname = :h", { ':h': device_id });
   if (existing) {
     // Never downgrade trust — if already approved (1) keep it; only set pending (0) on first-ever pan-client registration
@@ -128,14 +138,23 @@ function upsertDevice({ device_id, name, platform, capabilities, version, pendin
     // Only set the name if there isn't one already, or if the existing name IS the device_id (never manually renamed).
     const existingRow = get("SELECT name FROM devices WHERE hostname = :h", { ':h': device_id });
     const keepName = existingRow?.name && existingRow.name !== device_id;
-    run(`UPDATE devices SET ${keepName ? '' : 'name = :n,'} capabilities = :c, client_version = :v, online = 1, trusted = :t,
+    const tsIpClause = tailscale_ip ? ', tailscale_ip = :ts_ip' : '';
+    run(`UPDATE devices SET ${keepName ? '' : 'name = :n,'} capabilities = :c, client_version = :v, online = 1, trusted = :t${tsIpClause},
          last_seen = datetime('now','localtime') WHERE hostname = :h`,
-      { ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': newTrust, ':h': device_id });
+      { ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': newTrust, ':h': device_id, ...(tailscale_ip ? { ':ts_ip': tailscale_ip } : {}) });
   } else {
-    run(`INSERT INTO devices (hostname, name, device_type, capabilities, client_version, online, trusted)
-         VALUES (:h, :n, 'pc', :c, :v, 1, :t)`,
-      { ':h': device_id, ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': pending ? 0 : 1 });
+    run(`INSERT INTO devices (hostname, name, device_type, capabilities, client_version, online, trusted, tailscale_ip)
+         VALUES (:h, :n, 'pc', :c, :v, 1, :t, :ts_ip)`,
+      { ':h': device_id, ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': pending ? 0 : 1, ':ts_ip': tailscale_ip });
   }
+}
+
+/**
+ * Look up a device by its Tailscale IP (100.x.x.x).
+ * Returns the device row or null if not found.
+ */
+export function getDeviceByTailscaleIp(ip) {
+  return get("SELECT * FROM devices WHERE tailscale_ip = :ip", { ':ip': ip }) || null;
 }
 
 export function approveDevice(device_id) {
@@ -148,8 +167,13 @@ export function approveDevice(device_id) {
   console.log(`[PAN Clients] Approved: ${device_id}`);
 }
 
-export function denyDevice(device_id) {
+export function denyDevice(device_id, callerIp = null) {
   run("UPDATE devices SET trusted = -1, online = 0 WHERE hostname = :h", { ':h': device_id });
+  try {
+    run(`INSERT INTO device_audit_log (action, hostname, caller_ip, endpoint, notes)
+         VALUES ('denied', :h, :ip, 'client-manager/denyDevice', 'Device denied by administrator')`,
+      { ':h': device_id, ':ip': callerIp || 'internal' });
+  } catch {}
   const entry = clients.get(device_id);
   if (entry) {
     entry.ws.send(JSON.stringify({ type: 'denied', device_id, reason: 'Access denied by administrator' }));
@@ -168,10 +192,18 @@ function setDeviceOnline(device_id, online) {
 let wss = null;
 
 export function startClientServer(httpServer) {
-  // Mark all devices offline at startup — they'll reconnect if live.
-  // Without this, ungraceful disconnects (power-off, crash) leave online=1 forever.
-  // Exclude the hub itself — it doesn't reconnect via WS, it runs the heartbeat interval instead.
-  run("UPDATE devices SET online = 0 WHERE online = 1 AND hostname != :h", { ':h': hostname() });
+  // Mark all devices offline — they'll reconnect if live.
+  // Without this, ungraceful disconnects leave online=1 forever.
+  // Exclude the hub itself — it runs the heartbeat interval, not WS registration.
+  //
+  // IMPORTANT: Defer by 3s to avoid a race condition during Carrier restarts.
+  // SuperCarrier proxies existing pan-client connections; the new Carrier sends close(1001)
+  // which triggers pan-client to reconnect and re-register. That round-trip takes ~500-1500ms.
+  // Running the UPDATE immediately marks them offline before they can re-register.
+  const hub = hostname();
+  setTimeout(() => {
+    run("UPDATE devices SET online = 0 WHERE online = 1 AND hostname != :h", { ':h': hub });
+  }, 3000);
 
   wss = new WebSocketServer({ noServer: true });
 
@@ -188,15 +220,22 @@ export function startClientServer(httpServer) {
     // Localhost connections (hub machine itself) always allowed — no invite token needed.
     const remoteIp = request.socket.remoteAddress || '';
     const isLocalhost = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
-    if (!isLocalhost && !isTokenValid(token)) {
+    // Already-approved devices can reconnect even if their invite token has expired.
+    const deviceTrust = deviceId ? getDeviceTrust(deviceId) : null;
+    const isApproved = deviceTrust === 1;
+    if (!isLocalhost && !isApproved && !isTokenValid(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
       socket.destroy();
       console.warn(`[PAN Clients] Rejected connection: invalid token (device=${deviceId})`);
       return;
     }
 
+    // Capture Tailscale IP if the connection comes from the 100.x.x.x range
+    const tailscaleIp = remoteIp.startsWith('100.') ? remoteIp : null;
+
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws._panDeviceId = deviceId;
+      ws._panTailscaleIp = tailscaleIp;
       wss.emit('connection', ws, request);
     });
   });
@@ -324,6 +363,7 @@ function handleRegister(ws, deviceId, msg) {
     capabilities: msg.capabilities,
     version: msg.version,
     pending,
+    tailscale_ip: ws._panTailscaleIp || null,
   });
 
   if (pending) {

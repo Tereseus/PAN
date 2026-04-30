@@ -11,6 +11,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { get } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODEL_PATH = join(__dirname, '../node_modules/@vladmandic/face-api/model');
@@ -20,7 +21,7 @@ const REFERENCE_DIR   = 'C:/Users/tzuri/Desktop/Me_pics';
 const REFERENCE_FILES = ['portait.png', 'me_London.png', 'me_club.png', 'me_island.png'];
 
 const MATCH_THRESHOLD      = 0.60; // L2 distance; lower = stricter
-const AUTOENROLL_THRESHOLD = 0.35; // confidence % to auto-enroll a live frame (face-api 30-50% is a solid match)
+const AUTOENROLL_THRESHOLD = 35;   // min confidence % (0–100) to auto-enroll a live frame
 const AUTOENROLL_MAX       = 20;   // cap in-memory auto-enrolled descriptors
 
 let modelsLoaded   = false;
@@ -84,7 +85,18 @@ async function enrollReference() {
   }
 
   if (enrolledDescriptors.length > 0) {
-    enrolledLabel = 'Tereseus'; // TODO: pull from DB users table
+    // Pull name from DB — nickname > display_name > settings fallback > hardcoded
+    try {
+      const u = get("SELECT display_nickname, display_name FROM users WHERE id = 1");
+      enrolledLabel = u?.display_nickname || u?.display_name || null;
+    } catch {}
+    if (!enrolledLabel) {
+      try {
+        const row = get("SELECT value FROM settings WHERE key = 'display_name'");
+        enrolledLabel = row?.value ? String(row.value).replace(/^"|"$/g, '') : null;
+      } catch {}
+    }
+    if (!enrolledLabel) enrolledLabel = 'Tereseus';
     console.log(`[FaceID] Enrolled "${enrolledLabel}" from ${loaded} photo(s)`);
   } else {
     console.warn('[FaceID] No faces enrolled — identity will always be "unknown"');

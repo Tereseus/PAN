@@ -68,7 +68,7 @@ export async function startDevTerminalServer(httpServer) {
 }
 
 export async function listSessions() {
-  if (IS_CRAFT) return ipcRequest('terminal:listSessions');
+  if (IS_CRAFT) return ipcRequest('terminal:listSessions').catch(() => []);
   const t = await getTerminal();
   return t.listSessions() || [];
 }
@@ -131,7 +131,7 @@ export function getInFlightTool(cwd) {
 }
 
 export function getPendingPermissions() {
-  if (IS_CRAFT) return ipcRequest('terminal:getPendingPermissions');
+  if (IS_CRAFT) return ipcRequest('terminal:getPendingPermissions').catch(() => []);
   return directTerminal?.getPendingPermissions() || [];
 }
 

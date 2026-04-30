@@ -6,7 +6,10 @@
 	let stats = $state(null);
 	let usage = $state(null);
 	let loading = $state(true);
-	let transform = $state({ x: 0, y: 0, scale: 0.42 });
+	const FIT_SCALE = 0.60;
+	const CX_CENTER = 1300, CY_CENTER = 1300;
+	function fitTransform(s = FIT_SCALE) { return { x: CX_CENTER * (1 - s), y: CY_CENTER * (1 - s), scale: s }; }
+	let transform = $state(fitTransform());
 	let panDragging = $state(false);
 	let dragStart = $state({ x: 0, y: 0 });
 	let hovered = $state(null);
@@ -52,6 +55,7 @@
 		'semantic':   { code: 'Knowledge', tech: 'Semantic Triples' },
 		'procedural': { code: 'Habits', tech: 'Procedural Memory' },
 		'inject-ctx': { code: 'Injector', tech: 'Context Injection' },
+		'caveman':    { code: 'Caveman', tech: 'Context Compressor' },
 	};
 
 	function label(id) {
@@ -124,9 +128,10 @@
 			moonR: 110, moonSpeed: 0.25,
 			moons: [
 				{ id: 'classifier',    baseAngle: 0,   type: 'process' },
-				{ id: 'intuition',     baseAngle: 90,  type: 'process' },
-				{ id: 'consolidation', baseAngle: 180, type: 'process' },
-				{ id: 'evolution',     baseAngle: 270, type: 'process' },
+				{ id: 'intuition',     baseAngle: 72,  type: 'process' },
+				{ id: 'consolidation', baseAngle: 144, type: 'process' },
+				{ id: 'evolution',     baseAngle: 216, type: 'process' },
+				{ id: 'caveman',       baseAngle: 288, type: 'process' },
 			],
 		},
 		{
@@ -463,8 +468,8 @@
 	<div class="topbar">
 		<span class="title">Π Atlas <span class="v2">v2</span></span>
 		<div class="controls">
-			<button class="tb" onclick={() => { transform = { x: 0, y: 0, scale: 0.42 }; }}>Fit</button>
-			<button class="tb" onclick={() => { transform = { x: 0, y: 0, scale: 1 }; }}>1:1</button>
+			<button class="tb" onclick={() => { transform = fitTransform(); }}>Fit</button>
+			<button class="tb" onclick={() => { transform = fitTransform(1); }}>1:1</button>
 			<button class="tb" onclick={() => { transform = { ...transform, scale: transform.scale * 1.2 }; }}>+</button>
 			<button class="tb" onclick={() => { transform = { ...transform, scale: Math.max(0.1, transform.scale * 0.8) }; }}>−</button>
 			<span class="zoom">{Math.round(transform.scale * 100)}%</span>
