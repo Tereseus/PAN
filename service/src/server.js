@@ -70,6 +70,8 @@ import { startTerminalServer, startDevTerminalServer, listSessions, killSession,
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
 import { WebSocketServer as WsServer } from 'ws';
 import clientRouter from './routes/client.js';
+import activityRouter from './routes/activity.js';
+import { startActivityTracker } from './activity-tracker.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
 
@@ -865,6 +867,9 @@ registerVoiceRoutes(app);
 // PAN Client — manages connected pan-client processes on other machines
 app.use('/api/v1/client', clientRouter);
 
+// Activity — foreground window tracking + app usage preferences
+app.use('/api/v1/activity', activityRouter);
+
 // ── PAN Client install scripts ────────────────────────────────────────────────
 // Secondary computers fetch these via: irm http://hub:7777/install/TOKEN | iex
 //                                  or: curl -s http://hub:7777/install/TOKEN | bash
@@ -896,7 +901,9 @@ app.get('/install/:token', (req, res) => {
     return res.status(403).send('# Invalid or expired install token\n');
   }
 
-  const host = req.headers.host || `127.0.0.1:${PORT}`;
+  // x-forwarded-host is set by super-carrier to preserve the original client-facing host
+  // (super-carrier rewrites host: to 127.0.0.1:17760 for internal routing)
+  const host = req.headers['x-forwarded-host'] || req.headers.host || `127.0.0.1:${PORT}`;
   const isHttpsReq = req.secure
     || req.headers['x-forwarded-proto'] === 'https'
     || host.includes('trycloudflare.com')
@@ -4340,6 +4347,9 @@ function start() {
 
       // Webcam watcher — frame every 60s → vision AI → presence + identity signal
       if (!IS_DEV) startWebcamWatcher();
+
+      // Activity tracker — foreground window poll every 3s → app_focus events
+      if (!IS_DEV) startActivityTracker();
 
       // Dashboard watchdog — polls Tauri every 10s, auto-recovers black/stuck loading screen
       if (!IS_DEV) startWatchdog();

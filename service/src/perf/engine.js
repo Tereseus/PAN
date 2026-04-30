@@ -128,14 +128,23 @@ export class PerfEngine {
   }
 
   isSwapSafe() {
-    // All SWAP_GATE stages must be ready, no failures since swap started.
+    // During a swap window: only fail on errors that occurred AFTER markSwapStart().
+    // Pre-swap stale 'failed' state (from a previous failed swap) is intentionally
+    // ignored — the new Craft gets a clean slate. Force-probes in performSwap()
+    // ensure real failures are detected and recorded AFTER _swapStartedAt.
+    //
+    // Outside a swap window (auto-confirm or manual confirm): require stage 'ready'.
     for (const id of SWAP_GATE) {
       const st = this.state[id];
-      if (!st || st.state !== 'ready') return { safe: false, reason: `${id} is ${st?.state || 'missing'}` };
-      // Had an error since swap started?
+      if (!st) return { safe: false, reason: `${id} is missing` };
+
       if (this._swapStartedAt) {
+        // Only block on NEW failures since the swap window opened.
         const recent = st.errors.filter(e => e.at >= this._swapStartedAt);
         if (recent.length > 0) return { safe: false, reason: `${id} failed during rollback window: ${recent[0].error}` };
+      } else {
+        // Outside swap window: require 'ready'.
+        if (st.state !== 'ready') return { safe: false, reason: `${id} is ${st?.state || 'missing'}` };
       }
     }
     return { safe: true };

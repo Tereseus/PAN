@@ -32,7 +32,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSyn
 import { hostname, tmpdir } from 'os';
 import { killProcessOnPort } from './platform.js';
 import { PerfEngine } from './perf/engine.js';
-import { toMarkdown as perfToMarkdown } from './perf/stages.js';
+import { toMarkdown as perfToMarkdown, SWAP_GATE } from './perf/stages.js';
 
 // Carrier has no DB — send ΠΑΝ notifications via HTTP to the Craft
 function panNotify(service, subject, body, opts = {}) {
@@ -1020,6 +1020,34 @@ const carrierServer = http.createServer((req, res) => {
     return;
   }
 
+  // Client command relay — Carrier owns WS connections, Craft delegates here
+  // POST /api/carrier/client-send  { device_id, type, timeout_ms?, ...params }
+  if (url.pathname === '/api/carrier/client-send' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { device_id, type, timeout_ms = 30_000, ...params } = JSON.parse(body);
+        if (!device_id || !type) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, error: 'device_id and type required' }));
+        }
+        const cm = await import('./client-manager.js');
+        if (!cm.isClientConnected(device_id)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, error: `Client '${device_id}' not connected via WS` }));
+        }
+        const result = await cm.sendToClient(device_id, type, params, timeout_ms);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, result }));
+      } catch (err) {
+        res.writeHead(err.message?.includes('not connected') ? 404 : 408, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
   // Everything else → proxy to primary Craft
   if (primaryCraft?.healthy) {
     proxyRequest(req, res, primaryCraft.port);
@@ -1059,8 +1087,27 @@ async function performSwap() {
   previousCraft = oldCraft;
   primaryCraft = newCraft;
   perfEngine.primaryCraftPort = newCraft.port;
+
+  // Force-probe all SWAP_GATE stages against the new Craft before opening the
+  // rollback window. This clears any stale 'failed' state from a previous swap
+  // so isSwapSafe() only sees real failures from THIS Craft.
+  console.log(`[Carrier] 🔍 Probing SWAP_GATE stages against Craft-${newCraft.id}...`);
+  await Promise.all(SWAP_GATE.map(id => perfEngine.forceProbe(id).catch(() => {})));
+
   swapPending = true;
   perfEngine.markSwapStart();
+
+  const gateCheck = perfEngine.isSwapSafe();
+  if (!gateCheck.safe) {
+    console.error(`[Carrier] ❌ New Craft-${newCraft.id} failed initial swap gate: ${gateCheck.reason} — aborting swap`);
+    swapPending = false;
+    primaryCraft = oldCraft;
+    previousCraft = null;
+    perfEngine.primaryCraftPort = oldCraft?.port;
+    perfEngine.markSwapEnd();
+    try { newCraft.proc.kill(); } catch {}
+    return;
+  }
 
   console.log(`[Carrier] ═══ SWAP LIVE ═══ Primary is now Craft-${newCraft.id} (${newCommit})`);
   console.log(`[Carrier] ⏱️  Rollback window: ${ROLLBACK_TIMEOUT_MS / 1000}s — POST /lifeboat/rollback to revert, POST /lifeboat/confirm to keep`);

@@ -14,6 +14,10 @@ import {
   getSnapshotHistory,
   tickIntuition,
   getIntuitionStatus,
+  getCurrentOrgSnapshot,
+  getOrgSnapshotHistory,
+  getOrgMemberSnapshots,
+  tickOrgIntuition,
 } from '../intuition.js';
 
 const router = Router();
@@ -68,6 +72,42 @@ router.post('/tick', (req, res) => {
   const snap = tickIntuition('manual');
   if (!snap) return res.status(503).json({ ok: false, error: 'daemon not running' });
   res.json({ ok: true, snapshot: snap });
+});
+
+// ─── Org-wide intuition ───────────────────────────────────────────────────
+
+// GET /org/current?org_id=org_personal — org-level aggregated snapshot
+router.get('/org/current', (req, res) => {
+  const orgId = req.query.org_id || 'org_personal';
+  const snap = getCurrentOrgSnapshot(orgId);
+  if (!snap) return res.status(503).json({ ok: false, error: 'no org snapshot yet' });
+  res.json({ ok: true, snapshot: snap, as_of: snap.as_of });
+});
+
+// GET /org/members?org_id=org_personal — latest snapshot per member in the org
+router.get('/org/members', (req, res) => {
+  const orgId = req.query.org_id || 'org_personal';
+  const members = getOrgMemberSnapshots(orgId);
+  res.json({ ok: true, org_id: orgId, members });
+});
+
+// GET /org/history?org_id=org_personal&limit=50 — org snapshot timeline
+router.get('/org/history', (req, res) => {
+  const orgId = req.query.org_id || 'org_personal';
+  const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+  res.json({ ok: true, org_id: orgId, snapshots: getOrgSnapshotHistory(orgId, limit) });
+});
+
+// POST /org/tick — force a fresh org snapshot
+router.post('/org/tick', async (req, res) => {
+  const orgId = req.query.org_id || req.body?.org_id || 'org_personal';
+  try {
+    const snap = await tickOrgIntuition(orgId, 'manual');
+    if (!snap) return res.status(503).json({ ok: false, error: 'org tick failed' });
+    res.json({ ok: true, snapshot: snap });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 export default router;

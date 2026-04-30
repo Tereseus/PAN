@@ -306,27 +306,32 @@ async function runInstall(cfg) {
   const hubWS   = `${wsProto}://${hubHost}`;
   const deviceId = os.hostname();
 
-  // Auto-detect hardware model for a meaningful device name
-  let deviceName = deviceId;
-  try {
-    if (process.platform === 'win32') {
-      const raw = require('child_process').execSync('wmic computersystem get model /value', { encoding: 'utf8', timeout: 3000, windowsHide: true });
-      const model = raw.match(/Model=(.+)/)?.[1]?.trim();
-      if (model && model !== 'System Product Name' && model !== 'To Be Filled By O.E.M.' && model.length > 2) {
-        deviceName = `${model}-${deviceId}`;
+  // Friendly name: set by the user in the GUI (cfg.friendlyName), or auto-detected from hardware
+  let deviceName = cfg.friendlyName || null;
+
+  // Auto-detect hardware model for a meaningful device name (used only if no friendly name given)
+  if (!deviceName) {
+    deviceName = deviceId;
+    try {
+      if (process.platform === 'win32') {
+        const raw = require('child_process').execSync('wmic computersystem get model /value', { encoding: 'utf8', timeout: 3000, windowsHide: true });
+        const model = raw.match(/Model=(.+)/)?.[1]?.trim();
+        if (model && model !== 'System Product Name' && model !== 'To Be Filled By O.E.M.' && model.length > 2) {
+          deviceName = `${model}-${deviceId}`;
+        }
+      } else if (process.platform === 'darwin') {
+        const raw = require('child_process').execSync("system_profiler SPHardwareDataType | grep 'Model Name'", { encoding: 'utf8', timeout: 3000 });
+        const model = raw.match(/Model Name:\s*(.+)/)?.[1]?.trim();
+        if (model && model.length > 2) deviceName = `${model}-${deviceId}`;
+      } else {
+        // Linux: try DMI
+        try {
+          const model = require('fs').readFileSync('/sys/devices/virtual/dmi/id/product_name', 'utf8').trim();
+          if (model && model !== 'System Product Name' && model.length > 2) deviceName = `${model}-${deviceId}`;
+        } catch {}
       }
-    } else if (process.platform === 'darwin') {
-      const raw = require('child_process').execSync("system_profiler SPHardwareDataType | grep 'Model Name'", { encoding: 'utf8', timeout: 3000 });
-      const model = raw.match(/Model Name:\s*(.+)/)?.[1]?.trim();
-      if (model && model.length > 2) deviceName = `${model}-${deviceId}`;
-    } else {
-      // Linux: try DMI
-      try {
-        const model = require('fs').readFileSync('/sys/devices/virtual/dmi/id/product_name', 'utf8').trim();
-        if (model && model !== 'System Product Name' && model.length > 2) deviceName = `${model}-${deviceId}`;
-      } catch {}
-    }
-  } catch {}
+    } catch {}
+  }
 
   status('installing');
   log(`Connecting to: ${hubHTTP}`);
@@ -409,6 +414,7 @@ async function runInstall(cfg) {
     name:      deviceName,
   }, null, 2));
   log('Config saved ✓');
+  log(`Device name: ${deviceName}`);
 
   // ── Startup task ─────────────────────────────────────────────────────────────
   log('Registering startup task...');
@@ -468,13 +474,29 @@ WantedBy=default.target
   log('Starting PAN client...');
   if (IS_WIN) {
     cp.spawn(nodeExe, [clientPath], {
-      cwd: panDir, detached: true, stdio: 'ignore', windowsHide: false,
+      cwd: panDir, detached: true, stdio: 'ignore', windowsHide: true,
     }).unref();
   }
 
   log('');
   log('Waiting for hub owner to approve this device...');
   log('You can close this window once approved.');
+
+  // ── Tailscale hostname rename ─────────────────────────────────────────────
+  // Rename this machine in Tailscale so it appears as the friendly name there too.
+  // Fail silently — Tailscale may not be installed and that's fine.
+  try {
+    const tsArgs = ['set', '--hostname', deviceName];
+    if (IS_WIN) {
+      cp.execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', tsArgs,
+        { windowsHide: true, timeout: 5000, stdio: 'pipe' });
+    } else {
+      cp.execFileSync('tailscale', tsArgs, { timeout: 5000, stdio: 'pipe' });
+    }
+    log(`Tailscale hostname set to: ${deviceName} ✓`);
+  } catch (e) {
+    log(`(Tailscale rename skipped: ${e.message.split('\n')[0]})`);
+  }
 
   done(true, `Connected to ${hubHTTP} — waiting for approval`);
 }
@@ -575,6 +597,14 @@ const HTML = `<!DOCTYPE html>
 <div class="subtitle">Personal AI Network — Device Installer</div>
 
 <div class="card">
+  <h2>Name your device</h2>
+  <label for="nameInput" style="font-size:13px;color:#8b949e;display:block;margin-bottom:8px">
+    This name appears in your PAN dashboard and Tailscale network.
+  </label>
+  <input type="text" id="nameInput" placeholder="e.g. Predator, LivingRoomPC" />
+</div>
+
+<div class="card">
   <h2>Paste your invite link</h2>
   <input type="text" id="linkInput" placeholder="https://your-hub/install/pan-..." />
 </div>
@@ -605,10 +635,21 @@ function updateInstallBtn() {
 
 document.getElementById('linkInput').addEventListener('input', updateInstallBtn);
 
+// Populate default device name from the server (os.hostname())
+(async function loadDefaultName() {
+  try {
+    const r = await fetch('/api/hostname');
+    const d = await r.json();
+    const nameEl = document.getElementById('nameInput');
+    if (d.hostname && !nameEl.value) nameEl.value = d.hostname;
+  } catch {}
+})();
+
 async function startInstall() {
   if (installing) return;
   const link = document.getElementById('linkInput').value.trim();
   if (!link) return;
+  const friendlyName = document.getElementById('nameInput').value.trim() || undefined;
 
   installing = true;
   updateInstallBtn();
@@ -639,7 +680,7 @@ async function startInstall() {
   await fetch('/api/install', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ link }),
+    body: JSON.stringify({ link, friendlyName }),
   });
 }
 
@@ -683,6 +724,12 @@ function startGUI(launchUrl = `http://localhost:${GUI_PORT}`) {
       return;
     }
 
+    if (req.method === 'GET' && u === '/api/hostname') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ hostname: os.hostname() }));
+      return;
+    }
+
     if (req.method === 'GET' && u === '/api/hubs') {
       // Run all discovery methods in parallel:
       // 1. UDP broadcast — fast, may be blocked by firewall/AP isolation
@@ -713,13 +760,15 @@ function startGUI(launchUrl = `http://localhost:${GUI_PORT}`) {
         let cfg;
         try {
           const payload = JSON.parse(body);
+          const friendlyName = (payload.friendlyName || '').trim() || undefined;
           if (payload.hub) {
             // Hub discovered locally — use 'local' token
             const h = payload.hub;
-            cfg = { h: `${h.host}:${h.port}`, t: 'local', s: false };
+            cfg = { h: `${h.host}:${h.port}`, t: 'local', s: false, friendlyName };
           } else if (payload.link) {
             cfg = parseInstallLink(payload.link);
             if (!cfg) { done(false, 'Invalid install link'); return; }
+            cfg.friendlyName = friendlyName;
           } else { done(false, 'No hub or link provided'); return; }
         } catch (e) { done(false, `Bad request: ${e.message}`); return; }
 

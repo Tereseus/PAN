@@ -182,14 +182,15 @@ async function runCapture(forced = false) {
     }
 
     const ctx = {
-      presence:   face.present ? 'yes' : 'no',
-      identity:   face.identity,
-      confidence: face.confidence,
-      emotion:    face.expression,
-      ts:         Date.now(),
-      camera:     usedCamera,
-      elapsed_ms: elapsed,
-      locked:     identityLocked,
+      presence:      face.present ? 'yes' : 'no',
+      identity:      face.identity,
+      confidence:    face.confidence,
+      emotion:       face.expression,
+      people_count:  face.present ? 1 : 0,
+      ts:            Date.now(),
+      camera:        usedCamera,
+      elapsed_ms:    elapsed,
+      locked:        identityLocked,
     };
 
     lastContext = ctx;
@@ -235,7 +236,11 @@ export function triggerPresenceCheck() {
 
 export function getWebcamContext() {
   if (!lastContext) return null;
-  if (Date.now() - lastContext.ts > STALE_MS) return null;
+  // When identity is locked, we poll every LOCK_RECHECK_MS (5min) — don't mark
+  // context stale before the next recheck is even due. Use STALE_MS only when
+  // actively polling (unlocked), where 90s is a reasonable freshness window.
+  const maxAge = identityLocked ? LOCK_RECHECK_MS + 30_000 : STALE_MS;
+  if (Date.now() - lastContext.ts > maxAge) return null;
   return { ...lastContext, age_ms: Date.now() - lastContext.ts };
 }
 

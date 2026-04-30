@@ -6,6 +6,11 @@ import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText 
 import * as playwright from './playwright-bridge.js';
 import { findSkill, getSkillPrompt, listSkills } from './skills.js';
 import { resolvePreference, resolveDeviceAlias } from './routes/preferences.js';
+import {
+  smartPickApp, rankedAppsForAction, pickDevice,
+  detectCorrection, learnCorrection,
+  setLastAction, getLastAction, intentToActionType,
+} from './smart-router.js';
 
 // Log a step in the command processing pipeline
 function logStep(commandId, step, detail) {
@@ -454,26 +459,21 @@ async function processUnifiedResult(action, text, context) {
 }
 
 /**
- * Given a classified intent + the request context, determine WHERE and HOW to execute it.
- * Checks preference store first (user → org → unknown).
- * Returns { device_id, device_type, app, needsClarification, clarifyQuestion }
+ * Smart routing: determine WHERE and HOW to execute an intent.
+ *
+ * Priority:
+ *   1. Saved preference (user or org) — learned from corrections
+ *   2. Natural language hint in text ("on the big screen", "projector")
+ *   3. Device scoring (capabilities, online status, best app)
+ *   4. Hard defaults (terminal→desktop, navigate→phone)
+ *
+ * Never asks a question we already know the answer to.
+ * If we're confident → act. If genuinely ambiguous → ask ONCE, then learn.
  */
-async function resolveActionTarget(intent, text, user_id, org_id, activeDevices = []) {
-  const ACTION_MAP = {
-    'play_music':   'play_music',
-    'play_movie':   'play_movie',
-    'play_video':   'play_movie',
-    'browse':       'open_browser',
-    'browser':      'open_browser',
-    'open_app':     'open_app',
-    'navigate':     'navigate',
-    'notification': 'show_notification',
-    'terminal':     'terminal',
-    'system':       'run_command',
-  };
-  const action_type = ACTION_MAP[intent] || intent;
+async function resolveActionTarget(intent, text, user_id, org_id, activeDevices = [], session_id = null) {
+  const action_type = intentToActionType(intent);
 
-  // Check preference store (user → org)
+  // ── 1. Check saved preference ────────────────────────────────────────────
   const pref = resolvePreference(null, action_type, user_id, org_id);
   if (pref) {
     return {
@@ -482,60 +482,121 @@ async function resolveActionTarget(intent, text, user_id, org_id, activeDevices 
       app: pref.app,
       action_type,
       needsClarification: false,
-      source: pref.source,
+      source: 'preference',
     };
   }
 
-  // Hard defaults that need no preference
-  if (intent === 'terminal') return { device_type: 'desktop', action_type, needsClarification: false, source: 'default' };
-  if (intent === 'system')   return { device_type: 'desktop', action_type, needsClarification: false, source: 'default' };
-  if (intent === 'navigate') return { device_type: 'phone',   action_type, needsClarification: false, source: 'default' };
-  if (intent === 'music')    return { device_type: 'phone',   action_type: 'play_music', needsClarification: false, source: 'default' };
+  // ── 2. Hard defaults (no device knowledge needed) ────────────────────────
+  if (intent === 'terminal') return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
+  if (intent === 'system')   return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
+  if (intent === 'navigate') return { device_type: 'phone', action_type, needsClarification: false, source: 'default' };
 
-  const pcDevices = activeDevices.filter(d => d.device_type === 'pc' || d.device_type === 'desktop');
+  // ── 3. Smart device + app selection ─────────────────────────────────────
+  const { device, app, confident, alternatives } = pickDevice(action_type, activeDevices, text);
 
-  if (intent === 'play_movie' || intent === 'play_video') {
-    if (pcDevices.length === 1) {
-      const apps = getAvailableAppsForAction(action_type, pcDevices[0]);
-      if (apps.length <= 1) {
-        return { device_id: pcDevices[0].hostname, app: apps[0] || null, action_type, needsClarification: false, source: 'inferred' };
-      }
-      return {
-        needsClarification: true,
-        action_type,
-        device_id: pcDevices[0].hostname,
-        clarifyQuestion: `I can play that with ${apps.join(', ')} on ${pcDevices[0].name || pcDevices[0].hostname}. Which would you like?`,
-        options: apps,
-      };
+  if (device && confident) {
+    return {
+      device_id: device.hostname,
+      device_type: device.device_type,
+      app,
+      action_type,
+      needsClarification: false,
+      source: 'smart',
+    };
+  }
+
+  // ── 4. Multiple plausible devices — ask ONCE ─────────────────────────────
+  if (device && alternatives && alternatives.length > 0) {
+    const topName = device.name || device.hostname;
+    const altNames = alternatives.slice(0, 2).map(a => a.device.name || a.device.hostname);
+    return {
+      action_type,
+      needsClarification: true,
+      device_id: device.hostname,  // best guess, shown to user
+      app,
+      clarifyQuestion: `Play it on ${topName} or ${altNames.join(' or ')}?`,
+      options: [device, ...alternatives.map(a => a.device)],
+    };
+  }
+
+  // ── 5. Single device, no ambiguity ───────────────────────────────────────
+  if (device) {
+    return {
+      device_id: device.hostname,
+      device_type: device.device_type,
+      app,
+      action_type,
+      needsClarification: false,
+      source: 'only_device',
+    };
+  }
+
+  // ── 6. No devices at all ─────────────────────────────────────────────────
+  return { action_type, needsClarification: false, source: 'fallback' };
+}
+
+/**
+ * Check if this message is a correction of our last action.
+ * If yes: re-route to the correct target and save the preference.
+ * Returns { handled, response, action } or null.
+ */
+async function handleCorrectionIfNeeded(text, context, activeDevices) {
+  const correction = detectCorrection(text);
+  if (!correction) return null;
+
+  const session_id = context.session_id || null;
+  const last = session_id ? getLastAction(session_id) : null;
+  if (!last) return null;
+
+  // Find the target device the user is pointing at
+  let targetDevice = null;
+  let targetApp = null;
+
+  if (correction.hasExplicitTarget) {
+    const pick = pickDevice(last.action_type, activeDevices, correction.target);
+    if (pick.device) {
+      targetDevice = pick.device;
+      targetApp = pick.app;
     }
-    if (pcDevices.length > 1) {
-      const names = pcDevices.map(d => d.name || d.hostname).join(', ');
+  }
+
+  // "other one" / "not that" → pick a different device than last time
+  if (!targetDevice && last.device) {
+    const others = activeDevices.filter(d => d.hostname !== last.device.hostname && d.online);
+    if (others.length === 1) {
+      targetDevice = others[0];
+      targetApp = smartPickApp(last.action_type, others[0]);
+    } else if (others.length > 1) {
+      // Still ambiguous after correction — narrow it down
+      const names = others.map(d => d.name || d.hostname).join(' or ');
       return {
-        needsClarification: true,
-        action_type,
-        clarifyQuestion: `Which device should I play it on? ${names}`,
-        options: pcDevices.map(d => d.name || d.hostname),
+        handled: true,
+        response: `Got it, not ${last.device.name || last.device.hostname}. Which one — ${names}?`,
+        action: null,
       };
     }
   }
 
-  // Fallback — no targeting info
-  return { action_type, needsClarification: false, source: 'fallback' };
-}
+  if (!targetDevice) return null;
 
-function getAvailableAppsForAction(action_type, device) {
-  let caps = [];
-  try { caps = JSON.parse(device.capabilities || '[]'); } catch {}
-  const appCaps = caps.filter(c => c.startsWith('app:')).map(c => c.replace('app:', ''));
+  // Save preference so we never ask again
+  learnCorrection(last.action_type, targetDevice, targetApp, context.org_id || 'org_personal', context.user_id || null);
 
-  const APP_AFFINITY = {
-    'play_movie':   ['vlc', 'mpv', 'chrome', 'firefox'],
-    'open_browser': ['chrome', 'firefox'],
-    'play_music':   ['spotify', 'chrome', 'firefox'],
+  // Update last action
+  if (session_id) setLastAction(session_id, last.action_type, targetDevice, targetApp, text);
+
+  const deviceName = targetDevice.name || targetDevice.hostname;
+  const appLabel = targetApp ? ` with ${targetApp}` : '';
+  return {
+    handled: true,
+    response: `Got it — playing on ${deviceName}${appLabel}. I'll remember that for next time.`,
+    action: {
+      type: last.action_type,
+      device_id: targetDevice.hostname,
+      device_type: targetDevice.device_type,
+      app: targetApp,
+    },
   };
-  const preferred = APP_AFFINITY[action_type] || [];
-  const available = preferred.filter(a => appCaps.includes(a));
-  return available.length > 0 ? available : appCaps;
 }
 
 async function route(text, context = {}) {
@@ -564,6 +625,26 @@ async function route(text, context = {}) {
     return r;
   }
 
+  // 1.8 Correction detection — did the user just correct our last action?
+  // Check before calling Claude to save the LLM call entirely.
+  {
+    let activeDevices = [];
+    try {
+      activeDevices = all(
+        `SELECT hostname, name, device_type, capabilities, online FROM devices
+         WHERE last_seen >= datetime('now', '-5 minutes', 'localtime') AND org_id = :o`,
+        { ':o': context.org_id || 'org_personal' }
+      ) || [];
+    } catch {}
+
+    const correctionResult = await handleCorrectionIfNeeded(text, context, activeDevices);
+    if (correctionResult) {
+      logStep(cmdId, 'correction_handled', correctionResult.response);
+      insertRouterEvent(text, 'correction', correctionResult.response, context);
+      return { intent: 'correction', response: correctionResult.response, action: correctionResult.action };
+    }
+  }
+
   // 2. Everything else — single unified Claude call (classify + handle in one shot)
   // Pass serverClassify hint so LLM can use it for garbled/ambiguous text
   const hintedContext = serverIntent && serverIntent !== 'system'
@@ -579,7 +660,7 @@ async function route(text, context = {}) {
       let activeDevices = [];
       try {
         activeDevices = all(
-          `SELECT hostname, name, device_type, capabilities FROM devices
+          `SELECT hostname, name, device_type, capabilities, online FROM devices
            WHERE last_seen >= datetime('now', '-5 minutes', 'localtime') AND org_id = :o`,
           { ':o': context.org_id || 'org_personal' }
         ) || [];
@@ -600,6 +681,11 @@ async function route(text, context = {}) {
         };
       } else if (target.device_id || target.device_type) {
         result.action_target = target;
+        // Remember this action so a correction can reference it
+        if (context.session_id) {
+          const device = activeDevices.find(d => d.hostname === target.device_id) || { hostname: target.device_id, device_type: target.device_type };
+          setLastAction(context.session_id, target.action_type, device, target.app, text);
+        }
       }
     } catch (e) {
       console.error('[PAN Router] resolveActionTarget failed:', e.message);

@@ -11,14 +11,39 @@ import { writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomBytes } from 'crypto';
+import http from 'http';
 
-const WHISPER_URL = 'http://127.0.0.1:7782';
+const WHISPER_HOST = '127.0.0.1';
+const WHISPER_PORT = 7782;
+const WHISPER_URL  = `http://${WHISPER_HOST}:${WHISPER_PORT}`;
+
+// Use native http module — Python BaseHTTP speaks HTTP/1.0 which Node.js fetch (undici) rejects.
+function whisperRequest(method, path, body, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const opts = {
+      hostname: WHISPER_HOST, port: WHISPER_PORT,
+      path, method,
+      headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {},
+    };
+    const req = http.request(opts, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: JSON.parse(data) }); }
+        catch { resolve({ ok: false, status: res.statusCode, body: { error: data } }); }
+      });
+    });
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('timeout')); });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
 
 async function whisperAvailable() {
-  try {
-    const r = await fetch(WHISPER_URL, { signal: AbortSignal.timeout(1000) });
-    return r.ok;
-  } catch { return false; }
+  try { const r = await whisperRequest('GET', '/', null, 1000); return r.ok; }
+  catch { return false; }
 }
 
 // Raw audio body parser for browser enrollment
@@ -29,9 +54,9 @@ export function registerVoiceRoutes(app) {
   // Health / status
   app.get('/api/v1/voice/status', async (req, res) => {
     try {
-      const r = await fetch(WHISPER_URL, { signal: AbortSignal.timeout(2000) });
-      const data = await r.json();
-      res.json({ ok: true, ...data });
+      const r = await whisperRequest('GET', '/', null, 2000);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      res.json({ ok: true, ...r.body });
     } catch (e) {
       res.json({ ok: false, error: 'Whisper server not reachable', detail: e.message });
     }
@@ -43,9 +68,8 @@ export function registerVoiceRoutes(app) {
       // Get live speakers from whisper server
       let liveSpeakers = [];
       try {
-        const r = await fetch(`${WHISPER_URL}/speakers`, { signal: AbortSignal.timeout(1000) });
-        const d = await r.json();
-        liveSpeakers = d.speakers || [];
+        const r = await whisperRequest('GET', '/speakers', null, 1000);
+        liveSpeakers = r.body?.speakers || [];
       } catch {}
 
       // Sync: ensure every live speaker has a DB row (catches pre-DB enrollments)
@@ -95,13 +119,8 @@ export function registerVoiceRoutes(app) {
         return res.status(503).json({ error: 'Whisper/speaker server not running' });
       }
 
-      const r = await fetch(`${WHISPER_URL}/enroll`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, wav_path: filePath }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const data = await r.json();
+      const r = await whisperRequest('POST', '/enroll', { label, wav_path: filePath }, 15000);
+      const data = r.body;
       if (!r.ok) return res.status(r.status).json(data);
 
       // Persist to DB
@@ -128,13 +147,8 @@ export function registerVoiceRoutes(app) {
       return res.status(400).json({ error: 'wav_path required' });
     }
     try {
-      const r = await fetch(`${WHISPER_URL}/identify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wav_path }),
-        signal: AbortSignal.timeout(10000),
-      });
-      res.json(await r.json());
+      const r = await whisperRequest('POST', '/identify', { wav_path }, 10000);
+      res.json(r.body);
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -163,13 +177,8 @@ export function registerVoiceRoutes(app) {
           return res.status(503).json({ error: 'Voice server not running' });
         }
 
-        const r = await fetch(`${WHISPER_URL}/enroll`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label, wav_path: tmpFile }),
-          signal: AbortSignal.timeout(20000),
-        });
-        const data = await r.json();
+        const r = await whisperRequest('POST', '/enroll', { label, wav_path: tmpFile }, 20000);
+        const data = r.body;
         if (!r.ok) return res.status(r.status).json(data);
 
         // Track in DB
@@ -199,13 +208,8 @@ export function registerVoiceRoutes(app) {
       if (!(await whisperAvailable())) {
         return res.status(503).json({ error: 'Whisper server not running' });
       }
-      const r = await fetch(`${WHISPER_URL}/record-enroll`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, seconds }),
-        signal: AbortSignal.timeout((seconds + 5) * 1000),
-      });
-      const data = await r.json();
+      const r = await whisperRequest('POST', '/record-enroll', { label, seconds }, (seconds + 5) * 1000);
+      const data = r.body;
       if (!r.ok) return res.status(r.status).json(data);
 
       // Track in DB

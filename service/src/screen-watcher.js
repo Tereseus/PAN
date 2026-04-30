@@ -19,10 +19,12 @@ const IDLE_THRESH  = 3 * 60_000; // skip capture if no input for 3min (was 5min)
 const TAURI_PORT   = 7790;
 const SNAP_PATH    = join(tmpdir(), 'pan-screen-snap.jpg');
 
-let watcherTimer  = null;
-let isCapturing   = false;
-let lastContext   = null; // { description, ts, source }
-let lastIdleLog   = 0;
+let watcherTimer    = null;
+let isCapturing     = false;
+let captureStartMs  = 0;          // when isCapturing was last set true
+const CAPTURE_MAX_MS = 150_000;   // watchdog: reset lock if stuck longer than this
+let lastContext     = null; // { description, ts, source }
+let lastIdleLog     = 0;
 
 // ── How long since last mouse/keyboard input (Windows only) ───────────────────
 function getIdleMs() {
@@ -129,7 +131,12 @@ function captureViaFFmpeg() {
 
 // ── One capture cycle ─────────────────────────────────────────────────────────
 async function runCapture() {
-  if (isCapturing) return;
+  // Watchdog: if lock has been held longer than CAPTURE_MAX_MS, it's a deadlock — reset it.
+  if (isCapturing) {
+    if (Date.now() - captureStartMs < CAPTURE_MAX_MS) return;
+    console.warn(`[ScreenWatcher] ⚠️ Lock held ${Math.round((Date.now()-captureStartMs)/1000)}s — resetting (deadlock)`);
+    isCapturing = false;
+  }
 
   // Skip if user has been idle too long — pendant takes over when away
   const idleMs = getIdleMs();
@@ -145,6 +152,7 @@ async function runCapture() {
   }
 
   isCapturing = true;
+  captureStartMs = Date.now();
   try {
     // Grab window title before screenshot (tells AI what app is open)
     const windowTitle = getForegroundTitle();
