@@ -82,15 +82,72 @@ export function ensureIntuitionSchema(database) {
     CREATE TABLE IF NOT EXISTS intuition_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       commander TEXT NOT NULL,
-      as_of INTEGER NOT NULL,                   -- ms epoch
-      trigger TEXT,                             -- 'heartbeat' | 'event' | 'observe' | 'manual'
-      snapshot TEXT NOT NULL,                   -- full JSON doc
+      as_of INTEGER NOT NULL,
+      trigger TEXT,
+      snapshot TEXT NOT NULL,
       confidence REAL DEFAULT 0,
-      source_count INTEGER DEFAULT 0
+      source_count INTEGER DEFAULT 0,
+      org_id TEXT DEFAULT 'org_personal'
     );
     CREATE INDEX IF NOT EXISTS idx_intuition_as_of ON intuition_snapshots(as_of DESC);
     CREATE INDEX IF NOT EXISTS idx_intuition_commander ON intuition_snapshots(commander, as_of DESC);
+
+    CREATE TABLE IF NOT EXISTS org_intuition_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      org_id TEXT NOT NULL DEFAULT 'org_personal',
+      as_of INTEGER NOT NULL,
+      trigger TEXT,
+      snapshot TEXT NOT NULL,
+      member_count INTEGER DEFAULT 0,
+      device_count INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_org_intuition_as_of ON org_intuition_snapshots(org_id, as_of DESC);
+
+    CREATE TABLE IF NOT EXISTS device_presence (
+      device_id TEXT PRIMARY KEY,
+      user_id   TEXT,
+      activity  TEXT,
+      screen_title TEXT,
+      confidence INTEGER DEFAULT 0,
+      platform  TEXT,
+      as_of     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_presence_as_of ON device_presence(as_of DESC);
   `);
+
+  // Migrate existing intuition_snapshots tables that predate the org_id column
+  const migrations = [
+    `ALTER TABLE intuition_snapshots ADD COLUMN org_id TEXT DEFAULT 'org_personal'`,
+  ];
+  for (const sql of migrations) {
+    try { d.exec(sql); } catch {} // ignore "duplicate column" on fresh DBs
+  }
+
+  // org_id index must come after the migration in case the column was just added
+  try {
+    d.exec(`CREATE INDEX IF NOT EXISTS idx_intuition_org ON intuition_snapshots(org_id, as_of DESC)`);
+  } catch {}
+}
+
+// ─── Device Presence ───
+// Called by POST /api/v1/client/presence — upserts one row per device.
+export function upsertDevicePresence({ device_id, user_id, activity, screen_title, confidence, platform }) {
+  if (!device_id) return;
+  try {
+    db.prepare(`
+      INSERT INTO device_presence (device_id, user_id, activity, screen_title, confidence, platform, as_of)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(device_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        activity = excluded.activity,
+        screen_title = excluded.screen_title,
+        confidence = excluded.confidence,
+        platform = excluded.platform,
+        as_of = excluded.as_of
+    `).run(device_id, user_id || null, activity || null, screen_title || null, confidence || 0, platform || null, Date.now());
+  } catch (e) {
+    console.warn('[DevicePresence] upsert failed:', e.message);
+  }
 }
 
 // ─── Helpers ───
@@ -579,6 +636,7 @@ function buildSnapshot(trigger = 'heartbeat') {
 
   const snap = {
     commander,
+    org_id: 'org_personal',
     as_of: now,
     trigger,
     now: {
@@ -633,7 +691,7 @@ function buildSnapshot(trigger = 'heartbeat') {
       webcam_context: (() => {
         const wc = getWebcamContext();
         if (!wc) return null;
-        return { presence: wc.presence, identity: wc.identity, emotion: wc.emotion, people_count: wc.people_count, note: wc.note, age_ms: now - wc.ts, camera: wc.camera };
+        return { presence: wc.presence, identity: wc.identity, emotion: wc.emotion, people_count: wc.people_count ?? 0, age_ms: now - wc.ts, camera: wc.camera };
       })(),
       events_sampled: recentEvents.length,
       wrap_messages_sampled: recentWrap.length,
@@ -751,15 +809,16 @@ function inferWellbeing(terminalMsgs, events, hour, now) {
 function persistSnapshot(snap, trigger) {
   try {
     db.prepare(`
-      INSERT INTO intuition_snapshots (commander, as_of, trigger, snapshot, confidence, source_count)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO intuition_snapshots (commander, as_of, trigger, snapshot, confidence, source_count, org_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       snap.commander,
       snap.as_of,
       trigger,
       JSON.stringify(snap),
       snap.signals.confidence || 0,
-      (snap.signals.events_sampled || 0) + (snap.signals.wrap_messages_sampled || 0)
+      (snap.signals.events_sampled || 0) + (snap.signals.wrap_messages_sampled || 0),
+      snap.org_id || 'org_personal'
     );
   } catch (e) {
     _writeErrors++;
@@ -950,6 +1009,9 @@ export function tickIntuition(trigger = 'heartbeat') {
     // Fire async classification (non-blocking, updates snapshot later)
     classifyAxes(snap).catch(e => console.warn('[Intuition] classifyAxes unhandled:', e.message));
 
+    // Fire org tick alongside individual tick (non-blocking)
+    tickOrgIntuition('org_personal', trigger).catch(e => console.warn('[OrgIntuition] tick unhandled:', e.message));
+
     if (_onTickCallback) _onTickCallback();
     return snap;
   } catch (e) {
@@ -1015,4 +1077,340 @@ export function getIntuitionStatus() {
     file: INTUITION_FILE,
     commander: getCommanderIdentity(),
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ─── ORG-WIDE INTUITION ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Aggregates individual member snapshots + device presence into a single
+// org-level view. Answers: "what is the whole org doing right now?"
+//
+// For single-user PAN: shows the commander + connected client devices.
+// For multi-user PAN: shows all members' states rolled up.
+//
+// Tick cadence: same 60s as individual intuition (called from tickIntuition).
+
+const ORG_INTUITION_FILE = path.join(
+  process.env.LOCALAPPDATA || process.env.HOME || '.',
+  'PAN', 'data', 'org-intuition.json'
+);
+
+let _lastOrgSnapshot = null;
+let _getConnectedClients = null;
+
+// Lazy-import client-manager (avoids circular deps at load time)
+async function getClientsFn() {
+  if (!_getConnectedClients) {
+    try {
+      const cm = await import('./client-manager.js');
+      _getConnectedClients = cm.getConnectedClients;
+    } catch { _getConnectedClients = () => []; }
+  }
+  return _getConnectedClients;
+}
+
+// Build the org-level snapshot from all available signals
+async function buildOrgSnapshot(orgId = 'org_personal', trigger = 'heartbeat') {
+  const now = Date.now();
+
+  // ─── Org metadata ───
+  let orgName = 'Personal';
+  try {
+    const orgRow = get(`SELECT name FROM orgs WHERE id = :id`, { ':id': orgId });
+    if (orgRow?.name) orgName = orgRow.name;
+  } catch {}
+
+  // ─── Member snapshots — most recent per commander ───
+  let memberSnapshots = [];
+  try {
+    const rows = all(`
+      SELECT commander, as_of, confidence, snapshot
+      FROM intuition_snapshots
+      WHERE org_id = ? AND as_of > ?
+      GROUP BY commander
+      HAVING MAX(as_of)
+      ORDER BY as_of DESC
+      LIMIT 20
+    `, [orgId, now - 10 * 60 * 1000]);   // only members active in last 10min
+
+    for (const r of rows) {
+      try {
+        const snap = JSON.parse(r.snapshot);
+        const n = snap.now || {};
+        memberSnapshots.push({
+          commander: r.commander,
+          as_of: r.as_of,
+          age_ms: now - r.as_of,
+          is_active: (now - r.as_of) < 5 * 60 * 1000,   // active if snapshot < 5min old
+          activity: n.activity || null,
+          focus: n.focus || null,
+          mood: n.mood || null,
+          where: n.where || null,
+          last_seen: n.last_seen || null,
+          last_heard: n.last_heard || null,
+          urgency: n.urgency || null,
+          engagement: n.engagement || null,
+          recent_topics: n.recent_topics || [],
+          assumption: n.assumption || null,
+          confidence: r.confidence || 0,
+        });
+      } catch {}
+    }
+  } catch (e) {
+    console.warn('[OrgIntuition] member snapshot fetch failed:', e.message);
+  }
+
+  // If no DB snapshots, fall back to best available snapshot (in-memory or DB/disk via getCurrentSnapshot)
+  if (memberSnapshots.length === 0) {
+    const fallback = _lastSnapshot || getCurrentSnapshot();
+    if (fallback) {
+      const n = fallback.now || {};
+      memberSnapshots.push({
+        commander: fallback.commander,
+        as_of: fallback.as_of,
+        age_ms: now - fallback.as_of,
+        is_active: (now - fallback.as_of) < 5 * 60 * 1000,
+        activity: n.activity || null,
+        focus: n.focus || null,
+        mood: n.mood || null,
+        where: n.where || null,
+        last_seen: n.last_seen || null,
+        last_heard: n.last_heard || null,
+        urgency: n.urgency || null,
+        engagement: n.engagement || null,
+        recent_topics: n.recent_topics || [],
+        assumption: n.assumption || null,
+        confidence: fallback.signals?.confidence || 0,
+      });
+    }
+  }
+
+  // ─── Connected devices (pan-client devices) ───
+  let devices = [];
+  try {
+    const fn = await getClientsFn();
+    const clients = fn();
+    devices = clients.map(c => ({
+      device_id: c.device_id,
+      name: c.name || c.device_id,
+      platform: c.platform || null,
+      online: c.online,
+      trusted: c.trusted,
+      last_heartbeat: c.last_heartbeat,
+      age_ms: c.last_heartbeat ? now - new Date(c.last_heartbeat).getTime() : null,
+      mem_free_mb: c.mem_free_mb || null,
+    }));
+  } catch {}
+
+  // ─── Device presence (enriched from pan-client presence POSTs) ───
+  try {
+    const presenceRows = all(`
+      SELECT device_id, user_id, activity, screen_title, confidence, platform, as_of
+      FROM device_presence
+      WHERE as_of > ?
+    `, [now - 10 * 60 * 1000]);  // active in last 10min
+
+    for (const p of presenceRows) {
+      const existing = devices.find(d => d.device_id === p.device_id);
+      if (existing) {
+        // Enrich the existing device entry with presence data
+        existing.user_id = p.user_id || existing.user_id;
+        existing.activity = p.activity || null;
+        existing.screen_title = p.screen_title || null;
+        existing.presence_confidence = p.confidence || 0;
+        existing.presence_age_ms = now - p.as_of;
+        existing.presence_active = (now - p.as_of) < 5 * 60 * 1000;
+      } else {
+        // Device not in client-manager (e.g. reconnecting) — add from presence table
+        devices.push({
+          device_id: p.device_id,
+          name: p.device_id,
+          platform: p.platform || null,
+          online: false,
+          trusted: null,
+          user_id: p.user_id || null,
+          activity: p.activity || null,
+          screen_title: p.screen_title || null,
+          presence_confidence: p.confidence || 0,
+          presence_age_ms: now - p.as_of,
+          presence_active: (now - p.as_of) < 5 * 60 * 1000,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('[OrgIntuition] device_presence fetch failed:', e.message);
+  }
+
+  // ─── Task counts ───
+  let openTasks = 0, inProgressTasks = 0;
+  try {
+    const counts = get(`
+      SELECT
+        SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) as open,
+        SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress
+      FROM tasks WHERE status IN ('todo', 'in_progress')
+    `);
+    openTasks = counts?.open || 0;
+    inProgressTasks = counts?.in_progress || 0;
+  } catch {}
+
+  // ─── Aggregate org state ───
+  const activeMembers = memberSnapshots.filter(m => m.is_active);
+  const onlineDevices = devices.filter(d => d.online);
+
+  // Collective focus: merge unique focus topics across active members
+  const allTopics = [];
+  for (const m of activeMembers) {
+    if (m.focus) allTopics.push(m.focus);
+    if (m.recent_topics) allTopics.push(...m.recent_topics);
+  }
+  const collectiveFocus = [...new Set(allTopics)].slice(0, 5);
+
+  // Collective activity: primary member's activity + device count context
+  let collectiveActivity = null;
+  if (activeMembers.length > 0) {
+    collectiveActivity = activeMembers[0].activity || 'Idle';
+    if (onlineDevices.length > 0) {
+      collectiveActivity += ` (${onlineDevices.length} device${onlineDevices.length > 1 ? 's' : ''} online)`;
+    }
+  }
+
+  // Org mood: take highest-urgency member's mood, or majority
+  let orgMood = null;
+  const urgencyOrder = ['Critical', 'High', 'Elevated', 'Normal', 'Low'];
+  for (const level of urgencyOrder) {
+    const m = activeMembers.find(m => m.urgency === level);
+    if (m) { orgMood = m.mood; break; }
+  }
+  if (!orgMood && activeMembers.length > 0) orgMood = activeMembers[0].mood;
+
+  // Org assumption: bubble up any not_ok/emergency
+  let orgAssumption = 'Ok';
+  for (const m of activeMembers) {
+    if (m.assumption === 'Emergency') { orgAssumption = 'Emergency'; break; }
+    if (m.assumption === 'Not Ok') orgAssumption = 'Not Ok';
+  }
+
+  const orgSnap = {
+    org_id: orgId,
+    org_name: orgName,
+    as_of: now,
+    trigger,
+    members: memberSnapshots,
+    devices,
+    org_state: {
+      active_members: activeMembers.length,
+      total_members: memberSnapshots.length,
+      online_devices: onlineDevices.length,
+      total_devices: devices.length,
+      collective_activity: collectiveActivity,
+      collective_focus: collectiveFocus,
+      org_mood: orgMood,
+      org_assumption: orgAssumption,
+      open_tasks: openTasks,
+      in_progress_tasks: inProgressTasks,
+    },
+    meta: {
+      schema_version: 1,
+      generator: 'org-intuition-v1',
+      disclaimer: 'NOT a medical device. Mood and wellbeing are automated assumptions only.',
+    },
+  };
+
+  return orgSnap;
+}
+
+function persistOrgSnapshot(snap) {
+  try {
+    db.prepare(`
+      INSERT INTO org_intuition_snapshots (org_id, as_of, trigger, snapshot, member_count, device_count)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      snap.org_id,
+      snap.as_of,
+      snap.trigger,
+      JSON.stringify(snap),
+      snap.org_state.total_members,
+      snap.org_state.total_devices
+    );
+  } catch (e) {
+    console.warn('[OrgIntuition] snapshot DB write failed:', e.message);
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(ORG_INTUITION_FILE), { recursive: true });
+    fs.writeFileSync(ORG_INTUITION_FILE, JSON.stringify(snap, null, 2));
+  } catch (e) {
+    console.warn('[OrgIntuition] file write failed:', e.message);
+  }
+
+  // Push to dashboard
+  getBroadcast().then(fn => fn('widget_update', { widget: 'org_intuition' })).catch(() => {});
+}
+
+export async function tickOrgIntuition(orgId = 'org_personal', trigger = 'heartbeat') {
+  try {
+    const snap = await buildOrgSnapshot(orgId, trigger);
+    persistOrgSnapshot(snap);
+    _lastOrgSnapshot = snap;
+    return snap;
+  } catch (e) {
+    console.warn('[OrgIntuition] tick failed:', e.message);
+    return null;
+  }
+}
+
+export function getCurrentOrgSnapshot(orgId = 'org_personal') {
+  if (_lastOrgSnapshot && _lastOrgSnapshot.org_id === orgId) return _lastOrgSnapshot;
+  // Fall back to DB
+  try {
+    const row = get(`
+      SELECT snapshot FROM org_intuition_snapshots
+      WHERE org_id = ? ORDER BY as_of DESC LIMIT 1
+    `, [orgId]);
+    if (row?.snapshot) return JSON.parse(row.snapshot);
+  } catch {}
+  // Fall back to disk
+  try {
+    if (fs.existsSync(ORG_INTUITION_FILE)) return JSON.parse(fs.readFileSync(ORG_INTUITION_FILE, 'utf8'));
+  } catch {}
+  return null;
+}
+
+export function getOrgSnapshotHistory(orgId = 'org_personal', limit = 50) {
+  try {
+    const rows = all(`
+      SELECT id, org_id, as_of, trigger, member_count, device_count, snapshot
+      FROM org_intuition_snapshots
+      WHERE org_id = ?
+      ORDER BY as_of DESC LIMIT ?
+    `, [orgId, limit]);
+    return rows.map(r => {
+      let parsed = null;
+      try { parsed = JSON.parse(r.snapshot); } catch {}
+      return {
+        id: r.id, org_id: r.org_id, as_of: r.as_of, trigger: r.trigger,
+        member_count: r.member_count, device_count: r.device_count, snapshot: parsed,
+      };
+    });
+  } catch { return []; }
+}
+
+export function getOrgMemberSnapshots(orgId = 'org_personal') {
+  // Latest snapshot per commander for this org
+  try {
+    const rows = all(`
+      SELECT commander, MAX(as_of) as as_of, confidence, snapshot
+      FROM intuition_snapshots
+      WHERE org_id = ?
+      GROUP BY commander
+      ORDER BY as_of DESC
+    `, [orgId]);
+    return rows.map(r => {
+      let parsed = null;
+      try { parsed = JSON.parse(r.snapshot); } catch {}
+      return { commander: r.commander, as_of: r.as_of, confidence: r.confidence, snapshot: parsed };
+    });
+  } catch { return []; }
 }
