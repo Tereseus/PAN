@@ -3,16 +3,23 @@ package dev.pan.app.network
 import android.util.Log
 import dev.pan.app.network.dto.*
 import dev.pan.app.network.dto.TerminalSendRequest
+import dev.pan.app.util.Constants
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class PanServerClient @Inject constructor(
-    internal val api: PanServerApi
+    internal val api: PanServerApi,
+    private val okHttpClient: OkHttpClient
 ) {
     companion object {
         private const val TAG = "PanServer"
@@ -158,6 +165,81 @@ class PanServerClient @Inject constructor(
             if (response.isSuccessful) response.body() else null
         } catch (e: Exception) {
             Log.e(TAG, "Query failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Streaming query — calls /api/v1/query/stream via SSE.
+     * Invokes [onChunk] for each text chunk as it arrives, so TTS can start
+     * speaking the first sentence while the rest is still generating.
+     * Returns the final QueryResponse (intent, actions, etc.) when stream ends.
+     */
+    suspend fun askPanStream(
+        text: String,
+        conversationHistory: String = "",
+        sensorJson: String? = null,
+        onChunk: (String) -> Unit
+    ): QueryResponse? = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply {
+                put("text", text)
+                if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
+                if (sensorJson != null) put("sensors", sensorJson)
+            }.toString().toRequestBody("application/json".toMediaType())
+
+            // Build against default URL — the OkHttp interceptor will rewrite to Tailscale if active
+            val request = Request.Builder()
+                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/query/stream")
+                .post(body)
+                .addHeader("Accept", "text/event-stream")
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                Log.e(TAG, "Stream request failed: ${response.code}")
+                return@withContext null
+            }
+
+            val source = response.body?.source() ?: return@withContext null
+            var finalResult: QueryResponse? = null
+
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (!line.startsWith("data: ")) continue
+                val data = line.removePrefix("data: ").trim()
+                if (data.isEmpty()) continue
+
+                try {
+                    val json = JSONObject(data)
+                    when (json.optString("type")) {
+                        "chunk" -> {
+                            val chunk = json.optString("text", "")
+                            if (chunk.isNotEmpty()) onChunk(chunk)
+                        }
+                        "done" -> {
+                            val result = json.optJSONObject("result")
+                            if (result != null) {
+                                finalResult = QueryResponse(
+                                    response_text = result.optString("response", ""),
+                                    intent = result.optString("intent", "query"),
+                                    route = result.optString("intent", null),
+                                    query = result.optString("query", null),
+                                    actions = emptyList()
+                                )
+                            }
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "SSE parse error: ${e.message}")
+                }
+            }
+
+            response.body?.close()
+            finalResult
+        } catch (e: Exception) {
+            Log.e(TAG, "Stream failed: ${e.message}")
             null
         }
     }

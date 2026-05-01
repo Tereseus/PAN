@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
-import { claude } from './claude.js';
+import { claude, askAIStream, getConfiguredModel } from './claude.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
@@ -725,6 +725,142 @@ User said: "${text}"`,
   } catch (e) {
     console.error('[PAN Router] Classification failed:', e.message);
     return 'query';
+  }
+}
+
+// --- Streaming router ---
+// Yields SSE-style event objects: {type:'chunk',text} then {type:'done',result}
+// Extracts the "response" field from the streaming JSON as tokens arrive,
+// so the phone can start speaking word-by-word before the full reply is ready.
+
+function extractResponseField(buf) {
+  // Find "response":"..." in a partially-streamed JSON buffer.
+  // Returns { text: string, done: boolean }
+  const m = buf.match(/"response"\s*:\s*"/);
+  if (!m) return { text: '', done: false };
+  const start = buf.indexOf(m[0]) + m[0].length;
+  let text = '';
+  let i = start;
+  while (i < buf.length) {
+    const ch = buf[i];
+    if (ch === '\\' && i + 1 < buf.length) {
+      const e = buf[i + 1];
+      switch (e) {
+        case '"': text += '"'; break;
+        case '\\': text += '\\'; break;
+        case 'n': text += '\n'; break;
+        case 't': text += '\t'; break;
+        default: text += e;
+      }
+      i += 2;
+    } else if (ch === '"') {
+      return { text, done: true };
+    } else {
+      text += ch;
+      i++;
+    }
+  }
+  return { text, done: false };
+}
+
+export async function* routeStream(text, context = {}) {
+  // Fast local intents — no LLM, return immediately
+  const serverIntent = serverClassify(text);
+  if (serverIntent === 'system') {
+    const quick = await tryQuickSystem(text);
+    if (quick) {
+      yield { type: 'chunk', text: quick.response };
+      yield { type: 'done', result: quick };
+      return;
+    }
+  }
+
+  // Ambient pre-filter
+  const isVoice = context.source === 'voice' || context.source === 'mic' || context.source === 'phone';
+  if (isVoice && quickAmbientCheck(text)) {
+    yield { type: 'done', result: { intent: 'ambient', response: '[AMBIENT]' } };
+    return;
+  }
+
+  // Build the same prompt handleUnified builds, then stream it
+  const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
+  const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
+
+  const memories = allScoped(null,
+    `SELECT content, item_type FROM memory_items WHERE org_id = :org_id AND content LIKE :q ORDER BY created_at DESC LIMIT 5`,
+    { ':q': `%${text.split(' ').slice(0, 3).join('%')}%` }
+  );
+  const memoryContext = memories.length > 0
+    ? `\nRelevant memories:\n${memories.map(m => `- [${m.item_type}] ${m.content}`).join('\n')}`
+    : '';
+
+  const historyBlock = context.conversation_history
+    ? `\nRecent conversation:\n${context.conversation_history}\n` : '';
+
+  let sensorBlock = '';
+  const sensors = context.sensors || null;
+  if (sensors) {
+    const parts = [];
+    const phone = sensors.phone || {};
+    if (phone.gps) { const addr = phone.gps.address ? ` (${phone.gps.address})` : ''; parts.push(`Location: ${phone.gps.lat?.toFixed(5)}, ${phone.gps.lng?.toFixed(5)}${addr}`); }
+    if (phone.compass != null) parts.push(`Compass: ${Math.round(phone.compass)}°`);
+    if (parts.length > 0) sensorBlock = `\nUser's current sensor readings: ${parts.join(' | ')}\n`;
+  }
+
+  let personality = '';
+  try { const row = get("SELECT value FROM settings WHERE key = 'personality'"); if (row) personality = row.value.replace(/^"|"$/g, '').trim(); } catch {}
+  const personalityBlock = personality ? `\nPersonality: ${personality}\nAlways stay in character.` : '';
+
+  const hintBlock = context.intent_hint
+    ? `\nOVERRIDE: Server pattern matched — your response MUST use {"intent":"${context.intent_hint}",...}.\n` : '';
+
+  const safeText = anonymizeForAI(text);
+  const isDash = context.source === 'dashboard';
+
+  const prompt = `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
+${historyBlock}${sensorBlock}${hintBlock}
+${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
+
+Every response must include "speech_act" field.
+Response formats:
+{"intent":"query","speech_act":"query","response":"answer"}
+{"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg"}
+{"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg"}
+{"intent":"ambient","response":"[AMBIENT]"}
+
+Projects: ${projectList}
+${memoryContext}`;
+
+  const model = getConfiguredModel ? getConfiguredModel() : 'cerebras:qwen-3-235b';
+
+  let fullBuf = '';
+  let lastLen = 0;
+
+  try {
+    for await (const chunk of askAIStream(prompt, { model, caller: 'router', maxTokens: 300, _skipAnonymize: true })) {
+      fullBuf += chunk;
+      const { text: extracted, done } = extractResponseField(fullBuf);
+      if (extracted.length > lastLen) {
+        yield { type: 'chunk', text: extracted.slice(lastLen) };
+        lastLen = extracted.length;
+      }
+      if (done) break;
+    }
+  } catch (e) {
+    console.error('[routeStream] LLM error:', e.message);
+  }
+
+  // Parse the final JSON for intent + actions
+  try {
+    const jsonMatch = fullBuf.match(/\{[\s\S]*\}/);
+    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    if (parsed) {
+      yield { type: 'done', result: { ...parsed, response: parsed.response || lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '' } };
+    } else {
+      yield { type: 'done', result: { intent: 'query', response: '' } };
+    }
+  } catch {
+    yield { type: 'done', result: { intent: 'query', response: '' } };
   }
 }
 

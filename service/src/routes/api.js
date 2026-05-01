@@ -715,6 +715,52 @@ router.post('/query', async (req, res) => {
   }
 });
 
+// POST /api/v1/query/stream — SSE streaming voice query
+// Yields chunks of the response as they're generated so the phone can start TTS immediately.
+// Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
+router.post('/query/stream', async (req, res) => {
+  const { text, context, intent_hint, sensors } = req.body;
+  if (!text) return res.status(400).json({ error: 'missing text' });
+
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const send = (obj) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  };
+
+  // Immediate ping confirms SSE channel is open
+  send({ type: 'ping' });
+
+  let parsedSensors = sensors;
+  if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }
+
+  try {
+    const { routeStream } = await import('../router.js');
+    for await (const event of routeStream(text, {
+      source: 'phone',
+      device_id: req.headers['x-device-id'] || req.headers['x-device-name'] || null,
+      intent_hint,
+      conversation_history: context,
+      sensors: parsedSensors,
+      org_id: req.org_id,
+    })) {
+      send(event);
+      if (event.type === 'done') break;
+    }
+  } catch (err) {
+    console.error('[query/stream]', err.message);
+    send({ type: 'chunk', text: 'Something went wrong.' });
+    send({ type: 'done', result: { intent: 'query', response: 'Something went wrong.' } });
+  }
+
+  if (!res.writableEnded) res.end();
+});
+
 // POST /api/v1/devices/capabilities — phone/other devices self-report their capabilities
 router.post('/devices/capabilities', (req, res) => {
   const { capabilities } = req.body;
