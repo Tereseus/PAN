@@ -75,6 +75,21 @@ async function tryQuickSystem(text) {
     };
   }
 
+  // PC/desktop sleep — must check BEFORE the generic "sleep" PAN-pause handler below
+  if (lower.includes('sleep') && (lower.includes('computer') || lower.includes(' pc') || lower.includes('desktop') || lower.includes('machine'))) {
+    const { execSync } = await import('child_process');
+    try {
+      if (process.platform === 'win32') {
+        execSync('rundll32.exe powrprof.dll,SetSuspendState 0,1,0', { windowsHide: true });
+      } else {
+        execSync('systemctl suspend', {});
+      }
+      return { intent: 'system', response: 'Putting the computer to sleep.' };
+    } catch (e) {
+      return { intent: 'system', response: `Couldn't sleep the computer: ${e.message}` };
+    }
+  }
+
   if (lower.includes('stop') || lower.includes('pause') || lower.includes('sleep')) {
     return { intent: 'system', response: 'PAN paused. Say "PAN wake up" to resume.', action: 'pause' };
   }
