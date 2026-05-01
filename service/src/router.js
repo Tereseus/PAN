@@ -46,7 +46,8 @@ function serverClassify(text) {
 function quickAmbientCheck(text) {
   const t = text.trim();
   // 1. Addressing someone else by name: "hey John", "hi Sarah", "hello guys"
-  if (/^(?:hey|hi|hello)\s+(?!pan\b|pam\b)[a-z]{2,}/i.test(t)) return true;
+  // Exclude question words — "hey what/how/when/where/why/who/can/could/would/should/will/do/does/is/are/so/the/a"
+  if (/^(?:hey|hi|hello)\s+(?!pan\b|pam\b|what\b|how\b|when\b|where\b|why\b|who\b|can\b|could\b|would\b|should\b|will\b|do\b|does\b|is\b|are\b|so\b|the\b)[a-z]{2,}/i.test(t)) return true;
   // 2. Common person nouns as direct address at start
   if (/^(?:mom|dad|honey|babe|sis|bro|buddy|guys|everyone|y'all|folks)\b/i.test(t)) return true;
   // 3. "I'll be there / meet you / call you back" — talking to someone else
@@ -786,9 +787,13 @@ export async function* routeStream(text, context = {}) {
   const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
 
+  // Skip common stop words so the pre-search finds meaningful terms
+  const STOP_WORDS = new Set(['what','did','we','say','about','the','a','an','is','are','was','were','do','does','how','why','when','where','who','tell','me','i','you','have','has','had','can','could','would','should','will','to','of','in','on','at','for','with','that','this','these','those','it','its']);
+  const searchTerms = text.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w)).slice(0, 4);
+  const searchQ = searchTerms.length > 0 ? `%${searchTerms.join('%')}%` : `%${text.split(' ').slice(0, 3).join('%')}%`;
   const memories = allScoped(null,
     `SELECT content, item_type FROM memory_items WHERE org_id = :org_id AND content LIKE :q ORDER BY created_at DESC LIMIT 5`,
-    { ':q': `%${text.split(' ').slice(0, 3).join('%')}%` }
+    { ':q': searchQ }
   );
   const memoryContext = memories.length > 0
     ? `\nRelevant memories:\n${memories.map(m => `- [${m.item_type}] ${m.content}`).join('\n')}`
@@ -855,7 +860,27 @@ ${memoryContext}`;
     const jsonMatch = fullBuf.match(/\{[\s\S]*\}/);
     const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
     if (parsed) {
-      yield { type: 'done', result: { ...parsed, response: parsed.response || lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '' } };
+      // If Claude classified this as a memory recall, execute the real DB search —
+      // routeStream doesn't call processUnifiedResult so we must do it here.
+      if (parsed.intent === 'memory' && (parsed.action === 'recall' || parsed.action === 'list')) {
+        const items = allScoped(null,
+          `SELECT * FROM memory_items WHERE org_id = :org_id AND (item_type = :type OR content LIKE :q) ORDER BY created_at DESC LIMIT 10`,
+          { ':type': parsed.item_type || '', ':q': `%${parsed.content || text}%` }
+        );
+        let recallResponse;
+        if (items.length === 0) {
+          recallResponse = `I don't have anything saved about that.`;
+        } else {
+          const list = items.map(i => `- [${i.item_type}] ${i.content}`).join('\n');
+          recallResponse = `Found ${items.length} item${items.length === 1 ? '' : 's'}:\n${list}`;
+        }
+        // Emit the recall response text as a chunk so TTS picks it up
+        if (lastLen === 0) yield { type: 'chunk', text: recallResponse };
+        yield { type: 'done', result: { ...parsed, response: recallResponse } };
+        return;
+      }
+
+      yield { type: 'done', result: { ...parsed, response: parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '') } };
     } else {
       yield { type: 'done', result: { intent: 'query', response: '' } };
     }
