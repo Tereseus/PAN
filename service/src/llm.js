@@ -376,6 +376,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
         images: allImages,
         stream: false,
         keep_alive: -1,   // never unload — vision model stays hot between captures
+        options: { num_gpu: 0 }, // mini PC has AMD integrated GPU — force CPU inference
       }),
       signal: AbortSignal.timeout(timeout),
     });
