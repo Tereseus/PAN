@@ -36,6 +36,7 @@ import dev.pan.app.network.dto.AudioUpload
 import dev.pan.app.network.dto.HistoryRequest
 // GeminiBrain/MediaPipe REMOVED — all AI via server (Cerebras/Gemini through Tailscale)
 import dev.pan.app.audio.VoiceCollector
+import dev.pan.app.audio.BargeInMonitor
 import dev.pan.app.stt.GoogleStreamingStt
 import dev.pan.app.tts.TtsManager
 import dev.pan.app.util.Constants
@@ -84,6 +85,7 @@ class PanForegroundService : Service() {
     private var lastActionContext = "" // tracks what "it" / "that" refers to
     private var lastTtsDoneTime = 0L  // When TTS last finished speaking
     private val TTS_COOLDOWN_MS = 600L  // Ignore speech for 600ms after TTS finishes
+    private val bargeInMonitor = BargeInMonitor()
 
     // Recent conversation history — sent to server so Claude has context
     private val conversationHistory = mutableListOf<Pair<String, String>>() // role, text
@@ -239,6 +241,8 @@ class PanForegroundService : Service() {
             sttEngine.onInterrupt = { panLog("User interrupted TTS"); tts.stop() }
             tts.onSpeakingStateChanged = { speaking ->
                 if (!speaking) {
+                    // TTS ended naturally — stop barge-in monitor and restart STT
+                    bargeInMonitor.stop()
                     lastTtsDoneTime = System.currentTimeMillis()
                     if (sttEngine.enabled && !sttEngine.isListening) {
                         sttEngine.startListening { text, isFinal ->
@@ -247,6 +251,22 @@ class PanForegroundService : Service() {
                     }
                 }
             }
+
+            // Barge-in callback — fires when secondary mic detects user speech during TTS
+            bargeInMonitor.onBargeIn = {
+                if (tts.isSpeaking) {
+                    panLog("Barge-in detected — stopping TTS")
+                    tts.stop()
+                    bargeInMonitor.stop()
+                    lastTtsDoneTime = System.currentTimeMillis()
+                    if (sttEngine.enabled && !sttEngine.isListening) {
+                        sttEngine.startListening { text, isFinal ->
+                            if (text.isNotBlank() && isFinal) onSpeech(text)
+                        }
+                    }
+                }
+            }
+            bargeInMonitor.onLog = { msg -> panLog(msg) }
 
             panLog("AI: all queries via server (Cerebras/Gemini through Tailscale)")
 
@@ -390,11 +410,13 @@ class PanForegroundService : Service() {
         notificationManager?.notify(999, notification)
     }
 
-    // Stop STT before speaking, restart after TTS finishes
+    // Stop STT before speaking, restart after TTS finishes (or barge-in)
     private fun panSpeak(text: String) {
         sttEngine.registerTtsOutput(text)
         sttEngine.stopListening()  // Stop STT so it doesn't steal audio focus from TTS
         tts.speak(text)
+        // Start barge-in monitor — secondary mic watches for user interruption
+        bargeInMonitor.start(serviceScope)
         // STT restarts when TTS finishes via onSpeakingStateChanged + cooldown
     }
 
