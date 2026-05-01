@@ -436,15 +436,14 @@ async function processUnifiedResult(action, text, context) {
       }
 
       if (action.action === 'recall' || action.action === 'list') {
-        const items = allScoped(null, `SELECT * FROM memory_items WHERE org_id = :org_id AND (item_type = :type OR content LIKE :q) ORDER BY created_at DESC LIMIT 10`, {
-          ':type': action.item_type || '',
-          ':q': `%${action.content || ''}%`
-        });
+        // Use FTS5 + vector searchMemory against events (not memory_items LIKE — that was always empty)
+        const searchTerm = action.content || text;
+        const hits = await searchMemory(searchTerm, { limit: 10, caller: 'router-recall' });
 
-        if (items.length === 0) return { intent: 'memory', response: 'No matching items found.' };
+        if (hits.length === 0) return { intent: 'memory', response: `I searched conversation history for "${searchTerm}" but found nothing. We may not have discussed that yet.` };
 
-        const list = items.map(i => `- [${i.item_type}] ${i.content}`).join('\n');
-        return { intent: 'memory', response: `Found ${items.length} items:\n${list}` };
+        const list = hits.map(h => `- ${h.preview}`).join('\n');
+        return { intent: 'memory', response: `Here's what I found about "${searchTerm}":\n${list}` };
       }
 
       return { intent: 'memory', response: action.response || 'Memory action processed.' };
