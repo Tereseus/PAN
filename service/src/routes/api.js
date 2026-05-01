@@ -677,6 +677,13 @@ router.post('/query', async (req, res) => {
             sendToClient(match.device_id, action.type, args).catch(() => {});
         }
         console.log(`[PAN Router] Dispatched ${action.type} → ${match.device_id}`);
+
+        // Learn from successful dispatch — increment preference so PAN routes here again
+        try {
+          const { learnCorrection } = await import('../smart-router.js');
+          const deviceRow = all("SELECT * FROM devices WHERE hostname = :h", { ':h': match.device_id })[0];
+          if (deviceRow) learnCorrection(action.type, deviceRow, action.app || null, req.org_id || 'org_personal', user_id || null);
+        } catch {}
       } catch (e) {
         // Non-fatal
       }
