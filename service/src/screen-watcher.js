@@ -189,7 +189,7 @@ async function runCapture() {
     const description = await analyzeImage(
       `${titleHint}Describe what is on this computer screen in one short sentence.`,
       base64,
-      { caller: 'screen-watcher', timeout: 30_000 },  // short timeout — backoff on failure
+      { caller: 'screen-watcher', timeout: 90_000 },  // 90s — CPU inference on mini PC can be slow
     );
 
     if (description) {
