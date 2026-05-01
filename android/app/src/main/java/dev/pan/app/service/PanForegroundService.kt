@@ -240,7 +240,11 @@ class PanForegroundService : Service() {
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
             sttEngine.onInterrupt = { panLog("User interrupted TTS"); tts.stop() }
             tts.onSpeakingStateChanged = { speaking ->
-                if (!speaking) {
+                if (speaking) {
+                    // Audio is now actually coming out of the speaker — start barge-in monitor.
+                    // Calibration window now captures real TTS bleed, not silence.
+                    bargeInMonitor.start(serviceScope)
+                } else {
                     // TTS ended naturally — stop barge-in monitor and restart STT
                     bargeInMonitor.stop()
                     lastTtsDoneTime = System.currentTimeMillis()
@@ -415,9 +419,8 @@ class PanForegroundService : Service() {
         sttEngine.registerTtsOutput(text)
         sttEngine.stopListening()  // Stop STT so it doesn't steal audio focus from TTS
         tts.speak(text)
-        // Start barge-in monitor — secondary mic watches for user interruption
-        bargeInMonitor.start(serviceScope)
-        // STT restarts when TTS finishes via onSpeakingStateChanged + cooldown
+        // Barge-in monitor starts on speaking=true (audio actually playing), not here.
+        // Piper has a synthesis delay so calibration must happen during live playback.
     }
 
     // Log every command to the server so it's always visible for debugging
