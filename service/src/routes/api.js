@@ -363,48 +363,32 @@ router.post('/recall/stream', async (req, res) => {
   const keepaliveInterval = setInterval(sendKeepalive, 5000);
 
   try {
-    const { askAIStream } = await import('../claude.js');
-
-    const stopWords = new Set(['what','when','where','who','how','did','do','does','is','are','was','were',
-      'the','a','an','in','on','at','to','for','of','and','or','but','with','about','we','i','me','my',
-      'you','your','it','that','this','have','has','had','can','could','would','should','will',
-      'talk','talked','say','said','discuss','discussed','tell','told','remember','recall','find',
-      'search','look','know','think','before','something','anything','stuff','things']);
-    const searchTerms = text.toLowerCase().split(/\s+/)
-      .map(w => w.replace(/[^a-z0-9]/g, ''))
-      .filter(w => w.length > 2 && !stopWords.has(w));
-
-    let ftsResults = [];
-    if (searchTerms.length > 0) {
-      try {
-        ftsResults = allScoped(req,
-          `SELECT f.rowid as event_id, e.event_type, e.created_at, e.data, rank as fts_rank
-           FROM events_fts f JOIN events e ON e.id = f.rowid
-           WHERE events_fts MATCH :q AND e.org_id = :org_id ORDER BY rank LIMIT 100`,
-          { ':q': searchTerms.join(' OR ') }
-        );
-      } catch (err) { console.error('[PAN Recall/stream] FTS error:', err.message); }
-    }
+    // Use searchMemory (FTS5 + vector/semantic RRF) — same engine as router recall.
+    // The old hand-rolled FTS-only query missed semantic matches and accumulated
+    // false negatives as failed searches got indexed as events (circular contamination).
+    const { searchMemory } = await import('../memory-search.js');
+    const memHits = await searchMemory(text, { limit: 20, caller: 'recall-stream' });
 
     const recentEvents = allScoped(req,
       `SELECT id, event_type, data, created_at FROM events
        WHERE event_type NOT IN ('SessionEnd', 'SessionStart') AND org_id = :org_id
-       ORDER BY created_at DESC LIMIT 30`
+       ORDER BY created_at DESC LIMIT 20`
     );
 
-    function extractSnippet(e) {
+    function extractSnippet(eventRow) {
+      if (!eventRow) return null;
       let data = {};
-      try { data = JSON.parse(e.data); } catch { return null; }
-      if (e.event_type === 'RouterCommand') {
+      try { data = JSON.parse(eventRow.data || '{}'); } catch { return null; }
+      if (eventRow.event_type === 'RouterCommand') {
         const q = data.text || ''; const a = data.result || data.response_text || '';
         if (q || a) return `Voice: "${q}" → ${a}`;
-      } else if (e.event_type === 'UserPromptSubmit') {
+      } else if (eventRow.event_type === 'UserPromptSubmit') {
         const p = data.prompt || '';
         if (p.length >= 10 && !p.startsWith('{')) return `Terminal: ${p}`;
-      } else if (e.event_type === 'Stop') {
+      } else if (eventRow.event_type === 'Stop') {
         const m = data.last_assistant_message || '';
-        if (m.length >= 20) return `Claude: ${m}`;
-      } else if (e.event_type === 'PhoneAudio') {
+        if (m.length >= 20) return `Claude: ${m.slice(0, 400)}`;
+      } else if (eventRow.event_type === 'PhoneAudio') {
         const t = data.transcript || '';
         const finals = t.match(/Final: (.+?)(?:\[|Heard|$)/g)
           ?.map(m => m.replace(/^Final: /, '').replace(/\[.*$/, '').trim())
@@ -416,12 +400,15 @@ router.post('/recall/stream', async (req, res) => {
 
     const seen = new Set();
     const entries = [];
-    for (const e of ftsResults) {
-      if (seen.has(e.event_id)) continue;
-      seen.add(e.event_id);
-      const snippet = extractSnippet(e);
-      if (snippet) entries.push({ time: e.created_at, text: snippet.slice(0, 500) });
+
+    // Semantic + FTS hits first (ranked by relevance)
+    for (const hit of memHits) {
+      if (!hit.event || seen.has(hit.event.id)) continue;
+      seen.add(hit.event.id);
+      const snippet = extractSnippet(hit.event);
+      if (snippet) entries.push({ time: hit.event.created_at, text: snippet.slice(0, 500) });
     }
+    // Recent events as fallback context
     for (const e of recentEvents) {
       if (seen.has(e.id)) continue;
       seen.add(e.id);
@@ -436,8 +423,7 @@ router.post('/recall/stream', async (req, res) => {
       return;
     }
 
-    // 8K chars keeps Cerebras fast; FTS already ranked most relevant first
-    const TOKEN_BUDGET = 8000;
+    const TOKEN_BUDGET = 6000;
     let snippetText = '';
     let count = 0;
     for (const e of entries) {
@@ -450,20 +436,18 @@ router.post('/recall/stream', async (req, res) => {
     const totalEvents = getScoped(req, 'SELECT COUNT(*) as c FROM events WHERE org_id = :org_id')?.c || 0;
     const prompt = `You are PAN, a personal AI memory system. The user asked: "${text}"
 
-Here are ${count} relevant entries from their history (${ftsResults.length} FTS matches out of ${totalEvents} total events):
+Here are ${count} relevant entries from their history (${memHits.length} semantic+FTS matches out of ${totalEvents} total events):
 
 ${snippetText}
 Answer in 1-3 sentences, conversational tone. Be specific — mention dates and exact details if present. If the answer isn't in the data, say so.`;
 
     const startTime = Date.now();
-    // Use non-streaming claude() — qwen-3's thinking model consumes token budget before
-    // producing content in streaming mode, yielding nothing. Non-streaming returns after
-    // thinking completes. Response is short (1-3 sentences) so latency is the same.
+    // Use llama3.1-8b for fast recall — no thinking overhead, short lookup task
     const { claude: claudeCall } = await import('../claude.js');
-    const fullText = await claudeCall(prompt, { maxTokens: 400, timeout: 15000, caller: 'recall', _skipAnonymize: true }) || '';
+    const fullText = await claudeCall(prompt, { model: 'cerebras:llama3.1-8b', maxTokens: 400, timeout: 15000, caller: 'recall', _skipAnonymize: true }) || '';
     const elapsed = Date.now() - startTime;
     if (fullText.trim()) send({ type: 'chunk', text: fullText.trim() });
-    console.log(`[PAN Recall/stream] "${text}" → ${count} entries, ${elapsed}ms`);
+    console.log(`[PAN Recall/stream] "${text}" → ${count} entries (${memHits.length} semantic hits), ${elapsed}ms`);
     send({ type: 'done', result: { response_text: fullText } });
     clearInterval(keepaliveInterval);
     res.end();

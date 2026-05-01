@@ -9,6 +9,8 @@ const EMBED_MODEL = 'qwen3-embedding';
 const EMBED_DIM = 1024;
 
 let ollamaAvailable = null; // null = unknown, true/false = cached
+let ollamaLastCheck = 0;    // ms timestamp of last availability check
+const OLLAMA_RECHECK_MS = 60_000; // re-probe Ollama every 60s when it's down
 
 // Check if Ollama is running and has the embedding model
 async function checkOllama() {
@@ -32,7 +34,7 @@ async function embedOllama(text) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 8000) }),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(3000), // 3s — fast fail so searches don't hang
   });
   if (!res.ok) throw new Error(`Ollama ${res.status}`);
   const data = await res.json();
@@ -72,7 +74,11 @@ function embedFallback(text) {
 
 // Public API — get embedding for text
 async function embed(text) {
-  if (ollamaAvailable === null) {
+  const now = Date.now();
+
+  // Initial check or periodic recheck when Ollama is down
+  if (ollamaAvailable === null || (!ollamaAvailable && now - ollamaLastCheck > OLLAMA_RECHECK_MS)) {
+    ollamaLastCheck = now;
     ollamaAvailable = await checkOllama();
     if (ollamaAvailable) {
       console.log('[PAN Memory] Ollama connected — using neural embeddings');
@@ -87,6 +93,7 @@ async function embed(text) {
     } catch (err) {
       console.error('[PAN Memory] Ollama embed failed, falling back:', err.message);
       ollamaAvailable = false;
+      ollamaLastCheck = Date.now();
     }
   }
 
