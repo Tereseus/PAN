@@ -40,7 +40,7 @@ import preferencesRouter from './routes/preferences.js';
 import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
-import { startScreenWatcher, startBurst } from './screen-watcher.js';
+import { startScreenWatcher, startBurst, resetBackoff, getScreenWatcherStatus } from './screen-watcher.js';
 import { startWebcamWatcher, getWebcamStatus, getWebcamContext } from './webcam-watcher.js';
 import { startWatchdog, notifyDashboardLoaded } from './dashboard-watchdog.js';
 import guardianRouter from './routes/guardian.js';
@@ -854,8 +854,17 @@ app.post('/api/v1/webcam-watcher/force', async (req, res) => {
 app.post('/api/v1/screen-watcher/burst', (req, res) => {
   const duration = Math.min(parseInt(req.body?.duration_ms) || 60_000, 300_000);
   const interval = Math.min(parseInt(req.body?.interval_ms) || 5_000, 30_000);
-  startBurst(duration, interval);
+  startBurst(duration, interval); // startBurst now resets backoff internally
   res.json({ ok: true, duration_ms: duration, interval_ms: interval });
+});
+
+app.get('/api/v1/screen-watcher/status', (req, res) => {
+  res.json(getScreenWatcherStatus());
+});
+
+app.post('/api/v1/screen-watcher/reset-backoff', (req, res) => {
+  resetBackoff();
+  res.json({ ok: true });
 });
 
 // Benchmark — AI model scoring suite (Intuition: Hearing/Reflex/Clarity/Reasoning/Memory/Voice)

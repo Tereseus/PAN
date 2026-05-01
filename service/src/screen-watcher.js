@@ -15,7 +15,11 @@ import { run, all } from './db.js';
 
 const INTERVAL_MS  = 60_000;   // screenshot every 60s when active (was 30s)
 const STALE_MS     = 120_000;  // context older than 120s ignored by intuition
-const IDLE_THRESH  = 30 * 60_000; // skip capture if no input for 30min (pendant takes over when away)
+// Idle check is disabled (IDLE_THRESH = Infinity) because voice-first users may not touch keyboard for hours
+// but are still actively using PAN. The vision backoff mechanism handles the "truly away" case:
+// if Ollama is unreachable (mini PC off when user is asleep), captures back off 2→5→10→20 minutes automatically.
+const IDLE_THRESH  = Infinity;  // disabled — backoff handles offline
+const PAN_ACTIVE_WINDOW_MS = 30 * 60_000; // retained for isPanRecentlyActive() reference
 const TAURI_PORT   = 7790;
 const SNAP_PATH    = join(tmpdir(), 'pan-screen-snap.jpg');
 
@@ -50,6 +54,20 @@ function getIdleMs() {
       { windowsHide: true, timeout: 3000 }).toString().trim();
     return parseInt(out) || 0;
   } catch { return 0; }
+}
+
+// ── PAN activity check — voice/router events in DB are a better "active" signal ──
+// Voice-first users may not touch keyboard for hours yet be actively using PAN via phone.
+function isPanRecentlyActive() {
+  try {
+    const windowMin = Math.ceil(PAN_ACTIVE_WINDOW_MS / 60_000);
+    const rows = all(
+      `SELECT COUNT(*) as cnt FROM events
+       WHERE event_type IN ('VoiceCommand','RouterCommand','SessionStart','UserPromptSubmit','MobileSend','DashboardChat')
+         AND created_at > datetime('now', '-${windowMin} minutes')`
+    );
+    return (rows[0]?.cnt || 0) > 0;
+  } catch { return false; }
 }
 
 // ── Foreground window title (Windows only) ────────────────────────────────────
@@ -144,12 +162,15 @@ async function runCapture() {
     isCapturing = false;
   }
 
-  // Skip if user has been idle too long — pendant takes over when away
+  // Skip if user has been idle too long — pendant takes over when away.
+  // Primary check: recent PAN activity (voice/router events) — more reliable than Windows keyboard idle
+  // for voice-first users who never touch the keyboard.
   const idleMs = getIdleMs();
-  if (idleMs > IDLE_THRESH) {
+  const panRecentlyActive = isPanRecentlyActive();
+  if (!panRecentlyActive && idleMs > IDLE_THRESH) {
     const now = Date.now();
     if (now - lastIdleLog > 5 * 60_000) {
-      console.log(`[ScreenWatcher] User idle ${Math.round(idleMs/60000)}m — skipping capture (pendant context takes priority)`);
+      console.log(`[ScreenWatcher] User idle ${Math.round(idleMs/60000)}m, no PAN activity in ${PAN_ACTIVE_WINDOW_MS/60000}m — skipping (pendant takes priority)`);
       lastIdleLog = now;
     }
     // Clear stale in-memory context so intuition falls back to pendant/other signals
@@ -192,8 +213,8 @@ async function runCapture() {
       { caller: 'screen-watcher', timeout: 90_000 },  // 90s — CPU inference on mini PC can be slow
     );
 
-    if (description) {
-      // Success — reset failure streak
+    if (description && description.length >= 8) {
+      // Success — reset failure streak (< 8 chars = moondream cold-start garbage, treat as failure)
       visionFailStreak = 0;
       visionBackoffUntil = 0;
 
@@ -202,7 +223,7 @@ async function runCapture() {
 
       run(
         `INSERT INTO events (event_type, session_id, data, created_at)
-         VALUES (:type, NULL, :data, datetime('now'))`,
+         VALUES (:type, 'system', :data, datetime('now'))`,
         { type: 'screen_context', data: JSON.stringify({ description, ts, source, windowTitle }) }
       );
 
@@ -243,8 +264,12 @@ export function getScreenWatcherStatus() {
   const running = !!watcherTimer;
   const ctx = lastContext;
   const ageSec = ctx ? Math.round((Date.now() - ctx.ts) / 1000) : null;
+  const backoffRemainMs = Math.max(0, visionBackoffUntil - Date.now());
   return {
     running,
+    isCapturing,
+    visionFailStreak,
+    backoffRemainSec: backoffRemainMs > 0 ? Math.ceil(backoffRemainMs / 1000) : 0,
     lastCapture: ctx ? {
       ts: ctx.ts,
       ageSec,
@@ -267,12 +292,23 @@ export function getLatestScreenContext() {
 let burstInterval = null;
 let burstTimeout  = null;
 
+export function resetBackoff() {
+  if (visionFailStreak > 0 || visionBackoffUntil > 0) {
+    console.log(`[ScreenWatcher] Backoff reset (was streak=${visionFailStreak}, backoff expired ${Math.round((visionBackoffUntil - Date.now())/1000)}s from now)`);
+  }
+  visionFailStreak = 0;
+  visionBackoffUntil = 0;
+}
+
 export function startBurst(durationMs = 60_000, burstMs = 5_000) {
   // Stop any existing burst
   if (burstInterval) { clearInterval(burstInterval); burstInterval = null; }
   if (burstTimeout)  { clearTimeout(burstTimeout);  burstTimeout  = null; }
 
-  console.log(`[ScreenWatcher] 🔵 Burst mode: every ${burstMs/1000}s for ${durationMs/1000}s`);
+  // Reset any vision backoff — burst explicitly wants captures now
+  resetBackoff();
+
+  console.log(`[ScreenWatcher] Burst mode: every ${burstMs/1000}s for ${durationMs/1000}s`);
   runCapture(); // immediate first shot
   burstInterval = setInterval(runCapture, burstMs);
 
