@@ -355,9 +355,9 @@ export const claude = askAI;
 
 // qwen2.5vl:3b crashes on CPU vision. moondream generates empty responses.
 // llava-phi3 (2.9GB) is proven reliable with Ollama's API on CPU.
-// moondream: 1.7GB, purpose-built CPU vision. Uses /api/generate (not /api/chat).
-// qwen2.5vl:3b crashes on vision inference on CPU-only — text works, images don't.
-const VISION_MODEL = 'minicpm-v';
+// moondream: 1.7GB, purpose-built for image description, fast on CPU (~10-15s/query).
+// minicpm-v: 5.4GB, higher quality but 3min+/query on CPU — unusable without GPU.
+const VISION_MODEL = 'moondream';
 
 export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [] } = {}) {
   // referenceImages: optional array of base64 strings prepended before the main image.
