@@ -784,10 +784,12 @@ class PanForegroundService : Service() {
                     "recall" -> {
                         // Server does FTS5 DB search + Cerebras, streamed so first sentence plays immediately
                         panLog("Recall → server (stream): '$stripped'")
+                        sttEngine.queryPending = true
                         try {
                             val sentenceBuf = StringBuilder()
                             val fullBuf = StringBuilder()
                             val result = serverClient.recallStream(stripped) { chunk ->
+                                sttEngine.queryPending = false // first chunk = TTS about to start
                                 sentenceBuf.append(chunk)
                                 fullBuf.append(chunk)
                                 val lastPunct = sentenceBuf.indexOfLast { it == '.' || it == '!' || it == '?' }
@@ -797,6 +799,7 @@ class PanForegroundService : Service() {
                                     mainHandler.post { panSpeak(sentence) }
                                 }
                             }
+                            sttEngine.queryPending = false // clear on completion (no chunks case)
                             // Speak any trailing text that didn't end with punctuation
                             val tail = sentenceBuf.toString().trim()
                             if (tail.isNotEmpty()) mainHandler.post { panSpeak(tail) }
@@ -804,6 +807,7 @@ class PanForegroundService : Service() {
                             addToHistory("PAN", fullMsg)
                             dataRepository.addPanResponse(fullMsg)
                         } catch (e: Exception) {
+                            sttEngine.queryPending = false
                             panLog("Recall stream failed: ${e.message}")
                             mainHandler.post { panSpeak("Couldn't search conversations.") }
                         }
@@ -831,6 +835,7 @@ class PanForegroundService : Service() {
 
             // All AI goes through server (Cerebras/Gemini) via Tailscale — streaming mode
             val startTime = System.currentTimeMillis()
+            sttEngine.queryPending = true
             try {
                 val sensorData = sensorContext.getContextEnvelope()
                 val sensorJson = if (sensorData != null && sensorData.isNotEmpty()) {
@@ -846,7 +851,10 @@ class PanForegroundService : Service() {
                     conversationHistory = historyContext,
                     sensorJson = sensorJson,
                     onChunk = { chunk ->
-                        if (firstChunkTime == 0L) firstChunkTime = System.currentTimeMillis()
+                        if (firstChunkTime == 0L) {
+                            firstChunkTime = System.currentTimeMillis()
+                            sttEngine.queryPending = false // first chunk = TTS about to start
+                        }
                         sentenceBuf.append(chunk)
                         // Speak each complete sentence as it arrives
                         val buf = sentenceBuf.toString()
@@ -864,6 +872,7 @@ class PanForegroundService : Service() {
                 )
 
                 val elapsed = System.currentTimeMillis() - startTime
+                sttEngine.queryPending = false // clear after response received
                 // Speak any remaining text in the buffer (incomplete sentence or no punct)
                 val remaining = sentenceBuf.toString().trim()
                 if (remaining.isNotBlank() && remaining != "[AMBIENT]") {
@@ -898,6 +907,7 @@ class PanForegroundService : Service() {
                     mainHandler.post { panSpeak("Server didn't respond.") }
                 }
             } catch (e: Exception) {
+                sttEngine.queryPending = false
                 panLog("Server unreachable: ${e.message}")
                 mainHandler.post { panSpeak("I can't reach the server right now. I'm in limited mode without internet.") }
             }

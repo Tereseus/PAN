@@ -45,6 +45,10 @@ class GoogleStreamingStt @Inject constructor(
     var isTtsSpeaking: (() -> Boolean)? = null
     var onInterrupt: (() -> Unit)? = null
 
+    // Set to true while a server query is in-flight (from query sent → TTS starts / query fails).
+    // Prevents STT from restarting and picking up TTS audio before TTS has a chance to begin.
+    @Volatile var queryPending: Boolean = false
+
     // Track what PAN said recently for echo stripping
     private val recentTtsOutput = mutableListOf<String>()
     private val ttsTimestamps = mutableListOf<Long>()
@@ -257,16 +261,18 @@ class GoogleStreamingStt @Inject constructor(
     private fun restartListening() {
         if (!_enabled) return
         mainScope.launch {
-            // Wait for TTS to finish before restarting
+            // Wait while a query is pending (server hasn't responded yet) OR TTS is playing.
+            // This prevents STT from restarting and immediately barge-in-ing on TTS audio
+            // that starts 2-4s after the query is sent.
             var waitedMs = 0L
-            while (isTtsSpeaking?.invoke() == true && waitedMs < 30000) {
+            while ((queryPending || isTtsSpeaking?.invoke() == true) && waitedMs < 30000) {
                 delay(200)
                 waitedMs += 200
             }
             if (waitedMs > 0) {
-                delay(1000) // 1s after TTS stops
+                delay(1000) // 1s after TTS/query finishes
             } else {
-                delay(100) // Minimal gap between restarts — reduces music interruption
+                delay(100) // Minimal gap when no query was pending
             }
             if (_enabled) {
                 startRecognizer()
