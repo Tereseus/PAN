@@ -11,6 +11,7 @@ import {
   detectCorrection, learnCorrection,
   setLastAction, getLastAction, intentToActionType,
 } from './smart-router.js';
+import { searchMemory } from './memory-search.js';
 
 // Log a step in the command processing pipeline
 function logStep(commandId, step, detail) {
@@ -136,17 +137,11 @@ async function handleUnified(text, context) {
   const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
 
-  // Pull relevant memories for query context — strip stop words so "tell me about Genies"
-  // finds "Genies" rather than matching "%tell%me%about%"
-  const MEM_STOP = new Set(['what','did','we','say','about','the','a','an','is','are','was','were','do','does','how','why','when','where','who','tell','me','i','you','have','has','had','can','could','would','should','will','to','of','in','on','at','for','with','that','this','these','those','it','its','know','talked','talk','remember']);
-  const memTerms = text.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !MEM_STOP.has(w)).slice(0, 4);
-  const memQ = memTerms.length > 0 ? `%${memTerms.join('%')}%` : `%${text.split(' ').slice(0, 3).join('%')}%`;
-  const memories = allScoped(null, `SELECT content, item_type FROM memory_items
-    WHERE org_id = :org_id AND content LIKE :q ORDER BY created_at DESC LIMIT 5`, {
-    ':q': memQ
-  });
-  const memoryContext = memories.length > 0
-    ? `\nRelevant memories:\n${memories.map(m => `- [${m.item_type}] ${m.content}`).join('\n')}`
+  // Pull relevant memories via FTS5 + vector search (searchMemory handles tokenization,
+  // so stop words are not a problem here — no more "%tell%me%about%" queries)
+  const memResults = await searchMemory(text, { limit: 5, caller: 'router' });
+  const memoryContext = memResults.length > 0
+    ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
     : '';
 
   // Include conversation history if available
@@ -806,16 +801,10 @@ export async function* routeStream(text, context = {}) {
   const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
 
-  // Skip common stop words so the pre-search finds meaningful terms
-  const STOP_WORDS = new Set(['what','did','we','say','about','the','a','an','is','are','was','were','do','does','how','why','when','where','who','tell','me','i','you','have','has','had','can','could','would','should','will','to','of','in','on','at','for','with','that','this','these','those','it','its']);
-  const searchTerms = text.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w)).slice(0, 4);
-  const searchQ = searchTerms.length > 0 ? `%${searchTerms.join('%')}%` : `%${text.split(' ').slice(0, 3).join('%')}%`;
-  const memories = allScoped(null,
-    `SELECT content, item_type FROM memory_items WHERE org_id = :org_id AND content LIKE :q ORDER BY created_at DESC LIMIT 5`,
-    { ':q': searchQ }
-  );
-  const memoryContext = memories.length > 0
-    ? `\nRelevant memories:\n${memories.map(m => `- [${m.item_type}] ${m.content}`).join('\n')}`
+  // FTS5 + vector search — no stop-word pollution, no hand-rolled LIKE queries
+  const memResults = await searchMemory(text, { limit: 5, caller: 'router-stream' });
+  const memoryContext = memResults.length > 0
+    ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
     : '';
 
   const historyBlock = context.conversation_history
