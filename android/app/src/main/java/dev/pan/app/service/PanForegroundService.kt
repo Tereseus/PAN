@@ -240,13 +240,10 @@ class PanForegroundService : Service() {
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
             sttEngine.onInterrupt = { panLog("User interrupted TTS"); tts.stop() }
             tts.onSpeakingStateChanged = { speaking ->
-                if (speaking) {
-                    // Audio is now actually coming out of the speaker — start barge-in monitor.
-                    // Calibration window now captures real TTS bleed, not silence.
-                    bargeInMonitor.start(serviceScope)
-                } else {
-                    // TTS ended naturally — stop barge-in monitor and restart STT
-                    bargeInMonitor.stop()
+                if (!speaking) {
+                    // TTS ended naturally — restart STT
+                    // Note: BargeInMonitor disabled — secondary mic too close to speaker on Pixel,
+                    // TTS bleed triggers false positives even after calibration.
                     lastTtsDoneTime = System.currentTimeMillis()
                     if (sttEngine.enabled && !sttEngine.isListening) {
                         sttEngine.startListening { text, isFinal ->
@@ -256,20 +253,7 @@ class PanForegroundService : Service() {
                 }
             }
 
-            // Barge-in callback — fires when secondary mic detects user speech during TTS
-            bargeInMonitor.onBargeIn = {
-                if (tts.isSpeaking) {
-                    panLog("Barge-in detected — stopping TTS")
-                    tts.stop()
-                    bargeInMonitor.stop()
-                    lastTtsDoneTime = System.currentTimeMillis()
-                    if (sttEngine.enabled && !sttEngine.isListening) {
-                        sttEngine.startListening { text, isFinal ->
-                            if (text.isNotBlank() && isFinal) onSpeech(text)
-                        }
-                    }
-                }
-            }
+            // BargeInMonitor wired but not started — re-enable when we have AEC or earpiece mode
             bargeInMonitor.onLog = { msg -> panLog(msg) }
 
             panLog("AI: all queries via server (Cerebras/Gemini through Tailscale)")
