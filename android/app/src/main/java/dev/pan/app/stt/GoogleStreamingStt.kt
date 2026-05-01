@@ -48,7 +48,7 @@ class GoogleStreamingStt @Inject constructor(
     // Track what PAN said recently for echo stripping
     private val recentTtsOutput = mutableListOf<String>()
     private val ttsTimestamps = mutableListOf<Long>()
-    private val TTS_ECHO_WINDOW_MS = 3000L
+    private val TTS_ECHO_WINDOW_MS = 1000L
 
     var enabled: Boolean
         get() = _enabled
@@ -99,7 +99,7 @@ class GoogleStreamingStt @Inject constructor(
                     }
                 }
             }
-            if (matched.size > ttsWords.size * 0.5) {
+            if (matched.size > ttsWords.size * 0.8) {
                 result = resultWords.filterIndexed { i, _ -> i !in matched }.joinToString(" ").trim()
             }
         }
