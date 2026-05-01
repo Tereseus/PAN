@@ -310,7 +310,8 @@ router.post('/recall', async (req, res) => {
     }
 
     // Step 4: Build context — FTS results first (most relevant), then recent for background
-    const TOKEN_BUDGET = 60000; // ~15K tokens
+    // 8K chars keeps Cerebras fast; FTS already ranked the most relevant first
+    const TOKEN_BUDGET = 8000;
     let snippetText = '';
     let count = 0;
     for (const e of entries) {
@@ -322,15 +323,15 @@ router.post('/recall', async (req, res) => {
 
     const totalEvents = getScoped(req, 'SELECT COUNT(*) as c FROM events WHERE org_id = :org_id')?.c || 0;
 
-    // Step 5: Single Haiku call
+    // Step 5: Cerebras call — small context = fast (~500ms)
     const summary = await claude(
       `You are PAN, a personal AI memory system. The user asked: "${text}"
 
-Here are ${count} matching entries from their history (${totalEvents} total events in database, ${ftsResults.length} matched the search "${searchTerms.join(' ')}"):
+Here are ${count} relevant entries from their history (${ftsResults.length} FTS matches out of ${totalEvents} total events):
 
 ${snippetText}
-Answer the user's question based on these results. Be specific — mention dates, exact details, and what was said. If the answer isn't in the data, say so honestly. Keep it to 2-4 sentences, conversational tone.`,
-      { maxTokens: 600, timeout: 30000, caller: 'recall' }
+Answer in 1-3 sentences, conversational tone. Be specific — mention dates and exact details if present. If the answer isn't in the data, say so.`,
+      { maxTokens: 200, timeout: 15000, caller: 'recall' }
     );
 
     const elapsed = Date.now() - startTime;
@@ -339,6 +340,139 @@ Answer the user's question based on these results. Be specific — mention dates
   } catch (err) {
     console.error('[PAN Recall] Error:', err.message);
     res.json({ response_text: 'I had trouble searching through conversations.' });
+  }
+});
+
+// Streaming recall — same FTS5 search but SSE stream so phone speaks first sentence immediately
+router.post('/recall/stream', async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const send = (obj) => {
+    try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {}
+  };
+  const sendKeepalive = () => { try { res.write(': keepalive\n\n'); } catch {} };
+  send({ type: 'ping' });
+
+  // Keepalive every 5s — prevents OkHttp 30s readTimeout from firing during slow LLM calls
+  const keepaliveInterval = setInterval(sendKeepalive, 5000);
+
+  try {
+    const { askAIStream } = await import('../claude.js');
+
+    const stopWords = new Set(['what','when','where','who','how','did','do','does','is','are','was','were',
+      'the','a','an','in','on','at','to','for','of','and','or','but','with','about','we','i','me','my',
+      'you','your','it','that','this','have','has','had','can','could','would','should','will',
+      'talk','talked','say','said','discuss','discussed','tell','told','remember','recall','find',
+      'search','look','know','think','before','something','anything','stuff','things']);
+    const searchTerms = text.toLowerCase().split(/\s+/)
+      .map(w => w.replace(/[^a-z0-9]/g, ''))
+      .filter(w => w.length > 2 && !stopWords.has(w));
+
+    let ftsResults = [];
+    if (searchTerms.length > 0) {
+      try {
+        ftsResults = allScoped(req,
+          `SELECT f.rowid as event_id, e.event_type, e.created_at, e.data, rank as fts_rank
+           FROM events_fts f JOIN events e ON e.id = f.rowid
+           WHERE events_fts MATCH :q AND e.org_id = :org_id ORDER BY rank LIMIT 100`,
+          { ':q': searchTerms.join(' OR ') }
+        );
+      } catch (err) { console.error('[PAN Recall/stream] FTS error:', err.message); }
+    }
+
+    const recentEvents = allScoped(req,
+      `SELECT id, event_type, data, created_at FROM events
+       WHERE event_type NOT IN ('SessionEnd', 'SessionStart') AND org_id = :org_id
+       ORDER BY created_at DESC LIMIT 30`
+    );
+
+    function extractSnippet(e) {
+      let data = {};
+      try { data = JSON.parse(e.data); } catch { return null; }
+      if (e.event_type === 'RouterCommand') {
+        const q = data.text || ''; const a = data.result || data.response_text || '';
+        if (q || a) return `Voice: "${q}" → ${a}`;
+      } else if (e.event_type === 'UserPromptSubmit') {
+        const p = data.prompt || '';
+        if (p.length >= 10 && !p.startsWith('{')) return `Terminal: ${p}`;
+      } else if (e.event_type === 'Stop') {
+        const m = data.last_assistant_message || '';
+        if (m.length >= 20) return `Claude: ${m}`;
+      } else if (e.event_type === 'PhoneAudio') {
+        const t = data.transcript || '';
+        const finals = t.match(/Final: (.+?)(?:\[|Heard|$)/g)
+          ?.map(m => m.replace(/^Final: /, '').replace(/\[.*$/, '').trim())
+          .filter(Boolean).join('; ');
+        if (finals) return `Heard: ${finals}`;
+      }
+      return null;
+    }
+
+    const seen = new Set();
+    const entries = [];
+    for (const e of ftsResults) {
+      if (seen.has(e.event_id)) continue;
+      seen.add(e.event_id);
+      const snippet = extractSnippet(e);
+      if (snippet) entries.push({ time: e.created_at, text: snippet.slice(0, 500) });
+    }
+    for (const e of recentEvents) {
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      const snippet = extractSnippet(e);
+      if (snippet) entries.push({ time: e.created_at, text: snippet.slice(0, 500) });
+    }
+
+    if (entries.length === 0) {
+      send({ type: 'chunk', text: 'No conversation history to search through.' });
+      send({ type: 'done', result: {} });
+      res.end();
+      return;
+    }
+
+    // 8K chars keeps Cerebras fast; FTS already ranked most relevant first
+    const TOKEN_BUDGET = 8000;
+    let snippetText = '';
+    let count = 0;
+    for (const e of entries) {
+      const line = `[${e.time}] ${e.text}\n`;
+      if (snippetText.length + line.length > TOKEN_BUDGET) break;
+      snippetText += line;
+      count++;
+    }
+
+    const totalEvents = getScoped(req, 'SELECT COUNT(*) as c FROM events WHERE org_id = :org_id')?.c || 0;
+    const prompt = `You are PAN, a personal AI memory system. The user asked: "${text}"
+
+Here are ${count} relevant entries from their history (${ftsResults.length} FTS matches out of ${totalEvents} total events):
+
+${snippetText}
+Answer in 1-3 sentences, conversational tone. Be specific — mention dates and exact details if present. If the answer isn't in the data, say so.`;
+
+    const startTime = Date.now();
+    // Use non-streaming claude() — qwen-3's thinking model consumes token budget before
+    // producing content in streaming mode, yielding nothing. Non-streaming returns after
+    // thinking completes. Response is short (1-3 sentences) so latency is the same.
+    const { claude: claudeCall } = await import('../claude.js');
+    const fullText = await claudeCall(prompt, { maxTokens: 400, timeout: 15000, caller: 'recall', _skipAnonymize: true }) || '';
+    const elapsed = Date.now() - startTime;
+    if (fullText.trim()) send({ type: 'chunk', text: fullText.trim() });
+    console.log(`[PAN Recall/stream] "${text}" → ${count} entries, ${elapsed}ms`);
+    send({ type: 'done', result: { response_text: fullText } });
+    clearInterval(keepaliveInterval);
+    res.end();
+  } catch (err) {
+    console.error('[PAN Recall/stream] Error:', err.message);
+    send({ type: 'chunk', text: 'I had trouble searching through conversations.' });
+    send({ type: 'done', result: {} });
+    clearInterval(keepaliveInterval);
+    res.end();
   }
 });
 
@@ -732,9 +866,15 @@ router.post('/query/stream', async (req, res) => {
   const send = (obj) => {
     if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`);
   };
+  const sendKeepalive = () => {
+    if (!res.writableEnded) res.write(': keepalive\n\n');
+  };
 
   // Immediate ping confirms SSE channel is open
   send({ type: 'ping' });
+
+  // Keepalive every 5s — prevents OkHttp 30s readTimeout from firing during slow LLM calls
+  const keepaliveInterval = setInterval(sendKeepalive, 5000);
 
   let parsedSensors = sensors;
   if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }
@@ -756,6 +896,8 @@ router.post('/query/stream', async (req, res) => {
     console.error('[query/stream]', err.message);
     send({ type: 'chunk', text: 'Something went wrong.' });
     send({ type: 'done', result: { intent: 'query', response: 'Something went wrong.' } });
+  } finally {
+    clearInterval(keepaliveInterval);
   }
 
   if (!res.writableEnded) res.end();
