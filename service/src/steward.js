@@ -476,7 +476,20 @@ async function checkServiceHealth(svc) {
         try {
           const url = getOllamaUrl() + (svc.healthEndpoint || '/');
           const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-          svc._status = res.ok ? 'running' : 'down';
+          if (res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const models = data.models || [];
+            svc._status = 'running';
+            svc._modelCount = models.length;
+            svc._models = models.map(m => m.name);
+            // Warn loudly if Ollama is up but has no models (e.g. upgrade wiped them)
+            if (models.length === 0 && svc._lastModelCount > 0) {
+              console.warn('[Steward] ⚠️ Ollama models WIPED — was ' + svc._lastModelCount + ', now 0. Client watchdog should pull minicpm-v.');
+            }
+            svc._lastModelCount = models.length;
+          } else {
+            svc._status = 'down';
+          }
         } catch {
           svc._status = 'down';
         }
@@ -827,10 +840,20 @@ async function cleanZombieSessions() {
     const sessions = await listSessions();
     const now = Date.now();
     for (const s of sessions) {
-      // Sessions with 0 clients and no activity for 2 hours are zombies
-      if (s.clients === 0 && s.lastActivity && (now - s.lastActivity) > 2 * 60 * 60 * 1000) {
-        console.log(`[Steward] Cleaning zombie session: ${s.id} (no clients, idle ${Math.round((now - s.lastActivity) / 60000)}min)`);
-        // Don't kill — just log for now. Aggressive cleanup can lose work.
+      const lastOut = s.lastOutputTs || 0;
+      const idleMs = lastOut ? now - lastOut : 0;
+
+      // Stuck-thinking: Claude running, no connected clients, no output for 20min → Ctrl+C
+      if (s.clients === 0 && s.thinking && s.claudeRunning && idleMs > 20 * 60 * 1000) {
+        console.log(`[Steward] ⚡ Stuck-thinking session ${s.id} (no clients, silent ${Math.round(idleMs / 60000)}min) — interrupting`);
+        try { sendToSession(s.id, '\x03'); } catch {}
+        continue;
+      }
+
+      // Dead zombie: no clients, no output for 2 hours → send exit
+      if (s.clients === 0 && lastOut && idleMs > 2 * 60 * 60 * 1000) {
+        console.log(`[Steward] 🧹 Zombie session ${s.id} (no clients, idle ${Math.round(idleMs / 60000)}min) — sending exit`);
+        try { sendToSession(s.id, 'exit\r'); } catch {}
       }
     }
   } catch {}

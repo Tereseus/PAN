@@ -187,12 +187,21 @@ function send(obj) {
 
 function probeServices() {
   return new Promise((resolve) => {
-    const req = http.get('http://localhost:11434/api/tags', { timeout: 2000 }, (res) => {
-      res.resume(); // drain response
-      resolve([{ name: 'ollama', port: 11434, status: 'up', url: 'http://localhost:11434' }]);
+    let body = '';
+    const req = http.get('http://localhost:11434/api/tags', { timeout: 3000 }, (res) => {
+      res.on('data', d => { body += d; });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const models = data.models || [];
+          resolve([{ name: 'ollama', port: 11434, status: 'up', url: 'http://localhost:11434', modelCount: models.length, models: models.map(m => m.name) }]);
+        } catch {
+          resolve([{ name: 'ollama', port: 11434, status: 'up', url: 'http://localhost:11434', modelCount: 0, models: [] }]);
+        }
+      });
     });
-    req.on('error', () => resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434' }]));
-    req.on('timeout', () => { req.destroy(); resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434' }]); });
+    req.on('error', () => resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434', modelCount: 0, models: [] }]));
+    req.on('timeout', () => { req.destroy(); resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434', modelCount: 0, models: [] }]); });
   });
 }
 
@@ -200,6 +209,32 @@ function probeServices() {
 // Throttle: don't attempt restart more than once every 5 minutes.
 let _ollamaLastRestartAttempt = 0;
 const OLLAMA_RESTART_THROTTLE_MS = 5 * 60 * 1000;
+
+// Required models — if Ollama is up but these are missing, pull them automatically.
+const REQUIRED_MODELS = ['minicpm-v'];
+let _ollamaLastPullAttempt = 0;
+const OLLAMA_PULL_THROTTLE_MS = 30 * 60 * 1000; // don't re-pull more than once per 30min
+
+function pullMissingModels(missingModels) {
+  const now = Date.now();
+  if (now - _ollamaLastPullAttempt < OLLAMA_PULL_THROTTLE_MS) return;
+  _ollamaLastPullAttempt = now;
+  for (const model of missingModels) {
+    console.log(`[Watchdog] Ollama model '${model}' missing — pulling now...`);
+    const ollamaExe = IS_WINDOWS
+      ? `"${process.env.LOCALAPPDATA || 'C:\\Users\\' + require('os').userInfo().username + '\\AppData\\Local'}\\Programs\\Ollama\\ollama.exe"`
+      : 'ollama';
+    try {
+      spawn(IS_WINDOWS ? 'cmd' : 'sh',
+        IS_WINDOWS ? ['/c', `${ollamaExe} pull ${model}`] : ['-c', `ollama pull ${model}`],
+        { windowsHide: true, detached: true, stdio: 'ignore' }
+      ).unref();
+      console.log(`[Watchdog] Pull started for ${model}`);
+    } catch (err) {
+      console.error(`[Watchdog] Failed to pull ${model}:`, err.message);
+    }
+  }
+}
 
 function restartOllama() {
   if (IS_WINDOWS) {
@@ -242,7 +277,8 @@ async function sendHeartbeat() {
   let services = await probeServices();
 
   // Watchdog: if Ollama is down, attempt to start it (throttled to once per 5 min)
-  const ollamaDown = services.some(s => s.name === 'ollama' && s.status === 'down');
+  const ollamaSvc = services.find(s => s.name === 'ollama');
+  const ollamaDown = ollamaSvc?.status === 'down';
   if (ollamaDown) {
     const now = Date.now();
     if (now - _ollamaLastRestartAttempt >= OLLAMA_RESTART_THROTTLE_MS) {
@@ -252,6 +288,16 @@ async function sendHeartbeat() {
       // Wait 8s then re-probe so the heartbeat carries fresh status
       await new Promise(r => setTimeout(r, 8000));
       services = await probeServices();
+    }
+  }
+
+  // Watchdog: if Ollama is up but required models are missing (e.g. wiped by upgrade), pull them
+  if (!ollamaDown && ollamaSvc) {
+    const installedModels = ollamaSvc.models || [];
+    const missing = REQUIRED_MODELS.filter(m => !installedModels.some(i => i.startsWith(m)));
+    if (missing.length > 0) {
+      console.warn(`[Watchdog] ⚠️ Ollama up but missing required models: ${missing.join(', ')} — pulling`);
+      pullMissingModels(missing);
     }
   }
 
