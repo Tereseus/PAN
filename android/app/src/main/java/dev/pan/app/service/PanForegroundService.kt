@@ -84,7 +84,7 @@ class PanForegroundService : Service() {
     private var flashlightOn = false
     private var lastActionContext = "" // tracks what "it" / "that" refers to
     private var lastTtsDoneTime = 0L  // When TTS last finished speaking
-    private val TTS_COOLDOWN_MS = 600L  // Ignore speech for 600ms after TTS finishes
+    private val TTS_COOLDOWN_MS = 1200L  // Ignore speech for 1200ms after TTS finishes
     private val bargeInMonitor = BargeInMonitor()
 
     // Recent conversation history — sent to server so Claude has context
@@ -239,13 +239,21 @@ class PanForegroundService : Service() {
             // When TTS finishes speaking, restart STT listening
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
             sttEngine.onInterrupt = { panLog("User interrupted TTS"); tts.stop() }
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
             tts.onSpeakingStateChanged = { speaking ->
                 if (speaking) {
-                    // Audio now leaving the speaker — start barge-in monitor with AEC
+                    // Switch to telephony communication mode so AEC gets the speaker
+                    // reference signal and can cancel TTS bleed from the mic.
+                    // speakerphoneOn=true keeps audio on the main speaker (not earpiece).
+                    // This is the "speakerphone call" configuration — the proven AEC path.
+                    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                    @Suppress("DEPRECATION")
+                    audioManager.isSpeakerphoneOn = true
                     bargeInMonitor.start(serviceScope)
                 } else {
-                    // TTS ended naturally — stop monitor and restart STT
+                    // TTS ended naturally — restore normal audio mode, stop monitor, restart STT
                     bargeInMonitor.stop()
+                    audioManager.mode = AudioManager.MODE_NORMAL
                     lastTtsDoneTime = System.currentTimeMillis()
                     if (sttEngine.enabled && !sttEngine.isListening) {
                         sttEngine.startListening { text, isFinal ->
@@ -260,6 +268,7 @@ class PanForegroundService : Service() {
                     panLog("Barge-in — stopping TTS, resuming STT")
                     tts.stop()
                     bargeInMonitor.stop()
+                    audioManager.mode = AudioManager.MODE_NORMAL
                     lastTtsDoneTime = System.currentTimeMillis()
                     if (sttEngine.enabled && !sttEngine.isListening) {
                         sttEngine.startListening { text, isFinal ->
@@ -773,16 +782,29 @@ class PanForegroundService : Service() {
                         return@launch
                     }
                     "recall" -> {
-                        // Server does everything: keyword extraction, DB search, summarization
-                        panLog("Recall → server: '$stripped'")
+                        // Server does FTS5 DB search + Cerebras, streamed so first sentence plays immediately
+                        panLog("Recall → server (stream): '$stripped'")
                         try {
-                            val result = serverClient.recall(stripped)
-                            val msg = result ?: "Couldn't search conversations."
-                            addToHistory("PAN", msg)
-                            dataRepository.addPanResponse(msg)
-                            mainHandler.post { panSpeak(msg) }
+                            val sentenceBuf = StringBuilder()
+                            val fullBuf = StringBuilder()
+                            val result = serverClient.recallStream(stripped) { chunk ->
+                                sentenceBuf.append(chunk)
+                                fullBuf.append(chunk)
+                                val lastPunct = sentenceBuf.indexOfLast { it == '.' || it == '!' || it == '?' }
+                                if (lastPunct > 0) {
+                                    val sentence = sentenceBuf.substring(0, lastPunct + 1).trim()
+                                    sentenceBuf.delete(0, lastPunct + 1)
+                                    mainHandler.post { panSpeak(sentence) }
+                                }
+                            }
+                            // Speak any trailing text that didn't end with punctuation
+                            val tail = sentenceBuf.toString().trim()
+                            if (tail.isNotEmpty()) mainHandler.post { panSpeak(tail) }
+                            val fullMsg = fullBuf.toString().ifEmpty { "Couldn't search conversations." }
+                            addToHistory("PAN", fullMsg)
+                            dataRepository.addPanResponse(fullMsg)
                         } catch (e: Exception) {
-                            panLog("Recall failed: ${e.message}")
+                            panLog("Recall stream failed: ${e.message}")
                             mainHandler.post { panSpeak("Couldn't search conversations.") }
                         }
                         return@launch
