@@ -515,6 +515,7 @@ async function promoteBetaToProduction(trigger = 'manual') {
 
   previousCraft = oldPrimary;
   primaryCraft = promoted;
+  primaryCraft.fromPipeline = true; // prevents confirmSwap() re-triggering another pipeline
   betaCraft = null;
   perfEngine.primaryCraftPort = promoted.port;
   swapPending = true;
@@ -1102,6 +1103,11 @@ async function performSwap() {
     console.error(`[Carrier] ❌ New Craft-${newCraft.id} failed initial swap gate: ${gateCheck.reason} — aborting swap`);
     swapPending = false;
     primaryCraft = oldCraft;
+    // Kill previousCraft before nulling — prevents orphan Craft leak
+    if (previousCraft && previousCraft !== oldCraft) {
+      console.log(`[Carrier] 🧹 Gate failure — killing orphaned Craft-${previousCraft.id}`);
+      try { previousCraft.proc.kill(); } catch {}
+    }
     previousCraft = null;
     perfEngine.primaryCraftPort = oldCraft?.port;
     perfEngine.markSwapEnd();
@@ -1174,11 +1180,15 @@ function confirmSwap() {
   // Auto-trigger pipeline benchmarks after a confirmed swap — validates new code
   // against all 12 suites. If all pass, beta auto-promotes; if any fail, current
   // primary stays live and pipeline status goes to 'failed' for Scout to pick up.
-  if (pipeline.status === 'idle') {
+  // IMPORTANT: skip if this Craft was itself promoted from pipeline — otherwise
+  // every promotion triggers another pipeline, creating an infinite spawn loop.
+  if (pipeline.status === 'idle' && !primaryCraft.fromPipeline) {
     console.log(`[Carrier] 🔬 Auto-triggering benchmark pipeline on Craft-${primaryCraft.id} (post-swap validation)`);
     startPipelineBeta('autodev').catch(err =>
       console.error('[Carrier] Auto-pipeline start failed:', err.message)
     );
+  } else if (primaryCraft.fromPipeline) {
+    console.log(`[Carrier] ⏭️  Craft-${primaryCraft.id} was pipeline-promoted — skipping auto-trigger to prevent loop`);
   } else {
     console.log(`[Carrier] ⏭️  Pipeline already ${pipeline.status} — skipping auto-trigger`);
   }
@@ -1317,6 +1327,7 @@ function handleLifeboat(url, method, res) {
   if (method === 'OPTIONS') { json(200, {}); return true; }
 
   if (url.pathname === '/lifeboat/status') {
+    const trackedCrafts = [primaryCraft, previousCraft, shadowCraft].filter(Boolean);
     json(200, {
       ok: true,
       swapPending,
@@ -1324,6 +1335,8 @@ function handleLifeboat(url, method, res) {
       rollbackTimeoutMs: ROLLBACK_TIMEOUT_MS,
       activeCraft: primaryCraft ? { id: primaryCraft.id, port: primaryCraft.port, commit: primaryCraft.gitCommit, healthy: primaryCraft.healthy } : null,
       previousCraft: previousCraft ? { id: previousCraft.id, port: previousCraft.port, commit: previousCraft.gitCommit, healthy: previousCraft.healthy } : null,
+      craftCount: trackedCrafts.length,
+      crafts: trackedCrafts.map(c => ({ id: c.id, port: c.port, pid: c.proc?.pid, role: c === primaryCraft ? 'primary' : c === previousCraft ? 'previous' : 'shadow' })),
       carrierPid: process.pid,
       carrierUptime: process.uptime(),
     });
@@ -1385,6 +1398,71 @@ async function triggerClaudeHandoff(session) {
   // 3. Send new prompt with restored state
 }
 
+// ==================== Craft Orphan Watchdog ====================
+// Scans port range CRAFT_PORT_BASE..+20 every 60s.
+// Any process found on those ports whose PID doesn't match a known Craft is killed.
+let craftWatchdogTimer = null;
+
+async function runCraftOrphanScan() {
+  const { isWindows: _isWin } = await import('./platform.js');
+  const { execSync: _exec } = await import('child_process');
+
+  // Collect all PIDs we intentionally own
+  const knownPids = new Set([process.pid]);
+  if (primaryCraft?.proc?.pid)  knownPids.add(primaryCraft.proc.pid);
+  if (previousCraft?.proc?.pid) knownPids.add(previousCraft.proc.pid);
+  if (shadowCraft?.proc?.pid)   knownPids.add(shadowCraft.proc.pid);
+
+  const SCAN_RANGE = 20;
+  let killedCount = 0;
+
+  for (let offset = 0; offset <= SCAN_RANGE; offset++) {
+    const port = CRAFT_PORT_BASE + offset;
+    try {
+      let pids = new Set();
+      if (process.platform === 'win32') {
+        const result = _exec(
+          `netstat -ano | findstr :${port} | findstr LISTENING`,
+          { encoding: 'utf8', timeout: 5000, windowsHide: true }
+        );
+        for (const line of result.trim().split('\n')) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[parts.length - 1]);
+          if (pid) pids.add(pid);
+        }
+      } else {
+        const result = _exec(`lsof -ti :${port}`, { encoding: 'utf8', timeout: 5000 });
+        for (const line of result.trim().split('\n')) {
+          const pid = parseInt(line.trim());
+          if (pid) pids.add(pid);
+        }
+      }
+
+      for (const pid of pids) {
+        if (!knownPids.has(pid)) {
+          console.warn(`[Carrier] 🧹 Craft watchdog: orphan PID ${pid} on port ${port} — killing`);
+          try { process.kill(pid); } catch {}
+          killedCount++;
+        }
+      }
+    } catch {
+      // Port not in use — good
+    }
+  }
+
+  if (killedCount > 0) {
+    console.log(`[Carrier] 🧹 Craft watchdog: killed ${killedCount} orphaned Craft process(es)`);
+  }
+}
+
+function startCraftOrphanWatchdog() {
+  if (craftWatchdogTimer) return;
+  craftWatchdogTimer = setInterval(() => {
+    runCraftOrphanScan().catch(e => console.warn('[Carrier] Craft watchdog error:', e.message));
+  }, 60_000);
+  console.log('[Carrier] 🛡️  Craft orphan watchdog started (60s interval, ports 17700–17720)');
+}
+
 // ==================== Boot ====================
 async function boot() {
   // Client WS MUST be registered before terminal (terminal rejects unknown upgrade paths)
@@ -1395,6 +1473,9 @@ async function boot() {
 
   // Start Claude handoff monitor (Phase 5)
   startClaudeHandoffMonitor();
+
+  // Start Craft orphan watchdog — kills stale Craft processes not tracked by Carrier
+  startCraftOrphanWatchdog();
 
   // PerfEngine — give it the terminalServer reference for PTY probes, then start.
   // Boot-time marks are set when each subsystem finishes initializing.
