@@ -29,10 +29,10 @@ class BargeInMonitor {
         private const val TAG             = "BargeIn"
         private const val SAMPLE_RATE     = 16000
         private const val WINDOW_MS       = 80        // detection window size
-        private const val CALIBRATION_MS  = 300       // baseline measurement period
+        private const val CALIBRATION_MS  = 500       // baseline measurement period (during live TTS playback)
         private const val CONSECUTIVE     = 2         // windows above threshold to confirm barge-in
-        private const val THRESHOLD_MULT  = 3.0       // multiplier above baseline
-        private const val MIN_THRESHOLD   = 180.0     // floor to avoid false positives in silence
+        private const val THRESHOLD_MULT  = 4.0       // multiplier above baseline
+        private const val MIN_THRESHOLD   = 600.0     // floor — well above typical TTS bleed level
     }
 
     var onBargeIn: (() -> Unit)? = null
