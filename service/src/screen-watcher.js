@@ -206,7 +206,8 @@ async function runCapture() {
     // Resize to 640px wide JPEG — full HD is too large for CPU vision inference
     base64 = resizeForVision(base64);
 
-    const titleHint = windowTitle ? `Active window: "${windowTitle}". ` : '';
+    // Note: no quotes around windowTitle — moondream misinterprets double-quote characters
+    const titleHint = windowTitle ? `Active window: ${windowTitle.replace(/"/g, '')}. ` : '';
     const description = await analyzeImage(
       `${titleHint}Describe what is on this computer screen in one short sentence.`,
       base64,
