@@ -206,10 +206,10 @@ async function runCapture() {
     // Resize to 640px wide JPEG — full HD is too large for CPU vision inference
     base64 = resizeForVision(base64);
 
-    // Note: no quotes around windowTitle — moondream misinterprets double-quote characters
-    const titleHint = windowTitle ? `Active window: ${windowTitle.replace(/"/g, '')}. ` : '';
+    // No title hint in moondream prompt — it garbles window names (generates URN/UUID-like garbage).
+    // windowTitle is stored separately in the event data.
     const description = await analyzeImage(
-      `${titleHint}Describe what is on this computer screen in one short sentence.`,
+      'Describe what is on this computer screen in one short sentence.',
       base64,
       { caller: 'screen-watcher', timeout: 90_000 },  // 90s — CPU inference on mini PC can be slow
     );
