@@ -873,17 +873,17 @@ ${memoryContext}`;
     if (parsed) {
       // If Claude classified this as a memory recall, execute the real DB search —
       // routeStream doesn't call processUnifiedResult so we must do it here.
+      // Use searchMemory (FTS5 + vector) — NOT a raw LIKE query against memory_items,
+      // which misses conversations/events and chokes on stop words.
       if (parsed.intent === 'memory' && (parsed.action === 'recall' || parsed.action === 'list')) {
-        const items = allScoped(null,
-          `SELECT * FROM memory_items WHERE org_id = :org_id AND (item_type = :type OR content LIKE :q) ORDER BY created_at DESC LIMIT 10`,
-          { ':type': parsed.item_type || '', ':q': `%${parsed.content || text}%` }
-        );
+        const searchTerm = parsed.content || text;
+        const hits = await searchMemory(searchTerm, { limit: 10, caller: 'routeStream' });
         let recallResponse;
-        if (items.length === 0) {
+        if (hits.length === 0) {
           recallResponse = `I don't have anything saved about that.`;
         } else {
-          const list = items.map(i => `- [${i.item_type}] ${i.content}`).join('\n');
-          recallResponse = `Found ${items.length} item${items.length === 1 ? '' : 's'}:\n${list}`;
+          const list = hits.map(h => `- ${h.preview}`).join('\n');
+          recallResponse = `Found ${hits.length} result${hits.length === 1 ? '' : 's'}:\n${list}`;
         }
         // Emit the recall response text as a chunk so TTS picks it up
         if (lastLen === 0) yield { type: 'chunk', text: recallResponse };
