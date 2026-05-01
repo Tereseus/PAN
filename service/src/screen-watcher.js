@@ -15,7 +15,7 @@ import { run, all } from './db.js';
 
 const INTERVAL_MS  = 60_000;   // screenshot every 60s when active (was 30s)
 const STALE_MS     = 120_000;  // context older than 120s ignored by intuition
-const IDLE_THRESH  = 3 * 60_000; // skip capture if no input for 3min (was 5min)
+const IDLE_THRESH  = 30 * 60_000; // skip capture if no input for 30min (pendant takes over when away)
 const TAURI_PORT   = 7790;
 const SNAP_PATH    = join(tmpdir(), 'pan-screen-snap.jpg');
 
