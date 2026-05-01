@@ -442,8 +442,15 @@ async function processUnifiedResult(action, text, context) {
 
         if (hits.length === 0) return { intent: 'memory', response: `I searched conversation history for "${searchTerm}" but found nothing. We may not have discussed that yet.` };
 
-        const list = hits.map(h => `- ${h.preview}`).join('\n');
-        return { intent: 'memory', response: `Here's what I found about "${searchTerm}":\n${list}` };
+        // Synthesize a natural answer from the raw hits instead of listing previews
+        const snippets = hits.map((h, i) => `[${i+1}] ${h.preview}`).join('\n');
+        const synthesisPrompt = `The user asked: "${text}"\n\nRelevant conversation history:\n${snippets}\n\nAnswer the user's question in 1-3 sentences using only the information above. Be direct and conversational. Do not list sources.`;
+        try {
+          const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: 'cerebras:llama3.1-8b', maxTokens: 200, timeout: 8000 });
+          if (synthesized?.trim()) return { intent: 'memory', response: synthesized.trim() };
+        } catch {}
+        // Fallback: first hit preview only
+        return { intent: 'memory', response: hits[0].preview };
       }
 
       return { intent: 'memory', response: action.response || 'Memory action processed.' };
@@ -881,8 +888,15 @@ ${memoryContext}`;
         if (hits.length === 0) {
           recallResponse = `I don't have anything saved about that.`;
         } else {
-          const list = hits.map(h => `- ${h.preview}`).join('\n');
-          recallResponse = `Found ${hits.length} result${hits.length === 1 ? '' : 's'}:\n${list}`;
+          // Synthesize a natural answer — don't just dump raw previews at the user
+          const snippets = hits.map((h, i) => `[${i+1}] ${h.preview}`).join('\n');
+          const synthesisPrompt = `The user asked: "${text}"\n\nRelevant conversation history:\n${snippets}\n\nAnswer the user's question in 1-3 sentences using only the information above. Be direct and conversational. Do not list sources.`;
+          try {
+            const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: 'cerebras:llama3.1-8b', maxTokens: 200, timeout: 8000 });
+            recallResponse = synthesized?.trim() || hits[0].preview;
+          } catch {
+            recallResponse = hits[0].preview;
+          }
         }
         // Emit the recall response text as a chunk so TTS picks it up
         if (lastLen === 0) yield { type: 'chunk', text: recallResponse };
