@@ -26,6 +26,12 @@ const CAPTURE_MAX_MS = 150_000;   // watchdog: reset lock if stuck longer than t
 let lastContext     = null; // { description, ts, source }
 let lastIdleLog     = 0;
 
+// Backoff state — when vision AI (Ollama) is unreachable, skip captures
+// for increasing intervals so we don't hammer a dead endpoint every 60s.
+let visionFailStreak   = 0;       // consecutive vision failures
+let visionBackoffUntil = 0;       // timestamp when backoff expires
+const VISION_BACKOFF_STEPS = [2, 5, 10, 20]; // minutes per failure tier
+
 // ── How long since last mouse/keyboard input (Windows only) ───────────────────
 function getIdleMs() {
   try {
@@ -151,6 +157,13 @@ async function runCapture() {
     return;
   }
 
+  // Skip if vision AI is in backoff (Ollama unreachable)
+  if (Date.now() < visionBackoffUntil) {
+    const remainMin = Math.ceil((visionBackoffUntil - Date.now()) / 60_000);
+    if (remainMin % 5 === 0) console.log(`[ScreenWatcher] Vision backoff active — ${remainMin}m remaining (mini PC Ollama unreachable)`);
+    return;
+  }
+
   isCapturing = true;
   captureStartMs = Date.now();
   try {
@@ -176,10 +189,14 @@ async function runCapture() {
     const description = await analyzeImage(
       `${titleHint}Describe what is on this computer screen in one short sentence.`,
       base64,
-      { caller: 'screen-watcher', timeout: 120_000 },
+      { caller: 'screen-watcher', timeout: 30_000 },  // short timeout — backoff on failure
     );
 
     if (description) {
+      // Success — reset failure streak
+      visionFailStreak = 0;
+      visionBackoffUntil = 0;
+
       const ts = Date.now();
       lastContext = { description, ts, source, windowTitle };
 
@@ -192,7 +209,12 @@ async function runCapture() {
       console.log(`[ScreenWatcher] (${source}) ${windowTitle ? `[${windowTitle.slice(0,30)}] ` : ''}${description}`);
     }
   } catch (e) {
-    console.warn(`[ScreenWatcher] capture skipped: ${e.message}`);
+    // Vision failure — apply backoff so we don't hammer dead Ollama every 60s
+    visionFailStreak++;
+    const tierIdx = Math.min(visionFailStreak - 1, VISION_BACKOFF_STEPS.length - 1);
+    const backoffMin = VISION_BACKOFF_STEPS[tierIdx];
+    visionBackoffUntil = Date.now() + backoffMin * 60_000;
+    console.warn(`[ScreenWatcher] Vision failed (streak ${visionFailStreak}): ${e.message} — backing off ${backoffMin}m`);
   } finally {
     isCapturing = false;
     try { if (existsSync(SNAP_PATH)) unlinkSync(SNAP_PATH); } catch {}
