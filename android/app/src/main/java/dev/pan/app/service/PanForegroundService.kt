@@ -784,48 +784,76 @@ class PanForegroundService : Service() {
                 }
             }
 
-            // All AI goes through server (Cerebras/Gemini) via Tailscale
+            // All AI goes through server (Cerebras/Gemini) via Tailscale — streaming mode
             val startTime = System.currentTimeMillis()
             try {
                 val sensorData = sensorContext.getContextEnvelope()
-                val response = serverClient.askPanWithContext(text, null, historyContext, sensorData)
-                val elapsed = System.currentTimeMillis() - startTime
-                if (response != null) {
-                    val responseText = response.response_text
-                    panLog("Server (${elapsed}ms): ${responseText.take(100)}")
+                val sensorJson = if (sensorData != null && sensorData.isNotEmpty()) {
+                    org.json.JSONObject(sensorData).toString()
+                } else null
 
-                    // Dispatch phone-targeted actions (new actions[] + backward-compat route)
+                // Sentence buffer for streaming TTS — speak each sentence as it arrives
+                val sentenceBuf = StringBuilder()
+                var firstChunkTime = 0L
+
+                val response = serverClient.askPanStream(
+                    text = text,
+                    conversationHistory = historyContext,
+                    sensorJson = sensorJson,
+                    onChunk = { chunk ->
+                        if (firstChunkTime == 0L) firstChunkTime = System.currentTimeMillis()
+                        sentenceBuf.append(chunk)
+                        // Speak each complete sentence as it arrives
+                        val buf = sentenceBuf.toString()
+                        val lastPunct = buf.indexOfLast { it == '.' || it == '!' || it == '?' }
+                        if (lastPunct > 0) {
+                            val sentence = buf.substring(0, lastPunct + 1).trim()
+                            val remainder = buf.substring(lastPunct + 1)
+                            sentenceBuf.clear()
+                            sentenceBuf.append(remainder)
+                            if (sentence.isNotBlank()) {
+                                mainHandler.post { panSpeak(sentence) }
+                            }
+                        }
+                    }
+                )
+
+                val elapsed = System.currentTimeMillis() - startTime
+                // Speak any remaining text in the buffer (incomplete sentence or no punct)
+                val remaining = sentenceBuf.toString().trim()
+                if (remaining.isNotBlank() && remaining != "[AMBIENT]") {
+                    mainHandler.post { panSpeak(remaining) }
+                }
+
+                val firstWordMs = if (firstChunkTime > 0L) firstChunkTime - startTime else elapsed
+                panLog("Stream (first=${firstWordMs}ms total=${elapsed}ms): ${remaining.take(60)}")
+
+                if (response != null) {
+                    val responseText = response.response_text.ifBlank { remaining }
+
+                    // Dispatch phone-targeted actions (music, navigate, etc.)
                     val hasPhoneAction = !response.actions.isNullOrEmpty() ||
                         response.route == "music" || response.route == "play_music" ||
                         responseText.startsWith("Playing ")
                     if (hasPhoneAction) {
-                        // For legacy music route with no actions, derive query from response text
                         val legacyQuery = if (response.actions.isNullOrEmpty() && responseText.startsWith("Playing "))
                             responseText.removePrefix("Playing ").removeSuffix(".")
                         else response.query
                         dispatchActions(response.actions, response.route, legacyQuery, text)
-                        val msg = responseText
-                        addToHistory("PAN", "$msg (${elapsed}ms)")
-                        persistHistoryTurn("assistant", msg)
-                        dataRepository.addPanResponse(msg)
                         feedbackSounds.onCommandSent()
-                        mainHandler.post { panSpeak(msg) }
-                        return@launch
                     }
 
-                    addToHistory("PAN", "$responseText (${elapsed}ms)")
-                    persistHistoryTurn("assistant", responseText)
-                    dataRepository.addPanResponse(responseText)
-                    if (responseText != "[AMBIENT]" && responseText.isNotBlank()) {
-                        mainHandler.post { panSpeak(responseText) }
+                    if (responseText != "[AMBIENT]") {
+                        addToHistory("PAN", "$responseText (${elapsed}ms)")
+                        persistHistoryTurn("assistant", responseText)
+                        dataRepository.addPanResponse(responseText)
                     }
-                } else {
-                    panLog("Server returned null")
+                } else if (remaining.isBlank()) {
+                    panLog("Stream returned null/empty")
                     mainHandler.post { panSpeak("Server didn't respond.") }
                 }
             } catch (e: Exception) {
                 panLog("Server unreachable: ${e.message}")
-                // Offline fallback — limited local response
                 mainHandler.post { panSpeak("I can't reach the server right now. I'm in limited mode without internet.") }
             }
             } catch (e: Exception) {

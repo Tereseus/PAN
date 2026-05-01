@@ -163,6 +163,71 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
   };
 }
 
+// Streaming variant — yields raw text chunks from Cerebras SSE
+async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal) {
+  const apiKey = getApiKey('cerebras');
+  if (!apiKey) throw new Error('No Cerebras API key found.');
+
+  const modelId = CEREBRAS_MODELS[cerebrasModel] || cerebrasModel.replace('cerebras:', '');
+  const oaiMessages = messages.map(m => ({
+    role: m.role,
+    content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+  }));
+
+  const response = await fetch(CEREBRAS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: modelId, messages: oaiMessages, max_completion_tokens: maxTokens, temperature: 0.7, stream: true }),
+    signal,
+  });
+
+  if (!response.ok) throw new Error(`Cerebras stream ${response.status}: ${await response.text()}`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') return;
+        try {
+          const chunk = JSON.parse(data).choices?.[0]?.delta?.content;
+          if (chunk) yield chunk;
+        } catch {}
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// Public streaming API — yields text chunks. Falls back to single yield for non-streaming models.
+export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false } = {}) {
+  const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
+  if (!model) model = getModelForCaller(caller);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    if (model.startsWith('cerebras:')) {
+      yield* callCerebrasStream([{ role: 'user', content: prompt }], model, maxTokens, controller.signal);
+    } else {
+      // Non-streaming providers: yield full result at once
+      const text = await askAI(rawPrompt, { model, timeout, maxTokens, caller, _skipAnonymize });
+      if (text) yield text;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callOpenAIEndpoint(messages, modelId, url, apiKey, maxTokens, signal) {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
