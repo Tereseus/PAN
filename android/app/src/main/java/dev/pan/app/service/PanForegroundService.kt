@@ -240,10 +240,12 @@ class PanForegroundService : Service() {
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
             sttEngine.onInterrupt = { panLog("User interrupted TTS"); tts.stop() }
             tts.onSpeakingStateChanged = { speaking ->
-                if (!speaking) {
-                    // TTS ended naturally — restart STT
-                    // Note: BargeInMonitor disabled — secondary mic too close to speaker on Pixel,
-                    // TTS bleed triggers false positives even after calibration.
+                if (speaking) {
+                    // Audio now leaving the speaker — start barge-in monitor with AEC
+                    bargeInMonitor.start(serviceScope)
+                } else {
+                    // TTS ended naturally — stop monitor and restart STT
+                    bargeInMonitor.stop()
                     lastTtsDoneTime = System.currentTimeMillis()
                     if (sttEngine.enabled && !sttEngine.isListening) {
                         sttEngine.startListening { text, isFinal ->
@@ -253,7 +255,19 @@ class PanForegroundService : Service() {
                 }
             }
 
-            // BargeInMonitor wired but not started — re-enable when we have AEC or earpiece mode
+            bargeInMonitor.onBargeIn = {
+                if (tts.isSpeaking) {
+                    panLog("Barge-in — stopping TTS, resuming STT")
+                    tts.stop()
+                    bargeInMonitor.stop()
+                    lastTtsDoneTime = System.currentTimeMillis()
+                    if (sttEngine.enabled && !sttEngine.isListening) {
+                        sttEngine.startListening { text, isFinal ->
+                            if (text.isNotBlank() && isFinal) onSpeech(text)
+                        }
+                    }
+                }
+            }
             bargeInMonitor.onLog = { msg -> panLog(msg) }
 
             panLog("AI: all queries via server (Cerebras/Gemini through Tailscale)")

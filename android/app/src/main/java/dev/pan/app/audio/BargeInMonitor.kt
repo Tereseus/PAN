@@ -4,24 +4,30 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlin.math.sqrt
 
 /**
- * BargeInMonitor — detects user speech during TTS playback using the secondary mic.
+ * BargeInMonitor — detects user speech during TTS playback.
  *
- * Android phones have two mics: primary (bottom/call mic) and secondary (top/camera mic).
- * While TTS plays through the speaker, we open the secondary mic via CAMCORDER source.
- * The camera mic is physically further from the speaker, so TTS bleed is lower.
- * When the user speaks, RMS spikes above the TTS-bleed baseline → barge-in fires.
+ * Core idea: attach Android's hardware AcousticEchoCanceler (AEC) to the AudioRecord
+ * session. AEC is designed for phone calls — it removes the speaker signal from the mic
+ * so you don't hear yourself echo. Same principle here: TTS plays through the speaker,
+ * AEC subtracts it from the mic input at hardware level. Only the user's voice remains.
+ * A simple RMS threshold then detects "someone spoke" reliably.
+ *
+ * We don't need voice identity — we just need to cancel the AI voice out.
+ * AEC does that without any ML, at near-zero CPU cost.
  *
  * Algorithm:
- *  1. Calibrate baseline RMS during first 300ms (TTS bleed noise floor)
- *  2. Watch for CONSECUTIVE_WINDOWS consecutive 80ms windows above 3× baseline
- *  3. Fire onBargeIn() — caller stops TTS and resumes STT
+ *  1. Open AudioRecord + attach AEC (+ NoiseSuppressor if available)
+ *  2. Calibrate ambient RMS for 400ms (should be ~0 after AEC strips TTS)
+ *  3. Watch for CONSECUTIVE windows above threshold → fire onBargeIn()
  *
- * Fallback: if CAMCORDER fails (some devices), tries UNPROCESSED source.
+ * Fallback: if AEC unavailable, falls back to raw mic with higher threshold.
  */
 class BargeInMonitor {
 
@@ -29,17 +35,21 @@ class BargeInMonitor {
         private const val TAG             = "BargeIn"
         private const val SAMPLE_RATE     = 16000
         private const val WINDOW_MS       = 80        // detection window size
-        private const val CALIBRATION_MS  = 500       // baseline measurement period (during live TTS playback)
+        private const val CALIBRATION_MS  = 400       // baseline period (AEC-cleaned signal ≈ 0 during TTS)
         private const val CONSECUTIVE     = 2         // windows above threshold to confirm barge-in
-        private const val THRESHOLD_MULT  = 4.0       // multiplier above baseline
-        private const val MIN_THRESHOLD   = 600.0     // floor — well above typical TTS bleed level
+        private const val THRESHOLD_MULT  = 4.0       // multiplier above AEC-cleaned baseline
+        private const val MIN_THRESHOLD   = 120.0     // floor with AEC (much lower — TTS is removed)
+        private const val MIN_THRESHOLD_NO_AEC = 800.0 // fallback floor without AEC
     }
 
     var onBargeIn: (() -> Unit)? = null
     var onLog:     ((String) -> Unit)? = null
 
-    private var job:         Job?         = null
-    private var audioRecord: AudioRecord? = null
+    private var job:         Job?                   = null
+    private var audioRecord: AudioRecord?           = null
+    private var aec:         AcousticEchoCanceler?  = null
+    private var ns:          NoiseSuppressor?       = null
+    private var aecActive    = false
 
     /** Start monitoring. Safe to call multiple times — only one monitor runs at a time. */
     @SuppressLint("MissingPermission")
@@ -58,15 +68,38 @@ class BargeInMonitor {
             }
 
             audioRecord = recorder
+
+            // Attach AEC — removes TTS speaker signal from mic at hardware level
+            aecActive = false
+            if (AcousticEchoCanceler.isAvailable()) {
+                try {
+                    aec = AcousticEchoCanceler.create(recorder.audioSessionId)?.also {
+                        it.enabled = true
+                        aecActive = true
+                        log("AEC attached (session=${recorder.audioSessionId})")
+                    }
+                } catch (e: Exception) { log("AEC create failed: ${e.message}") }
+            } else {
+                log("AEC not available on this device — using raw mic with high threshold")
+            }
+            // Noise suppressor removes residual background hiss
+            if (NoiseSuppressor.isAvailable()) {
+                try {
+                    ns = NoiseSuppressor.create(recorder.audioSessionId)?.also { it.enabled = true }
+                } catch (_: Exception) {}
+            }
+
             try {
                 recorder.startRecording()
-                log("Secondary mic open (barge-in active)")
+                val minThreshold = if (aecActive) MIN_THRESHOLD else MIN_THRESHOLD_NO_AEC
+                log("Barge-in active (AEC=$aecActive, minThreshold=$minThreshold)")
 
                 val samplesPerWindow  = SAMPLE_RATE * WINDOW_MS / 1000
                 val calibWindows      = CALIBRATION_MS / WINDOW_MS
                 val buf               = ShortArray(samplesPerWindow)
 
-                // Phase 1 — calibrate noise floor (TTS bleed + ambient)
+                // Phase 1 — calibrate. With AEC on, TTS is cancelled so baseline ≈ ambient noise.
+                // Without AEC, baseline captures TTS bleed — threshold needs to be much higher.
                 var baselineSum = 0.0
                 var baselineN   = 0
                 repeat(calibWindows) {
@@ -75,7 +108,7 @@ class BargeInMonitor {
                     if (n > 0) { baselineSum += rms(buf, n); baselineN++ }
                 }
                 val baseline  = if (baselineN > 0) baselineSum / baselineN else 0.0
-                val threshold = maxOf(baseline * THRESHOLD_MULT, MIN_THRESHOLD)
+                val threshold = maxOf(baseline * THRESHOLD_MULT, minThreshold)
                 log("Baseline=%.0f threshold=%.0f".format(baseline, threshold))
 
                 // Phase 2 — watch for speech above threshold
@@ -137,6 +170,9 @@ class BargeInMonitor {
     }
 
     private fun releaseRecorder() {
+        try { aec?.release() } catch (_: Exception) {}
+        try { ns?.release()  } catch (_: Exception) {}
+        aec = null; ns = null; aecActive = false
         try { audioRecord?.stop()    } catch (_: Exception) {}
         try { audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
