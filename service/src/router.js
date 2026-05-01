@@ -136,10 +136,14 @@ async function handleUnified(text, context) {
   const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
 
-  // Pull relevant memories for query context
+  // Pull relevant memories for query context — strip stop words so "tell me about Genies"
+  // finds "Genies" rather than matching "%tell%me%about%"
+  const MEM_STOP = new Set(['what','did','we','say','about','the','a','an','is','are','was','were','do','does','how','why','when','where','who','tell','me','i','you','have','has','had','can','could','would','should','will','to','of','in','on','at','for','with','that','this','these','those','it','its','know','talked','talk','remember']);
+  const memTerms = text.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !MEM_STOP.has(w)).slice(0, 4);
+  const memQ = memTerms.length > 0 ? `%${memTerms.join('%')}%` : `%${text.split(' ').slice(0, 3).join('%')}%`;
   const memories = allScoped(null, `SELECT content, item_type FROM memory_items
     WHERE org_id = :org_id AND content LIKE :q ORDER BY created_at DESC LIMIT 5`, {
-    ':q': `%${text.split(' ').slice(0, 3).join('%')}%`
+    ':q': memQ
   });
   const memoryContext = memories.length > 0
     ? `\nRelevant memories:\n${memories.map(m => `- [${m.item_type}] ${m.content}`).join('\n')}`
@@ -868,6 +872,9 @@ ${memoryContext}`;
     }
   } catch (e) {
     console.error('[routeStream] LLM error:', e.message);
+    // Always yield a response — silence on the phone means the user thinks PAN is broken
+    yield { type: 'done', result: { intent: 'query', response: "Sorry, I ran into a problem thinking that through. Try again." } };
+    return;
   }
 
   // Parse the final JSON for intent + actions
@@ -897,10 +904,10 @@ ${memoryContext}`;
 
       yield { type: 'done', result: { ...parsed, response: parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '') } };
     } else {
-      yield { type: 'done', result: { intent: 'query', response: '' } };
+      yield { type: 'done', result: { intent: 'query', response: "I didn't catch that — could you try again?" } };
     }
   } catch {
-    yield { type: 'done', result: { intent: 'query', response: '' } };
+    yield { type: 'done', result: { intent: 'query', response: "I didn't catch that — could you try again?" } };
   }
 }
 
