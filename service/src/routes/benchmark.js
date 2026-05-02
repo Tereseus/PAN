@@ -6,7 +6,7 @@
 
 import { Router } from 'express';
 import { all, get } from '../db.js';
-import { runBenchmark, BENCHMARK_SUITES } from '../benchmark.js';
+import { runBenchmark, runBenchmarkWithVerification, BENCHMARK_SUITES } from '../benchmark.js';
 import { panNotify } from '../pan-notify.js';
 
 export const benchmarkApiRouter = Router();
@@ -26,8 +26,10 @@ benchmarkApiRouter.get('/benchmark/floors', async (req, res) => {
 
 // POST /api/v1/ai/benchmark
 // Body: { suite: 'intuition', model: 'cerebras:qwen-3-235b' }
+// Query: ?verify=1  — run with independent Verifier agent (Atlas v2 two-agent framework)
 benchmarkApiRouter.post('/benchmark', async (req, res) => {
   const { suite = 'intuition', model = 'cerebras:qwen-3-235b' } = req.body || {};
+  const withVerification = req.query.verify === '1' || req.query.verify === 'true';
 
   if (!BENCHMARK_SUITES.includes(suite)) {
     return res.status(400).json({
@@ -37,9 +39,15 @@ benchmarkApiRouter.post('/benchmark', async (req, res) => {
   }
 
   try {
-    console.log(`[PAN Benchmark] /api/v1/ai/benchmark — suite=${suite} model=${model}`);
-    const result = await runBenchmark(suite, model);
-    res.json({ ok: true, ...result });
+    if (withVerification) {
+      console.log(`[PAN Benchmark] /api/v1/ai/benchmark?verify=1 — suite=${suite} model=${model}`);
+      const result = await runBenchmarkWithVerification(suite, model);
+      res.json({ ok: true, ...result });
+    } else {
+      console.log(`[PAN Benchmark] /api/v1/ai/benchmark — suite=${suite} model=${model}`);
+      const result = await runBenchmark(suite, model);
+      res.json({ ok: true, ...result });
+    }
   } catch (e) {
     console.error('[PAN Benchmark] Run failed:', e.message);
     res.status(500).json({ ok: false, error: e.message });

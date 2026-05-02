@@ -627,12 +627,16 @@ CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id);
 -- AI benchmark results — Intuition suite scores per model run
 CREATE TABLE IF NOT EXISTS ai_benchmark (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  suite TEXT NOT NULL,           -- 'intuition', 'memory', etc.
-  model TEXT NOT NULL,           -- 'cerebras:qwen-3-235b'
-  scores TEXT NOT NULL,          -- JSON: { hearing, reflex_ms, clarity, reasoning, memory, voice }
-  passed INTEGER NOT NULL,       -- 1 if all floors met, 0 if not
-  details TEXT,                  -- JSON: per-test results for debugging
-  ran_at TEXT DEFAULT (datetime('now'))
+  suite TEXT NOT NULL,                          -- 'intuition', 'memory', etc.
+  model TEXT NOT NULL,                          -- 'cerebras:qwen-3-235b'
+  scores TEXT NOT NULL,                         -- JSON: { hearing, reflex_ms, clarity, reasoning, memory, voice }
+  passed INTEGER NOT NULL,                      -- 1 if all floors met, 0 if not
+  details TEXT,                                 -- JSON: per-test results for debugging
+  ran_at TEXT DEFAULT (datetime('now')),
+  -- Atlas v2 Step 7: verifier metadata (NULL on unverified runs)
+  verifier_verdict TEXT,                        -- JSON: {verified, reason, confidence, agree}
+  auto_corrected INTEGER DEFAULT 0,             -- 1 if executor was retried after verifier disagreed
+  correction_attempts INTEGER DEFAULT 0         -- number of executor attempts made
 );
 CREATE INDEX IF NOT EXISTS idx_ai_benchmark_suite ON ai_benchmark(suite, ran_at);
 CREATE INDEX IF NOT EXISTS idx_ai_benchmark_model ON ai_benchmark(model);
@@ -705,3 +709,15 @@ CREATE TABLE IF NOT EXISTS activity_events (
 );
 CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_app ON activity_events(app_name, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS atlas_apps (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  routes TEXT DEFAULT '[]',
+  key_files TEXT DEFAULT '[]',
+  version TEXT,
+  registered_by TEXT DEFAULT 'user',
+  last_seen TEXT DEFAULT (datetime('now','localtime')),
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);

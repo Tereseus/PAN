@@ -667,6 +667,12 @@ async function healthCheck() {
     // If a service keeps flapping (down → restart → down) we exponentially
     // delay further restarts so we don't burn CPU + spawn processes once a
     // minute forever (the AHK / Voice.ahk loop that crashed PAN on 2026-04-08).
+    // #438: if a restart was just attempted, give it one health check cycle grace period
+    // before treating it as 'down' again — prevents false failure increments.
+    if (svc._restartPending) {
+      svc._restartPending = false; // consumed — next cycle will evaluate normally
+      continue;
+    }
     if (svc._status === 'down' && svc.startFn && isServiceEnabled(svc)) {
       const now = Date.now();
       svc._restartFailures = svc._restartFailures || 0;
@@ -696,18 +702,21 @@ async function healthCheck() {
         try {
           console.log(`[Steward] Auto-restarting ${svc.name}... (attempt ${svc._restartFailures + 1})`);
           svc.startFn();
-          svc._status = 'running';
+          // #438: do NOT set _status = 'running' here — let the next health check confirm it.
+          // Setting it immediately caused the health check to find it "still starting",
+          // flip it back to 'down', and increment _restartFailures even on a good restart.
+          svc._restartPending = true; // #438: grace flag — skip one 'down' detection cycle
           svc._lastRun = Date.now();
           logServiceEvent(svc.id, 'restart', { success: true });
           // Exponential backoff: 1m, 2m, 4m, 8m, 16m. Reset on a successful
           // health check (handled below in checkServiceHealth path).
-          svc._restartFailures += 1;
-          svc._restartCooldownUntil = now + Math.min(60_000 * Math.pow(2, svc._restartFailures - 1), 16 * 60_000);
+          // #438: only increment failure counter in the catch block (startFn threw)
+          svc._restartCooldownUntil = now + Math.min(60_000 * Math.pow(2, svc._restartFailures), 16 * 60_000);
         } catch (err) {
           svc._lastError = err.message;
           console.error(`[Steward] Failed to restart ${svc.name}: ${err.message}`);
           logServiceEvent(svc.id, 'restart', { success: false, error: err.message });
-          svc._restartFailures += 1;
+          svc._restartFailures += 1; // #438: only increment when startFn() actually threw
           svc._restartCooldownUntil = now + Math.min(60_000 * Math.pow(2, svc._restartFailures - 1), 16 * 60_000);
         }
       }
@@ -1174,11 +1183,166 @@ setTimeout(() => {
   setInterval(scanInstalledApps, 24 * 60 * 60 * 1000);
 }, 10 * 1000);
 
+// ==================== ATLAS SUMMARY ====================
+// Returns a compact plain-text snapshot of the entire PAN system.
+// Used by Scout to update MEMORY.md and by the /api/v1/atlas/summary endpoint.
+
+async function getAtlasSummary() {
+  const lines = [];
+  const q = (fn) => { try { return fn(); } catch { return null; } };
+
+  // Version
+  let version = '?';
+  try {
+    const { readFileSync } = await import('fs');
+    const { join: pjoin, dirname: pdirname } = await import('path');
+    const { fileURLToPath: pfu } = await import('url');
+    const pkgPath = pjoin(pdirname(pfu(import.meta.url)), '../../package.json');
+    version = JSON.parse(readFileSync(pkgPath, 'utf8')).version || '?';
+  } catch {}
+
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+
+  // Services summary
+  const running = services.filter(s => s._status === 'running').length;
+  const down = services.filter(s => ['stopped', 'down', 'error'].includes(s._status));
+  const downNames = down.map(s => s.id);
+  const svcLine = down.length
+    ? `${running} services up, ${down.length} down: ${downNames.join(',')}`
+    : `${running} services up`;
+
+  lines.push(`PAN ${version} | ${dateStr} | ${svcLine}`);
+
+  // AI settings
+  const aiModel  = q(() => get(`SELECT value FROM settings WHERE key='ai_model'`)?.value)   || '?';
+  const cerebras = q(() => get(`SELECT value FROM settings WHERE key='cerebras_api_key'`)?.value);
+  const groq     = q(() => get(`SELECT value FROM settings WHERE key='groq_api_key'`)?.value);
+  const ollamaUrl = q(() => get(`SELECT value FROM settings WHERE key='ollama_url'`)?.value) || 'NONE';
+  lines.push(`AI       default=${aiModel} | cerebras=${cerebras ? 'YES' : 'NO_KEY'} | groq=${groq ? 'YES' : 'NO_KEY'} | ollama=${ollamaUrl}`);
+
+  // Devices
+  const devices = q(() => all(`SELECT hostname, name, device_type, online, trusted, tailscale_ip FROM devices`)) || [];
+  const deviceStr = devices.length
+    ? devices.map(d => `${d.name || d.hostname}=${d.online ? 'online' : 'offline'}`).join(' · ')
+    : 'NONE';
+  lines.push(`DEVICES  ${deviceStr}`);
+
+  // Sensors (webcam + screen from device_sensors/sensor_definitions)
+  let webcamStatus = 'off';
+  let screenStatus = 'off';
+  let pendantStatus = 'disconn';
+  try {
+    const webcamSensor = q(() => get(`
+      SELECT ds.value, ds.updated_at FROM device_sensors ds
+      JOIN sensor_definitions sd ON ds.sensor_id = sd.id
+      WHERE sd.name LIKE '%webcam%' OR sd.name LIKE '%camera%'
+      ORDER BY ds.updated_at DESC LIMIT 1`));
+    if (webcamSensor?.value) webcamStatus = 'active';
+
+    const screenSensor = q(() => get(`
+      SELECT ds.value, ds.updated_at FROM device_sensors ds
+      JOIN sensor_definitions sd ON ds.sensor_id = sd.id
+      WHERE sd.name LIKE '%screen%' OR sd.name LIKE '%display%'
+      ORDER BY ds.updated_at DESC LIMIT 1`));
+    if (screenSensor?.value) screenStatus = 'active';
+
+    const pendantDevice = q(() => get(`SELECT online FROM devices WHERE device_type='pendant' LIMIT 1`));
+    if (pendantDevice?.online) pendantStatus = 'conn';
+  } catch {}
+
+  lines.push(`SENSORS  webcam=${webcamStatus} · screen=${screenStatus} · pendant=${pendantStatus}`);
+
+  // Smart devices
+  const smartDevices = q(() => all(`SELECT name, type, room, state FROM smart_devices LIMIT 20`)) || [];
+  const smartStr = smartDevices.length
+    ? smartDevices.map(d => `${d.name}(${d.room || '?'})=${d.state || '?'}`).join(' · ')
+    : 'NONE';
+  lines.push(`SMART    ${smartStr}`);
+
+  // DB stats
+  let tableCount = '?';
+  let lastEventStr = '?';
+  let memoryCount = '?';
+  let scoutNew = '?';
+
+  try {
+    const tc = q(() => get(`SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'`));
+    if (tc) tableCount = tc.c;
+  } catch {}
+
+  try {
+    const lastEvt = q(() => get(`SELECT created_at FROM events ORDER BY created_at DESC LIMIT 1`));
+    if (lastEvt?.created_at) {
+      const diffMs = Date.now() - new Date(lastEvt.created_at).getTime();
+      const diffMin = Math.round(diffMs / 60000);
+      lastEventStr = diffMin < 60 ? `${diffMin}m ago` : `${Math.round(diffMin / 60)}h ago`;
+    }
+  } catch {}
+
+  try {
+    const mc = q(() => get(`SELECT COUNT(*) as c FROM memory_items`));
+    if (mc) memoryCount = mc.c;
+  } catch {}
+
+  try {
+    const sc = q(() => get(`SELECT COUNT(*) as c FROM scout_findings WHERE status='new'`));
+    if (sc) scoutNew = sc.c;
+  } catch {}
+
+  lines.push(`DB       ${tableCount} tables | last_event=${lastEventStr} | memory=${memoryCount} items | scout=${scoutNew} new findings`);
+
+  // Tasks
+  let p1Open = 0, p2Open = 0, inProgress = 0, inTest = 0;
+  let p1Tasks = [];
+  try {
+    const tasks = q(() => all(`SELECT id, title, status, priority, type FROM project_tasks WHERE status IN ('todo','in_progress','in_test') AND priority <= 2`)) || [];
+    p1Open     = tasks.filter(t => t.priority === 1 && t.status === 'todo').length;
+    p2Open     = tasks.filter(t => t.priority === 2 && t.status === 'todo').length;
+    inProgress = tasks.filter(t => t.status === 'in_progress').length;
+    inTest     = tasks.filter(t => t.status === 'in_test').length;
+    p1Tasks    = tasks.filter(t => t.priority === 1).slice(0, 6);
+  } catch {}
+
+  lines.push(`TASKS    ${p1Open} P1 open · ${p2Open} P2 open · ${inProgress} in_progress · ${inTest} in_test`);
+
+  const bugsStr = p1Tasks.length
+    ? p1Tasks.map(t => `#${t.id} ${t.title}`).join(' · ')
+    : 'none';
+  lines.push(`BUGS     ${bugsStr}`);
+
+  // Recent commits
+  let commitsStr = '?';
+  try {
+    const panDir = join(__dirname, '../../');
+    const gitOut = execSync('git log --oneline -5', { cwd: panDir, encoding: 'utf-8', timeout: 5000, windowsHide: true });
+    const commits = gitOut.trim().split('\n').slice(0, 3).map(l => l.trim());
+    commitsStr = commits.join(' · ');
+  } catch {}
+  lines.push(`COMMITS  ${commitsStr}`);
+
+  // Atlas apps
+  let appsStr = 'NONE';
+  try {
+    const atlasApps = q(() => all(`SELECT id, name FROM atlas_apps ORDER BY last_seen DESC LIMIT 10`)) || [];
+    if (atlasApps.length) appsStr = atlasApps.map(a => `${a.id}(${a.name})`).join(' · ');
+  } catch {}
+  lines.push(`APPS     ${appsStr}`);
+
+  // Search hint
+  lines.push(`SEARCH   events(event_type,data,created_at) · memory_items(item_type,content,confidence)`);
+  lines.push(`         project_tasks(status,priority,title) · settings(key,value)`);
+  lines.push(`         episodic_memories(summary,importance) · device_presence(device_id,activity,as_of)`);
+
+  return lines.join('\n');
+}
+
 export {
   bootAll,
   shutdownAll,
   healthCheck,
   getAtlasData,
+  getAtlasSummary,
   getServiceStatus,
   reportServiceRun,
   scanInstalledApps,

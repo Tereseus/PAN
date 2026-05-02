@@ -446,7 +446,7 @@ async function processUnifiedResult(action, text, context) {
         const snippets = hits.map((h, i) => `[${i+1}] ${h.preview}`).join('\n');
         const synthesisPrompt = `The user asked: "${text}"\n\nRelevant conversation history:\n${snippets}\n\nAnswer the user's question in 1-3 sentences using only the information above. Be direct and conversational. Do not list sources.`;
         try {
-          const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: 'cerebras:llama3.1-8b', maxTokens: 200, timeout: 8000 });
+          const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 200, timeout: 15000 }); // #440: use configured model, increase timeout
           if (synthesized?.trim()) return { intent: 'memory', response: synthesized.trim() };
         } catch {}
         // Fallback: first hit preview only
@@ -892,7 +892,7 @@ ${memoryContext}`;
           const snippets = hits.map((h, i) => `[${i+1}] ${h.preview}`).join('\n');
           const synthesisPrompt = `The user asked: "${text}"\n\nRelevant conversation history:\n${snippets}\n\nAnswer the user's question in 1-3 sentences using only the information above. Be direct and conversational. Do not list sources.`;
           try {
-            const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: 'cerebras:llama3.1-8b', maxTokens: 200, timeout: 8000 });
+            const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 200, timeout: 15000 }); // #440: use configured model, increase timeout
             recallResponse = synthesized?.trim() || hits[0].preview;
           } catch {
             recallResponse = hits[0].preview;
