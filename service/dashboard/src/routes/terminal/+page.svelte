@@ -46,6 +46,9 @@
 		lastSendText: '',    // preview of what was sent (first 40 chars)
 		awaitingAssistant: false, // true between send and first assistant message
 	});
+	// Guard against double-sends (Enter key + button click within same tick, or rapid double-tap).
+	const _sendInFlight = new Set();
+
 	function _markSend(text) {
 		_sendTimings.lastSendAt = performance.now();
 		_sendTimings.lastAckMs = 0;
@@ -1576,6 +1579,7 @@
 					const d = await r.json();
 					if (d.ok && d.messages?.length > 0) {
 						tabData._pushedMessages = d.messages;
+						_pushedMsgsCache.set(tabData.id, d.messages);
 						renderTranscriptToTerminal(tabData);
 					}
 				} catch {}
@@ -1817,6 +1821,22 @@
 							}
 							if (!hasExistingBuffer && msg.lines.some(l => l.trim().length > 0)) {
 								hasExistingBuffer = true;
+							}
+							break;
+						}
+						case 'session_redirect': {
+							// Server told us a session for this project already exists — reconnect to it.
+							// This happens when two windows race to create the same project session.
+							const redirectId = msg.session_id;
+							if (redirectId && redirectId !== sessionId) {
+								console.warn(`[PAN Terminal] Dedup redirect: ${sessionId} → ${redirectId}`);
+								ws.close();
+								// Update this tab's session ID and reconnect
+								tabData.sessionId = redirectId;
+								const newWsUrl = wsUrl(`/ws/terminal?session=${encodeURIComponent(redirectId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}`);
+								tabData.ws = new WebSocket(newWsUrl);
+								tabData.ws.addEventListener('message', handleMessage);
+								tabData.ws.addEventListener('close', handleClose);
 							}
 							break;
 						}
@@ -3193,13 +3213,8 @@
 		let text = explicit;
 		if (domValue.length > text.length) text = domValue;
 		if (stateValue.length > text.length) text = stateValue;
-		// Use /clipboard/<filename> web URL instead of raw Windows file path.
-		// Raw paths (C:/Users/.../clipboard_*.png) cause Claude Code to call Read on them,
-		// which triggers the OS file handler (Windows Photos) instead of rendering inline.
-		const imgPaths = pastedImages.filter(img => img.path).map(img => {
-			const filename = img.path.replace(/\\/g, '/').split('/').pop();
-			return `/clipboard/${filename}`;
-		});
+		// Send the actual absolute file path so Claude can use the Read tool to view the image.
+		const imgPaths = pastedImages.filter(img => img.path).map(img => img.path);
 		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
 
 		const active = getActiveTab();
@@ -3212,6 +3227,12 @@
 
 		if (!active) {
 			console.warn('[PAN Terminal] sendTerminalInput: no active tab');
+			return;
+		}
+
+		// Drop duplicate sends — guards against Enter+click race and rapid double-tap.
+		if (_sendInFlight.has(active.sessionId)) {
+			console.warn('[PAN Terminal] sendTerminalInput: already in-flight for session', active.sessionId, '— dropping duplicate');
 			return;
 		}
 
@@ -3282,30 +3303,13 @@
 		// as a child_process — clean JSON stream, no PTY, no TUI.
 		console.log('[PAN DIAG] SEND → session_id =', active.sessionId, '| text =', JSON.stringify(text.substring(0, 60)));
 
-		try {
-			if (!text) return;
-			_markSend(text);
-			const data = await api('/api/v1/terminal/pipe', {
-				method: 'POST',
-				body: JSON.stringify({ session_id: active.sessionId, text }),
-			});
-			if (!data.ok) throw new Error(data.error || 'pipe send failed');
-			_markSendPhase('ack');
-			console.log('[PAN Terminal] Pipe send OK');
-		} catch (err) {
-			console.error('[PAN Terminal] pipe send failed:', err);
-			if (terminalInputEl) {
-				terminalInputEl.style.outline = '2px solid #f38ba8';
-				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 1500);
-			}
-			return; // KEEP the text in the input box so the user can retry
-		}
+		if (!text) return;
+		_markSend(text);
 
-		// (REMOVED) Optimistic echo — was hiding messages when dedup matched them
-		// to the wrong polled entry, or when polling early-returned. Reverted per
-		// user request: "significantly worse for messages to be deleted".
-
-		// Only clear AFTER successful send
+		// Optimistic clear — wipe the input immediately so the user sees instant feedback.
+		// If the HTTP send fails, we restore the text so they can retry.
+		const savedText = text;
+		const savedImages = [...pastedImages];
 		terminalInputText = '';
 		setTerminalInput('');
 		if (active) {
@@ -3315,9 +3319,8 @@
 		}
 		pastedImages = [];
 		if (terminalInputEl) terminalInputEl.style.height = 'auto';
-		// Mark Claude as busy. The poll loop watches the rendered HTML and clears
-		// the indicator only when the DOM has been stable for 2 polls AND has
-		// changed at least once since send. 60s hard failsafe.
+
+		// Mark Claude as busy immediately (don't wait for server ACK).
 		if (active) {
 			active.claudeReady = false;
 			active._htmlAtSend = active._lastRenderedHtml || '';
@@ -3331,6 +3334,32 @@
 				if (activeTabId === active.id) claudeReady = true;
 			}
 		}, 60000);
+
+		_sendInFlight.add(active.sessionId);
+		try {
+			const data = await api('/api/v1/terminal/pipe', {
+				method: 'POST',
+				body: JSON.stringify({ session_id: active.sessionId, text }),
+			});
+			if (!data.ok) throw new Error(data.error || 'pipe send failed');
+			_markSendPhase('ack');
+			console.log('[PAN Terminal] Pipe send OK');
+		} catch (err) {
+			console.error('[PAN Terminal] pipe send failed:', err);
+			// Restore text so user can retry
+			terminalInputText = savedText;
+			setTerminalInput(savedText);
+			pastedImages = savedImages;
+			if (terminalInputEl) {
+				terminalInputEl.style.outline = '2px solid #f38ba8';
+				setTimeout(() => { if (terminalInputEl) terminalInputEl.style.outline = ''; }, 1500);
+			}
+			// Restore busy state
+			if (active) { active.claudeReady = true; active._htmlAtSend = null; }
+			claudeReady = true;
+		} finally {
+			_sendInFlight.delete(active.sessionId);
+		}
 	}
 
 	function handleTerminalInputKey(e) {
@@ -3377,7 +3406,7 @@
 
 	async function sendCenterChat() {
 		let text = centerChatInput.trim();
-		const imgPaths = pastedImages.filter(img => img.path).map(img => `[Image: ${img.path}]`);
+		const imgPaths = pastedImages.filter(img => img.path).map(img => img.path);
 		if (imgPaths.length) text = (text ? text + ' ' : '') + imgPaths.join(' ');
 		if (!text) return;
 		centerChatInput = '';
@@ -4835,6 +4864,7 @@
 				const msgs = await api(`/api/v1/terminal/messages/${encodeURIComponent(tab.sessionId)}`);
 				if (Array.isArray(msgs) && msgs.length > (tab._pushedMessages?.length || 0)) {
 					tab._pushedMessages = msgs;
+					_pushedMsgsCache.set(tab.id, msgs);
 					renderTranscriptToTerminal(tab);
 				}
 			} catch {}
@@ -4953,6 +4983,26 @@
 							}
 						}
 					}
+
+					// Kill duplicate sessions — if multiple sessions exist for the same project,
+					// keep the one with the most clients (or newest), kill the rest.
+					const byProject = new Map();
+					for (const s of dashSessions) {
+						if (!s.project) continue;
+						if (!byProject.has(s.project)) byProject.set(s.project, []);
+						byProject.get(s.project).push(s);
+					}
+					for (const [, group] of byProject) {
+						if (group.length <= 1) continue;
+						// Keep the one with the most clients, break ties by newest createdAt
+						group.sort((a, b) => (b.clients || 0) - (a.clients || 0) || (b.createdAt || 0) - (a.createdAt || 0));
+						for (const dup of group.slice(1)) {
+							if ((dup.clients || 0) === 0) {
+								console.log(`[PAN Terminal] Killing duplicate session ${dup.id} for project ${dup.project}`);
+								fetch(`/api/v1/terminal/sessions/${encodeURIComponent(dup.id)}`, { method: 'DELETE' }).catch(() => {});
+							}
+						}
+					}
 				}
 
 				// If no live sessions, try restoring from DB-saved tabs (creates new PTY sessions)
@@ -5042,6 +5092,13 @@
 			// Let Win+H pass through to Windows for voice typing
 			if (e.key === 'h' && e.metaKey) return;
 
+			// F5 — force page reload (Tauri doesn't pass F5 through natively in prod builds)
+			if (e.key === 'F5') {
+				e.preventDefault();
+				location.reload();
+				return;
+			}
+
 			// Escape is ALWAYS handled — even if focused elsewhere or WS is wobbly
 			if (e.key === 'Escape') {
 				e.preventDefault();
@@ -5060,9 +5117,12 @@
 			const tag = e.target?.tagName;
 			if ((tag === 'INPUT' || tag === 'TEXTAREA') && e.target !== terminalInputEl) return;
 
-			// Enter — send terminal input even if the textarea has lost focus
+			// Enter — send terminal input even if the textarea has lost focus.
+			// If focus IS on the terminal textarea, handleTerminalInputKey already handled it —
+			// skip here to avoid a double-send.
 			if (e.key === 'Enter' && !e.shiftKey) {
 				e.preventDefault();
+				if (e.target === terminalInputEl) return; // handled by onkeydown on the textarea
 				if (terminalInputEl) terminalInputEl.focus();
 				sendTerminalInput(terminalInputEl?.value || terminalInputText || '');
 				return;
@@ -7394,7 +7454,7 @@
 				rows="1"
 				class="center-input"
 			></textarea>
-			<button class="center-send-btn" onclick={sendTerminalInput} disabled={!terminalInputText.trim()} title="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+			<button class="center-send-btn" onclick={sendTerminalInput} disabled={!terminalInputText.trim() && pastedImages.length === 0} title="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
 		</div>
 	</div>
 
