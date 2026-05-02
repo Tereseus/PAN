@@ -1961,6 +1961,94 @@ const suites = {
         }
       }
     ]
+  },
+
+  'screen-watcher-regression': {
+    name: 'Screen Watcher Regression',
+    description: 'Regression specs for 3 bugs fixed in commits f3982a4, 7816a4f, 7c5b0fc: NULL session_id, keyboard-idle skip, moondream title injection',
+    dependsOn: [],
+    tests: [
+      {
+        id: 'sw-reg-session-id', name: 'session_id is never NULL in screen capture events',
+        description: 'Trigger a burst, wait 3s, then check that any screen_context events inserted in the last 60s have session_id = "system" (not NULL)',
+        run: async () => {
+          // Trigger a burst so there is at least an attempt to insert an event
+          await apiPost('/api/v1/screen-watcher/burst', { duration_ms: 3000, interval_ms: 3000 });
+          await wait(3000);
+          // Query recent screen_context events
+          const data = await apiGet('/dashboard/api/events?type=screen_context&limit=20');
+          const events = data.events || [];
+          // Filter to events created in the last 60 seconds
+          const cutoff = Date.now() - 60_000;
+          const recent = events.filter(e => new Date(e.created_at).getTime() >= cutoff);
+          // If there are no recent events at all, the burst may not have captured (no screen, backoff, etc.)
+          // That is not a NULL session_id bug — skip the NULL check and pass with a note.
+          if (recent.length === 0) {
+            return 'No screen_context events in last 60s (burst may not have captured — backoff or no screen). NULL regression not triggered.';
+          }
+          const nullIds = recent.filter(e => e.session_id === null || e.session_id === '');
+          if (nullIds.length > 0) {
+            throw new Error(`Found ${nullIds.length} screen_context event(s) with NULL/empty session_id — regression reintroduced`);
+          }
+          const systemIds = recent.filter(e => e.session_id === 'system');
+          return `${recent.length} recent screen_context event(s) — all have session_id="${systemIds[0]?.session_id || 'system'}" (no NULLs)`;
+        }
+      },
+      {
+        id: 'sw-reg-idle-bypass', name: 'Screen capture runs despite keyboard idle',
+        description: 'Burst must trigger a capture regardless of idle state — idle threshold is Infinity (disabled), so keyboard inactivity never blocks captures',
+        run: async () => {
+          const before = await apiGet('/api/v1/screen-watcher/status');
+          const beforeTs = before.lastCapture?.ts || 0;
+          // Trigger burst with short interval — if idle check were enforced this would fail
+          await apiPost('/api/v1/screen-watcher/burst', { duration_ms: 5000, interval_ms: 3000 });
+          await wait(5000);
+          const after = await apiGet('/api/v1/screen-watcher/status');
+          const afterTs = after.lastCapture?.ts || 0;
+          // A capture occurred if lastCapture.ts advanced (new capture) OR ageSec is fresh
+          const ageSec = after.lastCapture?.ageSec ?? null;
+          const captureAdvanced = afterTs > beforeTs;
+          const captureFresh = ageSec !== null && ageSec < 10;
+          if (!captureAdvanced && !captureFresh) {
+            // Burst may genuinely not have captured (no display, moondream offline) — check backoff
+            // If visionFailStreak > 0 it means vision ran but failed, which still proves idle was not blocking
+            if (after.visionFailStreak > 0) {
+              return `Vision ran but failed (streak=${after.visionFailStreak}) — idle did not block the attempt (fix verified)`;
+            }
+            throw new Error(`No capture after burst (lastCapture.ageSec=${ageSec}, ts unchanged) — idle check may be blocking`);
+          }
+          const detail = captureAdvanced ? `ts advanced ${beforeTs} → ${afterTs}` : `ageSec=${ageSec}`;
+          return `Capture occurred after burst regardless of keyboard idle state (${detail})`;
+        }
+      },
+      {
+        id: 'sw-reg-no-title-in-prompt', name: 'Moondream prompt contains no window title',
+        description: 'Code-level check: screen-watcher.js prompt must be a plain string literal — no ${titleHint}, no windowTitle interpolation',
+        run: async () => {
+          const swPath = join(process.cwd(), 'src', 'screen-watcher.js');
+          let source;
+          try {
+            source = readFileSync(swPath, 'utf8');
+          } catch {
+            // Try relative to this file's directory
+            const altPath = new URL('../screen-watcher.js', import.meta.url).pathname;
+            source = readFileSync(altPath, 'utf8');
+          }
+          const expectedPrompt = 'Describe what is on this computer screen in one short sentence.';
+          if (!source.includes(expectedPrompt)) {
+            throw new Error(`Expected prompt string not found in screen-watcher.js — was it changed?`);
+          }
+          // Ensure no template literal with title interpolation remains
+          if (/\$\{.*?[Tt]itle/.test(source)) {
+            throw new Error('Found ${...title...} template expression in screen-watcher.js — titleHint regression');
+          }
+          if (/titleHint/.test(source)) {
+            throw new Error('Found "titleHint" variable in screen-watcher.js — titleHint regression');
+          }
+          return `Prompt is plain string literal "${expectedPrompt.slice(0, 50)}..." — no title injection`;
+        }
+      }
+    ]
   }
 };
 

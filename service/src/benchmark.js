@@ -1638,6 +1638,95 @@ export async function runBenchmark(suite, model = 'cerebras:qwen-3-235b') {
   return runner();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXECUTOR + VERIFIER TWO-AGENT FRAMEWORK — Atlas v2 Step 7
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const delay_ms = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Runs a benchmark suite with independent verification.
+ *
+ * Flow:
+ *   1. Executor: runBenchmark() produces scores + pass/fail
+ *   2. Verifier: independent Claude call in fresh context judges the result
+ *   3. Auto-correction: if verifier disagrees AND confidence ≥ 7, retry once after 5s
+ *   4. Stores final result to ai_benchmark with verifier metadata
+ *
+ * @param {string} suite   - Suite name (e.g. 'intuition')
+ * @param {string} model   - Model to benchmark
+ * @param {object} options - { maxAttempts: 2 }
+ * @returns {Promise<object>} Full result with verifier, corrected, attempts fields
+ */
+export async function runBenchmarkWithVerification(suite, model = 'cerebras:qwen-3-235b', options = {}) {
+  const { maxAttempts = 2 } = options;
+  const { verify } = await import('./verifier.js');
+
+  let result = null;
+  let verifierVerdict = null;
+  let attempts = 0;
+  let corrected = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    attempts = attempt;
+
+    // ── Step 1: Executor ──────────────────────────────────────────────────────
+    console.log(`[PAN Benchmark+V] Executor run — suite=${suite} model=${model} attempt=${attempt}/${maxAttempts}`);
+    result = await runBenchmark(suite, model);
+
+    // ── Step 2: Verifier ──────────────────────────────────────────────────────
+    console.log(`[PAN Benchmark+V] Verifier running — suite=${suite}`);
+    verifierVerdict = await verify(suite, result);
+    console.log(`[PAN Benchmark+V] Verifier verdict — agree=${verifierVerdict.agree} confidence=${verifierVerdict.confidence} verified=${verifierVerdict.verified} reason="${verifierVerdict.reason}"`);
+
+    // ── Step 3: Auto-correction decision ─────────────────────────────────────
+    const shouldRetry = (
+      attempt < maxAttempts &&              // have retries left
+      !verifierVerdict.agree &&             // verifier disagrees with executor
+      verifierVerdict.confidence >= 7       // verifier is confident in its disagreement
+    );
+
+    if (shouldRetry) {
+      console.log(`[PAN Benchmark+V] Verifier disagrees (confidence ${verifierVerdict.confidence}/10) — retrying in 5s...`);
+      corrected = true;
+      await delay_ms(5000);
+      continue;
+    }
+
+    // No retry needed — break out of loop
+    break;
+  }
+
+  // ── Step 4: Store with verifier metadata ─────────────────────────────────
+  // The individual suite runners already called _storeResult() — store a second
+  // row with the extended verifier data so the verifier verdict is queryable.
+  try {
+    insert(
+      `INSERT INTO ai_benchmark (suite, model, scores, passed, details, verifier_verdict, auto_corrected, correction_attempts)
+       VALUES (:suite, :model, :scores, :passed, :details, :verifier_verdict, :auto_corrected, :correction_attempts)`,
+      {
+        ':suite':               suite,
+        ':model':               model,
+        ':scores':              JSON.stringify(result.scores || {}),
+        ':passed':              result.passed ? 1 : 0,
+        ':details':             JSON.stringify(result.details || {}),
+        ':verifier_verdict':    JSON.stringify(verifierVerdict),
+        ':auto_corrected':      corrected ? 1 : 0,
+        ':correction_attempts': attempts,
+      }
+    );
+  } catch (e) {
+    console.error(`[PAN Benchmark+V] Failed to store verified result for ${suite}:`, e.message);
+  }
+
+  return {
+    ...result,
+    verifier:  verifierVerdict,
+    corrected,
+    attempts,
+  };
+}
+
 export const BENCHMARK_SUITES = [
   'intuition', 'dream', 'memory', 'scout', 'augur',
   'identity', 'sensor', 'pipeline', 'orchestration',

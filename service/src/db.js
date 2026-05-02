@@ -276,6 +276,11 @@ const ORG_ID_TARGETS = [
   }
 }
 
+// project_tasks.status — valid values:
+//   todo | in_progress | in_test | done | backlog | cancelled
+// SQLite has no CHECK constraint here; enforcement is in the application layer.
+// in_test = task is complete but awaiting test pass before closing.
+
 // Migration: add security/privacy columns to events table
 // These 6 fields power the Guardian → Sensitivity → Routing pipeline
 {
@@ -396,6 +401,22 @@ if (!defaultUser) {
         console.log(`[PAN DB] Backfilled Cerebras costs: ${result.changes} rows for ${model}`);
       }
     } catch {}
+  }
+}
+
+// Migration: Atlas v2 Step 7 — add verifier metadata columns to ai_benchmark
+{
+  const bmCols = db.pragma('table_info(ai_benchmark)').map(c => c.name);
+  if (bmCols.length > 0) {
+    if (!bmCols.includes('verifier_verdict')) {
+      db.exec(`ALTER TABLE ai_benchmark ADD COLUMN verifier_verdict TEXT`);
+    }
+    if (!bmCols.includes('auto_corrected')) {
+      db.exec(`ALTER TABLE ai_benchmark ADD COLUMN auto_corrected INTEGER DEFAULT 0`);
+    }
+    if (!bmCols.includes('correction_attempts')) {
+      db.exec(`ALTER TABLE ai_benchmark ADD COLUMN correction_attempts INTEGER DEFAULT 0`);
+    }
   }
 }
 
