@@ -147,10 +147,14 @@ function pipeSetModel(sessionId, modelId) {
 function getSessionMessages(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return [];
-  const stream = session._streamMessages || [];
-  const adapter = session._llmAdapter?.getMessages?.() || [];
+  // PTY sessions store messages in _streamMessages; adapter/pipe sessions use _llmAdapter.
+  // Never merge both — PTY sessions can have _llmAdapter created for pipe sends too,
+  // which would double every message in the HTTP fallback response.
   const system = session.systemMessages || [];
-  const all = [...system, ...stream, ...adapter];
+  const msgs = session._streamMessages?.length
+    ? session._streamMessages
+    : (session._llmAdapter?.getMessages?.() || []);
+  const all = [...system, ...msgs];
   all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
   return all;
 }
@@ -178,6 +182,9 @@ function _pushStreamTranscript(sess) {
 }
 
 function _flushStreamTranscript(sess) {
+  // #439: if the LLM adapter is active, it owns all broadcasting — skip PTY path
+  // to prevent duplicate transcript_messages when both paths fire simultaneously.
+  if (sess._llmAdapter?.getMessages?.()?.length > 0) return;
   _trimStreamMessages(sess);
   const messages = [...(sess.systemMessages || []), ...(sess._streamMessages || [])];
   messages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
@@ -486,6 +493,28 @@ async function startTerminalServer(httpServer) {
 
     let session = sessions.get(sessionId);
 
+    // Dedup guard: if this is a NEW session ID but the project already has an active
+    // session with connected clients, redirect the client to that session instead of
+    // spawning a duplicate PTY.  This kills the race condition where two windows both
+    // load simultaneously, both see "no live session", and both create one.
+    // Only applies to named dashboard sessions (dash-* / dev-dash-*) with a project name.
+    if (!session && projectName && sessionId.startsWith('dash-')) {
+      const existingForProject = Array.from(sessions.values()).find(s =>
+        s.project === projectName && s.clients.size > 0
+      );
+      if (existingForProject) {
+        const existingId = [...sessions.entries()].find(([, v]) => v === existingForProject)?.[0];
+        if (existingId) {
+          console.log(`[PAN Terminal] Dedup: redirecting new ${sessionId} → existing ${existingId} for project ${projectName}`);
+          try {
+            ws.send(JSON.stringify({ type: 'session_redirect', session_id: existingId }));
+          } catch {}
+          ws.close();
+          return;
+        }
+      }
+    }
+
     if (!session) {
       // Create ScreenBuffer for server-side rendering
       const term = new ScreenBufferClass(cols, rows);
@@ -699,8 +728,9 @@ async function startTerminalServer(httpServer) {
                   total_cost: evt.total_cost_usd ?? null,
                 },
               });
-              if (session._streamMessages.length > MAX_STREAM_MESSAGES) {
-                session._streamMessages = session._streamMessages.slice(-MAX_STREAM_MESSAGES);
+              // #437: after each turn completes, aggressively trim to prevent unbounded growth
+              if (session._streamMessages.length > 100) {
+                session._streamMessages = session._streamMessages.slice(-50);
               }
               // Final push
               _pushStreamTranscript(session);
