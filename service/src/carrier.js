@@ -331,6 +331,11 @@ function handleCraftIPC(msg, craft) {
       craft.proc.send({ type: 'terminal:getSessionMessages:reply', id: msg.id, result });
       break;
     }
+    case 'terminal:getSessionBufferSize': {
+      const result = terminalServer ? terminalServer.getSessionBufferSize(msg.sessionId) : null;
+      craft.proc.send({ type: 'terminal:getSessionBufferSize:reply', id: msg.id, result });
+      break;
+    }
     case 'terminal:getProcessRegistry': {
       const result = terminalServer ? terminalServer.getProcessRegistry() : [];
       craft.proc.send({ type: 'terminal:getProcessRegistry:reply', id: msg.id, result });
