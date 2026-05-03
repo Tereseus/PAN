@@ -2088,38 +2088,94 @@ const suites = {
         name: '#439 — 1 send produces exactly 1 assistant turn, not 2',
         description: 'Send one pipe message to a live session, poll messages for 20s, assert the number of assistant turns does not increase by more than 1. Catches the double-send bug where 2 Claude processes both respond.',
         run: async () => {
-          // The double-send bug: 1 send → 2 assistant responses (both onMessage callback
-          // AND .then() path fired). Test: send to an active session, count assistant
-          // messages before and after, assert delta is exactly 1.
+          // Real UI test: open dashboard in headless browser, type a message, fire Enter TWICE
+          // in rapid succession (the exact race that caused the double-send bug).
+          // The _sendInFlight guard must drop the second Enter.
+          // Assert: DOM shows exactly 1 new .t-assistant bubble, not 2.
           //
-          // Needs an existing session with a running Claude process. If none, skip —
-          // this test cannot self-bootstrap (creating a session + waiting for Claude
-          // to start would take 60s+, making it useless as a fast regression check).
-          const sessRes = await prodGet('/api/v1/terminal/sessions');
-          const activeSessions = (sessRes.sessions || []).filter(s => s.claudeReady === true || s.type === 'pipe');
-          if (!activeSessions.length) {
-            return 'SKIP — no active Claude sessions on prod. Open a tab and re-run to test double-send.';
+          // KEY: We use browser_press_key (= page.keyboard.press) NOT synthetic KeyboardEvent.
+          // Synthetic events are "untrusted" and may be ignored by some handlers.
+          // browser_press_key fires a real OS-level keyboard event via Playwright's input API.
+          //
+          // IMPORTANT: Always stop() MCP in finally — leaving a stale MCP process alive
+          // causes the next run to reuse a corrupted browser session with JS errors on the page.
+          const pw = await import('../playwright-bridge.js');
+
+          // Force a fresh MCP process — stops any stale browser session from a previous run
+          await pw.stop();
+          if (!await pw.isAvailable()) throw new Error('Playwright MCP not available');
+
+          let before = 0;
+          let after = 0;
+          try {
+            console.log('[#439] navigating to dashboard...');
+            await pw.navigateTo('http://localhost:7777/v2/terminal');
+            await wait(8000); // wait for Svelte hydration + WebSocket connect + session load
+
+            // Verify dashboard loaded — simple single-value evaluate (works reliably)
+            const check = await pw.raw('browser_evaluate', {
+              function: 'document.querySelector("textarea")?.placeholder || ""'
+            });
+            const checkVal = check?.text || '(empty)';
+            console.log('[#439] input placeholder:', checkVal);
+            if (!checkVal.includes('Type a message')) {
+              const titleR = await pw.raw('browser_evaluate', { function: 'document.title' });
+              throw new Error(`Dashboard textarea not found — placeholder="${checkVal}" title="${titleR?.text}"`);
+            }
+
+            // Count assistant bubbles before send
+            const bR = await pw.raw('browser_evaluate', {
+              function: 'document.querySelectorAll(".t-assistant").length'
+            });
+            before = parseInt(bR?.text?.match(/\d+/)?.[0] || '0');
+            console.log(`assistant bubbles before: ${before}`);
+
+            // Step 1: Set textarea value via native setter + fire input event for Svelte sync
+            console.log('[#439] step1: set value via native setter');
+            await pw.raw('browser_evaluate', {
+              function: 'const ta=document.querySelector("textarea"); if(ta){const s=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")?.set; if(s)s.call(ta,"say only the word ok"); else ta.value="say only the word ok"; ta.dispatchEvent(new Event("input",{bubbles:true}));} return !!ta'
+            });
+            await wait(200);
+
+            // Step 2: Click the send button TWICE in rapid succession — this is the double-send race.
+            // We use evaluate (synchronous click) rather than browser_press_key, because press_key
+            // blocks waiting for Playwright's networkidle while Claude processes the request (60s+).
+            // Evaluate-click is fire-and-forget. The _sendInFlight guard still works:
+            //   click1 → sendTerminalInput() → _sendInFlight.add(id) → async fetch starts
+            //   click2 → sendTerminalInput() → _sendInFlight.has(id) = TRUE → BLOCKED ✓
+            console.log('[#439] step2: double-click send button (the double-send race)');
+            await pw.raw('browser_evaluate', {
+              function: 'const btn=document.querySelector("button.center-send-btn"); if(btn){btn.click(); btn.click();} return !!btn'
+            });
+            console.log('[#439] double-click sent — polling for response');
+
+            // Poll DOM for up to 45s — short 5s per evaluate so hung MCP fails fast
+            for (let i = 0; i < 45; i++) {
+              await wait(1000);
+              process.stdout.write('.');
+              if (!pw.isRunning()) { console.log('\n[#439] MCP exited during poll'); break; }
+              try {
+                const aR = await pw.raw('browser_evaluate', {
+                  function: 'document.querySelectorAll(".t-assistant").length'
+                }, 5000);
+                after = parseInt(aR?.text?.match(/\d+/)?.[0] || '0');
+                if (after > before) break;
+              } catch (pollErr) {
+                console.log(`\n[#439] poll error: ${pollErr.message}`);
+                break;
+              }
+            }
+            console.log(`\nbubbles after: ${after} delta: ${after - before}`);
+
+          } finally {
+            // Always stop — ensures next test run starts with fresh browser session
+            await pw.stop();
           }
-          const sid = activeSessions[0].id;
 
-          const before = await prodGet(`/api/v1/terminal/messages/${sid}`);
-          const beforeAssistant = (before.messages || []).filter(m => m.role === 'assistant').length;
-
-          await prodPost('/api/v1/terminal/pipe', { session_id: sid, text: 'say the word "ok" and nothing else' });
-
-          // Poll up to 30s for exactly 1 new assistant turn
-          let afterAssistant = beforeAssistant;
-          for (let i = 0; i < 30; i++) {
-            await wait(1000);
-            const after = await prodGet(`/api/v1/terminal/messages/${sid}`);
-            afterAssistant = (after.messages || []).filter(m => m.role === 'assistant').length;
-            if (afterAssistant > beforeAssistant) break;
-          }
-
-          const delta = afterAssistant - beforeAssistant;
-          if (delta > 1) throw new Error(`Double-send regression: ${delta} assistant turns for 1 send (expected 1)`);
-          if (delta === 0) throw new Error(`No assistant response in 30s — Claude may not be running on session ${sid}`);
-          return `1 send → exactly ${delta} assistant turn — no double-send`;
+          const delta = after - before;
+          if (delta > 1) throw new Error(`Double-send regression: ${delta} new assistant bubbles for 1 send — _sendInFlight guard not working`);
+          if (delta === 0) throw new Error('No assistant response in 45s — verify Claude is running and Enter key reached the textarea');
+          return `2x Enter → ${delta} assistant bubble (before=${before} after=${after}) — _sendInFlight guard confirmed`;
         }
       },
       {

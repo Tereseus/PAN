@@ -1644,6 +1644,10 @@
 					const msg = JSON.parse(event.data);
 					// Any server message after wsOpen proves the PTY session is attached.
 					_markLoad('ptyAttached');
+					// Ensure ptyStatus is never null while WS is live — prevents "No PTY Attached" flash
+					if (!ptyStatus && tabData?.sessionId) {
+						ptyStatus = { id: tabData.sessionId, thinking: false, claudeRunning: true };
+					}
 					// Track all incoming WS message types for the perf panel
 					if (msg.type && msg.type !== 'screen-v2' && msg.type !== 'screen') _trackWsMsg(msg.type);
 					switch (msg.type) {
@@ -3340,7 +3344,7 @@
 		_sendInFlight.add(active.sessionId);
 		pipeSending = true;
 		const _pipeAbort = new AbortController();
-		const _pipeTimeout = setTimeout(() => _pipeAbort.abort(), 8000);
+		const _pipeTimeout = setTimeout(() => _pipeAbort.abort(), 30000);
 		try {
 			const data = await api('/api/v1/terminal/pipe', {
 				method: 'POST',
@@ -3392,7 +3396,13 @@
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
-			if (ws) ws.send(JSON.stringify({ type: 'interrupt' }));
+			if (ws) {
+				ws.send(JSON.stringify({ type: 'interrupt' }));
+			} else {
+				// WS not open — try interrupt via HTTP as fallback
+				const sid = active?.sessionId;
+				if (sid) api('/api/v1/terminal/interrupt', { method: 'POST', body: JSON.stringify({ session_id: sid }) }).catch(() => {});
+			}
 			return;
 		}
 		// Number keys 1-3 when input is empty AND there's a pending approval prompt
@@ -7364,7 +7374,7 @@
 		{#if !approvalOptions || approvalOptions.length === 0}
 			{@const _now = ptyStatusNow}
 			{@const _pty = ptyStatus}
-			{@const _state = !_pty ? 'no-pty' : (_pty.thinking || _pty.claudeRunning) ? 'thinking' : 'ready'}
+			{@const _state = !_pty ? 'no-pty' : (!claudeReady || _pty.thinking || pipeSending) ? 'thinking' : 'ready'}
 			{@const _inAgo = _pty?.lastInputTs ? Math.max(0, Math.round((_now - _pty.lastInputTs) / 1000)) : null}
 			{@const _outAgo = _pty?.lastOutputTs ? Math.max(0, Math.round((_now - _pty.lastOutputTs) / 1000)) : null}
 			{@const _upS = _pty?.createdAt ? Math.max(0, Math.round((_now - _pty.createdAt) / 1000)) : null}
