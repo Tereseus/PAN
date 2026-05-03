@@ -2112,42 +2112,35 @@ const suites = {
             await pw.navigateTo('http://localhost:7777/v2/terminal');
             await wait(8000); // wait for Svelte hydration + WebSocket connect + session load
 
-            // Verify dashboard loaded — simple single-value evaluate (works reliably)
-            const check = await pw.raw('browser_evaluate', {
-              function: 'document.querySelector("textarea")?.placeholder || ""'
-            });
-            const checkVal = check?.text || '(empty)';
-            console.log('[#439] input placeholder:', checkVal);
-            if (!checkVal.includes('Type a message')) {
-              const titleR = await pw.raw('browser_evaluate', { function: 'document.title' });
-              throw new Error(`Dashboard textarea not found — placeholder="${checkVal}" title="${titleR?.text}"`);
+            // Verify dashboard loaded — poll for textarea+button to both be present (page may still be loading)
+            // Run all checks in one evaluate for consistency (separate calls can see different DOM states)
+            console.log('[#439] waiting for dashboard to fully load...');
+            let inputReady = false;
+            for (let attempt = 0; attempt < 10; attempt++) {
+              await wait(2000);
+              const stateR = await pw.raw('browser_evaluate', {
+                function: 'var ta=document.querySelector("textarea"),btn=document.querySelector("button.center-send-btn"),ass=document.querySelectorAll(".t-assistant").length; return ta&&btn ? "ready:"+ass : "wait:"+document.title'
+              }, 8000);
+              const stateVal = stateR?.text || '';
+              console.log(`[#439] attempt ${attempt+1}: ${stateVal.slice(0,80)}`);
+              const match = stateVal.match(/ready:(\d+)/);
+              if (match) {
+                before = parseInt(match[1]);
+                inputReady = true;
+                break;
+              }
             }
-
-            // Count assistant bubbles before send
-            const bR = await pw.raw('browser_evaluate', {
-              function: 'document.querySelectorAll(".t-assistant").length'
-            });
-            before = parseInt(bR?.text?.match(/\d+/)?.[0] || '0');
+            if (!inputReady) throw new Error('Dashboard input not ready after 20s — textarea or send button missing');
             console.log(`assistant bubbles before: ${before}`);
 
-            // Step 1: Set textarea value via native setter + fire input event for Svelte sync
-            console.log('[#439] step1: set value via native setter');
-            await pw.raw('browser_evaluate', {
-              function: 'const ta=document.querySelector("textarea"); if(ta){const s=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")?.set; if(s)s.call(ta,"say only the word ok"); else ta.value="say only the word ok"; ta.dispatchEvent(new Event("input",{bubbles:true}));} return !!ta'
+            // Set textarea value via native setter (fires input event for Svelte bind:value sync)
+            console.log('[#439] setting value and double-clicking send button');
+            const sendResult = await pw.raw('browser_evaluate', {
+              function: 'var ta=document.querySelector("textarea"),btn=document.querySelector("button.center-send-btn"); if(!ta||!btn) return "missing"; var s=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")?.set; if(s)s.call(ta,"say only the word ok"); else ta.value="say only the word ok"; ta.dispatchEvent(new Event("input",{bubbles:true})); setTimeout(function(){btn.click();btn.click();},100); return "sent"'
             });
-            await wait(200);
-
-            // Step 2: Click the send button TWICE in rapid succession — this is the double-send race.
-            // We use evaluate (synchronous click) rather than browser_press_key, because press_key
-            // blocks waiting for Playwright's networkidle while Claude processes the request (60s+).
-            // Evaluate-click is fire-and-forget. The _sendInFlight guard still works:
-            //   click1 → sendTerminalInput() → _sendInFlight.add(id) → async fetch starts
-            //   click2 → sendTerminalInput() → _sendInFlight.has(id) = TRUE → BLOCKED ✓
-            console.log('[#439] step2: double-click send button (the double-send race)');
-            await pw.raw('browser_evaluate', {
-              function: 'const btn=document.querySelector("button.center-send-btn"); if(btn){btn.click(); btn.click();} return !!btn'
-            });
-            console.log('[#439] double-click sent — polling for response');
+            console.log('[#439] send result:', sendResult?.text?.slice(0,40));
+            if (!sendResult?.text?.includes('sent')) throw new Error('Failed to trigger send — textarea or button missing after value set');
+            console.log('[#439] double-click queued via setTimeout — polling for response');
 
             // Poll DOM for up to 45s — short 5s per evaluate so hung MCP fails fast
             for (let i = 0; i < 45; i++) {
