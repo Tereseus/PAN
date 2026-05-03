@@ -1177,6 +1177,24 @@ function confirmSwap() {
     signal: AbortSignal.timeout(3000),
   }).catch(e => console.warn('[Carrier] Screen burst trigger failed:', e.message));
 
+  // Auto-run P1 regression suite after every confirmed swap — fast source-check tests,
+  // no setup required. Logs pass/fail to console; failures are surfaced as alerts.
+  setTimeout(() => {
+    fetch(`http://127.0.0.1:${primaryCraft.port}/api/v1/tests/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ suite: 'p1-regression' }),
+      signal: AbortSignal.timeout(60_000),
+    }).then(r => r.json()).then(result => {
+      const failed = result.results?.filter(t => t.status === 'fail') || [];
+      if (failed.length) {
+        console.error(`[Carrier] ⚠️  P1 regression FAILED after swap: ${failed.map(t => t.id).join(', ')}`);
+      } else {
+        console.log(`[Carrier] ✅ P1 regression passed after swap (${result.results?.length || 0} tests)`);
+      }
+    }).catch(e => console.warn('[Carrier] P1 regression trigger failed:', e.message));
+  }, 5000); // 5s delay — let new Craft fully boot before hitting its endpoints
+
   // Auto-trigger pipeline benchmarks after a confirmed swap — validates new code
   // against all 12 suites. If all pass, beta auto-promotes; if any fail, current
   // primary stays live and pipeline status goes to 'failed' for Scout to pick up.
@@ -1375,9 +1393,8 @@ function startClaudeHandoffMonitor() {
       const uptimeMs = Date.now() - (session.createdAt || Date.now());
       const uptimeHours = uptimeMs / (1000 * 60 * 60);
 
-      // Trigger handoff after 4 hours of continuous Claude usage
-      // (conservative — real trigger should be context window % from Claude API)
-      if (uptimeHours > 4 && !session._handoffTriggered) {
+      // Trigger /compact after 2 hours of continuous Claude usage to prevent context bloat
+      if (uptimeHours > 2 && !session._handoffTriggered) {
         session._handoffTriggered = true;
         console.log(`[Carrier] Phase 5: Claude session ${session.id} running ${uptimeHours.toFixed(1)}h — triggering handoff`);
         triggerClaudeHandoff(session);
@@ -1387,15 +1404,14 @@ function startClaudeHandoffMonitor() {
 }
 
 async function triggerClaudeHandoff(session) {
-  // Step 1: Send a "summarize yourself" command to Claude
-  // Step 2: Wait for the summary
-  // Step 3: Kill old Claude, start new with the summary as initial context
-  // For now: log the intent. Full implementation needs Claude CLI integration.
-  console.log(`[Carrier] Phase 5: Would handoff Claude in session ${session.id} — implementation pending CLI integration`);
-  // TODO: When Claude CLI supports session export/import:
-  // 1. terminalServer.sendToSession(session.id, '/compact\n')
-  // 2. Wait for Claude to compress context
-  // 3. Send new prompt with restored state
+  if (!terminalServer) return;
+  const uptimeH = ((Date.now() - (session.createdAt || Date.now())) / 3_600_000).toFixed(1);
+  console.log(`[Carrier] Phase 5: Sending /compact to session ${session.id} (running ${uptimeH}h)`);
+  try {
+    terminalServer.sendToSession(session.id, '/compact\n');
+  } catch (e) {
+    console.warn(`[Carrier] Phase 5: /compact failed for ${session.id}: ${e.message}`);
+  }
 }
 
 // ==================== Craft Orphan Watchdog ====================
