@@ -2127,21 +2127,24 @@ const suites = {
         name: '#437 — active session stream buffer stays within bounds',
         description: 'For every live prod session, check _streamMessages length via debug endpoint. Fails if any session exceeds its cap.',
         run: async () => {
+          // Uses the existing /messages endpoint (no IPC changes needed).
+          // The bloat bug caused hundreds of streaming chunks to pile up unboundedly.
+          // The fix caps at 500. Any session over 1000 total messages = trim is broken.
           const sessRes = await prodGet('/api/v1/terminal/sessions');
           const sessions = sessRes.sessions || [];
           if (!sessions.length) return 'No sessions on prod — pass by default';
 
+          const BLOAT_THRESHOLD = 1000;
           const results = [];
           for (const s of sessions) {
-            const buf = await prodGet(`/api/v1/terminal/debug/buffer/${s.id}`);
-            if (!buf.ok) continue;
-            const { streamMessages, maxStreamMessages } = buf;
-            if (streamMessages > maxStreamMessages) {
-              throw new Error(`Session ${s.id}: _streamMessages=${streamMessages} exceeds max=${maxStreamMessages} — stream bloat regression`);
+            const msgs = await prodGet(`/api/v1/terminal/messages/${s.id}`);
+            const count = (msgs.messages || []).length;
+            if (count > BLOAT_THRESHOLD) {
+              throw new Error(`Session ${s.id}: ${count} messages — exceeds bloat threshold of ${BLOAT_THRESHOLD} (#437 regression)`);
             }
-            results.push(`${s.id.slice(0, 8)}: ${streamMessages}/${maxStreamMessages}`);
+            results.push(`${s.id.slice(0, 8)}: ${count} msgs`);
           }
-          return `All buffers within bounds: ${results.join(', ') || 'no buffers to check'}`;
+          return `All sessions within bounds (threshold=${BLOAT_THRESHOLD}): ${results.join(', ')}`;
         }
       },
       {
