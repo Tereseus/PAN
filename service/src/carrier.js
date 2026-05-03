@@ -1205,11 +1205,15 @@ function confirmSwap() {
   // primary stays live and pipeline status goes to 'failed' for Scout to pick up.
   // IMPORTANT: skip if this Craft was itself promoted from pipeline — otherwise
   // every promotion triggers another pipeline, creating an infinite spawn loop.
-  if (pipeline.status === 'idle' && !primaryCraft.fromPipeline) {
-    console.log(`[Carrier] 🔬 Auto-triggering benchmark pipeline on Craft-${primaryCraft.id} (post-swap validation)`);
-    startPipelineBeta('autodev').catch(err =>
-      console.error('[Carrier] Auto-pipeline start failed:', err.message)
-    );
+  // AUTO-PIPELINE TEMPORARILY DISABLED — re-enable after p1-regression tests are verified
+  // if (pipeline.status === 'idle' && !primaryCraft.fromPipeline) {
+  //   console.log(`[Carrier] 🔬 Auto-triggering benchmark pipeline on Craft-${primaryCraft.id} (post-swap validation)`);
+  //   startPipelineBeta('autodev').catch(err =>
+  //     console.error('[Carrier] Auto-pipeline start failed:', err.message)
+  //   );
+  // }
+  if (false) {
+    // disabled
   } else if (primaryCraft.fromPipeline) {
     console.log(`[Carrier] ⏭️  Craft-${primaryCraft.id} was pipeline-promoted — skipping auto-trigger to prevent loop`);
   } else {
