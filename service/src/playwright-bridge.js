@@ -22,7 +22,7 @@ async function start() {
   return new Promise((resolve) => {
     try {
       // Try the official Playwright MCP server
-      mcpProcess = spawn('npx', ['-y', '@playwright/mcp@latest', '--headless'], {
+      mcpProcess = spawn('npx', ['-y', '@playwright/mcp@latest', '--headless', '--isolated'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: true,
         windowsHide: true,
@@ -139,18 +139,23 @@ function handleMessage(msg) {
 
 // ── MCP Tool Calls ─────────────────────────────────────────────
 
-async function callTool(name, args = {}) {
+async function callTool(name, args = {}, timeoutMs = 15000) {
   if (!initialized) {
     const ok = await start();
     if (!ok) throw new Error('Playwright MCP not available');
   }
-  const result = await rpcCall('tools/call', { name, arguments: args });
+  const result = await rpcCall('tools/call', { name, arguments: args }, timeoutMs);
   // MCP tool results come as { content: [{ type, text }] }
   if (result?.content) {
     const texts = result.content.filter(c => c.type === 'text').map(c => c.text);
     return texts.join('\n');
   }
   return JSON.stringify(result);
+}
+
+/** Is the MCP process alive and initialized? */
+export function isRunning() {
+  return initialized && mcpProcess && !mcpProcess.killed;
 }
 
 // ── Public API ─────────────────────────────────────────────────
@@ -223,8 +228,8 @@ export async function closeTab() {
  * Generic passthrough — call any Playwright MCP tool by name.
  * Used by the router for actions we haven't wrapped yet.
  */
-export async function raw(toolName, args = {}) {
-  const result = await callTool(toolName, args);
+export async function raw(toolName, args = {}, timeoutMs = 15000) {
+  const result = await callTool(toolName, args, timeoutMs);
   return { ok: true, text: result };
 }
 
