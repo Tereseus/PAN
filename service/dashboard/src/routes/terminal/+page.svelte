@@ -48,6 +48,8 @@
 	});
 	// Guard against double-sends (Enter key + button click within same tick, or rapid double-tap).
 	const _sendInFlight = new Set();
+	// Reactive flag — true while the pipe POST is in-flight. Drives the send button spinner.
+	let pipeSending = $state(false);
 
 	function _markSend(text) {
 		_sendTimings.lastSendAt = performance.now();
@@ -3336,16 +3338,21 @@
 		}, 60000);
 
 		_sendInFlight.add(active.sessionId);
+		pipeSending = true;
+		const _pipeAbort = new AbortController();
+		const _pipeTimeout = setTimeout(() => _pipeAbort.abort(), 8000);
 		try {
 			const data = await api('/api/v1/terminal/pipe', {
 				method: 'POST',
 				body: JSON.stringify({ session_id: active.sessionId, text }),
+				signal: _pipeAbort.signal,
 			});
 			if (!data.ok) throw new Error(data.error || 'pipe send failed');
 			_markSendPhase('ack');
 			console.log('[PAN Terminal] Pipe send OK');
 		} catch (err) {
-			console.error('[PAN Terminal] pipe send failed:', err);
+			const timedOut = err?.name === 'AbortError';
+			console.error('[PAN Terminal] pipe send failed' + (timedOut ? ' (timeout 8s)' : '') + ':', err);
 			// Restore text so user can retry
 			terminalInputText = savedText;
 			setTerminalInput(savedText);
@@ -3358,7 +3365,9 @@
 			if (active) { active.claudeReady = true; active._htmlAtSend = null; }
 			claudeReady = true;
 		} finally {
+			clearTimeout(_pipeTimeout);
 			_sendInFlight.delete(active.sessionId);
+			pipeSending = false;
 		}
 	}
 
@@ -7454,7 +7463,13 @@
 				rows="1"
 				class="center-input"
 			></textarea>
-			<button class="center-send-btn" onclick={sendTerminalInput} disabled={!terminalInputText.trim() && pastedImages.length === 0} title="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+			<button class="center-send-btn" onclick={sendTerminalInput} disabled={pipeSending || (!terminalInputText.trim() && pastedImages.length === 0)} title={pipeSending ? 'Sending…' : 'Send'}>
+				{#if pipeSending}
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pipe-spin"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+				{:else}
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+				{/if}
+			</button>
 		</div>
 	</div>
 
@@ -9215,6 +9230,8 @@
 
 	.center-send-btn:hover { background: #74a8fc; }
 	.center-send-btn:disabled { background: #45475a; color: #6c7086; cursor: not-allowed; }
+	@keyframes pipe-spin { to { transform: rotate(360deg); } }
+	.pipe-spin { animation: pipe-spin 0.8s linear infinite; }
 
 	.status-bar {
 		display: flex;
