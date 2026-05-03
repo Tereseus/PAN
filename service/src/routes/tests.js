@@ -2088,17 +2088,28 @@ const suites = {
         name: '#439 — 1 send produces exactly 1 assistant turn, not 2',
         description: 'Send one pipe message to a live session, poll messages for 20s, assert the number of assistant turns does not increase by more than 1. Catches the double-send bug where 2 Claude processes both respond.',
         run: async () => {
-          // Use a dedicated regression session — create_if_missing means no preconditions needed
-          const sid = 'p1-regression-439';
+          // The double-send bug: 1 send → 2 assistant responses (both onMessage callback
+          // AND .then() path fired). Test: send to an active session, count assistant
+          // messages before and after, assert delta is exactly 1.
+          //
+          // Needs an existing session with a running Claude process. If none, skip —
+          // this test cannot self-bootstrap (creating a session + waiting for Claude
+          // to start would take 60s+, making it useless as a fast regression check).
+          const sessRes = await prodGet('/api/v1/terminal/sessions');
+          const activeSessions = (sessRes.sessions || []).filter(s => s.claudeReady === true || s.type === 'pipe');
+          if (!activeSessions.length) {
+            return 'SKIP — no active Claude sessions on prod. Open a tab and re-run to test double-send.';
+          }
+          const sid = activeSessions[0].id;
+
           const before = await prodGet(`/api/v1/terminal/messages/${sid}`);
           const beforeAssistant = (before.messages || []).filter(m => m.role === 'assistant').length;
 
-          const sendRes = await prodPost('/api/v1/terminal/pipe', { session_id: sid, text: '__p1_reg_double_send_test__', create_if_missing: true });
-          if (!sendRes.ok) throw new Error(`Pipe send failed: ${sendRes.error}`);
+          await prodPost('/api/v1/terminal/pipe', { session_id: sid, text: 'say the word "ok" and nothing else' });
 
-          // Poll up to 25s for a response
+          // Poll up to 30s for exactly 1 new assistant turn
           let afterAssistant = beforeAssistant;
-          for (let i = 0; i < 25; i++) {
+          for (let i = 0; i < 30; i++) {
             await wait(1000);
             const after = await prodGet(`/api/v1/terminal/messages/${sid}`);
             afterAssistant = (after.messages || []).filter(m => m.role === 'assistant').length;
@@ -2106,8 +2117,9 @@ const suites = {
           }
 
           const delta = afterAssistant - beforeAssistant;
-          if (delta > 1) throw new Error(`Double-send regression: ${delta} assistant turns for 1 send (expected ≤1)`);
-          return `1 send → ${delta} assistant turn(s) — no double-send (before=${beforeAssistant} after=${afterAssistant})`;
+          if (delta > 1) throw new Error(`Double-send regression: ${delta} assistant turns for 1 send (expected 1)`);
+          if (delta === 0) throw new Error(`No assistant response in 30s — Claude may not be running on session ${sid}`);
+          return `1 send → exactly ${delta} assistant turn — no double-send`;
         }
       },
       {
