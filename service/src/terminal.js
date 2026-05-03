@@ -27,6 +27,12 @@ try { mkdirSync(TERMINAL_LOG_DIR, { recursive: true }); } catch {}
 // Active terminal sessions: Map<sessionId, { pty, term, clients, ... }>
 const sessions = new Map();
 
+// Crash history for ConPTY fallback + backoff: Map<sessionId, { code, at, count }>
+const ptySessionCrashMap = new Map();
+
+// Windows STATUS_FATAL_APP_EXIT — ConPTY/node-pty hard abort
+const STATUS_FATAL_APP_EXIT = -1073741510;
+
 // Cap per-session transcript messages to prevent memory leak
 const MAX_STREAM_MESSAGES = 500;
 
@@ -467,7 +473,7 @@ async function startTerminalServer(httpServer) {
     }
   });
 
-  function _handleTerminalConnection(ws, req) {
+  async function _handleTerminalConnection(ws, req) {
     // Parse query params: ?session=<id>&project=<name>&cwd=<path>&cols=80&rows=24
     const url = new URL(req.url, 'http://localhost');
     const isDev = url.pathname === '/ws/terminal-dev';
@@ -531,7 +537,21 @@ async function startTerminalServer(httpServer) {
 
       // Spawn new PTY
       try {
-        const ptyProcess = pty.spawn(SHELL, SHELL_ARGS, {
+        // ── ConPTY crash recovery (Part 1 + 2) ─────────────────────────
+        const crashEntry = ptySessionCrashMap.get(sessionId);
+        const recentCrash = crashEntry && (Date.now() - crashEntry.at < 60_000);
+        const useConptyFalse = process.platform === 'win32' && recentCrash && crashEntry.code === STATUS_FATAL_APP_EXIT;
+        if (useConptyFalse) {
+          console.log(`[PAN Terminal] PTY crash detected (STATUS_FATAL_APP_EXIT) — spawning with useConpty: false`);
+        }
+        // Backoff: if crashed more than 2 times within the last 5 minutes, wait 5s
+        if (crashEntry && crashEntry.count > 2 && (Date.now() - crashEntry.at < 5 * 60_000)) {
+          console.warn(`[PAN Terminal] Rapid PTY crashes detected (${crashEntry.count} times) — waiting 5s before respawn`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+        // ────────────────────────────────────────────────────────────────
+
+        const ptyOptions = {
           name: 'xterm-256color',
           cols,
           rows,
@@ -542,7 +562,10 @@ async function startTerminalServer(httpServer) {
             PAN_PROJECT: projectName,
             PAN_TERMINAL: 'dashboard',
           },
-        });
+        };
+        if (useConptyFalse) ptyOptions.useConpty = false;
+
+        const ptyProcess = pty.spawn(SHELL, SHELL_ARGS, ptyOptions);
 
         session = {
           pty: ptyProcess,
@@ -825,6 +848,15 @@ async function startTerminalServer(httpServer) {
                 client.send(JSON.stringify({ type: 'transcript_messages', messages: merged }));
               } catch {}
             }
+          }
+          // Record crash info for ConPTY fallback + backoff on next spawn
+          if (!planned && exitCode !== 0) {
+            const prev = ptySessionCrashMap.get(sessionId);
+            ptySessionCrashMap.set(sessionId, {
+              code: exitCode,
+              at: Date.now(),
+              count: prev ? prev.count + 1 : 1,
+            });
           }
           sessions.delete(sessionId);
         });
@@ -1407,4 +1439,15 @@ function createPipeSession(sessionId, { cwd = null, projectName = '' } = {}) {
   return session;
 }
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession };
+// Debug: expose per-session stream buffer size for regression testing (#437)
+function getSessionBufferSize(sessionId) {
+  const sess = sessions.get(sessionId);
+  if (!sess) return null;
+  return {
+    streamMessages: sess._streamMessages?.length ?? 0,
+    systemMessages: sess.systemMessages?.length ?? 0,
+    maxStreamMessages: sess._maxStreamMessages || 500,
+  };
+}
+
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize };

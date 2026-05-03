@@ -225,3 +225,10 @@ export async function createPipeSession(sessionId, opts = {}) {
   const t = await getTerminal();
   return t.createPipeSession(sessionId, opts);
 }
+
+// Debug: stream buffer size per session — used by p1 regression test (#437)
+export async function getSessionBufferSize(sessionId) {
+  if (IS_CRAFT) return ipcRequest('terminal:getSessionBufferSize', { sessionId });
+  const t = await getTerminal();
+  return t.getSessionBufferSize(sessionId);
+}
