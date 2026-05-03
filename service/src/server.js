@@ -2633,7 +2633,7 @@ app.post('/api/v1/dev/start', async (req, res) => {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
-      env: { ...process.env },
+      env: { ...process.env, PAN_CRAFT: '0' }, // strip Craft flag — dev runs as standalone, not a Craft
     });
     child.unref();
     // Wait for it to come up (poll for up to 10 seconds)
