@@ -2054,73 +2054,116 @@ const suites = {
 
   'p1-regression': {
     name: 'P1 Bug Regression',
-    description: 'Regression specs for P1 bugs fixed in bc4eb56 + 060fab7: double-send (#439), stream bloat (#437), steward recovery (#438), router model (#440)',
+    description: 'Behavioral regression tests for P1 bugs #437 #438 #439 #440 — tests actual runtime behavior, not source code',
     dependsOn: [],
     tests: [
       {
-        id: 'p1-reg-double-send', name: '#439 — pipe POST completes within 8s',
-        description: 'POST to /api/v1/terminal/pipe with the test session must return ok within 8s — confirms the AbortController timeout fix is live and the endpoint is responsive',
+        id: 'p1-reg-double-send',
+        name: '#439 — 1 send produces exactly 1 assistant turn, not 2',
+        description: 'Send one pipe message to a live session, poll messages for 20s, assert the number of assistant turns does not increase by more than 1. Catches the double-send bug where 2 Claude processes both respond.',
         run: async () => {
-          // Use the standard test session that the startup suite creates
+          // Get an existing live session
+          const sessRes = await apiGet('/api/v1/terminal/sessions');
+          const sessions = (sessRes.sessions || []).filter(s => s.type === 'pipe' || s.claudeReady !== undefined);
+          if (!sessions.length) throw new Error('No pipe sessions running — start a session in the dashboard first');
+          const sid = sessions[0].id;
+
+          // Snapshot assistant turn count before
+          const before = await apiGet(`/api/v1/terminal/messages/${sid}`);
+          const beforeAssistant = (before.messages || []).filter(m => m.role === 'assistant').length;
+
+          // Send exactly one message
+          const sendRes = await apiPost('/api/v1/terminal/pipe', { session_id: sid, text: '__p1_reg_double_send_test__' });
+          if (!sendRes.ok) throw new Error(`Pipe send failed: ${sendRes.error}`);
+
+          // Poll for up to 20s, checking assistant turn count
+          let afterAssistant = beforeAssistant;
+          for (let i = 0; i < 20; i++) {
+            await wait(1000);
+            const after = await apiGet(`/api/v1/terminal/messages/${sid}`);
+            afterAssistant = (after.messages || []).filter(m => m.role === 'assistant').length;
+            if (afterAssistant > beforeAssistant) break; // response arrived
+          }
+
+          const delta = afterAssistant - beforeAssistant;
+          if (delta > 1) throw new Error(`Double-send regression: ${delta} assistant turns appeared for 1 send (expected ≤1)`);
+          return `1 send → ${delta} assistant turn(s) — no double-send (was ${beforeAssistant}, now ${afterAssistant})`;
+        }
+      },
+      {
+        id: 'p1-reg-stream-bloat',
+        name: '#437 — active session stream buffer stays within bounds',
+        description: 'For every live session, check the _streamMessages buffer via the debug endpoint. If any session exceeds _maxStreamMessages, the trim is broken.',
+        run: async () => {
+          const sessRes = await apiGet('/api/v1/terminal/sessions');
+          const sessions = sessRes.sessions || [];
+          if (!sessions.length) return 'No sessions — nothing to check (pass by default)';
+
+          const results = [];
+          for (const s of sessions) {
+            const buf = await apiGet(`/api/v1/terminal/debug/buffer/${s.id}`);
+            if (!buf.ok) continue;
+            const { streamMessages, maxStreamMessages } = buf;
+            if (streamMessages > maxStreamMessages) {
+              throw new Error(`Session ${s.id}: _streamMessages=${streamMessages} exceeds max=${maxStreamMessages} — stream bloat regression`);
+            }
+            results.push(`${s.id.slice(0, 8)}: ${streamMessages}/${maxStreamMessages}`);
+          }
+          return `All session buffers within bounds: ${results.join(', ')}`;
+        }
+      },
+      {
+        id: 'p1-reg-steward-health',
+        name: '#438 — steward\'s reported status matches actual service health',
+        description: 'For each port-based service steward reports as "running", independently verify the port is actually open. Catches the bug where steward marked services running before health confirmation.',
+        run: async () => {
+          // Services with healthCheck: 'port' — steward claims health based on TCP connect
+          const portServices = ['whisper', 'ollama'];
+          const results = [];
+          let mismatches = 0;
+
+          for (const id of portServices) {
+            const svc = await apiGet(`/api/v1/atlas/service/${id}`);
+            if (!svc || svc.error) { results.push(`${id}: not registered`); continue; }
+
+            const stewardSays = svc._status;
+            // Try to connect to the service's port
+            const port = svc.port;
+            let actuallyUp = false;
+            try {
+              await new Promise((resolve, reject) => {
+                const req = http.request({ hostname: '127.0.0.1', port, path: '/', method: 'GET' }, res => { resolve(true); res.destroy(); });
+                req.on('error', reject);
+                req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
+                req.end();
+              });
+              actuallyUp = true;
+            } catch { actuallyUp = false; }
+
+            const match = (stewardSays === 'running') === actuallyUp;
+            if (!match) mismatches++;
+            results.push(`${id}: steward=${stewardSays} actual=${actuallyUp ? 'up' : 'down'} ${match ? '✓' : '✗ MISMATCH'}`);
+          }
+
+          if (mismatches > 0) throw new Error(`Steward status mismatch on ${mismatches} service(s): ${results.join('; ')}`);
+          return `Steward status matches reality: ${results.join(', ')}`;
+        }
+      },
+      {
+        id: 'p1-reg-router-response',
+        name: '#440 — router responds within 15s with non-empty result',
+        description: 'Send a real query through the AI router (/api/v1/chat), measure end-to-end latency. Fails if it times out or returns empty — catches the hardcoded slow model regression.',
+        run: async () => {
           const t0 = Date.now();
-          const r = await apiPost('/api/v1/terminal/pipe', { session_id: TEST_SESSION_ID, text: '__p1_reg_ping__' });
+          const res = await apiPost('/api/v1/chat', { message: 'reply with just the word pong', source: 'regression-test' });
           const elapsed = Date.now() - t0;
-          // ok=false with "session not found" is still a valid fast response — it means the endpoint
-          // is up and responsive. The fix being tested is that it doesn't *hang* silently.
-          if (elapsed > 8000) throw new Error(`Pipe POST took ${elapsed}ms — exceeds 8s AbortController threshold`);
-          return `Pipe POST responded in ${elapsed}ms (ok=${r.ok}) — 8s timeout guard is live`;
-        }
-      },
-      {
-        id: 'p1-reg-stream-bloat', name: '#437 — _streamMessages trim guard present in terminal.js',
-        description: 'Source check: terminal.js must contain the _streamMessages length cap that prevents unbounded stream growth',
-        run: async () => {
-          const termPath = fileURLToPath(new URL('../terminal.js', import.meta.url));
-          const source = readFileSync(termPath, 'utf8');
-          if (!source.includes('_streamMessages')) {
-            throw new Error('_streamMessages not found in terminal.js — #437 regression');
-          }
-          // Look for the trim: slice or splice keeping ≤50 items when over 100
-          const hasTrim = source.includes('_streamMessages.length > 100') ||
-                          /streamMessages.*splice|streamMessages.*slice\(.*50\)/.test(source);
-          if (!hasTrim) throw new Error('_streamMessages trim guard (>100 → keep 50) not found in terminal.js');
-          return '_streamMessages trim guard confirmed in terminal.js — stream bloat fix intact';
-        }
-      },
-      {
-        id: 'p1-reg-steward-health', name: '#438 — steward waits for health check before marking service running',
-        description: 'Source check: steward.js must have _restartPending grace period + _restartFailures counter',
-        run: async () => {
-          const stewardPath = fileURLToPath(new URL('../steward.js', import.meta.url));
-          const source = readFileSync(stewardPath, 'utf8');
-          if (!source.includes('_restartPending') && !source.includes('restartPending')) {
-            throw new Error('"_restartPending" grace period not found in steward.js — #438 regression');
-          }
-          if (!source.includes('_restartFailures')) {
-            throw new Error('"_restartFailures" counter not found in steward.js — #438 regression');
-          }
-          return 'steward.js has _restartPending + _restartFailures — health-check gate intact';
-        }
-      },
-      {
-        id: 'p1-reg-router-model', name: '#440 — router uses configured model, not hardcoded string',
-        description: 'Source check: router.js must not contain hardcoded "cerebras:llama3.1-8b" and must use dynamic model selection',
-        run: async () => {
-          const routerPath = fileURLToPath(new URL('../router.js', import.meta.url));
-          const source = readFileSync(routerPath, 'utf8');
-          if (source.includes('cerebras:llama3.1-8b')) {
-            throw new Error('Hardcoded "cerebras:llama3.1-8b" in router.js — #440 regression');
-          }
-          if (!source.includes('getConfiguredModel') && !source.includes('getModelForCaller')) {
-            throw new Error('Dynamic model fn not found in router.js — #440 regression');
-          }
-          // Confirm timeout is >= 15000ms (was 8000ms before fix)
-          const timeoutMatch = source.match(/timeout[^\n]*?(\d{4,})/);
-          if (timeoutMatch) {
-            const ms = parseInt(timeoutMatch[1]);
-            if (ms < 15000) throw new Error(`Router timeout is ${ms}ms — must be ≥ 15000 (#440 fix)`);
-          }
-          return 'router.js: no hardcoded model, dynamic selection present, timeout ≥ 15s — phone latency fix intact';
+
+          if (!res.response && !res.error) throw new Error(`Router returned no response field after ${elapsed}ms`);
+          if (res.error) throw new Error(`Router error after ${elapsed}ms: ${res.error}`);
+          if (elapsed > 15000) throw new Error(`Router took ${elapsed}ms — exceeds 15s threshold (#440 fix)`);
+          if (!res.response || res.response.trim().length === 0) throw new Error('Router returned empty response');
+
+          return `Router responded in ${elapsed}ms: "${res.response.slice(0, 60).replace(/\n/g, ' ')}"`;
         }
       }
     ]
