@@ -66,7 +66,7 @@ import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession } from './terminal-bridge.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
 import { WebSocketServer as WsServer } from 'ws';
 import clientRouter from './routes/client.js';
@@ -2872,6 +2872,17 @@ app.get('/api/v1/terminal/messages/:session_id', async (req, res) => {
   }
 });
 
+// Debug: stream buffer size for regression testing (#437 stream bloat)
+app.get('/api/v1/terminal/debug/buffer/:session_id', async (req, res) => {
+  try {
+    const info = await getSessionBufferSize(req.params.session_id);
+    if (!info) return res.status(404).json({ ok: false, error: 'Session not found' });
+    res.json({ ok: true, ...info });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // HTTP interrupt fallback — for when WebSocket is dead but user presses Escape
 app.post('/api/v1/terminal/interrupt', (req, res) => {
   const sessionId = req.query.session || req.body?.session_id;
@@ -3070,6 +3081,16 @@ app.post('/api/v1/stacks/scan', (req, res) => {
 // Atlas — service graph data from Steward registry
 app.get('/api/v1/atlas/services', (req, res) => {
   res.json(getAtlasData());
+});
+
+app.get('/api/v1/atlas/summary', async (req, res) => {
+  try {
+    const { getAtlasSummary } = await import('./steward.js');
+    const summary = await getAtlasSummary();
+    res.json({ ok: true, summary, generated_at: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // Hybrid memory search — FTS5 (lexical) + sqlite-vec (semantic) fused with
@@ -3359,6 +3380,45 @@ app.get('/api/v1/atlas/service/:id', (req, res) => {
   const svc = getServiceStatus(req.params.id);
   if (!svc) return res.status(404).json({ error: 'Service not found' });
   res.json(svc);
+});
+
+// Atlas app registration — external apps describe themselves
+app.post('/api/v1/atlas/register-app', async (req, res) => {
+  try {
+    const { id, name, description, routes, key_files, version, registered_by } = req.body;
+    if (!id || !name) return res.status(400).json({ ok: false, error: 'id and name required' });
+    run(`INSERT INTO atlas_apps (id, name, description, routes, key_files, version, registered_by, last_seen)
+         VALUES (:id, :name, :desc, :routes, :files, :ver, :by, datetime('now','localtime'))
+         ON CONFLICT(id) DO UPDATE SET
+           name=:name, description=:desc, routes=:routes, key_files=:files,
+           version=:ver, registered_by=:by, last_seen=datetime('now','localtime')`, {
+      ':id': id, ':name': name, ':desc': description || '',
+      ':routes': JSON.stringify(routes || []),
+      ':files': JSON.stringify(key_files || []),
+      ':ver': version || null, ':by': registered_by || 'user'
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/v1/atlas/apps', async (req, res) => {
+  try {
+    const apps = all(`SELECT * FROM atlas_apps ORDER BY last_seen DESC`);
+    res.json({ ok: true, apps });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.delete('/api/v1/atlas/apps/:id', async (req, res) => {
+  try {
+    run(`DELETE FROM atlas_apps WHERE id = :id`, { ':id': req.params.id });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ==================== Tier 0 Phase 6: Audit Chain + Backup ====================
