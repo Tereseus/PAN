@@ -2088,21 +2088,17 @@ const suites = {
         name: '#439 — 1 send produces exactly 1 assistant turn, not 2',
         description: 'Send one pipe message to a live session, poll messages for 20s, assert the number of assistant turns does not increase by more than 1. Catches the double-send bug where 2 Claude processes both respond.',
         run: async () => {
-          // Always hits prod (7777) — needs real live sessions, not dev's broken WS
-          const sessRes = await prodGet('/api/v1/terminal/sessions');
-          const sessions = (sessRes.sessions || []).filter(s => s.type === 'pipe' || s.claudeReady !== undefined);
-          if (!sessions.length) throw new Error('No pipe sessions on prod — open a tab in the prod dashboard first');
-          const sid = sessions[0].id;
-
+          // Use a dedicated regression session — create_if_missing means no preconditions needed
+          const sid = 'p1-regression-439';
           const before = await prodGet(`/api/v1/terminal/messages/${sid}`);
           const beforeAssistant = (before.messages || []).filter(m => m.role === 'assistant').length;
 
-          const sendRes = await prodPost('/api/v1/terminal/pipe', { session_id: sid, text: '__p1_reg_double_send_test__' });
+          const sendRes = await prodPost('/api/v1/terminal/pipe', { session_id: sid, text: '__p1_reg_double_send_test__', create_if_missing: true });
           if (!sendRes.ok) throw new Error(`Pipe send failed: ${sendRes.error}`);
 
-          // Poll up to 20s for a response
+          // Poll up to 25s for a response
           let afterAssistant = beforeAssistant;
-          for (let i = 0; i < 20; i++) {
+          for (let i = 0; i < 25; i++) {
             await wait(1000);
             const after = await prodGet(`/api/v1/terminal/messages/${sid}`);
             afterAssistant = (after.messages || []).filter(m => m.role === 'assistant').length;
