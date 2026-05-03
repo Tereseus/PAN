@@ -170,6 +170,32 @@ function getPort() {
   return parseInt(process.env.PAN_PORT) || 7777;
 }
 
+// Prod always targets 7777 — used by behavioral tests that need real sessions/services
+// and must not be routed to a broken dev server just because tests were triggered from dev.
+function prodGet(path) {
+  return new Promise((resolve, reject) => {
+    http.get(`http://127.0.0.1:7777${path}`, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(data); } });
+    }).on('error', reject);
+  });
+}
+
+function prodPost(path, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const req = http.request({ hostname: '127.0.0.1', port: 7777, path, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, (res) => {
+      let d = '';
+      res.on('data', chunk => d += chunk);
+      res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(d); } });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
 function apiGet(path) {
   const port = getPort();
   return new Promise((resolve, reject) => {
@@ -2062,46 +2088,44 @@ const suites = {
         name: '#439 — 1 send produces exactly 1 assistant turn, not 2',
         description: 'Send one pipe message to a live session, poll messages for 20s, assert the number of assistant turns does not increase by more than 1. Catches the double-send bug where 2 Claude processes both respond.',
         run: async () => {
-          // Get an existing live session
-          const sessRes = await apiGet('/api/v1/terminal/sessions');
+          // Always hits prod (7777) — needs real live sessions, not dev's broken WS
+          const sessRes = await prodGet('/api/v1/terminal/sessions');
           const sessions = (sessRes.sessions || []).filter(s => s.type === 'pipe' || s.claudeReady !== undefined);
-          if (!sessions.length) throw new Error('No pipe sessions running — start a session in the dashboard first');
+          if (!sessions.length) throw new Error('No pipe sessions on prod — open a tab in the prod dashboard first');
           const sid = sessions[0].id;
 
-          // Snapshot assistant turn count before
-          const before = await apiGet(`/api/v1/terminal/messages/${sid}`);
+          const before = await prodGet(`/api/v1/terminal/messages/${sid}`);
           const beforeAssistant = (before.messages || []).filter(m => m.role === 'assistant').length;
 
-          // Send exactly one message
-          const sendRes = await apiPost('/api/v1/terminal/pipe', { session_id: sid, text: '__p1_reg_double_send_test__' });
+          const sendRes = await prodPost('/api/v1/terminal/pipe', { session_id: sid, text: '__p1_reg_double_send_test__' });
           if (!sendRes.ok) throw new Error(`Pipe send failed: ${sendRes.error}`);
 
-          // Poll for up to 20s, checking assistant turn count
+          // Poll up to 20s for a response
           let afterAssistant = beforeAssistant;
           for (let i = 0; i < 20; i++) {
             await wait(1000);
-            const after = await apiGet(`/api/v1/terminal/messages/${sid}`);
+            const after = await prodGet(`/api/v1/terminal/messages/${sid}`);
             afterAssistant = (after.messages || []).filter(m => m.role === 'assistant').length;
-            if (afterAssistant > beforeAssistant) break; // response arrived
+            if (afterAssistant > beforeAssistant) break;
           }
 
           const delta = afterAssistant - beforeAssistant;
-          if (delta > 1) throw new Error(`Double-send regression: ${delta} assistant turns appeared for 1 send (expected ≤1)`);
-          return `1 send → ${delta} assistant turn(s) — no double-send (was ${beforeAssistant}, now ${afterAssistant})`;
+          if (delta > 1) throw new Error(`Double-send regression: ${delta} assistant turns for 1 send (expected ≤1)`);
+          return `1 send → ${delta} assistant turn(s) — no double-send (before=${beforeAssistant} after=${afterAssistant})`;
         }
       },
       {
         id: 'p1-reg-stream-bloat',
         name: '#437 — active session stream buffer stays within bounds',
-        description: 'For every live session, check the _streamMessages buffer via the debug endpoint. If any session exceeds _maxStreamMessages, the trim is broken.',
+        description: 'For every live prod session, check _streamMessages length via debug endpoint. Fails if any session exceeds its cap.',
         run: async () => {
-          const sessRes = await apiGet('/api/v1/terminal/sessions');
+          const sessRes = await prodGet('/api/v1/terminal/sessions');
           const sessions = sessRes.sessions || [];
-          if (!sessions.length) return 'No sessions — nothing to check (pass by default)';
+          if (!sessions.length) return 'No sessions on prod — pass by default';
 
           const results = [];
           for (const s of sessions) {
-            const buf = await apiGet(`/api/v1/terminal/debug/buffer/${s.id}`);
+            const buf = await prodGet(`/api/v1/terminal/debug/buffer/${s.id}`);
             if (!buf.ok) continue;
             const { streamMessages, maxStreamMessages } = buf;
             if (streamMessages > maxStreamMessages) {
@@ -2109,25 +2133,23 @@ const suites = {
             }
             results.push(`${s.id.slice(0, 8)}: ${streamMessages}/${maxStreamMessages}`);
           }
-          return `All session buffers within bounds: ${results.join(', ')}`;
+          return `All buffers within bounds: ${results.join(', ') || 'no buffers to check'}`;
         }
       },
       {
         id: 'p1-reg-steward-health',
-        name: '#438 — steward\'s reported status matches actual service health',
-        description: 'For each port-based service steward reports as "running", independently verify the port is actually open. Catches the bug where steward marked services running before health confirmation.',
+        name: '#438 — steward reported status matches actual port availability',
+        description: 'For each port-based service steward says is "running", TCP-connect to verify the port is open. Mismatch = bug.',
         run: async () => {
-          // Services with healthCheck: 'port' — steward claims health based on TCP connect
           const portServices = ['whisper', 'ollama'];
           const results = [];
           let mismatches = 0;
 
           for (const id of portServices) {
-            const svc = await apiGet(`/api/v1/atlas/service/${id}`);
+            const svc = await prodGet(`/api/v1/atlas/service/${id}`);
             if (!svc || svc.error) { results.push(`${id}: not registered`); continue; }
 
             const stewardSays = svc._status;
-            // Try to connect to the service's port
             const port = svc.port;
             let actuallyUp = false;
             try {
@@ -2145,25 +2167,24 @@ const suites = {
             results.push(`${id}: steward=${stewardSays} actual=${actuallyUp ? 'up' : 'down'} ${match ? '✓' : '✗ MISMATCH'}`);
           }
 
-          if (mismatches > 0) throw new Error(`Steward status mismatch on ${mismatches} service(s): ${results.join('; ')}`);
+          if (mismatches > 0) throw new Error(`Steward mismatch on ${mismatches} service(s): ${results.join('; ')}`);
           return `Steward status matches reality: ${results.join(', ')}`;
         }
       },
       {
         id: 'p1-reg-router-response',
         name: '#440 — router responds within 15s with non-empty result',
-        description: 'Send a real query through the AI router (/api/v1/chat), measure end-to-end latency. Fails if it times out or returns empty — catches the hardcoded slow model regression.',
+        description: 'Real end-to-end call through /api/v1/chat on prod. Fails if >15s or empty — catches slow/broken router regression.',
         run: async () => {
           const t0 = Date.now();
-          const res = await apiPost('/api/v1/chat', { message: 'reply with just the word pong', source: 'regression-test' });
+          const res = await prodPost('/api/v1/chat', { message: 'reply with just the word pong', source: 'regression-test' });
           const elapsed = Date.now() - t0;
 
-          if (!res.response && !res.error) throw new Error(`Router returned no response field after ${elapsed}ms`);
           if (res.error) throw new Error(`Router error after ${elapsed}ms: ${res.error}`);
-          if (elapsed > 15000) throw new Error(`Router took ${elapsed}ms — exceeds 15s threshold (#440 fix)`);
+          if (elapsed > 15000) throw new Error(`Router took ${elapsed}ms — exceeds 15s threshold`);
           if (!res.response || res.response.trim().length === 0) throw new Error('Router returned empty response');
 
-          return `Router responded in ${elapsed}ms: "${res.response.slice(0, 60).replace(/\n/g, ' ')}"`;
+          return `Router responded in ${elapsed}ms: "${res.response.slice(0, 80).replace(/\n/g, ' ')}"`;
         }
       }
     ]
