@@ -65,7 +65,13 @@ function pipeSend(sessionId, userText) {
       session.lastOutputTs = Date.now();
       const adapterBusy = session._llmAdapter?.busy || false;
       session.claudeRunning = adapterBusy; // legacy compat
-      if (adapterBusy) transitionState(session, SessionState.WORKING, 'adapter onMessage busy');
+      if (adapterBusy) {
+        transitionState(session, SessionState.WORKING, 'adapter onMessage busy');
+      } else {
+        // Adapter finished — transition back to IDLE so the next send isn't blocked.
+        // This is a belt-and-suspenders recovery alongside the .then()/.catch() below.
+        transitionState(session, SessionState.IDLE, 'adapter onMessage idle');
+      }
       const newMsgs = messages.slice(_adapterMsgCount);
       _adapterMsgCount = messages.length;
       for (const msg of newMsgs) {
@@ -106,17 +112,34 @@ function pipeSend(sessionId, userText) {
 
   session.claudeRunning = true; // legacy compat
   session.pipeMode = true;      // legacy compat
+  // If stuck in INTERRUPTED, recover to IDLE first so WORKING transition is legal
+  if (session.state === SessionState.INTERRUPTED) {
+    transitionState(session, SessionState.IDLE, 'pipeSend recovery from INTERRUPTED');
+  }
   transitionState(session, SessionState.WORKING, 'pipeSend start');
-  session._llmAdapter.send(userText).then(() => {
-    session.claudeRunning = false; // legacy compat
-    transitionState(session, SessionState.IDLE, 'pipeSend complete');
-    // Notify ready
-    for (const c of session.clients) {
-      if (c.readyState === WebSocket.OPEN) {
-        try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
+  session._llmAdapter.send(userText)
+    .then(() => {
+      session.claudeRunning = false; // legacy compat
+      transitionState(session, SessionState.IDLE, 'pipeSend complete');
+      // Notify ready
+      for (const c of session.clients) {
+        if (c.readyState === WebSocket.OPEN) {
+          try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
+        }
       }
-    }
-  });
+    })
+    .catch((err) => {
+      // Send failed — must return to IDLE or the session is stuck WORKING forever
+      session.claudeRunning = false; // legacy compat
+      console.error(`[PAN LLM] pipeSend error for ${sessionId}: ${err?.message}`);
+      transitionState(session, SessionState.IDLE, `pipeSend error: ${err?.message}`);
+      // Notify clients of the error so the UI can recover
+      for (const c of session.clients) {
+        if (c.readyState === WebSocket.OPEN) {
+          try { c.send(JSON.stringify({ type: 'error', message: `Send failed: ${err?.message}` })); } catch {}
+        }
+      }
+    });
   return true;
 }
 
@@ -128,6 +151,14 @@ function pipeInterrupt(sessionId) {
   session.claudeRunning = false; // legacy compat
   transitionState(session, SessionState.INTERRUPTED, 'pipeInterrupt');
   writeSystemMessage(sessionId, 'interrupt', 'Interrupted (Escape)');
+  // Immediately return to IDLE — INTERRUPTED is a momentary signal, not a stable resting state.
+  // Without this, INTERRUPTED → WORKING is illegal and the next pipeSend would be blocked.
+  // The recovery in pipeSend handles the edge case where this timer fires too late.
+  setTimeout(() => {
+    if (session.state === SessionState.INTERRUPTED) {
+      transitionState(session, SessionState.IDLE, 'pipeInterrupt cleanup');
+    }
+  }, 500);
   return true;
 }
 
@@ -1614,5 +1645,30 @@ function getSessionBufferSize(sessionId) {
     maxStreamMessages: sess._maxStreamMessages || 500,
   };
 }
+
+// ── Stuck-WORKING watchdog ────────────────────────────────────────────────────
+// If a pipe session stays in WORKING state for >60s with no adapter activity,
+// it means the .catch() was missed or the adapter silently died.
+// Auto-recover to IDLE so the user can send again without refreshing.
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of sessions) {
+    if (session.state !== SessionState.WORKING) continue;
+    if (session._llmAdapter?.busy) continue; // adapter says it's still working — OK
+    const lastOut = session.lastOutputTs || 0;
+    const stuckMs = now - lastOut;
+    if (stuckMs > 60_000) {
+      console.warn(`[Terminal] Session ${id} stuck WORKING for ${Math.round(stuckMs/1000)}s with no adapter activity — recovering to IDLE`);
+      session.claudeRunning = false;
+      transitionState(session, SessionState.IDLE, `watchdog recovery: stuck ${Math.round(stuckMs/1000)}s`);
+      // Tell clients we recovered so they re-enable the input immediately
+      for (const c of session.clients) {
+        if (c.readyState === WebSocket.OPEN) {
+          try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
+        }
+      }
+    }
+  }
+}, 15_000); // check every 15s — catches stuck state within ~75s worst case
 
 export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize };
