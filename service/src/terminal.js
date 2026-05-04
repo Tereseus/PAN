@@ -320,6 +320,16 @@ function appendMessage(session, message) {
     return;
   }
 
+  // Assign a stable per-session sequence number to tool messages so the
+  // frontend dedup key (role|type|text|_seq) treats each invocation as
+  // distinct — even when the same file is Read multiple times.
+  // Non-tool messages get no _seq so the echo/JSONL dedup (role|type|text)
+  // still collapses echo+JSONL pairs correctly.
+  if (message.role === 'assistant' && message.type === 'tool') {
+    session._toolMsgSeq = (session._toolMsgSeq || 0) + 1;
+    message._seq = session._toolMsgSeq;
+  }
+
   session.messages.push(message);
   session._messageVersion = (session._messageVersion || 0) + 1;
 
