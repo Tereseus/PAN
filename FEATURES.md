@@ -449,53 +449,26 @@ children can have adult-sounding voices and vice versa).
 
 ---
 
-## Dashboard Refresh Recovery (Spec — not yet built)
+## Dashboard Watchdog (dashboard-watchdog.js) — BUILT
 
-### Problem
-When the PAN dashboard (Tauri shell) refreshes or gets stuck loading, the
-user is locked out until the page finishes loading. Current worst-case: ~2min.
-Target: ≤15 seconds.
-
-### Detection
-The PAN dashboard always displays the π symbol visually when fully loaded
-(top-left, near the palm tree logo). The loading screen is plain black — no π.
-
-**Detection logic (no vision model needed):**
-1. Trigger: WebSocket from Tauri disconnects and reconnects (page refresh)
-2. Start a 15-second timer
-3. At T+15s: capture a screenshot of the Tauri window
-4. Check average pixel brightness of the frame:
-   - Mostly black (brightness < threshold) AND π not found in frame → **stuck**
-   - π symbol visible OR significant UI content → **loaded OK**
-5. If stuck: trigger recovery action (see below)
-
-**Why pixel brightness, not vision model:** Brightness check is instant (<5ms).
-No need to send to minicpm-v for a binary loaded/stuck determination.
-
-### Recovery Actions (in order)
-1. `POST /api/carrier/swap` — replaces Craft, which re-serves the page
-2. If swap doesn't resolve within 15s: send WebSocket `force_reload` message
-   to Tauri shell
-3. If still stuck: log incident, alert user via TTS
-
-### π Detection Method
-The π symbol in the dashboard uses a specific Unicode character (π, U+03C0)
-rendered at a known position. After capturing the frame:
-- Crop the top-left region (~150×80px)
-- Run OCR or template match for π character
-- Match = dashboard loaded; no match on black frame = stuck
-
-### Timing Target
-- T+0: WebSocket disconnect detected
-- T+0 to T+15: page reloading normally (don't interfere)
-- T+15: brightness check + π scan (~5ms)
-- T+15 to T+20: recovery action executes
-- T+30: user is back in the dashboard
-
-### Code Location (when built)
-- Trigger hook: `service/src/carrier.js` WebSocket reconnect handler
-- Detection: new `service/src/dashboard-watchdog.js`
-- Calls into: `service/src/screen-watcher.js` `captureViaTauri()`
+- **Purpose:** Detect a stuck/black loading screen and auto-recover without
+  user intervention. Target: user back in dashboard within 20 seconds.
+- **File:** `service/src/dashboard-watchdog.js`
+- **Detection:** Polls a Tauri screenshot every 10s. Computes average pixel
+  brightness of the frame. If brightness < 20 (near-black) for 2 consecutive
+  frames → classified as stuck.
+- **Recovery (in order):**
+  1. `POST /api/carrier/swap` — replaces Craft, re-serves the page
+  2. If swap doesn't resolve within 15s: `force_reload` WS message to Tauri
+  3. If still stuck: logs incident, alerts via PAN Notify
+- **Why brightness, not vision model:** Check is instant (<5ms). No LLM needed
+  for a binary loaded/stuck decision.
+- **Timing:**
+  - T+0: disconnect/stuck suspected
+  - T+10/T+20: brightness samples taken
+  - T+20: recovery action executes
+  - T+30: user back in dashboard
+- **Screenshot source:** `service/src/screen-watcher.js` `captureViaTauri()`
 
 ---
 
@@ -611,6 +584,292 @@ rendered at a known position. After capturing the frame:
 - **Threshold:** Session must have ≥4 turns and demonstrate a reusable capability
 
 ---
+
+---
+
+## Web Dashboard — All Pages
+
+The dashboard is a SvelteKit app compiled to `service/public/v2/`. It has
+**18 pages** (not 11 — the earlier count was outdated):
+
+| Route | Purpose | Status |
+|-------|---------|--------|
+| `/v2/terminal` | Main PTY + Claude pipe + sidebar widgets | Built |
+| `/v2/atlas` | Radial system map (Atlas V2) | Built |
+| `/v2/conversations` | Browse + search past sessions | Built |
+| `/v2/sensors` | 22 sensor category toggles | Built |
+| `/v2/automation` | Automation / scripting interface | Built |
+| `/v2/projects` | Project list + task progress | Built |
+| `/v2/settings` | Server config, model selection, keys | Built |
+| `/v2/data` | DB browsing + export | Built |
+| `/v2/crucible` | Side-by-side shadow traffic comparison | Built |
+| `/v2/terminal-dev` | Dev server terminal (port 7781) | Built |
+| `/v2/chat` | Chat interface (direct messaging) | Built |
+| `/v2/comms` | Communications hub — threads, ΠΑΝ messages | Built |
+| `/v2/compose` | Message composition | Built |
+| `/v2/call` | Audio/video calling UI | Built |
+| `/v2/kanban` | Kanban board view of project tasks | Built |
+| `/v2/timeline` | Timeline/history of project work | Built |
+| `/v2/kronos` | Time/scheduling/calendar interface | Built |
+| `/v2/atlas-v2` | Alias / migration target for Atlas | Built |
+
+Build: `cd service/dashboard && npm run build` → outputs to `service/public/v2/`.
+Must rebuild after editing any `.svelte` file.
+
+---
+
+## Atlas V2 (System Visualization)
+
+- **Purpose:** Interactive radial diagram of the entire PAN system — services,
+  devices, projects, memory pipeline, intelligence tier, voice pipeline.
+- **Route:** `/v2/atlas`
+- **File:** `service/dashboard/src/routes/atlas/+page.svelte`
+- **Structure:**
+  - **Center node:** ΠΑΝ Server (core hub)
+  - **Ring 1 (Core):** Database, Dashboard, Steward, Tauri
+  - **Ring 2 sectors (8 major systems):**
+    - Services: Whisper, Ollama, AHK, Tailscale, Cloudflare Tunnel
+    - Memory: Memory Hub, Episodic, Semantic, Procedural, Embeddings, Context Injection
+    - Processing: Classifier (Augur), Dream, Consolidation, Evolution
+    - Intelligence: Claude Code, Scout, Orchestrator, AutoDev
+    - Orgs: Org Engine, Roles/ACL, Data Isolation, Per-Org DBs, Cross-Org Share
+    - Presence: Webcam Watcher, Screen Watcher, Activity Tracker, Identity
+    - Comms: Chat, Email, PAN Notify, Messaging Prefs
+    - Devices: Connected clients (Ring 3)
+  - **Ring 3:** Registered devices + active projects (with task progress bars)
+  - **Voice pipeline strip:** Phone Mic → Google STT → Voice Router → Cerebras → Android TTS
+- **Interactivity:** Click any node → detail panel with status, description,
+  connections. 30-second auto-refresh. Live event/session/node counts in topbar.
+
+---
+
+## Activity Tracker
+
+- **Purpose:** Track which app/window is in focus on the desktop PC. Primary
+  activity signal for presence and intuition context.
+- **File:** `service/src/activity-tracker.js`
+- **How:** Polls the active foreground window every 3 seconds using Windows
+  Win32 API (via PowerShell `GetForegroundWindow`). Logs focus changes to
+  `activity_events` table. Tracks process name + window title + duration.
+- **Platform:** Windows only. No-op on other platforms.
+- **Data:** `activity_events` table — `process_name`, `window_title`,
+  `focused_at`, `duration_ms`
+- **Used by:** intuition.js (primary activity context), screen watcher (idle check)
+- **Status endpoint:** N/A (data via `GET /dashboard/api/events?type=activity`)
+
+---
+
+## Organization & Multi-Tenancy System
+
+- **Purpose:** Full multi-org isolation. Each org gets its own encrypted DB,
+  ACL, roles, and scoped data access. Enables family, team, or enterprise use
+  with clean data boundaries.
+- **Files:** `service/src/routes/orgs.js`, `service/src/routes/teams.js`
+- **Roles / Power Levels:**
+  | Role | Power | Can do |
+  |------|-------|--------|
+  | Owner | 100 | Everything, including impersonation |
+  | Admin | 75 | All ops, no impersonation |
+  | Manager | 50 | Read/write, manage users |
+  | User | 25 | Standard access |
+  | Viewer | 0 | Read-only |
+  | Guest | 0 | Temporary, scoped |
+  | Child | 0–15 | Restricted content + commands |
+- **Data isolation:** Every DB query is scoped by `org_id`. Helpers:
+  `allScoped()`, `getScoped()`, `runScoped()` in `db.js`.
+- **Per-org DBs:** Each org gets a separate SQLCipher-encrypted database file.
+  Registry managed by `db-registry.js`.
+- **Cross-org sharing:** Controlled share of data between orgs with explicit
+  permission grants.
+- **Isolation command:** `/isolate` — migrates data into org-scoped tables.
+- **API:** `GET/POST /api/v1/orgs`, `GET/POST /api/v1/teams`
+- **Visible in Atlas:** "Orgs" sector shows Org Engine, Roles/ACL, Data
+  Isolation, Per-Org DBs, Cross-Org Share nodes.
+
+---
+
+## Chat & Messaging System
+
+- **Purpose:** Thread-based messaging between the user, ΠΑΝ, and other contacts.
+  Also the channel through which PAN's own services (Scout, Dream, Pipeline)
+  message the user.
+- **Files:** `service/src/routes/chat.js`, `service/src/chat.js`
+- **Schema tables:** `chat_threads`, `chat_messages`, `chat_members`
+- **Message types:** `text` | `composed` | `system`
+- **Channels:**
+  - `pan` — ΠΑΝ system notifications (from pan-notify.js)
+  - `dm` — Direct messages between users
+- **Dashboard pages:**
+  - `/v2/chat` — Chat interface (direct messaging)
+  - `/v2/comms` — Communications hub (all threads, ΠΑΝ thread, service messages)
+  - `/v2/compose` — Compose and send messages
+- **See also:** PAN Notify section (how services post into the ΠΑΛ thread)
+
+---
+
+## Email System
+
+- **Purpose:** Send and receive email from within PAN.
+- **File:** `service/src/routes/email.js`
+- **Init:** `initEmail()` called on server boot to set up mail transport.
+- **Status:** Wired into server, `initEmail()` runs — but send returns HTTP 400
+  (no mail service provider configured yet). See task #394.
+- **Dashboard page:** `/v2/compose` handles email composition alongside messaging.
+
+---
+
+## Zones & Geofencing
+
+- **Purpose:** Define geographic zones. Actions and permissions can be scoped
+  to zones (e.g. "only allow recording at home", "mute when at work").
+- **File:** `service/src/routes/zones.js`
+- **API:** `getActiveZones()`, `findZonesForPoint(lat, lng)`
+- **Used by:** voice router (location-aware commands), privacy enforcement
+- **Storage:** `zones` table — name, boundary polygon, rules JSON
+
+---
+
+## Incognito Sessions
+
+- **Purpose:** Temporary isolated sessions that leave no permanent trace.
+  Data written in incognito scope is invisible to main scope and purged on expiry.
+- **File:** `service/src/routes/incognito.js`
+- **API:** `cleanupExpiredIncognito()` — server-side cron to purge expired sessions
+- **Pre-gate tested by:** Privacy Test benchmark suite (hard fail on any data leak)
+
+---
+
+## Personal Sync & Replication
+
+- **Purpose:** Sync personal data between PAN instances (e.g. home PC ↔ laptop).
+  Replication for backup and cross-device consistency.
+- **Files:**
+  - `service/src/routes/sync.js` — `startPersonalSync()`, `stopPersonalSync()`
+  - `service/src/routes/replication.js` — data replication between sources
+- **Status:** Wired into server boot. Configuration via settings.
+
+---
+
+## Kanban, Timeline & Kronos (Project Management Views)
+
+Three additional views on top of the existing Projects page:
+
+### Kanban (`/v2/kanban`)
+- **Purpose:** Drag-and-drop kanban board for project tasks.
+- **Columns:** backlog → todo → in_progress → in_test → done
+- **Data:** Same `project_tasks` table as the Projects page.
+
+### Timeline (`/v2/timeline`)
+- **Purpose:** Chronological view of project work — when tasks were created,
+  started, and completed. Historical record.
+
+### Kronos (`/v2/kronos`)
+- **Purpose:** Time and scheduling interface. Named after the Greek god of time.
+- **Integrates with:** Google Calendar (via GWS CLI), PAN task system.
+
+---
+
+## Call (`/v2/call`)
+
+- **Purpose:** Audio/video calling UI within the PAN dashboard.
+- **File:** `service/dashboard/src/routes/call/+page.svelte`
+- **Status:** UI built. Backend calling infrastructure pending.
+
+---
+
+## MCP Server — Full Tool List
+
+The MCP server (`service/src/mcp-server.js`) exposes tools to Claude Code.
+
+### Core Tools
+
+| Tool | What it does |
+|------|-------------|
+| `pan_search` | Full-text search across events, memory, conversations |
+| `pan_memory` | Read classified memory items (episodic, semantic, procedural) |
+| `pan_decide` | Log an architectural decision to the DB with rationale |
+| `pan_restart` | Restart the PAN server (Craft swap or Carrier restart) |
+| `pan_dev` | Dev server control — status, sessions, start |
+| `pan_terminal_send` | Send text to an active PTY terminal session |
+| `pan_browser` | Browser control: list_tabs, navigate, click, type, screenshot |
+| `pan_guardian` | Security scanning: status, decisions, scan, config |
+
+### Router Tool (`pan`) — All Actions
+
+Single `pan` tool dispatches to 20+ actions:
+
+| Category | Actions |
+|----------|---------|
+| **Data** | conversations, projects, tasks, services, devices, stats, sessions, sensors, photos, scout |
+| **Alerts** | list, count, types, get, acknowledge, resolve, dismiss, reopen |
+| **Recording** | start, stop, status, list |
+| **Windows** | list, open, focus, close |
+| **Settings** | get, set |
+| **Logs** | query, summary |
+| **Runner** | projects, running, status, start, stop, stop_all, logs |
+| **Library** | view |
+| **Processes** | list (all PIDs) |
+| **Carrier/Crucible** | status, swap, shadow_start, shadow_stop, shadow_promote, shadow_stats, crucible, open_crucible, rollback, confirm, lifeboat |
+| **Voice** | profiles, pregenerate, pack |
+| **Context** | briefing, inject |
+
+### MCP Resources (pull-based)
+
+| Resource URI | Returns |
+|-------------|---------|
+| `pan://actions` | Markdown table of all router actions |
+| `pan://alert-types` | Alert type definitions |
+| `pan://services` | Service status JSON |
+| `pan://stats` | Database statistics |
+
+---
+
+## Terminal Sidebar — Widget Panels
+
+The terminal page sidebar has 8 tracked widget panels:
+
+| Panel | Purpose |
+|-------|---------|
+| **intuition** | Current personality context and active signals |
+| **approvals** | User approvals for AutoDev code candidates |
+| **alerts** | System alerts (orphan processes, service crashes, etc.) |
+| **services** | Service health at a glance |
+| **pipeline** | Voice/processing pipeline status |
+| **devices** | Connected client devices + activity |
+| **transcript** | Session message history |
+| **lifeboat** | Craft swap / rollback status |
+
+### Terminal Performance Tracking
+
+The dashboard instruments **9 load stages** for every page load:
+
+| Stage | Measures |
+|-------|---------|
+| `scriptInit` | JS bundle parsed and running |
+| `mounted` | Svelte component mounted |
+| `wsOpen` | WebSocket connected |
+| `ptyAttached` | PTY session attached |
+| `firstScreen` | First terminal screen rendered |
+| `firstTranscript` | First message appears in transcript |
+| `transcriptWidget` | Transcript widget fully loaded |
+| `usageWidget` | Usage/cost widget loaded |
+| `interactive` | Full interactive state |
+
+### Send Latency Tracking
+
+Every message send is instrumented with three timestamps:
+- **ack** — server acknowledged the send
+- **echo** — user's message echoed back in transcript
+- **assistant** — first assistant token arrived
+
+Visible in the Perf panel.
+
+### Session Cost Tracking
+
+The terminal tracks per-session token usage:
+- Input tokens, output tokens, cache read/write tokens
+- Estimated cost (based on model pricing)
+- Displayed in the terminal toolbar
 
 _Add new features at the bottom when you build them. Update this file in the
 same commit as the code change._
