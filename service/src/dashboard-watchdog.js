@@ -65,6 +65,12 @@ export function notifyDashboardLoaded() {
 // ── Poll cycle ────────────────────────────────────────────────────────────────
 
 async function runPoll() {
+  // DISABLED: brightness-based black-screen detection is neutered until the root
+  // cause of the genuine black render is understood. The watchdog process stays
+  // alive for cooldown bookkeeping (notifyDashboardLoaded / cooldown file), but
+  // will never trigger a swap. Re-enable by removing this early return.
+  return;
+
   if (recovering) return; // don't pile up recovery triggers
 
   try {
