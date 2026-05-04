@@ -70,35 +70,56 @@ router.post('/PermissionRequest', async (req, res) => {
 
     const result = await new Promise((resolve) => {
       let isPolling = false; // prevent concurrent IPC calls from piling up
-      const timer = setInterval(async () => {
-        if (isPolling) return; // skip tick if previous IPC call still in flight
-        isPolling = true;
-        try {
-        // Find our permission in the pending list and check if it has a response
-        // getPendingPermissions() may return a Promise (Craft IPC mode) or an array
-        const pendingRaw = getPendingPermissions();
-        const pending = Array.isArray(pendingRaw) ? pendingRaw : await Promise.resolve(pendingRaw).catch(() => []);
-        const perm = Array.isArray(pending) ? pending.find(p => p.id === permId) : undefined;
+      let resolved = false;  // guard: Promise.resolve is a no-op after first call but clearInterval isn't
+      function settle(value) {
+        if (resolved) return;
+        resolved = true;
+        clearInterval(timer);
+        resolve(value);
+      }
 
-        if (perm && perm.response) {
-          // User responded!
-          clearInterval(timer);
-          clearPermission(permId);
-          console.log(`[PAN Hook] PermissionRequest response: ${perm.response} (${Date.now() - startTime}ms)`);
-          resolve(perm.response); // 'allow' or 'deny'
-        } else if (!perm) {
-          // Permission was removed (e.g. expired) — deny
-          clearInterval(timer);
-          console.log(`[PAN Hook] PermissionRequest expired (removed from queue)`);
-          resolve('deny');
-        } else if (Date.now() - startTime > MAX_WAIT) {
-          // Timeout — deny by default
-          clearInterval(timer);
-          clearPermission(permId);
-          console.log(`[PAN Hook] PermissionRequest timed out after ${MAX_WAIT}ms — denying`);
-          resolve('deny');
-        }
-        } finally { isPolling = false; }
+      // The setInterval callback is async — its returned Promise is discarded by setInterval.
+      // Attach an explicit .catch() so any unexpected throw becomes a logged deny, not an
+      // unhandled rejection that can escape to the process-level handler and (on Node <18) crash.
+      const timer = setInterval(() => {
+        if (isPolling || resolved) return;
+        isPolling = true;
+        (async () => {
+          try {
+            // getPendingPermissions() may return a Promise (Craft IPC mode) or an array
+            const pendingRaw = getPendingPermissions();
+            const pending = Array.isArray(pendingRaw)
+              ? pendingRaw
+              : await Promise.resolve(pendingRaw).catch(() => []);
+            const perm = Array.isArray(pending) ? pending.find(p => p.id === permId) : undefined;
+
+            if (perm && perm.response) {
+              // User responded!
+              console.log(`[PAN Hook] PermissionRequest response: ${perm.response} (${Date.now() - startTime}ms)`);
+              try { clearPermission(permId); } catch {}
+              settle(perm.response); // 'allow' or 'deny'
+            } else if (!perm) {
+              // Permission was removed (e.g. 30s auto-expiry in getPendingPermissions) — deny
+              console.log(`[PAN Hook] PermissionRequest expired (removed from queue)`);
+              settle('deny');
+            } else if (Date.now() - startTime > MAX_WAIT) {
+              // 115s hard timeout — deny
+              console.log(`[PAN Hook] PermissionRequest timed out after ${MAX_WAIT}ms — denying`);
+              try { clearPermission(permId); } catch {}
+              settle('deny');
+            }
+          } catch (pollErr) {
+            console.error(`[PAN Hook] PermissionRequest poll error (denying):`, pollErr?.message);
+            settle('deny');
+          } finally {
+            isPolling = false;
+          }
+        })().catch(escapeErr => {
+          // Belt-and-suspenders: if the async IIFE itself rejects past the inner catch,
+          // log it and deny rather than creating an unhandled rejection.
+          console.error(`[PAN Hook] PermissionRequest IIFE escaped catch:`, escapeErr?.message);
+          settle('deny');
+        });
       }, POLL_INTERVAL);
     });
 
