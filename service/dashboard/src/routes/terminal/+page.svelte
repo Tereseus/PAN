@@ -2012,6 +2012,7 @@
 								const working = msg.state === 'working' || msg.state === 'interrupted';
 								tabData.claudeReady = !working;
 								if (activeTabId === tabData.id) claudeReady = !working;
+								console.log(`[PAN #447] state push: state=${msg.state} → claudeReady=${!working}`);
 							}
 							break;
 						}
@@ -2025,6 +2026,7 @@
 							// Backend adapter finished (normal completion, error recovery, or watchdog
 							// recovery from stuck-WORKING). Re-enable input immediately.
 							// This fires from pipeSend.then(), pipeSend.catch(), and the 60/90s watchdog.
+							console.log(`[PAN #447] pipe_ready received — setting claudeReady=true (tab=${tabData.id}, active=${activeTabId === tabData.id})`);
 							tabData.claudeReady = true;
 							if (activeTabId === tabData.id) claudeReady = true;
 							break;
@@ -2032,11 +2034,13 @@
 						case 'sync_response': {
 							// Response to our sync_request — apply authoritative server state.
 							// Fired on reconnect so we don't rely on stale local state.
+							console.log(`[PAN #447] sync_response received — state=${msg.state} mode=${msg.mode} msgs=${msg.messages?.length ?? 0}`);
 							if (msg.state) {
 								tabData._sessionState = msg.state;
 								const working = msg.state === 'working' || msg.state === 'interrupted';
 								tabData.claudeReady = !working;
 								if (activeTabId === tabData.id) claudeReady = !working;
+								console.log(`[PAN #447] sync_response applied: claudeReady=${!working} (state=${msg.state})`);
 							}
 							if (msg.mode) tabData._sessionMode = msg.mode;
 							if (Array.isArray(msg.messages) && msg.messages.length > 0) {

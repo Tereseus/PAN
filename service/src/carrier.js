@@ -176,7 +176,10 @@ function spawnCraft(port, label = 'primary') {
   proc.stderr.on('data', (d) => process.stderr.write(`[Craft-${id}!] ${d}`));
 
   // IPC messages from Craft → Carrier (terminal operations)
-  proc.on('message', (msg) => handleCraftIPC(msg, craft));
+  proc.on('message', (msg) => {
+    try { handleCraftIPC(msg, craft); }
+    catch (e) { console.error('[Carrier] handleCraftIPC threw (IPC channel broken?):', e?.message); }
+  });
 
   proc.on('exit', (code, signal) => {
     console.log(`[Carrier] Craft-${id} (${label}) exited: code=${code} signal=${signal}`);

@@ -281,12 +281,30 @@ server.on('upgrade', async (req, socket, head) => {
   }
 });
 
+let _listenRetries = 0;
+const MAX_LISTEN_RETRIES = 10;
+
 server.on('error', err => {
   console.error(`[SuperCarrier] Server error: ${err.message}`);
   if (err.code === 'EADDRINUSE') {
-    console.error(`[SuperCarrier] Port ${SC_PORT} in use — cannot start`);
-    process.exit(1);
+    // Port conflict — almost always transient (TIME_WAIT from prior process, or
+    // a race where pan-loop kills the old process and we spawn before the port is
+    // fully released).  Retry up to 10× with 2s backoff instead of crashing.
+    // Previously this called process.exit(1), which pan-loop.bat treated as a
+    // crash and immediately respawned — causing a "SERVER CRASHED" storm with
+    // zero chance of recovery if the conflict lasted >10s.
+    _listenRetries++;
+    if (_listenRetries <= MAX_LISTEN_RETRIES) {
+      console.warn(`[SuperCarrier] Port ${SC_PORT} in use — retry ${_listenRetries}/${MAX_LISTEN_RETRIES} in 2s...`);
+      setTimeout(() => server.listen(SC_PORT, HOST), 2000);
+    } else {
+      console.error(`[SuperCarrier] Port ${SC_PORT} still in use after ${MAX_LISTEN_RETRIES} retries — giving up`);
+      process.exit(1);
+    }
+    return;
   }
+  // Other server errors are non-fatal — log and survive
+  console.error(`[SuperCarrier] Non-fatal server error:`, err.stack || err);
 });
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
@@ -319,12 +337,23 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 // the async WS proxy, waitForCarrier chains, or any imported module).
 // We log and survive; Carrier/Craft have their own handlers for their own scope.
 process.on('uncaughtException', (err) => {
-  // EPIPE = writing to a dead socket — harmless transient, no alert needed
-  if (err.code === 'EPIPE') return;
+  // EPIPE = broken pipe writing to a dead socket — harmless transient.
+  // Check both err.code AND message — process.stdout.write EPIPE sets message only, not code.
+  if (err.code === 'EPIPE' || String(err?.message).includes('EPIPE')) return;
   console.error('[SuperCarrier] !! Uncaught exception (keeping alive):', err?.message, err?.stack);
 });
 process.on('unhandledRejection', (reason) => {
   const msg = String(reason?.message || reason);
   if (msg.includes('EPIPE')) return;
   console.error('[SuperCarrier] !! Unhandled rejection (keeping alive):', msg, reason?.stack || '');
+});
+
+// Diagnostic: log the EXACT call stack whenever process.exit is called.
+// This fires even for exit(0), giving us a full picture of why the process is ending.
+// Remove once the spontaneous crash is identified and fixed.
+process.on('exit', (code) => {
+  if (code !== 0) {
+    console.error(`[SuperCarrier] !! process.exit(${code}) — stack at point of exit:`);
+    console.trace('[SuperCarrier] exit trace');
+  }
 });
