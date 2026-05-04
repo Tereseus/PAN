@@ -197,6 +197,33 @@ function _flushStreamTranscript(sess) {
   }
 }
 
+// ==================== Session Mode ====================
+// Controls which input path is active. Backend enforces — frontend must not guess.
+
+const SessionMode = {
+  PTY_ONLY:          'pty',      // raw PTY shell, no AI
+  PTY_WITH_CLAUDE:   'pty-tui',  // claude TUI running inside PTY
+  ADAPTER:           'adapter',  // Agent SDK pipe mode, no direct PTY writes
+};
+
+function transitionMode(session, newMode, reason) {
+  const old = session.mode || SessionMode.PTY_ONLY;
+  if (old === newMode) return;
+  console.log(`[Session] ${session.id || session.sessionId} mode: ${old} → ${newMode} (${reason})`);
+  session.mode = newMode;
+  appendMessage(session, {
+    role: 'system', type: 'mode_change',
+    text: `Session mode: ${old} → ${newMode}`,
+    source: 'system',
+  });
+  // Broadcast mode change so frontend stays in sync
+  for (const client of session.clients) {
+    if (client.readyState === 1) {
+      try { client.send(JSON.stringify({ type: 'mode', mode: newMode })); } catch {}
+    }
+  }
+}
+
 // ==================== Unified Message Log ====================
 // Single source of truth for all session messages.
 // appendMessage is the ONLY way to add messages. flushBroadcast is the ONLY way to push to clients.
@@ -619,6 +646,8 @@ async function startTerminalServer(httpServer) {
           createdAt: Date.now(),
           renderTimer: null,
           lastRendered: '',
+          // Session mode — controls which input path is active (see SessionMode/transitionMode)
+          mode: SessionMode.PTY_ONLY,
           // Unified message log — single source of truth (see appendMessage/flushBroadcast)
           messages: [],
           _messageVersion: 0,
@@ -949,7 +978,7 @@ async function startTerminalServer(httpServer) {
     const newToken = issueToken(sessionId, projectName, cwd, claudeSessionIdsFromToken);
     ws._reconnectToken = newToken;
 
-    // Send session info + reconnect token
+    // Send session info + reconnect token. Frontend reads mode as authoritative — no local opinion.
     ws.send(JSON.stringify({
       type: 'info',
       session: sessionId,
@@ -959,6 +988,7 @@ async function startTerminalServer(httpServer) {
       reconnectToken: newToken,
       restoredFromToken: !!tokenEntry,
       tokenExpired,
+      mode: session.mode || SessionMode.PTY_ONLY,
     }));
 
     if (tokenExpired) {
@@ -993,10 +1023,18 @@ async function startTerminalServer(httpServer) {
 
         switch (parsed.type) {
           case 'input':
+            // Guard: raw PTY input is only valid in PTY modes.
+            // If session is in ADAPTER mode, the frontend sent to the wrong path —
+            // reject it explicitly so input isn't silently lost.
+            if (session.mode === SessionMode.ADAPTER) {
+              console.warn(`[Session] Dropped 'input' in ADAPTER mode for ${sessionId} — frontend should send pipe_send`);
+              try { ws.send(JSON.stringify({ type: 'error', message: 'Session is in adapter mode, use pipe_send' })); } catch {}
+              break;
+            }
             if (session.pty) {
               session.lastInputTs = Date.now();
               session.pty.write(parsed.data);
-              // Detect pipe-mode commands and extract user message for transcript
+              // Extract user message for transcript when PTY sends pipe-mode commands
               const pipeMatch = parsed.data.match(/claude\s+-p\s+--continue\s+.*--permission-mode\s+\w+\s+'((?:[^'\\]|\\.)*)'/);
               if (pipeMatch) {
                 const userText = pipeMatch[1].replace(/'\\''/g, "'");
@@ -1053,6 +1091,10 @@ async function startTerminalServer(httpServer) {
             break;
 
           case 'pipe_send':
+            // Auto-transition to ADAPTER mode on first pipe_send if not already there
+            if (session.mode !== SessionMode.ADAPTER) {
+              transitionMode(session, SessionMode.ADAPTER, 'pipe_send received');
+            }
             pipeSend(sessionId, parsed.text);
             break;
 
