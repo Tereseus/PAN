@@ -50,7 +50,7 @@ Last updated: 2026-05-04
 | Pendant Firmware | Hardware | ESP32-S3 Sense: camera, mic, BLE, sensors | 30% | Hardware in dev, BLE protocol designed |
 | Geofencing (zones.js) | Presence | Location-aware permission gating | 50% | zones.js wired, GPS source integration pending |
 | Personal Sync | Data | Sync across PAN instances (home ↔ laptop) | 40% | startPersonalSync() exists, conflict resolution pending |
-| Identity System | Presence | Multi-modal identity from visual + voice + context | 40% | Schema designed (see FEATURES.md), matching algorithm pending |
+| Identity System | Presence | Multi-modal identity from visual + voice + context | 40% | Schema designed (see docs/FEATURES.md), matching algorithm pending |
 
 ## Next Up — Approved for Integration
 
