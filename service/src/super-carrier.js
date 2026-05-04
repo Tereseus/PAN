@@ -102,7 +102,10 @@ async function launchCarrier() {
     markCarrierReady();
     console.log(`[SuperCarrier] ✓ Carrier ready on :${CARRIER_PORT}`);
   } else {
-    console.error('[SuperCarrier] Carrier failed health check — waiting for it to exit and respawn');
+    console.error('[SuperCarrier] Carrier failed health check — force-killing to ensure clean respawn');
+    // Don't just "wait" — if Carrier is alive-but-unhealthy, _carrierReady stays false
+    // forever and every HTTP request queues indefinitely. Kill it so exit handler fires.
+    try { carrierProc?.kill('SIGKILL'); } catch {}
     // Exit handler will respawn
   }
 }
@@ -216,6 +219,8 @@ function proxyWs(browserWs, url) {
 
 // ── Main HTTP server ─────────────────────────────────────────────────────────
 
+const CARRIER_RESTART_WATCHDOG_MS = 5_000; // force-kill if Carrier hasn't exited in 5s
+
 const server = createServer((req, res) => {
   // Super-Carrier answers /health directly — instant, never blocked by Carrier state
   if (req.url === '/health' || req.url === '/api/carrier/health') {
@@ -228,6 +233,31 @@ const server = createServer((req, res) => {
       carrierPid:      carrierProc?.pid ?? null,
       craftHealthy:    _carrierReady,  // optimistic — carrier will report accurately
     }));
+    return;
+  }
+
+  // Restart request: proxy to Carrier for the 200, then arm a watchdog to force-kill
+  // if Carrier hasn't exited on its own within CARRIER_RESTART_WATCHDOG_MS.
+  // This prevents the indefinite hang where Carrier's process.exit(1) never fires
+  // (blocked event loop, zombie child, etc.) and _carrierReady stays false forever.
+  if (req.url.startsWith('/api/carrier/restart') && req.method === 'POST') {
+    const procAtStart = carrierProc;
+    waitForCarrier()
+      .then(() => proxyHttp(req, res))
+      .catch(() => {
+        if (!res.headersSent) { res.writeHead(503); res.end('Carrier starting'); }
+      })
+      .finally(() => {
+        // Arm watchdog: if the same Carrier process is still alive after the deadline,
+        // force-kill it so Super-Carrier's exit handler fires and respawns cleanly.
+        const watchdog = setTimeout(() => {
+          if (carrierProc && carrierProc === procAtStart && carrierProc.exitCode === null) {
+            console.warn('[SuperCarrier] ⚠ Carrier restart watchdog fired — force-killing hung Carrier');
+            try { carrierProc.kill('SIGKILL'); } catch {}
+          }
+        }, CARRIER_RESTART_WATCHDOG_MS);
+        watchdog.unref(); // don't keep Super-Carrier alive just for this timer
+      });
     return;
   }
 
