@@ -131,4 +131,4 @@ function resetOllamaStatus() {
   ollamaAvailable = null;
 }
 
-export { embed, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM };
+export { embed, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM, EMBED_MODEL };

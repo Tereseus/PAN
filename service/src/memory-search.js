@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 const sqliteVec = require('sqlite-vec');
 
 import { getDb } from './db-registry.js';
-import { embed, toBlob, EMBED_DIM } from './memory/embeddings.js';
+import { embed, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
 import { privatizeSearch } from './privacy.js';
 
 // Track which DB handles already have the vec extension loaded + tables
@@ -26,8 +26,95 @@ import { privatizeSearch } from './privacy.js';
 const initialized = new WeakSet();
 
 /**
- * Idempotent: load sqlite-vec into this DB handle and ensure the
- * event_embeddings vec0 virtual table exists. Safe to call repeatedly.
+ * Version-gated embedding table migration.
+ *
+ * Stores embedding_dim + embedding_model in the settings table as a version
+ * stamp. On boot:
+ *   - If no stamp exists (first tracked boot): probe-insert a 0-vector to
+ *     detect whether the existing vec table is dimensionally compatible.
+ *     Incompatible (or missing) → drop + recreate + write stamp.
+ *     Compatible → no-op + write stamp.
+ *   - If stamp exists and matches current config: nothing to do.
+ *   - If stamp exists but config has drifted (dim or model changed): drop +
+ *     recreate + update stamp. Old vectors are semantically meaningless across
+ *     model boundaries anyway.
+ *
+ * Returns true if the table was (re)built and a backfill is needed.
+ */
+function migrateEmbeddingTable(db) {
+  const storedDim   = db.prepare(`SELECT value FROM settings WHERE key = 'embedding_dim'`).get();
+  const storedModel = db.prepare(`SELECT value FROM settings WHERE key = 'embedding_model'`).get();
+  const currentDim   = String(EMBED_DIM);
+  const currentModel = EMBED_MODEL;
+
+  // ── First-time setup: migration tracking not yet written ─────────────────
+  if (!storedDim || !storedModel) {
+    // Check table existence first — "missing" and "wrong dim" are distinct states
+    // that warrant different log messages and have different row counts.
+    const tableExists = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='event_embeddings'`
+    ).get();
+
+    // Only probe if the table actually exists — probing a missing table would
+    // throw "no such table" which is NOT a dimension error and shouldn't be
+    // caught as one.
+    let tableCompatible = false;
+    if (tableExists) {
+      try {
+        const testVec = new Float32Array(EMBED_DIM).fill(0);
+        db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (-1, ?)`)
+          .run(Buffer.from(testVec.buffer));
+        db.prepare(`DELETE FROM event_embeddings WHERE rowid = -1`).run();
+        tableCompatible = true;
+      } catch (err) {
+        if (!/dimension/i.test(err.message)) throw err;
+        tableCompatible = false; // dimension mismatch — table exists but wrong dim
+      }
+    }
+    // tableCompatible=false covers both: table missing (tableExists=falsy) and
+    // table exists with wrong dimension.
+
+    if (!tableCompatible) {
+      const existingCount = tableExists
+        ? (db.prepare(`SELECT COUNT(*) as c FROM event_embeddings`).get()?.c ?? 0)
+        : 0;
+      if (existingCount > 0) {
+        console.warn(`[PAN MemorySearch] migration: dimension mismatch on first-tracked boot — dropping ${existingCount} stale rows (incompatible with ${currentModel}@${currentDim})`);
+      } else if (tableExists) {
+        console.log(`[PAN MemorySearch] migration: empty vec table with wrong dim — rebuilding for ${currentModel}@${currentDim}`);
+      } else {
+        console.log(`[PAN MemorySearch] migration: no vec table yet — creating for ${currentModel}@${currentDim}`);
+      }
+      db.exec(`DROP TABLE IF EXISTS event_embeddings`);
+      db.exec(`CREATE VIRTUAL TABLE event_embeddings USING vec0(embedding float[${EMBED_DIM}])`);
+    }
+    // If tableCompatible=true the table already exists with the right dim — nothing to do.
+
+    // Write version stamp so future boots skip the probe entirely
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('embedding_dim',   ?, datetime('now','localtime'))`).run(currentDim);
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('embedding_model', ?, datetime('now','localtime'))`).run(currentModel);
+    return !tableCompatible; // true = needs backfill
+  }
+
+  // ── Subsequent boots: check for config drift ──────────────────────────────
+  if (storedDim.value !== currentDim || storedModel.value !== currentModel) {
+    let existingCount = 0;
+    try { existingCount = db.prepare(`SELECT COUNT(*) as c FROM event_embeddings`).get()?.c ?? 0; } catch {}
+    console.warn(`[PAN MemorySearch] migration: embedding config changed — ${storedModel.value}@${storedDim.value} → ${currentModel}@${currentDim}. Dropping ${existingCount} rows and rebuilding.`);
+    db.exec(`DROP TABLE IF EXISTS event_embeddings`);
+    db.exec(`CREATE VIRTUAL TABLE event_embeddings USING vec0(embedding float[${EMBED_DIM}])`);
+    db.prepare(`UPDATE settings SET value = ?, updated_at = datetime('now','localtime') WHERE key = 'embedding_dim'`).run(currentDim);
+    db.prepare(`UPDATE settings SET value = ?, updated_at = datetime('now','localtime') WHERE key = 'embedding_model'`).run(currentModel);
+    return true; // needs backfill
+  }
+
+  return false; // no migration needed — table and stamp match current config
+}
+
+/**
+ * Idempotent: load sqlite-vec into this DB handle, run embedding migration,
+ * and ensure the event_embeddings vec0 virtual table exists and is correctly
+ * dimensioned. Safe to call repeatedly — only runs once per DB handle.
  */
 function ensureInitialized(db) {
   if (initialized.has(db)) return;
@@ -37,35 +124,17 @@ function ensureInitialized(db) {
     // Already loaded for this connection — extensions can throw on re-load.
     if (!/already loaded|already exists/i.test(err.message)) throw err;
   }
-  // vec0 virtual table — one row per event, embedding stored as float vector.
-  // We DON'T use FOREIGN KEY here because vec0 doesn't support it; we instead
-  // clean orphans on a periodic sweep (or by trigger) below.
-  //
-  // Migration: if EMBED_DIM changed (e.g. 3072 → 1024), drop and recreate.
-  // Old embeddings are invalid anyway since dimensions differ.
-  try {
-    const existing = db.prepare(`SELECT * FROM event_embeddings LIMIT 0`).columns();
-    // vec0 column info — check if dimensions match by trying an insert
-    // If table exists but dimensions mismatch, the safest path is recreate.
-  } catch {
-    // Table doesn't exist yet — will be created below
-  }
-  try {
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS event_embeddings USING vec0(
-      embedding float[${EMBED_DIM}]
-    )`);
-  } catch (err) {
-    if (/dimension/i.test(err.message) || /mismatch/i.test(err.message)) {
-      console.log(`[PAN Memory] Embedding dimension changed to ${EMBED_DIM} — rebuilding vector index...`);
-      db.exec(`DROP TABLE IF EXISTS event_embeddings`);
-      db.exec(`CREATE VIRTUAL TABLE event_embeddings USING vec0(
-        embedding float[${EMBED_DIM}]
-      )`);
-    } else {
-      throw err;
-    }
-  }
+  // Version-gated migration. Handles: fresh DB, stale dim, model change.
+  // After this returns, event_embeddings is guaranteed to exist and match EMBED_DIM.
+  const needsBackfill = migrateEmbeddingTable(db);
   initialized.add(db);
+  if (needsBackfill) {
+    // Fire backfill in the background — don't block server boot or the
+    // calling insert/search path. Progress logged every 200 embeddings.
+    setImmediate(() => backfillEmbeddings().catch(err => {
+      console.error('[PAN MemorySearch] backfill error:', err.message);
+    }));
+  }
 }
 
 /**
@@ -130,8 +199,10 @@ async function backfillEmbeddings(scope = 'main', batchSize = 50) {
     return { indexed, total: totalEvents, added: 0 };
   }
 
-  console.log(`[PAN MemorySearch] backfill starting: ${indexed}/${totalEvents}`);
+  const needed = totalEvents - indexed;
+  console.log(`[PAN MemorySearch] backfill starting: ${indexed}/${totalEvents} indexed, ${needed} to embed`);
   let added = 0;
+  const LOG_EVERY = 200; // log a progress line every N embeddings
   // Walk events that don't yet have an embedding row. We use a NOT IN
   // subquery against the small vec0 rowid space; for huge backlogs we
   // chunk by id range so we don't load everything into memory.
@@ -148,7 +219,12 @@ async function backfillEmbeddings(scope = 'main', batchSize = 50) {
     for (const row of batch) {
       try {
         const ok = await embedEvent(db, row);
-        if (ok) added++;
+        if (ok) {
+          added++;
+          if (added % LOG_EVERY === 0) {
+            console.log(`[PAN MemorySearch] backfill: +${added}/${needed} (${indexed + added}/${totalEvents} total)`);
+          }
+        }
       } catch (err) {
         console.warn(`[PAN MemorySearch] backfill embed failed for event ${row.id}:`, err.message);
       }
@@ -156,7 +232,7 @@ async function backfillEmbeddings(scope = 'main', batchSize = 50) {
     // Yield to the event loop so the server stays responsive.
     await new Promise(r => setImmediate(r));
   }
-  console.log(`[PAN MemorySearch] backfill complete: +${added} embeddings`);
+  console.log(`[PAN MemorySearch] backfill complete: +${added} embeddings (${indexed + added}/${totalEvents} total)`);
   return { indexed: indexed + added, total: totalEvents, added };
 }
 
