@@ -59,14 +59,15 @@ function pipeSend(sessionId, userText) {
     const resumeId = session.claudeSessionIds?.[session.claudeSessionIds.length - 1] || null;
     
     // 2. Instantiate the correct adapter
+    let _adapterMsgCount = 0; // tracks how many adapter messages we've already appended
     const onMessage = (messages) => {
-      // Push transcript to all connected WebSocket clients
+      // Append only new messages since last callback — adapter passes its full array each time
       session.lastOutputTs = Date.now();
       session.claudeRunning = session._llmAdapter?.busy || false;
-      for (const client of session.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          try { client.send(JSON.stringify({ type: 'transcript_messages', messages })); } catch {}
-        }
+      const newMsgs = messages.slice(_adapterMsgCount);
+      _adapterMsgCount = messages.length;
+      for (const msg of newMsgs) {
+        appendMessage(session, { ...msg, source: 'adapter' });
       }
       // Persist the session ID back to the session + token (for resume)
       const csid = session._llmAdapter?.getSessionId?.();
@@ -150,19 +151,11 @@ function pipeSetModel(sessionId, modelId) {
 }
 
 // Get all transcript messages for a session (for HTTP fallback on page load)
+// Now returns the unified message log — single source of truth.
 function getSessionMessages(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return [];
-  // PTY sessions store messages in _streamMessages; adapter/pipe sessions use _llmAdapter.
-  // Never merge both — PTY sessions can have _llmAdapter created for pipe sends too,
-  // which would double every message in the HTTP fallback response.
-  const system = session.systemMessages || [];
-  const msgs = session._streamMessages?.length
-    ? session._streamMessages
-    : (session._llmAdapter?.getMessages?.() || []);
-  const all = [...system, ...msgs];
-  all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-  return all;
+  return session.messages || [];
 }
 
 // Trim _streamMessages to prevent unbounded memory growth.
@@ -200,6 +193,56 @@ function _flushStreamTranscript(sess) {
       try {
         client.send(payload);
       } catch {}
+    }
+  }
+}
+
+// ==================== Unified Message Log ====================
+// Single source of truth for all session messages.
+// appendMessage is the ONLY way to add messages. flushBroadcast is the ONLY way to push to clients.
+// _streamMessages, systemMessages, and adapter internal arrays are legacy — stop writing to them.
+
+function appendMessage(session, message) {
+  if (!session.messages) session.messages = [];
+  if (!message.ts) message.ts = new Date().toISOString();
+  if (!message.source) message.source = 'system';
+
+  // Dedup: same source + same text within 50ms → drop silently
+  const last = session.messages[session.messages.length - 1];
+  if (last
+      && last.source === message.source
+      && last.text === message.text
+      && Math.abs(new Date(last.ts) - new Date(message.ts)) < 50) {
+    return;
+  }
+
+  session.messages.push(message);
+  session._messageVersion = (session._messageVersion || 0) + 1;
+
+  if (session.messages.length > MAX_STREAM_MESSAGES) {
+    session.messages = session.messages.slice(-MAX_STREAM_MESSAGES);
+  }
+
+  scheduleBroadcast(session);
+}
+
+function scheduleBroadcast(session) {
+  if (session._broadcastTimer) return;
+  session._broadcastTimer = setTimeout(() => {
+    session._broadcastTimer = null;
+    flushBroadcast(session);
+  }, 100);
+}
+
+function flushBroadcast(session) {
+  const payload = JSON.stringify({
+    type: 'transcript_messages',
+    messages: session.messages || [],
+    version: session._messageVersion || 0,
+  });
+  for (const client of session.clients) {
+    if (client.readyState === 1) {
+      try { client.send(payload); } catch {}
     }
   }
 }
@@ -576,8 +619,10 @@ async function startTerminalServer(httpServer) {
           createdAt: Date.now(),
           renderTimer: null,
           lastRendered: '',
-          // System messages (banners, PTY events, interrupts) that persist
-          // across transcript refreshes. Merged into every transcript push.
+          // Unified message log — single source of truth (see appendMessage/flushBroadcast)
+          messages: [],
+          _messageVersion: 0,
+          // Legacy arrays — kept for read compat, no longer written to directly
           systemMessages: [],
           // Liveness tracking — used by listSessions() so the dashboard can
           // derive a real "thinking" state from input-vs-output recency,
@@ -703,11 +748,12 @@ async function startTerminalServer(httpServer) {
               // Assistant message — extract clean text and tool use
               for (const block of evt.message.content) {
                 if (block.type === 'text' && block.text?.trim()) {
-                  session._streamMessages.push({
+                  appendMessage(session, {
                     role: 'assistant', type: 'text',
                     text: block.text,
                     ts: new Date().toISOString(),
                     model: evt.message.model || null,
+                    source: 'pty',
                   });
                 } else if (block.type === 'tool_use') {
                   const name = block.name || 'unknown';
@@ -720,19 +766,15 @@ async function startTerminalServer(httpServer) {
                   else if (name === 'Grep' && input.pattern) summary = `Grep: ${input.pattern.substring(0, 60)}`;
                   else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
                   else if (name === 'Agent' && (input.description || input.prompt)) summary = `Agent: ${(input.description || input.prompt).substring(0, 80)}`;
-                  session._streamMessages.push({
+                  appendMessage(session, {
                     role: 'assistant', type: 'tool',
                     text: summary,
                     ts: new Date().toISOString(),
+                    source: 'pty',
                   });
                 }
               }
-              // Trim to prevent unbounded growth (memory leak)
-              if (session._streamMessages.length > MAX_STREAM_MESSAGES) {
-                session._streamMessages = session._streamMessages.slice(-MAX_STREAM_MESSAGES);
-              }
-              // Push updated transcript to all clients
-              _pushStreamTranscript(session);
+              // appendMessage handles dedup, trim, and broadcast scheduling
 
             } else if (evt.type === 'result') {
               // Turn complete — Claude exited back to bash
@@ -740,9 +782,10 @@ async function startTerminalServer(httpServer) {
               console.log(`[PAN Terminal] Stream result: turns=${evt.num_turns} cost=$${evt.total_cost_usd?.toFixed(4)} in ${sessionId}`, JSON.stringify(Object.keys(evt)));
               // Push turn stats with cumulative cost + tokens
               const tt = session._tokenTotals || { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
-              session._streamMessages.push({
+              appendMessage(session, {
                 role: 'system', type: 'turn_stats',
                 ts: new Date().toISOString(),
+                source: 'pty',
                 tokens: {
                   total_input: tt.input,
                   total_output: tt.output,
@@ -751,12 +794,7 @@ async function startTerminalServer(httpServer) {
                   total_cost: evt.total_cost_usd ?? null,
                 },
               });
-              // #437: after each turn completes, aggressively trim to prevent unbounded growth
-              if (session._streamMessages.length > 100) {
-                session._streamMessages = session._streamMessages.slice(-50);
-              }
-              // Final push
-              _pushStreamTranscript(session);
+              // appendMessage handles trim and broadcast scheduling
             }
           }
 
@@ -831,8 +869,12 @@ async function startTerminalServer(httpServer) {
             project: session.project,
           });
           // Add PTY exit as system message so it shows in transcript
-          const exitMsg = { role: 'system', type: 'banner', text: `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`, ts: new Date().toISOString() };
-          if (session.systemMessages) session.systemMessages.push(exitMsg);
+          appendMessage(session, {
+            role: 'system', type: 'banner',
+            text: `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`,
+            ts: new Date().toISOString(),
+            source: 'system',
+          });
           for (const client of session.clients) {
             if (client.readyState === 1) {
               client.send(JSON.stringify({
@@ -841,11 +883,13 @@ async function startTerminalServer(httpServer) {
                 uptime_ms: uptimeMs,
                 project: session.project,
               }));
-              // Push updated system messages so PTY exit appears in transcript
+              // Flush unified message log so PTY exit appears in transcript immediately
               try {
-                const merged = [...(session.systemMessages || []), ...(session._lastTranscriptMessages || [])];
-                merged.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-                client.send(JSON.stringify({ type: 'transcript_messages', messages: merged }));
+                client.send(JSON.stringify({
+                  type: 'transcript_messages',
+                  messages: session.messages || [],
+                  version: session._messageVersion || 0,
+                }));
               } catch {}
             }
           }
@@ -928,17 +972,16 @@ async function startTerminalServer(httpServer) {
     // (triggered by the dashboard auto-launch) IS the briefing. A separate system
     // banner was rendering as a red warning box which looked wrong.
 
-    // On connect/reconnect, push all transcript messages immediately.
-    // Merge: system messages + PTY stream messages + pipe mode adapter messages.
+    // On connect/reconnect, push unified message log immediately.
     {
-      const stream = session._streamMessages || [];
-      const adapter = session._llmAdapter?.getMessages?.() || [];
-      const system = session.systemMessages || [];
-      const all = [...system, ...stream, ...adapter];
-      if (all.length > 0) {
-        all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+      const msgs = session.messages || [];
+      if (msgs.length > 0) {
         try {
-          ws.send(JSON.stringify({ type: 'transcript_messages', messages: all }));
+          ws.send(JSON.stringify({
+            type: 'transcript_messages',
+            messages: msgs,
+            version: session._messageVersion || 0,
+          }));
         } catch {}
       }
     }
@@ -958,16 +1001,12 @@ async function startTerminalServer(httpServer) {
               if (pipeMatch) {
                 const userText = pipeMatch[1].replace(/'\\''/g, "'");
                 if (userText.trim() && !/ΠΑΝ remembers/i.test(userText)) {
-                  session._streamMessages = session._streamMessages || [];
-                  session._streamMessages.push({
+                  appendMessage(session, {
                     role: 'user', type: 'prompt',
                     text: userText.trim(),
                     ts: new Date().toISOString(),
+                    source: 'pty',
                   });
-                  if (session._streamMessages.length > MAX_STREAM_MESSAGES) {
-                    session._streamMessages = session._streamMessages.slice(-MAX_STREAM_MESSAGES);
-                  }
-                  _pushStreamTranscript(session);
                 }
               }
             }
@@ -977,11 +1016,14 @@ async function startTerminalServer(httpServer) {
             // User pressed Escape — interrupt Claude
             session.lastInputTs = Date.now();
             if (session._llmAdapter && session._llmAdapter.busy) {
-              // Pipe mode: abort the active SDK query
+              // Pipe mode (SDK): abort the active SDK query
               pipeInterrupt(sessionId);
-            } else if (session.pty) {
-              // Legacy PTY mode: send ESC char
-              session.pty.write('\x1b');
+            }
+            if (session.pty) {
+              // PTY mode: send Ctrl+C (\x03) — this is the actual SIGINT/interrupt
+              // signal in terminal emulators. ESC alone only works in Claude's TUI
+              // input field; Ctrl+C interrupts mid-generation reliably.
+              session.pty.write('\x03');
               writeSystemMessage(sessionId, 'interrupt', 'Interrupted (Escape)');
             }
             break;
