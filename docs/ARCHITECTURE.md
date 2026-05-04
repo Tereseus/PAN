@@ -2,7 +2,7 @@
 
 This document describes what is **currently built and running** in PAN.
 For aspirational specs, see `docs/BLE-MESH.md`, `docs/DATA-DIVIDENDS.md`,
-`docs/HOME-ASSISTANT.md`. For feature-level detail, see `FEATURES.md`.
+`docs/HOME-ASSISTANT.md`. For feature-level detail, see `docs/FEATURES.md`.
 
 ---
 
@@ -84,7 +84,7 @@ Loop restarts on crash (exit ≠ 0), stops on clean exit (code 0).
 │  │ TERMINAL (PTY + CLAUDE)                                      │   │
 │  │ claude -p --project <dir> --model <model>                    │   │
 │  │ WebSocket push: transcript_messages → dashboard              │   │
-│  │ MCP server: 8 tools + 20+ router actions (see FEATURES.md)  │   │
+│  │ MCP server: 8 tools + 20+ router actions (see docs/FEATURES.md)│  │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │

@@ -242,4 +242,4 @@ Sends capabilities on each heartbeat.
 | Context resumption for clarifications | Not built | Store pending_intent in session, resume on next turn |
 | Usage tracking (success/fail per route) | Not built | action_history table → feeds recommendation engine |
 
-See [FEATURES.md] for the full feature registry.
+See [FEATURES.md](./FEATURES.md) for the full feature registry.
