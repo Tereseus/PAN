@@ -2745,7 +2745,12 @@
 			const items = [];
 			for (const m of allMessages) {
 				const cleanText = (m.text || '').replace(/^\[Pasted text #\d+ \+\d+ lines\]/, '').trimStart();
-				const sig = (m.role || '') + '|' + (m.type || '') + '|' + normalize(cleanText);
+				// Tool messages carry a per-session _seq counter (set by appendMessage
+				// in terminal.js) so each invocation — even same file read N times —
+				// produces a unique sig. Non-tool messages keep role|type|text so the
+				// echo/JSONL dedup pair still collapses correctly.
+				const sig = (m.role || '') + '|' + (m.type || '') + '|' + normalize(cleanText)
+					+ (m._seq != null ? '|' + m._seq : '');
 				if (sig.length > 10 && seenSig.has(sig)) continue;
 				seenSig.add(sig);
 
