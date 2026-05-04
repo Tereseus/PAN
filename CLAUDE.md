@@ -175,13 +175,20 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 | `service/src/routes/client.js` | Client API — device approval, command dispatch, metrics, heartbeat |
 | `service/src/webcam-watcher.js` | Webcam presence — face ID every 30s, identity lock, auto-enroll |
 | `service/src/screen-watcher.js` | Screen watcher — vision AI screenshot every 60s, primary activity signal |
+| `service/src/activity-tracker.js` | Foreground window tracker — polls every 3s, logs to activity_events table |
+| `service/src/dashboard-watchdog.js` | Stuck-screen detector — brightness check every 10s, triggers Craft swap on black screen |
 | `service/src/pan-notify.js` | Service messaging — Scout/Dream/Pipeline → user via ΠΑΝ chat thread |
 | `service/src/hooks/skill-learner.js` | Stop hook — auto-generates SKILL.md for novel sessions |
+| `service/src/routes/orgs.js` | Organization CRUD — per-org DBs, roles, ACL, cross-org sharing |
+| `service/src/routes/chat.js` | Chat system — threads, messages, ΠΑΝ system channel |
+| `service/src/routes/intuition.js` | Intuition engine — aggregates presence signals into voice router context |
+| `service/src/routes/zones.js` | Geofencing — zone definitions, active zone lookup, permission gating |
+| `service/src/routes/incognito.js` | Incognito sessions — isolated, no persistent trace, auto-expiry |
 | `service/installer/pan-installer.cjs` | Browser-based client installer with hardware model detection |
 | `pan-client/pan-client.js` | Client agent — runs on remote PCs, receives + executes commands |
 | `service/pan-loop.bat` | Windows respawn loop — restarts node on crash, stops on clean exit (code 0) |
 | `service/public/mobile/index.html` | Phone dashboard — static HTML, no build step, served at /mobile/ |
-| `dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (6000+ lines, both prod and dev) |
+| `service/dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (6000+ lines, both prod and dev) |
 
 ### Phone Dashboard Architecture
 The phone opens the dashboard via **Android WebView** (not a browser — no address bar).
@@ -222,12 +229,6 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### This Tab *(session: 75654542-596)*
-**Claude** (2026-05-04 06:13:32): **ΠΑΝ Remembers:**
-
-- **Last session** — discussed how many Craft instances exist simultaneously (up to **4**: `primaryCraft`, `previousCraft`, `shadowCraft`, + canary/phase variants)
-- **Last error** — `AttachConsole failed` crash in `node-pty/conpt
-**User** (2026-05-04 06:14:35): Let's see if I can send you a message
-**Claude** (2026-05-04 06:14:39): Message received loud and clear. What's up?
 **User** (2026-05-04 06:14:57): Show me the bugs we were working on before there was a lot of them at least up to 10
 **Claude** (2026-05-04 06:17:17): Here are the open items — PAN doesn't distinguish "bugs" as a separate type, everything's a task. The P1s are the closest to bugs:
 
@@ -241,6 +242,15 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 |---|-------------|-------|
 | #444 | May 3 | Terminal missing messages — output not rendering |
 | #439 | May 3 | Dupli
+**User** (2026-05-04 07:23:07): These are not done so I don't know why you mark these as as done but I need you to update documentation all of the documentation and then we need to push that to get about everything that exists and all the tool uses and stuff I believe we did this w
+**Claude** (2026-05-04 07:27:20): Pushed. Here's what just happened:
+
+**Reopened (all 8):**
+#444 terminal missing messages · #439 double-send · #438 steward recovery · #431 memory recall · #430 send delay · #435 screen watcher · #432 crash loops · #376 phone race condition
+
+**Created
+**User** (2026-05-04 07:28:56): No don't fucking make AAA dog called nightmare bugs don't make that fucking document what the fuck are you doing I'm TI told you to look at all of the documents we have that explain architecture and everything Get rid of that fucking document Look at
+**User** (2026-05-04 07:29:10): Actually keep that dock but just don't push it to Github
 
 ### Recent Project Work *(session: c8c4f450-efe)*
 **Claude** (2026-05-03 14:06:31): Up to **4** at once, from `carrier.js`:
@@ -264,8 +274,10 @@ Error: AttachConsole failed
 - [#434 backlog P2] Proactive assistant � PAN chimes in with relevant context without being asked
 - [#441 backlog P2] Intuition system � build proactive context engine tied to screen watcher + webcam presence
 - [#442 backlog P2] Phone dashboard tabs show wrong names � 'pan' + random numbers instead of session labels
-- [#437 backlog P1] UI performance degrades over time � fast on restart, becomes extremely slow after uptime
-- [#440 backlog P1] Phone response times slow + memory search unreliable from voice pipeline
-- [#443 backlog P1] Steward reports ollama as running but port is down � status mismatch
+- [#376 backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
+- [#430 backlog P1] Message send delay � enter key sometimes takes 30s to go through
+- [#431 backlog P1] Memory recall unreliable � search flaky, results incomplete
+- [#432 backlog P1] Crash loop stability � things crash and come back broken or don't restart
+- [#435 backlog P1] Screen watcher incorrect � triggers bad refreshes, not watching correctly
 
 <!-- PAN-CONTEXT-END -->
