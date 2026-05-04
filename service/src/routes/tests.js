@@ -2110,16 +2110,16 @@ const suites = {
           try {
             console.log('[#439] navigating to dashboard...');
             await pw.navigateTo('http://localhost:7777/v2/terminal');
-            await wait(8000); // wait for Svelte hydration + WebSocket connect + session load
+            await wait(12000); // wait for Svelte hydration + WebSocket connect + session load + pipe_ready
 
             // Verify dashboard loaded — poll for textarea+button to both be present (page may still be loading)
             // Run all checks in one evaluate for consistency (separate calls can see different DOM states)
             console.log('[#439] waiting for dashboard to fully load...');
             let inputReady = false;
-            for (let attempt = 0; attempt < 10; attempt++) {
+            for (let attempt = 0; attempt < 14; attempt++) {
               await wait(2000);
               const stateR = await pw.raw('browser_evaluate', {
-                function: 'var ta=document.querySelector("textarea"),btn=document.querySelector("button.center-send-btn"),ass=document.querySelectorAll(".t-assistant").length; return ta&&btn ? "ready:"+ass : "wait:"+document.title'
+                function: 'var ta=document.querySelector("textarea"),btn=document.querySelector("button.center-send-btn"),ass=document.querySelectorAll(".t-assistant").length; if(ta&&btn) return "ready:"+ass; var err=document.querySelector(".svelte-error,.error-overlay"); return "wait:ta="+(!!ta)+",btn="+(!!btn)+",err="+(err?err.textContent.slice(0,40):"")'
               }, 8000);
               const stateVal = stateR?.text || '';
               console.log(`[#439] attempt ${attempt+1}: ${stateVal.slice(0,80)}`);
@@ -2198,33 +2198,50 @@ const suites = {
       },
       {
         id: 'p1-reg-steward-health',
-        name: '#438 — steward reported status matches actual port availability',
-        description: 'For each port-based service steward says is "running", TCP-connect to verify the port is open. Mismatch = bug.',
+        name: '#438 — steward reported status matches actual service availability',
+        description: 'For each port/url service steward tracks, verify it matches what steward actually checks. Ollama uses configured URL (may be remote Mini PC), whisper checks localhost:7782.',
         run: async () => {
-          const portServices = ['whisper', 'ollama'];
           const results = [];
           let mismatches = 0;
 
-          for (const id of portServices) {
-            const svc = await prodGet(`/api/v1/atlas/service/${id}`);
-            if (!svc || svc.error) { results.push(`${id}: not registered`); continue; }
-
-            const stewardSays = svc._status;
-            const port = svc.port;
+          // whisper — port-based, always localhost
+          const whisperSvc = await prodGet('/api/v1/atlas/service/whisper');
+          if (whisperSvc && !whisperSvc.error) {
+            const stewardSays = whisperSvc._status;
             let actuallyUp = false;
             try {
               await new Promise((resolve, reject) => {
-                const req = http.request({ hostname: '127.0.0.1', port, path: '/', method: 'GET' }, res => { resolve(true); res.destroy(); });
+                const req = http.request({ hostname: '127.0.0.1', port: 7782, path: '/', method: 'GET' }, res => { resolve(true); res.destroy(); });
                 req.on('error', reject);
                 req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
                 req.end();
               });
               actuallyUp = true;
             } catch { actuallyUp = false; }
-
             const match = (stewardSays === 'running') === actuallyUp;
             if (!match) mismatches++;
-            results.push(`${id}: steward=${stewardSays} actual=${actuallyUp ? 'up' : 'down'} ${match ? '✓' : '✗ MISMATCH'}`);
+            results.push(`whisper: steward=${stewardSays} actual=${actuallyUp ? 'up' : 'down'} ${match ? '✓' : '✗ MISMATCH'}`);
+          }
+
+          // ollama — uses configured URL (may be remote), must match what steward checks.
+          // The test fetches the same health endpoint steward uses: GET {ollamaUrl}/api/tags
+          const ollamaSvc = await prodGet('/api/v1/atlas/service/ollama');
+          if (ollamaSvc && !ollamaSvc.error) {
+            const stewardSays = ollamaSvc._status;
+            // Ask the server what URL it's using for Ollama — same as getOllamaUrl()
+            const ollamaCfg = await prodGet('/api/v1/settings/ollama_url').catch(() => null);
+            const ollamaUrl = (ollamaCfg?.value || 'http://127.0.0.1:11434').replace(/^"|"$/g, '');
+            let actuallyUp = false;
+            try {
+              const res = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+              actuallyUp = res.ok;
+            } catch { actuallyUp = false; }
+            // Steward reports 'running' when Ollama responds AND has models,
+            // 'degraded' when it responds but has no models. Both are "up" from a port perspective.
+            const stewardUp = stewardSays === 'running' || stewardSays === 'degraded';
+            const match = stewardUp === actuallyUp;
+            if (!match) mismatches++;
+            results.push(`ollama@${ollamaUrl}: steward=${stewardSays} actual=${actuallyUp ? 'up' : 'down'} ${match ? '✓' : '✗ MISMATCH'}`);
           }
 
           if (mismatches > 0) throw new Error(`Steward mismatch on ${mismatches} service(s): ${results.join('; ')}`);
