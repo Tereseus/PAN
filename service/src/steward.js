@@ -15,7 +15,7 @@
 // Atlas reads from Steward's registry to render the service graph.
 
 import { get, all, run, insert, getOllamaUrl } from './db.js';
-import { sendToClient, getConnectedClients } from './client-manager.js';
+import { sendToClient } from './client-manager.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startIntuition, stopIntuition } from './intuition.js';
 import { startScout, stopScout } from './scout.js';
@@ -36,6 +36,51 @@ import { writeFileSync, existsSync } from 'fs';
 import { IS_USER_MODE, IS_SERVICE_MODE } from './mode.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ==================== SERVICE STATE MACHINE ====================
+// Single source of truth for every service's lifecycle state.
+// All mutations go through transitionServiceState() — never set _status directly.
+
+const ServiceState = {
+  UNKNOWN:   'unknown',   // initial — health not yet checked
+  STARTING:  'starting',  // startFn called, not yet confirmed running
+  RUNNING:   'running',   // confirmed healthy
+  DEGRADED:  'degraded',  // running but reporting errors (e.g. no models loaded)
+  DOWN:      'down',      // health check failed
+  GIVING_UP: 'giving_up', // exceeded max restart cycles — manual action required
+  STOPPED:   'stopped',   // intentionally disabled / not configured
+};
+
+const LEGAL_SERVICE_TRANSITIONS = {
+  [ServiceState.UNKNOWN]:   [ServiceState.STARTING, ServiceState.RUNNING, ServiceState.DOWN, ServiceState.STOPPED, ServiceState.DEGRADED],
+  [ServiceState.STARTING]:  [ServiceState.RUNNING, ServiceState.DOWN, ServiceState.DEGRADED],
+  [ServiceState.RUNNING]:   [ServiceState.DOWN, ServiceState.DEGRADED, ServiceState.STOPPED, ServiceState.STARTING],
+  [ServiceState.DEGRADED]:  [ServiceState.RUNNING, ServiceState.DOWN, ServiceState.STOPPED, ServiceState.STARTING],
+  [ServiceState.DOWN]:      [ServiceState.STARTING, ServiceState.RUNNING, ServiceState.GIVING_UP, ServiceState.STOPPED],
+  [ServiceState.GIVING_UP]: [ServiceState.STARTING, ServiceState.RUNNING, ServiceState.STOPPED],
+  [ServiceState.STOPPED]:   [ServiceState.STARTING, ServiceState.RUNNING, ServiceState.UNKNOWN],
+};
+
+function transitionServiceState(svc, newState, reason) {
+  const old = svc._status;
+  if (old === newState) return true; // no-op
+  const allowed = LEGAL_SERVICE_TRANSITIONS[old] || Object.values(ServiceState);
+  if (!allowed.includes(newState)) {
+    console.error(`[Steward] ILLEGAL transition for ${svc.id}: ${old} → ${newState} (${reason})`);
+    return false;
+  }
+  console.log(`[Steward] ${svc.id} state: ${old} → ${newState} (${reason})`);
+  svc._status = newState;
+  // Broadcast to all terminal sessions so the dashboard sidebar updates immediately
+  try {
+    broadcastNotification('service_status', {
+      service_id: svc.id,
+      state: newState,
+      last_error: svc._lastError || null,
+    });
+  } catch {}
+  return true;
+}
 
 // ==================== MODEL TIERS ====================
 // These define what kind of AI backend a service requires.
@@ -468,18 +513,18 @@ async function checkServiceHealth(svc) {
     switch (svc.healthCheck) {
       case 'port': {
         const result = await checkPortHealth(svc.port, svc.healthEndpoint || '/');
-        svc._status = result.up ? 'running' : 'down';
+        transitionServiceState(svc, result.up ? ServiceState.RUNNING : ServiceState.DOWN, 'port health check');
         break;
       }
       case 'url': {
-        // Health check against a full URL — supports remote hosts (e.g. Ollama on mini PC)
+        // Health check against a full URL — single source of truth for Ollama
+        // whether it's local or on Mini PC (getOllamaUrl() returns the configured URL).
         try {
           const url = getOllamaUrl() + (svc.healthEndpoint || '/');
           const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
           if (res.ok) {
             const data = await res.json().catch(() => ({}));
             const models = data.models || [];
-            svc._status = 'running';
             svc._modelCount = models.length;
             svc._models = models.map(m => m.name);
             // Warn loudly if Ollama is up but has no models (e.g. upgrade wiped them)
@@ -487,21 +532,22 @@ async function checkServiceHealth(svc) {
               console.warn('[Steward] ⚠️ Ollama models WIPED — was ' + svc._lastModelCount + ', now 0. Client watchdog should pull minicpm-v.');
             }
             svc._lastModelCount = models.length;
+            transitionServiceState(svc, models.length === 0 ? ServiceState.DEGRADED : ServiceState.RUNNING, 'url health check ok');
           } else {
-            svc._status = 'down';
+            transitionServiceState(svc, ServiceState.DOWN, `url health check HTTP ${res.status}`);
           }
-        } catch {
-          svc._status = 'down';
+        } catch (urlErr) {
+          transitionServiceState(svc, ServiceState.DOWN, `url health check failed: ${urlErr.message}`);
         }
         break;
       }
       case 'process': {
         const running = await checkProcessRunning(svc.processName, svc.processCmdLineMatch);
-        svc._status = running ? 'running' : 'down';
+        transitionServiceState(svc, running ? ServiceState.RUNNING : ServiceState.DOWN, 'process health check');
         break;
       }
       case 'interval': {
-        if (svc._status === 'stopped' || svc._status === 'unknown') {
+        if (svc._status === ServiceState.STOPPED || svc._status === ServiceState.UNKNOWN) {
           // Never started or explicitly stopped — leave as-is
           break;
         }
@@ -511,28 +557,28 @@ async function checkServiceHealth(svc) {
           // If 3x the interval has passed without a reportServiceRun call, it's dead
           const overdueThreshold = svc.intervalMs * 3;
           if (elapsed > overdueThreshold) {
-            svc._status = 'down';
             svc._lastError = `Overdue: last run ${Math.round(elapsed / 60000)}m ago (expected every ${Math.round(svc.intervalMs / 60000)}m)`;
+            transitionServiceState(svc, ServiceState.DOWN, svc._lastError);
           }
         }
         break;
       }
       case 'self': {
-        svc._status = 'running';
+        transitionServiceState(svc, ServiceState.RUNNING, 'self check');
         break;
       }
       case 'function': {
         // Embeddings — check if Ollama is responding to embedding requests
         const ollamaSvc = serviceMap.get('ollama');
-        svc._status = ollamaSvc?._status === 'running' ? 'running' : 'degraded';
+        transitionServiceState(svc, ollamaSvc?._status === ServiceState.RUNNING ? ServiceState.RUNNING : ServiceState.DEGRADED, 'function health check');
         break;
       }
       default:
-        svc._status = 'unknown';
+        transitionServiceState(svc, ServiceState.UNKNOWN, 'unknown health check type');
     }
   } catch (err) {
-    svc._status = 'error';
     svc._lastError = err.message;
+    transitionServiceState(svc, ServiceState.DOWN, `health check threw: ${err.message}`);
   }
   svc._lastCheck = now;
 }
@@ -584,12 +630,13 @@ async function bootAll() {
   for (const svc of bootable) {
     try {
       console.log(`[Steward] Starting ${svc.name} (${svc.interval}, model: ${svc.modelTier === 'none' ? 'none' : svc.modelCurrent})...`);
+      transitionServiceState(svc, ServiceState.STARTING, 'bootAll');
       svc.startFn();
-      svc._status = 'running';
+      transitionServiceState(svc, ServiceState.RUNNING, 'startFn returned');
       svc._lastRun = Date.now();
     } catch (err) {
-      svc._status = 'error';
       svc._lastError = err.message;
+      transitionServiceState(svc, ServiceState.DOWN, `startFn threw: ${err.message}`);
       console.error(`[Steward] ✗ ${svc.name} failed to start: ${err.message}`);
     }
   }
@@ -613,14 +660,14 @@ async function shutdownAll() {
 
   // Shutdown in reverse boot order
   const stoppable = services
-    .filter(s => s.stopFn && s._status === 'running')
+    .filter(s => s.stopFn && (s._status === ServiceState.RUNNING || s._status === ServiceState.DEGRADED || s._status === ServiceState.STARTING))
     .sort((a, b) => b.bootOrder - a.bootOrder);
 
   for (const svc of stoppable) {
     try {
       console.log(`[Steward] Stopping ${svc.name}...`);
       svc.stopFn();
-      svc._status = 'stopped';
+      transitionServiceState(svc, ServiceState.STOPPED, 'shutdownAll');
     } catch (err) {
       console.error(`[Steward] Error stopping ${svc.name}: ${err.message}`);
     }
@@ -654,7 +701,8 @@ async function healthCheck() {
     await checkServiceHealth(svc);
 
     // Detect status transitions and log them
-    if (prevStatus !== svc._status && prevStatus !== 'unknown') {
+    // (transitionServiceState also broadcasts service_status; this logs to DB and widget update)
+    if (prevStatus !== svc._status && prevStatus !== ServiceState.UNKNOWN) {
       logServiceEvent(svc.id, 'status_change', {
         from: prevStatus,
         to: svc._status,
@@ -673,15 +721,15 @@ async function healthCheck() {
       svc._restartPending = false; // consumed — next cycle will evaluate normally
       continue;
     }
-    if (svc._status === 'down' && svc.startFn && isServiceEnabled(svc)) {
+    if (svc._status === ServiceState.DOWN && svc.startFn && isServiceEnabled(svc)) {
       const now = Date.now();
       svc._restartFailures = svc._restartFailures || 0;
       svc._restartCooldownUntil = svc._restartCooldownUntil || 0;
       if (now < svc._restartCooldownUntil) {
         // still cooling down — skip silently
       } else if (svc._restartFailures >= 5) {
-        // Give up after 5 failed restart cycles. Log once, then stay quiet.
-        if (!svc._restartGaveUp) {
+        // Give up after 5 failed restart cycles — transition to GIVING_UP state once.
+        if (svc._status !== ServiceState.GIVING_UP) {
           console.error(`[Steward] ${svc.name} failed ${svc._restartFailures} restart cycles — giving up. Manual restart required.`);
           logServiceEvent(svc.id, 'restart_giveup', { failures: svc._restartFailures });
           createAlert({
@@ -696,20 +744,20 @@ async function healthCheck() {
               hint: 'Manual restart required. Check logs for root cause.'
             })
           });
-          svc._restartGaveUp = true;
+          transitionServiceState(svc, ServiceState.GIVING_UP, `${svc._restartFailures} failed restarts`);
         }
       } else {
         try {
           console.log(`[Steward] Auto-restarting ${svc.name}... (attempt ${svc._restartFailures + 1})`);
+          transitionServiceState(svc, ServiceState.STARTING, `auto-restart attempt ${svc._restartFailures + 1}`);
           svc.startFn();
-          // #438: do NOT set _status = 'running' here — let the next health check confirm it.
+          // #438: do NOT transition to RUNNING here — let the next health check confirm it.
           // Setting it immediately caused the health check to find it "still starting",
           // flip it back to 'down', and increment _restartFailures even on a good restart.
           svc._restartPending = true; // #438: grace flag — skip one 'down' detection cycle
           svc._lastRun = Date.now();
           logServiceEvent(svc.id, 'restart', { success: true });
-          // Exponential backoff: 1m, 2m, 4m, 8m, 16m. Reset on a successful
-          // health check (handled below in checkServiceHealth path).
+          // Exponential backoff: 1m, 2m, 4m, 8m, 16m.
           // #438: only increment failure counter in the catch block (startFn threw)
           svc._restartCooldownUntil = now + Math.min(60_000 * Math.pow(2, svc._restartFailures), 16 * 60_000);
         } catch (err) {
@@ -717,14 +765,14 @@ async function healthCheck() {
           console.error(`[Steward] Failed to restart ${svc.name}: ${err.message}`);
           logServiceEvent(svc.id, 'restart', { success: false, error: err.message });
           svc._restartFailures += 1; // #438: only increment when startFn() actually threw
+          transitionServiceState(svc, ServiceState.DOWN, `restart failed: ${err.message}`);
           svc._restartCooldownUntil = now + Math.min(60_000 * Math.pow(2, svc._restartFailures - 1), 16 * 60_000);
         }
       }
-    } else if (svc._status === 'running' && svc._restartFailures) {
+    } else if (svc._status === ServiceState.RUNNING && svc._restartFailures) {
       // Service recovered — reset backoff counters.
       svc._restartFailures = 0;
       svc._restartCooldownUntil = 0;
-      svc._restartGaveUp = false;
     }
   }
 
@@ -758,10 +806,9 @@ async function healthCheck() {
     }
   }
 
-  // ── Remote Ollama watchdog ────────────────────────────────────────────────
-  // When a remote device reports Ollama as down for 2+ consecutive heartbeats,
-  // send a restart_service command to that device.
-  await checkRemoteOllama();
+  // Remote Ollama watchdog removed (Part 4 refactor):
+  // The 'ollama' service entry uses healthCheck:'url' against getOllamaUrl().
+  // This already works whether Ollama is local or on Mini PC — single source of truth.
 
   // Log a heartbeat event
   try {
@@ -782,67 +829,10 @@ async function healthCheck() {
   } catch {}
 }
 
-// ── Remote Ollama watchdog helpers ──────────────────────────────────────────
-// Per-device consecutive "ollama down" counter.
-// Resets to 0 when Ollama is seen as up for that device.
-const _remoteOllamaDownCounts = new Map(); // deviceId → count
-// Per-device last-restart timestamp to avoid re-spamming.
-const _remoteOllamaLastRestart = new Map(); // deviceId → timestamp
-const REMOTE_OLLAMA_RESTART_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
-const REMOTE_OLLAMA_DOWN_THRESHOLD = 2; // consecutive heartbeats before acting
-
-async function checkRemoteOllama() {
-  try {
-    const clients = getConnectedClients();
-    for (const client of clients) {
-      if (!client.trusted) continue;
-      const deviceId = client.device_id;
-      const services = client.reported_services;
-      if (!Array.isArray(services)) continue;
-
-      const ollamaSvc = services.find(s => s.name === 'ollama');
-      if (!ollamaSvc) continue;
-
-      if (ollamaSvc.status === 'up' || ollamaSvc.status === 'running') {
-        // Recovered — reset counter
-        if (_remoteOllamaDownCounts.get(deviceId)) {
-          console.log(`[Steward] Remote Ollama recovered on ${deviceId}`);
-        }
-        _remoteOllamaDownCounts.set(deviceId, 0);
-        continue;
-      }
-
-      if (ollamaSvc.status === 'down') {
-        const count = (_remoteOllamaDownCounts.get(deviceId) || 0) + 1;
-        _remoteOllamaDownCounts.set(deviceId, count);
-        console.log(`[Steward] Remote Ollama down on ${deviceId} (${count} consecutive)`);
-
-        if (count >= REMOTE_OLLAMA_DOWN_THRESHOLD) {
-          const now = Date.now();
-          const lastRestart = _remoteOllamaLastRestart.get(deviceId) || 0;
-          if (now - lastRestart < REMOTE_OLLAMA_RESTART_COOLDOWN_MS) continue;
-
-          console.log(`[Steward] Sending restart_service(ollama) to ${deviceId}`);
-          _remoteOllamaLastRestart.set(deviceId, now);
-          // Reset count so we don't spam on the next cycle
-          _remoteOllamaDownCounts.set(deviceId, 0);
-
-          sendToClient(deviceId, 'restart_service', { service: 'ollama' }, 60_000)
-            .then(result => {
-              console.log(`[Steward] restart_service(ollama) result from ${deviceId}:`, result?.status || 'ok');
-              logServiceEvent('remote-ollama-watchdog', 'restart_sent', { deviceId, result });
-            })
-            .catch(err => {
-              console.error(`[Steward] restart_service(ollama) failed for ${deviceId}: ${err.message}`);
-              logServiceEvent('remote-ollama-watchdog', 'restart_failed', { deviceId, error: err.message });
-            });
-        }
-      }
-    }
-  } catch (err) {
-    console.error(`[Steward] checkRemoteOllama error: ${err.message}`);
-  }
-}
+// Remote Ollama watchdog removed (Part 4 refactor).
+// The ollama service entry uses healthCheck:'url' against getOllamaUrl() which
+// already handles both local and remote Ollama via the configured URL.
+// Two sources of truth (local health check + remote device report) caused #438.
 
 async function cleanZombieSessions() {
   try {
@@ -1110,11 +1100,11 @@ function getAtlasData() {
     // Summary stats
     summary: {
       total: services.length,
-      running: services.filter(s => s._status === 'running').length,
-      stopped: services.filter(s => s._status === 'stopped').length,
-      down: services.filter(s => s._status === 'down').length,
-      error: services.filter(s => s._status === 'error').length,
-      unknown: services.filter(s => s._status === 'unknown').length,
+      running: services.filter(s => s._status === ServiceState.RUNNING).length,
+      stopped: services.filter(s => s._status === ServiceState.STOPPED).length,
+      down: services.filter(s => s._status === ServiceState.DOWN || s._status === ServiceState.GIVING_UP).length,
+      degraded: services.filter(s => s._status === ServiceState.DEGRADED).length,
+      unknown: services.filter(s => s._status === ServiceState.UNKNOWN || s._status === ServiceState.STARTING).length,
     },
     timestamp: Date.now(),
   };
@@ -1132,10 +1122,10 @@ function reportServiceRun(serviceId, error = null) {
     svc._lastRun = Date.now();
     if (error) {
       svc._lastError = error;
-      svc._status = 'error';
+      transitionServiceState(svc, ServiceState.DEGRADED, `reportServiceRun error: ${error}`);
     } else {
       svc._lastError = null;
-      svc._status = 'running';
+      transitionServiceState(svc, ServiceState.RUNNING, 'reportServiceRun success');
     }
   }
 }
