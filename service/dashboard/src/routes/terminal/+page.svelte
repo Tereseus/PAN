@@ -4876,6 +4876,10 @@
 						if (consecutiveOk >= 2) {
 							clearInterval(poll);
 							window._panSwapPolling = false;
+							// Mark swap reload so onMount skips clearing pan_claude_launched:
+							// guards — Claude is already running, clearing them causes a fresh
+							// re-launch and a new adapter session UUID.
+							sessionStorage.setItem('pan_swap_in_progress', '1');
 							window.location.href = pageUrl + '?t=' + Date.now();
 						}
 					} else { consecutiveOk = 0; }
@@ -4894,11 +4898,15 @@
 		// Load wrapped app services for the Apps panel
 		loadWrapServices();
 		// Clear auto-launch guards on page load so Claude greets on refresh.
-		// The "existing messages" check (line ~1319) prevents double-greeting
-		// if Claude is already mid-session.
-		for (let i = sessionStorage.length - 1; i >= 0; i--) {
-			const key = sessionStorage.key(i);
-			if (key?.startsWith('pan_claude_launched:')) sessionStorage.removeItem(key);
+		// Exception: swap-triggered reloads preserve the guards so Claude isn't
+		// re-launched into a fresh session — the existing process is still live.
+		const isSwapReload = sessionStorage.getItem('pan_swap_in_progress') === '1';
+		sessionStorage.removeItem('pan_swap_in_progress');
+		if (!isSwapReload) {
+			for (let i = sessionStorage.length - 1; i >= 0; i--) {
+				const key = sessionStorage.key(i);
+				if (key?.startsWith('pan_claude_launched:')) sessionStorage.removeItem(key);
+			}
 		}
 
 		// Check URL params — apps open in new windows with ?view=atlas etc.
