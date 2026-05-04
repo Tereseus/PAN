@@ -2021,6 +2021,30 @@
 							if (msg.mode) tabData._sessionMode = msg.mode;
 							break;
 						}
+						case 'pipe_ready': {
+							// Backend adapter finished (normal completion, error recovery, or watchdog
+							// recovery from stuck-WORKING). Re-enable input immediately.
+							// This fires from pipeSend.then(), pipeSend.catch(), and the 60/90s watchdog.
+							tabData.claudeReady = true;
+							if (activeTabId === tabData.id) claudeReady = true;
+							break;
+						}
+						case 'sync_response': {
+							// Response to our sync_request — apply authoritative server state.
+							// Fired on reconnect so we don't rely on stale local state.
+							if (msg.state) {
+								tabData._sessionState = msg.state;
+								const working = msg.state === 'working' || msg.state === 'interrupted';
+								tabData.claudeReady = !working;
+								if (activeTabId === tabData.id) claudeReady = !working;
+							}
+							if (msg.mode) tabData._sessionMode = msg.mode;
+							if (Array.isArray(msg.messages) && msg.messages.length > 0) {
+								tabData._unifiedMessages = msg.messages;
+								renderTranscriptToTerminal(tabData);
+							}
+							break;
+						}
 						case 'service_status': {
 							// Service state machine update (Part 4 refactor).
 							// Update servicesData in-place — no full refetch needed.
@@ -2138,10 +2162,10 @@
 						startPing();
 
 						// Ask server for current state snapshot (Part 5 refactor).
-						// Server responds with current service states, inbox counts, task statuses
-						// so we don't have to wait for the next polling cycle to catch up.
+						// 'session' kind returns authoritative state/mode/messages so we don't
+						// inherit stale claudeReady=false from pre-reconnect local state.
 						try {
-							newWs.send(JSON.stringify({ type: 'sync_request', kinds: ['services', 'tasks'] }));
+							newWs.send(JSON.stringify({ type: 'sync_request', kinds: ['services', 'tasks', 'session'] }));
 						} catch {}
 
 						// Only relaunch Claude on reconnect if the SERVER actually restarted
