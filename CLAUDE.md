@@ -11,6 +11,10 @@ PAN is a persistent AI operating system across all devices, projects, and conver
 > before touching anything in `terminal/+page.svelte` related to messages, chat bubbles,
 > or rendering. The Svelte proxy vs raw object distinction is the #1 source of bugs here.
 
+> **Nightmare bugs: read [docs/NIGHTMARE_BUGS.md](./docs/NIGHTMARE_BUGS.md) before fixing any recurring bug.**
+> These 8 bugs (#444, #439, #438, #431, #430, #435, #432, #376) keep coming back because of
+> architectural root causes — not one-off mistakes. Do NOT mark them done without a regression test.
+
 ## Architecture
 
 ```mermaid
@@ -217,68 +221,51 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 12ef44d1-ec1)*
-**Claude** (2026-04-30 17:51:37): **ΠΑΝ Remembers:**
-- Fixed SQLite migration (org_id index ordering bug)
-- Disabled Windows Voice Typing cache / confirmed SpeechRuntime not running
-- SSH'd into **Minipc-Ted** (success) and **TedGL** (key auth failed — pubkey not in authorized_keys)
+### This Tab *(session: 75654542-596)*
+**Claude** (2026-05-04 06:13:32): **ΠΑΝ Remembers:**
 
-**User** (2026-04-30 17:55:22): So do you now have access to my Predator computer
-**Claude** (2026-04-30 17:55:39): Not yet — only **TedGL** and **Minipc-Ted** are registered. The Predator hasn't connected.
+- **Last session** — discussed how many Craft instances exist simultaneously (up to **4**: `primaryCraft`, `previousCraft`, `shadowCraft`, + canary/phase variants)
+- **Last error** — `AttachConsole failed` crash in `node-pty/conpt
+**User** (2026-05-04 06:14:35): Let's see if I can send you a message
+**Claude** (2026-05-04 06:14:39): Message received loud and clear. What's up?
+**User** (2026-05-04 06:14:57): Show me the bugs we were working on before there was a lot of them at least up to 10
+**Claude** (2026-05-04 06:17:17): Here are the open items — PAN doesn't distinguish "bugs" as a separate type, everything's a task. The P1s are the closest to bugs:
 
-Did the installer run on it? If so, it may need to be approved here. If you haven't run it yet, grab a fresh token (the last one likely expired) and run this 
-**User** (2026-04-30 17:58:27): It says invalid token why wouldn't you give me an actual one
-**Claude** (2026-04-30 17:59:51): Fresh token, good for 60 minutes. Run this on the Predator:
+| # | Priority | Title |
+|---|----------|-------|
+| #443 | P1 | Steward reports ollama as running but port is down — s
+**User** (2026-05-04 06:19:43): No those are all incorrect That's not what we were talking about at all almost every I had a whole bunch of other bugs in here we made regression tests I don't know if you somehow mark those as complete because you're absolutely not complete they're 
+**Claude** (2026-05-04 06:20:19): These were all marked done on May 2–3. The ones that were likely bugs you're still seeing issues with:
 
-```powershell
-irm https://click-douglas-dow-corporate.trycloudflare.com/install/pan-167a127a1d5d74dacccbc69cc029d7c0 | iex
-```
+| # | Marked Done | Title |
+|---|-------------|-------|
+| #444 | May 3 | Terminal missing messages — output not rendering |
+| #439 | May 3 | Dupli
 
-It'll open a browser, type **Predator** as the name, hit conn
-**User** (2026-04-30 18:01:25): OK I guess it's up now right
-**Claude** (2026-04-30 18:01:42): Yep — **Predator PH315-51-TED** is online and trusted. All 3 machines connected:
+### Recent Project Work *(session: c8c4f450-efe)*
+**Claude** (2026-05-03 14:06:31): Up to **4** at once, from `carrier.js`:
 
-| Device | Status |
-|--------|--------|
-| Predator PH315-51-TED | ✅ Online |
-| TED Hub (TedGL) | ✅ Online |
-| Minipc-Ted | ✅ Online |
+| Variable | Role | When alive |
+|---|---|---|
+| `primaryCraft` | Serves all traffic | Always |
+| `previousCraft` | Rollback target | 30s after a swap |
+| `shadowCraft` | Canary / Phase 6 | When shadow mode is
+**User** (2026-05-03 14:06:31): how many craft are there
+**User** (2026-05-03 21:29:19): [Carrier!] C:\Users\tzuri\Desktop\PAN\service\node_modules\node-pty\lib\conpty_console_list_agent.js:13
+var consoleProcessList = getConsoleProcessList(shellPid);
+                         ^
 
-I can now send commands to it — o
-
-### Recent Project Work *(session: ebcc1b6c-e91)*
-**Claude** (2026-04-30 17:11:39): Cloudflare tunnel is still dead. Use the Tailscale IP directly instead — **run this on the Predator:**
-
-```powershell
-irm http://100.127.71.114:7777/install/pan-3921b5616208cfbf11cd15ea760d86e8 | iex
-```
-
-That hits the hub via Tailscale, no tunnel ne
-**User** (2026-04-30 17:12:42): Well it's kind of dangerous adding SSH to everything is it not Especially for people and users who have no idea what the fuck they're doing Well I guess the server is difficult to compromise the server We have a separation between client and server n
-**Claude** (2026-04-30 17:16:52): That URL is on the local LAN IP — Predator needs Tailscale. **Run this on the Predator:**
-
-```powershell
-irm http://100.127.71.114:7777/install/pan-ef7e4d7d373ac8f7997d30516a61fd58 | iex
-```
-
-Token expires in 30 min. The installer will now ask you to
-**User** (2026-04-30 17:19:51): What do I do to install it Why am I running it there can't you can't you remotely run it
-**Claude** (2026-04-30 17:21:29): Every port is blocked. Here's the honest answer:
-
-**The Windows Firewall on the Predator is blocking all inbound connections.** Tailscale gives us network routing (that's why ping works) but it can't get through the firewall to execute anything. SSH,
-**User** (2026-04-30 17:22:08): Add it to the installer add it add it to the installer and then I'll fucking run the PowerShell on the other computer
-**Claude** (2026-04-30 17:22:49): Done. Go run this on the Predator:
-
-```powershell
-irm http://100.127.71.114:7777/install/pan-ef7e4d7d373ac8f7997d30516a61fd58 | iex
-```
-
-Browser will open, type **Predator** in the name field, hit connect. It'll register, set the Tailscale hostname, 
+Error: AttachConsole failed
+    at Object.<anonymous> (C:\Us
 
 ### Open Tasks
 - [#394 backlog P2] Compose email — send returns HTTP 400, no email service wired
-- [#376 backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [#382 backlog P1] PAN.bat respawn loop failed to restart today
-- [#387 backlog] Task notifications overflow chat width
+- [#433 backlog P2] Regression test baseline � write tests before adding features so bugs stop coming back
+- [#434 backlog P2] Proactive assistant � PAN chimes in with relevant context without being asked
+- [#441 backlog P2] Intuition system � build proactive context engine tied to screen watcher + webcam presence
+- [#442 backlog P2] Phone dashboard tabs show wrong names � 'pan' + random numbers instead of session labels
+- [#437 backlog P1] UI performance degrades over time � fast on restart, becomes extremely slow after uptime
+- [#440 backlog P1] Phone response times slow + memory search unreliable from voice pipeline
+- [#443 backlog P1] Steward reports ollama as running but port is down � status mismatch
 
 <!-- PAN-CONTEXT-END -->
