@@ -63,7 +63,9 @@ function pipeSend(sessionId, userText) {
     const onMessage = (messages) => {
       // Append only new messages since last callback — adapter passes its full array each time
       session.lastOutputTs = Date.now();
-      session.claudeRunning = session._llmAdapter?.busy || false;
+      const adapterBusy = session._llmAdapter?.busy || false;
+      session.claudeRunning = adapterBusy; // legacy compat
+      if (adapterBusy) transitionState(session, SessionState.WORKING, 'adapter onMessage busy');
       const newMsgs = messages.slice(_adapterMsgCount);
       _adapterMsgCount = messages.length;
       for (const msg of newMsgs) {
@@ -102,10 +104,12 @@ function pipeSend(sessionId, userText) {
     } catch {}
   }
 
-  session.claudeRunning = true;
-  session.pipeMode = true; 
+  session.claudeRunning = true; // legacy compat
+  session.pipeMode = true;      // legacy compat
+  transitionState(session, SessionState.WORKING, 'pipeSend start');
   session._llmAdapter.send(userText).then(() => {
-    session.claudeRunning = false;
+    session.claudeRunning = false; // legacy compat
+    transitionState(session, SessionState.IDLE, 'pipeSend complete');
     // Notify ready
     for (const c of session.clients) {
       if (c.readyState === WebSocket.OPEN) {
@@ -121,7 +125,8 @@ function pipeInterrupt(sessionId) {
   const session = sessions.get(sessionId);
   if (!session?._llmAdapter) return false;
   session._llmAdapter.interrupt();
-  session.claudeRunning = false;
+  session.claudeRunning = false; // legacy compat
+  transitionState(session, SessionState.INTERRUPTED, 'pipeInterrupt');
   writeSystemMessage(sessionId, 'interrupt', 'Interrupted (Escape)');
   return true;
 }
@@ -195,6 +200,47 @@ function _flushStreamTranscript(sess) {
       } catch {}
     }
   }
+}
+
+// ==================== Session State Machine ====================
+// Single state field replaces claudeRunning + claudeExited + pipeMode booleans.
+// Every transition is logged. Illegal transitions are rejected and logged as bugs.
+
+const SessionState = {
+  STARTING:     'starting',     // PTY spawning or adapter initializing
+  IDLE:         'idle',         // Connected, waiting for input
+  WORKING:      'working',      // AI actively responding
+  INTERRUPTED:  'interrupted',  // User pressed Esc, cleanup in progress
+  EXITED:       'exited',       // PTY died or adapter ended, no recovery
+  RECONNECTING: 'reconnecting', // Carrier restart, waiting for reattach
+};
+
+const LEGAL_TRANSITIONS = {
+  [SessionState.STARTING]:     [SessionState.IDLE, SessionState.EXITED],
+  [SessionState.IDLE]:         [SessionState.WORKING, SessionState.EXITED, SessionState.RECONNECTING],
+  [SessionState.WORKING]:      [SessionState.IDLE, SessionState.INTERRUPTED, SessionState.EXITED],
+  [SessionState.INTERRUPTED]:  [SessionState.IDLE, SessionState.EXITED],
+  [SessionState.RECONNECTING]: [SessionState.IDLE, SessionState.EXITED],
+  [SessionState.EXITED]:       [],
+};
+
+function transitionState(session, newState, reason) {
+  const current = session.state || SessionState.STARTING;
+  if (current === newState) return true;
+  const allowed = LEGAL_TRANSITIONS[current] || [];
+  if (!allowed.includes(newState)) {
+    console.error(`[Session] ILLEGAL transition ${session.id || session.sessionId || '?'}: ${current} → ${newState} (${reason})`);
+    return false;
+  }
+  console.log(`[Session] ${session.id || session.sessionId || '?'} state: ${current} → ${newState} (${reason})`);
+  session.state = newState;
+  // Broadcast state so frontend binding is always server-authoritative
+  for (const client of session.clients) {
+    if (client.readyState === 1) {
+      try { client.send(JSON.stringify({ type: 'state', state: newState })); } catch {}
+    }
+  }
+  return true;
 }
 
 // ==================== Session Mode ====================
@@ -646,6 +692,8 @@ async function startTerminalServer(httpServer) {
           createdAt: Date.now(),
           renderTimer: null,
           lastRendered: '',
+          // Session state machine (see SessionState/transitionState)
+          state: SessionState.STARTING,
           // Session mode — controls which input path is active (see SessionMode/transitionMode)
           mode: SessionMode.PTY_ONLY,
           // Unified message log — single source of truth (see appendMessage/flushBroadcast)
@@ -672,6 +720,9 @@ async function startTerminalServer(httpServer) {
           sessionId,
           command: `${SHELL} ${SHELL_ARGS.join(' ')}`,
         });
+
+        // PTY is spawned and shell is ready — transition from STARTING to IDLE
+        transitionState(session, SessionState.IDLE, 'pty spawned');
 
         // ── AUTO-LAUNCH AI CLI ───────────────────────────────────────
         // If the provider is 'gemini', send the command to the PTY.
@@ -760,8 +811,9 @@ async function startTerminalServer(httpServer) {
             if (evt.type === 'system' && evt.subtype === 'init') {
               // Session init — capture Claude session ID + mark as running
               session._claudeSessionId = evt.session_id;
-              session.claudeRunning = true;
-              session.claudeExited = false;
+              session.claudeRunning = true;  // legacy compat
+              session.claudeExited = false;  // legacy compat
+              transitionState(session, SessionState.WORKING, 'stream init');
               console.log(`[PAN Terminal] Stream init: claude_session=${evt.session_id} in ${sessionId}`);
 
             } else if (evt.type === 'assistant' && evt.message?.content) {
@@ -807,7 +859,8 @@ async function startTerminalServer(httpServer) {
 
             } else if (evt.type === 'result') {
               // Turn complete — Claude exited back to bash
-              session.claudeRunning = false;
+              session.claudeRunning = false; // legacy compat
+              transitionState(session, SessionState.IDLE, 'stream result');
               console.log(`[PAN Terminal] Stream result: turns=${evt.num_turns} cost=$${evt.total_cost_usd?.toFixed(4)} in ${sessionId}`, JSON.stringify(Object.keys(evt)));
               // Push turn stats with cumulative cost + tokens
               const tt = session._tokenTotals || { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
@@ -832,7 +885,8 @@ async function startTerminalServer(httpServer) {
           const rawStripped = data.replace(/[\r\n]/g, '').trim();
           if (/\$\s*$/.test(rawStripped) && !rawStripped.startsWith('{')) {
             if (session.claudeRunning) {
-              session.claudeRunning = false;
+              session.claudeRunning = false; // legacy compat
+              transitionState(session, SessionState.IDLE, 'bash prompt detected');
             }
           }
 
@@ -887,6 +941,7 @@ async function startTerminalServer(httpServer) {
             console.log(`[PAN Terminal] Planned shutdown — skipping crash alert for ${sessionId}`);
           }
           // Persist PTY exit to per-tab transcript file
+          transitionState(session, SessionState.EXITED, `pty exit code=${exitCode}`);
           flushSession(sessionId);
           writeSystemMessage(sessionId, 'pty_exit', `PTY exited (code ${exitCode}, uptime ${Math.round(uptimeMs/1000)}s)`);
           // Also write to old Claude JSONL transcript (for backwards compat)
@@ -1225,7 +1280,10 @@ function listSessions() {
     // quiet for >2s AND input is older than output (i.e. genuinely waiting on the user).
     const inputNewer = lastIn > lastOut && now - lastOut > 300;
     const stillStreaming = lastIn > 0 && now - lastOut < 2000 && lastIn > lastOut - 60000;
-    const thinking = !!session.claudeRunning || inputNewer || stillStreaming;
+    // Derive thinking from state machine — WORKING means AI is actively responding.
+    // Fall back to legacy heuristics only if state hasn't been set yet (old sessions).
+    const stateMachineWorking = session.state === SessionState.WORKING || session.state === SessionState.INTERRUPTED;
+    const thinking = stateMachineWorking || !!session.claudeRunning || inputNewer || stillStreaming;
     const inFlight = getInFlightTool(session.cwd, session.claudeSessionIds);
     result.push({
       id,
@@ -1237,8 +1295,12 @@ function listSessions() {
       lastInputTs: lastIn,
       lastOutputTs: lastOut,
       thinking,
-      claudeRunning: !!session.claudeRunning,
-      pipeMode: !!session.pipeMode,
+      // State machine values (authoritative)
+      state: session.state || SessionState.IDLE,
+      mode: session.mode || SessionMode.PTY_ONLY,
+      // Legacy compat — derived from state machine, not from scattered booleans
+      claudeRunning: stateMachineWorking || !!session.claudeRunning,
+      pipeMode: (session.mode === SessionMode.ADAPTER) || !!session.pipeMode,
       currentTool: inFlight ? {
         tool: inFlight.tool,
         summary: inFlight.summary,
@@ -1507,6 +1569,10 @@ function createPipeSession(sessionId, { cwd = null, projectName = '' } = {}) {
     createdAt: Date.now(),
     renderTimer: null,
     lastRendered: '',
+    state: SessionState.IDLE, // pipe sessions are immediately ready (no PTY spawn wait)
+    mode: SessionMode.ADAPTER, // pipe sessions are always in adapter mode
+    messages: [],
+    _messageVersion: 0,
     systemMessages: [],
     lastInputTs: 0,
     lastOutputTs: Date.now(),
