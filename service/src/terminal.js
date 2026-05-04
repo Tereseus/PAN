@@ -1647,20 +1647,31 @@ function getSessionBufferSize(sessionId) {
 }
 
 // ── Stuck-WORKING watchdog ────────────────────────────────────────────────────
-// If a pipe session stays in WORKING state for >60s with no adapter activity,
-// it means the .catch() was missed or the adapter silently died.
-// Auto-recover to IDLE so the user can send again without refreshing.
+// If a pipe session stays in WORKING state for >60s with no output, recover to IDLE.
+// Two cases:
+//   A. Adapter is NOT busy — .catch() was missed or adapter silently died.
+//      Threshold: 60s no output.
+//   B. Adapter IS busy but hung — internal deadlock, network stall, etc.
+//      Threshold: 90s no output (extra grace, since real long responses are possible).
+// Previously the watchdog bailed on adapter.busy — meaning a hung-but-busy adapter
+// would keep the session stuck WORKING forever. Fixed: time threshold overrides busy.
 setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions) {
     if (session.state !== SessionState.WORKING) continue;
-    if (session._llmAdapter?.busy) continue; // adapter says it's still working — OK
     const lastOut = session.lastOutputTs || 0;
     const stuckMs = now - lastOut;
-    if (stuckMs > 60_000) {
-      console.warn(`[Terminal] Session ${id} stuck WORKING for ${Math.round(stuckMs/1000)}s with no adapter activity — recovering to IDLE`);
+    const adapterBusy = !!session._llmAdapter?.busy;
+    // Grace period: busy adapters get 90s, non-busy get 60s
+    const threshold = adapterBusy ? 90_000 : 60_000;
+    if (stuckMs > threshold) {
+      console.warn(`[Terminal] Session ${id} stuck WORKING for ${Math.round(stuckMs/1000)}s (adapterBusy=${adapterBusy}) — recovering to IDLE`);
       session.claudeRunning = false;
-      transitionState(session, SessionState.IDLE, `watchdog recovery: stuck ${Math.round(stuckMs/1000)}s`);
+      // Force-cancel the adapter if it claims to be busy but is clearly hung
+      if (adapterBusy) {
+        try { session._llmAdapter?.cancel?.(); } catch {}
+      }
+      transitionState(session, SessionState.IDLE, `watchdog recovery: stuck ${Math.round(stuckMs/1000)}s adapterBusy=${adapterBusy}`);
       // Tell clients we recovered so they re-enable the input immediately
       for (const c of session.clients) {
         if (c.readyState === WebSocket.OPEN) {
@@ -1669,6 +1680,6 @@ setInterval(() => {
       }
     }
   }
-}, 15_000); // check every 15s — catches stuck state within ~75s worst case
+}, 15_000); // check every 15s — catches stuck state within ~105s worst case (busy adapter)
 
 export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize };
