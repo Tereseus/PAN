@@ -7,7 +7,7 @@
 // subscribe; they all get the same updates. Watchers are torn down when
 // the last subscriber disconnects.
 
-import { watch as fsWatch, readFileSync, statSync, existsSync, readdirSync, appendFileSync } from 'fs';
+import { watch as fsWatch, openSync, readSync, closeSync, statSync, existsSync, readdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -83,26 +83,60 @@ export function writeSystemEvent(cwd, event, text, meta = {}) {
   }
 }
 
-// Parse a Claude Code JSONL transcript file into a flat list of messages.
-// Returns { messages: [{role, type, text, ts}], path }.
-function parseJsonlFile(filepath) {
+// Incrementally parse a Claude Code JSONL transcript file.
+// fileState: Map<filepath, { byteOffset, partialLine, messages, agentToolCalls }>
+//   — owned by the watcher entry, torn down when the watcher is torn down.
+//
+// First call reads the whole file; every subsequent call reads only the bytes
+// appended since last time. This keeps parse cost O(new data) instead of
+// O(total file size), which matters a lot in long sessions with many tool calls.
+function parseJsonlFileIncremental(filepath, fileState) {
+  let state = fileState.get(filepath);
+  if (!state) {
+    state = { byteOffset: 0, partialLine: '', messages: [], agentToolCalls: new Map() };
+    fileState.set(filepath, state);
+  }
+
   try {
-    const raw = readFileSync(filepath, 'utf-8').trim();
-    if (!raw) return [];
-    const lines = raw.split('\n');
-    const messages = [];
-    // Track Agent tool_use IDs so we can match tool_result blocks back to them
-    // and display sub-agent responses distinctly from the leader's own messages.
-    // key: tool_use_id → { description }
-    const agentToolCalls = new Map();
+    let st;
+    try { st = statSync(filepath); } catch { return state.messages; }
+
+    // File was replaced / truncated — reset and re-read from scratch
+    if (st.size < state.byteOffset) {
+      state.byteOffset = 0;
+      state.partialLine = '';
+      state.messages = [];
+      state.agentToolCalls = new Map();
+    }
+
+    if (st.size === state.byteOffset) return state.messages; // Nothing new
+
+    // Read only the bytes appended since last parse
+    const newByteCount = st.size - state.byteOffset;
+    const buf = Buffer.allocUnsafe(newByteCount);
+    const fd = openSync(filepath, 'r');
+    let bytesRead = 0;
+    try {
+      bytesRead = readSync(fd, buf, 0, newByteCount, state.byteOffset);
+    } finally {
+      closeSync(fd);
+    }
+    if (bytesRead === 0) return state.messages;
+    state.byteOffset += bytesRead;
+
+    // Prepend any leftover partial line from the previous read, then split
+    const chunk = state.partialLine + buf.slice(0, bytesRead).toString('utf-8');
+    const lines = chunk.split('\n');
+    state.partialLine = lines.pop() ?? ''; // last entry may be incomplete — hold for next read
 
     for (const line of lines) {
+      if (!line.trim()) continue;
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
 
       // System events (PTY exit, restart, disconnect, etc.) — written by writeSystemEvent()
       if (obj.type === 'system' && obj.event) {
-        messages.push({ role: 'system', type: obj.event, text: obj.text || obj.event, ts: obj.timestamp });
+        state.messages.push({ role: 'system', type: obj.event, text: obj.text || obj.event, ts: obj.timestamp });
         continue;
       }
 
@@ -110,16 +144,16 @@ function parseJsonlFile(filepath) {
       if (obj.type === 'user' && obj.message) {
         const content = obj.message.content;
         if (typeof content === 'string' && content.trim()) {
-          messages.push({ role: 'user', type: 'prompt', text: content, ts: obj.timestamp });
+          state.messages.push({ role: 'user', type: 'prompt', text: content, ts: obj.timestamp });
         } else if (Array.isArray(content)) {
           let textParts = [];
           for (const block of content) {
             if (block.type === 'text' && block.text?.trim()) {
               textParts.push(block.text);
-            } else if (block.type === 'tool_result' && agentToolCalls.has(block.tool_use_id)) {
+            } else if (block.type === 'tool_result' && state.agentToolCalls.has(block.tool_use_id)) {
               // This tool_result is the response from a sub-agent — emit it as a
               // distinct 'agent_result' message instead of folding it into the leader's turn.
-              const agentInfo = agentToolCalls.get(block.tool_use_id);
+              const agentInfo = state.agentToolCalls.get(block.tool_use_id);
               let resultText = '';
               if (typeof block.content === 'string') {
                 resultText = block.content;
@@ -127,7 +161,7 @@ function parseJsonlFile(filepath) {
                 resultText = block.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
               }
               if (resultText.trim()) {
-                messages.push({
+                state.messages.push({
                   role: 'agent',
                   type: 'agent_result',
                   text: resultText.trim(),
@@ -138,7 +172,7 @@ function parseJsonlFile(filepath) {
             }
           }
           if (textParts.length) {
-            messages.push({ role: 'user', type: 'prompt', text: textParts.join('\n'), ts: obj.timestamp });
+            state.messages.push({ role: 'user', type: 'prompt', text: textParts.join('\n'), ts: obj.timestamp });
           }
         }
         continue;
@@ -149,7 +183,7 @@ function parseJsonlFile(filepath) {
         const model = obj.message?.model || null;
         for (const block of obj.message.content) {
           if (block.type === 'text' && block.text) {
-            messages.push({ role: 'assistant', type: 'text', text: block.text, ts: obj.timestamp, model });
+            state.messages.push({ role: 'assistant', type: 'text', text: block.text, ts: obj.timestamp, model });
           } else if (block.type === 'tool_use') {
             const name = block.name || 'unknown';
             const input = block.input || {};
@@ -162,21 +196,20 @@ function parseJsonlFile(filepath) {
             else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
             else if (name === 'Agent' && input.description) {
               summary = `Agent: ${input.description}`;
-              // Register this agent call so we can display its result distinctly
-              if (block.id) agentToolCalls.set(block.id, { description: input.description });
+              if (block.id) state.agentToolCalls.set(block.id, { description: input.description });
             } else if (name === 'Agent' && input.prompt) {
               summary = `Agent: ${input.prompt.substring(0, 80)}`;
-              if (block.id) agentToolCalls.set(block.id, { description: input.prompt.substring(0, 60) });
+              if (block.id) state.agentToolCalls.set(block.id, { description: input.prompt.substring(0, 60) });
             }
-            messages.push({ role: 'assistant', type: 'tool', text: summary, ts: obj.timestamp });
+            state.messages.push({ role: 'assistant', type: 'tool', text: summary, ts: obj.timestamp });
           }
         }
       }
     }
-    return messages;
+    return state.messages;
   } catch (err) {
-    console.error('[transcript-watcher] parse error:', filepath, err.message);
-    return [];
+    console.error('[transcript-watcher] incremental parse error:', filepath, err.message);
+    return state.messages;
   }
 }
 
@@ -185,7 +218,7 @@ function parseJsonlFile(filepath) {
 // If empty/null, returns nothing — prevents cross-tab contamination where a tab
 // with no known sessions would read the most recent file (which might belong to
 // another tab). Tabs must discover their Claude session ID first via chat_update.
-function readAllForCwd(cwd, claudeSessionIds) {
+function readAllForCwd(cwd, claudeSessionIds, fileState) {
   const dir = cwdToClaudeDir(cwd);
   if (!existsSync(dir)) return [];
   let allMessages = [];
@@ -208,7 +241,7 @@ function readAllForCwd(cwd, claudeSessionIds) {
     }
 
     for (const full of filesToRead) {
-      allMessages.push(...parseJsonlFile(full));
+      allMessages.push(...parseJsonlFileIncremental(full, fileState));
     }
     // Sort merged messages by timestamp ascending
     allMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
@@ -244,7 +277,10 @@ export function subscribeToTranscript(cwd, callback, claudeSessionIds) {
     callback,
     fire() {
       try {
-        const messages = readAllForCwd(cwd, this.claudeSessionIds.length > 0 ? this.claudeSessionIds : null);
+        // Look up current entry to get shared fileState (incremental read cache)
+        const e = watchers.get(cwd);
+        const fileState = e?.fileState || new Map();
+        const messages = readAllForCwd(cwd, this.claudeSessionIds.length > 0 ? this.claudeSessionIds : null, fileState);
         this.callback(messages);
       } catch (err) { console.error('[transcript-watcher] subscriber error:', err.message); }
     }
@@ -308,7 +344,7 @@ export function subscribeToTranscript(cwd, callback, claudeSessionIds) {
       } catch {}
     }, 500);
 
-    entry = { watcher, poller, subscribers: new Set(), dir, emit };
+    entry = { watcher, poller, subscribers: new Set(), dir, emit, fileState: new Map() };
     watchers.set(cwd, entry);
   }
   entry.subscribers.add(subscriber);
@@ -324,11 +360,25 @@ export function subscribeToTranscript(cwd, callback, claudeSessionIds) {
       if (e.subscribers.size === 0) {
         try { e.watcher?.close(); } catch {}
         try { if (e.poller) clearInterval(e.poller); } catch {}
+        e.fileState.clear(); // release incremental parse cache
         watchers.delete(cwd);
       }
     },
     setClaudeSessions: (ids) => {
       subscriber.claudeSessionIds = ids || [];
+      // Clear incremental state for any newly-added session files so they're
+      // read from scratch with the correct filter, not from a stale mid-file offset.
+      const e = watchers.get(cwd);
+      if (e && ids?.length) {
+        const dir = cwdToClaudeDir(cwd);
+        for (const id of ids) {
+          const fp = join(dir, id + '.jsonl');
+          if (!e.fileState.has(fp)) continue; // not cached yet — no action needed
+          // Only reset if byteOffset is 0 would be a no-op; if > 0 it may be mid-file
+          // Safe to always delete and let the next fire() re-read from scratch
+          e.fileState.delete(fp);
+        }
+      }
       subscriber.fire(); // Re-read with new filter immediately
     }
   };
