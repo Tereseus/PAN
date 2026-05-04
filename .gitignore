@@ -25,6 +25,17 @@ service/src/claude.js
 .env
 *.credentials.json
 
+# Temp files that sometimes land in project root due to Windows path mangling
+Temp*/
+C*/
+Users*/
+*pan_settings.txt
+*pan-tasks.json
+*pan_tasks.json
+*testout.json
+Tempusage.txt
+hub/data-test/
+
 # IDE
 .vscode/
 *.swp
@@ -65,3 +76,4 @@ __pycache__/
 tmp-eval-claude-bot/
 tmp-eval-opencode-bot/
 service/tauri/src-tauri/target-new/
+docs/NIGHTMARE_BUGS.md

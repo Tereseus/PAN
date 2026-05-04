@@ -2,10 +2,10 @@
 
 PAN is a persistent AI operating system across all devices, projects, and conversations.
 
-> **Feature specs live in [FEATURES.md](./FEATURES.md).** Every button, widget, and
+> **Feature specs live in [docs/FEATURES.md](./docs/FEATURES.md).** Every button, widget, and
 > endpoint is documented there with what it calls, what it preserves, what it
 > replaces, and its pre-gate. If you're about to guess what a UI element does —
-> check FEATURES.md first. Update it in the same commit as any code change.
+> check docs/FEATURES.md first. Update it in the same commit as any code change.
 
 > **Transcript/terminal system: read [docs/TRANSCRIPT_SYSTEM.md](./docs/TRANSCRIPT_SYSTEM.md) FIRST**
 > before touching anything in `terminal/+page.svelte` related to messages, chat bubbles,
@@ -229,12 +229,6 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
 ### This Tab *(session: 75654542-596)*
-**User** (2026-05-04 06:14:57): Show me the bugs we were working on before there was a lot of them at least up to 10
-**Claude** (2026-05-04 06:17:17): Here are the open items — PAN doesn't distinguish "bugs" as a separate type, everything's a task. The P1s are the closest to bugs:
-
-| # | Priority | Title |
-|---|----------|-------|
-| #443 | P1 | Steward reports ollama as running but port is down — s
 **User** (2026-05-04 06:19:43): No those are all incorrect That's not what we were talking about at all almost every I had a whole bunch of other bugs in here we made regression tests I don't know if you somehow mark those as complete because you're absolutely not complete they're 
 **Claude** (2026-05-04 06:20:19): These were all marked done on May 2–3. The ones that were likely bugs you're still seeing issues with:
 
@@ -251,6 +245,9 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 **Created
 **User** (2026-05-04 07:28:56): No don't fucking make AAA dog called nightmare bugs don't make that fucking document what the fuck are you doing I'm TI told you to look at all of the documents we have that explain architecture and everything Get rid of that fucking document Look at
 **User** (2026-05-04 07:29:10): Actually keep that dock but just don't push it to Github
+**Claude** (2026-05-04 07:31:11): File is back locally, invisible to git. GitHub is clean.
+
+Now — you said update the existing docs. Before I touch anything, tell me what you want. Do you want me to actually read through all the docs first and show you what's stale/missing, then we d
 
 ### Recent Project Work *(session: c8c4f450-efe)*
 **Claude** (2026-05-03 14:06:31): Up to **4** at once, from `carrier.js`:
