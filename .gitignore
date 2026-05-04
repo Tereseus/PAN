@@ -25,6 +25,9 @@ service/src/claude.js
 .env
 *.credentials.json
 
+# Local-only planning docs — do not push
+docs/REFACTOR-STATE-MACHINE.md
+
 # Temp files that sometimes land in project root due to Windows path mangling
 Temp*/
 C*/
