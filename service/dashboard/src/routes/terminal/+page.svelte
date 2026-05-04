@@ -1543,7 +1543,9 @@
 
 		// Track if user has scrolled up (don't auto-scroll if so)
 		// Persist to sessionStorage so scroll position survives page refresh.
-		tabContainer.addEventListener('scroll', () => {
+		// Store the handler reference on tabData so closeTab() can remove it and
+		// release the closure — otherwise the tabData object can't be GC'd after close.
+		tabData._scrollHandler = () => {
 			const atBottom = tabContainer.scrollHeight - tabContainer.scrollTop - tabContainer.clientHeight < 40;
 			tabData.userScrolledUp = !atBottom;
 			try {
@@ -1552,7 +1554,8 @@
 					sessionStorage.setItem('pan_scroll_pos:' + tabData.sessionId, String(tabContainer.scrollTop));
 				}
 			} catch {}
-		});
+		};
+		tabContainer.addEventListener('scroll', tabData._scrollHandler);
 		// Restore scroll state from sessionStorage (survives refresh)
 		try {
 			const wasUp = sessionStorage.getItem('pan_scrolled_up:' + sessionId);
@@ -2407,6 +2410,11 @@
 		tab._closing = true;
 		if (tab._pollTimer) { clearInterval(tab._pollTimer); tab._pollTimer = null; }
 		if (tab.ws) tab.ws.close();
+		// Remove scroll listener before DOM removal to release the tabData closure for GC
+		if (tab._scrollHandler && tab.container) {
+			tab.container.removeEventListener('scroll', tab._scrollHandler);
+			tab._scrollHandler = null;
+		}
 		if (tab.container) tab.container.remove();
 
 		tabs = tabs.filter(t => t.id !== tabId);
@@ -2454,30 +2462,6 @@
 		return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 	}
 
-
-	// Listen for terminal settings changes — wipe cached renders so colors apply immediately
-	if (typeof window !== 'undefined') {
-		window.addEventListener('pan-terminal-settings-changed', () => {
-			for (const t of tabs) {
-				if (t.scrollbackDiv) t.scrollbackDiv.innerHTML = '';
-				t._renderedMsgCount = 0;
-				renderTranscriptToTerminal(t);
-			}
-		});
-
-		// When the AI provider/model changes in Settings, clear all launch guards so
-		// ΠΑΝ Remembers re-fires on the next WS reconnect (or tab reopen).
-		window.addEventListener('storage', (e) => {
-			if (e.key === 'pan_ai_changed') {
-				for (const key of Object.keys(sessionStorage)) {
-					if (key.startsWith('pan_claude_launched:')) {
-						sessionStorage.removeItem(key);
-					}
-				}
-				console.log('[PAN Terminal] AI provider changed — launch guards cleared, ΠΑΝ Remembers will re-fire');
-			}
-		});
-	}
 
 	// Seed default username/LLM name + terminal colors on first run.
 	// All are overridable from Settings → Terminal. Names are first-cap.
@@ -5029,6 +5013,7 @@
 		}, 3000);
 
 		// Auto-connect: wait for projects to load, then start terminal
+		let saveStateInterval = null; // tracked so cleanup can clear it (prevents stacking on hot-swap)
 		setTimeout(async () => {
 			// Make sure projects are loaded
 			await loadTerminalProjects();
@@ -5167,7 +5152,7 @@
 			restoringTabs = false;
 
 			// Save session state periodically
-			setInterval(saveSessionState, 5000);
+			saveStateInterval = setInterval(saveSessionState, 5000);
 		}, 300);
 
 		// Save state on page unload (backup — Svelte cleanup may not fire on full refresh)
@@ -5284,6 +5269,29 @@
 		}
 		window.addEventListener('keydown', handleGlobalKeydown);
 
+		// Terminal settings change — wipe cached renders so colors/fonts apply immediately.
+		// Registered here (not at module eval time) so cleanup can remove them and prevent
+		// listener stacking across hot-swaps and page reloads.
+		const handleTermSettingsChanged = () => {
+			for (const t of tabs) {
+				if (t.scrollbackDiv) t.scrollbackDiv.innerHTML = '';
+				t._renderedMsgCount = 0;
+				renderTranscriptToTerminal(t);
+			}
+		};
+		// When the AI provider/model changes in Settings, clear all launch guards so
+		// ΠΑΝ Remembers re-fires on the next WS reconnect (or tab reopen).
+		const handleStorageChange = (e) => {
+			if (e.key === 'pan_ai_changed') {
+				for (const key of Object.keys(sessionStorage)) {
+					if (key.startsWith('pan_claude_launched:')) sessionStorage.removeItem(key);
+				}
+				console.log('[PAN Terminal] AI provider changed — launch guards cleared, ΠΑΝ Remembers will re-fire');
+			}
+		};
+		window.addEventListener('pan-terminal-settings-changed', handleTermSettingsChanged);
+		window.addEventListener('storage', handleStorageChange);
+
 		// Load data for initially selected panels (otherwise they show "loading" forever)
 		if (leftSection === 'usage') loadUsageData();
 		if (rightSection === 'usage') loadUsageData();
@@ -5297,9 +5305,12 @@
 			saveChatToStorage(); // Persist chat before page unloads
 			document.removeEventListener('visibilitychange', visCb);
 			window.removeEventListener('keydown', handleGlobalKeydown);
+			window.removeEventListener('pan-terminal-settings-changed', handleTermSettingsChanged);
+			window.removeEventListener('storage', handleStorageChange);
 			window.removeEventListener('resize', handleResize);
 			if (termResizeObserver) termResizeObserver.disconnect();
 			window.removeEventListener('beforeunload', handleBeforeUnload);
+			if (saveStateInterval) { clearInterval(saveStateInterval); saveStateInterval = null; }
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
 			if (atlasAnimTimer) { clearInterval(atlasAnimTimer); atlasAnimTimer = null; }
 			clearInterval(svcInterval);
