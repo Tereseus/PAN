@@ -1006,11 +1006,18 @@ export function tickIntuition(trigger = 'heartbeat') {
     persistSnapshot(snap, trigger);
     _lastSnapshot = snap;
 
-    // Fire async classification (non-blocking, updates snapshot later)
-    classifyAxes(snap).catch(e => console.warn('[Intuition] classifyAxes unhandled:', e.message));
+    // Fire async classification (non-blocking, updates snapshot later).
+    // Double-wrapped: inner try/catch in classifyAxes + outer .catch here.
+    // This ensures no rejection escapes to the process level even if classifyAxes
+    // has a bug that slips past its own outer try/catch.
+    Promise.resolve().then(() => classifyAxes(snap)).catch(e =>
+      console.warn('[Intuition] classifyAxes escaped catch:', e?.message)
+    );
 
     // Fire org tick alongside individual tick (non-blocking)
-    tickOrgIntuition('org_personal', trigger).catch(e => console.warn('[OrgIntuition] tick unhandled:', e.message));
+    Promise.resolve().then(() => tickOrgIntuition('org_personal', trigger)).catch(e =>
+      console.warn('[OrgIntuition] tick escaped catch:', e?.message)
+    );
 
     if (_onTickCallback) _onTickCallback();
     return snap;

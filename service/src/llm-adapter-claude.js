@@ -11,6 +11,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { anonymizeForAI } from './anonymize.js';
 import { randomUUID } from 'crypto';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 export class ClaudeAdapter {
   constructor(sessionId, cwd, onMessage, resumeClaudeSessionId = null) {
@@ -34,6 +37,7 @@ export class ClaudeAdapter {
     if (resumeClaudeSessionId) {
       // Pre-set query count so the resume logic kicks in on first send
       this._queryCount = 1;
+      this._loadHistoryFromJSONL(resumeClaudeSessionId);
       console.log(`[Claude Adapter] Resuming session: ${resumeClaudeSessionId}`);
     }
   }
@@ -220,6 +224,74 @@ export class ClaudeAdapter {
   // Get Claude's session UUID
   getSessionId() {
     return this.claudeSessionId;
+  }
+
+  // Load transcript history from Claude's JSONL file on disk into this.messages.
+  // Called from the constructor when resumeClaudeSessionId is set, so that after
+  // a PTY crash + server restart the UI transcript is not blank.
+  _loadHistoryFromJSONL(sessionId) {
+    try {
+      const slug = this.cwd.replace(/\\/g, '/').replace(/\/$/, '').replace(/[\/:]/g, '-');
+      const filePath = join(homedir(), '.claude', 'projects', slug, sessionId + '.jsonl');
+      if (!existsSync(filePath)) {
+        console.warn(`[Claude Adapter] JSONL not found for session ${sessionId}: ${filePath}`);
+        return;
+      }
+      const raw = readFileSync(filePath, 'utf8');
+      const lines = raw.split('\n').filter(l => l.trim());
+      const loaded = [];
+      for (const line of lines) {
+        let entry;
+        try { entry = JSON.parse(line); } catch { continue; }
+        if (entry.isSidechain === true) continue;
+        const msg = entry.message;
+        if (!msg) continue;
+        const ts = entry.timestamp || new Date().toISOString();
+        if (entry.type === 'user') {
+          const content = msg.content;
+          if (!Array.isArray(content)) continue;
+          const hasText = content.some(b => b.type === 'text');
+          if (!hasText) continue;
+          const textBlocks = content.filter(b => b.type === 'text').map(b => b.text).join('\n\n');
+          loaded.push({ role: 'user', type: 'prompt', text: textBlocks, ts });
+        } else if (entry.type === 'assistant') {
+          const content = msg.content;
+          if (!Array.isArray(content)) continue;
+          const model = msg.model || null;
+          const textParts = [];
+          for (const block of content) {
+            if (block.type === 'text' && block.text?.trim()) {
+              textParts.push(block.text);
+            } else if (block.type === 'tool_use') {
+              if (textParts.length > 0) {
+                loaded.push({ role: 'assistant', type: 'text', text: textParts.join('\n\n'), ts, model });
+                textParts.length = 0;
+              }
+              const name = block.name || 'unknown';
+              const input = block.input || {};
+              let summary = name;
+              if (name === 'Bash' && input.command) summary = `Bash: ${input.command.substring(0, 120)}`;
+              else if (name === 'Edit' && input.file_path) summary = `Edit: ${input.file_path.split(/[/\\]/).pop()}`;
+              else if (name === 'Read' && input.file_path) summary = `Read: ${input.file_path.split(/[/\\]/).pop()}`;
+              else if (name === 'Write' && input.file_path) summary = `Write: ${input.file_path.split(/[/\\]/).pop()}`;
+              else if (name === 'Grep' && input.pattern) summary = `Grep: ${input.pattern.substring(0, 60)}`;
+              else if (name === 'Glob' && input.pattern) summary = `Glob: ${input.pattern}`;
+              else if (name === 'Agent') summary = `Agent: ${(input.description || input.prompt || '').substring(0, 80)}`;
+              loaded.push({ role: 'assistant', type: 'tool', text: summary, ts: new Date().toISOString() });
+            }
+          }
+          if (textParts.length > 0) {
+            loaded.push({ role: 'assistant', type: 'text', text: textParts.join('\n\n'), ts, model });
+          }
+        }
+      }
+      // Cap to MAX_MESSAGES, keeping most recent
+      const capped = loaded.length > this.MAX_MESSAGES ? loaded.slice(-this.MAX_MESSAGES) : loaded;
+      this.messages = capped;
+      console.log(`[Claude Adapter] Loaded ${capped.length} messages from JSONL (${loaded.length} parsed, ${lines.length} lines)`);
+    } catch (err) {
+      console.warn(`[Claude Adapter] Failed to load JSONL history for session ${sessionId}: ${err.message}`);
+    }
   }
 
   // Push transcript update to callback

@@ -1077,6 +1077,18 @@ async function startTerminalServer(httpServer) {
       mode: session.mode || SessionMode.PTY_ONLY,
     }));
 
+    // Push authoritative session state immediately on connect/reconnect.
+    // Without this, reconnecting clients inherit their pre-reconnect local state
+    // (claudeReady=false from the disconnect) and never recover until the next
+    // state transition. The sync_request handler also returns this, but push it
+    // proactively so there's no round-trip delay.
+    try {
+      ws.send(JSON.stringify({
+        type: 'state',
+        state: session.state || SessionState.IDLE,
+      }));
+    } catch {}
+
     if (tokenExpired) {
       console.log(`[PAN Terminal] Reconnect token expired/invalid for session ${sessionId} — falling back to fresh params`);
     }

@@ -312,3 +312,19 @@ function shutdown(sig) {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT',  () => shutdown('SIGINT'));
+
+// ── Process-level survival handlers ─────────────────────────────────────────
+// Super-Carrier is the permanent outer layer — it MUST NOT crash.
+// Without these, Node 18+ kills the process on any unhandled rejection (from
+// the async WS proxy, waitForCarrier chains, or any imported module).
+// We log and survive; Carrier/Craft have their own handlers for their own scope.
+process.on('uncaughtException', (err) => {
+  // EPIPE = writing to a dead socket — harmless transient, no alert needed
+  if (err.code === 'EPIPE') return;
+  console.error('[SuperCarrier] !! Uncaught exception (keeping alive):', err?.message, err?.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = String(reason?.message || reason);
+  if (msg.includes('EPIPE')) return;
+  console.error('[SuperCarrier] !! Unhandled rejection (keeping alive):', msg, reason?.stack || '');
+});
