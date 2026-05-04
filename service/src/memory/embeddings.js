@@ -5,7 +5,7 @@
 // Falls back to simple TF-IDF-like keyword vectors when Ollama is down.
 
 import { getOllamaUrl } from '../db.js';
-const EMBED_MODEL = 'qwen3-embedding';
+const EMBED_MODEL = 'qwen3-embedding:0.6b';
 const EMBED_DIM = 1024;
 
 let ollamaAvailable = null; // null = unknown, true/false = cached
