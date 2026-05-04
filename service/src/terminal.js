@@ -1162,6 +1162,21 @@ async function startTerminalServer(httpServer) {
             ws._logPosition = parsed.logPosition || 0;
             broadcastRenderedScreen(session, ws);
             break;
+
+          case 'sync_request': {
+            // Client reconnected and wants current state snapshot.
+            // Respond immediately with state — no need to wait for next poll cycle.
+            const kinds = Array.isArray(parsed.kinds) ? parsed.kinds : [];
+            const snap = { type: 'sync_response' };
+            if (kinds.includes('session')) {
+              snap.state = session.state || SessionState.IDLE;
+              snap.mode = session.mode || SessionMode.PTY_ONLY;
+              snap.messages = session.messages || [];
+              snap.version = session._messageVersion || 0;
+            }
+            try { ws.send(JSON.stringify(snap)); } catch {}
+            break;
+          }
         }
       } catch {}
     });

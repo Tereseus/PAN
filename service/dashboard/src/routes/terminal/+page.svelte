@@ -48,6 +48,9 @@
 	});
 	// Guard against double-sends (Enter key + button click within same tick, or rapid double-tap).
 	const _sendInFlight = new Set();
+	// Timestamp of last successful send — PTY screen detection must not override claudeReady=false
+	// within 2s of a send (prevents race where echo hasn't appeared yet and ❯ is still visible).
+	let _lastSendTime = 0;
 	// Reactive flag — true while the pipe POST is in-flight. Drives the send button spinner.
 	let pipeSending = $state(false);
 
@@ -1676,6 +1679,10 @@
 							// Server pushed parsed messages from the JSONL file watcher.
 							// Replaces polling. We get the full deduped message list each
 							// time any JSONL in the project's dir changes.
+							// Use _messageVersion (integer from server) for dedup — avoids
+							// Svelte proxy vs raw object stale-comparison bug (#444).
+							if (msg.version !== undefined && tabData._lastMessageVersion === msg.version) break;
+							if (msg.version !== undefined) tabData._lastMessageVersion = msg.version;
 							tabData._pushedMessages = msg.messages || [];
 							_pushedMsgsCache.set(tabData.id, tabData._pushedMessages); // bypass proxy
 							tabData._lastTranscriptPush = Date.now();
@@ -1758,7 +1765,11 @@
 							// This forcibly clears the indicator the instant reality says
 							// it should be cleared.
 							const ptySaysReady = detectClaudeReady(plainLines);
-							if (ptySaysReady) {
+							// Don't flip claudeReady back to true within 2s of a send — the PTY echo
+							// of our own message appears before Claude starts "Thinking...", so the ❯
+							// prompt is briefly still visible and would defeat the duplicate-send guard.
+							const msSinceSend = Date.now() - _lastSendTime;
+							if (ptySaysReady && msSinceSend >= 2000) {
 								if (tabData.claudeReady === false) {
 									tabData.claudeReady = true;
 									tabData._htmlAtSend = null;
@@ -1993,6 +2004,35 @@
 							}
 							break;
 						}
+						case 'state': {
+							// Server state machine pushed new session state (Part 3 refactor).
+							// Update tabData so UI can react — claudeReady derived from WORKING state.
+							if (msg.state) {
+								tabData._sessionState = msg.state;
+								const working = msg.state === 'working' || msg.state === 'interrupted';
+								tabData.claudeReady = !working;
+								if (activeTabId === tabData.id) claudeReady = !working;
+							}
+							break;
+						}
+						case 'mode': {
+							// Server mode machine pushed new session mode (Part 2 refactor).
+							// Track mode so input dispatch can show correct UI hints.
+							if (msg.mode) tabData._sessionMode = msg.mode;
+							break;
+						}
+						case 'service_status': {
+							// Service state machine update (Part 4 refactor).
+							// Update servicesData in-place — no full refetch needed.
+							if (msg.service_id && servicesData?.length) {
+								servicesData = servicesData.map(s =>
+									s.id === msg.service_id
+										? { ...s, status: msg.state, lastError: msg.last_error ?? s.lastError }
+										: s
+								);
+							}
+							break;
+						}
 						case 'voice_toggle':
 							// Only handle ONCE — use a global flag to prevent multiple tabs from recording
 							if (!window._panVoiceHandled) {
@@ -2096,6 +2136,13 @@
 							scrollbackDiv.innerHTML += '\n<span style="color:#a6e3a1">[Reconnected]</span>';
 						}
 						startPing();
+
+						// Ask server for current state snapshot (Part 5 refactor).
+						// Server responds with current service states, inbox counts, task statuses
+						// so we don't have to wait for the next polling cycle to catch up.
+						try {
+							newWs.send(JSON.stringify({ type: 'sync_request', kinds: ['services', 'tasks'] }));
+						} catch {}
 
 						// Only relaunch Claude on reconnect if the SERVER actually restarted
 						// (which means a fresh PTY). For network-blip reconnects, the existing
@@ -3236,9 +3283,14 @@
 			return;
 		}
 
-		// Drop duplicate sends — guards against Enter+click race and rapid double-tap.
+		// Drop duplicate sends — guards against Enter+click race, rapid double-tap,
+		// and spamming while Claude is still processing the previous message.
 		if (_sendInFlight.has(active.sessionId)) {
 			console.warn('[PAN Terminal] sendTerminalInput: already in-flight for session', active.sessionId, '— dropping duplicate');
+			return;
+		}
+		if (active.claudeReady === false) {
+			console.warn('[PAN Terminal] sendTerminalInput: Claude not ready (still processing) — dropping send');
 			return;
 		}
 
@@ -3333,6 +3385,7 @@
 			active._stablePolls = 0;
 		}
 		claudeReady = false;
+		_lastSendTime = Date.now(); // freeze PTY ready-detection for 2s to prevent duplicate-send race
 		setTimeout(() => {
 			if (active && active.claudeReady === false) {
 				active.claudeReady = true;
@@ -3384,6 +3437,8 @@
 
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
+			// Block Enter while Claude is thinking — same guard as the button
+			if (!claudeReady || pipeSending) return;
 			// Delay 50ms to let Svelte state and DOM value fully sync before reading
 			const el = e.target;
 			setTimeout(() => {
@@ -4881,7 +4936,14 @@
 			if (now - lastPush < 15000) return;
 			try {
 				const msgs = await api(`/api/v1/terminal/messages/${encodeURIComponent(tab.sessionId)}`);
-				if (Array.isArray(msgs) && msgs.length > (tab._pushedMessages?.length || 0)) {
+				// Use _messageVersion integer for dedup — avoids Svelte proxy stale-comparison bug (#444).
+				// Falls back to length comparison if server doesn't send version (legacy sessions).
+				const serverVersion = msgs?._messageVersion;
+				const hasNew = serverVersion !== undefined
+					? serverVersion !== tab._lastMessageVersion
+					: Array.isArray(msgs) && msgs.length > (tab._pushedMessages?.length || 0);
+				if (hasNew && Array.isArray(msgs)) {
+					if (serverVersion !== undefined) tab._lastMessageVersion = serverVersion;
 					tab._pushedMessages = msgs;
 					_pushedMsgsCache.set(tab.id, msgs);
 					renderTranscriptToTerminal(tab);
@@ -7473,7 +7535,7 @@
 				rows="1"
 				class="center-input"
 			></textarea>
-			<button class="center-send-btn" onclick={sendTerminalInput} disabled={pipeSending || (!terminalInputText.trim() && pastedImages.length === 0)} title={pipeSending ? 'Sending…' : 'Send'}>
+			<button class="center-send-btn" onclick={sendTerminalInput} disabled={pipeSending || !claudeReady || (!terminalInputText.trim() && pastedImages.length === 0)} title={pipeSending ? 'Sending…' : !claudeReady ? 'Waiting for Claude…' : 'Send'}>
 				{#if pipeSending}
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pipe-spin"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
 				{:else}
