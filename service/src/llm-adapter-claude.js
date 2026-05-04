@@ -73,8 +73,11 @@ export class ClaudeAdapter {
     if (this.model) opts.model = this.model;
 
     // Resume previous session for multi-turn (or after server restart)
+    const _attemptedResumeId = this.claudeSessionId || null;
     if (this.claudeSessionId) {
       opts.resume = this.claudeSessionId;
+      // #450 diagnostic: log every resume attempt so we can see if it fires post-restart
+      console.log(`[Claude Adapter] Attempting resume: ${this.claudeSessionId} (queryCount=${this._queryCount})`);
     }
 
     this.busy = true;
@@ -91,6 +94,10 @@ export class ClaudeAdapter {
 
       for await (const msg of stream) {
         if (msg.type === 'system' && msg.subtype === 'init') {
+          // #450 diagnostic: detect silent resume failure (SDK accepted resume but returned a different UUID)
+          if (_attemptedResumeId && msg.session_id && msg.session_id !== _attemptedResumeId) {
+            console.warn(`[Claude Adapter] Resume FAILED silently — requested ${_attemptedResumeId} got ${msg.session_id}`);
+          }
           this.claudeSessionId = msg.session_id;
           console.log(`[Claude Adapter] Init: session=${msg.session_id}`);
 
@@ -174,7 +181,9 @@ export class ClaudeAdapter {
         this._push();
       } else if (opts.resume && (err.message?.includes('session') || err.message?.includes('resume') || err.message?.includes('not found'))) {
         // Resume failed — session expired or invalid. Retry as fresh session.
-        console.warn(`[Claude Adapter] Resume failed (${err.message}), retrying as fresh session`);
+        // #450 diagnostic: log full error so we know exactly why resume was rejected
+        console.warn(`[Claude Adapter] Resume threw, falling back to fresh session: ${err.message}`);
+        console.warn(`[Claude Adapter] Resume error stack: ${err.stack || '(no stack)'}`);
         this.claudeSessionId = null;
         this._queryCount = 1;
         this.busy = false;
