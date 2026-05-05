@@ -192,57 +192,123 @@ async function embedEvent(db, eventRow) {
 let _backfillAborted = false;
 function abortBackfill() { _backfillAborted = true; }
 
-async function backfillEmbeddings(scope = 'main', batchSize = 50) {
+async function backfillEmbeddings(scope = 'main', concurrency = 5) {
   _backfillAborted = false;
   const db = getDb(scope);
   ensureInitialized(db);
 
   const totalEvents = db.prepare('SELECT COUNT(*) as c FROM events').get().c;
-  const indexed = db.prepare('SELECT COUNT(*) as c FROM event_embeddings').get().c;
-  if (indexed >= totalEvents) {
-    console.log(`[PAN MemorySearch] backfill: ${indexed}/${totalEvents} — already complete`);
-    return { indexed, total: totalEvents, added: 0 };
+  const indexedStart = db.prepare('SELECT COUNT(*) as c FROM event_embeddings').get().c;
+  if (indexedStart >= totalEvents) {
+    console.log(`[PAN MemorySearch] backfill: ${indexedStart}/${totalEvents} — already complete`);
+    return { indexed: indexedStart, total: totalEvents, added: 0 };
   }
 
-  const needed = totalEvents - indexed;
-  console.log(`[PAN MemorySearch] backfill starting: ${indexed}/${totalEvents} indexed, ${needed} to embed`);
+  const needed = totalEvents - indexedStart;
+  console.log(`[PAN MemorySearch] backfill starting: ${indexedStart}/${totalEvents} indexed, ${needed} to embed (concurrency=${concurrency})`);
+
   let added = 0;
-  const LOG_EVERY = 200; // log a progress line every N embeddings
-  // Walk events that don't yet have an embedding row. We use a NOT IN
-  // subquery against the small vec0 rowid space; for huge backlogs we
-  // chunk by id range so we don't load everything into memory.
-  // eslint-disable-next-line no-constant-condition
+  // Pool-level failure tracking — shared across all workers so 5 failures
+  // anywhere in the pool trigger the backoff, not per-worker independently.
+  let poolConsecFails = 0;
+  let poolBackoffUntil = 0;
+  const POOL_FAIL_LIMIT = 5;
+  const POOL_BACKOFF_MS = 30_000;
+
+  // Rate tracking — one log line per minute with actual embeds/sec.
+  let rateWindowStart = Date.now();
+  let rateWindowAdded = 0;
+  const RATE_LOG_MS = 60_000;
+
+  function logRate() {
+    const elapsed = (Date.now() - rateWindowStart) / 1000;
+    if (elapsed < 1) return;
+    const rate = rateWindowAdded / elapsed;
+    const remaining = needed - added;
+    const etaMin = rate > 0 ? Math.round(remaining / rate / 60) : Infinity;
+    console.log(
+      `[PAN MemorySearch] backfill: ${rate.toFixed(1)}/sec — ` +
+      `${indexedStart + added}/${totalEvents} embedded ` +
+      `(ETA ~${etaMin === Infinity ? '∞' : etaMin + 'min'})`
+    );
+    rateWindowStart = Date.now();
+    rateWindowAdded = 0;
+  }
+
+  async function processRow(row) {
+    try {
+      const ok = await embedEvent(db, row);
+      if (ok) {
+        added++;
+        rateWindowAdded++;
+        poolConsecFails = 0;
+      } else {
+        // embedForWrite returned null — Ollama unavailable on write path
+        poolConsecFails++;
+        if (poolConsecFails >= POOL_FAIL_LIMIT) {
+          poolBackoffUntil = Date.now() + POOL_BACKOFF_MS;
+          console.warn(`[PAN MemorySearch] backfill: pool paused 30s after ${POOL_FAIL_LIMIT} consecutive Ollama failures`);
+          poolConsecFails = 0;
+        }
+      }
+    } catch (err) {
+      console.warn(`[PAN MemorySearch] backfill embed failed for event ${row.id}:`, err.message);
+      poolConsecFails++;
+      if (poolConsecFails >= POOL_FAIL_LIMIT) {
+        poolBackoffUntil = Date.now() + POOL_BACKOFF_MS;
+        console.warn(`[PAN MemorySearch] backfill: pool paused 30s after ${POOL_FAIL_LIMIT} consecutive Ollama failures`);
+        poolConsecFails = 0;
+      }
+    }
+  }
+
+  // Fetch rows in DB batches; process each batch as concurrent chunks of
+  // `concurrency` rows. Workers share poolConsecFails so any worker's failure
+  // counts toward the pool-wide backoff threshold.
+  const DB_BATCH = concurrency * 10;
   while (true) {
     if (_backfillAborted) {
       console.log('[PAN MemorySearch] backfill aborted');
       break;
     }
+
+    // Pool-level backoff: pause before issuing any new work to Ollama.
+    const now = Date.now();
+    if (now < poolBackoffUntil) {
+      const wait = poolBackoffUntil - now;
+      console.log(`[PAN MemorySearch] backfill: pool backing off ${Math.ceil(wait / 1000)}s`);
+      await new Promise(r => setTimeout(r, wait));
+      poolConsecFails = 0;
+    }
+
     const batch = db.prepare(`
       SELECT id, event_type, data
       FROM events
       WHERE id NOT IN (SELECT rowid FROM event_embeddings)
       ORDER BY id ASC
       LIMIT ?
-    `).all(batchSize);
+    `).all(DB_BATCH);
     if (batch.length === 0) break;
-    for (const row of batch) {
-      try {
-        const ok = await embedEvent(db, row);
-        if (ok) {
-          added++;
-          if (added % LOG_EVERY === 0) {
-            console.log(`[PAN MemorySearch] backfill: +${added}/${needed} (${indexed + added}/${totalEvents} total)`);
-          }
-        }
-      } catch (err) {
-        console.warn(`[PAN MemorySearch] backfill embed failed for event ${row.id}:`, err.message);
-      }
+
+    for (let i = 0; i < batch.length; i += concurrency) {
+      if (_backfillAborted) break;
+      // Mid-batch backoff check: failures in the current chunk may have
+      // set poolBackoffUntil — break out and let the outer loop wait.
+      if (Date.now() < poolBackoffUntil) break;
+
+      const chunk = batch.slice(i, i + concurrency);
+      await Promise.all(chunk.map(row => processRow(row)));
+
+      if (Date.now() - rateWindowStart >= RATE_LOG_MS) logRate();
     }
-    // Yield to the event loop so the server stays responsive.
+
+    // Yield between DB batches so the event loop stays responsive.
     await new Promise(r => setImmediate(r));
   }
-  console.log(`[PAN MemorySearch] backfill complete: +${added} embeddings (${indexed + added}/${totalEvents} total)`);
-  return { indexed: indexed + added, total: totalEvents, added };
+
+  if (added > 0) logRate();
+  console.log(`[PAN MemorySearch] backfill complete: +${added} embeddings (${indexedStart + added}/${totalEvents} total)`);
+  return { indexed: indexedStart + added, total: totalEvents, added };
 }
 
 /**
