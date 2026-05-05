@@ -158,26 +158,42 @@ function eventText(row) {
   }
 }
 
+// Sentinel blob for events with no embeddable text. Inserted into event_embeddings
+// so the backfill query never re-visits them. Unit vector on dim 0 — valid in
+// vec0 (non-zero, L2-normalised), but won't match any real semantic embedding.
+const _SENTINEL_VEC = new Float32Array(EMBED_DIM);
+_SENTINEL_VEC[0] = 1.0;
+const _SENTINEL_BLOB = Buffer.from(_SENTINEL_VEC.buffer);
+
 /**
  * Embed a single event into the vec0 table. Idempotent: replaces an existing
  * embedding for the same rowid. Called from indexEvent() below and from the
- * backfill job. Returns true if an embedding was written, false if skipped.
+ * backfill job.
+ * Returns:
+ *   true    — real embedding written
+ *   'skip'  — no embeddable content; sentinel written so backfill skips this row in future
+ *   false   — Ollama unavailable; nothing written
  */
 async function embedEvent(db, eventRow) {
   ensureInitialized(db);
-  const text = eventText(eventRow);
-  if (!text || text.length < 4) return false;
-  const vec = await embedForWrite(text);
-  if (!vec) return false;  // Ollama unavailable — skip, never write keyword fallback to vec table
-  const blob = toBlob(vec);
+  const id = parseInt(eventRow.id, 10);
+  if (!Number.isInteger(id)) throw new Error('embedEvent: bad event id ' + eventRow.id);
   // vec0 doesn't support UPSERT — delete-then-insert is the documented pattern.
   // vec0 also rejects bound parameters for the rowid column (sqlite-vec quirk:
   // "Only integers are allowed for primary key values"), even when the JS
   // value IS an integer. Workaround: inline the rowid into the SQL. eventRow.id
   // comes from a trusted internal SELECT against our own table, so injection
   // is not a concern — but we still hard-cast to integer for safety.
-  const id = parseInt(eventRow.id, 10);
-  if (!Number.isInteger(id)) throw new Error('embedEvent: bad event id ' + eventRow.id);
+  const text = eventText(eventRow);
+  if (!text || text.length < 4) {
+    // No meaningful content — write sentinel so backfill never re-processes this event.
+    db.prepare(`DELETE FROM event_embeddings WHERE rowid = ${id}`).run();
+    db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(_SENTINEL_BLOB);
+    return 'skip';
+  }
+  const vec = await embedForWrite(text);
+  if (!vec) return false;  // Ollama unavailable — skip, never write keyword fallback to vec table
+  const blob = toBlob(vec);
   db.prepare(`DELETE FROM event_embeddings WHERE rowid = ${id}`).run();
   db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(blob);
   return true;
@@ -245,12 +261,15 @@ async function backfillEmbeddings(scope = 'main', concurrency = 5) {
   async function processRow(row) {
     try {
       const ok = await embedEvent(db, row);
-      if (ok) {
+      if (ok === true) {
         added++;
         rateWindowAdded++;
         poolConsecFails = 0;
+      } else if (ok === 'skip') {
+        // No-content event — sentinel written, not an Ollama failure
+        poolConsecFails = 0;
       } else {
-        // embedForWrite returned null — Ollama unavailable on write path
+        // false = embedForWrite returned null — Ollama unavailable on write path
         poolConsecFails++;
         if (poolConsecFails >= POOL_FAIL_LIMIT) {
           poolBackoffUntil = Date.now() + POOL_BACKOFF_MS;
