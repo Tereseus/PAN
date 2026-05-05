@@ -138,38 +138,53 @@ function resetOllamaStatus() {
 // After 5 consecutive probe/embed failures, backs off 30s before retrying.
 let _wConsecFails = 0;
 let _wBackoffUntil = 0;
-let _wProbeOk = null;  // null = unknown
+let _wProbeOk = null;  // null = unknown; true/false = last known state
 let _wProbeTs = 0;
-const _W_PROBE_TTL_MS = 5_000;    // reuse probe result for 5s in happy path
+let _wProbePromise = null;  // shared in-flight probe — concurrent workers join instead of duplicate-probing
+const _W_PROBE_TTL_MS = 5_000;    // reuse a healthy probe result for 5s before re-probing
 const _W_BACKOFF_MS   = 30_000;
 const _W_FAIL_LIMIT   = 5;
+
+// Single probe execution. Writes result to _wProbeOk/_wProbeTs and clears
+// _wProbePromise on completion. Stored in _wProbePromise so concurrent
+// workers can await it without launching duplicate HTTP requests.
+async function _doWriteProbe(prevOk) {
+  try {
+    const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) {
+      _wProbeOk = false;
+    } else {
+      const data = await res.json();
+      _wProbeOk = data.models?.some(m => m.name.startsWith(EMBED_MODEL)) ?? false;
+    }
+  } catch {
+    _wProbeOk = false;
+  }
+  _wProbeTs = Date.now();
+  _wProbePromise = null;
+  if (!_wProbeOk && prevOk !== false) {
+    console.warn('[PAN Embeddings] write-path: Ollama probe failed — skipping writes until it recovers');
+  } else if (_wProbeOk && prevOk === false) {
+    console.log('[PAN Embeddings] write-path: Ollama recovered — resuming writes');
+    _wConsecFails = 0;
+  }
+  return _wProbeOk;
+}
 
 async function embedForWrite(text) {
   const now = Date.now();
   if (now < _wBackoffUntil) return null;
 
-  // Re-probe if state is unknown or cached result has expired
-  if (_wProbeOk === null || now - _wProbeTs > _W_PROBE_TTL_MS) {
-    const prevOk = _wProbeOk;
-    _wProbeTs = now;
-    try {
-      const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(15000) });
-      if (!res.ok) {
-        _wProbeOk = false;
-      } else {
-        const data = await res.json();
-        _wProbeOk = data.models?.some(m => m.name.startsWith(EMBED_MODEL)) ?? false;
-      }
-    } catch {
-      _wProbeOk = false;
-    }
-    if (!_wProbeOk && prevOk !== false) {
-      console.warn('[PAN Embeddings] write-path: Ollama probe failed — skipping writes until it recovers');
-    } else if (_wProbeOk && prevOk === false) {
-      console.log('[PAN Embeddings] write-path: Ollama recovered — resuming writes');
-      _wConsecFails = 0;
+  // Shared probe: if a probe is already in-flight, all concurrent callers await
+  // the same promise instead of each independently seeing stale _wProbeOk=false
+  // and racing _wConsecFails to the backoff limit.
+  if (!_wProbePromise) {
+    const cacheExpired = now - _wProbeTs > _W_PROBE_TTL_MS;
+    if (_wProbeOk === null || !_wProbeOk || cacheExpired) {
+      _wProbePromise = _doWriteProbe(_wProbeOk);
     }
   }
+  if (_wProbePromise) await _wProbePromise;
 
   if (!_wProbeOk) {
     _wConsecFails++;

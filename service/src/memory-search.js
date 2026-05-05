@@ -190,10 +190,17 @@ async function embedEvent(db, eventRow) {
  * should kick this off in a setImmediate / async tick.
  */
 let _backfillAborted = false;
+let _backfillRunning = false;
 function abortBackfill() { _backfillAborted = true; }
 
 async function backfillEmbeddings(scope = 'main', concurrency = 5) {
+  if (_backfillRunning) {
+    console.log('[PAN MemorySearch] backfill: already running — skipping duplicate invocation');
+    return null;
+  }
   _backfillAborted = false;
+  _backfillRunning = true;
+  try {
   const db = getDb(scope);
   ensureInitialized(db);
 
@@ -309,6 +316,9 @@ async function backfillEmbeddings(scope = 'main', concurrency = 5) {
   if (added > 0) logRate();
   console.log(`[PAN MemorySearch] backfill complete: +${added} embeddings (${indexedStart + added}/${totalEvents} total)`);
   return { indexed: indexedStart + added, total: totalEvents, added };
+  } finally {
+    _backfillRunning = false;
+  }
 }
 
 /**
