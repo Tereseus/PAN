@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 const sqliteVec = require('sqlite-vec');
 
 import { getDb } from './db-registry.js';
-import { embed, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
+import { embed, embedForWrite, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
 import { privatizeSearch } from './privacy.js';
 
 // Track which DB handles already have the vec extension loaded + tables
@@ -167,7 +167,8 @@ async function embedEvent(db, eventRow) {
   ensureInitialized(db);
   const text = eventText(eventRow);
   if (!text || text.length < 4) return false;
-  const vec = await embed(text);
+  const vec = await embedForWrite(text);
+  if (!vec) return false;  // Ollama unavailable — skip, never write keyword fallback to vec table
   const blob = toBlob(vec);
   // vec0 doesn't support UPSERT — delete-then-insert is the documented pattern.
   // vec0 also rejects bound parameters for the rowid column (sqlite-vec quirk:
@@ -188,7 +189,11 @@ async function embedEvent(db, eventRow) {
  * everything is already indexed. Designed to NOT block server boot — caller
  * should kick this off in a setImmediate / async tick.
  */
+let _backfillAborted = false;
+function abortBackfill() { _backfillAborted = true; }
+
 async function backfillEmbeddings(scope = 'main', batchSize = 50) {
+  _backfillAborted = false;
   const db = getDb(scope);
   ensureInitialized(db);
 
@@ -208,6 +213,10 @@ async function backfillEmbeddings(scope = 'main', batchSize = 50) {
   // chunk by id range so we don't load everything into memory.
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    if (_backfillAborted) {
+      console.log('[PAN MemorySearch] backfill aborted');
+      break;
+    }
     const batch = db.prepare(`
       SELECT id, event_type, data
       FROM events
@@ -374,5 +383,6 @@ export {
   searchMemory,
   embedEvent,
   backfillEmbeddings,
+  abortBackfill,
   indexEventForSearch,
 };
