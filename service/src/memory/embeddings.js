@@ -29,12 +29,13 @@ async function checkOllama() {
 }
 
 // Get embedding from Ollama
-async function embedOllama(text) {
+// timeout: 3s default keeps query-time searches snappy; write path passes 30s.
+async function embedOllama(text, timeout = 3000) {
   const res = await fetch(`${getOllamaUrl()}/api/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 8000) }),
-    signal: AbortSignal.timeout(3000), // 3s — fast fail so searches don't hang
+    signal: AbortSignal.timeout(timeout),
   });
   if (!res.ok) throw new Error(`Ollama ${res.status}`);
   const data = await res.json();
@@ -152,7 +153,7 @@ async function embedForWrite(text) {
     const prevOk = _wProbeOk;
     _wProbeTs = now;
     try {
-      const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(1000) });
+      const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) {
         _wProbeOk = false;
       } else {
@@ -181,7 +182,7 @@ async function embedForWrite(text) {
   }
 
   try {
-    const vec = await embedOllama(text);
+    const vec = await embedOllama(text, 30000);
     _wConsecFails = 0;
     return vec;
   } catch (err) {
