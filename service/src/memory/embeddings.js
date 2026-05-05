@@ -131,4 +131,71 @@ function resetOllamaStatus() {
   ollamaAvailable = null;
 }
 
-export { embed, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM, EMBED_MODEL };
+// ── Write-path probe gate ─────────────────────────────────────────────────
+// Used by embedEvent / backfill. Returns the embedding vector or null.
+// NEVER falls back to embedFallback — null means "skip this row".
+// After 5 consecutive probe/embed failures, backs off 30s before retrying.
+let _wConsecFails = 0;
+let _wBackoffUntil = 0;
+let _wProbeOk = null;  // null = unknown
+let _wProbeTs = 0;
+const _W_PROBE_TTL_MS = 5_000;    // reuse probe result for 5s in happy path
+const _W_BACKOFF_MS   = 30_000;
+const _W_FAIL_LIMIT   = 5;
+
+async function embedForWrite(text) {
+  const now = Date.now();
+  if (now < _wBackoffUntil) return null;
+
+  // Re-probe if state is unknown or cached result has expired
+  if (_wProbeOk === null || now - _wProbeTs > _W_PROBE_TTL_MS) {
+    const prevOk = _wProbeOk;
+    _wProbeTs = now;
+    try {
+      const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(1000) });
+      if (!res.ok) {
+        _wProbeOk = false;
+      } else {
+        const data = await res.json();
+        _wProbeOk = data.models?.some(m => m.name.startsWith(EMBED_MODEL)) ?? false;
+      }
+    } catch {
+      _wProbeOk = false;
+    }
+    if (!_wProbeOk && prevOk !== false) {
+      console.warn('[PAN Embeddings] write-path: Ollama probe failed — skipping writes until it recovers');
+    } else if (_wProbeOk && prevOk === false) {
+      console.log('[PAN Embeddings] write-path: Ollama recovered — resuming writes');
+      _wConsecFails = 0;
+    }
+  }
+
+  if (!_wProbeOk) {
+    _wConsecFails++;
+    if (_wConsecFails >= _W_FAIL_LIMIT) {
+      _wBackoffUntil = Date.now() + _W_BACKOFF_MS;
+      console.warn(`[PAN Embeddings] write-path: ${_W_FAIL_LIMIT} consecutive failures — backing off 30s`);
+      _wConsecFails = 0;
+    }
+    return null;
+  }
+
+  try {
+    const vec = await embedOllama(text);
+    _wConsecFails = 0;
+    return vec;
+  } catch (err) {
+    console.error('[PAN Embeddings] write-path embed failed:', err.message);
+    _wProbeOk = false;
+    _wProbeTs = Date.now();
+    _wConsecFails++;
+    if (_wConsecFails >= _W_FAIL_LIMIT) {
+      _wBackoffUntil = Date.now() + _W_BACKOFF_MS;
+      console.warn(`[PAN Embeddings] write-path: ${_W_FAIL_LIMIT} consecutive failures — backing off 30s`);
+      _wConsecFails = 0;
+    }
+    return null;
+  }
+}
+
+export { embed, embedForWrite, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM, EMBED_MODEL };
