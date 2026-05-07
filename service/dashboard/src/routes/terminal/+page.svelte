@@ -1488,10 +1488,12 @@
 		const projectId = active?.projectId || null;
 		const cwd = active?.cwd || '%USERPROFILE%\\Desktop';
 		const sessionId = sessionPrefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
-		createTab(sessionId, projectName, cwd, projectId, false, null);
+		// force_new=true: skip server-side dedup guard so this tab gets its own PTY,
+		// not a redirect to whatever existing session the project already has open.
+		createTab(sessionId, projectName, cwd, projectId, false, null, undefined, true);
 	}
 
-	async function createTab(sessionId, projectName, cwd, projectId, isReconnect, tabName, savedClaudeSessionIds) {
+	async function createTab(sessionId, projectName, cwd, projectId, isReconnect, tabName, savedClaudeSessionIds, forceNew = false) {
 		const tabId = 'tab-' + (++tabCounter);
 
 		// Server-side rendered terminal — just a scrollable div that displays pre-rendered HTML lines
@@ -1619,7 +1621,8 @@
 			const calcRows = termContainerEl ? Math.max(20, Math.floor(termContainerEl.clientHeight / 21)) : 30; // line-height ~21px
 			const csidsParam = tabData.claudeSessionIds.length > 0 ? '&claude_sessions=' + encodeURIComponent(JSON.stringify(tabData.claudeSessionIds)) : '';
 			const tokenParam = tabData.reconnectToken ? '&token=' + encodeURIComponent(tabData.reconnectToken) : '';
-			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}${csidsParam}${tokenParam}`);
+			const forceNewParam = forceNew ? '&force_new=1' : '';
+			const wsUrlStr = wsUrl(`/ws/terminal?session=${encodeURIComponent(sessionId)}&project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}&cols=${calcCols}&rows=${calcRows}${csidsParam}${tokenParam}${forceNewParam}`);
 
 			const ws = new WebSocket(wsUrlStr);
 			tabData.ws = ws;
@@ -1907,14 +1910,14 @@
 							if (updateSid && !updateSid.startsWith('system-') && !updateSid.startsWith('phone-') && !updateSid.startsWith('router-') && !updateSid.startsWith('dash-') && !updateSid.startsWith('dev-dash-') && !updateSid.startsWith('mob-')) {
 								const ownerTab = tabs.find(t => t.claudeSessionIds.includes(updateSid));
 								if (!ownerTab) {
-									const activeTab = getActiveTab();
-									if (activeTab) {
-										activeTab.claudeSessionIds = [...new Set([...activeTab.claudeSessionIds, updateSid])];
-										tabs = [...tabs];
-										// Tell the backend about the new Claude session so it filters transcripts correctly
-										if (activeTab.ws && activeTab.ws.readyState === 1) {
-											activeTab.ws.send(JSON.stringify({ type: 'set_claude_sessions', sessions: activeTab.claudeSessionIds }));
-										}
+									// Always assign to the tab that owns this WebSocket (tabData),
+									// NOT getActiveTab() — that was stealing sessions from other tabs
+									// whenever the user switched to a new tab while Claude was still running.
+									tabData.claudeSessionIds = [...new Set([...tabData.claudeSessionIds, updateSid])];
+									tabs = [...tabs];
+									// Tell the backend about the new Claude session so it filters transcripts correctly
+									if (tabData.ws && tabData.ws.readyState === 1) {
+										tabData.ws.send(JSON.stringify({ type: 'set_claude_sessions', sessions: tabData.claudeSessionIds }));
 									}
 								}
 							}
@@ -2506,7 +2509,9 @@
 			const btws = (tabData._btwMessages || []);
 			const allMessages = [...pushed, ...echoes, ...btws].sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
 			console.log('[PAN DIAG] RENDER ← tab.sessionId =', tabData.sessionId, '| messages =', allMessages.length, '| echoes =', echoes.length);
-			if (allMessages.length === 0) return;
+			// Don't short-circuit when there are no messages — the loading indicator
+			// and PTY exit banner still need to render even on a brand-new empty tab.
+			if (allMessages.length === 0 && !tabData._claudeLoading && !tabData.ptyDead) return;
 
 			// Terminal-style rendering: tight monospace lines, simple prompt prefix.
 			// Username + LLM name + colors come from settings (localStorage). Names first-cap.
