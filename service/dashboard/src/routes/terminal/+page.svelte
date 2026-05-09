@@ -1954,11 +1954,37 @@
 							}
 							break;
 						case 'server_swap':
-							// Carrier hot-swapped a new Craft — wait until it's healthy then reload
+							// Carrier hot-swapped a new Craft.
+							// Bug #457: Don't blindly reload — first check whether the dashboard
+							// bundle actually changed. If the bundle is identical, the WS reconnect
+							// + adapter (which lives on the Carrier, NOT the Craft) is enough to
+							// restore everything. Reloading wipes tabs/scrollback/ΠΑΝ Remembers
+							// for no benefit.
 							if (!window._panSwapReloading) {
 								window._panSwapReloading = true;
-								console.log('[PAN] Craft swapped — waiting for server ready...');
-								waitForServerAndReload('⟳ Updating — reloading when ready…');
+								(async () => {
+									let bundleChanged = true; // fail-safe: if check fails, behave as before
+									try {
+										const r = await fetch('/api/dashboard/bundle-hash', { cache: 'no-store' });
+										if (r.ok) {
+											const { hash } = await r.json();
+											const prior = window._panBundleHash;
+											if (prior && hash && prior === hash) bundleChanged = false;
+											console.log(`[PAN] Craft swapped — bundle hash ${prior} → ${hash} (changed=${bundleChanged})`);
+										}
+									} catch (e) {
+										console.warn('[PAN] bundle-hash check failed, falling back to reload:', e?.message);
+									}
+									if (bundleChanged) {
+										console.log('[PAN] Bundle changed — waiting for server ready then reloading...');
+										waitForServerAndReload('⟳ Updating — reloading when ready…');
+									} else {
+										// Same bundle — no reload. WS reconnect + Carrier-side adapter
+										// will restore state without touching the DOM.
+										console.log('[PAN] Bundle unchanged — skipping reload (PTY/transcripts preserved)');
+										window._panSwapReloading = false;
+									}
+								})();
 							}
 							break;
 						case 'server_restarting':
@@ -4905,6 +4931,14 @@
 
 	onMount(() => {
 		_markLoad('mounted');
+
+		// Bug #457: capture the dashboard bundle hash at mount so the server_swap
+		// handler can decide whether the swap actually requires a page reload.
+		// If the bundle is unchanged, we skip the reload entirely.
+		fetch('/api/dashboard/bundle-hash', { cache: 'no-store' })
+			.then(r => r.ok ? r.json() : null)
+			.then(j => { if (j?.hash) window._panBundleHash = j.hash; })
+			.catch(() => {});
 
 		// Load wrapped app services for the Apps panel
 		loadWrapServices();

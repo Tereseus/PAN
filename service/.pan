@@ -1,12 +1,24 @@
 {
   "project_name": "service",
-  "last_session_id": "e1936a3c-c382-444f-9f35-4e9df82792f0",
-  "last_session_time": "2026-05-08T14:17:18.900Z",
+  "last_session_id": "a5679db6-d448-498c-b9b6-8c4ab35b0e25",
+  "last_session_time": "2026-05-09T18:23:05.228Z",
   "claude_project_dir": "%USERPROFILE%\\.claude\\projects\\C--Users-owner-Desktop-PAN-service",
   "all_session_dirs": [
     "C--Users-owner-Desktop-PAN-service"
   ],
   "session_history": [
+    {
+      "id": "a5679db6-d448-498c-b9b6-8c4ab35b0e25",
+      "time": "2026-05-09T18:23:05.229Z"
+    },
+    {
+      "id": "d36c23fd-7ecc-45c8-b04d-d3ab6cc40551",
+      "time": "2026-05-09T18:22:15.417Z"
+    },
+    {
+      "id": "292ac6d6-c6b6-4c22-9db3-56bc1ee51073",
+      "time": "2026-05-09T18:20:57.380Z"
+    },
     {
       "id": "e1936a3c-c382-444f-9f35-4e9df82792f0",
       "time": "2026-05-08T14:17:18.901Z"
@@ -34,18 +46,6 @@
     {
       "id": "6dd70025-b705-41c8-976d-84f27038647a",
       "time": "2026-05-06T15:13:34.416Z"
-    },
-    {
-      "id": "7528bb14-4074-4e30-a79c-41573fd447ef",
-      "time": "2026-05-06T15:12:50.882Z"
-    },
-    {
-      "id": "413201bd-4040-4b53-97e0-d66f63d93990",
-      "time": "2026-05-06T15:12:02.103Z"
-    },
-    {
-      "id": "e62c63d3-faf7-4ca5-a60f-ccd0d568a0ec",
-      "time": "2026-05-05T07:03:21.452Z"
     }
   ]
 }

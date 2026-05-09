@@ -30,6 +30,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync } from 'fs';
 import { hostname, tmpdir } from 'os';
+import { createHash } from 'crypto';
 import { killProcessOnPort } from './platform.js';
 import { PerfEngine } from './perf/engine.js';
 import { toMarkdown as perfToMarkdown, SWAP_GATE } from './perf/stages.js';
@@ -745,6 +746,36 @@ const carrierServer = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: 'invalid json' }));
       }
     });
+    return;
+  }
+
+  // Bundle hash — used by the dashboard to decide whether a Craft swap requires
+  // a full window.location.reload(). On `server_swap` the client compares the
+  // current hash against the one captured at page mount; if unchanged, the WS
+  // reconnect handles everything and the page reload is skipped (preserving
+  // tabs, scrollback, ΠΑΝ Remembers, etc.).
+  // Bug #457: prior to this, every Craft swap reloaded the page even when the
+  // dashboard bundle was identical, wiping the user's visible state.
+  if (url.pathname === '/api/dashboard/bundle-hash' && req.method === 'GET') {
+    try {
+      const indexPath = join(__dirname, '..', 'public', 'v2', 'index.html');
+      let hash = 'unknown';
+      if (existsSync(indexPath)) {
+        // Cheap: hash mtime+size, not file contents. The SvelteKit build emits
+        // hashed chunk names referenced from index.html, so any code change
+        // produces a new index.html with different mtime/size.
+        const st = statSync(indexPath);
+        hash = createHash('sha1')
+          .update(`${st.mtimeMs}:${st.size}`)
+          .digest('hex')
+          .slice(0, 16);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ hash }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message || 'hash failed' }));
+    }
     return;
   }
 
