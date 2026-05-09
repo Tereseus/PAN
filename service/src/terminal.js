@@ -132,6 +132,9 @@ function pipeSend(sessionId, userText) {
           try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
         }
       }
+      // Drain any pending completion callbacks (e.g. delegateToPhoneToolsSession
+      // registers a panNotify hook so the phone hears the result).
+      drainPipeCompleteCallbacks(session, null);
     })
     .catch((err) => {
       // Send failed — must return to IDLE or the session is stuck WORKING forever
@@ -144,8 +147,108 @@ function pipeSend(sessionId, userText) {
           try { c.send(JSON.stringify({ type: 'error', message: `Send failed: ${err?.message}` })); } catch {}
         }
       }
+      drainPipeCompleteCallbacks(session, err);
     });
   return true;
+}
+
+// One-shot pipe-complete callback queue. Used by delegateToPhoneToolsSession
+// (and any other caller that needs to react to "this specific send finished").
+// Callbacks receive (err) — null on success, Error on failure.
+function drainPipeCompleteCallbacks(session, err) {
+  const queue = session._onPipeComplete;
+  if (!queue || queue.length === 0) return;
+  session._onPipeComplete = [];
+  for (const cb of queue) {
+    try { cb(err); }
+    catch (e) { console.error('[PAN LLM] _onPipeComplete callback threw:', e?.message); }
+  }
+}
+
+// Phone → headless Claude session delegate (task #453).
+// Picks a target session and pipeSend()s the user's text into its LLM adapter.
+// Lookup order:
+//   1. settings.phone_tools_session_id (explicit user choice in dashboard)
+//   2. most-recent session by lastInputTs (fall back to createdAt)
+// Returns { ok, sessionId, reason? }. Fire-and-forget for the caller — the
+// phone gets an immediate ack from the router. When the adapter finishes,
+// drainPipeCompleteCallbacks() fires our hook which panNotify()s the user
+// with the assistant's final response so the phone hears the result.
+function delegateToPhoneToolsSession(userText) {
+  let sessionId = null;
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'phone_tools_session_id'");
+    if (row) sessionId = (row.value || '').replace(/^"|"$/g, '').trim() || null;
+  } catch {}
+
+  // Configured but stale — fall through to auto-pick
+  if (sessionId && !sessions.has(sessionId)) sessionId = null;
+
+  if (!sessionId) {
+    let best = null;
+    for (const [id, s] of sessions) {
+      const score = s.lastInputTs || s.createdAt || 0;
+      if (!best || score > best.score) best = { id, score };
+    }
+    sessionId = best?.id || null;
+  }
+
+  if (!sessionId) return { ok: false, reason: 'no_session' };
+
+  const session = sessions.get(sessionId);
+  // Snapshot baseline message count BEFORE pipeSend so the completion hook
+  // knows which messages were produced by THIS request vs prior history.
+  const baselineMsgCount = (session.messages || []).length;
+
+  // Register the completion hook BEFORE pipeSend so there's no race where the
+  // adapter resolves before our callback is queued. drainPipeCompleteCallbacks
+  // runs in pipeSend's .then()/.catch() once the adapter is idle.
+  session._onPipeComplete = session._onPipeComplete || [];
+  session._onPipeComplete.push(async (err) => {
+    try {
+      if (err) {
+        const { panNotify } = await import('./pan-notify.js');
+        panNotify('ΠΑΝ · ⚡',
+          `Task failed: "${userText.slice(0, 80)}"`,
+          `The delegated task errored: ${err.message || err}`,
+          { severity: 'error', metadata: { delegated: true, sessionId, error: String(err?.message || err) } });
+        return;
+      }
+      // Slice messages produced since this send started, keep only assistant
+      // text content (skip tool-use rows, system rows, and user echoes).
+      const allMsgs = session.messages || [];
+      const newMsgs = allMsgs.slice(baselineMsgCount);
+      const assistantText = newMsgs
+        .filter(m => m.role === 'assistant' && (m.type === 'text' || !m.type))
+        .map(m => (m.text || m.content || '').trim())
+        .filter(Boolean)
+        .join('\n\n');
+
+      if (!assistantText) return; // nothing to report — adapter produced no text
+      const summary = assistantText.length > 1500
+        ? assistantText.slice(0, 1500) + '…'
+        : assistantText;
+      const { panNotify } = await import('./pan-notify.js');
+      panNotify('ΠΑΝ · ⚡',
+        `✅ Done: "${userText.slice(0, 80)}"`,
+        summary,
+        { severity: 'info', metadata: { delegated: true, sessionId, originalRequest: userText } });
+    } catch (e) {
+      console.error('[PAN delegate] completion hook failed:', e?.message);
+    }
+  });
+
+  const ok = pipeSend(sessionId, userText);
+  if (!ok) {
+    // Roll back our registered callback — pipeSend never started, so the
+    // .then()/.catch() chain that drains it will never fire. Pop the last
+    // entry (which is the one we just pushed).
+    if (session._onPipeComplete && session._onPipeComplete.length > 0) {
+      session._onPipeComplete.pop();
+    }
+    return { ok: false, reason: 'pipeSend_failed' };
+  }
+  return { ok: true, sessionId };
 }
 
 // Interrupt a session's LLM adapter (Escape key in pipe mode)
@@ -1750,4 +1853,4 @@ setInterval(() => {
   }
 }, 15_000); // check every 15s — catches stuck state within ~105s worst case (busy adapter)
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize, delegateToPhoneToolsSession };

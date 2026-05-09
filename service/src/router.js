@@ -226,6 +226,7 @@ Response formats:
 {"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg"}
 {"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg"}
 {"intent":"calendar","speech_act":"command","response":"msg"}
+{"intent":"task","speech_act":"command","text":"command for the Claude session","response":"short ack for TTS"} — for things that need full capability: writing/fixing/reading code, multi-step file ops, running commands, debugging. The "text" is what gets handed to the live Claude session. The "response" is a short ack the user hears immediately ("On it.", "Working on that now."). Use task ONLY when query/system/browser/terminal can't do it — code edits, file searches, multi-step reasoning over the codebase.
 
 Projects: ${projectList}
 ${memoryContext}`,
@@ -255,6 +256,33 @@ async function processUnifiedResult(action, text, context) {
   const speech_act = action.speech_act || (intent === 'ambient' ? 'ambient' : 'command');
 
   switch (intent) {
+    case 'task': {
+      // Phone → headless Claude session delegate (task #453).
+      // Cerebras decided this needs full capability (code, files, multi-step).
+      // Fire-and-forget into a live PTY adapter; return immediate TTS ack.
+      try {
+        const { delegateToPhoneToolsSession } = await import('./terminal.js');
+        const delegateText = action.text || text;
+        const result = delegateToPhoneToolsSession(delegateText);
+        if (result.ok) {
+          return {
+            intent: 'task',
+            speech_act,
+            response: action.response || `On it. I'll work on that and follow up.`,
+            delegated: { sessionId: result.sessionId, text: delegateText },
+          };
+        }
+        // No live session available — degrade to a query response so the user knows why
+        const reason = result.reason === 'no_session'
+          ? `I don't have a live Claude session open to do that. Open one in the dashboard and try again.`
+          : `Couldn't hand that off (${result.reason}).`;
+        return { intent: 'query', speech_act, response: reason };
+      } catch (e) {
+        console.error('[PAN Router] task delegate error:', e.message);
+        return { intent: 'query', speech_act, response: `Task delegate failed: ${e.message}` };
+      }
+    }
+
     case 'terminal': {
       if (action.action === 'open') {
         const path = action.project || process.env.USERPROFILE + '\\Desktop';

@@ -228,34 +228,66 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 87b3f5df-c1e)*
-**Claude** (2026-05-08 15:35:36): ΠΑΝ Remembers: backfill sentinel fix (`2ae56df`) was committed but only 122 embeds added overnight since old code was still running; now at 1.5 embeds/sec, ~24h to clear 130k. Also helped with Joying head unit USB drive letter assignment via diskpart
-**User** (2026-05-08 15:55:35): What model are you
-**Claude** (2026-05-08 15:55:39): I'm **Claude Opus 4.6**, made by Anthropic.
-**User** (2026-05-08 15:56:29): OK great so I'm able to switch now correctly between models and tabs which is what we were working on last time actually can you push to github
-**Claude** (2026-05-08 15:56:58): Pushed. 18 commits up to `90c4e1a` (terminal new-tab fix) are now on `origin/master`.
+### This Tab *(session: 11978f9d-d16)*
+**Claude** (2026-05-09 15:45:21): Got it. Found the bug — and it's **not** a Craft swap. It's a known-but-ignored model-switch failure.
 
-Note: there are still uncommitted changes in the working tree (terminal.svelte, server.js, etc.) — left those alone since you only asked to push. Say the word if y
-**User** (2026-05-08 15:59:36): Why wouldn't you push those as well though
-**Claude** (2026-05-08 15:59:50): Fair point — I shouldn't have left them. A few reasons I held back, but none of them are great:
+## What actually happened
 
-1. **Mixed scope** — the working tree has ~37 modified files spanning Android (TTS, barge-in), terminal UI, dashboard build artifacts, scout, memory-sear
+1. You hit **claude-opus-4-7** in the model dropdown.
+2. That called `pipeSetModel()` → `adapter.setModel('claude-opus-4
+**User** (2026-05-09 15:47:32): Yes go let's go ahead and try and fix this OK just go ahead and do what you need to fix this Well I guess actually I guess actually because these these types of bugs right now right the scalp should be looking at these and then it should be saying to
+**Claude** (2026-05-09 15:51:49): **Filed as `#457` P1.** Full description includes root cause, fix options, and regression test.
 
-### Recent Project Work *(session: 851666d4-cad)*
-**Claude** (2026-05-08 15:55:29): Acknowledged.
-**User** (2026-05-08 15:55:43): What model are you
-**Claude** (2026-05-08 15:56:20): Claude Sonnet 4.5.
+## Recap of your questions
+
+1. **"Are these all in the database?"** — Yes. `events` table + Claude SDK JSONL (`~/.claude/projects/<slug>/<sessionId>.json
+**User** (2026-05-09 15:53:34): Well if we have to do a in the future I'm not sure what that even means Like we should be able to have multiple crafts and be able to seamlessly transfer between them and not lose Pty and transcripts That's how it worked before So if we have to do a 
+**Claude** (2026-05-09 15:54:00): You're right, and I muddied it. Let me make it plain.
+
+**What the architecture promises** (and what you remember working):
+- Carrier owns PTY + adapter + sessions. They live in memory, in the long-running Carrier process.
+- Craft is just an HTTP rout
+**User** (2026-05-09 15:54:34): Yes go ahead and do that
+**Claude** (2026-05-09 15:58:11): Done. `#457` → `in_test`.
+
+## What changed
+
+**`service/src/carrier.js`** — new endpoint `GET /api/dashboard/bundle-hash`. Returns a sha1 of `service/public/v2/index.html`'s mtime+size (cheap, accurate — SvelteKit emits hashed chunk names referenced f
+
+### Recent Project Work *(session: 87b3f5df-c1e)*
+**User** (2026-05-09 14:57:54): Yeah I havent used the phone for a couple of days so that actually makes sense that the last logs came 7 days ago so that actually makes sense Yeah go ahead and make that diff
+**Claude** (2026-05-09 14:59:29): Diff applied. Final picture:
+
+**Open tasks: 13** (was 10) · **P1: 6** · **In-progress: 1** (AutoDev re-opened)
+
+```
+P1 (6) — gating the pendant
+  [405] in_progress  AutoDev v0 — Slack/Discord watcher (re-opened, was prematurely done)
+  [440] backlog 
+**User** (2026-05-09 15:04:03): OK So then what should we work on next what should we do now that we have all this
+**Claude** (2026-05-09 15:04:36): Given what you said earlier — that you're focused on **intuition + phone reply timing** before pendant — here are the three real options, ranked by my read on leverage:
+
+### 🎯 Recommended: `#453` phone → headless Claude routing
+**Why first:** It's t
+**User** (2026-05-09 15:05:27): OK yeah go ahead and do that
+**Claude** (2026-05-09 15:09:11): **`#453` Phase 1 done — sitting in `in_test`.**
+
+### What changed
+- `service/src/terminal.js` — new `delegateToPhoneToolsSession(text)` helper. Reads `settings.phone_tools_session_id`, falls back to most-recent active session, calls `pipeSend()` fire
+**User** (2026-05-09 15:23:03): You might as well just do phase two before we do anything else
+**Claude** (2026-05-09 15:26:10): **`#453` Phase 2 done.** Both files syntax-clean.
+
+### What Phase 2 added
+
+**`terminal.js`:**
+- New `_onPipeComplete` callback queue on each session — generic one-shot completion hooks
+- `drainPipeCompleteCallbacks(session, err)` — runs the queue, ca
 
 ### Open Tasks
+- [#458 backlog] Tab list rebuild fragile across Craft swap — pan-4 tab disappeared after swap
+- [#459 backlog] Forge: Opus auto-fix loop on Scout-detected bugs
+- [#457 in_test] Craft swap silently restarts Claude session — transcript wipe + tab loss + fresh ΠΑΝ Remembers
 - [#451 backlog] Replace brightness watchdog with a real health signal
-- [#452 backlog] Replace brightness watchdog with a real health signal
-- [#394 backlog P2] Compose email — send returns HTTP 400, no email service wired
-- [#433 backlog P2] Regression test baseline � write tests before adding features so bugs stop coming back
-- [#434 backlog P2] Proactive assistant � PAN chimes in with relevant context without being asked
-- [#441 backlog P2] Intuition system � build proactive context engine tied to screen watcher + webcam presence
-- [#442 backlog P2] Phone dashboard tabs show wrong names � 'pan' + random numbers instead of session labels
-- [#437 backlog P1] UI performance degrades over time � fast on restart, becomes extremely slow after uptime
-- [#440 backlog P1] Phone response times slow + memory search unreliable from voice pipeline
-- [#443 backlog P1] Steward reports ollama as running but port is down � status mismatch
 
+[... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
