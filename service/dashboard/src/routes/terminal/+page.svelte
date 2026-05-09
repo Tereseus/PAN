@@ -1105,7 +1105,8 @@
 				cwd: t.cwd,
 				projectId: t.projectId,
 				tabIndex: i,
-				claudeSessionIds: t.claudeSessionIds || []
+				claudeSessionIds: t.claudeSessionIds || [],
+				model: t.model || null
 			}));
 			localStorage.setItem('pan-terminal-sessions', JSON.stringify(state));
 			localStorage.setItem('pan-terminal-active', activeTabId || '');
@@ -1529,6 +1530,9 @@
 			project: projectName,
 			cwd,
 			projectId,
+			// Per-tab model override — null means "use global default (voiceSettings.terminal_ai_model)".
+			// Set when the user picks a model from the dropdown for this tab.
+			model: null,
 			claudeStarted: false,
 			container: tabContainer,
 			scrollbackDiv,
@@ -1542,6 +1546,14 @@
 			draft: sessionStorage.getItem('pan_tab_draft:' + sessionId) || '',
 			pastedImages: [],   // Per-tab image attachments
 		};
+
+		// Restore per-tab model override from saved state (survives page reload).
+		// On reconnect we re-issue set-model to the server when the WS opens.
+		try {
+			const savedTabs = getSavedSessionState();
+			const saved = savedTabs.find(s => s.sessionId === sessionId);
+			if (saved?.model) tabData.model = saved.model;
+		} catch {}
 
 		// Track if user has scrolled up (don't auto-scroll if so)
 		// Persist to sessionStorage so scroll position survives page refresh.
@@ -2273,6 +2285,16 @@
 			ws.onopen = () => {
 				_markLoad('wsOpen');
 				startPing();
+
+				// Re-apply per-tab model override after reconnect. Server-side session may
+				// have been recreated (Carrier restart) and lost the in-memory model field —
+				// re-issue set-model so the SDK adapter gets the right model on next send.
+				if (tabData.model) {
+					api('/api/v1/terminal/set-model', {
+						method: 'POST',
+						body: JSON.stringify({ session_id: sessionId, model: tabData.model }),
+					}).catch(() => {});
+				}
 
 				// Auto-launch Claude (PAN) for project tabs — but only ONCE per project session.
 				// Previously this fired on every WebSocket reconnect, re-running the printf trigger.
@@ -5284,14 +5306,18 @@
 				renderTranscriptToTerminal(t);
 			}
 		};
-		// When the AI provider/model changes in Settings, clear all launch guards so
-		// ΠΑΝ Remembers re-fires on the next WS reconnect (or tab reopen).
+		// AI settings change in Settings page. Previously this cleared every launch
+		// guard so ΠΑΝ Remembers would re-fire on next WS reconnect — but that also
+		// caused a fresh launch printf into ALREADY-RUNNING tabs, which the user
+		// experienced as "changing a model restarts the chat in other tabs."
+		//
+		// New behavior: do nothing for tabs that already started Claude. If the user
+		// wants the new provider/model applied to a running session, they can close
+		// the tab and reopen it (or use the per-tab dropdown, which only affects
+		// the active tab).
 		const handleStorageChange = (e) => {
 			if (e.key === 'pan_ai_changed') {
-				for (const key of Object.keys(sessionStorage)) {
-					if (key.startsWith('pan_claude_launched:')) sessionStorage.removeItem(key);
-				}
-				console.log('[PAN Terminal] AI provider changed — launch guards cleared, ΠΑΝ Remembers will re-fire');
+				console.log('[PAN Terminal] AI settings changed in Settings page — running tabs unaffected. New tabs will pick up the new defaults.');
 			}
 		};
 		window.addEventListener('pan-terminal-settings-changed', handleTermSettingsChanged);
@@ -7540,28 +7566,29 @@
 			<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
 			<select
 				class="model-pill-select"
-				title="Switch model — takes effect on new tabs (click + to start new session)"
-				bind:value={voiceSettings.terminal_ai_model}
+				title="Switch model — applies to THIS tab only. Other tabs keep their own model."
+				value={getActiveTab()?.model || voiceSettings.terminal_ai_model || ''}
 				onchange={async (e) => {
 					const model = e.target.value;
-					const sid = getActiveTab()?.sessionId;
+					const active = getActiveTab();
+					const sid = active?.sessionId;
+					if (!sid) return;
 					try {
-						// 1. Switch model live on the running session
-						if (sid) {
-							const r = await api('/api/v1/terminal/set-model', { method: 'POST', body: JSON.stringify({ session_id: sid, model }) });
-							if (!r?.ok) console.warn('[PAN] set-model failed for session', sid, r);
+						// Per-tab only: switch model on the running session, persist on the
+						// tab object. Do NOT write to global settings, do NOT clear launch
+						// guards, do NOT broadcast pan_ai_changed — those side-effects were
+						// the cause of model switches restarting chats in other tabs.
+						const r = await api('/api/v1/terminal/set-model', { method: 'POST', body: JSON.stringify({ session_id: sid, model }) });
+						if (r?.ok) {
+							active.model = model;
+							tabs = tabs; // trigger reactivity so dropdown reflects new value
+							saveSessionState();
+						} else {
+							console.warn('[PAN] set-model failed for session', sid, r);
 						}
-						// 2. Save as default for future sessions
-						await api('/api/v1/settings', { method: 'PUT', body: JSON.stringify({ terminal_ai_model: model }) });
-						// 3. Reload voiceSettings so bind reflects confirmed saved value
-						await loadVoiceSettings();
-						// 4. Clear launch guards in this window immediately (localStorage storage
-						//    events don't fire in the same window — do it here too)
-						for (const key of Object.keys(sessionStorage)) {
-							if (key.startsWith('pan_claude_launched:')) sessionStorage.removeItem(key);
-						}
-						localStorage.setItem('pan_ai_changed', Date.now().toString());
-					} catch {}
+					} catch (err) {
+						console.warn('[PAN] set-model error', err);
+					}
 				}}
 			>
 				{#if availableModels.length > 0}

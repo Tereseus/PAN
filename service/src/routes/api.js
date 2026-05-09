@@ -247,7 +247,7 @@ router.post('/recall', async (req, res) => {
            FROM events_fts f
            JOIN events e ON e.id = f.rowid
            WHERE events_fts MATCH :q AND e.org_id = :org_id
-           ORDER BY rank
+           ORDER BY CASE e.event_type WHEN 'RouterCommand' THEN 0 ELSE 1 END, rank
            LIMIT 100`,
           { ':q': ftsQuery }
         );
@@ -269,6 +269,10 @@ router.post('/recall', async (req, res) => {
       try { data = JSON.parse(e.data); } catch { return null; }
       if (e.event_type === 'RouterCommand') {
         const q = data.text || ''; const a = data.result || data.response_text || '';
+        // Skip recall-failure events — they pollute results with "we haven't talked about X"
+        const failurePhrases = ["haven't talked about", "no record of", "no matching items", "first time you've mentioned",
+          "don't have access to previous", "can't find", "nothing found", "[AMBIENT]", "No matching items"];
+        if (failurePhrases.some(p => a.includes(p))) return null;
         if (q || a) return `Voice: "${q}" → ${a}`;
       } else if (e.event_type === 'UserPromptSubmit') {
         const p = data.prompt || '';

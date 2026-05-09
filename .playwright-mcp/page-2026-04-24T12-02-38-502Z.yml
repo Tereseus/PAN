@@ -1,0 +1,828 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - link "Skip to main content" [ref=e6] [cursor=pointer]:
+        - /url: "#main-view"
+        - generic [ref=e7]: Skip to main content
+      - link "Spotify" [ref=e9] [cursor=pointer]:
+        - /url: /
+        - img "Spotify" [ref=e10]
+      - generic [ref=e13]:
+        - button "Home" [ref=e14] [cursor=pointer]:
+          - img [ref=e16]
+        - search [ref=e19]:
+          - button "Search" [ref=e21] [cursor=pointer]:
+            - img [ref=e23]
+          - generic [ref=e25]:
+            - combobox "What do you want to play?" [ref=e26]
+            - generic:
+              - generic: CtrlShiftL
+          - button "Browse" [ref=e29] [cursor=pointer]:
+            - img [ref=e31]
+      - generic [ref=e35]:
+        - button "Premium" [ref=e36] [cursor=pointer]
+        - button "Support" [ref=e37] [cursor=pointer]
+        - button "Download" [ref=e38] [cursor=pointer]
+        - link "Install App" [ref=e40] [cursor=pointer]:
+          - /url: /download
+          - img [ref=e42]
+          - generic [ref=e45]: Install App
+        - generic [ref=e46]:
+          - button "Sign up" [ref=e47] [cursor=pointer]
+          - button "Log in" [ref=e48] [cursor=pointer]:
+            - generic [ref=e49]: Log in
+    - generic [ref=e50]:
+      - navigation "Main" [ref=e51]:
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - generic [ref=e56]:
+              - heading "Your Library" [level=1] [ref=e58]
+              - button "Create" [ref=e60] [cursor=pointer]:
+                - img [ref=e61]
+            - generic [ref=e65]:
+              - generic [ref=e66]:
+                - generic [ref=e67]:
+                  - generic [ref=e68]: Create your first playlist
+                  - generic [ref=e69]: It's easy, we'll help you
+                - button "Create playlist" [ref=e71] [cursor=pointer]:
+                  - generic [ref=e72]: Create playlist
+              - generic [ref=e73]:
+                - generic [ref=e74]:
+                  - generic [ref=e75]: Let's find some podcasts to follow
+                  - generic [ref=e76]: We'll keep you updated on new episodes
+                - link "Browse podcasts" [ref=e78] [cursor=pointer]:
+                  - /url: /genre/podcasts-web
+                  - generic [ref=e79]: Browse podcasts
+              - generic:
+                - grid "Your Library":
+                  - generic:
+                    - row
+                    - row
+          - generic [ref=e80]:
+            - generic [ref=e81]:
+              - generic [ref=e82]:
+                - link "Legal" [ref=e84] [cursor=pointer]:
+                  - /url: https://www.spotify.com/gr/legal/
+                  - generic [ref=e85]: Legal
+                - link "Safety & Privacy Center" [ref=e87] [cursor=pointer]:
+                  - /url: https://www.spotify.com/gr/safetyandprivacy/
+                  - generic [ref=e88]: Safety & Privacy Center
+                - link "Privacy Policy" [ref=e90] [cursor=pointer]:
+                  - /url: https://www.spotify.com/gr/legal/privacy-policy/
+                  - generic [ref=e91]: Privacy Policy
+                - button "Cookie Settings" [ref=e93] [cursor=pointer]:
+                  - generic [ref=e94]: Cookie Settings
+                - link "About Ads" [ref=e96] [cursor=pointer]:
+                  - /url: https://www.spotify.com/gr/legal/privacy-policy/#s3
+                  - generic [ref=e97]: About Ads
+                - link "Accessibility" [ref=e99] [cursor=pointer]:
+                  - /url: https://www.spotify.com/gr/accessibility/
+                  - generic [ref=e100]: Accessibility
+              - link "Cookies" [ref=e101] [cursor=pointer]:
+                - /url: https://www.spotify.com/legal/cookies-policy/
+            - button "English" [ref=e103] [cursor=pointer]:
+              - img [ref=e105]
+              - text: English
+      - generic [ref=e108]:
+        - text: Resize main navigation
+        - slider "Resize main navigation" [ref=e109]: "290"
+    - complementary "Now playing bar" [ref=e111]:
+      - generic [ref=e112] [cursor=pointer]:
+        - generic [ref=e113]:
+          - paragraph [ref=e114]: Preview of Spotify
+          - paragraph [ref=e115]: Sign up to get unlimited songs and podcasts with occasional ads. No credit card needed.
+        - button "Sign up free" [ref=e116]:
+          - generic [ref=e117]: Sign up free
+      - generic:
+        - generic "Player controls" [ref=e119]:
+          - generic [ref=e120]:
+            - generic [ref=e121]:
+              - switch "Enable shuffle" [disabled] [ref=e122]:
+                - img [ref=e124]
+              - button "Previous" [disabled] [ref=e127]:
+                - img [ref=e129]
+            - button "Pause" [disabled] [ref=e131]:
+              - img [ref=e134]
+            - generic [ref=e136]:
+              - button "Next" [disabled] [ref=e137]:
+                - img [ref=e139]
+              - checkbox "Disable repeat" [disabled] [ref=e141]:
+                - img [ref=e143]
+          - generic [ref=e145]:
+            - generic [ref=e146]: "-:--"
+            - generic [ref=e149]:
+              - text: Change progress
+              - slider "Change progress" [disabled] [ref=e150]: "0"
+            - generic [ref=e156]: "-:--"
+        - generic [ref=e158]:
+          - button "Now playing view" [disabled] [ref=e159]:
+            - img [ref=e161]
+          - generic [ref=e164]:
+            - button "Mute" [ref=e165] [cursor=pointer]:
+              - img [ref=e167]
+            - generic [ref=e172]:
+              - text: Change volume
+              - slider "Change volume" [ref=e173]: "1"
+    - main "Spotify – Search" [ref=e184]:
+      - generic [ref=e185]:
+        - generic [ref=e188]:
+          - list [ref=e189]:
+            - link "All" [ref=e190] [cursor=pointer]:
+              - /url: /search/ambient%20music%20for%20focus
+              - checkbox "All" [checked] [ref=e191]:
+                - generic [ref=e192]: All
+            - link "Playlists" [ref=e193] [cursor=pointer]:
+              - /url: /search/ambient%20music%20for%20focus/playlists
+              - checkbox "Playlists" [ref=e194]:
+                - generic [ref=e195]: Playlists
+            - link "Podcasts & Shows" [ref=e196] [cursor=pointer]:
+              - /url: /search/ambient%20music%20for%20focus/podcastAndEpisodes
+              - checkbox "Podcasts & Shows" [ref=e197]:
+                - generic [ref=e198]: Podcasts & Shows
+            - link "Albums" [ref=e199] [cursor=pointer]:
+              - /url: /search/ambient%20music%20for%20focus/albums
+              - checkbox "Albums" [ref=e200]:
+                - generic [ref=e201]: Albums
+            - link "Songs" [ref=e202] [cursor=pointer]:
+              - /url: /search/ambient%20music%20for%20focus/tracks
+              - checkbox "Songs" [ref=e203]:
+                - generic [ref=e204]: Songs
+            - link "Artists" [ref=e205] [cursor=pointer]:
+              - /url: /search/ambient%20music%20for%20focus/artists
+              - checkbox "Artists" [ref=e206]:
+                - generic [ref=e207]: Artists
+            - link "Genres & Moods" [ref=e208] [cursor=pointer]:
+              - /url: /search/ambient%20music%20for%20focus/genres
+              - checkbox "Genres & Moods" [ref=e209]:
+                - generic [ref=e210]: Genres & Moods
+          - generic:
+            - generic:
+              - img
+            - generic:
+              - img
+        - generic [ref=e211]:
+          - region "Top result" [ref=e212]:
+            - group [ref=e214]:
+              - heading [level=2] [ref=e217]:
+                - generic [ref=e218]: Top result
+            - generic [ref=e221]:
+              - img [ref=e223]
+              - generic [ref=e224]:
+                - link "Relaxing Zen Music with Water Sounds • Peaceful Ambience for Spa, Yoga and Relaxation" [ref=e225] [cursor=pointer]:
+                  - /url: /episode/0SnBLYh1aQMp0kyCsErSgy
+                  - generic [ref=e226]: Relaxing Zen Music with Water Sounds • Peaceful Ambience for Spa, Yoga and Relaxation
+                - generic [ref=e229]:
+                  - generic [ref=e230]:
+                    - generic [ref=e231]: Episode
+                    - text: •
+                  - text: Apr 2025•186 min•
+                  - link "Be better everyday" [ref=e234] [cursor=pointer]:
+                    - /url: /show/4S4IHMb9UiRAWOIu6xM3JF
+              - generic:
+                - generic:
+                  - button "Play":
+                    - generic:
+                      - generic:
+                        - img
+          - region "Songs" [ref=e237]:
+            - group [ref=e239]:
+              - heading [level=2] [ref=e242]:
+                - link [ref=e244] [cursor=pointer]:
+                  - /url: /search/ambient%20music%20for%20focus/tracks
+                  - text: Songs
+            - grid "Songs search results" [ref=e247]:
+              - row "Play Ambient Music for Programming Focus by Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP Ambient Music for Programming Focus Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP Add to Liked Songs 2:08 More options for Ambient Music for Programming Focus by Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP" [ref=e248]:
+                - gridcell "Play Ambient Music for Programming Focus by Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP Ambient Music for Programming Focus Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP" [ref=e249]:
+                  - generic [ref=e250]:
+                    - img [ref=e251]
+                    - button "Play Ambient Music for Programming Focus by Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP":
+                      - img
+                  - generic [ref=e252]:
+                    - link "Ambient Music for Programming Focus" [ref=e253] [cursor=pointer]:
+                      - /url: /track/1mFxUYmkjdwlpVONykON4p
+                      - generic [ref=e254]: Ambient Music for Programming Focus
+                    - generic [ref=e256]:
+                      - link "Music for Coding TP" [ref=e257] [cursor=pointer]:
+                        - /url: /artist/6JmscSElarixajN3JG8YKb
+                      - text: ","
+                      - link "Programmer's Beats TP" [ref=e258] [cursor=pointer]:
+                        - /url: /artist/6HeHYfDZAKAmDU5WWBTWQB
+                      - text: ","
+                      - link "Programming Code Beats TP" [ref=e259] [cursor=pointer]:
+                        - /url: /artist/2LwxA8wuZQhUTSzC2hJkG1
+                - gridcell "Add to Liked Songs 2:08 More options for Ambient Music for Programming Focus by Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP" [ref=e260]:
+                  - button "Add to Liked Songs" [ref=e261] [cursor=pointer]:
+                    - img [ref=e263]
+                  - generic [ref=e266]: 2:08
+                  - button "More options for Ambient Music for Programming Focus by Music for Coding TP, Programmer's Beats TP, Programming Code Beats TP" [ref=e267] [cursor=pointer]:
+                    - img [ref=e269]
+              - row "Play Ambient Music For Focus and Concentration by Study Music & Sounds, Study Power, Study Alpha Waves Ambient Music For Focus and Concentration Study Music & Sounds, Study Power, Study Alpha Waves Add to Liked Songs 2:11 More options for Ambient Music For Focus and Concentration by Study Music & Sounds, Study Power, Study Alpha Waves" [ref=e271]:
+                - gridcell "Play Ambient Music For Focus and Concentration by Study Music & Sounds, Study Power, Study Alpha Waves Ambient Music For Focus and Concentration Study Music & Sounds, Study Power, Study Alpha Waves" [ref=e272]:
+                  - generic [ref=e273]:
+                    - img [ref=e274]
+                    - button "Play Ambient Music For Focus and Concentration by Study Music & Sounds, Study Power, Study Alpha Waves":
+                      - img
+                  - generic [ref=e275]:
+                    - link "Ambient Music For Focus and Concentration" [ref=e276] [cursor=pointer]:
+                      - /url: /track/42uhV7NxgUA5VlwQnS8aHj
+                      - generic [ref=e277]: Ambient Music For Focus and Concentration
+                    - generic [ref=e279]:
+                      - link "Study Music & Sounds" [ref=e280] [cursor=pointer]:
+                        - /url: /artist/7rfR2Pmx3GNKyrjgMNCUEa
+                      - text: ","
+                      - link "Study Power" [ref=e281] [cursor=pointer]:
+                        - /url: /artist/1C4ZVWC3f3KZRfs6O75X8H
+                      - text: ","
+                      - link "Study Alpha Waves" [ref=e282] [cursor=pointer]:
+                        - /url: /artist/3UDxdbAXqqKJG1pWgUgOCp
+                - gridcell "Add to Liked Songs 2:11 More options for Ambient Music For Focus and Concentration by Study Music & Sounds, Study Power, Study Alpha Waves" [ref=e283]:
+                  - button "Add to Liked Songs" [ref=e284] [cursor=pointer]:
+                    - img [ref=e286]
+                  - generic [ref=e289]: 2:11
+                  - button "More options for Ambient Music For Focus and Concentration by Study Music & Sounds, Study Power, Study Alpha Waves" [ref=e290] [cursor=pointer]:
+                    - img [ref=e292]
+              - row "Play Ambient Study Music by Study Music Project Ambient Study Music Study Music Project Add to Liked Songs 1:12 More options for Ambient Study Music by Study Music Project" [ref=e294]:
+                - gridcell "Play Ambient Study Music by Study Music Project Ambient Study Music Study Music Project" [ref=e295]:
+                  - generic [ref=e296]:
+                    - img [ref=e297]
+                    - button "Play Ambient Study Music by Study Music Project":
+                      - img
+                  - generic [ref=e298]:
+                    - link "Ambient Study Music" [ref=e299] [cursor=pointer]:
+                      - /url: /track/0HT3vWtf3U14MuUnR06Nk6
+                      - generic [ref=e300]: Ambient Study Music
+                    - link "Study Music Project" [ref=e303] [cursor=pointer]:
+                      - /url: /artist/2lwe485psVX32oqYHhzFbP
+                - gridcell "Add to Liked Songs 1:12 More options for Ambient Study Music by Study Music Project" [ref=e304]:
+                  - button "Add to Liked Songs" [ref=e305] [cursor=pointer]:
+                    - img [ref=e307]
+                  - generic [ref=e310]: 1:12
+                  - button "More options for Ambient Study Music by Study Music Project" [ref=e311] [cursor=pointer]:
+                    - img [ref=e313]
+              - row "Play Brown Noise Ambient Music by Ablation Brown Noise Ambient Music Ablation Add to Liked Songs 2:25 More options for Brown Noise Ambient Music by Ablation" [ref=e315]:
+                - gridcell "Play Brown Noise Ambient Music by Ablation Brown Noise Ambient Music Ablation" [ref=e316]:
+                  - generic [ref=e317]:
+                    - img [ref=e318]
+                    - button "Play Brown Noise Ambient Music by Ablation":
+                      - img
+                  - generic [ref=e319]:
+                    - link "Brown Noise Ambient Music" [ref=e320] [cursor=pointer]:
+                      - /url: /track/37oGrZzNz0rlx9Eku8ayim
+                      - generic [ref=e321]: Brown Noise Ambient Music
+                    - link "Ablation" [ref=e324] [cursor=pointer]:
+                      - /url: /artist/5iaYfJCxvfufnRwTVSMahD
+                - gridcell "Add to Liked Songs 2:25 More options for Brown Noise Ambient Music by Ablation" [ref=e325]:
+                  - button "Add to Liked Songs" [ref=e326] [cursor=pointer]:
+                    - img [ref=e328]
+                  - generic [ref=e331]: 2:25
+                  - button "More options for Brown Noise Ambient Music by Ablation" [ref=e332] [cursor=pointer]:
+                    - img [ref=e334]
+          - region "Artists" [ref=e336]:
+            - group [ref=e338]:
+              - heading [level=2] [ref=e341]:
+                - link [ref=e343] [cursor=pointer]:
+                  - /url: /search/ambient%20music%20for%20focus/artists
+                  - text: Artists
+            - generic "Music for Focus and Concentration" [ref=e344] [cursor=pointer]:
+              - button "Music for Focus and Concentration Artist" [ref=e345]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Music for Focus and Concentration":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e348]:
+                - link "Music for Focus and Concentration" [ref=e349]:
+                  - /url: /artist/79VBzxN1HRqIWCkVdg8AMy
+                  - paragraph [ref=e350]:
+                    - generic [ref=e351]: Music for Focus and Concentration
+                - generic [ref=e354]: Artist
+            - generic "Studying Music For Focus" [ref=e355] [cursor=pointer]:
+              - button "Studying Music For Focus Artist" [ref=e356]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Studying Music For Focus":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e359]:
+                - link "Studying Music For Focus" [ref=e360]:
+                  - /url: /artist/343WUTtXN19nq6GTjrPhSr
+                  - paragraph [ref=e361]:
+                    - generic [ref=e362]: Studying Music For Focus
+                - generic [ref=e365]: Artist
+            - generic "Focus Music For Work" [ref=e366] [cursor=pointer]:
+              - button "Focus Music For Work Artist" [ref=e367]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Focus Music For Work":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e370]:
+                - link "Focus Music For Work" [ref=e371]:
+                  - /url: /artist/24VNqrVW396hr6xKmBzxDG
+                  - paragraph [ref=e372]:
+                    - generic [ref=e373]: Focus Music For Work
+                - generic [ref=e376]: Artist
+            - generic "Work Music For Concentration & Focus" [ref=e377] [cursor=pointer]:
+              - button "Work Music For Concentration & Focus Artist" [ref=e378]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Work Music For Concentration & Focus":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e381]:
+                - link "Work Music For Concentration & Focus" [ref=e382]:
+                  - /url: /artist/0j8DH9Ik5fa7tpORgV4Rk8
+                  - paragraph [ref=e383]:
+                    - generic [ref=e384]: Work Music For Concentration & Focus
+                - generic [ref=e387]: Artist
+            - generic "Mariza Rizou" [ref=e388] [cursor=pointer]:
+              - button "Mariza Rizou Artist" [ref=e389]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Mariza Rizou":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e392]:
+                - link "Mariza Rizou" [ref=e393]:
+                  - /url: /artist/0YOHWBsXDveoGIFVKHkZ4V
+                  - paragraph [ref=e394]:
+                    - generic [ref=e395]: Mariza Rizou
+                - generic [ref=e398]: Artist
+          - region "Albums" [ref=e399]:
+            - group [ref=e401]:
+              - heading [level=2] [ref=e404]:
+                - link [ref=e406] [cursor=pointer]:
+                  - /url: /search/ambient%20music%20for%20focus/albums
+                  - text: Albums
+            - generic "Ambient Music for Focus" [ref=e407] [cursor=pointer]:
+              - button "Ambient Music for Focus 2026 • Ambient Focus Music" [ref=e408]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Ambient Music for Focus by Ambient Focus Music":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e411]:
+                - link "Ambient Music for Focus" [ref=e412]:
+                  - /url: /album/55PFaLt6c71eLXZWC0PlIN
+                  - paragraph [ref=e413]:
+                    - generic [ref=e414]: Ambient Music for Focus
+                - generic [ref=e417]:
+                  - time [ref=e418]: 2026 •
+                  - link "Ambient Focus Music" [ref=e419]:
+                    - /url: /artist/2xXxzkRutWWRLPSbShU0iF
+            - generic "Ambient Classical Background Music for Focus" [ref=e420] [cursor=pointer]:
+              - button "Ambient Classical Background Music for Focus 2026 • Cosmic Halo" [ref=e421]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Ambient Classical Background Music for Focus by Cosmic Halo":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e424]:
+                - link "Ambient Classical Background Music for Focus" [ref=e425]:
+                  - /url: /album/13YClYbEQ7p5rJm6t4RpSy
+                  - paragraph [ref=e426]:
+                    - generic [ref=e427]: Ambient Classical Background Music for Focus
+                - generic [ref=e430]:
+                  - time [ref=e431]: 2026 •
+                  - link "Cosmic Halo" [ref=e432]:
+                    - /url: /artist/6bofaxjSlETqN30mTzuHf0
+            - 'generic "Programming Focus: Ambient Music for Developers" [ref=e433] [cursor=pointer]':
+              - 'button "Programming Focus: Ambient Music for Developers 2025 • Music for Coding TP, Programmer''s Beats TP, Programming Code Beats TP" [ref=e434]'
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - 'button "Play Programming Focus: Ambient Music for Developers by Music for Coding TP, Programmer''s Beats TP, Programming Code Beats TP"':
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e437]:
+                - 'link "Programming Focus: Ambient Music for Developers" [ref=e438]':
+                  - /url: /album/62hDEkVg8OYP3NFkLqDb77
+                  - paragraph [ref=e439]:
+                    - generic [ref=e440]: "Programming Focus: Ambient Music for Developers"
+                - generic [ref=e443]:
+                  - time [ref=e444]: 2025 •
+                  - link "Music for Coding TP" [ref=e445]:
+                    - /url: /artist/6JmscSElarixajN3JG8YKb
+                  - text: ","
+                  - link "Programmer's Beats TP" [ref=e446]:
+                    - /url: /artist/6HeHYfDZAKAmDU5WWBTWQB
+                  - text: ","
+                  - link "Programming Code Beats TP" [ref=e447]:
+                    - /url: /artist/2LwxA8wuZQhUTSzC2hJkG1
+            - 'generic "Ambient Study Music: Chill Ambient Music For Studying, Deep Focus Concentration, Music For Reading and Acoustic Guitar Relaxation Music" [ref=e448] [cursor=pointer]':
+              - 'button "Ambient Study Music: Chill Ambient Music For Studying, Deep Focus Concentration, Music For Reading and Acoustic Guitar Relaxation Music 2025 • Ambient Study Music Academy, Concentration Music for Work, Study Music & Sounds" [ref=e449]'
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - 'button "Play Ambient Study Music: Chill Ambient Music For Studying, Deep Focus Concentration, Music For Reading and Acoustic Guitar Relaxation Music by Ambient Study Music Academy, Concentration Music for Work, Study Music & Sounds"':
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e452]:
+                - 'link "Ambient Study Music: Chill Ambient Music For Studying, Deep Focus Concentration, Music For Reading and Acoustic Guitar Relaxation Music" [ref=e453]':
+                  - /url: /album/5vPSF96kqoptzW0MzacPtK
+                  - paragraph [ref=e454]:
+                    - generic [ref=e455]: "Ambient Study Music: Chill Ambient Music For Studying, Deep Focus Concentration, Music For Reading and Acoustic Guitar Relaxation Music"
+                - generic [ref=e458]:
+                  - time [ref=e459]: 2025 •
+                  - link "Ambient Study Music Academy" [ref=e460]:
+                    - /url: /artist/1Bysp8eUTYGbe8GdxAQGkX
+                  - text: ","
+                  - link "Concentration Music for Work" [ref=e461]:
+                    - /url: /artist/4QEB56HlcKUWcVn3g4xN51
+                  - text: ","
+                  - link "Study Music & Sounds" [ref=e462]:
+                    - /url: /artist/1MiqxKnTDvagkhZw0kgEnl
+            - generic "Ambient Sounds for Concentration Sessions" [ref=e463] [cursor=pointer]:
+              - button "Ambient Sounds for Concentration Sessions 2026 • Deep Focus Ensemble" [ref=e464]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Ambient Sounds for Concentration Sessions by Deep Focus Ensemble":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e467]:
+                - link "Ambient Sounds for Concentration Sessions" [ref=e468]:
+                  - /url: /album/2G4TY3FsNekg9mKQgPqWm5
+                  - paragraph [ref=e469]:
+                    - generic [ref=e470]: Ambient Sounds for Concentration Sessions
+                - generic [ref=e473]:
+                  - time [ref=e474]: 2026 •
+                  - link "Deep Focus Ensemble" [ref=e475]:
+                    - /url: /artist/72zltZkG3UeB1aIYFqa9Ef
+          - region "Playlists" [ref=e476]:
+            - group [ref=e478]:
+              - heading [level=2] [ref=e481]:
+                - link [ref=e483] [cursor=pointer]:
+                  - /url: /search/ambient%20music%20for%20focus/playlists
+                  - text: Playlists
+            - generic "Ambient Study" [ref=e484] [cursor=pointer]:
+              - button "Ambient Study By Spotify" [ref=e485]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Ambient Study":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e488]:
+                - link "Ambient Study" [ref=e489]:
+                  - /url: /playlist/37i9dQZF1DWWb1L5n1gkOJ
+                  - paragraph [ref=e490]:
+                    - generic [ref=e491]: Ambient Study
+                - generic [ref=e495]: By Spotify
+            - generic "Background Music for Working or Studying" [ref=e496] [cursor=pointer]:
+              - button "Background Music for Working or Studying By Chillax Records" [ref=e497]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Background Music for Working or Studying":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e500]:
+                - link "Background Music for Working or Studying" [ref=e501]:
+                  - /url: /playlist/6Uls6BAiuTRMfqEUyyeODT
+                  - paragraph [ref=e502]:
+                    - generic [ref=e503]: Background Music for Working or Studying
+                - generic [ref=e507]: By Chillax Records
+            - generic "Concentration Music for Work ☕" [ref=e508] [cursor=pointer]:
+              - button "Concentration Music for Work ☕ By Work Music" [ref=e509]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Concentration Music for Work ☕":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e512]:
+                - link "Concentration Music for Work ☕" [ref=e513]:
+                  - /url: /playlist/3WK8djg4g0XFKkEIRRvOgg
+                  - paragraph [ref=e514]:
+                    - generic [ref=e515]: Concentration Music for Work ☕
+                - generic [ref=e519]: By Work Music
+            - generic "40 Hz Binaural Beats 🎧 Focus, Memory & Concentration" [ref=e520] [cursor=pointer]:
+              - button "40 Hz Binaural Beats 🎧 Focus, Memory & Concentration By Miracle Tones" [ref=e521]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play 40 Hz Binaural Beats 🎧 Focus, Memory & Concentration":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e524]:
+                - link "40 Hz Binaural Beats 🎧 Focus, Memory & Concentration" [ref=e525]:
+                  - /url: /playlist/2F6LyTRo99Hy7ayFFLso9t
+                  - paragraph [ref=e526]:
+                    - generic [ref=e527]: 40 Hz Binaural Beats 🎧 Focus, Memory & Concentration
+                - generic [ref=e531]: By Miracle Tones
+            - generic "Ambient Relaxation" [ref=e532] [cursor=pointer]:
+              - button "Ambient Relaxation By Spotify" [ref=e533]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Ambient Relaxation":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e536]:
+                - link "Ambient Relaxation" [ref=e537]:
+                  - /url: /playlist/37i9dQZF1DX3Ogo9pFvBkY
+                  - paragraph [ref=e538]:
+                    - generic [ref=e539]: Ambient Relaxation
+                - generic [ref=e543]: By Spotify
+          - region "Podcasts" [ref=e544]:
+            - group [ref=e546]:
+              - heading [level=2] [ref=e549]:
+                - link [ref=e551] [cursor=pointer]:
+                  - /url: /search/ambient%20music%20for%20focus/podcasts
+                  - text: Podcasts
+            - generic "I AM Affirmations for Mental Health Wellbeing" [ref=e552] [cursor=pointer]:
+              - button "I AM Affirmations for Mental Health Wellbeing Celi" [ref=e553]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - generic [ref=e556]:
+                - link "I AM Affirmations for Mental Health Wellbeing" [ref=e557]:
+                  - /url: /show/7LpbP2EBLrCizbimxkpNdW
+                  - paragraph [ref=e558]:
+                    - generic [ref=e559]: I AM Affirmations for Mental Health Wellbeing
+                - generic [ref=e562]: Celi
+            - generic "Dream Supplier" [ref=e563] [cursor=pointer]:
+              - button "Dream Supplier Dream Supplier" [ref=e564]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - generic [ref=e567]:
+                - link "Dream Supplier" [ref=e568]:
+                  - /url: /show/7FP7v5eUwUAdBL24SmSTSR
+                  - paragraph [ref=e569]:
+                    - generic [ref=e570]: Dream Supplier
+                - generic [ref=e573]: Dream Supplier
+            - generic "White Noise and Sleep Sounds (12 Hours)" [ref=e574] [cursor=pointer]:
+              - button "White Noise and Sleep Sounds (12 Hours) White Noise and Sleep Sounds (12 Hours) to Sleep | Study | Relax | Soothe a Baby" [ref=e575]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - generic [ref=e578]:
+                - link "White Noise and Sleep Sounds (12 Hours)" [ref=e579]:
+                  - /url: /show/0G8dfo52R3wBQ4zWaVXv3W
+                  - paragraph [ref=e580]:
+                    - generic [ref=e581]: White Noise and Sleep Sounds (12 Hours)
+                - generic [ref=e584]: White Noise and Sleep Sounds (12 Hours) to Sleep | Study | Relax | Soothe a Baby
+            - generic "Άκου την επιστήμη" [ref=e585] [cursor=pointer]:
+              - button "Άκου την επιστήμη LIFO PODCASTS, Γιάννης Πανταζόπουλος" [ref=e586]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - generic [ref=e589]:
+                - link "Άκου την επιστήμη" [ref=e590]:
+                  - /url: /show/23AO8QeHCFgvN7h89kleOo
+                  - paragraph [ref=e591]:
+                    - generic [ref=e592]: Άκου την επιστήμη
+                - generic [ref=e595]: LIFO PODCASTS, Γιάννης Πανταζόπουλος
+            - generic "Meditation Sounds" [ref=e596] [cursor=pointer]:
+              - button "Meditation Sounds Meditation Sounds" [ref=e597]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - generic [ref=e600]:
+                - link "Meditation Sounds" [ref=e601]:
+                  - /url: /show/6bOLhs8nFW3JfsjVhkpOTL
+                  - paragraph [ref=e602]:
+                    - generic [ref=e603]: Meditation Sounds
+                - generic [ref=e606]: Meditation Sounds
+          - region "Episodes" [ref=e607]:
+            - group [ref=e609]:
+              - heading [level=2] [ref=e612]:
+                - link [ref=e614] [cursor=pointer]:
+                  - /url: /search/ambient%20music%20for%20focus/episodes
+                  - text: Episodes
+            - generic "Relaxing Zen Music with Water Sounds • Peaceful Ambience for Spa, Yoga and Relaxation" [ref=e615] [cursor=pointer]:
+              - button "Relaxing Zen Music with Water Sounds • Peaceful Ambience for Spa, Yoga and Relaxation Apr 2025•186 min" [ref=e616]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Relaxing Zen Music with Water Sounds • Peaceful Ambience for Spa, Yoga and Relaxation":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e619]:
+                - link "Relaxing Zen Music with Water Sounds • Peaceful Ambience for Spa, Yoga and Relaxation" [ref=e620]:
+                  - /url: /episode/0SnBLYh1aQMp0kyCsErSgy
+                  - paragraph [ref=e621]:
+                    - generic [ref=e622]: Relaxing Zen Music with Water Sounds • Peaceful Ambience for Spa, Yoga and Relaxation
+                - generic [ref=e626]: Apr 2025•186 min
+            - generic "Music For Concentration And Focus While Studying - 1 Hour of Ambient Study Music" [ref=e627] [cursor=pointer]:
+              - button "Music For Concentration And Focus While Studying - 1 Hour of Ambient Study Music Jun 2023•61 min" [ref=e628]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Music For Concentration And Focus While Studying - 1 Hour of Ambient Study Music":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e631]:
+                - link "Music For Concentration And Focus While Studying - 1 Hour of Ambient Study Music" [ref=e632]:
+                  - /url: /episode/7zgJZ7p9G5mZeIyN7f8Gni
+                  - paragraph [ref=e633]:
+                    - generic [ref=e634]: Music For Concentration And Focus While Studying - 1 Hour of Ambient Study Music
+                - generic [ref=e638]: Jun 2023•61 min
+            - 'generic "Deep Focus Music: Ambient Alpha Waves For Study, and Focus" [ref=e639] [cursor=pointer]':
+              - 'button "Deep Focus Music: Ambient Alpha Waves For Study, and Focus Jul 2020•11 min" [ref=e640]'
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - 'button "Play Deep Focus Music: Ambient Alpha Waves For Study, and Focus"':
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e643]:
+                - 'link "Deep Focus Music: Ambient Alpha Waves For Study, and Focus" [ref=e644]':
+                  - /url: /episode/2nYaI7vGXMJjcw0Jmb9FM3
+                  - paragraph [ref=e645]:
+                    - generic [ref=e646]: "Deep Focus Music: Ambient Alpha Waves For Study, and Focus"
+                - generic [ref=e650]: Jul 2020•11 min
+            - generic "Pure 40Hz Gamma Brain Waves High Focus Meditation Music" [ref=e651] [cursor=pointer]:
+              - button "Pure 40Hz Gamma Brain Waves High Focus Meditation Music Sep 2021•54 min" [ref=e652]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Pure 40Hz Gamma Brain Waves High Focus Meditation Music":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e655]:
+                - link "Pure 40Hz Gamma Brain Waves High Focus Meditation Music" [ref=e656]:
+                  - /url: /episode/0omBcuWx5qZCLqEDepi1xf
+                  - paragraph [ref=e657]:
+                    - generic [ref=e658]: Pure 40Hz Gamma Brain Waves High Focus Meditation Music
+                - generic [ref=e662]: Sep 2021•54 min
+            - generic "Cozy Ambience - Rain On Window & Thunder Sounds - Fireplace Sounds - 10 Hours Of Thunderstorm & Fireplace" [ref=e663] [cursor=pointer]:
+              - button "Cozy Ambience - Rain On Window & Thunder Sounds - Fireplace Sounds - 10 Hours Of Thunderstorm & Fireplace Feb 2023•601 min" [ref=e664]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic:
+                    - button "Play Cozy Ambience - Rain On Window & Thunder Sounds - Fireplace Sounds - 10 Hours Of Thunderstorm & Fireplace":
+                      - generic:
+                        - generic:
+                          - img
+              - generic [ref=e667]:
+                - link "Cozy Ambience - Rain On Window & Thunder Sounds - Fireplace Sounds - 10 Hours Of Thunderstorm & Fireplace" [ref=e668]:
+                  - /url: /episode/0cW3evtnsjmzYiPutzlTDT
+                  - paragraph [ref=e669]:
+                    - generic [ref=e670]: Cozy Ambience - Rain On Window & Thunder Sounds - Fireplace Sounds - 10 Hours Of Thunderstorm & Fireplace
+                - generic [ref=e674]: Feb 2023•601 min
+            - text: • • • • • • •
+          - region "Genres & Moods" [ref=e675]:
+            - group [ref=e677]:
+              - heading [level=2] [ref=e680]:
+                - link [ref=e682] [cursor=pointer]:
+                  - /url: /search/ambient%20music%20for%20focus/genres
+                  - text: Genres & Moods
+            - generic "Ambient" [ref=e683] [cursor=pointer]:
+              - button "Ambient" [ref=e684]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - link "Ambient" [ref=e688]:
+                - /url: /genre/0JQ5DAqbMKFLjmiZRss79w
+                - paragraph [ref=e689]:
+                  - generic [ref=e690]: Ambient
+            - generic "Instrumental Ambient" [ref=e691] [cursor=pointer]:
+              - button "Instrumental Ambient" [ref=e692]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - link "Instrumental Ambient" [ref=e696]:
+                - /url: /genre/0JQ5IMCbQBLycllo8gOB6R
+                - paragraph [ref=e697]:
+                  - generic [ref=e698]: Instrumental Ambient
+            - generic "Ambient 101" [ref=e699] [cursor=pointer]:
+              - button "Ambient 101" [ref=e700]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - link "Ambient 101" [ref=e704]:
+                - /url: /genre/0JQ5IMCbQBLwwAzN8338kY
+                - paragraph [ref=e705]:
+                  - generic [ref=e706]: Ambient 101
+            - generic "Classic Ambient" [ref=e707] [cursor=pointer]:
+              - button "Classic Ambient" [ref=e708]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - link "Classic Ambient" [ref=e712]:
+                - /url: /genre/0JQ5IMCbQBLz0q7dvpW1xW
+                - paragraph [ref=e713]:
+                  - generic [ref=e714]: Classic Ambient
+            - generic "Ambient with nature sounds" [ref=e715] [cursor=pointer]:
+              - button "Ambient with nature sounds" [ref=e716]
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+              - link "Ambient with nature sounds" [ref=e720]:
+                - /url: /genre/0JQ5IMCbQBLlUaqsn2BEin
+                - paragraph [ref=e721]:
+                  - generic [ref=e722]: Ambient with nature sounds
+      - separator [ref=e724]
+  - dialog "We Care About Your Privacy" [ref=e726]:
+    - generic [ref=e728]:
+      - generic [ref=e730]:
+        - heading "We Care About Your Privacy" [level=2] [ref=e731]
+        - generic [ref=e732]: We and our 90 partners store and/or access information on a device, such as unique IDs in cookies to process personal data. You may accept or manage your choices by clicking below, including your right to object where legitimate interest is used, or at any time in the privacy policy page. These choices will be signaled to our partners and will not affect browsing data.
+        - generic [ref=e733]:
+          - heading "We and our partners process data to provide:" [level=3] [ref=e734]
+          - paragraph [ref=e736]:
+            - text: Store and/or access information on a device. Personalised advertising. Personalised content. Advertising and content measurement, audience research, and services development.
+            - button "List of Partners (vendors)" [ref=e737] [cursor=pointer]
+      - generic [ref=e739]:
+        - button "Accept Cookies" [ref=e740] [cursor=pointer]
+        - button "Reject All" [ref=e741] [cursor=pointer]
+        - button "Cookie Settings, Opens the preference center dialog" [ref=e742] [cursor=pointer]: Cookie Settings

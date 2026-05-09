@@ -75,7 +75,10 @@ class TtsManager @Inject constructor(
             tts?.setPitch(0.95f)
 
             tts?.setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                // VOICE_COMMUNICATION routes through the telephony audio path.
+                // When AudioManager is in MODE_IN_COMMUNICATION, AEC gets the speaker
+                // reference signal from this path and can cancel TTS bleed from the mic.
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
             )

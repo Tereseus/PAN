@@ -261,6 +261,38 @@
 		// inject-ctx → claude already connected above
 		// So the loop is: claude → db → classifier → dream → consolidation → memory-hub → inject-ctx → claude
 
+		// ===== VOICE PIPELINE (r=380, 45°–125°, right/lower-right) =====
+		// The complete voice loop: Phone Mic → Google STT (cloud) → PAN Server →
+		// Voice Router → Cerebras LLM → Android TTS → back to user.
+		// NOTE: Whisper (port 7782) is speaker *identification* only — NOT the live STT.
+		//       Google Streaming STT is the actual hot-path engine.
+		//       AHK is the desktop entry point (hotkey → voice router).
+		const voiceColor = '#94e2d5';
+		const r_voice = 380;
+		rings.push({ r: r_voice, label: '', color: '#1e1e2e' });
+
+		const voiceItems = [
+			['phone-mic',    'Phone Mic',    'up',                       'Always listening',       'Android always-on audio capture. No wake word — raw PCM stream straight into Google STT.'],
+			['google-stt',   'Google STT',   'up',                       'Cloud · 300-500ms',      'Google Streaming Speech-to-Text. The actual live STT engine. Cloud round-trip is the primary latency bottleneck — NOT the network.'],
+			['voice-router', 'Voice Router', svcStatus(am, 'router'),    'router.js',              'Classifies + dispatches voice commands in a single Cerebras call. Routes local (time/timer/nav/media) vs server queries.'],
+			['cerebras-llm', 'Cerebras LLM', svcStatus(am, 'cerebras'),  'qwen-3-235b · ~150ms',   'LLM backbone for all voice queries. Cerebras free tier. ~150ms inference. Falls back to Claude Haiku if needed.'],
+			['android-tts',  'Android TTS',  'up',                       'On-device · 100-300ms',  'Android TextToSpeech. Speaks LLM response back to user. Echo-cancel prevents STT re-capture of own output.'],
+		];
+		const voicePos = arc(CX, CY, r_voice, 45, 125, voiceItems.length);
+		voiceItems.forEach(([id, label, status, detail, desc], i) => {
+			add(id, label, 'voice', status, detail, 'voice', voicePos[i].x, voicePos[i].y, desc);
+		});
+
+		// Hot path (live voice loop)
+		edges.push({ from: 'phone-mic',    to: 'google-stt',   color: voiceColor });
+		edges.push({ from: 'google-stt',   to: 'pan-server',   color: voiceColor, label: 'transcript' });
+		edges.push({ from: 'pan-server',   to: 'voice-router', color: voiceColor });
+		edges.push({ from: 'voice-router', to: 'cerebras-llm', color: voiceColor });
+		edges.push({ from: 'cerebras-llm', to: 'android-tts',  color: voiceColor, label: 'response' });
+		// Side paths (not hot path)
+		edges.push({ from: 'voice-router', to: 'whisper',      color: voiceColor + '60', label: 'speaker ID' });
+		edges.push({ from: 'ahk',          to: 'voice-router', color: voiceColor + '60', label: 'hotkey' });
+
 		// ===== RING 3 (r=440): Devices + Projects =====
 		const r3 = 440;
 		rings.push({ r: r3, label: '', color: '#1e1e2e' });
@@ -302,6 +334,7 @@
 			{ text: 'ORGS', angle: 340, r: r2 + 40, color: EC.org },
 			{ text: 'DEVICES', angle: 0, r: r3 + 30, color: EC.dev },
 			{ text: 'PROJECTS', angle: 180, r: r3 + 30, color: EC.proj },
+			{ text: 'VOICE PIPELINE', angle: 85, r: r_voice + 40, color: voiceColor },
 		];
 
 		// Real dependency edges from the steward's dependsOn field. These are
@@ -319,11 +352,11 @@
 		// All connections for the detail panel — combines layout + dependency edges
 		const allConnections = [...edges, ...depEdges];
 
-		return { nodes, edges, depEdges, nodeMap, rings, sectorLabels, stats: statsResp, viewBox: '0 0 1400 900', allConnections, CX, CY };
+		return { nodes, edges, depEdges, nodeMap, rings, sectorLabels, stats: statsResp, viewBox: '0 0 1400 960', allConnections, CX, CY };
 	}
 
 	function nodeColor(node) {
-		const c = { core: '#89b4fa', service: '#a6e3a1', device: '#f9e2af', data: '#fab387', project: '#74c7ec', ui: '#89dceb', ai: '#f38ba8', memory: '#f5c2e7', process: '#cba6f7', org: '#f2cdcd' };
+		const c = { core: '#89b4fa', service: '#a6e3a1', device: '#f9e2af', data: '#fab387', project: '#74c7ec', ui: '#89dceb', ai: '#f38ba8', memory: '#f5c2e7', process: '#cba6f7', org: '#f2cdcd', voice: '#94e2d5' };
 		return c[node.type] || '#6c7086';
 	}
 

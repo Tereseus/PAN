@@ -175,6 +175,55 @@ class PanServerClient @Inject constructor(
      * speaking the first sentence while the rest is still generating.
      * Returns the final QueryResponse (intent, actions, etc.) when stream ends.
      */
+    /** Streaming recall — FTS5 DB search + Cerebras, SSE so phone speaks immediately. */
+    suspend fun recallStream(
+        text: String,
+        onChunk: (String) -> Unit
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply { put("text", text) }
+                .toString().toRequestBody("application/json".toMediaType())
+
+            val request = Request.Builder()
+                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/recall/stream")
+                .post(body)
+                .addHeader("Accept", "text/event-stream")
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                Log.e(TAG, "Recall stream failed: ${response.code}")
+                return@withContext null
+            }
+
+            val source = response.body?.source() ?: return@withContext null
+            val fullText = StringBuilder()
+
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (!line.startsWith("data: ")) continue
+                val data = line.removePrefix("data: ").trim()
+                if (data.isEmpty()) continue
+                try {
+                    val json = JSONObject(data)
+                    when (json.optString("type")) {
+                        "chunk" -> {
+                            val chunk = json.optString("text", "")
+                            if (chunk.isNotEmpty()) { fullText.append(chunk); onChunk(chunk) }
+                        }
+                        "done" -> break
+                    }
+                } catch (e: Exception) { Log.w(TAG, "Recall SSE parse: ${e.message}") }
+            }
+
+            response.body?.close()
+            fullText.toString().ifEmpty { null }
+        } catch (e: Exception) {
+            Log.e(TAG, "Recall stream failed: ${e.message}")
+            null
+        }
+    }
+
     suspend fun askPanStream(
         text: String,
         conversationHistory: String = "",

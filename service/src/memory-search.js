@@ -473,11 +473,23 @@ function indexEventForSearch(scope, eventId) {
   });
 }
 
+function backfillStatus(scope = 'main') {
+  try {
+    const db = getDb(scope);
+    const total = db.prepare('SELECT COUNT(*) as c FROM events').get().c;
+    const indexed = db.prepare('SELECT COUNT(*) as c FROM event_embeddings').get().c;
+    return { total, indexed, remaining: total - indexed, running: _backfillRunning };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 export {
   ensureInitialized,
   searchMemory,
   embedEvent,
   backfillEmbeddings,
+  backfillStatus,
   abortBackfill,
   indexEventForSearch,
 };
