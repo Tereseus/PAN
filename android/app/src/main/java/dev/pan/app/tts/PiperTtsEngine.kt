@@ -205,7 +205,10 @@ class PiperTtsEngine(private val context: Context) {
 
         val track = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
+                // VOICE_COMMUNICATION routes through the telephony audio path.
+                // When AudioManager is in MODE_IN_COMMUNICATION, AEC can cancel this output
+                // from the mic signal — preventing Piper TTS bleed from triggering barge-in.
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)

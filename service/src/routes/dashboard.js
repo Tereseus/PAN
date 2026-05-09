@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { all, get, run, insert, DB_PATH, allScoped, getScoped, runScoped, insertScoped, getOllamaUrl } from '../db.js';
 import { getAtlasData } from '../steward.js';
+import { panNotify } from '../pan-notify.js';
 // screen-watcher and webcam-watcher status shown in Intuition panel, not Services
 import { getFindings, updateFinding, scout } from '../scout.js';
 import { statSync, readdirSync, existsSync, unlinkSync, readFileSync } from 'fs';
@@ -1211,13 +1212,13 @@ router.get('/api/progress', (req, res) => {
 
     // Get task counts per milestone and overall
     const totalTasks = getScoped(req,
-      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND org_id = :org_id",
+      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status IN ('in_progress','in_test') THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND org_id = :org_id",
       { ':pid': p.id }
     );
 
     const milestonesWithProgress = milestones.map(m => {
       const mTasks = getScoped(req,
-        "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE milestone_id = :mid AND org_id = :org_id",
+        "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status IN ('in_progress','in_test') THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE milestone_id = :mid AND org_id = :org_id",
         { ':mid': m.id }
       );
       const total = mTasks?.total || 0;
@@ -1236,7 +1237,7 @@ router.get('/api/progress', (req, res) => {
 
     // Uncategorized tasks (no milestone)
     const uncategorized = getScoped(req,
-      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND milestone_id IS NULL AND org_id = :org_id",
+      "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done, SUM(CASE WHEN status IN ('in_progress','in_test') THEN 1 ELSE 0 END) as in_progress FROM project_tasks WHERE project_id = :pid AND milestone_id IS NULL AND org_id = :org_id",
       { ':pid': p.id }
     );
 
@@ -1397,6 +1398,24 @@ router.put('/api/tasks/:id', (req, res) => {
   if (updates.length === 0) return res.json({ ok: true, unchanged: true });
 
   runScoped(req, `UPDATE project_tasks SET ${updates.join(', ')} WHERE id = :id AND org_id = :org_id`, params);
+
+  // Notify on status transitions involving in_test
+  if (status !== undefined && status !== existing.status) {
+    try {
+      if (status === 'in_test') {
+        panNotify('ΠΑΝ · ⚡', `🧪 Task #${id} is now being tested: ${existing.title}`,
+          `Task #${id} moved to in_test.\nTitle: ${existing.title}`,
+          { severity: 'info', metadata: { task_id: id } });
+      } else if (status === 'done' && existing.status === 'in_test') {
+        panNotify('ΠΑΝ · ⚡', `✅ Task #${id} passed tests and closed: ${existing.title}`,
+          `Task #${id} passed tests and was closed.\nTitle: ${existing.title}`,
+          { severity: 'info', metadata: { task_id: id } });
+      }
+    } catch (err) {
+      console.warn('[tasks] panNotify failed:', err.message);
+    }
+  }
+
   res.json({ ok: true });
 });
 
@@ -1431,6 +1450,22 @@ router.put('/api/tasks/reorder', (req, res) => {
       if (t.status !== 'done') updates.push("completed_at = NULL");
     }
     runScoped(req, `UPDATE project_tasks SET ${updates.join(', ')} WHERE id = :id AND org_id = :org_id`, params);
+    // Notify on in_test / done-from-in_test transitions (Kanban drag-drop)
+    if (t.status !== undefined && t.status !== existing.status) {
+      try {
+        if (t.status === 'in_test') {
+          panNotify('ΠΑΝ · ⚡', `🧪 Task #${t.id} is now being tested: ${existing.title}`,
+            `Task #${t.id} moved to in_test.\nTitle: ${existing.title}`,
+            { severity: 'info', metadata: { task_id: t.id } });
+        } else if (t.status === 'done' && existing.status === 'in_test') {
+          panNotify('ΠΑΝ · ⚡', `✅ Task #${t.id} passed tests and closed: ${existing.title}`,
+            `Task #${t.id} passed tests and was closed.\nTitle: ${existing.title}`,
+            { severity: 'info', metadata: { task_id: t.id } });
+        }
+      } catch (err) {
+        console.warn('[tasks/reorder] panNotify failed:', err.message);
+      }
+    }
   }
   res.json({ ok: true, updated: tasks.length });
 });

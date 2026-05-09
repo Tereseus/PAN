@@ -340,8 +340,28 @@ function startScout(intervalMs = 24 * 60 * 60 * 1000) {
       // Re-scan local apps too (picks up new installs)
       await scanLocalApps();
       await scout();
-      const { reportServiceRun } = await import('./steward.js');
+      const { reportServiceRun, getAtlasSummary } = await import('./steward.js');
       reportServiceRun('scout');
+
+      // Update System State section in MEMORY.md
+      try {
+        const { readFileSync, writeFileSync } = await import('fs');
+        const summary = await getAtlasSummary();
+        const memPath = '%USERPROFILE%\\.claude\\projects\\C--Users-owner-Desktop-PAN\\memory\\MEMORY.md';
+        let content = '';
+        try { content = readFileSync(memPath, 'utf8'); } catch { content = ''; }
+        const section = `## System State\n\`\`\`\n${summary}\n\`\`\`\n`;
+        if (content.includes('## System State')) {
+          // Replace everything from ## System State up to the next ## heading (or end of file)
+          content = content.replace(/## System State[\s\S]*?(?=\n## |\n*$)/, section.trimEnd());
+        } else {
+          content = content.trimEnd() + '\n\n' + section;
+        }
+        writeFileSync(memPath, content, 'utf8');
+        console.log('[PAN Scout] MEMORY.md System State updated');
+      } catch (e) {
+        console.error('[PAN Scout] Atlas MEMORY.md update failed:', e.message);
+      }
     } catch (err) {
       try { const { reportServiceRun } = await import('./steward.js'); reportServiceRun('scout', err.message); } catch {}
       console.error('[PAN Scout]', err.message);

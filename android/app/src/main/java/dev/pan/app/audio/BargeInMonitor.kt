@@ -89,8 +89,20 @@ class BargeInMonitor {
                 } catch (_: Exception) {}
             }
 
+            // Guard: coroutine may have been cancelled between openRecorder() and here
+            // (e.g. stop() called while we were attaching AEC). Check both.
+            if (!isActive || recorder.state != AudioRecord.STATE_INITIALIZED) {
+                log("Cancelled before startRecording — aborting")
+                return@launch
+            }
+
             try {
-                recorder.startRecording()
+                try {
+                    recorder.startRecording()
+                } catch (e: IllegalStateException) {
+                    log("startRecording failed (released during init): ${e.message}")
+                    return@launch
+                }
                 val minThreshold = if (aecActive) MIN_THRESHOLD else MIN_THRESHOLD_NO_AEC
                 log("Barge-in active (AEC=$aecActive, minThreshold=$minThreshold)")
 
@@ -144,10 +156,12 @@ class BargeInMonitor {
 
     @SuppressLint("MissingPermission")
     private fun openRecorder(bufSize: Int): AudioRecord? {
-        // Try secondary (camera) mic first — physically farthest from speaker
+        // VOICE_COMMUNICATION source is the telephony uplink mic — pairs with AEC when
+        // AudioManager is in MODE_IN_COMMUNICATION (speakerphone mode). AEC gets the
+        // telephony downlink as its reference signal, which is exactly what's playing
+        // through the speaker during TTS in that mode. MIC is the fallback.
         for (source in listOf(
-            MediaRecorder.AudioSource.CAMCORDER,
-            MediaRecorder.AudioSource.UNPROCESSED,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.MIC
         )) {
             try {

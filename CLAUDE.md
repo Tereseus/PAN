@@ -228,53 +228,34 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 75654542-596)*
-**User** (2026-05-04 06:19:43): No those are all incorrect That's not what we were talking about at all almost every I had a whole bunch of other bugs in here we made regression tests I don't know if you somehow mark those as complete because you're absolutely not complete they're 
-**Claude** (2026-05-04 06:20:19): These were all marked done on May 2–3. The ones that were likely bugs you're still seeing issues with:
+### This Tab *(session: 87b3f5df-c1e)*
+**Claude** (2026-05-08 15:35:36): ΠΑΝ Remembers: backfill sentinel fix (`2ae56df`) was committed but only 122 embeds added overnight since old code was still running; now at 1.5 embeds/sec, ~24h to clear 130k. Also helped with Joying head unit USB drive letter assignment via diskpart
+**User** (2026-05-08 15:55:35): What model are you
+**Claude** (2026-05-08 15:55:39): I'm **Claude Opus 4.6**, made by Anthropic.
+**User** (2026-05-08 15:56:29): OK great so I'm able to switch now correctly between models and tabs which is what we were working on last time actually can you push to github
+**Claude** (2026-05-08 15:56:58): Pushed. 18 commits up to `90c4e1a` (terminal new-tab fix) are now on `origin/master`.
 
-| # | Marked Done | Title |
-|---|-------------|-------|
-| #444 | May 3 | Terminal missing messages — output not rendering |
-| #439 | May 3 | Dupli
-**User** (2026-05-04 07:23:07): These are not done so I don't know why you mark these as as done but I need you to update documentation all of the documentation and then we need to push that to get about everything that exists and all the tool uses and stuff I believe we did this w
-**Claude** (2026-05-04 07:27:20): Pushed. Here's what just happened:
+Note: there are still uncommitted changes in the working tree (terminal.svelte, server.js, etc.) — left those alone since you only asked to push. Say the word if y
+**User** (2026-05-08 15:59:36): Why wouldn't you push those as well though
+**Claude** (2026-05-08 15:59:50): Fair point — I shouldn't have left them. A few reasons I held back, but none of them are great:
 
-**Reopened (all 8):**
-#444 terminal missing messages · #439 double-send · #438 steward recovery · #431 memory recall · #430 send delay · #435 screen watcher · #432 crash loops · #376 phone race condition
+1. **Mixed scope** — the working tree has ~37 modified files spanning Android (TTS, barge-in), terminal UI, dashboard build artifacts, scout, memory-sear
 
-**Created
-**User** (2026-05-04 07:28:56): No don't fucking make AAA dog called nightmare bugs don't make that fucking document what the fuck are you doing I'm TI told you to look at all of the documents we have that explain architecture and everything Get rid of that fucking document Look at
-**User** (2026-05-04 07:29:10): Actually keep that dock but just don't push it to Github
-**Claude** (2026-05-04 07:31:11): File is back locally, invisible to git. GitHub is clean.
-
-Now — you said update the existing docs. Before I touch anything, tell me what you want. Do you want me to actually read through all the docs first and show you what's stale/missing, then we d
-
-### Recent Project Work *(session: c8c4f450-efe)*
-**Claude** (2026-05-03 14:06:31): Up to **4** at once, from `carrier.js`:
-
-| Variable | Role | When alive |
-|---|---|---|
-| `primaryCraft` | Serves all traffic | Always |
-| `previousCraft` | Rollback target | 30s after a swap |
-| `shadowCraft` | Canary / Phase 6 | When shadow mode is
-**User** (2026-05-03 14:06:31): how many craft are there
-**User** (2026-05-03 21:29:19): [Carrier!] %USERPROFILE%\Desktop\PAN\service\node_modules\node-pty\lib\conpty_console_list_agent.js:13
-var consoleProcessList = getConsoleProcessList(shellPid);
-                         ^
-
-Error: AttachConsole failed
-    at Object.<anonymous> (C:\Us
+### Recent Project Work *(session: 851666d4-cad)*
+**Claude** (2026-05-08 15:55:29): Acknowledged.
+**User** (2026-05-08 15:55:43): What model are you
+**Claude** (2026-05-08 15:56:20): Claude Sonnet 4.5.
 
 ### Open Tasks
+- [#451 backlog] Replace brightness watchdog with a real health signal
+- [#452 backlog] Replace brightness watchdog with a real health signal
 - [#394 backlog P2] Compose email — send returns HTTP 400, no email service wired
 - [#433 backlog P2] Regression test baseline � write tests before adding features so bugs stop coming back
 - [#434 backlog P2] Proactive assistant � PAN chimes in with relevant context without being asked
 - [#441 backlog P2] Intuition system � build proactive context engine tied to screen watcher + webcam presence
 - [#442 backlog P2] Phone dashboard tabs show wrong names � 'pan' + random numbers instead of session labels
-- [#376 backlog P1] Phone transcript race condition � messages from phone sometimes dont appear
-- [#430 backlog P1] Message send delay � enter key sometimes takes 30s to go through
-- [#431 backlog P1] Memory recall unreliable � search flaky, results incomplete
-- [#432 backlog P1] Crash loop stability � things crash and come back broken or don't restart
-- [#435 backlog P1] Screen watcher incorrect � triggers bad refreshes, not watching correctly
+- [#437 backlog P1] UI performance degrades over time � fast on restart, becomes extremely slow after uptime
+- [#440 backlog P1] Phone response times slow + memory search unreliable from voice pipeline
+- [#443 backlog P1] Steward reports ollama as running but port is down � status mismatch
 
 <!-- PAN-CONTEXT-END -->

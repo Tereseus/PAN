@@ -96,16 +96,21 @@ function pipeSend(sessionId, userText) {
       console.log(`[PAN LLM] Created Claude adapter for session ${sessionId}`);
     }
 
-    // Apply saved model preference from settings (if any) so that model changes
-    // made via the dashboard picker take effect even before the first message.
+    // Apply model preference for this adapter:
+    //   1. Prefer the per-session override (session.model) — set by the dashboard's
+    //      tab dropdown via pipeSetModel. This is what makes each tab independent.
+    //   2. Fall back to the global terminal_ai_model setting (default for new tabs).
     try {
-      const modelRow = get("SELECT value FROM settings WHERE key = 'terminal_ai_model'");
-      if (modelRow) {
-        const savedModel = modelRow.value.replace(/^"|"$/g, '').trim();
-        if (savedModel) {
-          session._llmAdapter.setModel(savedModel);
-          console.log(`[PAN LLM] Applied saved model preference: ${savedModel}`);
-        }
+      let savedModel = null;
+      if (session.model) {
+        savedModel = session.model;
+      } else {
+        const modelRow = get("SELECT value FROM settings WHERE key = 'terminal_ai_model'");
+        if (modelRow) savedModel = modelRow.value.replace(/^"|"$/g, '').trim() || null;
+      }
+      if (savedModel) {
+        session._llmAdapter.setModel(savedModel);
+        console.log(`[PAN LLM] Applied model preference: ${savedModel} (per-session=${!!session.model})`);
       }
     } catch {}
   }
@@ -162,10 +167,17 @@ function pipeInterrupt(sessionId) {
   return true;
 }
 
-// Set the model for a session's LLM adapter — takes effect on next message
+// Set the model for a session's LLM adapter — takes effect on next message.
+// Persists the choice on session.model so:
+//   • subsequent adapter creations for the same session honor it
+//   • each tab can have its own model without affecting other tabs
+//   • the global terminal_ai_model setting is no longer touched per switch
 function pipeSetModel(sessionId, modelId) {
   const session = sessions.get(sessionId);
   if (!session) return false;
+
+  // Per-session override — survives adapter recreation within this server's lifetime.
+  session.model = modelId || null;
 
   // Pipe mode (Agent SDK): set model on the adapter directly
   if (session._llmAdapter?.setModel) {
@@ -183,7 +195,8 @@ function pipeSetModel(sessionId, modelId) {
     return true;
   }
 
-  return false;
+  // No adapter, no PTY — model is still recorded on the session for when one is created.
+  return true;
 }
 
 // Get all transcript messages for a session (for HTTP fallback on page load)
@@ -661,7 +674,10 @@ async function startTerminalServer(httpServer) {
     // spawning a duplicate PTY.  This kills the race condition where two windows both
     // load simultaneously, both see "no live session", and both create one.
     // Only applies to named dashboard sessions (dash-* / dev-dash-*) with a project name.
-    if (!session && projectName && sessionId.startsWith('dash-')) {
+    // Skip if force_new=1 — intentional new-tab creation (e.g. "+" button) must NOT be
+    // deduplicated, otherwise every new tab attaches to the first tab's PTY session.
+    const forceNew = url.searchParams.get('force_new') === '1';
+    if (!session && projectName && sessionId.startsWith('dash-') && !forceNew) {
       const existingForProject = Array.from(sessions.values()).find(s =>
         s.project === projectName && s.clients.size > 0
       );
@@ -751,6 +767,9 @@ async function startTerminalServer(httpServer) {
           claudeExited: false, // set true when Claude CLI exits inside the PTY
           pipeMode: true, // always true — pipe mode means Claude is available on-demand
           claudeSessionIds: [], // Claude session IDs belonging to this tab (updated via set_claude_sessions)
+          // Per-session model override — set via pipeSetModel. Null = use global default.
+          // This is what makes each dashboard tab able to run a different model.
+          model: null,
         };
         sessions.set(sessionId, session);
 
@@ -1550,19 +1569,44 @@ function findSessionByClaudeId(claudeSessionId) {
 }
 
 // Broadcast a chat_update to ONLY the tab that owns this Claude session.
-// Falls back to broadcastNotification if no owning tab is found (e.g. new session
-// not yet discovered). This prevents cross-tab contamination.
+// Uses cwd-based routing for new sessions (before any tab has claimed the Claude ID)
+// to prevent cross-tab contamination when multiple tabs share the same project.
 function broadcastChatUpdate(data) {
   const claudeSessionId = data?.session_id;
+  const cwd = data?.cwd || '';
+
+  // 1. Known owner — fast path
   const ownerSessionId = findSessionByClaudeId(claudeSessionId);
   if (ownerSessionId) {
-    // Targeted: only send to the owning tab's clients
     broadcastToSession(ownerSessionId, 'chat_update', data);
-  } else {
-    // No owner found yet — broadcast to all so the first tab can claim it.
-    // This only happens for the very first message of a new Claude session.
-    broadcastNotification('chat_update', data);
+    return;
   }
+
+  // 2. New session — route to the most-recently-created tab with matching cwd
+  //    that hasn't claimed a Claude session yet. This pinpoints the brand-new
+  //    tab that just launched Claude, avoiding the broadcast-to-all race.
+  if (cwd) {
+    const normCwd = cwd.toLowerCase().replace(/\\/g, '/');
+    let bestSid = null;
+    let bestCreatedAt = 0;
+    for (const [sid, session] of sessions) {
+      const sessionCwd = (session.cwd || '').toLowerCase().replace(/\\/g, '/');
+      if (sessionCwd !== normCwd) continue;
+      if ((session.claudeSessionIds || []).length > 0) continue; // already owns a Claude session
+      if ((session.createdAt || 0) > bestCreatedAt) {
+        bestCreatedAt = session.createdAt || 0;
+        bestSid = sid;
+      }
+    }
+    if (bestSid) {
+      broadcastToSession(bestSid, 'chat_update', data);
+      return;
+    }
+  }
+
+  // 3. True fallback: unknown cwd or no unclaimed session — broadcast to all
+  //    so at least one tab can claim it. Should be rare after the cwd fix.
+  broadcastNotification('chat_update', data);
 }
 
 // Broadcast to a SPECIFIC session's WebSocket clients
@@ -1648,6 +1692,8 @@ function createPipeSession(sessionId, { cwd = null, projectName = '' } = {}) {
     claudeExited: false,
     pipeMode: true,
     claudeSessionIds: [],
+    // Per-session model override (see pipeSetModel) — keeps tabs independent.
+    model: null,
     _streamMessages: [],
     _jsonBuf: '',
     _claudeSessionId: null,

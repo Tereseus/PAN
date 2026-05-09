@@ -61,7 +61,7 @@ import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir } from './platform.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, logDecision } from './db.js';
-import { searchMemory, backfillEmbeddings } from './memory-search.js';
+import { searchMemory, backfillEmbeddings, backfillStatus } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import https from 'https';
@@ -1669,11 +1669,19 @@ async function getClaudeModels() {
       });
       if (r.ok) {
         const data = await r.json();
-        const models = (data.data || [])
+        const apiModels = (data.data || [])
           .filter(m => m.id.startsWith('claude-'))
           .map(m => ({ id: m.id, name: m.display_name || m.id, created_at: m.created_at }))
           .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
-        _modelsCache = { models, source: 'anthropic_api', fetched_at: new Date().toISOString() };
+        // Merge in pinned models that the API may not return yet
+        const pinned = [
+          { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+          { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+          { id: 'claude-haiku-4-5',  name: 'Claude Haiku 4.5 (fast)' },
+        ];
+        const apiIds = new Set(apiModels.map(m => m.id));
+        const merged = [...apiModels, ...pinned.filter(m => !apiIds.has(m.id))];
+        _modelsCache = { models: merged, source: 'anthropic_api', fetched_at: new Date().toISOString() };
         _modelsCacheAt = Date.now();
         return _modelsCache;
       }
@@ -3115,6 +3123,11 @@ app.get('/api/v1/memory/search', async (req, res) => {
 // List registered DB scopes (for debugging / Atlas surfacing).
 app.get('/api/v1/memory/scopes', (req, res) => {
   res.json({ scopes: listScopes() });
+});
+
+// Backfill progress — indexed/total/remaining + running flag.
+app.get('/api/v1/memory/backfill-status', (req, res) => {
+  res.json(backfillStatus(req.query.scope || 'main'));
 });
 
 // Tier 0 Phase 4: org policy lookup for the phone.

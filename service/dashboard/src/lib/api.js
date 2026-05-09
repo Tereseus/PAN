@@ -14,9 +14,14 @@ export async function api(path, options = {}) {
 		headers['Authorization'] = `Bearer ${token}`;
 	}
 
+	// Default 10s timeout — prevents hung fetches from freezing the UI (e.g. stale TCP
+	// connections after sleep/wake). Callers can override by passing signal in options.
+	const signal = options.signal ?? AbortSignal.timeout(10000);
+
 	const res = await fetch(`${API_BASE}${path}`, {
 		...options,
-		headers
+		headers,
+		signal,
 	});
 
 	if (res.status === 401) {

@@ -546,6 +546,7 @@ router.post('/:eventType', (req, res) => {
         broadcastChatUpdate({
           event_type: eventType,
           session_id: sessionId,
+          cwd,
           timestamp: new Date().toISOString(),
         });
       } catch {}

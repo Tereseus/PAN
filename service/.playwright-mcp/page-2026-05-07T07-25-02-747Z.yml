@@ -1,0 +1,113 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - link "Skip to main content" [ref=e6] [cursor=pointer]:
+      - /url: "#main-view"
+      - generic [ref=e7]: Skip to main content
+    - link "Spotify" [ref=e9] [cursor=pointer]:
+      - /url: /
+      - img "Spotify" [ref=e10]
+    - generic [ref=e12]:
+      - button "Home" [ref=e13] [cursor=pointer]:
+        - img [ref=e15]
+      - search [ref=e18]:
+        - button "Search" [ref=e20] [cursor=pointer]:
+          - img [ref=e22]
+        - generic [ref=e24]:
+          - combobox "What do you want to play?" [ref=e25]
+          - generic:
+            - generic: CtrlShiftL
+        - button "Browse" [ref=e28] [cursor=pointer]:
+          - img [ref=e30]
+    - generic [ref=e34]:
+      - button "Premium" [ref=e35] [cursor=pointer]
+      - button "Support" [ref=e36] [cursor=pointer]
+      - button "Download" [ref=e37] [cursor=pointer]
+      - link "Install App" [ref=e39] [cursor=pointer]:
+        - /url: /download
+        - img [ref=e41]
+        - generic [ref=e44]: Install App
+      - generic [ref=e45]:
+        - button "Sign up" [ref=e46] [cursor=pointer]
+        - button "Log in" [ref=e47] [cursor=pointer]:
+          - generic [ref=e48]: Log in
+  - generic [ref=e49]:
+    - navigation "Main" [ref=e50]:
+      - generic [ref=e51]:
+        - generic [ref=e52]:
+          - generic [ref=e55]:
+            - heading "Your Library" [level=1] [ref=e57]
+            - button "Create" [ref=e59] [cursor=pointer]:
+              - img [ref=e60]
+          - generic [ref=e64]:
+            - generic [ref=e65]:
+              - generic [ref=e66]:
+                - generic [ref=e67]: Create your first playlist
+                - generic [ref=e68]: It's easy, we'll help you
+              - button "Create playlist" [ref=e70] [cursor=pointer]:
+                - generic [ref=e71]: Create playlist
+            - generic [ref=e72]:
+              - generic [ref=e73]:
+                - generic [ref=e74]: Let's find some podcasts to follow
+                - generic [ref=e75]: We'll keep you updated on new episodes
+              - link "Browse podcasts" [ref=e77] [cursor=pointer]:
+                - /url: /genre/podcasts-web
+                - generic [ref=e78]: Browse podcasts
+            - generic:
+              - grid "Your Library":
+                - generic:
+                  - row
+                  - row
+        - button "English" [ref=e81] [cursor=pointer]:
+          - img [ref=e83]
+          - text: English
+    - generic [ref=e86]:
+      - text: Resize main navigation
+      - slider "Resize main navigation" [ref=e87]: "290"
+  - complementary "Now playing bar" [ref=e89]:
+    - generic [ref=e90] [cursor=pointer]:
+      - generic [ref=e91]:
+        - paragraph [ref=e92]: Preview of Spotify
+        - paragraph [ref=e93]: Sign up to get unlimited songs and podcasts with occasional ads. No credit card needed.
+      - button "Sign up free" [ref=e94]:
+        - generic [ref=e95]: Sign up free
+    - generic:
+      - generic "Player controls" [ref=e97]:
+        - generic [ref=e98]:
+          - generic [ref=e99]:
+            - switch "Enable shuffle" [disabled] [ref=e100]:
+              - img [ref=e102]
+            - button "Previous" [disabled] [ref=e105]:
+              - img [ref=e107]
+          - button "Pause" [disabled] [ref=e109]:
+            - img [ref=e112]
+          - generic [ref=e114]:
+            - button "Next" [disabled] [ref=e115]:
+              - img [ref=e117]
+            - checkbox "Disable repeat" [disabled] [ref=e119]:
+              - img [ref=e121]
+        - generic [ref=e123]:
+          - generic [ref=e124]: "-:--"
+          - generic [ref=e127]:
+            - text: Change progress
+            - slider "Change progress" [disabled] [ref=e128]: "0"
+          - generic [ref=e134]: "-:--"
+      - generic [ref=e136]:
+        - button "Now playing view" [disabled] [ref=e137]:
+          - img [ref=e139]
+        - generic [ref=e142]:
+          - button "Mute" [ref=e143] [cursor=pointer]:
+            - img [ref=e145]
+          - generic [ref=e150]:
+            - text: Change volume
+            - slider "Change volume" [ref=e151]: "1"
+  - main "Spotify – Search" [ref=e162]:
+    - generic [ref=e164]:
+      - generic:
+        - generic:
+          - list
+          - generic:
+            - generic:
+              - img
+            - generic:
+              - img
+    - separator [ref=e168]
