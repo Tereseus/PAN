@@ -393,9 +393,25 @@ async function searchMemory(query, opts = {}) {
   }
 
   // ---------- Vector (semantic) ----------
+  // Bug #461: embed() goes through Ollama and can hang for 10-20s when the
+  // embeddings service is degraded — which silently stalls every voice prompt
+  // because routeStream awaits searchMemory. Wrap the embed call in a hard
+  // timeout (default 500ms) so we degrade to FTS5-only instead of hanging.
+  // RRF below will still produce a reasonable ranking from FTS hits alone.
+  // Caller can override via opts.embedTimeoutMs (e.g. consolidation jobs that
+  // can afford to wait longer).
+  const embedTimeoutMs = opts.embedTimeoutMs ?? 500;
   let vecRows = [];
   try {
-    const qVec = await embed(q);
+    const qVec = await Promise.race([
+      embed(q),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`embed timeout >${embedTimeoutMs}ms — ollama likely degraded`)),
+          embedTimeoutMs
+        )
+      ),
+    ]);
     const blob = toBlob(qVec);
     vecRows = db.prepare(`
       SELECT rowid AS id, distance
@@ -405,7 +421,10 @@ async function searchMemory(query, opts = {}) {
       LIMIT ?
     `).all(blob, candidates);
   } catch (err) {
-    console.warn('[PAN MemorySearch] vec query failed:', err.message);
+    // Fall through to FTS5-only ranking — the function still returns useful
+    // results from lexical hits. Logged at warn level so the degradation is
+    // visible in console without crashing the search path.
+    console.warn(`[PAN MemorySearch] vec query failed (FTS-only fallback for caller=${opts.caller || 'search'}):`, err.message);
   }
 
   // ---------- Reciprocal Rank Fusion ----------
