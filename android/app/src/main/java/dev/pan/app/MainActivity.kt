@@ -9,17 +9,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import dev.pan.app.service.PanForegroundService
 import dev.pan.app.tts.TtsManager
 import dev.pan.app.ui.navigation.PanNavGraph
 import dev.pan.app.ui.theme.PanTheme
+import dev.pan.app.update.UpdateChecker
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var tts: TtsManager
+    @Inject lateinit var updateChecker: UpdateChecker
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -53,6 +58,14 @@ class MainActivity : ComponentActivity() {
             PanTheme {
                 PanNavGraph()
             }
+        }
+
+        // Self-update check — non-blocking, runs once per launch.
+        // Delay 8s so Tailscale has time to come up (UpdateChecker prefers
+        // the tailnet base URL and falls back to LAN if it isn't ready).
+        lifecycleScope.launch {
+            delay(8_000)
+            updateChecker.checkAndInstall(this@MainActivity, silent = true)
         }
     }
 
