@@ -160,6 +160,27 @@ db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = OFF');
 
+// Pre-schema migrations: add columns that the schema now references but old DBs lack.
+// Must run BEFORE db.exec(schema) so index creation doesn't fail on missing columns.
+{
+  const preMig = [
+    // #465: source + device_id added to ai_usage; schema now creates an index on source
+    ['ai_usage',        'source',    "TEXT DEFAULT 'internal'"],
+    ['ai_usage',        'device_id', 'TEXT'],
+    // source column added to sessions, device_logs, activity_events
+    ['sessions',        'source',    'TEXT'],
+    ['device_logs',     'source',    "TEXT NOT NULL DEFAULT 'console'"],
+    ['activity_events', 'source',    "TEXT DEFAULT 'desktop'"],
+  ];
+  for (const [table, col, def] of preMig) {
+    const cols = db.pragma(`table_info(${table})`).map(c => c.name);
+    if (cols.length > 0 && !cols.includes(col)) {
+      db.exec(`ALTER TABLE "${table}" ADD COLUMN ${col} ${def}`);
+      console.log(`[PAN DB] Pre-schema migration: added ${table}.${col}`);
+    }
+  }
+}
+
 // Run schema (CREATE IF NOT EXISTS — safe to run every startup)
 const schema = readFileSync(SCHEMA_PATH, 'utf-8');
 db.exec(schema);
@@ -417,6 +438,22 @@ if (!defaultUser) {
     if (!bmCols.includes('correction_attempts')) {
       db.exec(`ALTER TABLE ai_benchmark ADD COLUMN correction_attempts INTEGER DEFAULT 0`);
     }
+  }
+}
+
+// Migration: #465 — tag ai_usage with source + device_id so phone-vs-internal traffic
+// is distinguishable. Without this we can't tell which AI calls came from the user
+// vs background services like Scout, Dream, Intuition.
+{
+  const usageCols = db.pragma('table_info(ai_usage)').map(c => c.name);
+  if (usageCols.length > 0) {
+    if (!usageCols.includes('source')) {
+      db.exec(`ALTER TABLE ai_usage ADD COLUMN source TEXT DEFAULT 'internal'`);
+    }
+    if (!usageCols.includes('device_id')) {
+      db.exec(`ALTER TABLE ai_usage ADD COLUMN device_id TEXT`);
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_usage_source ON ai_usage(source)`);
   }
 }
 

@@ -294,11 +294,14 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     output_tokens INTEGER DEFAULT 0,
     cost_cents REAL DEFAULT 0,
     prompt_preview TEXT,
+    source TEXT DEFAULT 'internal',  -- #465: phone | dashboard | mcp | scout | dream | intuition | router | internal
+    device_id TEXT,                   -- #465: e.g. "pixel-10-pro", "minipc", null for server-internal
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_usage_caller ON ai_usage(caller);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_source ON ai_usage(source);
 
 -- === THREE-TIER VECTOR MEMORY ===
 
