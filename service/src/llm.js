@@ -455,16 +455,39 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   throw new Error(`No vision provider available — ${VISION_MODEL} unreachable on mini PC and no API keys configured`);
 }
 
-export function logUsage(caller, model, usage, promptPreview) {
+// #465: source = phone | dashboard | mcp | scout | dream | intuition | router | internal
+// device_id = e.g. "pixel-10-pro", "minipc", null for server-internal
+// Background callers like 'scout', 'dream', 'intuition-classifier' auto-classify
+// by name so we don't have to retrofit every call site.
+const INTERNAL_CALLERS = new Set([
+  'scout', 'dream', 'evolution', 'consolidation', 'intuition-classifier',
+  'augur', 'classifier', 'verifier', 'screen-watcher', 'webcam-watcher',
+  'pan-notify', 'orchestrator',
+]);
+
+function inferSource(caller, explicitSource) {
+  if (explicitSource) return explicitSource;
+  if (!caller) return 'internal';
+  if (INTERNAL_CALLERS.has(caller)) return caller; // self-tagging for known background callers
+  if (caller.startsWith('phone') || caller.includes('pixel') || caller.startsWith('mic')) return 'phone';
+  if (caller.startsWith('dash') || caller === 'terminal') return 'dashboard';
+  if (caller.startsWith('mcp')) return 'mcp';
+  if (caller === 'router' || caller === 'router-stream') return 'router';
+  return 'internal';
+}
+
+export function logUsage(caller, model, usage, promptPreview, opts = {}) {
   try {
     const inputTokens = usage?.input_tokens || 0;
     const outputTokens = usage?.output_tokens || 0;
     const pricing = MODEL_PRICING[model] || { input: 0, output: 0 };
     const costCents = inputTokens * pricing.input + outputTokens * pricing.output;
+    const source = inferSource(caller, opts.source);
+    const deviceId = opts.device_id || null;
     insert(
-      `INSERT INTO ai_usage (caller, model, input_tokens, output_tokens, cost_cents, prompt_preview)
-       VALUES (:caller, :model, :input, :output, :cost, :preview)`,
-      { ':caller': caller || 'unknown', ':model': model, ':input': inputTokens, ':output': outputTokens, ':cost': costCents, ':preview': (promptPreview || '').slice(0, 100) }
+      `INSERT INTO ai_usage (caller, model, input_tokens, output_tokens, cost_cents, prompt_preview, source, device_id)
+       VALUES (:caller, :model, :input, :output, :cost, :preview, :source, :device_id)`,
+      { ':caller': caller || 'unknown', ':model': model, ':input': inputTokens, ':output': outputTokens, ':cost': costCents, ':preview': (promptPreview || '').slice(0, 100), ':source': source, ':device_id': deviceId }
     );
   } catch (e) {
     console.error('[PAN Usage] Failed to log usage:', e.message);
