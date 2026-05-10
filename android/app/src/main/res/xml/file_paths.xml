@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="camera_photos" path="." />
+    <!-- Self-update: APK downloads land in cacheDir/updates/ and are exposed
+         to the system package installer via FileProvider. -->
+    <cache-path name="updates" path="updates/" />
 </paths>

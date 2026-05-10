@@ -64,6 +64,7 @@ import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, l
 import { searchMemory, backfillEmbeddings, backfillStatus } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
+import { createHash } from 'crypto';
 import https from 'https';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
 import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
@@ -2218,6 +2219,68 @@ app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
     res.setHeader('Access-Control-Allow-Origin', '*');
   }
 }));
+
+// APK download — serves the latest debug build so the phone can sideload over Tailscale
+app.get('/apk/latest', (req, res) => {
+  const apkPath = join(__dirname, '..', '..', 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.setHeader('Content-Disposition', 'attachment; filename="pan-debug.apk"');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.sendFile(apkPath, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).send('APK not built. Run: cd android && ./gradlew.bat assembleDebug');
+    }
+  });
+});
+
+// APK version metadata — Android self-update flow polls this and compares
+// `versionCode` against `BuildConfig.VERSION_CODE`. If the server has a newer
+// build, the app downloads /apk/latest, verifies sha256, and triggers the
+// system installer. Reads versionCode/versionName/applicationId from the
+// gradle-produced output-metadata.json so we never lie about what the APK is.
+let _apkMetaCache = null;
+app.get('/api/v1/apk/version', (req, res) => {
+  try {
+    const apkPath = join(__dirname, '..', '..', 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+    const metaPath = join(__dirname, '..', '..', 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'output-metadata.json');
+
+    if (!existsSync(apkPath) || !existsSync(metaPath)) {
+      return res.status(404).json({ error: 'APK not built. Run: cd android && ./gradlew.bat assembleDebug' });
+    }
+
+    const stat = statSync(apkPath);
+    const mtimeMs = stat.mtimeMs;
+    const size = stat.size;
+
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    const elem = (meta.elements || [])[0] || {};
+    const versionCode = elem.versionCode;
+    const versionName = elem.versionName;
+    const applicationId = meta.applicationId;
+
+    // Cache sha256 by mtime+size — APK is ~200MB, no point rehashing on every poll
+    let sha256 = (_apkMetaCache && _apkMetaCache.mtimeMs === mtimeMs && _apkMetaCache.size === size)
+      ? _apkMetaCache.sha256
+      : null;
+    if (!sha256) {
+      sha256 = createHash('sha256').update(readFileSync(apkPath)).digest('hex');
+      _apkMetaCache = { mtimeMs, size, sha256 };
+    }
+
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.json({
+      applicationId,
+      versionCode,
+      versionName,
+      apkUrl: '/apk/latest',
+      apkSize: size,
+      sha256,
+      buildTime: new Date(mtimeMs).toISOString()
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Legacy inline mobile route (removed — now static)
 app.get('/mobile-old/', (req, res) => { res.redirect('/mobile/'); });

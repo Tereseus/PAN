@@ -915,3 +915,60 @@ same commit as the code change._
 - Power: `👁 User (lvl 25)`
 - User: `👤 owner (lvl 15)`
 - Group: `🏢 ΠΑΝ → Member (lvl 25)`
+
+---
+
+## Android self-update
+
+PAN's Android app updates itself from the user's own PAN server — no Play Store, no manual sideload after the first install. Designed to be reusable for any future PAN-shipped Android app.
+
+### Server side
+- `GET /apk/latest` — serves `android/app/build/outputs/apk/debug/app-debug.apk` (existing).
+- `GET /api/v1/apk/version` — JSON metadata read from gradle's `output-metadata.json`. sha256 is computed once and cached by mtime + size:
+  ```json
+  {
+    "applicationId": "dev.pan.app",
+    "versionCode": 3,
+    "versionName": "0.4.0",
+    "apkUrl": "/apk/latest",
+    "apkSize": 216202946,
+    "sha256": "abcd…",
+    "buildTime": "2026-05-10T11:13:50Z"
+  }
+  ```
+  Returns 404 if the APK hasn't been built yet.
+
+### Client side (`UpdateChecker.kt`)
+1. On `MainActivity.onCreate`, after an 8-second delay (lets Tailscale come up), call `UpdateChecker.checkAndInstall()`.
+2. GET `${baseUrl}/api/v1/apk/version` via the same Hilt `OkHttpClient` everything else uses (Tailscale-aware, falls back to LAN).
+3. Bail if `applicationId != BuildConfig.APPLICATION_ID` — never let the server replace this app with a different one.
+4. If `versionCode > BuildConfig.VERSION_CODE`:
+   - Download to `cacheDir/updates/pan-${versionCode}.apk` (older APKs in that dir are deleted first).
+   - Verify size + sha256 against the manifest. Mismatch → delete + abort.
+   - Hand to system installer via `FileProvider` + `Intent.ACTION_VIEW` with `application/vnd.android.package-archive`.
+5. The system shows "Update this app?" — user taps once, install completes, app data + signing key preserved.
+
+### Permissions
+- `REQUEST_INSTALL_PACKAGES` (manifest) — required on Android 8+.
+- "Install unknown apps" must be granted once for PAN under Settings → Apps → Special access → Install unknown apps. If not granted, `UpdateChecker` deep-links the user there via `ACTION_MANAGE_UNKNOWN_APP_SOURCES`.
+
+### FileProvider
+- Authority: `dev.pan.app.fileprovider` (already declared for camera photos).
+- New path entry: `<cache-path name="updates" path="updates/" />` in `res/xml/file_paths.xml`.
+
+### Pre-gate
+- APK must exist at `android/app/build/outputs/apk/debug/app-debug.apk` and have a sibling `output-metadata.json`. Both produced by `./gradlew.bat assembleDebug`.
+
+### Replaces
+- Manual sideload flow (open browser → `/apk/latest` → find file → tap → install). That path still works — this is additive.
+
+### What it doesn't do
+- **Silent install.** Requires device-owner privileges that personal devices don't have. The system "Update this app?" dialog is the unavoidable Android security boundary for sideloaded APKs.
+- **Rollback.** Once the user accepts the new APK, the old one is gone.
+- **Staged rollouts.** Server always serves the latest built APK to every device.
+
+### Reusing for other PAN apps
+The only app-specific bits are the `applicationId` and the FileProvider authority. To ship a second PAN-managed Android app:
+1. Point its `UpdateChecker` at a different version endpoint (e.g. `/api/v1/apk/<app-id>/version`) — server reads from a different gradle output dir.
+2. Update the `FILE_PROVIDER_AUTHORITY` constant to match its manifest.
+Everything else (Tailscale routing, sha256 verification, install flow) is generic.

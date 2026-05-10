@@ -14,8 +14,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.3.1"
+        versionCode = 3
+        versionName = "0.4.0"
     }
 
     buildTypes {
@@ -35,6 +35,9 @@ android {
 
     buildFeatures {
         compose = true
+        // Required so UpdateChecker can read BuildConfig.VERSION_CODE / APPLICATION_ID
+        // at runtime to decide whether the server has a newer APK to install.
+        buildConfig = true
     }
 }
 
