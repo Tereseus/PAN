@@ -228,66 +228,53 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 11978f9d-d16)*
-**Claude** (2026-05-09 15:45:21): Got it. Found the bug — and it's **not** a Craft swap. It's a known-but-ignored model-switch failure.
+### This Tab *(session: 69c782e7-7c6)*
+**User** (2026-05-10 10:19:57): No you need to reinstall just reinstall it reinstall the application on the phone
+**Claude** (2026-05-10 10:20:45): Endpoint is good — 216MB APK, last-modified 11:13 today (matches the rebuilt one).
 
-## What actually happened
+**Open this on the phone browser:**
 
-1. You hit **claude-opus-4-7** in the model dropdown.
-2. That called `pipeSetModel()` → `adapter.setModel('claude-opus-4
-**User** (2026-05-09 15:47:32): Yes go let's go ahead and try and fix this OK just go ahead and do what you need to fix this Well I guess actually I guess actually because these these types of bugs right now right the scalp should be looking at these and then it should be saying to
-**Claude** (2026-05-09 15:51:49): **Filed as `#457` P1.** Full description includes root cause, fix options, and regression test.
+`http://100.127.71.114:7777/apk/latest`
 
-## Recap of your questions
+Tap to download → tap the downloaded file → "Install over existing app." Permissions, ap
+**User** (2026-05-10 10:21:31): Well then there's two options here one is literally I plug in my phone to the USB or two you do push an update how could you push an update No seconds of detective being pushed what via the Play Store you can't just push updates you have to make them
+**Claude** (2026-05-10 10:21:47): You're right — there's no silent push. Without Play Store, every "update" is a sideload the user has to tap-tap-confirm. Three real options:
 
-1. **"Are these all in the database?"** — Yes. `events` table + Claude SDK JSONL (`~/.claude/projects/<slug>/<sessionId>.json
-**User** (2026-05-09 15:53:34): Well if we have to do a in the future I'm not sure what that even means Like we should be able to have multiple crafts and be able to seamlessly transfer between them and not lose Pty and transcripts That's how it worked before So if we have to do a 
-**Claude** (2026-05-09 15:54:00): You're right, and I muddied it. Let me make it plain.
+1. **USB plug in** — fastest. Plug it in, "Allow USB debugging", I run `adb install -r app-debug.apk` and it
+**User** (2026-05-10 10:22:33): No I think we might as well just have the update because we're gonna be using it in the future do you wanna just make it then the update is coming from your own server so everyone whoever updates any application the update comes from their own server
+**Claude** (2026-05-10 10:30:03): **Done.** Self-update feature shipped, server route is live, APK built.
 
-**What the architecture promises** (and what you remember working):
-- Carrier owns PTY + adapter + sessions. They live in memory, in the long-running Carrier process.
-- Craft is just an HTTP rout
-**User** (2026-05-09 15:54:34): Yes go ahead and do that
-**Claude** (2026-05-09 15:58:11): Done. `#457` → `in_test`.
+## What just got built
 
-## What changed
+| Layer | Change |
+|---|---|
+| **Server** | `GET /api/v1/apk/version` — reads gradle's `output-metadata.json`, computes sha256 once (cached by mtime+size
+**User** (2026-05-10 10:32:53): OK the phone is plugged in go ahead and fix that
+**Claude** (2026-05-10 10:34:06): Confirmed — Windows sees **Pixel 10 Pro** but its class is `WPD` (Windows Portable Devices = MTP file transfer). That means the cable is good and the phone is in File Transfer mode, but the **ADB interface isn't enabled**. So one of these is off:
 
-**`service/src/carrier.js`** — new endpoint `GET /api/dashboard/bundle-hash`. Returns a sha1 of `service/public/v2/index.html`'s mtime+size (cheap, accurate — SvelteKit emits hashed chunk names referenced f
+**
+**User** (2026-05-10 10:35:27): OK I re enable debug
 
-### Recent Project Work *(session: 87b3f5df-c1e)*
-**User** (2026-05-09 14:57:54): Yeah I havent used the phone for a couple of days so that actually makes sense that the last logs came 7 days ago so that actually makes sense Yeah go ahead and make that diff
-**Claude** (2026-05-09 14:59:29): Diff applied. Final picture:
+### Recent Project Work *(session: b7ad0038-1e1)*
+**Claude** (2026-05-10 08:10:14): ΠΑΝ Remembers: embed backfill running ~1.5/sec after sentinel fix (`2ae56df`); ~24h to clear remaining 130k. Joying USB drive letter assignment via diskpart was the last thread — waiting on you to confirm if you exited diskpart.
+**User** (2026-05-10 08:10:21): You were going to push the last thing we were doing to the phone This is this is clearly the incorrect pan remembers This is not what we were doing last
+**Claude** (2026-05-10 08:14:12): **Open this on the phone browser to install:**
 
-**Open tasks: 13** (was 10) · **P1: 6** · **In-progress: 1** (AutoDev re-opened)
+`http://100.127.71.114:7777/apk/latest`
 
-```
-P1 (6) — gating the pendant
-  [405] in_progress  AutoDev v0 — Slack/Discord watcher (re-opened, was prematurely done)
-  [440] backlog 
-**User** (2026-05-09 15:04:03): OK So then what should we work on next what should we do now that we have all this
-**Claude** (2026-05-09 15:04:36): Given what you said earlier — that you're focused on **intuition + phone reply timing** before pendant — here are the three real options, ranked by my read on leverage:
-
-### 🎯 Recommended: `#453` phone → headless Claude routing
-**Why first:** It's t
-**User** (2026-05-09 15:05:27): OK yeah go ahead and do that
-**Claude** (2026-05-09 15:09:11): **`#453` Phase 1 done — sitting in `in_test`.**
-
-### What changed
-- `service/src/terminal.js` — new `delegateToPhoneToolsSession(text)` helper. Reads `settings.phone_tools_session_id`, falls back to most-recent active session, calls `pipeSend()` fire
-**User** (2026-05-09 15:23:03): You might as well just do phase two before we do anything else
-**Claude** (2026-05-09 15:26:10): **`#453` Phase 2 done.** Both files syntax-clean.
-
-### What Phase 2 added
-
-**`terminal.js`:**
-- New `_onPipeComplete` callback queue on each session — generic one-shot completion hooks
-- `drainPipeCompleteCallbacks(session, err)` — runs the queue, ca
+That's the Tailscale IP for this PC — phone is on Tailscale (`pan-pixel-10-pro-1` active), so it can reach it directly. Tap the downloaded APK to install over th
 
 ### Open Tasks
+- [#466 backlog] Voice trace ID: end-to-end correlation across phone log + server router + AI usage + TTS
+- [#470 in_test] steward: ollama restart action is a no-op (startFn disabled) but logs success — clean up the lie
 - [#458 backlog] Tab list rebuild fragile across Craft swap — pan-4 tab disappeared after swap
 - [#459 backlog] Forge: Opus auto-fix loop on Scout-detected bugs
-- [#457 in_test] Craft swap silently restarts Claude session — transcript wipe + tab loss + fresh ΠΑΝ Remembers
-- [#451 backlog] Replace brightness watchdog with a real health signal
+- [#462 in_test] router.js: emit empty chunk for [AMBIENT] verdicts so phone sees a fast 'no-op' response
+- [#464 in_test] steward: ollama health check 3s ping produces false-negatives under load — phantom DOWN→RUNNING bounces every ~2min
+- [#465 in_test] AI usage tracking: tag every router call with source (phone-id / dashboard / scout / etc.) — 'router' bucket too coarse
+- [#468 backlog] Phone: health-aware degradation banner — show 'PAN running on backup' when ollama/embeddings/whisper degraded
+- [#469 backlog] Voice timeline panel in Kronos — per-prompt route, latency, response
+- [#457 in_test] Craft swap silently restarts Claude session — trans
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
