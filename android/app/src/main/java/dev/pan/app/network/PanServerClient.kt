@@ -266,6 +266,18 @@ class PanServerClient @Inject constructor(
                             val chunk = json.optString("text", "")
                             if (chunk.isNotEmpty()) onChunk(chunk)
                         }
+                        "ambient" -> {
+                            // #462: server flagged this as ambient — silently drop, no TTS.
+                            // Final 'done' will follow with empty response; we tag intent=ambient
+                            // here so caller can short-circuit even if 'done' is missed.
+                            finalResult = QueryResponse(
+                                response_text = "",
+                                intent = "ambient",
+                                route = "ambient",
+                                query = null,
+                                actions = emptyList()
+                            )
+                        }
                         "done" -> {
                             val result = json.optJSONObject("result")
                             if (result != null) {

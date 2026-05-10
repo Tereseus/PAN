@@ -873,6 +873,13 @@ class PanForegroundService : Service() {
 
                 val elapsed = System.currentTimeMillis() - startTime
                 sttEngine.queryPending = false // clear after response received
+
+                // #462: ambient verdict — silently drop, no TTS, no history, no fallback.
+                if (response?.intent == "ambient") {
+                    panLog("Ambient (${elapsed}ms): no-op")
+                    return@launch
+                }
+
                 // Speak any remaining text in the buffer (incomplete sentence or no punct)
                 val remaining = sentenceBuf.toString().trim()
                 if (remaining.isNotBlank() && remaining != "[AMBIENT]") {
