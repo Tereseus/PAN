@@ -112,10 +112,12 @@ const services = [
     bootOrder: 1,
     dependsOn: [],
     interval: null, // always-on process
-    startFn: async () => {
-      // AUTO-START DISABLED — Ollama consumes too much memory. Start manually if needed.
-      console.log('[Steward] Ollama auto-start disabled. Run `ollama serve` manually if needed.');
-    },
+    // #470: startFn was a no-op that printed "auto-start disabled" on every restart
+    // attempt and falsely transitioned the service to STARTING -> DOWN in a loop.
+    // Setting startFn: null short-circuits the auto-restart loop in checkPortHealth's
+    // post-check restart logic (line ~724 only triggers when startFn is defined).
+    // Ollama recovery now relies on the external `ollama serve` process being up.
+    startFn: null,
     stopFn: null,
     _status: 'unknown',
     _lastCheck: null,
@@ -519,10 +521,15 @@ async function checkServiceHealth(svc) {
       case 'url': {
         // Health check against a full URL — single source of truth for Ollama
         // whether it's local or on Mini PC (getOllamaUrl() returns the configured URL).
+        // #464: 3s timeout produced false-negatives under load. Bumped to 5s, and
+        // require N consecutive failures before flipping to DOWN to debounce the
+        // "ollama bouncing" noise that propagated to memory-search timeouts.
+        const URL_FAIL_THRESHOLD = 3;
         try {
           const url = getOllamaUrl() + (svc.healthEndpoint || '/');
-          const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+          const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
           if (res.ok) {
+            svc._urlFailStreak = 0;
             const data = await res.json().catch(() => ({}));
             const models = data.models || [];
             svc._modelCount = models.length;
@@ -534,10 +541,20 @@ async function checkServiceHealth(svc) {
             svc._lastModelCount = models.length;
             transitionServiceState(svc, models.length === 0 ? ServiceState.DEGRADED : ServiceState.RUNNING, 'url health check ok');
           } else {
-            transitionServiceState(svc, ServiceState.DOWN, `url health check HTTP ${res.status}`);
+            svc._urlFailStreak = (svc._urlFailStreak || 0) + 1;
+            if (svc._urlFailStreak >= URL_FAIL_THRESHOLD) {
+              transitionServiceState(svc, ServiceState.DOWN, `url health check HTTP ${res.status} (${svc._urlFailStreak} consecutive)`);
+            } else {
+              console.warn(`[Steward] ${svc.id} HTTP ${res.status} (${svc._urlFailStreak}/${URL_FAIL_THRESHOLD}) — debouncing`);
+            }
           }
         } catch (urlErr) {
-          transitionServiceState(svc, ServiceState.DOWN, `url health check failed: ${urlErr.message}`);
+          svc._urlFailStreak = (svc._urlFailStreak || 0) + 1;
+          if (svc._urlFailStreak >= URL_FAIL_THRESHOLD) {
+            transitionServiceState(svc, ServiceState.DOWN, `url health check failed (${svc._urlFailStreak} consecutive): ${urlErr.message}`);
+          } else {
+            console.warn(`[Steward] ${svc.id} health check failed (${svc._urlFailStreak}/${URL_FAIL_THRESHOLD}): ${urlErr.message} — debouncing`);
+          }
         }
         break;
       }
