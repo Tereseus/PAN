@@ -824,10 +824,12 @@ export async function* routeStream(text, context = {}) {
     }
   }
 
-  // Ambient pre-filter
+  // Ambient pre-filter — emit dedicated 'ambient' chunk (not [AMBIENT] literal)
+  // so phone client can silently drop without TTS, no embed/LLM round-trip needed.
   const isVoice = context.source === 'voice' || context.source === 'mic' || context.source === 'phone';
   if (isVoice && quickAmbientCheck(text)) {
-    yield { type: 'done', result: { intent: 'ambient', response: '[AMBIENT]' } };
+    yield { type: 'ambient' };
+    yield { type: 'done', result: { intent: 'ambient', response: '' } };
     return;
   }
 
@@ -929,6 +931,14 @@ ${memoryContext}`;
         // Emit the recall response text as a chunk so TTS picks it up
         if (lastLen === 0) yield { type: 'chunk', text: recallResponse };
         yield { type: 'done', result: { ...parsed, response: recallResponse } };
+        return;
+      }
+
+      // If the LLM classified this as ambient, emit ambient signal + clear response
+      // so phone client doesn't speak "[AMBIENT]" literal.
+      if (parsed.intent === 'ambient') {
+        yield { type: 'ambient' };
+        yield { type: 'done', result: { ...parsed, response: '' } };
         return;
       }
 
