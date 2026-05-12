@@ -194,6 +194,26 @@
 	let confirmRemoveDeviceId = $state(null);
 	let confirmRemoveTyped = $state('');
 
+	// Versions — server-published APK + last-seen installed phone version (from logs)
+	let apkVersion = $state(null);        // { applicationId, versionCode, versionName, apkSize, sha256, buildTime }
+	let phoneInstalled = $state(null);    // { versionCode, versionName, appId, seenAt }
+	async function loadVersions() {
+		try {
+			const r = await fetch('/api/v1/apk/version');
+			apkVersion = r.ok ? await r.json() : null;
+		} catch { apkVersion = null; }
+		try {
+			const r = await fetch('/api/v1/logs?device_type=phone&limit=300');
+			const logs = r.ok ? await r.json() : [];
+			if (Array.isArray(logs)) {
+				for (const l of logs) {
+					const m = (l.message || '').match(/^Build: versionCode=(\d+) versionName=(\S+) appId=(\S+)/);
+					if (m) { phoneInstalled = { versionCode: +m[1], versionName: m[2], appId: m[3], seenAt: l.created_at }; break; }
+				}
+			}
+		} catch { /* ignore */ }
+	}
+
 	// --- Org management state ---
 	let orgList = $state([]);
 	let orgMembers = $state([]);
@@ -812,6 +832,7 @@
 		loadOrgs();
 		loadTeams();
 		loadEmailConfig();
+		loadVersions();
 
 		// Deep-link: ?section=email jumps to the email tab
 		if (typeof window !== 'undefined') {
@@ -1259,6 +1280,50 @@
 		<!-- Devices -->
 		{#if activeTab === 'devices'}
 			<h2>Devices</h2>
+
+			<section class="section">
+				<h3>App Versions</h3>
+				<div class="small muted" style="margin-bottom:8px">
+					Server-published APK vs the last build the phone reported on boot.
+					Phone fetches <code>/api/v1/apk/version</code> 8s after launch — bump <code>versionCode</code> in <code>android/app/build.gradle.kts</code> and the next launch installs OTA.
+				</div>
+				<div style="display:grid;grid-template-columns:160px 1fr;gap:6px 12px;align-items:center;font-size:13px">
+					<span class="muted">Phone (installed)</span>
+					<span>
+						{#if phoneInstalled}
+							<strong>{phoneInstalled.versionName}</strong> <span class="muted">(code {phoneInstalled.versionCode} · {phoneInstalled.appId})</span>
+						{:else}
+							<span class="muted">no Build log seen — relaunch the phone app to record it</span>
+						{/if}
+					</span>
+					<span class="muted">Server (published)</span>
+					<span>
+						{#if apkVersion}
+							<strong>{apkVersion.versionName}</strong> <span class="muted">(code {apkVersion.versionCode} · {Math.round((apkVersion.apkSize || 0) / 1024 / 1024)} MB)</span>
+						{:else}
+							<span class="muted" style="color:#f38ba8">/api/v1/apk/version unreachable</span>
+						{/if}
+					</span>
+					<span class="muted">Status</span>
+					<span>
+						{#if phoneInstalled && apkVersion && apkVersion.versionCode > phoneInstalled.versionCode}
+							<span style="color:#f9e2af">⏳ Phone behind by {apkVersion.versionCode - phoneInstalled.versionCode} — OTA on next launch</span>
+						{:else if phoneInstalled && apkVersion && apkVersion.versionCode < phoneInstalled.versionCode}
+							<span style="color:#cba6f7">↑ Phone is ahead of server (dev build?)</span>
+						{:else if phoneInstalled && apkVersion}
+							<span style="color:#a6e3a1">✓ In sync</span>
+						{:else}
+							<span class="muted">—</span>
+						{/if}
+					</span>
+					{#if apkVersion?.sha256}
+						<span class="muted">SHA-256</span>
+						<code style="font-size:11px;word-break:break-all">{apkVersion.sha256}</code>
+					{/if}
+				</div>
+				<button class="btn" style="margin-top:10px;padding:4px 10px;font-size:12px" onclick={loadVersions}>Refresh</button>
+				<a class="btn" style="margin-top:10px;margin-left:6px;padding:4px 10px;font-size:12px;text-decoration:none" href="/atlas/phone" target="_blank">Open Phone Atlas →</a>
+			</section>
 
 			<section class="section">
 				<h3>Connected Devices</h3>

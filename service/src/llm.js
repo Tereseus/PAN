@@ -163,8 +163,10 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
   };
 }
 
-// Streaming variant — yields raw text chunks from Cerebras SSE
-async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal) {
+// Streaming variant — yields raw text chunks from Cerebras SSE.
+// usageOut: optional { input_tokens, output_tokens } object that gets populated
+// from the final SSE frame (Cerebras emits usage when stream_options.include_usage=true).
+async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, usageOut = null) {
   const apiKey = getApiKey('cerebras');
   if (!apiKey) throw new Error('No Cerebras API key found.');
 
@@ -177,7 +179,11 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal) {
   const response = await fetch(CEREBRAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: modelId, messages: oaiMessages, max_completion_tokens: maxTokens, temperature: 0.7, stream: true }),
+    body: JSON.stringify({
+      model: modelId, messages: oaiMessages, max_completion_tokens: maxTokens,
+      temperature: 0.7, stream: true,
+      stream_options: { include_usage: true }, // #465: surface tokens so we can logUsage
+    }),
     signal,
   });
 
@@ -198,8 +204,13 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal) {
         const data = line.slice(6).trim();
         if (data === '[DONE]') return;
         try {
-          const chunk = JSON.parse(data).choices?.[0]?.delta?.content;
+          const parsed = JSON.parse(data);
+          const chunk = parsed.choices?.[0]?.delta?.content;
           if (chunk) yield chunk;
+          if (usageOut && parsed.usage) {
+            usageOut.input_tokens = parsed.usage.prompt_tokens || 0;
+            usageOut.output_tokens = parsed.usage.completion_tokens || 0;
+          }
         } catch {}
       }
     }
@@ -209,22 +220,36 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal) {
 }
 
 // Public streaming API — yields text chunks. Falls back to single yield for non-streaming models.
-export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false } = {}) {
+export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  // #465: declare usage holder outside try{} so finally{} can flush logUsage even
+  // when the consumer break-s out of `for await` early (router does this once it
+  // has parsed enough JSON). Otherwise the generator's return() short-circuits
+  // logUsage and the row never lands in ai_usage.
+  let cerebrasUsage = null;
   try {
     if (model.startsWith('cerebras:')) {
-      yield* callCerebrasStream([{ role: 'user', content: prompt }], model, maxTokens, controller.signal);
+      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
+      for await (const chunk of callCerebrasStream([{ role: 'user', content: prompt }], model, maxTokens, controller.signal, cerebrasUsage)) {
+        yield chunk;
+      }
     } else {
       // Non-streaming providers: yield full result at once
-      const text = await askAI(rawPrompt, { model, timeout, maxTokens, caller, _skipAnonymize });
+      const text = await askAI(rawPrompt, { model, timeout, maxTokens, caller, _skipAnonymize, source, device_id });
       if (text) yield text;
     }
   } finally {
     clearTimeout(timer);
+    if (cerebrasUsage) {
+      // Always log — even on early break (router) or abort (timeout). usage tokens
+      // may be 0 if cerebras hadn't sent the final SSE frame yet, which is fine —
+      // the row still gets source / device_id tagged for routing telemetry.
+      logUsage(caller, model, cerebrasUsage, prompt.slice(0, 100), { source, device_id });
+    }
   }
 }
 
@@ -276,7 +301,7 @@ async function callOpenAICompat(prompt, messages, config, maxTokens, signal) {
 
 // --- Main Interface ---
 
-export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false } = {}) {
+export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
 
@@ -342,7 +367,7 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       model = `sdk:${model}`;
     }
 
-    logUsage(caller, model, result.usage, prompt);
+    logUsage(caller, model, result.usage, prompt, { source, device_id });
     return result.text.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
   } finally {
     clearTimeout(timer);

@@ -35,11 +35,28 @@ class BargeInMonitor {
         private const val TAG             = "BargeIn"
         private const val SAMPLE_RATE     = 16000
         private const val WINDOW_MS       = 80        // detection window size
-        private const val CALIBRATION_MS  = 400       // baseline period (AEC-cleaned signal ≈ 0 during TTS)
-        private const val CONSECUTIVE     = 2         // windows above threshold to confirm barge-in
-        private const val THRESHOLD_MULT  = 4.0       // multiplier above AEC-cleaned baseline
-        private const val MIN_THRESHOLD   = 120.0     // floor with AEC (much lower — TTS is removed)
-        private const val MIN_THRESHOLD_NO_AEC = 800.0 // fallback floor without AEC
+        // Calibration window — longer (800ms) lets AEC converge before we measure.
+        // The hardware AEC on most phones (incl. Pixel 10) needs a few hundred ms
+        // after activation before the cancellation reaches steady-state. Measuring
+        // too early captures pre-convergence echo as "baseline" and underestimates it.
+        private const val CALIBRATION_MS  = 800
+        // Sustained signal requirement: 4 × 80ms = 320ms of continuous above-threshold
+        // audio. A transient AEC residual spike from a hard consonant in TTS is
+        // typically <100ms; a real human "hey wait" syllable is 200ms+. This cleanly
+        // separates the two.
+        private const val CONSECUTIVE     = 4
+        // Threshold = peak_during_calibration × headroom, floored at MIN_THRESHOLD.
+        // Headroom keeps us ABOVE the worst residual peak observed during TTS.
+        private const val THRESHOLD_HEADROOM = 1.8
+        // Higher floor — AEC is not perfect. 350 still detects normal speech (which
+        // hits 1500-3000 RMS easily) but ignores residual TTS leak peaks that
+        // empirically land in the 100-250 range on Pixel-class hardware.
+        private const val MIN_THRESHOLD   = 350.0
+        private const val MIN_THRESHOLD_NO_AEC = 1200.0  // fallback floor without AEC — also raised
+        // Post-calibration grace period — ignore detections for this long after
+        // calibration ends. Covers the moment when the next TTS sentence kicks in
+        // with a fresh transient before AEC adapts.
+        private const val POST_CALIB_GRACE_MS = 250L
     }
 
     var onBargeIn: (() -> Unit)? = null
@@ -110,28 +127,49 @@ class BargeInMonitor {
                 val calibWindows      = CALIBRATION_MS / WINDOW_MS
                 val buf               = ShortArray(samplesPerWindow)
 
-                // Phase 1 — calibrate. With AEC on, TTS is cancelled so baseline ≈ ambient noise.
-                // Without AEC, baseline captures TTS bleed — threshold needs to be much higher.
-                var baselineSum = 0.0
-                var baselineN   = 0
+                // Phase 1 — calibrate. With AEC on, TTS is cancelled so baseline ≈ ambient noise,
+                // BUT residual echo bleeds through in transient peaks (hard consonants, sentence
+                // boundaries). We track PEAK rms during calibration so the threshold sits
+                // safely above the worst residual we observed while TTS was already playing.
+                var baselineSum  = 0.0
+                var baselinePeak = 0.0
+                var baselineN    = 0
                 repeat(calibWindows) {
                     if (!isActive) return@repeat
                     val n = recorder.read(buf, 0, samplesPerWindow)
-                    if (n > 0) { baselineSum += rms(buf, n); baselineN++ }
+                    if (n > 0) {
+                        val r = rms(buf, n)
+                        baselineSum += r
+                        baselineN++
+                        if (r > baselinePeak) baselinePeak = r
+                    }
                 }
-                val baseline  = if (baselineN > 0) baselineSum / baselineN else 0.0
-                val threshold = maxOf(baseline * THRESHOLD_MULT, minThreshold)
-                log("Baseline=%.0f threshold=%.0f".format(baseline, threshold))
+                val baselineAvg = if (baselineN > 0) baselineSum / baselineN else 0.0
+                // Threshold uses the peak residual × headroom, floored at minThreshold.
+                // Average is logged for diagnostics only — peak is what causes false positives.
+                val threshold = maxOf(baselinePeak * THRESHOLD_HEADROOM, minThreshold)
+                log("Baseline avg=%.0f peak=%.0f threshold=%.0f".format(baselineAvg, baselinePeak, threshold))
 
-                // Phase 2 — watch for speech above threshold
+                // Grace period: AEC sometimes still adapts for a moment after the
+                // calibration window. Drop any "above threshold" reads for the first
+                // POST_CALIB_GRACE_MS to avoid one-off false trigger right at start.
+                val graceUntil = System.currentTimeMillis() + POST_CALIB_GRACE_MS
+
+                // Phase 2 — watch for speech above threshold (CONSECUTIVE = sustained).
                 var consecutive = 0
                 while (isActive) {
                     val n = recorder.read(buf, 0, samplesPerWindow)
                     if (n <= 0) continue
-                    if (rms(buf, n) > threshold) {
+                    val r = rms(buf, n)
+                    val now = System.currentTimeMillis()
+                    if (r > threshold) {
+                        if (now < graceUntil) {
+                            // Still in grace window — log once and skip
+                            continue
+                        }
                         consecutive++
                         if (consecutive >= CONSECUTIVE) {
-                            log("Barge-in! (${consecutive} windows above threshold)")
+                            log("Barge-in! (${consecutive} windows above threshold, rms=%.0f)".format(r))
                             withContext(Dispatchers.Main) { onBargeIn?.invoke() }
                             break
                         }

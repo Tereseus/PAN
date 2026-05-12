@@ -274,13 +274,26 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 
 <!-- CHAT / TERMINAL — terminal-style transcript + input -->
 <div id="chat" class="page active">
+  <!-- Intuition banner — sticky strip showing what PAN thinks the user is doing.
+       Pulls /api/v1/intuition/current every 30s via loadIntuition().
+       Tap to expand into a fuller card with focus/direction/mood/recent_topics.
+       Part of #471 (was marked done but phone side never shipped). -->
+  <div id="intuition-banner" onclick="toggleIntuitionDetail()" style="display:none;background:linear-gradient(90deg,#1e1e2e,#181825);color:var(--text2);padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;font-family:var(--mono,monospace);cursor:pointer;line-height:1.35;flex-shrink:0">
+    <div id="intuition-summary" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+    <div id="intuition-detail" style="display:none;margin-top:6px;border-top:1px dashed var(--border);padding-top:6px;white-space:normal"></div>
+  </div>
   <div class="messages" id="chat-msgs"><div class="muted">Loading conversations...</div></div>
+  <!-- Upload status: lives OUTSIDE #chat-msgs so loadChat() innerHTML='' can't wipe it.
+       Set display:block + populate via setUploadStatus(); auto-hides after success. -->
+  <div id="upload-status" class="status-bar" style="display:none;background:var(--bg2);color:var(--text2);padding:6px 10px;border-top:1px solid var(--border);font-size:12px;font-family:var(--mono,monospace)"></div>
   <div id="chat-status" class="status-bar" style="display:none"><span class="spinner"></span><span>Claude is thinking…</span></div>
   <div class="input-bar" id="input-bar">
     <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:12px;font-weight:600;white-space:nowrap;flex-shrink:0" title="Switch AI model">Model</button>
     <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
     <button onclick="if(window.PAN&&typeof window.PAN.openCamera==='function'){panToast('📷 Calling JS bridge...');window.PAN.openCamera();}else{panToast('⚠️ window.PAN not found: '+(typeof window.PAN));document.getElementById('photo-input').click();}" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:18px;align-self:flex-end;flex-shrink:0" title="Open camera">&#128247;</button>
+    <button onclick="document.getElementById('gallery-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:18px;align-self:flex-end;flex-shrink:0" aria-label="Attach screenshot or photo from gallery" title="Attach screenshot or photo from gallery">&#128206;</button>
     <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
+    <input type="file" id="gallery-input" accept="image/*" style="display:none" onchange="uploadScreenshot(this)">
     <button onclick="sendChat()" style="flex-shrink:0">Send</button>
     <button id="stop-btn" onclick="stopChat()" style="flex-shrink:0;background:#3a1a1a;color:var(--red);border:1px solid var(--red);border-radius:var(--radius);padding:8px 12px;font-size:18px;display:none" title="Stop">■</button>
   </div>
@@ -515,6 +528,7 @@ async function init() {
   loadOrgContext();
   loadSessionTabs().then(() => loadChat()); // load sessions first, then chat
   loadDynamicModels(); // populate model picker from API
+  startIntuitionPoll(); // #471 — banner at top of chat page, 30s refresh
   // Refresh session tabs every 10s so new sessions appear
   setInterval(loadSessionTabs, 10000);
   // Auto-refresh active tab every 3 seconds
@@ -671,6 +685,17 @@ async function loadChat() {
 }
 
 let _sendingChat = false;
+// #474 — conversational filler phrases swapped into chat-status when wait
+// exceeds 2.5s. Pool keeps it from sounding robotic on repeat. One per turn.
+const _CHAT_FILLERS = [
+  'Hold on, let me look that up…',
+  'One sec, checking memory…',
+  'Digging through the database…',
+  'Pulling that up now…',
+  'Let me find that for you…',
+];
+let _chatTimerInterval = null;
+
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
@@ -679,13 +704,32 @@ async function sendChat() {
   _sendingChat = true;
   input.value = '';
   lastSentTime = Date.now();
+  const t0 = Date.now(); // #474 — measure response time end-to-end
   const el = document.getElementById('chat-msgs');
   const status = document.getElementById('chat-status');
   // Optimistic local echo as a terminal user line + faded pending placeholder
   el.insertAdjacentHTML('beforeend', '<div class="t-line t-user"><span class="name">' + esc(USERNAME) + '</span><span class="sep">$ </span>' + esc(text) + '</div>');
   el.insertAdjacentHTML('beforeend', '<div class="t-line t-assistant t-pending" id="chat-typing"><span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>thinking…</div>');
   el.scrollTop = el.scrollHeight;
-  if (status) status.style.display = 'flex';
+  if (status) {
+    status.style.display = 'flex';
+    // #474 — live elapsed counter + filler swap-in after 2.5s
+    const filler = _CHAT_FILLERS[Math.floor(Math.random() * _CHAT_FILLERS.length)];
+    const statusText = status.querySelector('span:last-child');
+    const startTs = Date.now();
+    let fillerShown = false;
+    if (_chatTimerInterval) clearInterval(_chatTimerInterval);
+    _chatTimerInterval = setInterval(() => {
+      const ms = Date.now() - startTs;
+      const s = (ms / 1000).toFixed(1);
+      if (!fillerShown && ms > 2500) {
+        fillerShown = true;
+        if (statusText) statusText.textContent = filler + ' (' + s + 's)';
+      } else if (statusText) {
+        statusText.textContent = (fillerShown ? filler + ' (' + s + 's)' : 'Claude is thinking… ' + s + 's');
+      }
+    }, 200);
+  }
   const stopBtn = document.getElementById('stop-btn');
   if (stopBtn) stopBtn.style.display = 'inline-flex';
 
@@ -727,13 +771,27 @@ async function sendChat() {
     }
     // Poll transcript for Claude's response
     let prevCount = _renderedMsgIds.length;
+    let respondedMs = null; // #474 — set when first new assistant message lands
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 3000));
       loadChat._forceLoad = true;
       await loadChat();
       if (_renderedMsgIds.length > prevCount + 1) {
+        respondedMs = Date.now() - t0;
         const t = document.getElementById('chat-typing');
         if (t) t.remove();
+        // #474 — append response time tag to the last assistant line so user
+        // can eyeball latency turn-by-turn. Format: ↳ 4.2s (green/yellow/red).
+        try {
+          const lines = el.querySelectorAll('.t-assistant');
+          const last = lines[lines.length - 1];
+          if (last && !last.dataset.rtTagged) {
+            last.dataset.rtTagged = '1';
+            const s = (respondedMs / 1000).toFixed(1);
+            const color = respondedMs < 2500 ? 'var(--green)' : respondedMs < 6000 ? '#f9e2af' : 'var(--red)';
+            last.insertAdjacentHTML('beforeend', ' <span style="color:' + color + ';font-size:11px;opacity:0.85;margin-left:6px">↳ ' + s + 's</span>');
+          }
+        } catch (rtErr) { /* non-fatal — tagging is cosmetic */ }
         break;
       }
     }
@@ -747,7 +805,14 @@ async function sendChat() {
     const t = document.getElementById('chat-typing');
     if (t) { t.innerHTML = '<span class="name">' + esc(LLMNAME) + '</span><span class="sep">$ </span>error: ' + esc(e.message); t.style.color = 'var(--red)'; t.removeAttribute('id'); }
   }
-  if (status) status.style.display = 'none';
+  // #474 — stop the live elapsed counter no matter how we exit
+  if (_chatTimerInterval) { clearInterval(_chatTimerInterval); _chatTimerInterval = null; }
+  if (status) {
+    status.style.display = 'none';
+    // restore static text so the next send starts clean
+    const statusText = status.querySelector('span:last-child');
+    if (statusText) statusText.textContent = 'Claude is thinking…';
+  }
   const stopBtnEnd = document.getElementById('stop-btn');
   if (stopBtnEnd) stopBtnEnd.style.display = 'none';
   lastSentTime = 0;
@@ -949,6 +1014,37 @@ async function loadStatus() {
     const remaining = pctPerMsg > 0 ? Math.floor((100 - utilPct) / pctPerMsg) : null;
 
     let html = '';
+
+    // ── Intuition (#471 — PAN's current read on what the user is doing) ──
+    // Reuses _lastIntuition cache from the chat-page banner poll so we never
+    // hit /api/v1/intuition/current twice on the same tick. If user opens
+    // status before the banner poll has fired, render is empty (next 30s tick
+    // populates). Fields rendered: activity / where / focus / direction /
+    // need / mood + recent_topics chip row.
+    if (_lastIntuition && _lastIntuition.now) {
+      const n = _lastIntuition.now;
+      html += '<div class="section-title">Intuition · what PAN sees</div><div class="card">';
+      if (n.where)     html += '<div class="setting-row"><span class="setting-label">Where</span><span class="setting-val">' + esc(n.where) + '</span></div>';
+      if (n.activity)  html += '<div class="setting-row"><span class="setting-label">Activity</span><span class="setting-val" style="text-align:right;max-width:60%">' + esc(n.activity) + '</span></div>';
+      if (n.focus)     html += '<div class="setting-row"><span class="setting-label">Focus</span><span class="setting-val">' + esc(n.focus) + '</span></div>';
+      if (n.direction) html += '<div class="setting-row"><span class="setting-label">Direction</span><span class="setting-val" style="text-align:right;max-width:60%">' + esc(n.direction) + '</span></div>';
+      if (n.need)      html += '<div class="setting-row"><span class="setting-label">Need</span><span class="setting-val" style="text-align:right;max-width:60%">' + esc(n.need) + '</span></div>';
+      if (n.mood) {
+        const moodC = n.mood.toLowerCase() === 'focused' ? 'var(--green)' : n.mood.toLowerCase().includes('frustrat') ? 'var(--red)' : '#f9e2af';
+        html += '<div class="setting-row"><span class="setting-label">Mood</span><span class="setting-val" style="color:' + moodC + '">' + esc(n.mood) + '</span></div>';
+      }
+      if (Array.isArray(n.recent_topics) && n.recent_topics.length) {
+        html += '<div style="font-size:12px;color:var(--text2);margin-top:8px">Recent topics</div>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
+        for (const t of n.recent_topics.slice(0, 8)) {
+          html += '<span style="background:var(--bg3);color:var(--text2);padding:2px 8px;border-radius:10px;font-size:11px">' + esc(t) + '</span>';
+        }
+        html += '</div>';
+      }
+      const age = _lastIntuition.as_of ? Math.round((Date.now() - _lastIntuition.as_of) / 1000) : null;
+      if (age !== null) html += '<div style="font-size:10px;color:var(--text2);margin-top:8px;opacity:0.6">updated ' + age + 's ago · trigger=' + esc(_lastIntuition.trigger || '?') + '</div>';
+      html += '</div>';
+    }
 
     // ── Claude Plan Limits (matches desktop) ──
     if (rl) {
@@ -1827,47 +1923,219 @@ window.panCameraUploadDone = function(path, filename) {
   sendChat();
 };
 
-// Screenshot upload — reads file(s), converts to base64, sends to server
+// Screenshot upload — reads file(s), converts to base64, sends to server.
+// Every step ships a /api/v1/logs entry so we can debug from the server side
+// (Android WebView console.log only goes to logcat which we can't read here).
+function _shipLog(level, message) {
+  try {
+    fetch(API + '/api/v1/logs', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ device_id: 'phone-dashboard', level, source: 'upload', message })
+    }).catch(() => {});
+  } catch(_) {}
+}
+
 async function uploadScreenshot(input) {
-  const files = input.files;
-  if (!files || !files.length) return;
-  input.value = ''; // reset so same file can be re-selected
-  for (const file of files) { await _uploadOneFile(file); }
+  try {
+    const files = input.files;
+    _shipLog('info', 'uploadScreenshot called, files=' + (files ? files.length : 'null') + ' inputId=' + (input?.id || '?'));
+    if (!files || !files.length) {
+      _shipLog('warn', 'uploadScreenshot: no files in input — picker returned nothing');
+      panToast('No file selected');
+      return;
+    }
+    // Snapshot files into a real Array BEFORE resetting input — FileList becomes
+    // empty as soon as input.value is cleared, and some Android WebViews throw on
+    // for...of over a stale FileList. Indexed access avoids that whole class of bug.
+    const snapshot = [];
+    for (let i = 0; i < files.length; i++) snapshot.push(files[i]);
+    _shipLog('info', 'snapshot built, count=' + snapshot.length);
+
+    try { input.value = ''; _shipLog('info', 'input.value reset OK'); }
+    catch (e) { _shipLog('warn', 'input.value reset threw: ' + e.message); }
+
+    for (let i = 0; i < snapshot.length; i++) {
+      const file = snapshot[i];
+      let nm='?', sz=0, tp='?';
+      try { nm = file.name || '?'; sz = file.size || 0; tp = file.type || '?'; }
+      catch (e) { _shipLog('warn', 'file prop access threw: ' + e.message); }
+      _shipLog('info', 'file[' + i + '] picked: name=' + nm + ' size=' + sz + ' type=' + tp + ' ctor=' + (file?.constructor?.name || '?'));
+      await _uploadOneFile(file);
+    }
+    _shipLog('info', 'uploadScreenshot done');
+  } catch (e) {
+    _shipLog('error', 'uploadScreenshot top-level threw: ' + (e?.message || String(e)) + ' stack=' + (e?.stack || '').slice(0, 300));
+  }
+}
+
+// ── Intuition banner (#471) ──────────────────────────────────────────────
+// Fetches /api/v1/intuition/current and renders activity/focus/mood at the
+// top of the chat page. Tap to expand into a full card. Polls every 30s.
+// State is cached so the banner doesn't blank during a poll round-trip.
+let _lastIntuition = null;
+let _intuitionDetailOpen = false;
+let _intuitionTimer = null;
+
+async function loadIntuition() {
+  try {
+    const r = await fetch(API + '/api/v1/intuition/current');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d || !d.ok || !d.snapshot || !d.snapshot.now) return;
+    _lastIntuition = d.snapshot;
+    _renderIntuition();
+  } catch (e) {
+    // silent — banner just doesn't update; cached value stays
+  }
+}
+
+function _renderIntuition() {
+  const banner = document.getElementById('intuition-banner');
+  const sum = document.getElementById('intuition-summary');
+  const det = document.getElementById('intuition-detail');
+  if (!banner || !sum || !_lastIntuition) return;
+  const now = _lastIntuition.now || {};
+  const activity = (now.activity || '').toString().trim();
+  const focus = (now.focus || '').toString().trim();
+  const mood = (now.mood || '').toString().trim();
+  const direction = (now.direction || '').toString().trim();
+  const where = (now.where || '').toString().trim();
+  const need = (now.need || '').toString().trim();
+  const recent = Array.isArray(now.recent_topics) ? now.recent_topics : [];
+  if (!activity && !focus && !mood) { banner.style.display = 'none'; return; }
+  banner.style.display = 'block';
+  // Summary line: ◉ <activity short> · <focus> · <mood>
+  const shortAct = activity.length > 60 ? activity.slice(0, 60) + '…' : activity;
+  const parts = [];
+  if (shortAct) parts.push('◉ ' + shortAct);
+  if (focus) parts.push('focus: ' + focus);
+  if (mood) parts.push(mood.toLowerCase());
+  sum.textContent = parts.join(' · ');
+  // Detail card (visible only when _intuitionDetailOpen)
+  det.style.display = _intuitionDetailOpen ? 'block' : 'none';
+  if (_intuitionDetailOpen) {
+    const rows = [];
+    if (where) rows.push('<div><span style="color:var(--text2)">where</span> · ' + esc(where) + '</div>');
+    if (activity) rows.push('<div><span style="color:var(--text2)">activity</span> · ' + esc(activity) + '</div>');
+    if (focus) rows.push('<div><span style="color:var(--text2)">focus</span> · ' + esc(focus) + '</div>');
+    if (direction) rows.push('<div><span style="color:var(--text2)">direction</span> · ' + esc(direction) + '</div>');
+    if (need) rows.push('<div><span style="color:var(--text2)">need</span> · ' + esc(need) + '</div>');
+    if (mood) rows.push('<div><span style="color:var(--text2)">mood</span> · ' + esc(mood) + (now.mood_detail ? ' — ' + esc(now.mood_detail) : '') + '</div>');
+    if (recent.length) rows.push('<div><span style="color:var(--text2)">recent</span> · ' + recent.map(esc).join(', ') + '</div>');
+    const age = _lastIntuition.as_of ? Math.round((Date.now() - _lastIntuition.as_of) / 1000) : null;
+    if (age !== null) rows.push('<div style="opacity:0.5;margin-top:4px">updated ' + age + 's ago · trigger=' + esc(_lastIntuition.trigger || '?') + '</div>');
+    det.innerHTML = rows.join('');
+  }
+}
+
+function toggleIntuitionDetail() {
+  _intuitionDetailOpen = !_intuitionDetailOpen;
+  _renderIntuition();
+}
+
+function startIntuitionPoll() {
+  if (_intuitionTimer) return;
+  loadIntuition();
+  _intuitionTimer = setInterval(loadIntuition, 30000);
+}
+
+// setUploadStatus — populates the #upload-status div outside #chat-msgs so
+// loadChat() can't wipe it. autoHide=true clears after 8s (success), false keeps it pinned.
+function setUploadStatus(text, color, autoHide) {
+  const u = document.getElementById('upload-status');
+  if (!u) return;
+  u.style.display = text ? 'block' : 'none';
+  u.style.color = color || 'var(--text2)';
+  u.textContent = text || '';
+  if (setUploadStatus._hideTimer) { clearTimeout(setUploadStatus._hideTimer); setUploadStatus._hideTimer = null; }
+  if (autoHide && text) {
+    setUploadStatus._hideTimer = setTimeout(() => { u.style.display = 'none'; u.textContent = ''; }, 8000);
+  }
+}
+
+// _pipeMessageDirect — POSTs straight to /api/v1/terminal/pipe so we bypass
+// sendChat()'s _sendingChat lock (which silently dropped the auto-prompt at
+// 12:53:34 → 12:54:18 in the original race). Also resolves the session the
+// same way sendChat does, so the message lands on the same Claude instance
+// the user is talking to.
+async function _pipeMessageDirect(text) {
+  let sessionId = activeProject ? 'dash-' + activeProject.name.toLowerCase().replace(/\s+/g, '-') : 'dash-pan';
+  try {
+    const sessRes = await fetch(API + '/api/v1/terminal/sessions');
+    const sessData = await sessRes.json();
+    const sessions = sessData.sessions || [];
+    let match;
+    if (activeSessionId) {
+      match = sessions.find(s => s.id === activeSessionId) || sessions[0];
+    } else {
+      match = sessions.find(s => s.id.startsWith(sessionId)) || sessions[0];
+    }
+    if (match) sessionId = match.id;
+  } catch (sessErr) {
+    _shipLog('warn', 'pipeDirect session lookup failed: ' + (sessErr?.message || String(sessErr)));
+  }
+  const res = await fetch(API + '/api/v1/terminal/pipe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, session_id: sessionId })
+  });
+  const data = await res.json();
+  _shipLog('info', 'pipeDirect response: ' + JSON.stringify(data).slice(0, 200) + ' session=' + sessionId);
+  return { ok: !!data.ok, sessionId, raw: data };
 }
 
 async function _uploadOneFile(file) {
-  const el = document.getElementById('chat-msgs');
-  el.insertAdjacentHTML('beforeend', '<div class="t-line t-tool"><span class="arrow">→</span> Uploading ' + esc(file.name || 'image') + '...</div>');
-  el.scrollTop = el.scrollHeight;
+  setUploadStatus('→ Uploading ' + (file.name || 'image') + ' (' + Math.round((file.size||0)/1024) + ' KB)…', 'var(--accent)', false);
 
   try {
+    _shipLog('info', 'reading file as base64: ' + (file.name || '?'));
     const base64 = await new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(',')[1]); // strip data:image/...;base64,
-      reader.onerror = reject;
+      reader.onload = () => {
+        const result = reader.result || '';
+        const comma = result.indexOf(',');
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = () => reject(new Error('FileReader error: ' + (reader.error?.message || 'unknown')));
       reader.readAsDataURL(file);
     });
+    _shipLog('info', 'base64 ready, length=' + base64.length + ' chars (~' + Math.round(base64.length / 1024) + 'KB)');
+    setUploadStatus('→ Encoded ' + Math.round(base64.length/1024) + ' KB — POSTing…', 'var(--accent)', false);
 
     const res = await fetch(API + '/api/v1/screenshot/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: base64, mimeType: file.type, source: 'phone' })
     });
+    _shipLog('info', 'POST /api/v1/screenshot/upload status=' + res.status);
     const result = await res.json();
+    _shipLog('info', 'server response: ' + JSON.stringify(result).slice(0, 300));
 
-    if (result.ok) {
-      el.insertAdjacentHTML('beforeend', '<div class="t-line t-tool"><span class="arrow">→</span> Screenshot uploaded: ' + esc(result.filename) + '</div>');
-      // Auto-send a message referencing the screenshot so Claude sees it
-      const chatInput = document.getElementById('chat-input');
-      chatInput.value = result.path;
-      sendChat();
-    } else {
-      el.insertAdjacentHTML('beforeend', '<div class="t-line" style="color:var(--red)">Upload failed: ' + esc(result.error || 'unknown') + '</div>');
+    if (!result.ok) {
+      setUploadStatus('✗ Upload failed: ' + (result.error || 'unknown'), 'var(--red)', false);
+      _shipLog('error', 'upload returned ok=false: ' + (result.error || 'unknown'));
+      return;
     }
+
+    // Upload succeeded. Pipe the prompt DIRECTLY (not via sendChat) so the
+    // _sendingChat lock can't drop it. The message lands as a normal user
+    // turn in the active Claude session, just like a typed message.
+    setUploadStatus('✓ Uploaded → asking Claude to read it…', 'var(--accent)', false);
+    _shipLog('info', 'pipeDirect: I uploaded a screenshot path=' + result.path);
+    const piped = await _pipeMessageDirect('I uploaded a screenshot — please Read it:\n' + result.path);
+    if (!piped.ok) {
+      setUploadStatus('✓ Uploaded, but prompt failed to pipe (' + (piped.raw?.error || 'unknown') + '). Path: ' + result.path, 'var(--red)', false);
+      return;
+    }
+
+    // Force a chat refresh so the user sees their auto-prompt appear, then
+    // success status auto-hides after 8s.
+    loadChat._forceLoad = true;
+    loadChat();
+    setUploadStatus('✓ Screenshot sent to Claude → ' + (result.filename || result.path), '#a6e3a1', true);
   } catch(e) {
-    el.insertAdjacentHTML('beforeend', '<div class="t-line" style="color:var(--red)">Upload error: ' + esc(e.message) + '</div>');
+    setUploadStatus('✗ Upload error: ' + (e?.message || String(e)), 'var(--red)', false);
+    _shipLog('error', 'upload threw: ' + (e?.message || String(e)));
   }
-  el.scrollTop = el.scrollHeight;
 }
 
 // Textarea auto-grow — expand as user types, up to max-height
@@ -1888,6 +2156,27 @@ function autoGrowTextarea(el) {
   chatInput.addEventListener('focus', () => { [150, 350, 600].forEach(d => setTimeout(scrollBottom, d)); });
   window.addEventListener('resize', () => setTimeout(scrollBottom, 100));
 })();
+
+// Force-refresh chat transcript whenever the WebView comes back to the foreground.
+// Android backgrounds the WebView aggressively — the 3s loadChat poll freezes while
+// the app is hidden, so on resume the user sees stale content until they tap-send.
+// visibilitychange fires reliably on Android WebView; we force loadChat to bypass
+// the lastSentTime debounce so a fresh fetch happens immediately on resume.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && typeof loadChat === 'function') {
+    loadChat._forceLoad = true;
+    _lastFingerprint = ''; // bust the cache so DOM always repaints on resume
+    loadChat().catch(() => {});
+  }
+});
+// pageshow also fires on Android when WebView restores from cache — belt + suspenders.
+window.addEventListener('pageshow', () => {
+  if (typeof loadChat === 'function') {
+    loadChat._forceLoad = true;
+    _lastFingerprint = '';
+    loadChat().catch(() => {});
+  }
+});
 
 // ========== REFRESH BUTTON ==========
 function refreshCurrentTab() {

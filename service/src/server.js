@@ -1527,37 +1527,68 @@ app.post('/api/automation/toggle', requireFeature('automations:toggle'), (req, r
 });
 
 // GET /api/automation/usage — AI usage stats
+// #465: now includes by_source (phone/dashboard/scout/dream/router/internal/...)
+// and by_device (pixel-10-pro / minipc / null) breakdowns alongside by_caller.
 app.get('/api/automation/usage', (req, res) => {
   try {
+    const COL_TOKENS = `COALESCE(SUM(input_tokens), 0) as input_tokens, COALESCE(SUM(output_tokens), 0) as output_tokens`;
+    const COL_BASE   = `COUNT(*) as calls, COALESCE(SUM(cost_cents), 0) as cost_cents`;
+
     // Today
     const todayStats = get(`SELECT COALESCE(SUM(cost_cents), 0) as total_cost_cents, COUNT(*) as total_calls
       FROM ai_usage WHERE date(created_at) = date('now','localtime')`);
-    const todayByCaller = all(`SELECT caller, COUNT(*) as calls, COALESCE(SUM(cost_cents), 0) as cost_cents,
-      COALESCE(SUM(input_tokens), 0) as input_tokens, COALESCE(SUM(output_tokens), 0) as output_tokens
+    const todayByCaller = all(`SELECT caller, ${COL_BASE}, ${COL_TOKENS}
       FROM ai_usage WHERE date(created_at) = date('now','localtime') GROUP BY caller`);
+    const todayBySource = all(`SELECT COALESCE(source,'internal') as source, ${COL_BASE}, ${COL_TOKENS}
+      FROM ai_usage WHERE date(created_at) = date('now','localtime') GROUP BY source`);
+    const todayByDevice = all(`SELECT COALESCE(device_id,'(none)') as device_id, ${COL_BASE}, ${COL_TOKENS}
+      FROM ai_usage WHERE date(created_at) = date('now','localtime') GROUP BY device_id`);
 
     // This week
     const weekStats = get(`SELECT COALESCE(SUM(cost_cents), 0) as total_cost_cents, COUNT(*) as total_calls
       FROM ai_usage WHERE created_at >= datetime('now','localtime', '-7 days')`);
-    const weekByCaller = all(`SELECT caller, COUNT(*) as calls, COALESCE(SUM(cost_cents), 0) as cost_cents
+    const weekByCaller = all(`SELECT caller, ${COL_BASE}
       FROM ai_usage WHERE created_at >= datetime('now','localtime', '-7 days') GROUP BY caller`);
+    const weekBySource = all(`SELECT COALESCE(source,'internal') as source, ${COL_BASE}
+      FROM ai_usage WHERE created_at >= datetime('now','localtime', '-7 days') GROUP BY source`);
+    const weekByDevice = all(`SELECT COALESCE(device_id,'(none)') as device_id, ${COL_BASE}
+      FROM ai_usage WHERE created_at >= datetime('now','localtime', '-7 days') GROUP BY device_id`);
 
     // All time
     const allTimeStats = get(`SELECT COALESCE(SUM(cost_cents), 0) as total_cost_cents, COUNT(*) as total_calls
       FROM ai_usage`);
-    const allTimeByCaller = all(`SELECT caller, COUNT(*) as calls, COALESCE(SUM(cost_cents), 0) as cost_cents
-      FROM ai_usage GROUP BY caller`);
+    const allTimeByCaller = all(`SELECT caller, ${COL_BASE} FROM ai_usage GROUP BY caller`);
+    const allTimeBySource = all(`SELECT COALESCE(source,'internal') as source, ${COL_BASE} FROM ai_usage GROUP BY source`);
+    const allTimeByDevice = all(`SELECT COALESCE(device_id,'(none)') as device_id, ${COL_BASE} FROM ai_usage GROUP BY device_id`);
 
-    const toMap = (rows) => {
+    const toMapBy = (rows, key) => {
       const m = {};
-      for (const r of rows) m[r.caller] = { calls: r.calls, cost_cents: r.cost_cents, input_tokens: r.input_tokens, output_tokens: r.output_tokens };
+      for (const r of rows) m[r[key]] = {
+        calls: r.calls, cost_cents: r.cost_cents,
+        input_tokens: r.input_tokens, output_tokens: r.output_tokens,
+      };
       return m;
     };
 
     res.json({
-      today: { ...todayStats, by_caller: toMap(todayByCaller) },
-      week: { ...weekStats, by_caller: toMap(weekByCaller) },
-      all_time: { ...allTimeStats, by_caller: toMap(allTimeByCaller) },
+      today: {
+        ...todayStats,
+        by_caller: toMapBy(todayByCaller, 'caller'),
+        by_source: toMapBy(todayBySource, 'source'),
+        by_device: toMapBy(todayByDevice, 'device_id'),
+      },
+      week: {
+        ...weekStats,
+        by_caller: toMapBy(weekByCaller, 'caller'),
+        by_source: toMapBy(weekBySource, 'source'),
+        by_device: toMapBy(weekByDevice, 'device_id'),
+      },
+      all_time: {
+        ...allTimeStats,
+        by_caller: toMapBy(allTimeByCaller, 'caller'),
+        by_source: toMapBy(allTimeBySource, 'source'),
+        by_device: toMapBy(allTimeByDevice, 'device_id'),
+      },
     });
   } catch (e) {
     console.error('[PAN Usage] Error:', e.message);
@@ -4031,6 +4062,22 @@ for (const name of [
 
 // Health check
 let _serverStartedAt = Date.now();
+// Internal: Carrier posts DB event rows here (Carrier has no DB, Craft does).
+// Used for #472 instrumentation — carrier_restart / craft_swap / etc. so the
+// next time a PTY dies (#457), the events table has the correlating timeline.
+app.post('/api/internal/event', async (req, res) => {
+  try {
+    const { session_id, event_type, data } = req.body || {};
+    if (!event_type) return res.status(400).json({ error: 'event_type required' });
+    const { logEvent } = await import('./db.js');
+    const id = logEvent(session_id || 'system', event_type, data ?? {});
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('[internal/event] insert failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Internal: Carrier posts ΠΑΝ notifications here (Carrier has no DB, Craft does)
 app.post('/api/internal/pan-notify', async (req, res) => {
   try {

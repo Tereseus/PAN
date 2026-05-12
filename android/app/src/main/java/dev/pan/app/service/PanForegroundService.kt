@@ -54,6 +54,38 @@ class PanForegroundService : Service() {
         // STT engine status surface — read by MainViewModel for the UI badge.
         // Updated by the streaming STT loop with strings like "idle" / "listening" / "error: ...".
         val sttStatus = MutableStateFlow("idle")
+
+        // PAN deliberation surfaces — drives the native PanThinkingCard.
+        // Set true when a query is in flight to the server; flips false when the
+        // first response chunk arrives.
+        val isThinking = MutableStateFlow(false)
+        // Conversational filler picked when a query goes out; cleared when first
+        // chunk lands. Shown in the UI immediately; spoken via TTS only if the
+        // first chunk takes longer than FILLER_SPEAK_AFTER_MS.
+        val currentFiller = MutableStateFlow("")
+        // What the user just asked (post-strip wake word).
+        val lastQueryText = MutableStateFlow("")
+        // What PAN replied with on the previous turn.
+        val lastResponseText = MutableStateFlow("")
+        // Wall-clock ms from query-send to stream complete. Drives the
+        // ↳ X.Xs response-time badge in the native UI.
+        val lastResponseMs = MutableStateFlow(0L)
+        // ms until the first streaming chunk arrived (time-to-first-token-ish).
+        val lastFirstChunkMs = MutableStateFlow(0L)
+
+        // Conversational fillers — randomized per query so it doesn't feel robotic.
+        private val CHAT_FILLERS = listOf(
+            "Hold on, let me look that up.",
+            "One sec, checking on that.",
+            "Give me a moment.",
+            "Let me think about that.",
+            "Looking that up now.",
+            "Pulling that up for you."
+        )
+        fun pickFiller(): String = CHAT_FILLERS.random()
+
+        // Speak the filler aloud if the first chunk hasn't arrived this fast.
+        const val FILLER_SPEAK_AFTER_MS = 1500L
     }
 
     @Inject lateinit var serverClient: PanServerClient
@@ -203,6 +235,9 @@ class PanForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         panLog("PAN service created")
+        // Surface installed build to server so the Phone Atlas / dashboard
+        // Updater node can compare phone version vs server-published version.
+        panLog("Build: versionCode=${dev.pan.app.BuildConfig.VERSION_CODE} versionName=${dev.pan.app.BuildConfig.VERSION_NAME} appId=${dev.pan.app.BuildConfig.APPLICATION_ID}")
 
         // Register screen off receiver for power button TTS stop
         registerReceiver(screenOffReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
@@ -836,6 +871,20 @@ class PanForegroundService : Service() {
             // All AI goes through server (Cerebras/Gemini) via Tailscale — streaming mode
             val startTime = System.currentTimeMillis()
             sttEngine.queryPending = true
+
+            // PanThinkingCard surfaces — flip ON for the duration of this query.
+            // Picked filler is shown in UI immediately; spoken only if the first
+            // chunk takes longer than FILLER_SPEAK_AFTER_MS (slow lookup).
+            val filler = pickFiller()
+            isThinking.value = true
+            currentFiller.value = filler
+            lastQueryText.value = text
+            // Schedule the audible filler — cancel if first chunk lands in time.
+            val fillerSpeakJob = serviceScope.launch {
+                delay(FILLER_SPEAK_AFTER_MS)
+                mainHandler.post { panSpeak(filler) }
+            }
+
             try {
                 val sensorData = sensorContext.getContextEnvelope()
                 val sensorJson = if (sensorData != null && sensorData.isNotEmpty()) {
@@ -854,6 +903,11 @@ class PanForegroundService : Service() {
                         if (firstChunkTime == 0L) {
                             firstChunkTime = System.currentTimeMillis()
                             sttEngine.queryPending = false // first chunk = TTS about to start
+                            // Stream started — cancel the audible filler and clear it
+                            // from the UI. lastFirstChunkMs feeds the response-time badge.
+                            fillerSpeakJob.cancel()
+                            currentFiller.value = ""
+                            lastFirstChunkMs.value = firstChunkTime - startTime
                         }
                         sentenceBuf.append(chunk)
                         // Speak each complete sentence as it arrives
@@ -908,6 +962,10 @@ class PanForegroundService : Service() {
                         addToHistory("PAN", "$responseText (${elapsed}ms)")
                         persistHistoryTurn("assistant", responseText)
                         dataRepository.addPanResponse(responseText)
+                        // Surface to native PanThinkingCard — shows the reply text +
+                        // ↳ X.Xs response-time badge.
+                        lastResponseText.value = responseText
+                        lastResponseMs.value = elapsed
                     }
                 } else if (remaining.isBlank()) {
                     panLog("Stream returned null/empty")
@@ -917,6 +975,12 @@ class PanForegroundService : Service() {
                 sttEngine.queryPending = false
                 panLog("Server unreachable: ${e.message}")
                 mainHandler.post { panSpeak("I can't reach the server right now. I'm in limited mode without internet.") }
+            } finally {
+                // Always clear thinking state — even on exception/timeout — so
+                // the PanThinkingCard doesn't get stuck spinning.
+                fillerSpeakJob.cancel()
+                currentFiller.value = ""
+                isThinking.value = false
             }
             } catch (e: Exception) {
                 panLog("FATAL onSpeech error for '$text': ${e::class.simpleName} ${e.message}")
@@ -1024,6 +1088,21 @@ class PanForegroundService : Service() {
                     return@launch
                 }
 
+                // Immediate acknowledgment — vision can take 10-15s, so without
+                // this the user thinks the camera command was ignored. Picks one
+                // of a small set so repeated camera questions don't feel canned.
+                // Also surfaces to the PanThinkingCard via lastQueryText/isThinking.
+                isThinking.value = true
+                lastQueryText.value = "[camera] $question"
+                val camAck = listOf(
+                    "Let me have a look.",
+                    "One sec, looking at that.",
+                    "Taking a look now.",
+                    "Hold on, checking the camera."
+                ).random()
+                currentFiller.value = camAck
+                mainHandler.post { panSpeak(camAck) }
+
                 // Take photo
                 panLog("Taking photo...")
                 val photoBytes = cameraCapture.takePhoto()
@@ -1041,6 +1120,9 @@ class PanForegroundService : Service() {
                     addToHistory("User", "[photo] $question")
                     addToHistory("PAN", description)
                     dataRepository.addPanResponse(description)
+                    // Surface to PanThinkingCard before speaking.
+                    lastResponseText.value = description
+                    currentFiller.value = ""
                     mainHandler.post { panSpeak(description) }
                 } else {
                     panLog("Vision analysis failed — no response")
@@ -1049,6 +1131,11 @@ class PanForegroundService : Service() {
             } catch (e: Exception) {
                 panLog("Camera command failed: ${e.message}")
                 mainHandler.post { panSpeak("I had trouble with the camera. ${e.message ?: ""}") }
+            } finally {
+                // Always clear thinking state — camera path used the same UI
+                // surface as the askPan flow.
+                isThinking.value = false
+                currentFiller.value = ""
             }
         }
     }
