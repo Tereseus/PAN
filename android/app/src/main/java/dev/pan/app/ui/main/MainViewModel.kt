@@ -42,6 +42,14 @@ class MainViewModel @Inject constructor(
     val lastAction: StateFlow<String> = PanForegroundService.lastAction
     val sttStatus: StateFlow<String> = PanForegroundService.sttStatus
 
+    // PAN deliberation surfaces — drive the PanThinkingCard in MainScreen.
+    val isThinking: StateFlow<Boolean> = PanForegroundService.isThinking
+    val currentFiller: StateFlow<String> = PanForegroundService.currentFiller
+    val lastQueryText: StateFlow<String> = PanForegroundService.lastQueryText
+    val lastResponseText: StateFlow<String> = PanForegroundService.lastResponseText
+    val lastResponseMs: StateFlow<Long> = PanForegroundService.lastResponseMs
+    val lastFirstChunkMs: StateFlow<Long> = PanForegroundService.lastFirstChunkMs
+
     val isMicEnabled: StateFlow<Boolean> = PanForegroundService.micEnabled
 
     private val _deviceTarget = MutableStateFlow("auto")

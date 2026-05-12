@@ -230,7 +230,7 @@ Response formats:
 
 Projects: ${projectList}
 ${memoryContext}`,
-      { caller: 'router', _skipAnonymize: true }
+      { caller: 'router', _skipAnonymize: true, source: context.source, device_id: context.device_id }
     );
 
     logStep(cmdId, 'unified_response', raw.slice(0, 200));
@@ -474,7 +474,7 @@ async function processUnifiedResult(action, text, context) {
         const snippets = hits.map((h, i) => `[${i+1}] ${h.preview}`).join('\n');
         const synthesisPrompt = `The user asked: "${text}"\n\nRelevant conversation history:\n${snippets}\n\nAnswer the user's question in 1-3 sentences using only the information above. Be direct and conversational. Do not list sources.`;
         try {
-          const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 200, timeout: 15000 }); // #440: use configured model, increase timeout
+          const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 200, timeout: 15000, source: context.source, device_id: context.device_id }); // #440: use configured model, increase timeout
           if (synthesized?.trim()) return { intent: 'memory', response: synthesized.trim() };
         } catch {}
         // Fallback: first hit preview only
@@ -886,7 +886,7 @@ ${memoryContext}`;
   let lastLen = 0;
 
   try {
-    for await (const chunk of askAIStream(prompt, { model, caller: 'router', maxTokens: 300, _skipAnonymize: true })) {
+    for await (const chunk of askAIStream(prompt, { model, caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id })) {
       fullBuf += chunk;
       const { text: extracted, done } = extractResponseField(fullBuf);
       if (extracted.length > lastLen) {
@@ -922,7 +922,7 @@ ${memoryContext}`;
           const snippets = hits.map((h, i) => `[${i+1}] ${h.preview}`).join('\n');
           const synthesisPrompt = `The user asked: "${text}"\n\nRelevant conversation history:\n${snippets}\n\nAnswer the user's question in 1-3 sentences using only the information above. Be direct and conversational. Do not list sources.`;
           try {
-            const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 200, timeout: 15000 }); // #440: use configured model, increase timeout
+            const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 200, timeout: 15000, source: context.source, device_id: context.device_id }); // #440: use configured model, increase timeout
             recallResponse = synthesized?.trim() || hits[0].preview;
           } catch {
             recallResponse = hits[0].preview;

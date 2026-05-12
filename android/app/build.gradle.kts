@@ -14,8 +14,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.4.2"
     }
 
     buildTypes {

@@ -112,8 +112,25 @@ fun MainScreen(
                 Text("PAN Dashboard")
             }
 
-            // Intuition — JARVIS-style situational awareness card
+            // Intuition — JARVIS-style situational awareness card (USER's intuition)
             IntuitionCard(snapshot = intuition)
+
+            // PAN's own deliberation — mirrors IntuitionCard but for what PAN
+            // itself is doing right now (thinking / filler / last reply + ms).
+            val isThinking by viewModel.isThinking.collectAsState()
+            val currentFiller by viewModel.currentFiller.collectAsState()
+            val lastQueryText by viewModel.lastQueryText.collectAsState()
+            val lastResponseText by viewModel.lastResponseText.collectAsState()
+            val lastResponseMs by viewModel.lastResponseMs.collectAsState()
+            val lastFirstChunkMs by viewModel.lastFirstChunkMs.collectAsState()
+            PanThinkingCard(
+                isThinking = isThinking,
+                filler = currentFiller,
+                lastQuery = lastQueryText,
+                lastResponse = lastResponseText,
+                lastResponseMs = lastResponseMs,
+                firstChunkMs = lastFirstChunkMs,
+            )
 
             // Microphone toggle — LIVE (red) or Muted
             Card(
@@ -416,6 +433,147 @@ fun SensorSection(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * PAN's own deliberation card — mirror of IntuitionCard but for what PAN
+ * itself is doing. Shows:
+ *   - Thinking spinner + conversational filler while a query is in flight
+ *   - Last user query + PAN reply
+ *   - ↳ X.Xs response-time badge (color-coded: green <2s, yellow <5s, red >5s)
+ *   - Tap to expand for time-to-first-chunk breakdown
+ */
+@Composable
+fun PanThinkingCard(
+    isThinking: Boolean,
+    filler: String,
+    lastQuery: String,
+    lastResponse: String,
+    lastResponseMs: Long,
+    firstChunkMs: Long,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    // Color-code response time: green < 2s, yellow < 5s, red ≥ 5s
+    val rtSeconds = lastResponseMs / 1000.0
+    val rtColor = when {
+        lastResponseMs <= 0 -> MaterialTheme.colorScheme.onSurfaceVariant
+        rtSeconds < 2.0 -> MaterialTheme.colorScheme.primary
+        rtSeconds < 5.0 -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.error
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isThinking) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant
+        ),
+        onClick = { expanded = !expanded }
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isThinking) "🧠" else "Π", fontSize = 20.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (isThinking) "PAN is thinking…" else "PAN Idle",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    val subtitle = when {
+                        isThinking && filler.isNotBlank() -> filler
+                        lastResponse.isNotBlank() -> lastResponse
+                        else -> "Waiting for your next question"
+                    }
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (lastResponseMs > 0 && !isThinking) {
+                    // ↳ X.Xs response-time badge
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = rtColor.copy(alpha = 0.15f)
+                    ) {
+                        Text(
+                            "↳ ${"%.1f".format(rtSeconds)}s",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = rtColor,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    if (expanded) "▲" else "▼",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (expanded) {
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (lastQuery.isNotBlank()) {
+                    Text("You asked", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(lastQuery, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                if (lastResponse.isNotBlank()) {
+                    Text("PAN replied", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(lastResponse, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 4, overflow = TextOverflow.Ellipsis)
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                // Timing breakdown
+                Row(modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("First chunk", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (firstChunkMs > 0) "${firstChunkMs}ms" else "—",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Total", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (lastResponseMs > 0) "${"%.2f".format(rtSeconds)}s" else "—",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = rtColor
+                        )
+                    }
+                }
+
+                if (isThinking) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
         }

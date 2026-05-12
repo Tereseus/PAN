@@ -8,6 +8,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import dev.pan.app.BuildConfig
+import dev.pan.app.network.LogShipper
 import dev.pan.app.vpn.RemoteAccessManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -44,6 +45,7 @@ import javax.inject.Singleton
 class UpdateChecker @Inject constructor(
     private val okHttpClient: OkHttpClient,
     private val remoteAccessManager: RemoteAccessManager,
+    private val logShipper: LogShipper,
 ) {
     companion object {
         private const val TAG = "UpdateChecker"
@@ -68,6 +70,7 @@ class UpdateChecker @Inject constructor(
     suspend fun checkAndInstall(context: Context, silent: Boolean = true): Result =
         withContext(Dispatchers.IO) {
             try {
+                logShipper.info("update", "Update check starting (app=${BuildConfig.VERSION_CODE} ${BuildConfig.VERSION_NAME})")
                 val base = remoteAccessManager.getTailscaleBaseUrl() ?: LAN_FALLBACK
                 val url = "$base/api/v1/apk/version"
 
@@ -75,6 +78,7 @@ class UpdateChecker @Inject constructor(
                 val resp = okHttpClient.newCall(req).execute()
                 resp.use {
                     if (!it.isSuccessful) {
+                        logShipper.info("update", "Update check: version endpoint HTTP ${it.code}")
                         return@withContext Result.Error("version endpoint HTTP ${it.code}")
                     }
                     val body = it.body?.string()
@@ -90,6 +94,7 @@ class UpdateChecker @Inject constructor(
 
                     // Sanity check — never install a different app over ourselves
                     if (srvAppId != BuildConfig.APPLICATION_ID) {
+                        logShipper.info("update", "Update check: applicationId mismatch server=$srvAppId app=${BuildConfig.APPLICATION_ID}")
                         return@withContext Result.Error(
                             "applicationId mismatch: server=$srvAppId, app=${BuildConfig.APPLICATION_ID}"
                         )
@@ -97,32 +102,41 @@ class UpdateChecker @Inject constructor(
 
                     if (srvVersionCode <= BuildConfig.VERSION_CODE) {
                         Log.i(TAG, "Up to date — server=$srvVersionCode, app=${BuildConfig.VERSION_CODE}")
+                        logShipper.info("update", "Update check: server=$srvVersionCode app=${BuildConfig.VERSION_CODE} → up to date")
                         return@withContext Result.UpToDate
                     }
 
                     Log.i(TAG, "Update available: ${BuildConfig.VERSION_CODE} → $srvVersionCode ($srvVersionName)")
+                    logShipper.info("update", "Update available: ${BuildConfig.VERSION_CODE} → $srvVersionCode ($srvVersionName), downloading...")
 
                     // Download
                     val apkFile = downloadApk(context, base + apkPath, srvVersionCode, apkSize)
-                        ?: return@withContext Result.Error("download failed")
+                    if (apkFile == null) {
+                        logShipper.info("update", "Update check: download failed for version $srvVersionCode")
+                        return@withContext Result.Error("download failed")
+                    }
 
                     // Verify
                     if (sha256.isNotEmpty()) {
                         val actual = sha256(apkFile)
                         if (!actual.equals(sha256, ignoreCase = true)) {
                             Log.w(TAG, "sha256 mismatch — expected=$sha256 actual=$actual")
+                            logShipper.info("update", "Update check: sha256 mismatch expected=$sha256 actual=$actual — refusing install")
                             apkFile.delete()
                             return@withContext Result.Error("sha256 mismatch — refusing install")
                         }
                         Log.i(TAG, "sha256 verified ($actual)")
+                        logShipper.info("update", "sha256 verified for version $srvVersionCode")
                     }
 
                     // Trigger install
+                    logShipper.info("update", "Launching system installer for version $srvVersionCode ($srvVersionName)")
                     triggerInstall(context, apkFile)
                     return@withContext Result.UpdateInstalling(srvVersionCode, srvVersionName)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "checkAndInstall error: ${e.message}")
+                logShipper.info("update", "Update check error: ${e.message}")
                 if (silent) Result.Error(e.message ?: "unknown") else throw e
             }
         }

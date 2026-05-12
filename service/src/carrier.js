@@ -53,6 +53,33 @@ function panNotify(service, subject, body, opts = {}) {
   } catch {}
 }
 
+// Carrier has no DB — record a row in the events table via the Craft.
+// Used for #472: carrier_restart / craft_swap / etc. so #457 (silent swap
+// killing PTYs) becomes diagnosable by joining on timestamps.
+// Fire-and-forget; never blocks the swap/restart hot path.
+function recordEvent(eventType, data) {
+  const port = primaryCraft?.port;
+  if (!port) return;
+  const payload = JSON.stringify({
+    session_id: 'system',
+    event_type: eventType,
+    data: { ...(data || {}), recorded_by: 'carrier', ts: Date.now() },
+  });
+  try {
+    const req = http.request({
+      hostname: '127.0.0.1', port,
+      path: '/api/internal/event',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 1500,
+    }, () => {});
+    req.on('error', () => {});
+    req.on('timeout', () => { try { req.destroy(); } catch {} });
+    req.write(payload);
+    req.end();
+  } catch {}
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ==================== Configuration ====================
@@ -781,6 +808,13 @@ const carrierServer = http.createServer((req, res) => {
 
   if (url.pathname === '/api/carrier/swap' && req.method === 'POST') {
     // Phase 4: Hot-swap Craft without losing PTY/WS connections
+    // #472: log the swap so PTY exits during this window can be correlated.
+    recordEvent('craft_swap', {
+      trigger: 'manual_api',
+      old_craft_id: primaryCraft?.id,
+      old_craft_port: primaryCraft?.port,
+      old_craft_pid: primaryCraft?.proc?.pid,
+    });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, message: 'Swap initiated' }));
     performSwap();
@@ -820,6 +854,19 @@ const carrierServer = http.createServer((req, res) => {
     }));
 
     console.log(`[Carrier] 🔄 Full restart requested${force ? ' (forced)' : ''}. Broadcasting carrier_restarting…`);
+
+    // #472: emit DB event BEFORE we kill ourselves. This is the row that will
+    // sit next to any PtyExit rows that fire because of the restart, making
+    // #457 (silent PTY death during swap/restart) diagnosable post-hoc.
+    recordEvent('carrier_restart', {
+      reason: force ? 'forced' : 'user_requested',
+      forced: force,
+      system_ready: snap.system_ready,
+      reconnect_in_ms: RESTART_DELAY_MS + 2000,
+      carrier_pid: process.pid,
+      primary_craft_id: primaryCraft?.id,
+      primary_craft_pid: primaryCraft?.proc?.pid,
+    });
 
     // 1. Broadcast to all PTY clients so they can show a banner + buffer input
     //    during the gap. Reconnect tokens are persisted to disk on every

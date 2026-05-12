@@ -228,53 +228,54 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 69c782e7-7c6)*
-**User** (2026-05-10 10:19:57): No you need to reinstall just reinstall it reinstall the application on the phone
-**Claude** (2026-05-10 10:20:45): Endpoint is good — 216MB APK, last-modified 11:13 today (matches the rebuilt one).
+### This Tab *(session: a938bbf4-26e)*
+**User** (2026-05-11 17:56:49): I'm pretty sure we already have this top of the page banner on the phone I already see that we don't have response time showing don't have conversational umm Dr Faso follow up to proactive level intuition which project Yeah we don't have any of that 
+**Claude** (2026-05-11 18:02:15): Done. Single file, four areas changed, no server changes (so no carrier restart needed) — phone WebView cache-busts on every load, so **pull-to-refresh on the phone picks it up immediately**.
 
-**Open this on the phone browser:**
+## What you'll see on the phone after a refresh
 
-`http://100.127.71.114:7777/apk/latest`
+| Where 
+**User** (2026-05-11 18:05:38): Well doesn't this need a phone ADB update because this is not this is not in the dashboard of the phone this is literally in the phone's application So you said update the phone but did you actually B rebuild the application 'cause I think you have t
+**Claude** (2026-05-11 18:17:03): Shipped to the **native phone app** this time (Pixel 10 Pro, install confirmed, app relaunched).
 
-Tap to download → tap the downloaded file → "Install over existing app." Permissions, ap
-**User** (2026-05-10 10:21:31): Well then there's two options here one is literally I plug in my phone to the USB or two you do push an update how could you push an update No seconds of detective being pushed what via the Play Store you can't just push updates you have to make them
-**Claude** (2026-05-10 10:21:47): You're right — there's no silent push. Without Play Store, every "update" is a sideload the user has to tap-tap-confirm. Three real options:
+## What's new on the main screen
 
-1. **USB plug in** — fastest. Plug it in, "Allow USB debugging", I run `adb install -r app-debug.apk` and it
-**User** (2026-05-10 10:22:33): No I think we might as well just have the update because we're gonna be using it in the future do you wanna just make it then the update is coming from your own server so everyone whoever updates any application the update comes from their own server
-**Claude** (2026-05-10 10:30:03): **Done.** Self-update feature shipped, server route is live, APK built.
+A new **PAN Thinking card** sits right below the IntuitionCard. It mirrors that card's style but shows what *PAN* is d
+**User** (2026-05-12 04:48:49): OK so I've been testing it it's pretty fast I see I see actually what the intuition of payers actually doing It interrupts itself When I asked it a complex question it interrupted itself it isn't complete you know what it's trying to say I guess it's
+**Claude** (2026-05-12 04:52:27): Found smoking guns in the phone logs. Quick summary before I dive in:
 
-## What just got built
+## 1. Self-interruption — confirmed false barge-in
+Log line **#4700** is the smoking gun:
+```
+[BargeIn] Baseline=0 threshold=120
+User interrupted TTS         ← fires while PAN is 
+**User** (2026-05-12 09:19:28): OK yeah go ahead and do that Just do all three all three of them are important
 
-| Layer | Change |
-|---|---|
-| **Server** | `GET /api/v1/apk/version` — reads gradle's `output-metadata.json`, computes sha256 once (cached by mtime+size
-**User** (2026-05-10 10:32:53): OK the phone is plugged in go ahead and fix that
-**Claude** (2026-05-10 10:34:06): Confirmed — Windows sees **Pixel 10 Pro** but its class is `WPD` (Windows Portable Devices = MTP file transfer). That means the cable is good and the phone is in File Transfer mode, but the **ADB interface isn't enabled**. So one of these is off:
+### Recent Project Work *(session: dcfa7b43-c79)*
+**Claude** (2026-05-10 08:49:40): Guardian is running and PAN is back up on port 7777. The Windows shortcut should now work — try it.
+**User** (2026-05-12 17:25:57): Can you reach my pro desk too I can reach pro desk but I can't reach pro desk 2VIA Rust Desk
+**Claude** (2026-05-12 17:26:11): I can't directly control RustDesk, but I can check if PAN/Tailscale can reach Pro Desk 2 to narrow down whether it's a network issue or RustDesk-specific. What's the Tailscale IP or hostname of Pro Desk 2?
+**User** (2026-05-12 17:27:53): Yeah obviously I want you to do that and or maybe SSH in there
+**Claude** (2026-05-12 17:31:04): Every remote access port is closed on Pro Desk 2 — SSH, RDP, WinRM all blocked or not running. The machine IS alive (Tailscale confirms it), but there's no way in remotely right now.
 
-**
-**User** (2026-05-10 10:35:27): OK I re enable debug
+The most likely cause: RustDesk crashed or stopped on Pro Desk 2, 
+**User** (2026-05-12 17:31:35): That's not true because we set up SSH on all these computers
+**Claude** (2026-05-12 17:35:35): MiniPC isn't on the same LAN, so can't use it as a hop.
 
-### Recent Project Work *(session: b7ad0038-1e1)*
-**Claude** (2026-05-10 08:10:14): ΠΑΝ Remembers: embed backfill running ~1.5/sec after sentinel fix (`2ae56df`); ~24h to clear remaining 130k. Joying USB drive letter assignment via diskpart was the last thread — waiting on you to confirm if you exited diskpart.
-**User** (2026-05-10 08:10:21): You were going to push the last thing we were doing to the phone This is this is clearly the incorrect pan remembers This is not what we were doing last
-**Claude** (2026-05-10 08:14:12): **Open this on the phone browser to install:**
+Since you CAN briefly get into Pro Desk 2 via RustDesk before it drops — the next time you get in, the fastest fix is to quickly open a Run dialog (`Win+R`) and paste this to enable SSH:
 
-`http://100.127.71.114:7777/apk/latest`
+```
+p
+**User** (2026-05-12 17:37:03): What was the last topic discussed in this session?
+**Claude** (2026-05-12 17:37:10): The last topic was troubleshooting remote access to **Pro Desk 2** (`work-pc`, `100.86.16.10`). Summary of what was found:
 
-That's the Tailscale IP for this PC — phone is on Tailscale (`pan-pixel-10-pro-1` active), so it can reach it directly. Tap the downloaded APK to install over th
+- Tailscale reaches it at 268ms via DERP relay (Miami) — no direct connection
+- SSH port 22 times out (service likely stop
+**User** (2026-05-12 17:37:53): Summarize the last thing we were working on in one paragraph
 
 ### Open Tasks
 - [#466 backlog] Voice trace ID: end-to-end correlation across phone log + server router + AI usage + TTS
-- [#470 in_test] steward: ollama restart action is a no-op (startFn disabled) but logs success — clean up the lie
-- [#458 backlog] Tab list rebuild fragile across Craft swap — pan-4 tab disappeared after swap
-- [#459 backlog] Forge: Opus auto-fix loop on Scout-detected bugs
-- [#462 in_test] router.js: emit empty chunk for [AMBIENT] verdicts so phone sees a fast 'no-op' response
-- [#464 in_test] steward: ollama health check 3s ping produces false-negatives under load — phantom DOWN→RUNNING bounces every ~2min
-- [#465 in_test] AI usage tracking: tag every router call with source (phone-id / dashboard / scout / etc.) — 'router' bucket too coarse
-- [#468 backlog] Phone: health-aware degradation banner — show 'PAN running on backup' when ollama/embeddings/whisper degraded
-- [#469 backlog] Voice timeline panel in Kronos — per-prompt route, latency, response
-- [#457 in_test] Craft swap silently restarts Claude session — trans
+- [#470 in_test] steward: ollama restart action is a no-op (startFn disabled) but logs
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
