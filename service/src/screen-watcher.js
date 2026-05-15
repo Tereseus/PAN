@@ -12,6 +12,9 @@ import { unlinkSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { analyzeImage } from './llm.js';
 import { run, all } from './db.js';
+import { writeThought, recentThoughtMatches } from './thoughts.js';
+import { noteFoodInScreenDescription } from './intuition/nourishment.js';
+import { noteSignalsInScreenDescription } from './intuition/signals.js';
 
 const INTERVAL_MS  = 60_000;   // screenshot every 60s when active (was 30s)
 const STALE_MS     = 120_000;  // context older than 120s ignored by intuition
@@ -214,8 +217,29 @@ async function runCapture() {
       { caller: 'screen-watcher', timeout: 90_000 },  // 90s — CPU inference on mini PC can be slow
     );
 
-    if (description && description.length >= 8) {
-      // Success — reset failure streak (< 8 chars = moondream cold-start garbage, treat as failure)
+    // Moondream cold-start failure modes:
+    //   1. <8 char output (treat as fail)
+    //   2. URN/UUID/URL-only output — model latches onto window title hints
+    //      or text on screen and emits garbage like
+    //      "Urn:le/example.org/multi/light/1.3.3.0" or just a bare URL.
+    //   3. Output that's mostly punctuation/identifiers and no real words.
+    // Reject all of those — they pollute the activity signal in intuition
+    // and surface as nonsense in the dashboard.
+    function looksLikeVisionGarbage(desc) {
+      if (!desc) return true;
+      const trimmed = desc.trim();
+      if (trimmed.length < 8) return true;
+      // URN / UUID-like prefixes — case-insensitive
+      if (/^(urn:|uuid:|cid:|did:|isbn:|oid:)/i.test(trimmed)) return true;
+      // Bare URL with no surrounding prose
+      if (/^https?:\/\/\S+$/i.test(trimmed)) return true;
+      // Mostly path/identifier syntax (slashes, colons, dots, digits, no words)
+      const wordChars = (trimmed.match(/[a-zA-Z]{3,}/g) || []).join('').length;
+      if (wordChars < trimmed.length * 0.3) return true;
+      return false;
+    }
+    if (description && !looksLikeVisionGarbage(description)) {
+      // Success — reset failure streak (< 8 chars or URN-like = moondream cold-start garbage, treat as failure)
       visionFailStreak = 0;
       visionBackoffUntil = 0;
 
@@ -227,6 +251,31 @@ async function runCapture() {
          VALUES (:type, 'system', :data, datetime('now'))`,
         { type: 'screen_context', data: JSON.stringify({ description, ts, source, windowTitle }) }
       );
+
+      // PAN's-Mind thought — phrase the vision verdict in first person. Skip
+      // near-duplicates within 90s so a static screen doesn't spam the stream.
+      try {
+        const thought = `I see ${description.replace(/^(this |the |a |an )?(image |screen |computer screen )?(shows |displays |is )?/i, '').replace(/\.$/, '')}.`;
+        if (!recentThoughtMatches('screen', thought, 90_000)) {
+          writeThought('screen', thought, { window: windowTitle || null }, 0.3);
+        }
+      } catch { /* non-fatal */ }
+
+      // Life Needs — weak Nourishment signal if the vision description
+      // mentions food/drink. Strong "user actually ate" signal goes through
+      // router.js (explicit utterances). See intuition/nourishment.js.
+      try {
+        const r = noteFoodInScreenDescription(description, { source: 'screen-watcher' });
+        if (r.applied) console.log(`[ScreenWatcher] 🍽 nourishment observed: ${r.matched.slice(0, 3).join(', ')}`);
+      } catch { /* non-fatal */ }
+
+      // Other Life Needs visible in vision (currently Hydration via drinkware).
+      try {
+        const r = noteSignalsInScreenDescription(description, { source: 'screen-watcher' });
+        for (const a of r.applied || []) {
+          console.log(`[ScreenWatcher] 💧 ${a.need} observed: ${a.term}`);
+        }
+      } catch { /* non-fatal */ }
 
       console.log(`[ScreenWatcher] (${source}) ${windowTitle ? `[${windowTitle.slice(0,30)}] ` : ''}${description}`);
     }

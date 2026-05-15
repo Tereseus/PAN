@@ -22,17 +22,26 @@ import {
 
 const router = Router();
 
-// GET /current — single latest snapshot
+// Resolve org context for a request — explicit ?org_id wins, then the
+// x-pan-org header (PAN's standard scoping signal), then req.activeOrg (if
+// upstream middleware populated it), then null (= "any org, latest globally").
+// Returning null is safe — getCurrentSnapshot/getSnapshotHistory both accept
+// null and fall back to the legacy non-scoped query.
+function resolveOrgId(req) {
+  return req.query.org_id || req.get('x-pan-org') || req.activeOrg?.id || null;
+}
+
+// GET /current?org_id=org_personal — single latest snapshot scoped to caller's org
 router.get('/current', (req, res) => {
-  const snap = getCurrentSnapshot();
+  const snap = getCurrentSnapshot(resolveOrgId(req));
   if (!snap) return res.status(503).json({ ok: false, error: 'no snapshot yet' });
   res.json({ ok: true, snapshot: snap, as_of: snap.as_of });
 });
 
-// GET /history?limit=50 — recent snapshots for Atlas timeline
+// GET /history?limit=50&org_id=org_personal — recent snapshots for Atlas timeline
 router.get('/history', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 50, 500);
-  res.json({ ok: true, snapshots: getSnapshotHistory(limit) });
+  res.json({ ok: true, snapshots: getSnapshotHistory(limit, resolveOrgId(req)) });
 });
 
 // GET /status — is the daemon alive, writing, which commander

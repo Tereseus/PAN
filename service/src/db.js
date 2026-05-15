@@ -167,6 +167,9 @@ db.pragma('foreign_keys = OFF');
     // #465: source + device_id added to ai_usage; schema now creates an index on source
     ['ai_usage',        'source',    "TEXT DEFAULT 'internal'"],
     ['ai_usage',        'device_id', 'TEXT'],
+    // #471: per-call latency_ms — powers the "PAN's Mind" panel's response-time
+    // badges (mirrors the phone PanThinkingCard's "↳ X.Xs" display).
+    ['ai_usage',        'latency_ms', 'INTEGER'],
     // source column added to sessions, device_logs, activity_events
     ['sessions',        'source',    'TEXT'],
     ['device_logs',     'source',    "TEXT NOT NULL DEFAULT 'console'"],

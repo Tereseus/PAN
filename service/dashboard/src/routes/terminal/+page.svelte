@@ -370,12 +370,14 @@
 				await new Promise(r => setTimeout(r, 3000));
 				const s = await fetch(`${window.location.origin}/api/v1/webcam-watcher/status`).then(r => r.json()).catch(() => null);
 				if (s?.lastCapture?.ts && Date.now() - s.lastCapture.ts < 10_000) {
-					// Capture landed — push it into intuitionData directly so display updates immediately
-					if (intuitionData) {
-						const snap = intuitionData.snapshot || intuitionData;
-						const signals = snap.signals || snap;
-						signals.webcam_context = { ...s.lastCapture };
-						intuitionData = { ...intuitionData }; // trigger reactivity
+					// Capture landed — mutate the atomic individual-snap piece directly
+					// so the side blocks (webcam_context) update before the next
+					// loadIntuition() resolves. intuitionData is a derivation now, so
+					// we write to the ATOMIC source, not the composite.
+					if (intuitionIndSnap) {
+						const next = { ...intuitionIndSnap };
+						next.signals = { ...(next.signals || {}), webcam_context: { ...s.lastCapture } };
+						intuitionIndSnap = next;
 					}
 					await loadIntuition(); // full refresh
 					break;
@@ -431,52 +433,260 @@
 	let tasksData = $state(null);
 	let sectionsData = $state([]);
 	let servicesData = $state([]);
-	let intuitionData = $state(null);
+	// ─── Intuition state — DEAD SIMPLE ───────────────────────────────────────
+	// Five atomic pieces. ONE refresh function. No nested deriveds writing back
+	// into state. No synthetic ghost users. If a fetch returns nothing, we keep
+	// what we had so a transient blip doesn't blank the UI — but we never
+	// invent data.
+	//
+	// intuitionMembers          — roster from /api/v1/orgs/:id/members
+	// intuitionSnapsByCommander — { [display_name]: snapshot row }
+	// intuitionOrgSnap          — org-level snapshot (devices, org_state)
+	// intuitionIndSnap          — individual snapshot (side detail blocks)
+	// selectedIntuitionUser     — currently-viewed user's display_name
+	let intuitionMembers = $state([]);
+	let intuitionSnapsByCommander = $state({});
+	let intuitionOrgSnap = $state(null);
+	let intuitionIndSnap = $state(null);
+	let selectedIntuitionUser = $state('');
+	let intuitionStatus = $state('');
 	let intuitionPolling = null;
+	// `intuitionLoaded` flips true after the FIRST successful roster fetch.
+	// Plain $state — never reset to false — so a slow follow-up fetch can
+	// never collapse the card back to its loading state.
+	let intuitionLoaded = $state(false);
+	// Flips true after the FIRST snapshots fetch resolves (whether or not it
+	// returned rows). Gates the "(no data)" label in the dropdown so we don't
+	// flash "(no data)" against every name during the brief window between
+	// the roster landing and the snapshots landing. See task #489.
+	let intuitionSnapshotsLoaded = $state(false);
 
-	async function loadIntuition() {
-		try {
-			const indData = await api('/api/v1/intuition/current');
-			const iSnap = indData.snapshot || indData;
-			let orgData = null;
-			try { orgData = await api('/api/v1/intuition/org/current'); } catch {}
-			if (orgData?.members) {
-				intuitionData = { ...orgData, individualSnap: iSnap };
+	async function refreshIntuition() {
+		// HARD GATE: orgData must exist. Calling with null orgData produces a
+		// false "No users in this org yet" flash. The $effect on orgData?.org_id
+		// retriggers this as soon as orgData lands.
+		if (!orgData?.org_id) return;
+		const orgId = orgData.org_id;
+		const orgQS = `?org_id=${encodeURIComponent(orgId)}`;
+		// Fan out independent fetches. allSettled = one failure can't take the
+		// others down with it.
+		const [rosterR, snapsR, orgR, indR] = await Promise.allSettled([
+			api(`/api/v1/orgs/${encodeURIComponent(orgId)}/members`),
+			api(`/api/v1/intuition/org/members${orgQS}`),
+			api(`/api/v1/intuition/org/current${orgQS}`),
+			api(`/api/v1/intuition/current${orgQS}`),
+		]);
+
+		// 1. Roster. Replace only when API gave us something — a blip never
+		//    wipes the dropdown.
+		if (rosterR.status === 'fulfilled' && Array.isArray(rosterR.value?.members) && rosterR.value.members.length > 0) {
+			intuitionMembers = rosterR.value.members;
+		}
+
+		// 2. Snapshots map. MERGE (don't replace): a fetch that's missing a
+		//    known commander must NOT flip that user's has_snapshot to false
+		//    (which would collapse their axes table).
+		if (snapsR.status === 'fulfilled' && Array.isArray(snapsR.value?.members)) {
+			const merged = { ...intuitionSnapsByCommander };
+			for (const row of snapsR.value.members) merged[row.commander] = row;
+			intuitionSnapsByCommander = merged;
+		}
+		// Flip the "snapshots have been fetched at least once" gate as soon as
+		// the call resolves (fulfilled OR rejected). Suppresses the "(no data)"
+		// flash on the dropdown for the few hundred ms between roster-landed
+		// and snapshots-landed. Never flipped back to false. (Task #489.)
+		if (snapsR.status === 'fulfilled' || snapsR.status === 'rejected') {
+			intuitionSnapshotsLoaded = true;
+		}
+
+		// 3. Org-level + individual snapshots. Keep previous on empty response.
+		if (orgR.status === 'fulfilled' && orgR.value?.snapshot) intuitionOrgSnap = orgR.value.snapshot;
+		if (indR.status === 'fulfilled' && indR.value?.snapshot) intuitionIndSnap = indR.value.snapshot;
+
+		// 4. Repair selection if it points at a user no longer in the roster.
+		if (!selectedIntuitionUser || !intuitionMembers.some(m => m.display_name === selectedIntuitionUser)) {
+			let saved = '';
+			try { saved = localStorage.getItem('pan_intuition_user') || ''; } catch {}
+			if (saved && intuitionMembers.some(m => m.display_name === saved)) {
+				selectedIntuitionUser = saved;
 			} else {
-				// Org snapshot not built yet — synthesize a single-member view from individual snap
-				const n = iSnap.now || {};
-				intuitionData = {
-					org_name: iSnap.commander || 'Personal',
-					as_of: iSnap.as_of,
-					members: [{
-						commander: iSnap.commander,
-						as_of: iSnap.as_of,
-						age_ms: 0,
-						is_active: true,
-						activity: n.activity,
-						focus: n.focus,
-						mood: n.mood,
-						where: n.where,
-						last_seen: n.last_seen,
-						last_heard: n.last_heard,
-						urgency: n.urgency,
-						engagement: n.engagement,
-						recent_topics: n.recent_topics || [],
-						assumption: n.assumption,
-						confidence: iSnap.signals?.confidence ?? 0
-					}],
-					org_state: {},
-					individualSnap: iSnap
-				};
+				selectedIntuitionUser = orgData?.user_display_name || intuitionMembers[0]?.display_name || '';
 			}
-		} catch {}
+		}
+
+		intuitionStatus = intuitionMembers.length === 0 ? 'No users in this org yet' : '';
+		// Flip to loaded after the first roster fetch lands. Never set back to
+		// false — the card stays visible from this point on.
+		if (intuitionMembers.length > 0) intuitionLoaded = true;
+
+		// Side-channel updates (independent endpoints).
+		loadPanMind();
+		loadPanNeeds();
+		loadPanSynthesis();
 	}
+	// PAN's Mind — first-person thought stream (modeled on Claude's extended
+	// thinking blocks). Replaces the old `ai_usage` feed which showed static
+	// system prompts. Each row is a sentence PAN wrote about what it just
+	// concluded — see service/src/thoughts.js for the producers.
+	let panThoughts = $state([]);
+	async function loadPanThoughts() {
+		try {
+			const r = await fetch('/api/v1/thoughts/recent?limit=20');
+			if (!r.ok) return;
+			const d = await r.json();
+			panThoughts = Array.isArray(d?.thoughts) ? d.thoughts : [];
+		} catch { /* leave previous data */ }
+	}
+	// Legacy alias retained so existing callers keep working during the
+	// transition. Same payload, new label.
+	const loadPanMind = loadPanThoughts;
+
+	// Life Needs — Sims-style motive bars (0..100). Populated from
+	// /api/v1/needs?user=<commander>. Sorted server-side by urgency descending.
+	// Scoped to whichever user is currently selected in the Intuition dropdown
+	// so the bars track that user — not always Tereseus.
+	let panNeeds = $state([]);
+	async function loadPanNeeds() {
+		try {
+			const u = selectedIntuitionUser || orgData?.user_display_name || '';
+			const qs = u ? `?user=${encodeURIComponent(u)}` : '';
+			const r = await fetch(`/api/v1/needs${qs}`);
+			if (!r.ok) return;
+			const d = await r.json();
+			panNeeds = Array.isArray(d?.needs) ? d.needs : [];
+		} catch { /* keep last */ }
+	}
+
+	// PAN's-Mind synthesis — a single first-person paragraph (LLM-generated).
+	// Replaces the old icon-count "gist" line (task #494). Cached server-side
+	// for 3 min per user, so this fetch is cheap to call alongside other
+	// refreshes. We still cache the last good payload locally so a transient
+	// fetch failure never blanks the box.
+	// Synthesis payload now also carries reasoning_steps[] (task #495) —
+	// the substrate the paragraph was rendered from. panReasoningOpen
+	// toggles the structured trace view in the widget.
+	let panSynthesis = $state(null); // { synthesis, generated_at_ms, sources_used, model, cached, cycle_id, steps }
+	let panReasoningOpen = $state(false);
+	async function loadPanSynthesis() {
+		try {
+			const u = selectedIntuitionUser || orgData?.user_display_name || '';
+			const qs = u ? `?user=${encodeURIComponent(u)}` : '';
+			const r = await fetch(`/api/v1/pan/synthesis${qs}`);
+			if (!r.ok) return;
+			const d = await r.json();
+			if (d?.ok) panSynthesis = d;
+		} catch { /* keep last */ }
+	}
+	// Force a fresh reasoning cycle — bypasses both the in-process and
+	// DB-row cache and re-runs runCycle. Used by the ↻ button in the
+	// synthesis box.
+	async function forcePanSynthesis() {
+		try {
+			const u = selectedIntuitionUser || orgData?.user_display_name || '';
+			const qs = u ? `?user=${encodeURIComponent(u)}&force=1` : '?force=1';
+			const r = await fetch(`/api/v1/pan/synthesis${qs}`);
+			if (!r.ok) return;
+			const d = await r.json();
+			if (d?.ok) panSynthesis = d;
+		} catch { /* keep last */ }
+	}
+	function needBarColor(level) {
+		// Green > 70, yellow 30-70, red < 30
+		if (level >= 70) return '#22c55e';
+		if (level >= 30) return '#eab308';
+		return '#ef4444';
+	}
+
+	// Composite view the template reads. PURE DERIVATION — never assigned to.
+	// Re-evaluates whenever any atomic piece changes, so the merged members
+	// list always reflects the latest roster + latest snapshots. There's no
+	// intermediate "writing the composite" step that could blank the panel
+	// mid-flight.
+	let _intuitionMergedMembers = $derived.by(() => {
+		const snaps = intuitionSnapsByCommander;
+		return (intuitionMembers || []).map(u => {
+			const snap = snaps[u.display_name]?.snapshot || null;
+			const n = snap?.now || {};
+			const age_ms = snap?.as_of ? Date.now() - snap.as_of : null;
+			return {
+				user_id: u.id,
+				commander: u.display_name,
+				role_name: u.role_name,
+				role_color: u.role_color,
+				avatar_url: u.avatar_url,
+				as_of: snap?.as_of || null,
+				age_ms,
+				is_active: age_ms !== null && age_ms < 5 * 60 * 1000,
+				has_snapshot: !!snap,
+				activity: n.activity || null,
+				focus: n.focus || null,
+				mood: n.mood || null,
+				where: n.where || null,
+				last_seen: n.last_seen || null,
+				last_heard: n.last_heard || null,
+				urgency: n.urgency || null,
+				engagement: n.engagement || null,
+				recent_topics: n.recent_topics || [],
+				assumption: n.assumption || null,
+				confidence: snap?.signals?.confidence ?? 0,
+			};
+		});
+	});
+	let intuitionData = $derived(
+		!intuitionLoaded
+			? null
+			: {
+				org_id: orgData?.org_id || '',
+				org_name: orgData?.org_name || intuitionOrgSnap?.org_name || 'Personal',
+				as_of: intuitionOrgSnap?.as_of || null,
+				members: _intuitionMergedMembers,
+				devices: intuitionOrgSnap?.devices || [],
+				org_state: intuitionOrgSnap?.org_state || {},
+				individualSnap: intuitionIndSnap || {},
+				snapshot: intuitionIndSnap || null, // legacy alias for forceCamCapture
+			}
+	);
+
+	// Legacy alias — `loadIntuition` is referenced from a few places (WS push,
+	// section-show $effect, forceCamCapture). Point them all at the new
+	// `refreshIntuition`. Same single source of truth.
+	const loadIntuition = refreshIntuition;
+
 	function startIntuitionPolling() {
-		loadIntuition();
-		if (intuitionPolling) clearInterval(intuitionPolling);
-		// 30s fallback only — real-time updates come via widget_update WS push from intuition.js
-		intuitionPolling = setInterval(() => { _trackWidget('intuition', 'poll'); loadIntuition(); }, 30_000);
+		// NO setInterval polling. WS `widget_update:'intuition'` from
+		// intuition.js is the only refresh trigger. On reconnect, sync_response
+		// re-fires it. Polling was the original source of the
+		// disappearing-user-block race.
+		if (intuitionPolling) { clearInterval(intuitionPolling); intuitionPolling = null; }
+		if (orgData?.org_id) refreshIntuition();
 	}
+
+	// When the user picks a different user from the dropdown, persist the choice
+	// then refresh so detail blocks + Life Needs both track the new selection.
+	function onIntuitionUserChange() {
+		try { localStorage.setItem('pan_intuition_user', selectedIntuitionUser || ''); } catch {}
+		refreshIntuition();
+	}
+
+	// React to the bottom-left org switcher changing the active org. We only
+	// want to re-fetch when the org_id ACTUALLY changes — Svelte 5 effects
+	// deeply track $state, so a naked `orgData?.org_id` read fires on any
+	// mutation inside orgData (role change, avatar change, etc.). Cache the
+	// last-seen org_id and bail when unchanged so we don't blank the roster
+	// every tick.
+	let _lastIntuitionOrgId = null;
+	$effect(() => {
+		const activeOrgId = orgData?.org_id;
+		if (!activeOrgId) return;
+		if (activeOrgId === _lastIntuitionOrgId) return;
+		_lastIntuitionOrgId = activeOrgId;
+		// DON'T blank the roster here — if the new fetch is slow, blanking
+		// causes a flash-of-empty-panel. refreshIntuition replaces atomically
+		// when the new data lands. Clear the selection so the default-to-self
+		// logic re-runs against the new org's roster.
+		selectedIntuitionUser = '';
+		refreshIntuition();
+	});
 	function stopIntuitionPolling() {
 		if (intuitionPolling) { clearInterval(intuitionPolling); intuitionPolling = null; }
 	}
@@ -5722,77 +5932,384 @@
 {/snippet}
 
 {#snippet intuitionPanelContents()}
-	{#if !intuitionData}
-		<div class="empty-state">Loading Intuition...</div>
-	{:else}
-		{@const members = intuitionData.members || []}
-		{@const orgState = intuitionData.org_state || {}}
-		{@const iSnap = intuitionData.individualSnap || {}}
-		{@const pan = iSnap.pan || {}}
-		{@const iSig = iSnap.signals || {}}
-		{@const preds = pan.predictions || []}
-		{@const wc = iSig.webcam_context}
-		{@const sc = iSig.screen_context}
+	<!-- BULLETPROOF RENDER: this snippet has NO conditional wrapper that can
+	     unmount the user card. Every "could be null" path falls through to a
+	     synthetic placeholder so the layout NEVER disappears. The only state
+	     that ever changes is the VALUES inside the cells. -->
+	<!-- Dropdown iterates the ROSTER directly. No derived chain, no synthetic
+	     fallback hijacking the options. Whatever /api/v1/orgs/:id/members
+	     returned, that's what you can pick from. -->
+	{@const _intData = intuitionData || { org_state: {}, individualSnap: {}, org_name: '' }}
+	{@const orgState = _intData.org_state || {}}
+	{@const iSnap = _intData.individualSnap || {}}
+	{@const pan = iSnap.pan || {}}
+	{@const iSig = iSnap.signals || {}}
+	{@const preds = pan.predictions || []}
+	{@const wc = iSig.webcam_context}
+	{@const sc = iSig.screen_context}
+	{@const _orgName = _intData.org_name || orgData?.org_name || 'Org'}
+	<!-- Build the per-user card from atomic state: roster (intuitionMembers)
+	     + snapshots map (intuitionSnapsByCommander). selectedIntuitionUser
+	     picks which one to show. No deriveds, no synthetics. -->
+	{@const _selectedRow = intuitionMembers.find(u => u.display_name === selectedIntuitionUser) || intuitionMembers[0]}
+	{@const _selectedSnap = _selectedRow ? (intuitionSnapsByCommander[_selectedRow.display_name]?.snapshot || null) : null}
+	{@const _selN = _selectedSnap?.now || {}}
+	{@const _selAgeMs = _selectedSnap?.as_of ? Date.now() - _selectedSnap.as_of : null}
+	{@const m = _selectedRow ? {
+		commander: _selectedRow.display_name,
+		role_name: _selectedRow.role_name,
+		role_color: _selectedRow.role_color,
+		as_of: _selectedSnap?.as_of || null,
+		age_ms: _selAgeMs,
+		is_active: _selAgeMs !== null && _selAgeMs < 5 * 60 * 1000,
+		has_snapshot: !!_selectedSnap,
+		activity: _selN.activity || null,
+		focus: _selN.focus || null,
+		mood: _selN.mood || null,
+		where: _selN.where || null,
+		last_heard: _selN.last_heard || null,
+		urgency: _selN.urgency || null,
+		engagement: _selN.engagement || null,
+		recent_topics: _selN.recent_topics || [],
+		assumption: _selN.assumption || null,
+		confidence: _selectedSnap?.signals?.confidence ?? 0,
+	} : null}
 
-		<!-- Org header -->
-		<div class="int-header">
-			<span class="int-commander">{intuitionData.org_name || 'Org'}</span>
-			<span class="int-ago">{intuitionData.as_of ? new Date(intuitionData.as_of).toLocaleTimeString() : '—'}</span>
-		</div>
+	<!-- ═══════════════════════════════════════════════════════════════════════
+	     TOP-LEVEL SECTION: USER. Sits ABOVE the dropdown — the dropdown is the
+	     'which user' selector belonging to this section, and the identity strip
+	     below the dropdown is the same user rendered from sensor data.
+	     Tasks #490 + #493. -->
+	<div style="padding-bottom:3px;margin-bottom:6px;font-size:11px;font-weight:700;color:#cba6f7;letter-spacing:1.5px;border-bottom:1px solid rgba(203,166,247,0.3)">
+		USER
+	</div>
+	<div class="int-header" style="gap:6px;align-items:center">
+		<select
+			bind:value={selectedIntuitionUser}
+			onchange={onIntuitionUserChange}
+			style="flex:1;background:#181825;color:#cdd6f4;border:1px solid #313244;border-radius:4px;padding:3px 6px;font-size:11px"
+		>
+			{#if intuitionMembers.length === 0}
+				<option value="">(no users)</option>
+			{:else}
+				{#each intuitionMembers as u (u.id)}
+					{@const hasSnap = !!intuitionSnapsByCommander[u.display_name]?.snapshot}
+					<option value={u.display_name}>
+						{u.display_name}{u.role_name ? ` · ${u.role_name}` : ''}{(intuitionSnapshotsLoaded && !hasSnap) ? ' (no data)' : ''}
+					</option>
+				{/each}
+			{/if}
+		</select>
+		<span class="int-ago">{m?.as_of ? new Date(m.as_of).toLocaleTimeString() : (intuitionLoaded ? '—' : 'loading…')}</span>
+	</div>
 
-		<!-- Per-member cards -->
-		{#if members.length === 0}
-			<div class="empty-state" style="font-size:12px">No members detected</div>
-		{/if}
-		{#each members as m}
+	<!-- Status banner — only shown when loadIntuition set a status message. -->
+	{#if intuitionStatus}
+		<div class="empty-state" style="font-size:11px;color:#94a3b8;font-style:italic">{intuitionStatus}</div>
+	{/if}
+
+	<!-- Selected user's intuition card. Only renders when a row was found in
+	     the roster — but the dropdown above always renders, so the panel never
+	     "disappears". Each named section below is the unit you can refer to in
+	     conversation ("the State section", "the Motives section", etc.). -->
+	{#if m}
+			<!-- Identity strip: who is selected, role, active/idle.
+			     Not a "section" with a heading — it's the card's header bar.
+			     Role title-cased; "X m ago" stamp removed per user request. -->
+			{@const _roleLabel = m.role_name ? (m.role_name.charAt(0).toUpperCase() + m.role_name.slice(1)) : ''}
 			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
 				{m.commander || 'Unknown'}
+				{#if _roleLabel}<span style="font-size:10px;color:{m.role_color || '#6c7086'}">· {_roleLabel}</span>{/if}
 				<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{m.is_active ? 'rgba(166,227,161,0.15)' : 'rgba(108,112,134,0.15)'};color:{m.is_active ? '#a6e3a1' : '#6c7086'}">{m.is_active ? '● active' : '○ idle'}</span>
-				{#if m.age_ms}<span style="font-size:10px;color:#6c7086">{Math.round(m.age_ms/60000)}m ago</span>{/if}
 			</div>
+
+			<!-- ═══ SECTION: Identity ═══════════════════════════════════════════════
+			     Sensor-based identity for the selected commander. Combines what
+			     used to be two separate sections (Identity + Voice Identity) into
+			     one — camera, screen, voice enrollment all live here. Moved up
+			     from bottom to top of USER block per task #490. -->
+			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+				Identity
+				<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:auto;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}" title="voice ID server">voice {voiceServerOk ? 'online' : 'offline'}</span>
+			</div>
+			<div class="int-axes">
+				<div class="int-axis">
+					<span class="int-label">Camera</span>
+					<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
+						{wc ? (wc.presence === 'yes' ? (wc.identity || 'Someone') : wc.presence === 'no' ? 'Desk empty' : 'Unclear') : '⏳ no capture yet'}
+					</span>
+					<button onclick={forceCamCapture} disabled={forcingCapture} title="Force capture now" style="margin-left:4px;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:{forcingCapture ? '#6c7086' : '#cba6f7'};cursor:{forcingCapture ? 'default' : 'pointer'};font-size:10px;padding:1px 5px;line-height:1.4">
+						{forcingCapture ? '⏳' : '📷'}
+					</button>
+				</div>
+				{#if wc?.emotion && wc.presence === 'yes'}
+					<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
+				{/if}
+				{#if wc?.people_count > 1}
+					<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
+				{/if}
+				<div class="int-axis" style="flex-wrap:wrap">
+					<span class="int-label">Screen</span>
+					<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : '⏳ no capture yet'}</span>
+				</div>
+				{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
+				{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
+			</div>
+			<!-- Voice enrollment lives inside the Identity section -->
+			{#if voiceEnrollSpeakers.length > 0}
+				<div style="margin-bottom:6px">
+					{#each voiceEnrollSpeakers as sp}
+						<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
+							<span style="font-size:15px">🎤</span>
+							<span style="font-size:12px;color:#cdd6f4;flex:1">{sp.label || sp}</span>
+							{#if sp.sample_count}<span style="font-size:10px;color:#6c7086">{sp.sample_count} sample{sp.sample_count !== 1 ? 's' : ''}</span>{/if}
+							<button onclick={() => deleteVoiceSpeaker(sp.label || sp)} style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:12px;padding:1px 4px;border-radius:3px" title="Remove">✕</button>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<div style="font-size:11px;color:#6c7086;margin-bottom:6px">No speakers enrolled — voice IDs passively as you speak</div>
+			{/if}
+			<div style="display:flex;gap:5px;margin-bottom:5px">
+				<input bind:value={voiceEnrollLabel} placeholder="Speaker name" disabled={voiceEnrollStatus === 'recording' || voiceEnrollStatus === 'uploading'} style="flex:1;background:#1e1e2e;border:1px solid rgba(255,255,255,0.12);border-radius:5px;color:#cdd6f4;padding:4px 8px;font-size:12px;outline:none" />
+			</div>
+			{#if voiceEnrollStatus === 'recording'}
+				<div style="display:flex;gap:6px;align-items:center">
+					<button onclick={stopVoiceEnroll} style="flex:1;background:rgba(243,139,168,0.2);border:1px solid #f38ba8;border-radius:5px;color:#f38ba8;padding:5px;font-size:12px;cursor:pointer">⏹ Stop ({voiceEnrollSeconds}s / 10s)</button>
+				</div>
+				<div style="margin-top:4px;background:rgba(255,255,255,0.07);border-radius:3px;height:3px;overflow:hidden">
+					<div style="background:#cba6f7;height:100%;width:{Math.min(voiceEnrollSeconds/10*100,100)}%;transition:width 1s linear"></div>
+				</div>
+			{:else}
+				<button onclick={startVoiceEnroll} disabled={!voiceServerOk || voiceEnrollStatus === 'uploading'} style="width:100%;background:rgba(203,166,247,0.15);border:1px solid rgba(203,166,247,0.4);border-radius:5px;color:#cba6f7;padding:5px;font-size:12px;cursor:{voiceServerOk ? 'pointer' : 'not-allowed'};opacity:{voiceServerOk ? 1 : 0.5}">
+					🎤 {voiceEnrollStatus === 'uploading' ? 'Processing...' : 'Record Sample (10s)'}
+				</button>
+			{/if}
+			{#if voiceEnrollMsg}
+				<div style="font-size:11px;margin-top:4px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
+			{/if}
+
+			<!-- Subsection divider — Identity → State (task #493). -->
+			<hr style="border:none;border-top:1px solid rgba(255,255,255,0.07);margin:10px 0 6px" />
+
+			<!-- ═══ SECTION: State ═══════════════════════════════════════════
+			     PAN's read of who this user is right now: location, what they're
+			     doing, their mood, urgency, what was last said. Confidence is
+			     the daemon's self-rated certainty in this read. Schema field is
+			     `snapshot.now`. -->
+			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+				State
+				<span style="font-size:10px;color:#6c7086">read of {m.commander}</span>
+			</div>
+			{#if !m.has_snapshot}
+				<div class="empty-state" style="font-size:10px;color:#94a3b8;font-style:italic;margin:4px 0">No intuition data for {m.commander} yet — the daemon builds a snapshot once they have presence signals (screen, camera, mic, or terminal activity).</div>
+			{/if}
 			<div class="int-axes">
 				<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{m.where || '—'}</span></div>
 				<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{m.activity || '—'}</span></div>
 				<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{m.focus || '—'}</span></div>
 				<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{m.mood || '—'}</span></div>
-				<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{m.urgency || 'normal'}</span></div>
+				<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{m.urgency || (m.has_snapshot ? 'normal' : '—')}</span></div>
 				<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{m.engagement || '—'}</span></div>
 				<div class="int-axis">
 					<span class="int-label">Assumption</span>
 					<span class="int-val" class:wellbeing-ok={m.assumption === 'ok'} class:wellbeing-notok={m.assumption === 'not_ok'} class:wellbeing-emergency={m.assumption === 'emergency'}>{m.assumption || '—'}</span>
 				</div>
-				{#if m.last_heard}
-					<div class="int-axis"><span class="int-label">Last heard</span><span class="int-val small">"{m.last_heard}"</span></div>
-				{/if}
-				{#if (m.recent_topics || []).length > 0}
-					<div class="int-axis"><span class="int-label">Topics</span><span class="int-val small">{m.recent_topics.slice(0, 3).join(', ')}</span></div>
-				{/if}
+				<div class="int-axis"><span class="int-label">Last heard</span><span class="int-val small">{m.last_heard ? `"${m.last_heard}"` : '—'}</span></div>
+				<div class="int-axis"><span class="int-label">Topics</span><span class="int-val small">{(m.recent_topics || []).length > 0 ? m.recent_topics.slice(0, 3).join(', ') : '—'}</span></div>
 				<div class="int-axis"><span class="int-label">Confidence</span><span class="int-val small">{Math.round((m.confidence || 0) * 100)}%</span></div>
 			</div>
-			<div class="int-disclaimer">⚠ Not medical advice — PAN's assumptions only</div>
-		{/each}
+			{#if m.has_snapshot}
+				<div class="int-disclaimer">⚠ Not medical advice — PAN's assumptions only</div>
+			{/if}
+		{/if}
 
-		<!-- PAN Activity (from individual snapshot) -->
-		<div class="svc-category">PAN Activity</div>
-		<div class="int-axes">
-			<div class="int-axis"><span class="int-label">Status</span><span class="int-val">{pan.status || 'Idle'}</span></div>
-			{#each (pan.sessions || []) as sess}
-				<div class="int-axis"><span class="int-label">Session</span><span class="int-val small">{sess.description || sess.id}</span></div>
-			{/each}
-			{#each (pan.services || []) as svc}
-				<div class="int-axis"><span class="int-label">{svc.name}</span><span class="int-val small" class:svc-healthy={svc.status === 'Running'} class:svc-down={svc.status === 'Down'}>{svc.status}</span></div>
-			{/each}
+		<!-- Subsection divider — State → Motives (task #493). -->
+		<hr style="border:none;border-top:1px solid rgba(255,255,255,0.07);margin:10px 0 6px" />
+
+		<!-- ═══ SECTION: Motives ═══════════════════════════════════════════════
+		     Sims-style motive bars (0..100). The motivational layer below State
+		     and above Mind. Each motive decays + is reset by events (meals →
+		     Nourishment, sleep → Rest). Sorted server-side by urgency =
+		     (100 - level) × weight. See service/src/intuition/needs.js. -->
+		{#if panNeeds.length > 0}
+			{@const _trackedCount = panNeeds.filter(n => n.tracked).length}
+			{@const _untrackedCount = panNeeds.length - _trackedCount}
+			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+				Motives
+				<span style="font-size:10px;color:#6c7086">
+					{_trackedCount} tracked{_untrackedCount > 0 ? ` · ${_untrackedCount} awaiting signal` : ''} · event-driven (task #492)
+				</span>
+			</div>
+			<div class="needs-grid">
+				{#each panNeeds as n}
+					<!-- Each row: icon + label, then either a bar (tracked) or a hint
+					     pill (not tracked). Cause string sits as a thin subtitle
+					     under tracked rows explaining WHY the bar is where it is. -->
+					<div class="need-row" class:need-untracked={!n.tracked} title="{n.label} · weight {n.weight} · decay {n.decay_rate}/h · {n.cause || ''}">
+						<span class="need-icon">{n.icon}</span>
+						<span class="need-label">{n.label}</span>
+						{#if n.tracked}
+							<div class="need-bar-track">
+								<div class="need-bar-fill" style="width:{n.level}%;background:{needBarColor(n.level)}"></div>
+							</div>
+							<span class="need-level" style="color:{needBarColor(n.level)}">{Math.round(n.level)}{#if n.stale}<span style="font-size:9px;color:#fab387;margin-left:3px" title="value can't be trusted — last event too old">⚠</span>{/if}</span>
+						{:else}
+							<span class="need-hint" style="flex:1;font-size:10px;color:#6c7086;font-style:italic;text-align:right">{n.hint || 'not tracked yet'}</span>
+						{/if}
+					</div>
+					{#if n.tracked && n.cause}
+						<div class="need-cause" style="font-size:10px;color:{n.stale ? '#fab387' : '#6c7086'};padding:0 6px 4px 22px;line-height:1.2;margin-top:-2px">{n.cause}</div>
+					{/if}
+				{/each}
+			</div>
+		{/if}
+
+		<!-- ═══════════════════════════════════════════════════════════════════
+		     TOP-LEVEL SECTION: PAN — what PAN itself is doing/thinking.
+		     Distinct from USER above (which is PAN's read of the commander).
+		     Subsections: Mind → Recent Actions → Tasks → Predictions. Task #490. -->
+		<div style="margin-top:14px;padding-bottom:3px;margin-bottom:6px;font-size:11px;font-weight:700;color:#a6e3a1;letter-spacing:1.5px;border-bottom:1px solid rgba(166,227,161,0.3)">
+			PAN
 		</div>
+
+		<!-- ═══ SECTION: PAN's Mind ═════════════════════════════════════════════
+		     What PAN itself is doing/thinking right now. Combines:
+		       • Hero status badge (thinking / idle)
+		       • Per-session live indicator (Claude active / thinking / idle)
+		       • Recent thought stream (first-person reasoning trace, sources:
+		         intuition · screen · router · scout · interjection · dream)
+		     Mirrors the phone's PanThinkingCard. PAN can read this stream back
+		     via the `pan_thoughts` MCP tool. -->
+		{@const thinkingNow = (pan.sessions || []).some(s => s.thinking || s.claudeRunning)}
+		<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+			PAN's Mind
+			<span style="font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;background:{thinkingNow ? 'rgba(203,166,247,0.18)' : 'rgba(108,112,134,0.18)'};color:{thinkingNow ? '#cba6f7' : '#9399b2'}">
+				{thinkingNow ? '🧠 thinking…' : 'Π idle'}
+			</span>
+		</div>
+		<!-- Task #493: removed Status:Idle + per-session 'PAN idle · 1 client' rows.
+		     PAN's Mind is now Synthesis + Thought stream only — the live thinking/idle
+		     pill in the header above already conveys the busy state. -->
+		{#if panThoughts.length > 0}
+			<!-- Source → sensor-type mapping (task #491). Each thought source
+			     maps to a sensor category: BRAIN (pure reasoning), EYE (vision),
+			     EAR (audio in), VOICE (output), SCOUT (background research),
+			     DREAM (sleep/synthesis). Add new sources here as new sensors
+			     (pendant mic, gyroscope, etc.) come online. -->
+			{@const sensorOf = (src) => (
+				src === 'intuition'    ? 'brain'
+				: src === 'screen'     ? 'eye'
+				: src === 'webcam'     ? 'eye'
+				: src === 'router'     ? 'ear'
+				: src === 'transcript' ? 'ear'
+				: src === 'scout'      ? 'scout'
+				: src === 'interjection' ? 'voice'
+				: src === 'dream'      ? 'dream'
+				: 'other'
+			)}
+			{@const sensorIcon = { brain: '🧠', eye: '👁', ear: '👂', scout: '🔭', voice: '🗣', dream: '💤', other: '·' }}
+			{@const sensorColor = { brain: '#cba6f7', eye: '#89b4fa', ear: '#a6e3a1', scout: '#f9e2af', voice: '#fab387', dream: '#f5c2e7', other: '#9399b2' }}
+			{@const sensorLabel = { brain: 'think', eye: 'see', ear: 'hear', scout: 'scout', voice: 'speak', dream: 'dream', other: 'other' }}
+
+			<!-- Synthesis — rendered paragraph from the latest reasoning cycle
+			     (task #495). The paragraph is now a deterministic render of
+			     typed reasoning_steps, not a free-form LLM prose call. Each
+			     step carries kind/subject/predicate/value/conf + refs to
+			     evidence + parents[] forming a causal chain. The "show steps"
+			     toggle reveals the substrate behind the paragraph so you can
+			     drill into why PAN concluded what it did. -->
+			{@const synthAgeMs = panSynthesis?.generated_at_ms ? (Date.now() - panSynthesis.generated_at_ms) : null}
+			{@const synthAgeStr = synthAgeMs == null ? '' : synthAgeMs < 60_000 ? `${Math.round(synthAgeMs/1000)}s ago` : synthAgeMs < 3_600_000 ? `${Math.round(synthAgeMs/60_000)}m ago` : `${Math.round(synthAgeMs/3_600_000)}h ago`}
+			{@const reasoningSteps = panSynthesis?.steps || []}
+			<div style="margin:6px 0 10px;padding:8px 10px;background:rgba(203,166,247,0.06);border-left:2px solid rgba(203,166,247,0.45);border-radius:3px;font-size:12px;color:#cdd6f4;line-height:1.55">
+				<div style="display:flex;align-items:center;gap:6px;font-size:9px;font-weight:700;color:#cba6f7;letter-spacing:1px;margin-bottom:4px">
+					SYNTHESIS
+					{#if reasoningSteps.length > 0}
+						<button onclick={() => panReasoningOpen = !panReasoningOpen} style="margin-left:auto;background:none;border:1px solid rgba(203,166,247,0.3);color:#cba6f7;font-size:9px;font-weight:600;letter-spacing:1px;border-radius:3px;padding:1px 6px;cursor:pointer">{panReasoningOpen ? '▾ HIDE STEPS' : '▸ SHOW STEPS'} ({reasoningSteps.length})</button>
+					{/if}
+				</div>
+				{#if panSynthesis?.synthesis}
+					<div style="color:#cdd6f4;font-size:12px;line-height:1.55">{panSynthesis.synthesis}</div>
+					{#if panReasoningOpen && reasoningSteps.length > 0}
+						<!-- Typed reasoning trace — one row per step. Kind tag is
+						     color-coded; parents arrow indicates causal lineage. -->
+						{@const kindColor = { observe:'#a6e3a1', recall:'#89b4fa', notice:'#f9e2af', contradict:'#f38ba8', infer:'#cba6f7', question:'#94e2d5', doubt:'#fab387', intend:'#f5c2e7', commit:'#cba6f7' }}
+						<div style="margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,255,255,0.08);display:flex;flex-direction:column;gap:4px">
+							{#each reasoningSteps as step}
+								{@const kc = kindColor[step.kind] || '#9399b2'}
+								<div style="display:flex;align-items:flex-start;gap:6px;font-size:11px">
+									<span style="flex:0 0 70px;font-size:9px;font-weight:700;color:{kc};letter-spacing:1px;text-transform:uppercase;padding-top:2px">{step.kind}</span>
+									<span style="flex:1;color:#cdd6f4;line-height:1.4">
+										{step.value}
+										{#if step.subject || step.predicate}
+											<span style="color:#6c7086;font-size:9px"> · {step.subject || ''}{step.predicate ? `.${step.predicate}` : ''}</span>
+										{/if}
+										{#if step.conf != null}
+											<span style="color:#585b70;font-size:9px"> · conf {(step.conf * 100).toFixed(0)}%</span>
+										{/if}
+										{#if step.refs && step.refs.length}
+											<span style="color:#585b70;font-size:9px"> · refs {step.refs.map(r => `${r.type}#${r.id}`).join(', ')}</span>
+										{/if}
+										{#if step.parents && step.parents.length}
+											<span style="color:#585b70;font-size:9px"> ← from step{step.parents.length > 1 ? 's' : ''} {step.parents.join(', ')}</span>
+										{/if}
+									</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
+					<div style="margin-top:5px;font-size:9px;color:#6c7086;display:flex;align-items:center;gap:6px">
+						<span>{synthAgeStr ? `${synthAgeStr}` : ''}</span>
+						{#if (panSynthesis.sources_used || []).length}
+							<span>· sources: {panSynthesis.sources_used.join(' · ')}</span>
+						{/if}
+						{#if panSynthesis.cached}<span style="opacity:0.6">· cached</span>{/if}
+						<button onclick={() => forcePanSynthesis()} style="margin-left:auto;background:none;border:1px solid rgba(255,255,255,0.12);color:#9399b2;font-size:9px;border-radius:3px;padding:1px 5px;cursor:pointer" title="Force a fresh reasoning cycle">↻ rethink</button>
+					</div>
+				{:else}
+					<div style="color:#6c7086;font-size:11px;font-style:italic">thinking…</div>
+				{/if}
+			</div>
+
+			<div class="thought-stream" style="margin-top:6px">
+				{#each panThoughts.slice(0, 8) as t}
+					{@const tsMs = t.ts ? Date.parse(t.ts.replace(' ', 'T')) : null}
+					{@const ageMs = tsMs ? (Date.now() - tsMs) : null}
+					{@const ageStr = ageMs == null ? '' : ageMs < 60_000 ? `${Math.round(ageMs/1000)}s` : ageMs < 3_600_000 ? `${Math.round(ageMs/60_000)}m` : `${Math.round(ageMs/3_600_000)}h`}
+					{@const sens = sensorOf(t.source)}
+					{@const srcColor = sensorColor[sens]}
+					{@const srcIcon = sensorIcon[sens]}
+					<div class="thought-row">
+						<span class="thought-source" style="color:{srcColor}" title="{sensorLabel[sens]} · {t.source}">{srcIcon}</span>
+						<span class="thought-text">{t.thought}</span>
+						<span class="thought-age" title={t.ts}>{ageStr}</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
+
+		<!-- ═══ SECTION: Recent Actions ═════════════════════════════════════════
+		     Last 5 things PAN's services did (status changes, restarts, replies).
+		     Most useful when debugging "why did X happen 30s ago?". -->
 		{#if (pan.recent_actions || []).length > 0}
-			<div class="svc-category">Recent Actions</div>
+			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+				Recent Actions
+			</div>
 			<div class="int-axes">
 				{#each (pan.recent_actions || []).slice(0, 5) as act}
 					<div class="int-axis"><span class="int-val small">{act.action}</span></div>
 				{/each}
 			</div>
 		{/if}
+
+		<!-- ═══ SECTION: Tasks ══════════════════════════════════════════════════
+		     Active project tasks for the selected commander. -->
 		{#if (pan.active_tasks || []).length > 0}
-			<div class="svc-category">Tasks</div>
+			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+				Tasks
+				<span style="font-size:10px;color:#6c7086">in flight</span>
+			</div>
 			<div class="int-axes">
 				{#each (pan.active_tasks || []).slice(0, 5) as task}
 					<div class="int-axis task">
@@ -5802,8 +6319,14 @@
 				{/each}
 			</div>
 		{/if}
+
+		<!-- ═══ SECTION: Predictions ════════════════════════════════════════════
+		     PAN's guesses about what comes next (with confidence). -->
 		{#if preds.length > 0}
-			<div class="svc-category">Predictions</div>
+			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
+				Predictions
+				<span style="font-size:10px;color:#6c7086">what PAN thinks comes next</span>
+			</div>
 			<div class="int-axes">
 				{#each preds as p}
 					<div class="int-axis pred">
@@ -5814,76 +6337,7 @@
 			</div>
 		{/if}
 
-		<!-- Identity (from individual snapshot) -->
-		<div class="svc-category">Identity</div>
-		<div class="int-axes">
-			{#if voiceEnrollSpeakers.length > 0}
-				<div class="int-axis">
-					<span class="int-label">Voice</span>
-					<span class="int-val small" style="color:#a6e3a1">🎤 {voiceEnrollSpeakers.map(s => s.label || s).join(', ')}</span>
-				</div>
-			{/if}
-			<div class="int-axis">
-				<span class="int-label">Camera</span>
-				<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
-					{wc ? (wc.presence === 'yes' ? (wc.identity || 'someone') : wc.presence === 'no' ? 'desk empty' : 'unclear') : '⏳ no capture yet'}
-				</span>
-				<button onclick={forceCamCapture} disabled={forcingCapture} title="Force capture now" style="margin-left:4px;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:{forcingCapture ? '#6c7086' : '#cba6f7'};cursor:{forcingCapture ? 'default' : 'pointer'};font-size:10px;padding:1px 5px;line-height:1.4">
-					{forcingCapture ? '⏳' : '📷'}
-				</button>
-			</div>
-			{#if wc?.emotion && wc.presence === 'yes'}
-				<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
-			{/if}
-			{#if wc?.people_count > 1}
-				<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
-			{/if}
-			<div class="int-axis" style="flex-wrap:wrap">
-				<span class="int-label">Screen</span>
-				<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : '⏳ no capture yet'}</span>
-			</div>
-			{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
-			{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
-		</div>
-
-		<!-- Voice Identity enrollment -->
-		<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-			Voice Identity
-			<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}">{voiceServerOk ? 'online' : 'offline'}</span>
-		</div>
-		{#if voiceEnrollSpeakers.length > 0}
-			<div style="margin-bottom:6px">
-				{#each voiceEnrollSpeakers as sp}
-					<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
-						<span style="font-size:15px">🎤</span>
-						<span style="font-size:12px;color:#cdd6f4;flex:1">{sp.label || sp}</span>
-						{#if sp.sample_count}<span style="font-size:10px;color:#6c7086">{sp.sample_count} sample{sp.sample_count !== 1 ? 's' : ''}</span>{/if}
-						<button onclick={() => deleteVoiceSpeaker(sp.label || sp)} style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:12px;padding:1px 4px;border-radius:3px" title="Remove">✕</button>
-					</div>
-				{/each}
-			</div>
-		{:else}
-			<div style="font-size:11px;color:#6c7086;margin-bottom:6px">No speakers enrolled — voice IDs passively as you speak</div>
-		{/if}
-		<div style="display:flex;gap:5px;margin-bottom:5px">
-			<input bind:value={voiceEnrollLabel} placeholder="Speaker name" disabled={voiceEnrollStatus === 'recording' || voiceEnrollStatus === 'uploading'} style="flex:1;background:#1e1e2e;border:1px solid rgba(255,255,255,0.12);border-radius:5px;color:#cdd6f4;padding:4px 8px;font-size:12px;outline:none" />
-		</div>
-		{#if voiceEnrollStatus === 'recording'}
-			<div style="display:flex;gap:6px;align-items:center">
-				<button onclick={stopVoiceEnroll} style="flex:1;background:rgba(243,139,168,0.2);border:1px solid #f38ba8;border-radius:5px;color:#f38ba8;padding:5px;font-size:12px;cursor:pointer">⏹ Stop ({voiceEnrollSeconds}s / 10s)</button>
-			</div>
-			<div style="margin-top:4px;background:rgba(255,255,255,0.07);border-radius:3px;height:3px;overflow:hidden">
-				<div style="background:#cba6f7;height:100%;width:{Math.min(voiceEnrollSeconds/10*100,100)}%;transition:width 1s linear"></div>
-			</div>
-		{:else}
-			<button onclick={startVoiceEnroll} disabled={!voiceServerOk || voiceEnrollStatus === 'uploading'} style="width:100%;background:rgba(203,166,247,0.15);border:1px solid rgba(203,166,247,0.4);border-radius:5px;color:#cba6f7;padding:5px;font-size:12px;cursor:{voiceServerOk ? 'pointer' : 'not-allowed'};opacity:{voiceServerOk ? 1 : 0.5}">
-				🎤 {voiceEnrollStatus === 'uploading' ? 'Processing...' : 'Record Sample (10s)'}
-			</button>
-		{/if}
-		{#if voiceEnrollMsg}
-			<div style="font-size:11px;margin-top:4px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
-		{/if}
-	{/if}
+		<!-- Identity section moved to top of USER block (task #490). -->
 {/snippet}
 
 <!-- TOOLBAR -->
@@ -11238,7 +11692,52 @@
 	.int-axis {
 		display: flex; align-items: baseline; gap: 6px;
 		padding: 3px 4px; font-size: 12px;
+		min-width: 0;                       /* allow flex children to shrink below content size */
 	}
+	/* The int-label has min-width:80px which is fine for short labels like
+	   "Mood"/"Focus" but breaks for long single-token captions (e.g. a caller
+	   name "intuition-classifier") when the panel is dragged narrow. Allow
+	   wrapping/breaking so the panel never gets forced wider than the user
+	   wants — and never wraps one-char-per-line. */
+	.int-label, .int-val { overflow-wrap: anywhere; word-break: break-word; }
+
+	/* PAN's thought stream — one row = one first-person sentence. Designed to
+	   render cleanly down to ~160px panel width. The text wraps softly via
+	   overflow-wrap:anywhere; the icon + age cling to the row edges. */
+	/* Life Needs — Sims-style motive bars. Compact horizontal row per need. */
+	.needs-grid {
+		padding: 2px 0 8px 0; display: flex; flex-direction: column; gap: 3px;
+	}
+	.need-row {
+		display: flex; align-items: center; gap: 6px;
+		padding: 3px 4px; font-size: 12px; min-width: 0;
+	}
+	.need-icon { flex-shrink: 0; width: 16px; text-align: center; font-size: 13px; }
+	.need-label {
+		flex-shrink: 0; width: 90px; color: #a6adc8;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.need-bar-track {
+		flex: 1 1 auto; min-width: 30px; height: 8px;
+		background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden;
+	}
+	.need-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease, background 0.4s ease; }
+	.need-level {
+		flex-shrink: 0; width: 28px; text-align: right;
+		font-variant-numeric: tabular-nums; font-weight: 600; font-size: 11px;
+	}
+
+	.thought-stream { padding: 2px 0 8px 0; display: flex; flex-direction: column; gap: 4px; }
+	.thought-row {
+		display: flex; align-items: flex-start; gap: 6px;
+		padding: 5px 6px; font-size: 12px; line-height: 1.4;
+		background: rgba(255,255,255,0.02); border-radius: 5px;
+		border-left: 2px solid rgba(203,166,247,0.25);
+		min-width: 0;
+	}
+	.thought-source { flex-shrink: 0; font-size: 13px; line-height: 1.3; width: 16px; text-align: center; }
+	.thought-text   { flex: 1; min-width: 0; color: #cdd6f4; overflow-wrap: anywhere; word-break: break-word; }
+	.thought-age    { flex-shrink: 0; color: #6c7086; font-size: 10px; font-family: ui-monospace, monospace; align-self: flex-end; }
 	.int-axis:hover { background: #1e1e2e; border-radius: 4px; }
 	.int-label { color: #6c7086; min-width: 80px; flex-shrink: 0; }
 	.int-val { color: #cdd6f4; word-break: break-word; }

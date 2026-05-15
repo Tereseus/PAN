@@ -40,6 +40,10 @@ import preferencesRouter from './routes/preferences.js';
 import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
+import { writeThought, recentThoughts } from './thoughts.js';
+import * as needs from './intuition/needs.js';
+import { currentUserId as needsCurrentUser } from './intuition/nourishment.js';
+import { recentInterjections, recordFeedback } from './intuition/action.js';
 import { startScreenWatcher, startBurst, resetBackoff, getScreenWatcherStatus } from './screen-watcher.js';
 import { startWebcamWatcher, getWebcamStatus, getWebcamContext } from './webcam-watcher.js';
 import { startWatchdog, notifyDashboardLoaded } from './dashboard-watchdog.js';
@@ -1593,6 +1597,292 @@ app.get('/api/automation/usage', (req, res) => {
   } catch (e) {
     console.error('[PAN Usage] Error:', e.message);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/automation/usage/recent?limit=10 — recent AI calls feed.
+// Powers the desktop dashboard's "PAN's Mind" panel ("what PAN is thinking
+// about right now"). Mirrors the per-call telemetry the phone's
+// PanThinkingCard already surfaces locally. Per-call latency_ms is bug #471.
+app.get('/api/automation/usage/recent', (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    const rows = all(`
+      SELECT caller, model, COALESCE(source,'internal') as source,
+             COALESCE(device_id,'(none)') as device_id,
+             input_tokens, output_tokens, cost_cents,
+             COALESCE(prompt_preview,'') as prompt_preview,
+             latency_ms,
+             created_at
+      FROM ai_usage
+      ORDER BY id DESC
+      LIMIT ${limit}
+    `);
+    res.json({ ok: true, recent: rows });
+  } catch (e) {
+    console.error('[PAN Usage Recent] Error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ==================== PAN THOUGHT STREAM ====================
+// First-person reasoning trace — see service/src/thoughts.js header.
+// Powers the dashboard's "PAN's Mind" panel and the `pan_thoughts` MCP tool.
+
+// GET /api/v1/thoughts/recent?limit=20&source=intuition&since_ms=3600000
+app.get('/api/v1/thoughts/recent', (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 200);
+    const source = (req.query.source || '').trim() || undefined;
+    const sinceMs = req.query.since_ms ? parseInt(req.query.since_ms) : undefined;
+    const rows = recentThoughts({ limit, source, sinceMs });
+    res.json({ ok: true, thoughts: rows });
+  } catch (e) {
+    console.error('[Thoughts API] recent failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/v1/thoughts { source, thought, refs?, importance? }
+// Used by PAN itself (via MCP) to log explicit deliberations — e.g. "I'm
+// considering interjecting because…". Kept out of `ai_usage` because this is
+// a verdict, not a billing event.
+app.post('/api/v1/thoughts', express.json(), (req, res) => {
+  try {
+    const { source, thought, refs, importance } = req.body || {};
+    if (!source || !thought) {
+      return res.status(400).json({ ok: false, error: 'source and thought required' });
+    }
+    const id = writeThought(source, thought, refs || null, importance);
+    if (!id) return res.status(500).json({ ok: false, error: 'write failed' });
+    res.json({ ok: true, id });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ==================== LIFE NEEDS ====================
+// Sims-style motive bars. See service/src/intuition/needs.js for the model.
+// User identity defaults to face-id lock; override with ?user=<id>.
+
+// GET /api/v1/needs?user=owner  → all needs with current decayed levels
+app.get('/api/v1/needs', (req, res) => {
+  try {
+    const user = (req.query.user || '').trim() || needsCurrentUser();
+    const rows = needs.evaluate(user);
+    res.json({ ok: true, user, needs: rows });
+  } catch (e) {
+    console.error('[Needs API] evaluate failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/needs/definitions  → static metadata (labels, icons, defaults)
+app.get('/api/v1/needs/definitions', (_req, res) => {
+  res.json({ ok: true, definitions: needs.NEED_DEFS });
+});
+
+// GET /api/v1/needs/events?user=owner&need=nourishment&limit=20  → audit log
+app.get('/api/v1/needs/events', (req, res) => {
+  try {
+    const user = (req.query.user || '').trim() || needsCurrentUser();
+    const needId = (req.query.need || '').trim() || null;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 200);
+    const events = needs.recentEvents(user, { needId, limit });
+    res.json({ ok: true, user, need: needId, events });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/pan/synthesis?user=<name>&force=1
+// LLM-synthesized first-person paragraph capturing what PAN is currently
+// trying to understand. Backs the PAN's-Mind synthesis box on the dashboard
+// (task #494). Cached 3 min per user — pass force=1 to bypass.
+app.get('/api/v1/pan/synthesis', async (req, res) => {
+  try {
+    const user = (req.query.user || '').trim() || needsCurrentUser();
+    const force = req.query.force === '1';
+    const { generate } = await import('./intuition/synthesis.js');
+    const result = await generate(user, { force, trigger: force ? 'manual' : 'tick' });
+    res.json({ ok: true, user, ...result });
+  } catch (e) {
+    console.error('[PAN Synthesis API] failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ─── PAN Reasoning Steps (task #495) ───────────────────────────────────
+// Typed reasoning substrate. Each step is one atomic thought-move
+// (observe/recall/infer/...) with refs to evidence. The widget paragraph
+// is a *rendering* of the latest cycle; these endpoints expose the
+// substrate underneath so consumers can drill in.
+//
+// GET /api/v1/pan/reasoning/recent?user=<name>&limit=20&kind=infer&since_ms=N
+app.get('/api/v1/pan/reasoning/recent', async (req, res) => {
+  try {
+    const userId = (req.query.user || '').trim() || undefined;
+    const limit = parseInt(req.query.limit, 10);
+    const since_ms = parseInt(req.query.since_ms, 10);
+    const { recentSteps } = await import('./intuition/reasoning.js');
+    const rows = recentSteps({
+      userId,
+      limit: Number.isFinite(limit) ? limit : 20,
+      kind: req.query.kind || undefined,
+      since_ms: Number.isFinite(since_ms) ? since_ms : undefined,
+    });
+    res.json({ ok: true, count: rows.length, steps: rows });
+  } catch (e) {
+    console.error('[PAN Reasoning API] recent failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/pan/reasoning/cycle/:id  → one cycle + all its steps.
+app.get('/api/v1/pan/reasoning/cycle/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad id' });
+    const { getCycle } = await import('./intuition/reasoning.js');
+    const result = getCycle(id);
+    if (!result) return res.status(404).json({ ok: false, error: 'not found' });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[PAN Reasoning API] cycle failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/pan/reasoning/why/:stepId  → causal chain (parents walk).
+app.get('/api/v1/pan/reasoning/why/:stepId', async (req, res) => {
+  try {
+    const id = parseInt(req.params.stepId, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad step id' });
+    const { walkParents } = await import('./intuition/reasoning.js');
+    const chain = walkParents(id);
+    res.json({ ok: true, count: chain.length, chain });
+  } catch (e) {
+    console.error('[PAN Reasoning API] why failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/v1/pan/reasoning/cycle  { user?, trigger? } → force a new cycle.
+app.post('/api/v1/pan/reasoning/cycle', express.json(), async (req, res) => {
+  try {
+    const user = (req.body?.user || req.query.user || '').trim() || needsCurrentUser();
+    const trigger = req.body?.trigger || 'manual';
+    const { runCycle } = await import('./intuition/reasoning.js');
+    const result = await runCycle({ userId: user, trigger });
+    res.json({ ok: result.ok !== false, user, ...result });
+  } catch (e) {
+    console.error('[PAN Reasoning API] cycle POST failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/v1/needs/satisfy { user?, need, delta?, toLevel?, source?, note? }
+// Used by manual UI + tests + future skills ("PAN, log that I ate a sandwich").
+app.post('/api/v1/needs/satisfy', express.json(), (req, res) => {
+  try {
+    const { user, need, delta, toLevel, source, note, refs } = req.body || {};
+    if (!need) return res.status(400).json({ ok: false, error: 'need required' });
+    const userId = (user || '').trim() || needsCurrentUser();
+    const result = needs.satisfy(userId, need, { delta, toLevel, source: source || 'api', note, refs });
+    if (!result) return res.status(400).json({ ok: false, error: `unknown need: ${need}` });
+    res.json({ ok: true, user: userId, need, ...result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/v1/needs/set { user?, need, level, note? } — dashboard slider override
+app.post('/api/v1/needs/set', express.json(), (req, res) => {
+  try {
+    const { user, need, level, note } = req.body || {};
+    if (!need || typeof level !== 'number') {
+      return res.status(400).json({ ok: false, error: 'need and numeric level required' });
+    }
+    const userId = (user || '').trim() || needsCurrentUser();
+    const result = needs.manualSet(userId, need, level, { note });
+    if (!result) return res.status(400).json({ ok: false, error: `unknown need: ${need}` });
+    res.json({ ok: true, user: userId, need, ...result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/interjections?user=owner&limit=20 — recent delivered interjections
+app.get('/api/v1/interjections', (req, res) => {
+  try {
+    const user = (req.query.user || '').trim() || null;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 200);
+    const rows = recentInterjections({ userId: user, limit });
+    res.json({ ok: true, interjections: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/v1/interjections/:id/feedback { feedback: accept|dismiss|snooze|thanks }
+// Updates status + adjusts the per-user need weight (learning loop).
+app.post('/api/v1/interjections/:id/feedback', express.json(), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const feedback = (req.body?.feedback || '').trim();
+    const valid = ['accept', 'dismiss', 'snooze', 'thanks', 'ignored'];
+    if (!valid.includes(feedback)) {
+      return res.status(400).json({ ok: false, error: `feedback must be one of ${valid.join('|')}` });
+    }
+    const r = await recordFeedback(id, feedback);
+    if (!r.ok) return res.status(400).json(r);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/v1/needs/weight { user?, need, delta }  — learning loop adjustment
+app.post('/api/v1/needs/weight', express.json(), (req, res) => {
+  try {
+    const { user, need, delta } = req.body || {};
+    if (!need || typeof delta !== 'number') {
+      return res.status(400).json({ ok: false, error: 'need and numeric delta required' });
+    }
+    const userId = (user || '').trim() || needsCurrentUser();
+    const next = needs.adjustWeight(userId, need, delta);
+    if (next == null) return res.status(400).json({ ok: false, error: `unknown need: ${need}` });
+    res.json({ ok: true, user: userId, need, weight: next });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/v1/interjections?user=owner&limit=20 — delivered interjections log
+app.get('/api/v1/interjections', (req, res) => {
+  try {
+    const user = (req.query.user || '').trim() || null;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 200);
+    const rows = recentInterjections({ userId: user, limit });
+    res.json({ ok: true, interjections: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/v1/interjections/:id/feedback { feedback: 'accept'|'dismiss'|'thanks'|'snooze' }
+// Powers the per-user weight learning loop. accept/thanks raise the need's
+// weight, dismiss lowers it. See intuition/action.js recordFeedback.
+app.post('/api/v1/interjections/:id/feedback', express.json(), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { feedback } = req.body || {};
+    if (!id || !feedback) return res.status(400).json({ ok: false, error: 'id + feedback required' });
+    const result = await recordFeedback(id, feedback);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
