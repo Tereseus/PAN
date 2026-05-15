@@ -351,6 +351,103 @@ PAN identifies people through accumulated multi-modal evidence — never by
 comparing against external face databases. All identity data lives in PAN's
 own DB. The system builds confidence over time, not from a single image.
 
+### PAN's Mind — first-person thought stream (dashboard Intuition section)
+
+**What it is**: A live, persisted, first-person reasoning trace — modeled on
+Claude's extended-thinking blocks. Every reasoning event in PAN writes ONE
+short sentence describing what it just concluded:
+
+- **🧠 intuition** — after each classifier run: *"Commander is focused on Svelte, mood normal. Holding back — no nudge needed."*
+- **👁 screen** — after each vision capture: *"I see a Svelte dashboard with a sunset terminal background and the intuition panel open."*
+- **💬 router** — after each user utterance: *"Commander said 'fix the intuition panel' — I'm answering."*
+- **🔭 scout** — after each finding (TBD)
+- **🗯 interjection** — when deliberating whether to interrupt (TBD)
+- **💤 dream** — at each consolidation cycle (TBD)
+
+**Storage**: `pan_thoughts(id, ts, source, thought, refs_json, importance)`.
+Capped at 240 chars per row. Producers call `writeThought(source, text, refs, importance)`
+from `service/src/thoughts.js`. The dashboard renders newest-first; PAN itself
+reads the stream back via the `pan_thoughts` MCP tool to answer questions like
+"what was I just doing 10 minutes ago?".
+
+**Replaces**: The old "What PAN's mind is busy with" feed, which showed raw
+`ai_usage` rows (caller + static system prompt). That feed was useless because
+the system prompt for `intuition-classifier` is identical every call — the
+interesting bit is the *verdict*, which is now what gets surfaced here.
+
+**Pre-gate**: Verdict producers (intuition.js, screen-watcher.js, router.js)
+must call `writeThought` AFTER they've parsed/validated the model output —
+never log the raw prompt as a thought. Dedupe with `recentThoughtMatches()` so
+a static screen doesn't fill the panel with the same description every minute.
+
+**Endpoints**:
+- `GET /api/v1/thoughts/recent?limit=20&source=intuition&since_ms=3600000` → newest-first thoughts
+- `POST /api/v1/thoughts {source, thought, refs?, importance?}` → write one (used by MCP)
+
+**MCP tool**: `pan_thoughts {limit?, source?, since_ms?, write?}` — read or write.
+
+---
+
+### Life Needs — Sims-style motive bars (dashboard Intuition section)
+
+**What it is**: 13 per-user "motive" bars (0..100) sitting between state and
+mind in the Intuition panel. Modeled on The Sims' needs system: each Need
+decays linearly over time and is reset/raised by real-world events.
+
+The 13 needs (default decay rate, points/hour):
+- **Body**: 🍽 Nourishment (15) · 💧 Hydration (25) · 😴 Rest (6) · 🏃 Body movement (4)
+- **Mind**: 🧘 Mental health (3) · 👥 Social (5) · 💞 Connection (3) · 🎯 Focus (8) · 🎮 Fun (5) · 🔭 Curiosity (4)
+- **World**: 🪴 Environment (3) · 🗂 Admin (4) · 🛡 Safety (2)
+
+**Storage**:
+- `pan_needs(user_id, need_id, level, weight, decay_rate, last_satisfied_at, last_evaluated_at)`
+  — one row per (user, need). UNIQUE constraint.
+- `pan_need_events(ts, user_id, need_id, kind, delta, level_after, source, refs_json, note)`
+  — append-only audit log. `kind` ∈ {satisfy, observe, decay_tick, manual}.
+
+**Decay model**: Levels are recomputed on read (`evaluate()` in
+`service/src/intuition/needs.js`):
+`level = max(0, stored.level - decay_rate × hours_since_last_evaluated)`.
+No background timer — pure lazy recompute. `evaluate()` persists the decayed
+value back so dashboard reads are O(1) and consistent.
+
+**Producers (Nourishment wired first)**:
+- **screen-watcher** — keyword-scan the vision-AI description; food/drink terms
+  fire `observe('nourishment', +12)`. Weak signal (food on screen ≠ user
+  eating). Drink-only sightings give +6.
+- **router** — regex-scan every user utterance for meal mentions
+  ("just ate lunch", "had a snack", "eating a sandwich") → `satisfy()`.
+  Hunger mentions ("I'm hungry", "starving") write a high-importance Mind
+  thought so the scorer surfaces Nourishment next tick.
+- **Manual** — dashboard slider override → `manualSet()`.
+
+**Per-user weight (0..2)**: How much *this person* cares about each need.
+Default 1.0. Adjusted by the learning loop: dismissing a "you should eat" nudge
+3× lowers Nourishment weight; thanking PAN for it raises it. Urgency in the
+scorer = `(100 - level) / 100 × weight`.
+
+**Identity**: Currently resolved via face-id lock from webcam-watcher (falls
+back to `'owner'` for single-user). Will be replaced by identity-fusion cluster
+once `intuition/identity.js` lands.
+
+**Endpoints**:
+- `GET /api/v1/needs?user=owner` → all needs, sorted by urgency desc
+- `GET /api/v1/needs/definitions` → static metadata (icons, labels, defaults)
+- `GET /api/v1/needs/events?user=owner&need=nourishment&limit=20` → audit log
+- `POST /api/v1/needs/satisfy {user?, need, delta?, toLevel?, source?, note?}` → bump up
+- `POST /api/v1/needs/set {user?, need, level, note?}` → manual override
+- `POST /api/v1/needs/weight {user?, need, delta}` → learning loop adjustment
+
+**Dashboard widget**: Compact horizontal bars in the Intuition panel, sorted
+by urgency (most pressing motive on top). Bar color: green ≥70, yellow 30-69,
+red <30. Tooltip shows weight, decay rate, hours-since-satisfied.
+
+**Pre-gate**: Producers must not satisfy needs from inferred state alone — a
+food image on screen is `observe()` (capped delta), only an explicit "I ate"
+utterance is `satisfy()`. This keeps the bar honest.
+
+---
+
 ### Identity Panel (dashboard Intuition section)
 The current split between "Identity" and "Voice Identity" is wrong. There is
 one concept: **Identity**. Voice is one signal among many. The panel should

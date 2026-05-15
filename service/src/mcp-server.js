@@ -61,6 +61,35 @@ server.tool(
 );
 
 server.tool(
+  'pan_thoughts',
+  'Read PAN\'s own stream of consciousness — first-person reasoning trace from intuition, screen-watcher, router, scout, etc. Use this to remember "what was I just doing/thinking?" across the last few minutes/hours. Returns thoughts newest-first. Can also write a new thought (e.g. an explicit interjection deliberation) via {write:{...}}.',
+  {
+    limit:    z.number().optional().describe('Max thoughts to return (default 20, max 200)'),
+    source:   z.string().optional().describe('Filter to one source: intuition | screen | scout | router | interjection | dream | manual'),
+    since_ms: z.number().optional().describe('Only return thoughts newer than this many ms ago (e.g. 3600000 = last hour)'),
+    write:    z.object({
+      source: z.string(),
+      thought: z.string(),
+      refs: z.record(z.any()).optional(),
+      importance: z.number().optional(),
+    }).optional().describe('Write a new thought instead of (or in addition to) reading. First-person sentence, <=240 chars.'),
+  },
+  async ({ limit, source, since_ms, write }) => {
+    try {
+      if (write) {
+        await panFetch('/api/v1/thoughts', { method: 'POST', body: write });
+      }
+      const params = new URLSearchParams();
+      if (limit) params.set('limit', String(limit));
+      if (source) params.set('source', source);
+      if (since_ms) params.set('since_ms', String(since_ms));
+      const qs = params.toString();
+      return ok(await panFetch(`/api/v1/thoughts/recent${qs ? '?' + qs : ''}`));
+    } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
   'pan_decide',
   'Log a significant decision to PAN memory. Use when choosing between approaches, architectures, or designs — so future sessions know what was decided and why.',
   {

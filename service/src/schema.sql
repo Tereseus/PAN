@@ -296,12 +296,112 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     prompt_preview TEXT,
     source TEXT DEFAULT 'internal',  -- #465: phone | dashboard | mcp | scout | dream | intuition | router | internal
     device_id TEXT,                   -- #465: e.g. "pixel-10-pro", "minipc", null for server-internal
+    latency_ms INTEGER,               -- #471: wall-clock ms from request → response (null = not measured)
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_usage_caller ON ai_usage(caller);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_source ON ai_usage(source);
+
+-- PAN's stream of consciousness — first-person reasoning trace, modeled on
+-- Claude's extended-thinking blocks. Every reasoning event (intuition verdict,
+-- screen description, router decision, scout finding, interjection deliberation)
+-- writes ONE short first-person sentence here. The dashboard's "PAN's Mind"
+-- panel renders this stream verbatim, and PAN itself can read its own thoughts
+-- back via the `pan_thoughts` MCP tool to remember "what was I doing 10 min ago?"
+--
+-- Design contract for `thought`:
+--   • First person ("I'm noticing…", "I see…", "I'm holding back from interjecting because…")
+--   • <= 240 chars, complete sentence
+--   • States the conclusion, NOT the input ("Commander seems focused on Svelte"
+--     — NOT "Given the signals: commander=owner, screen=...")
+--
+-- `source` values: intuition | screen | scout | router | interjection | dream | manual
+-- `refs_json`: optional pointers — {"ai_usage_id": 123, "event_id": 456, "session_id": "abc"}
+CREATE TABLE IF NOT EXISTS pan_thoughts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    source TEXT NOT NULL,
+    thought TEXT NOT NULL,
+    refs_json TEXT,
+    importance REAL DEFAULT 0.5    -- 0..1, biases retention + dashboard ordering
+);
+CREATE INDEX IF NOT EXISTS idx_pan_thoughts_ts ON pan_thoughts(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_pan_thoughts_source ON pan_thoughts(source);
+
+-- === LIFE NEEDS (Sims-style motive bars) ===
+-- Per-user, per-need 0..100 levels. Decay over time, reset/raised by events
+-- (eating → Nourishment up, sleep → Rest up, social interaction → Social up).
+-- Each Need has a per-user weight (how much THIS person cares about it) that's
+-- learned over time from accept/dismiss feedback on need-driven interjections.
+--
+-- The Needs engine (`intuition/needs.js`) computes current levels on demand
+-- (level = max(0, last_level - decay_rate × hours_since_last_event)) and emits
+-- candidate actions when (100 - level) × weight × precondition crosses threshold.
+--
+-- need_id values: nourishment | hydration | rest | social | connection | focus
+--                 | fun | environment | health_physical | health_mental | admin
+--                 | curiosity | safety
+CREATE TABLE IF NOT EXISTS pan_needs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,                          -- identity cluster id (e.g. 'owner')
+    need_id TEXT NOT NULL,                          -- e.g. 'nourishment'
+    level REAL NOT NULL DEFAULT 100,                -- 0..100, last computed value
+    weight REAL NOT NULL DEFAULT 1.0,               -- 0..2, per-user multiplier
+    decay_rate REAL NOT NULL DEFAULT 10,            -- points lost per hour
+    last_satisfied_at TEXT,                         -- last time level was reset/raised
+    last_evaluated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    notes TEXT DEFAULT '',
+    UNIQUE(user_id, need_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pan_needs_user ON pan_needs(user_id);
+CREATE INDEX IF NOT EXISTS idx_pan_needs_need ON pan_needs(need_id);
+
+-- Raw events that move need levels. Append-only audit log so we can
+-- recompute history and learn decay rates / weights from real data.
+-- kind: 'satisfy' (level jumps up), 'decay_tick' (scheduled drop),
+--       'observe' (sensor evidence — food seen, yawn detected, etc.),
+--       'manual' (user/dashboard override).
+CREATE TABLE IF NOT EXISTS pan_need_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    user_id TEXT NOT NULL,
+    need_id TEXT NOT NULL,
+    kind TEXT NOT NULL,                             -- satisfy | decay_tick | observe | manual
+    delta REAL NOT NULL DEFAULT 0,                  -- signed change applied to level
+    level_after REAL NOT NULL,                      -- snapshot post-change
+    source TEXT,                                    -- 'screen-watcher' | 'router' | 'manual' | 'webcam' | 'transcript'
+    refs_json TEXT,                                 -- pointers: { ai_usage_id, event_id, session_id }
+    note TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_pan_need_events_ts ON pan_need_events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_pan_need_events_user_need ON pan_need_events(user_id, need_id);
+
+-- Delivered interjections — every time PAN actually speaks up. One row per
+-- dispatch, with action_key dedupe (30-min window persistence guard) and
+-- status field for the learning loop:
+--   delivered → accept (user followed up) | dismiss (closed/swiped) |
+--               snooze (later) | thanks (positive) | ignored (timeout)
+CREATE TABLE IF NOT EXISTS pan_interjections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    user_id TEXT NOT NULL,
+    action_key TEXT NOT NULL,       -- e.g. 'act:need:nourishment'
+    candidate_id TEXT NOT NULL,     -- e.g. 'need:nourishment'
+    score REAL NOT NULL DEFAULT 0,
+    reason TEXT DEFAULT '',
+    speak TEXT DEFAULT '',          -- TTS-friendly phrasing
+    subject TEXT DEFAULT '',        -- chat subject line
+    body TEXT DEFAULT '',           -- chat body
+    chat_msg_id TEXT,               -- FK-ish into chat_messages(id)
+    client_fanout INTEGER DEFAULT 0,-- how many connected devices got speak
+    status TEXT NOT NULL DEFAULT 'delivered',
+    feedback_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pan_interjections_user_created ON pan_interjections(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pan_interjections_key ON pan_interjections(action_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pan_interjections_status ON pan_interjections(status);
 
 -- === THREE-TIER VECTOR MEMORY ===
 
@@ -724,3 +824,76 @@ CREATE TABLE IF NOT EXISTS atlas_apps (
   last_seen TEXT DEFAULT (datetime('now','localtime')),
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
+
+-- === PAN REASONING STEPS (task #495) =================================
+-- Typed thought records — the substrate PAN actually "thinks in".
+-- Each row is one atomic reasoning move (observe / recall / infer / etc).
+-- Rows reference each other via `parents` (causal chain) and reference
+-- raw evidence (events, snapshots, prior thoughts) via `refs`. The widget
+-- synthesis paragraph is a *rendering* of the latest cycle's steps —
+-- the steps themselves are the durable substrate of PAN's mind.
+--
+-- Why: pre-#495 synthesis was prose-only LLM output with no pointers,
+-- which is narration, not thought. With refs, PAN can pull up "the
+-- screenshot I was looking at when I concluded X" the same way a human
+-- pulls up an image from memory.
+CREATE TABLE IF NOT EXISTS pan_reasoning_steps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          INTEGER NOT NULL,                      -- epoch ms
+    cycle_id    INTEGER NOT NULL,                      -- groups steps from one reasoning pass
+    user_id     TEXT,                                  -- whose context this is about (nullable for system-level reasoning)
+    kind        TEXT NOT NULL,                         -- observe|recall|notice|contradict|infer|question|doubt|intend|commit
+    subject     TEXT,                                  -- 'user' | 'self' | 'system' | entity name
+    predicate   TEXT,                                  -- 'is_frustrated' | 'wants' | 'shows' | 'failed_at' ...
+    value       TEXT,                                  -- the object (free text; may contain JSON for structured values)
+    conf        REAL DEFAULT 0.5,                      -- 0..1 confidence
+    refs        TEXT,                                  -- JSON array: [{type:'event',id:N},{type:'thought',id:N},{type:'snapshot',ts:N},{type:'step',id:N}]
+    parents     TEXT,                                  -- JSON array of step ids this was inferred from
+    source      TEXT,                                  -- 'cerebras'|'claude'|'rule'|'sensor'|'manual'
+    importance  REAL DEFAULT 0.5                       -- biases retention + dashboard ordering
+);
+CREATE INDEX IF NOT EXISTS idx_reasoning_ts        ON pan_reasoning_steps(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reasoning_user_ts   ON pan_reasoning_steps(user_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reasoning_cycle     ON pan_reasoning_steps(cycle_id);
+CREATE INDEX IF NOT EXISTS idx_reasoning_subj_pred ON pan_reasoning_steps(subject, predicate);
+CREATE INDEX IF NOT EXISTS idx_reasoning_kind      ON pan_reasoning_steps(kind);
+
+-- FTS5 mirror over the free-text fields so we can do "what has PAN ever
+-- thought about <topic>" queries without scanning. Triggers keep it in
+-- sync with the base table.
+CREATE VIRTUAL TABLE IF NOT EXISTS pan_reasoning_steps_fts USING fts5(
+    subject, predicate, value,
+    content='pan_reasoning_steps', content_rowid='id'
+);
+CREATE TRIGGER IF NOT EXISTS pan_reasoning_steps_ai AFTER INSERT ON pan_reasoning_steps BEGIN
+    INSERT INTO pan_reasoning_steps_fts(rowid, subject, predicate, value)
+    VALUES (new.id, new.subject, new.predicate, new.value);
+END;
+CREATE TRIGGER IF NOT EXISTS pan_reasoning_steps_ad AFTER DELETE ON pan_reasoning_steps BEGIN
+    INSERT INTO pan_reasoning_steps_fts(pan_reasoning_steps_fts, rowid, subject, predicate, value)
+    VALUES ('delete', old.id, old.subject, old.predicate, old.value);
+END;
+CREATE TRIGGER IF NOT EXISTS pan_reasoning_steps_au AFTER UPDATE ON pan_reasoning_steps BEGIN
+    INSERT INTO pan_reasoning_steps_fts(pan_reasoning_steps_fts, rowid, subject, predicate, value)
+    VALUES ('delete', old.id, old.subject, old.predicate, old.value);
+    INSERT INTO pan_reasoning_steps_fts(rowid, subject, predicate, value)
+    VALUES (new.id, new.subject, new.predicate, new.value);
+END;
+
+-- Cycles table — one row per reasoning pass, holds the rendered paragraph
+-- + provenance + cost. Steps belong to a cycle via cycle_id. We cache the
+-- rendered paragraph here so the widget doesn't re-render on every poll.
+CREATE TABLE IF NOT EXISTS pan_reasoning_cycles (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              INTEGER NOT NULL,                  -- epoch ms (cycle start)
+    user_id         TEXT,                              -- whose context
+    trigger         TEXT,                              -- 'manual' | 'tick' | 'event' | 'message'
+    paragraph       TEXT,                              -- rendered synthesis (cached for widget)
+    step_count      INTEGER DEFAULT 0,
+    model           TEXT,                              -- which LLM produced the steps
+    latency_ms      INTEGER,                           -- wall time of the LLM call
+    sources_used    TEXT,                              -- JSON: ['thoughts','snapshot','events','steps']
+    ok              INTEGER DEFAULT 1                  -- 0 if cycle failed
+);
+CREATE INDEX IF NOT EXISTS idx_reasoning_cycles_ts      ON pan_reasoning_cycles(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_reasoning_cycles_user_ts ON pan_reasoning_cycles(user_id, ts DESC);

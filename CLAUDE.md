@@ -2,6 +2,13 @@
 
 PAN is a persistent AI operating system across all devices, projects, and conversations.
 
+> **Architecture lives in [docs/PAN-ARCHITECTURE.md](./docs/PAN-ARCHITECTURE.md).**
+> PAN is 8 functional sections — **Intuition is the cortex (~50% of the system)**;
+> Memory, Capabilities, Jobs, Devices, Comms, Learning, and Security wrap around it.
+> Read that doc before reorganizing code or asking "where does this belong?".
+> The Mermaid diagram below shows *deployment topology* (Phone/Server/Desktop/Pendant) —
+> the architecture doc shows the *functional sections* (what each part IS).
+
 > **Feature specs live in [docs/FEATURES.md](./docs/FEATURES.md).** Every button, widget, and
 > endpoint is documented there with what it calls, what it preserves, what it
 > replaces, and its pre-gate. If you're about to guess what a UI element does —
@@ -182,6 +189,7 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 | `service/src/routes/orgs.js` | Organization CRUD — per-org DBs, roles, ACL, cross-org sharing |
 | `service/src/routes/chat.js` | Chat system — threads, messages, ΠΑΝ system channel |
 | `service/src/routes/intuition.js` | Intuition engine — aggregates presence signals into voice router context |
+| `service/src/thoughts.js` | PAN's-Mind thought stream — first-person reasoning trace (writeThought/recentThoughts). Backs `pan_thoughts` MCP tool + dashboard panel. See docs/FEATURES.md |
 | `service/src/routes/zones.js` | Geofencing — zone definitions, active zone lookup, permission gating |
 | `service/src/routes/incognito.js` | Incognito sessions — isolated, no persistent trace, auto-expiry |
 | `service/installer/pan-installer.cjs` | Browser-based client installer with hardware model detection |
@@ -228,54 +236,51 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: a938bbf4-26e)*
-**User** (2026-05-11 17:56:49): I'm pretty sure we already have this top of the page banner on the phone I already see that we don't have response time showing don't have conversational umm Dr Faso follow up to proactive level intuition which project Yeah we don't have any of that 
-**Claude** (2026-05-11 18:02:15): Done. Single file, four areas changed, no server changes (so no carrier restart needed) — phone WebView cache-busts on every load, so **pull-to-refresh on the phone picks it up immediately**.
+### This Tab *(session: 01c5c81e-2d0)*
+**User** (2026-05-15 18:00:25): idk what happened but a lot of crashes happend. Make sections for the widgets as I stated, start with the intuition
+**Claude** (2026-05-15 18:00:45): Context got nuked by the crashes — I don't have what you stated about the widget sections. Before I start splitting things up, quick check:
 
-## What you'll see on the phone after a refresh
+You mean grouping the **right-sidebar widgets** in `terminal/+page.svelte` into collapsible/labeled sections 
+**User** (2026-05-15 18:23:29): OK so I was trying to some reason it's saying here and the intuition even though it says my name Theresa Sonner says no data So there's no data it's not loading the data correctly. That's an issue and then I wanted to create sections that I said make
+**Claude** (2026-05-15 18:24:38): Three tasks filed:
 
-| Where 
-**User** (2026-05-11 18:05:38): Well doesn't this need a phone ADB update because this is not this is not in the dashboard of the phone this is literally in the phone's application So you said update the phone but did you actually B rebuild the application 'cause I think you have t
-**Claude** (2026-05-11 18:17:03): Shipped to the **native phone app** this time (Pixel 10 Pro, install confirmed, app relaunched).
+- **#489** (P2 bug) — Intuition widget shows 'no data' on initial load despite identity resolved
+- **#490** (P2 feature) — Intuition widget: User / PAN sections with headers. Layout: **USER** (Identity → State → Motives) then **PA
+**User** (2026-05-15 18:30:42): OK so what where do we begin then We're getting closer to getting the intuition done correctly umm also the motives a lot of them are kind of retarded so like what's the point of connection if you have social like what does that even mean connection 
+**Claude** (2026-05-15 18:51:34): All four tasks shipped (in_test for visual confirmation). **Reload the dashboard** and check:
 
-## What's new on the main screen
+**Intuition widget — new layout:**
+- **═══ USER ═══** (purple) — Identity (sensors + voice enrollment, moved up) → State → Motives
+- **═══ PAN ═══** (green
+**User** (2026-05-15 19:11:29): So make it say state read of Teresius don't make it say anything else for that section and Justice user has an _right and then it says how pan reads you get rid of that Also user doesn't make sense shouldn't user be at the top When you have the drop 
 
-A new **PAN Thinking card** sits right below the IntuitionCard. It mirrors that card's style but shows what *PAN* is d
-**User** (2026-05-12 04:48:49): OK so I've been testing it it's pretty fast I see I see actually what the intuition of payers actually doing It interrupts itself When I asked it a complex question it interrupted itself it isn't complete you know what it's trying to say I guess it's
-**Claude** (2026-05-12 04:52:27): Found smoking guns in the phone logs. Quick summary before I dive in:
+### Recent Project Work *(session: 315071a1-cf0)*
+**Claude** (2026-05-15 14:56:44): ΠΑΝ Remembers: sentinel embed fix (`2ae56df`) running ~1.5/sec overnight (864→986), Joying USB drive letter assignment via diskpart, and #470 steward ollama startFn cleanup still in test.
+**User** (2026-05-15 14:57:05): are you able to receive this message
+**Claude** (2026-05-15 14:57:09): Yes, received.
+**User** (2026-05-15 14:57:39): OK so I have another tab open called pan one I tried sending three messages in there none of them got to it and I see some errors that exist inside of the terminal
 
-## 1. Self-interruption — confirmed false barge-in
-Log line **#4700** is the smoking gun:
-```
-[BargeIn] Baseline=0 threshold=120
-User interrupted TTS         ← fires while PAN is 
-**User** (2026-05-12 09:19:28): OK yeah go ahead and do that Just do all three all three of them are important
+Carrier] [Craft-18] [Intuition] classified via cerebras:qwen-3-235b: mood=engaged foc
+**Claude** (2026-05-15 14:59:54): Found both problems. Here's the diagnosis:
 
-### Recent Project Work *(session: dcfa7b43-c79)*
-**Claude** (2026-05-10 08:49:40): Guardian is running and PAN is back up on port 7777. The Windows shortcut should now work — try it.
-**User** (2026-05-12 17:25:57): Can you reach my pro desk too I can reach pro desk but I can't reach pro desk 2VIA Rust Desk
-**Claude** (2026-05-12 17:26:11): I can't directly control RustDesk, but I can check if PAN/Tailscale can reach Pro Desk 2 to narrow down whether it's a network issue or RustDesk-specific. What's the Tailscale IP or hostname of Pro Desk 2?
-**User** (2026-05-12 17:27:53): Yeah obviously I want you to do that and or maybe SSH in there
-**Claude** (2026-05-12 17:31:04): Every remote access port is closed on Pro Desk 2 — SSH, RDP, WinRM all blocked or not running. The machine IS alive (Tailscale confirms it), but there's no way in remotely right now.
+## What the `[#439] attempt N` spam is
 
-The most likely cause: RustDesk crashed or stopped on Pro Desk 2, 
-**User** (2026-05-12 17:31:35): That's not true because we set up SSH on all these computers
-**Claude** (2026-05-12 17:35:35): MiniPC isn't on the same LAN, so can't use it as a hop.
+That's the **`p1-reg-double-send` regression test** in `service/src/routes/tests.js:2119`. It's running `browser_evaluate` against the dashboard via Playwright MCP, b
+**User** (2026-05-15 15:16:19): Well I'm not going to look at the carrier log you're supposed to look at the carrier log so it's pan one broken and I can't reply to it and also the stupid malware analysis system reminder bullshit that has nothing to do stop like that's part of the 
+**Claude** (2026-05-15 15:18:25): Filed as **#488** (P1, todo).
 
-Since you CAN briefly get into Pro Desk 2 via RustDesk before it drops — the next time you get in, the fastest fix is to quickly open a Run dialog (`Win+R`) and paste this to enable SSH:
+Now you decide:
 
-```
-p
-**User** (2026-05-12 17:37:03): What was the last topic discussed in this session?
-**Claude** (2026-05-12 17:37:10): The last topic was troubleshooting remote access to **Pro Desk 2** (`work-pc`, `100.86.16.10`). Summary of what was found:
+**Option A — Abandon pan-1, stay here in pan-7.** The intuition work conversation is preserved in the DB (`dash-pan-1778871391942` rows). I can pull it up here and we keep going. pan-1 tab can be closed
+**Claude** (2026-05-15 16:48:43): Done. State now:
 
-- Tailscale reaches it at 268ms via DERP relay (Miami) — no direct connection
-- SSH port 22 times out (service likely stop
-**User** (2026-05-12 17:37:53): Summarize the last thing we were working on in one paragraph
+- **pan-1 (`dash-pan-1778871391942`) killed** — DELETE returned `{}`, no longer in the sessions list
+- **Bug #488 filed** (P1, todo) with full root-cause description and 4-point fix plan
+- **Nothing was lost** — pan-1 had zero actua
 
 ### Open Tasks
 - [#466 backlog] Voice trace ID: end-to-end correlation across phone log + server router + AI usage + TTS
-- [#470 in_test] steward: ollama restart action is a no-op (startFn disabled) but logs
+- [#47
 
 [... context trimmed ...]
 <!-- PAN-CONTEXT-END -->

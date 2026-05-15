@@ -155,7 +155,10 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
     signal,
   });
 
-  if (!response.ok) throw new Error(`Cerebras ${response.status}: ${await response.text()}`);
+  if (!response.ok) {
+    const errText = await Promise.race([response.text(), new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000))]).catch(() => 'error body unreadable');
+    throw new Error(`Cerebras ${response.status}: ${errText}`);
+  }
   const data = await response.json();
   return {
     text: data.choices?.[0]?.message?.content || '',
@@ -223,6 +226,7 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
 export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
+  const startedAt = Date.now(); // #471: t0 for ai_usage.latency_ms
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -248,7 +252,7 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
       // Always log — even on early break (router) or abort (timeout). usage tokens
       // may be 0 if cerebras hadn't sent the final SSE frame yet, which is fine —
       // the row still gets source / device_id tagged for routing telemetry.
-      logUsage(caller, model, cerebrasUsage, prompt.slice(0, 100), { source, device_id });
+      logUsage(caller, model, cerebrasUsage, prompt.slice(0, 100), { source, device_id, started_at: startedAt });
     }
   }
 }
@@ -304,6 +308,7 @@ async function callOpenAICompat(prompt, messages, config, maxTokens, signal) {
 export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
+  const startedAt = Date.now(); // #471: t0 for ai_usage.latency_ms
 
   // Determine Provider
   let provider = 'sdk';
@@ -367,7 +372,7 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       model = `sdk:${model}`;
     }
 
-    logUsage(caller, model, result.usage, prompt, { source, device_id });
+    logUsage(caller, model, result.usage, prompt, { source, device_id, started_at: startedAt });
     return result.text.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
   } finally {
     clearTimeout(timer);
@@ -388,6 +393,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   // referenceImages: optional array of base64 strings prepended before the main image.
   // Ollama /api/generate supports images[] — first image(s) are reference, last is live frame.
   const allImages = [...referenceImages, imageBase64];
+  const startedAt = Date.now(); // #471: t0 for ai_usage.latency_ms — vision is the slowest caller
 
   // Primary: mini PC Ollama (100.72.237.137:11434) — getOllamaUrl() returns that address
   try {
@@ -409,7 +415,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
       const data = await res.json();
       const text = data.response?.trim() || '';
       if (text) {
-        logUsage(caller, VISION_MODEL, { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 }, prompt.slice(0, 100));
+        logUsage(caller, VISION_MODEL, { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 }, prompt.slice(0, 100), { started_at: startedAt });
         return text;
       }
     }
@@ -445,7 +451,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
       if (res.ok) {
         const data = await res.json();
         const text = data.content?.[0]?.text?.trim() || '';
-        logUsage(caller, 'claude-haiku-4-5-20251001', data.usage, prompt.slice(0, 100));
+        logUsage(caller, 'claude-haiku-4-5-20251001', data.usage, prompt.slice(0, 100), { started_at: startedAt });
         return text;
       }
     } catch (e) {
@@ -469,7 +475,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
         logUsage(caller, 'gemini-2.0-flash', {
           input_tokens:  meta?.promptTokenCount     || 0,
           output_tokens: meta?.candidatesTokenCount || 0,
-        }, prompt.slice(0, 100));
+        }, prompt.slice(0, 100), { started_at: startedAt });
         return text;
       }
     } catch (e) {
@@ -509,10 +515,16 @@ export function logUsage(caller, model, usage, promptPreview, opts = {}) {
     const costCents = inputTokens * pricing.input + outputTokens * pricing.output;
     const source = inferSource(caller, opts.source);
     const deviceId = opts.device_id || null;
+    // #471: per-call wall-clock latency. Callers pass either `latency_ms` (already
+    // measured) or `started_at` (Date.now() at request entry) — we derive ms.
+    // Null is fine — old call sites that haven't been updated yet just leave it blank.
+    let latencyMs = null;
+    if (typeof opts.latency_ms === 'number' && opts.latency_ms >= 0) latencyMs = Math.round(opts.latency_ms);
+    else if (typeof opts.started_at === 'number') latencyMs = Math.max(0, Date.now() - opts.started_at);
     insert(
-      `INSERT INTO ai_usage (caller, model, input_tokens, output_tokens, cost_cents, prompt_preview, source, device_id)
-       VALUES (:caller, :model, :input, :output, :cost, :preview, :source, :device_id)`,
-      { ':caller': caller || 'unknown', ':model': model, ':input': inputTokens, ':output': outputTokens, ':cost': costCents, ':preview': (promptPreview || '').slice(0, 100), ':source': source, ':device_id': deviceId }
+      `INSERT INTO ai_usage (caller, model, input_tokens, output_tokens, cost_cents, prompt_preview, source, device_id, latency_ms)
+       VALUES (:caller, :model, :input, :output, :cost, :preview, :source, :device_id, :latency)`,
+      { ':caller': caller || 'unknown', ':model': model, ':input': inputTokens, ':output': outputTokens, ':cost': costCents, ':preview': (promptPreview || '').slice(0, 100), ':source': source, ':device_id': deviceId, ':latency': latencyMs }
     );
   } catch (e) {
     console.error('[PAN Usage] Failed to log usage:', e.message);

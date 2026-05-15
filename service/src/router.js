@@ -12,6 +12,9 @@ import {
   setLastAction, getLastAction, intentToActionType,
 } from './smart-router.js';
 import { searchMemory } from './memory-search.js';
+import { writeThought } from './thoughts.js';
+import { noteMealMention } from './intuition/nourishment.js';
+import { noteSignalsInUtterance } from './intuition/signals.js';
 
 // Log a step in the command processing pipeline
 function logStep(commandId, step, detail) {
@@ -242,6 +245,32 @@ ${memoryContext}`,
     if (jsonMatch) cleaned = jsonMatch[0];
 
     const action = JSON.parse(cleaned);
+
+    // PAN's-Mind thought — describe what PAN heard and what it decided to do.
+    // Ambient utterances get a quieter line; real commands get a higher-importance one.
+    try {
+      const intent = action.intent || 'query';
+      const heardShort = (text || '').trim().slice(0, 80);
+      // Life Needs side-channel — scan utterance for meal/hunger phrases
+      // regardless of intent (ambient mention of "just had lunch" still moves
+      // Nourishment). Cheap regex; failures are non-fatal.
+      try { noteMealMention(text || '', { source: context?.source || null, intent }); } catch {}
+      try { noteSignalsInUtterance(text || '', { source: context?.source || null, intent }); } catch {}
+      if (intent === 'ambient') {
+        writeThought('router', `I heard "${heardShort}" — not addressed to me, ignoring.`, { intent }, 0.1);
+      } else {
+        const verb = intent === 'query'
+          ? 'answering'
+          : intent === 'terminal' ? 'running a terminal action'
+          : intent === 'system' ? 'running a system command'
+          : intent === 'memory' ? 'saving/recalling a note'
+          : intent === 'music' ? 'starting music'
+          : intent === 'task' ? 'delegating a task to a Claude session'
+          : `handling ${intent}`;
+        writeThought('router', `Commander said "${heardShort}" — I'm ${verb}.`, { intent, source: context?.source || null }, 0.7);
+      }
+    } catch { /* non-fatal */ }
+
     return processUnifiedResult(action, text, context);
   } catch (e) {
     console.error('[PAN Router] Unified call error:', e.message, '| raw:', typeof raw === 'string' ? raw.slice(0, 300) : raw);
