@@ -99,6 +99,76 @@ function run(cmd, cwd, opts = {}) {
   return cp.execSync(cmd, { cwd, stdio: 'pipe', windowsHide: true, ...opts });
 }
 
+// ── #497: elevation detection ────────────────────────────────────────────────
+// Returns true if this process can install system-level services.
+// Windows: running as Administrator.   POSIX: euid === 0.
+function isElevated() {
+  if (IS_WIN) {
+    try {
+      // `net session` requires admin; succeeds silently otherwise errors.
+      // Cheapest reliable admin probe on Windows without external libs.
+      cp.execSync('net session', { stdio: 'pipe', windowsHide: true, timeout: 3000 });
+      return true;
+    } catch { return false; }
+  }
+  return typeof process.getuid === 'function' && process.getuid() === 0;
+}
+
+// nssm.exe — bundled tiny native binary (~340KB, public domain) that turns
+// any executable into a real Windows service. Downloaded once on demand to
+// keep the installer binary small. URL is the upstream stable build.
+const NSSM_VER = '2.24';
+const NSSM_URL = `https://nssm.cc/release/nssm-${NSSM_VER}.zip`;
+
+function installWinSchtasksFallback(nodeExe, clientPath, panDir) {
+  // Windows fallback when not elevated: schtasks LogonTrigger. Only runs after the user logs in,
+  // but at least the client survives a reboot+login without manual start.
+  const taskXml = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"${nodeExe}"</Command>
+      <Arguments>"${clientPath}"</Arguments>
+      <WorkingDirectory>${panDir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>`;
+  const xmlPath = path.join(os.tmpdir(), 'pan-task.xml');
+  fs.writeFileSync(xmlPath, taskXml, 'utf16le');
+  try {
+    run(`schtasks /Create /TN "PAN-Client" /XML "${xmlPath}" /F`, panDir, { shell: true });
+    log('Scheduled task created ✓ (login-time)');
+  } catch {
+    log('⚠ Could not create scheduled task — client will need manual restart after reboot');
+  }
+  try { fs.unlinkSync(xmlPath); } catch {}
+}
+
+async function ensureNssm(targetDir) {
+  const nssmExe = path.join(targetDir, 'nssm.exe');
+  if (fs.existsSync(nssmExe)) return nssmExe;
+  log('Downloading nssm (service wrapper)...');
+  const tmpZip = path.join(os.tmpdir(), 'nssm.zip');
+  await download(NSSM_URL, tmpZip);
+  run(`powershell -NoProfile -Command "Expand-Archive -Force '${tmpZip}' '${os.tmpdir()}\\nssm-extract'"`,
+      targetDir, { shell: true });
+  // Pick win64 build inside the extracted folder.
+  const root = path.join(os.tmpdir(), 'nssm-extract', `nssm-${NSSM_VER}`);
+  const arch64 = path.join(root, 'win64', 'nssm.exe');
+  const arch32 = path.join(root, 'win32', 'nssm.exe');
+  const src = fs.existsSync(arch64) ? arch64 : arch32;
+  fs.copyFileSync(src, nssmExe);
+  try { fs.unlinkSync(tmpZip); } catch {}
+  return nssmExe;
+}
+
 function httpGet(u, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     const mod = u.startsWith('https') ? https : http;
@@ -416,39 +486,81 @@ async function runInstall(cfg) {
   log('Config saved ✓');
   log(`Device name: ${deviceName}`);
 
-  // ── Startup task ─────────────────────────────────────────────────────────────
-  log('Registering startup task...');
+  // ── Startup registration (#497) ─────────────────────────────────────────────
+  // Goal: client survives reboot on EVERY system, without requiring login.
+  // Elevated install → real system service (boot-time, no login needed).
+  // Non-elevated   → user-session fallback (login-time): schtasks, LaunchAgent, systemd --user.
+  const elevated = isElevated();
+  log(`Privilege: ${elevated ? 'elevated (system-service install)' : 'normal user (login-time fallback)'}`);
+  // Track whether the service manager already started the client. If true, we skip
+  // the manual spawn below — otherwise we double-spawn and the second instance
+  // either crashes on port conflicts or floods the hub with duplicate registers.
+  let clientAlreadyStarted = false;
+
   if (IS_WIN) {
-    const taskXml = `<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>"${nodeExe}"</Command>
-      <Arguments>"${clientPath}"</Arguments>
-      <WorkingDirectory>${panDir}</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>`;
-    const xmlPath = path.join(os.tmpdir(), 'pan-task.xml');
-    fs.writeFileSync(xmlPath, taskXml, 'utf16le');
-    try {
-      run(`schtasks /Create /TN "PAN-Client" /XML "${xmlPath}" /F`, panDir, { shell: true });
-      log('Startup task created ✓ (runs at login)');
-    } catch {
-      log('⚠ Could not create startup task — may need Administrator');
+    if (elevated) {
+      // Real Windows service via nssm — survives reboot without anyone logging in.
+      try {
+        const nssmExe = await ensureNssm(panDir);
+        // Wipe any prior install so re-running this installer is idempotent.
+        try { run(`"${nssmExe}" stop PAN-Client`, panDir, { shell: true }); } catch {}
+        try { run(`"${nssmExe}" remove PAN-Client confirm`, panDir, { shell: true }); } catch {}
+        run(`"${nssmExe}" install PAN-Client "${nodeExe}" "${clientPath}"`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client AppDirectory "${panDir}"`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client DisplayName "PAN Client"`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client Description "Personal AI Network client — connects this PC to its PAN hub."`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client Start SERVICE_AUTO_START`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client AppStdout "${path.join(panDir, 'pan-client.log')}"`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client AppStderr "${path.join(panDir, 'pan-client.log')}"`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client AppRotateFiles 1`, panDir, { shell: true });
+        run(`"${nssmExe}" set PAN-Client AppRotateBytes 1048576`, panDir, { shell: true });
+        run(`"${nssmExe}" start PAN-Client`, panDir, { shell: true });
+        log('Windows service installed ✓ (boot-time, runs as SYSTEM)');
+        clientAlreadyStarted = true;
+      } catch (e) {
+        log(`⚠ nssm service install failed: ${e.message.split('\n')[0]} — falling back to scheduled task`);
+        installWinSchtasksFallback(nodeExe, clientPath, panDir);
+      }
+    } else {
+      log('Tip: re-run installer as Administrator for a real Windows service (boot-time).');
+      installWinSchtasksFallback(nodeExe, clientPath, panDir);
     }
-    try { fs.unlinkSync(xmlPath); } catch {}
+  } else if (IS_MAC) {
+    // macOS: LaunchDaemon if root (boot), LaunchAgent if user.
+    const label = 'dev.pan.client';
+    const plistPath = elevated
+      ? `/Library/LaunchDaemons/${label}.plist`
+      : path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>
+    <string>${nodeExe}</string>
+    <string>${clientPath}</string>
+  </array>
+  <key>WorkingDirectory</key><string>${panDir}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${path.join(panDir, 'pan-client.log')}</string>
+  <key>StandardErrorPath</key><string>${path.join(panDir, 'pan-client.log')}</string>
+</dict></plist>`;
+    try {
+      if (!fs.existsSync(path.dirname(plistPath))) fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+      fs.writeFileSync(plistPath, plist);
+      try { run(`launchctl unload "${plistPath}"`, panDir, { shell: true }); } catch {}
+      run(`launchctl load -w "${plistPath}"`, panDir, { shell: true });
+      log(elevated
+        ? `LaunchDaemon installed ✓ (boot-time, ${plistPath})`
+        : `LaunchAgent installed ✓ (login-time, ${plistPath})`);
+      clientAlreadyStarted = true;
+    } catch (e) {
+      log(`⚠ launchd install failed: ${e.message.split('\n')[0]} — starting in background`);
+      cp.spawn(nodeExe, [clientPath], { cwd: panDir, detached: true, stdio: 'ignore' }).unref();
+    }
   } else {
-    const svcDir = path.join(os.homedir(), '.config', 'systemd', 'user');
-    if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
-    fs.writeFileSync(path.join(svcDir, 'pan-client.service'), `[Unit]
+    // Linux: system unit if root (boot), user unit otherwise (login-time).
+    const unitBody = `[Unit]
 Description=PAN Client
 After=network.target
 
@@ -459,23 +571,44 @@ Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=default.target
-`);
-    try {
-      run('systemctl --user daemon-reload && systemctl --user enable pan-client.service && systemctl --user start pan-client.service', panDir, { shell: true });
-      log('Systemd service enabled and started ✓');
-    } catch {
-      cp.spawn(nodeExe, [clientPath], { cwd: panDir, detached: true, stdio: 'ignore' }).unref();
-      log('Client started in background ✓ (no systemd)');
+WantedBy=${elevated ? 'multi-user.target' : 'default.target'}
+`;
+    if (elevated) {
+      try {
+        fs.writeFileSync('/etc/systemd/system/pan-client.service', unitBody);
+        run('systemctl daemon-reload && systemctl enable --now pan-client.service', panDir, { shell: true });
+        log('Systemd system unit installed ✓ (boot-time, /etc/systemd/system/pan-client.service)');
+        clientAlreadyStarted = true;
+      } catch (e) {
+        log(`⚠ system unit install failed: ${e.message.split('\n')[0]}`);
+      }
+    } else {
+      const svcDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+      if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
+      fs.writeFileSync(path.join(svcDir, 'pan-client.service'), unitBody);
+      try {
+        run('systemctl --user daemon-reload && systemctl --user enable --now pan-client.service', panDir, { shell: true });
+        log('Systemd --user unit installed ✓ (login-time)');
+        log('Tip: run `loginctl enable-linger $USER` so the client keeps running after logout.');
+        clientAlreadyStarted = true;
+      } catch {
+        cp.spawn(nodeExe, [clientPath], { cwd: panDir, detached: true, stdio: 'ignore' }).unref();
+        log('Client started in background ✓ (no systemd available)');
+      }
     }
   }
 
   // ── Launch ───────────────────────────────────────────────────────────────────
-  log('Starting PAN client...');
-  if (IS_WIN) {
+  // Skip if the service manager (nssm / launchd / systemd) already started the client.
+  // Otherwise spawn manually so first install gets the client up immediately
+  // (schtasks LogonTrigger doesn't fire until next login).
+  if (!clientAlreadyStarted && IS_WIN) {
+    log('Starting PAN client...');
     cp.spawn(nodeExe, [clientPath], {
       cwd: panDir, detached: true, stdio: 'ignore', windowsHide: true,
     }).unref();
+  } else if (clientAlreadyStarted) {
+    log('PAN client already running under service manager ✓');
   }
 
   log('');
