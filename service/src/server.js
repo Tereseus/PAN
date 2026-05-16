@@ -4839,6 +4839,37 @@ function start() {
       // Dashboard watchdog — polls Tauri every 10s, auto-recovers black/stuck loading screen
       if (!IS_DEV) startWatchdog();
 
+      // Dashboard render health (task #506, L3 of dashboard self-heal) —
+      // Scans dashboard_health every 30s and auto-files bugs for widgets stuck
+      // in empty/error/stale states. Builds on the telemetry pushed by L2
+      // (browser → /api/v1/dashboard/health every 30s).
+      if (!IS_DEV) {
+        import('./dashboard-render-health.js')
+          .then(m => m.startDashboardRenderHealth())
+          .catch(e => console.warn('[DashboardRenderHealth] failed to start:', e.message));
+      }
+
+      // Dashboard vision verifier (task #507, L4 — THE ULTIMATE FIX) —
+      // Every 2 minutes, captures the dashboard and asks a vision model what
+      // it actually sees. Cross-checks vision verdict against the markup state
+      // from L2 and files P1 bugs on disagreement. Catches the class of bug
+      // markup can never expose (CSS broke, font failed, z-index covered).
+      if (!IS_DEV) {
+        import('./dashboard-vision-verifier.js')
+          .then(m => m.startDashboardVisionVerifier())
+          .catch(e => console.warn('[VisionVerifier] failed to start:', e.message));
+      }
+
+      // Forge: dashboard bug auto-fixer (task #508, L5 — closes the loop) —
+      // Picks dashboard-render bugs filed by L3/L4 and spawns a constrained
+      // claude -p session to fix them. Off by default; enable via the
+      // `forge_dashboard_autofix` setting with { enabled: true }.
+      if (!IS_DEV) {
+        import('./forge-dashboard.js')
+          .then(m => m.startForgeDashboard())
+          .catch(e => console.warn('[ForgeDashboard] failed to start:', e.message));
+      }
+
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
       _startupIntervals.push(setInterval(syncProjects, 10 * 60 * 1000));
 
@@ -5318,6 +5349,137 @@ app.get('/api/v1/logs/summary', (req, res) => {
       FROM client_logs WHERE created_at >= datetime('now','localtime','-${mins} minutes')
       GROUP BY device_id, device_type, level ORDER BY count DESC`).all();
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Dashboard health (task #505, L2 of dashboard self-heal) ──────────────────
+// Desktop dashboard ships a per-widget snapshot every 30s. Server keeps the
+// latest row per (device_id, widget, side) so the steward UI lane (#506) can
+// detect widgets stuck in 'empty' / 'stale' / 'error' for too long and file
+// bugs automatically. This is the contract that closes the "server pushes,
+// dashboard never confirms it received/rendered" gap.
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS dashboard_health (
+    device_id      TEXT NOT NULL,
+    page           TEXT NOT NULL,
+    widget         TEXT NOT NULL,
+    side           TEXT,
+    state          TEXT NOT NULL,
+    rendered_at    INTEGER,
+    data_source_at INTEGER,
+    has_data       INTEGER,
+    recorded_at    INTEGER NOT NULL,
+    PRIMARY KEY (device_id, page, widget, side)
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_dashboard_health_recorded ON dashboard_health(recorded_at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_dashboard_health_state ON dashboard_health(state, recorded_at)`);
+} catch (e) {
+  console.warn('[dashboard_health] schema init failed:', e.message);
+}
+
+// POST /api/v1/dashboard/health — accept a batch of widget snapshots
+app.post('/api/v1/dashboard/health', (req, res) => {
+  try {
+    const body = req.body || {};
+    const deviceId = String(body.device_id || 'desktop-dashboard').slice(0, 64);
+    const page = String(body.page || 'terminal').slice(0, 64);
+    const widgets = Array.isArray(body.widgets) ? body.widgets : [];
+    if (widgets.length === 0) return res.json({ ok: true, upserted: 0 });
+    if (widgets.length > 200) return res.status(400).json({ error: 'too many widgets' });
+
+    const now = Date.now();
+    const stmt = db.prepare(`INSERT INTO dashboard_health
+      (device_id, page, widget, side, state, rendered_at, data_source_at, has_data, recorded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(device_id, page, widget, side) DO UPDATE SET
+        state = excluded.state,
+        rendered_at = excluded.rendered_at,
+        data_source_at = excluded.data_source_at,
+        has_data = excluded.has_data,
+        recorded_at = excluded.recorded_at`);
+
+    let upserted = 0;
+    for (const w of widgets) {
+      if (!w || !w.widget) continue;
+      stmt.run(
+        deviceId,
+        page,
+        String(w.widget).slice(0, 64),
+        String(w.side || '').slice(0, 16) || null,
+        String(w.state || 'unknown').slice(0, 16),
+        Number.isFinite(+w.rendered_at) ? +w.rendered_at : null,
+        Number.isFinite(+w.data_source_at) ? +w.data_source_at : null,
+        w.has_data ? 1 : 0,
+        now,
+      );
+      upserted++;
+    }
+    res.json({ ok: true, upserted });
+  } catch (err) {
+    console.error('[dashboard_health] insert error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug + manual-trigger endpoints for the dashboard self-heal stack (tasks #506/507/508).
+// These let an operator (or this very Claude session) introspect what L3/L4/L5
+// are seeing without grepping logs.
+app.get('/api/v1/dashboard/render-health/debug', async (req, res) => {
+  try {
+    const m = await import('./dashboard-render-health.js');
+    res.json({
+      ok: true,
+      tracked: m._renderHealthDebug(),
+      last_error: typeof m._lastError === 'function' ? m._lastError() : null,
+      last_ok: typeof m._lastOk === 'function' ? m._lastOk() : null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/v1/dashboard/render-health/run', async (req, res) => {
+  try {
+    const m = await import('./dashboard-render-health.js');
+    const r = typeof m.runRenderHealthOnce === 'function' ? m.runRenderHealthOnce() : { ok: false, error: 'no manual runner' };
+    res.json({
+      ...r,
+      tracked: m._renderHealthDebug(),
+      last_error: typeof m._lastError === 'function' ? m._lastError() : null,
+      last_ok: typeof m._lastOk === 'function' ? m._lastOk() : null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/v1/dashboard/vision/run', async (req, res) => {
+  try {
+    const m = await import('./dashboard-vision-verifier.js');
+    const r = await m.runVisionVerifierOnce();
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/v1/forge/dashboard/run', async (req, res) => {
+  try {
+    const m = await import('./forge-dashboard.js');
+    const r = await m.runForgeDashboardOnce();
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/v1/dashboard/health — current snapshot for steward UI lane + UI tools.
+//   ?stale_ms=60000  → only return rows where recorded_at < now - stale_ms
+//   ?widget=intuition → filter to one widget
+app.get('/api/v1/dashboard/health', (req, res) => {
+  try {
+    let sql = 'SELECT * FROM dashboard_health WHERE 1=1';
+    const params = [];
+    if (req.query.widget) { sql += ' AND widget = ?'; params.push(req.query.widget); }
+    if (req.query.device_id) { sql += ' AND device_id = ?'; params.push(req.query.device_id); }
+    if (req.query.stale_ms) {
+      const ms = parseInt(req.query.stale_ms, 10);
+      if (Number.isFinite(ms)) { sql += ' AND recorded_at < ?'; params.push(Date.now() - ms); }
+    }
+    sql += ' ORDER BY recorded_at DESC LIMIT 500';
+    const rows = db.prepare(sql).all(...params);
+    res.json({ ok: true, rows, now: Date.now() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

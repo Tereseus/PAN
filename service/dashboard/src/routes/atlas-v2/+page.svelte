@@ -56,6 +56,12 @@
 		'procedural': { code: 'Habits', tech: 'Procedural Memory' },
 		'inject-ctx': { code: 'Injector', tech: 'Context Injection' },
 		'caveman':    { code: 'Caveman', tech: 'Context Compressor' },
+		// Dashboard self-heal stack (#504–#508) — three new daemons that
+		// keep widgets honest. L3 reads telemetry, L4 looks at pixels, L5
+		// hands a bug to Claude to fix it.
+		'render-health':   { code: 'Vigil',  tech: 'L3 Dashboard Render Health' },
+		'vision-verifier': { code: 'Iris',   tech: 'L4 Dashboard Vision Verifier' },
+		'forge-dashboard': { code: 'Mend',   tech: 'L5 Dashboard Auto-Fixer' },
 	};
 
 	function label(id) {
@@ -104,12 +110,16 @@
 			id: 'steward', orbitR: 420, baseAngle: 200, orbitSpeed: -0.15,
 			moonR: 105, moonSpeed: 0.35,
 			moons: [
-				{ id: 'guardian',      baseAngle: 0,   type: 'security', virtual: true },
-				{ id: 'guillotine',    baseAngle: 60,  type: 'security', virtual: true },
-				{ id: 'ollama',        baseAngle: 120, type: 'service' },
-				{ id: 'whisper',       baseAngle: 180, type: 'service' },
-				{ id: 'voice-shell',   baseAngle: 240, type: 'service' },
-				{ id: 'stack-scanner', baseAngle: 300, type: 'service' },
+				{ id: 'guardian',        baseAngle: 0,   type: 'security', virtual: true },
+				{ id: 'guillotine',      baseAngle: 45,  type: 'security', virtual: true },
+				{ id: 'ollama',          baseAngle: 90,  type: 'service' },
+				{ id: 'whisper',         baseAngle: 135, type: 'service' },
+				{ id: 'voice-shell',     baseAngle: 180, type: 'service' },
+				{ id: 'stack-scanner',   baseAngle: 225, type: 'service' },
+				// Self-heal stack — L3 (telemetry watcher) and L4 (pixel watcher)
+				// both lean on Steward orbit because they're health daemons.
+				{ id: 'render-health',   baseAngle: 270, type: 'service' },
+				{ id: 'vision-verifier', baseAngle: 315, type: 'service' },
 			],
 		},
 		{
@@ -138,10 +148,13 @@
 			id: 'autodev', orbitR: 1100, baseAngle: 160, orbitSpeed: 0.06,
 			moonR: 110, moonSpeed: -0.2,
 			moons: [
-				{ id: 'orchestrator', baseAngle: 0,   type: 'ai' },
-				{ id: 'scout',        baseAngle: 90,  type: 'ai' },
-				{ id: 'sensitivity',  baseAngle: 180, type: 'security', virtual: true },
-				{ id: 'privacy',      baseAngle: 270, type: 'security', virtual: true },
+				{ id: 'orchestrator',    baseAngle: 0,   type: 'ai' },
+				{ id: 'scout',           baseAngle: 72,  type: 'ai' },
+				{ id: 'sensitivity',     baseAngle: 144, type: 'security', virtual: true },
+				{ id: 'privacy',         baseAngle: 216, type: 'security', virtual: true },
+				// L5 of the self-heal stack — picks up bugs filed by Vigil/Iris
+				// (Steward moons) and spawns a headless `claude -p` to fix them.
+				{ id: 'forge-dashboard', baseAngle: 288, type: 'ai' },
 			],
 		},
 	];

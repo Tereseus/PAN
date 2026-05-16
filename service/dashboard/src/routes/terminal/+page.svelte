@@ -647,6 +647,76 @@
 			}
 	);
 
+	// ─── Widget self-identification contract (task #504, L1 of dashboard self-heal) ───
+	// Every dashboard panel exposes (data-widget, data-widget-state,
+	// data-widget-rendered-at, data-widget-data-source-at). Downstream layers
+	// (browser telemetry L2, steward UI lane L3, vision verifier L4) read these
+	// to detect "panel rendered but is empty/stale" without having to guess.
+	// States: loading | empty | ok | error | stale
+	let intuitionWidgetState = $derived.by(() => {
+		if (!intuitionLoaded) return 'loading';
+		if (!Array.isArray(intuitionMembers) || intuitionMembers.length === 0) return 'empty';
+		const sel = intuitionMembers.find(u => u.display_name === selectedIntuitionUser) || intuitionMembers[0];
+		if (!sel) return 'empty';
+		const snap = intuitionSnapsByCommander[sel.display_name]?.snapshot;
+		if (!snap) return 'empty';
+		const ageMs = snap.as_of ? Date.now() - snap.as_of : null;
+		if (ageMs !== null && ageMs > 5 * 60 * 1000) return 'stale';
+		return 'ok';
+	});
+	let intuitionWidgetDataSourceAt = $derived(
+		(() => {
+			const sel = intuitionMembers.find(u => u.display_name === selectedIntuitionUser) || intuitionMembers[0];
+			return sel ? (intuitionSnapsByCommander[sel.display_name]?.snapshot?.as_of || 0) : 0;
+		})()
+	);
+
+	// Generic per-section state resolver. Pessimistic by default: a section
+	// reports 'empty' if its primary data array is empty, otherwise 'ok'.
+	// Sections without a known data shape are reported 'ok' once the page
+	// has mounted (we can't usefully assert empty/ok if we don't know what
+	// "data" means for them yet).
+	function widgetStateOf(section) {
+		if (!section) return 'empty';
+		switch (section) {
+			case 'intuition': return intuitionWidgetState;
+			case 'services': return (Array.isArray(servicesData) && servicesData.length > 0) ? 'ok' : 'loading';
+			case 'devices': {
+				const have = (Array.isArray(panClientDevices) && panClientDevices.length > 0)
+					|| (Array.isArray(allDevices) && allDevices.length > 0);
+				return have ? 'ok' : 'loading';
+			}
+			case 'alerts': return Array.isArray(alertsData) ? 'ok' : 'loading';
+			case 'approvals': return Array.isArray(approvalsData) ? 'ok' : 'loading';
+			case 'tests': return (Array.isArray(testSuites) && testSuites.length > 0) ? 'ok' : 'loading';
+			case 'library': return (Array.isArray(libraryItems) && libraryItems.length > 0) ? 'ok' : 'loading';
+			case 'usage': return usageData ? 'ok' : 'loading';
+			case 'transcript': return 'ok'; // transcript widget owns its own empty state
+
+			case 'tasks':
+			case 'bugs': return 'ok';
+
+			// Extended coverage for L1 substrate (task #504). Previously these
+			// fell to default:'ok' so L3 render-health could never see them as
+			// empty. Now they reflect their backing $state vars.
+			case 'project': return projectData ? 'ok' : 'loading';
+			case 'lifeboat': return lifeboatData ? 'ok' : 'loading';
+			case 'users': return (Array.isArray(usersData) && usersData.length > 0) ? 'ok' : 'loading';
+			case 'teams': return (Array.isArray(teamsData) && teamsData.length > 0) ? 'ok' : 'loading';
+			case 'contacts': return Array.isArray(contactsData) ? 'ok' : 'loading';
+			case 'benchmarks': return benchmarksData ? 'ok' : 'loading';
+			case 'pipeline': return pipelineData ? 'ok' : 'loading';
+			case 'mail': return Array.isArray(mailMessages) ? 'ok' : 'loading';
+			// perf/apps/instances/setup/calendar: static or composite — 'ok' is honest
+			case 'perf':
+			case 'apps':
+			case 'instances':
+			case 'setup':
+			case 'calendar': return 'ok';
+			default: return 'ok';
+		}
+	}
+
 	// Legacy alias — `loadIntuition` is referenced from a few places (WS push,
 	// section-show $effect, forceCamCapture). Point them all at the new
 	// `refreshIntuition`. Same single source of truth.
@@ -5142,6 +5212,80 @@
 	onMount(() => {
 		_markLoad('mounted');
 
+		// ─── Desktop dashboard telemetry (task #505, L2 of dashboard self-heal) ───
+		// Browser errors → /api/v1/logs (mirrors what phone's LogShipper does).
+		// Widget health → /api/v1/dashboard/health every 30s, scanning every
+		// [data-widget] element for its state. Server uses this to detect
+		// "rendered but empty" / "stale" widgets and file bugs in L3.
+		(function startDashboardTelemetry() {
+			if (window._panTelemetryStarted) return;
+			window._panTelemetryStarted = true;
+			const DEVICE_ID = 'desktop-dashboard';
+			function shipLog(level, message, meta) {
+				try {
+					fetch('/api/v1/logs', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							device_id: DEVICE_ID,
+							device_type: 'browser',
+							level: level || 'error',
+							source: 'window',
+							message: String(message || '').slice(0, 4000),
+							meta: meta || {}
+						})
+					}).catch(() => {});
+				} catch (e) { /* never let telemetry crash the app */ }
+			}
+			window.addEventListener('error', (e) => {
+				shipLog('error', e?.message || 'window.error', {
+					filename: e?.filename, lineno: e?.lineno, colno: e?.colno,
+					stack: e?.error?.stack ? String(e.error.stack).slice(0, 2000) : null,
+					ua: navigator.userAgent
+				});
+			});
+			window.addEventListener('unhandledrejection', (e) => {
+				const reason = e?.reason;
+				shipLog('error', 'unhandledrejection: ' + (reason?.message || String(reason)).slice(0, 200), {
+					stack: reason?.stack ? String(reason.stack).slice(0, 2000) : null,
+					ua: navigator.userAgent
+				});
+			});
+
+			// Widget health scan — every 30s, walk every [data-widget] in the DOM
+			// and POST a snapshot. State machine lives entirely in the markup;
+			// this code just reads it.
+			function scanWidgets() {
+				try {
+					const els = document.querySelectorAll('[data-widget]');
+					const widgets = [];
+					els.forEach((el) => {
+						const w = el.getAttribute('data-widget');
+						if (!w) return;
+						const state = el.getAttribute('data-widget-state') || 'unknown';
+						const side = el.getAttribute('data-widget-side') || null;
+						const rendered_at = parseInt(el.getAttribute('data-widget-rendered-at') || '0', 10) || 0;
+						const data_source_at = parseInt(el.getAttribute('data-widget-data-source-at') || '0', 10) || 0;
+						// has_data is true if we have actual non-empty content
+						const has_data = state === 'ok' || state === 'stale';
+						widgets.push({ widget: w, side, state, rendered_at, data_source_at, has_data });
+					});
+					if (widgets.length === 0) return;
+					fetch('/api/v1/dashboard/health', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ device_id: DEVICE_ID, page: 'terminal', widgets })
+					}).catch(() => {});
+				} catch (e) { /* telemetry must never throw */ }
+			}
+			// First scan after 5s (give widgets time to render), then every 30s.
+			setTimeout(scanWidgets, 5000);
+			setInterval(scanWidgets, 30000);
+			// Also scan whenever a panel is switched, so state changes propagate
+			// quickly without waiting for the next 30s tick.
+			window._panRescanWidgets = scanWidgets;
+		})();
+
 		// Bug #457: capture the dashboard bundle hash at mount so the server_swap
 		// handler can decide whether the swap actually requires a page reload.
 		// If the bundle is unchanged, we skip the reload entirely.
@@ -6469,7 +6613,13 @@
 				<button class="expand-btn" onclick={() => openExpandedView(leftSection)} title="Open in window">&#x2197;</button>
 			{/if}
 		</div>
-		<div class="left-content" bind:this={chatSidebarEl} onscroll={handleTranscriptScroll}>
+		<div class="left-content"
+			bind:this={chatSidebarEl}
+			onscroll={handleTranscriptScroll}
+			data-widget={leftSection}
+			data-widget-side="left"
+			data-widget-state={widgetStateOf(leftSection)}
+			data-widget-rendered-at={Date.now()}>
 			{#if leftSection === 'transcript'}
 				{#if chatBubbles.length === 0}
 					<div class="empty-state">No conversation yet</div>
@@ -6951,7 +7101,11 @@
 					</div>
 				</div>
 			{:else if leftSection === 'intuition'}
-				<div class="intuition-panel">
+				<div class="intuition-panel"
+					data-widget="intuition"
+					data-widget-state={intuitionWidgetState}
+					data-widget-rendered-at={Date.now()}
+					data-widget-data-source-at={intuitionWidgetDataSourceAt}>
 					{@render intuitionPanelContents()}
 				</div>
 			{:else if leftSection === 'lifeboat'}
@@ -8158,7 +8312,11 @@
 				</button>
 			{/if}
 		</div>
-		<div class="right-content">
+		<div class="right-content"
+			data-widget={rightSection}
+			data-widget-side="right"
+			data-widget-state={widgetStateOf(rightSection)}
+			data-widget-rendered-at={Date.now()}>
 			{#if rightSection === 'alerts'}
 				<div class="alerts-panel">
 					<div class="alerts-filters">
@@ -8445,7 +8603,11 @@
 					{/if}
 				</div>
 			{:else if rightSection === 'intuition'}
-				<div class="intuition-panel">
+				<div class="intuition-panel"
+					data-widget="intuition"
+					data-widget-state={intuitionWidgetState}
+					data-widget-rendered-at={Date.now()}
+					data-widget-data-source-at={intuitionWidgetDataSourceAt}>
 					{@render intuitionPanelContents()}
 				</div>
 			{:else if rightSection === 'lifeboat'}

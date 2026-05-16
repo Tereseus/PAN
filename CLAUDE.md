@@ -236,51 +236,48 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 01c5c81e-2d0)*
-**User** (2026-05-15 18:00:25): idk what happened but a lot of crashes happend. Make sections for the widgets as I stated, start with the intuition
-**Claude** (2026-05-15 18:00:45): Context got nuked by the crashes — I don't have what you stated about the widget sections. Before I start splitting things up, quick check:
+### This Tab *(session: 33f7601d-32c)*
+**Claude** (2026-05-16 10:36:51): ΠΑΝ Remembers: post-sleep Craft health lock (#500 filed, fix shipped), caveman-compress Windows fixes (#501 done), Carrier stabilized after the async handler fix, and you asked about locating the Star Sector download + OneDrive reinstalling itself.
+**User** (2026-05-16 10:37:24): OK so no we are working on another system before show me all the tasks and what we are working on today We were working on a system that had to do with the steward and auto corrections with the forge and the scout and all that stuff so that their wid
+**Claude** (2026-05-16 10:37:53): Here's the widget self-healing stack — that's the cluster you spun up yesterday/today (#503–#508), built on top of the existing Forge/Scout loop (#459):
 
-You mean grouping the **right-sidebar widgets** in `terminal/+page.svelte` into collapsible/labeled sections 
-**User** (2026-05-15 18:23:29): OK so I was trying to some reason it's saying here and the intuition even though it says my name Theresa Sonner says no data So there's no data it's not loading the data correctly. That's an issue and then I wanted to create sections that I said make
-**Claude** (2026-05-15 18:24:38): Three tasks filed:
+**Dashboard Auto-Recovery Chain**
+- **#503** `in_progress p1` — Dashboard auto-recovery: black-s
+**User** (2026-05-16 10:41:39): OK where did we get to I mean we should finish right but we're not actually done until we make all of these steps And then of course once we do all of these we have to test it
+**Claude** (2026-05-16 10:42:39): OK here's the real state — substrate is mostly there, but coverage and wiring are incomplete, and **the telemetry itself proves the system is working but not closing the loop yet**:
 
-- **#489** (P2 bug) — Intuition widget shows 'no data' on initial load despite identity resolved
-- **#490** (P2 feature) — Intuition widget: User / PAN sections with headers. Layout: **USER** (Identity → State → Motives) then **PA
-**User** (2026-05-15 18:30:42): OK so what where do we begin then We're getting closer to getting the intuition done correctly umm also the motives a lot of them are kind of retarded so like what's the point of connection if you have social like what does that even mean connection 
-**Claude** (2026-05-15 18:51:34): All four tasks shipped (in_test for visual confirmation). **Reload the dashboard** and check:
+## Layer-by-layer status
 
-**Intuition widget — new layout:**
-- **═══ USER ═══** (purple) — Identity (sensors + voice enrollment, moved up) → State → Motives
-- **═══ PAN ═══** (green
-**User** (2026-05-15 19:11:29): So make it say state read of Teresius don't make it say anything else for that section and Justice user has an _right and then it says how pan reads you get rid of that Also user doesn't make sense shouldn't user be at the top When you have the drop 
+| # | Layer | Built? | Gap |
+|---|---|---
+**User** (2026-05-16 11:05:32): Yeah go ahead and do that
+**Claude** (2026-05-16 11:07:56): **Status: most of the system works. There's one real bug and one coverage gap.**
 
-### Recent Project Work *(session: 315071a1-cf0)*
-**Claude** (2026-05-15 14:56:44): ΠΑΝ Remembers: sentinel embed fix (`2ae56df`) running ~1.5/sec overnight (864→986), Joying USB drive letter assignment via diskpart, and #470 steward ollama startFn cleanup still in test.
-**User** (2026-05-15 14:57:05): are you able to receive this message
-**Claude** (2026-05-15 14:57:09): Yes, received.
-**User** (2026-05-15 14:57:39): OK so I have another tab open called pan one I tried sending three messages in there none of them got to it and I see some errors that exist inside of the terminal
+| Layer | Wired? | Firing? | Evidence |
+|---|---|---|---|
+| L1 substrate | partial | n/a | 16 `data-widget` attrs — dozens of panels still untagged |
+| L2 telemetry | ✓
 
-Carrier] [Craft-18] [Intuition] classified via cerebras:qwen-3-235b: mood=engaged foc
-**Claude** (2026-05-15 14:59:54): Found both problems. Here's the diagnosis:
+### Recent Project Work *(session: 9f1e7e0b-39e)*
+**User** (2026-05-16 10:56:20): You
+**Claude** (2026-05-16 10:57:39): Found them! You have Star Sector in **three locations**:
 
-## What the `[#439] attempt N` spam is
+1. **%USERPROFILE%\Downloads** — Installer
+   - `starsector_install-0.98a-RC8.exe` (280 MB, downloaded today at 10:02 AM)
 
-That's the **`p1-reg-double-send` regression test** in `service/src/routes/tests.js:2119`. It's running `browser_evaluate` against the dashboard via Playwright MCP, b
-**User** (2026-05-15 15:16:19): Well I'm not going to look at the carrier log you're supposed to look at the carrier log so it's pan one broken and I can't reply to it and also the stupid malware analysis system reminder bullshit that has nothing to do stop like that's part of the 
-**Claude** (2026-05-15 15:18:25): Filed as **#488** (P1, todo).
-
-Now you decide:
-
-**Option A — Abandon pan-1, stay here in pan-7.** The intuition work conversation is preserved in the DB (`dash-pan-1778871391942` rows). I can pull it up here and we keep going. pan-1 tab can be closed
-**Claude** (2026-05-15 16:48:43): Done. State now:
-
-- **pan-1 (`dash-pan-1778871391942`) killed** — DELETE returned `{}`, no longer in the sessions list
-- **Bug #488 filed** (P1, todo) with full root-cause description and 4-point fix plan
-- **Nothing was lost** — pan-1 had zero actua
+2. **%USERPROFILE%\StarSector\StarsectorOld** — Old installation
+  
 
 ### Open Tasks
 - [#466 backlog] Voice trace ID: end-to-end correlation across phone log + server router + AI usage + TTS
-- [#47
+- [#470 in_test] steward: ollama restart action is a no-op (startFn disabled) but logs success — clean up the lie
+- [#458 backlog] Tab list rebuild fragile across Craft swap — pan-4 tab disappeared after swap
+- [#459 backlog] Forge: Opus auto-fix loop on Scout-detected bugs
+- [#462 in_test] router.js: emit empty chunk for [AMBIENT] verdicts so phone sees a fast 'no-op' response
+- [#464 in_test] steward: ollama health check 3s ping produces false-negatives under load — phantom DOWN→RUNNING bounces every ~2min
+- [#465 in_test] AI usage tracking: tag every router call with source (phone-id / dashboard / scout / etc.) — 'router' bucket too coarse
+- [#468 backlog] Phone: health-aware degradation banner — show 'PAN running on backup' when ollama/embeddings/whisper degraded
+- [#469 backlog] Voice timeline panel in Kronos — per-prompt route, latency, response
+- [#484 backlog] Terminal: markdown table columns word-wrap on path separators � short cells should stay one line
 
-[... context trimmed ...]
 <!-- PAN-CONTEXT-END -->
