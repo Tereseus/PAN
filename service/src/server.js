@@ -2444,6 +2444,33 @@ app.post('/api/v1/voice/speak', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── #496: Cross-device TTS routing ───────────────────────────────────────────
+// POST /api/v1/speak  { text, target?, voice?, rate?, fallback? }
+//   Picks the best speaker device (presence → activity → voice source →
+//   recent heartbeat → phone push) and dispatches tts_speak. Falls back
+//   through the chain on delivery failure.
+//
+// GET  /api/v1/speak/preview?target=<device>
+//   Debug: returns which device WOULD be picked + why, without speaking.
+app.post('/api/v1/speak', async (req, res) => {
+  try {
+    const { speakSomewhere } = await import('./speak-router.js');
+    const { text, target, voice, rate, fallback } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'text required' });
+    const result = await speakSomewhere({ text, target, voice, rate, fallback });
+    if (!result.ok) return res.status(503).json(result);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/v1/speak/preview', async (req, res) => {
+  try {
+    const { pickSpeakerDevice } = await import('./speak-router.js');
+    const choice = pickSpeakerDevice({ target: req.query.target || undefined });
+    res.json(choice);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Pre-generate common phrases for a voice (background task)
 app.post('/api/v1/voice/pregenerate/:name', async (req, res) => {
   try {

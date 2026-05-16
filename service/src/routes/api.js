@@ -784,9 +784,21 @@ router.post('/query', async (req, res) => {
             sendToClient(match.device_id, 'open_app', { app: action.app || 'vlc' }).catch(() => {});
             break;
           case 'notification':
-          case 'tts_speak':
             sendToClient(match.device_id, action.type, { text: args.text || args.message || result.response }).catch(() => {});
             break;
+          case 'tts_speak': {
+            // #496: route through smart speaker picker so the spoken response
+            // falls through to another reachable device if the picked one is
+            // offline. `match.device_id` is preferred (target) but not required.
+            const { speakSomewhere } = await import('../speak-router.js');
+            speakSomewhere({
+              text: args.text || args.message || result.response,
+              target: match.device_id,
+              voice: args.voice,
+              rate: args.rate,
+            }).catch(() => {});
+            break;
+          }
           case 'shell_exec':
           case 'run_command':
             sendToClient(match.device_id, 'shell_exec', { command: args.command || args.query }).catch(() => {});
