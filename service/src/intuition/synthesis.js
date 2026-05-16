@@ -80,6 +80,8 @@ export async function generate(userId, { force = false, trigger = 'manual' } = {
       cycle_id: result.cycle_id || null,
       steps: result.steps || [],
       ok: result.ok !== false,
+      renderer: result.renderer || 'unknown',  // 'llm' | 'deterministic' | 'unknown'
+      latency_ms: result.latency_ms || 0,
     };
     if (result.error) payload.error = result.error;
     _cache.set(key, payload);

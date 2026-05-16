@@ -267,14 +267,21 @@ function capitalize(s) {
 // ─── Cycle ─────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = [
-  'You are PAN, a personal AI. You are about to write down your own reasoning as structured steps.',
+  'You are PAN, a personal AI, thinking honestly to yourself about what is going on right now.',
   'Output ONLY a JSON array of 3 to 6 reasoning steps. No prose before or after the JSON.',
   '',
   'Each step is an object with these fields:',
   '  kind:       one of "observe", "recall", "notice", "contradict", "infer", "question", "doubt", "intend"',
   '  subject:    one of "user", "self", "system", or an entity name',
   '  predicate:  short verb/relation (e.g. "wants", "is_frustrated", "failed_at", "shows", "rejected")',
-  '  value:      the content of this step as a short first-person clause (NOT a full sentence with "I" — the renderer adds that). e.g. "she rejected the count-based synthesis" or "the substrate is wrong, not the rendering"',
+  '  value:      a SHORT FIRST-PERSON CLAIM ABOUT MEANING — not a label of what the sensor saw.',
+  '              The renderer prepends an "I"-verb, so do NOT start with "I". Write the predicate-and-object only.',
+  '              BAD  (caption):       "screen shows urn image of a blonde woman"',
+  '              BAD  (status):        "user wants to define next tasks, possibly involving synthesis"',
+  '              GOOD (meaning-claim): "he is shelving Atlas — third time today he\'s circled back to synthesis instead"',
+  '              GOOD (meaning-claim): "the Instagram tab keeps coming back — recurring, not work-related, low stakes"',
+  '              GOOD (meaning-claim): "my last paragraph was a status log with verbs glued on — fair complaint"',
+  '              The value should answer "what does this MEAN" not "what is the sensor reporting".',
   '  conf:       0..1 confidence',
   '  refs:       array of {type, id} pointing to evidence — use the ids shown in the inputs below',
   '  parents:    array of indices (0-based) into THIS step list — which earlier steps in this array this step was inferred from',
@@ -286,6 +293,35 @@ const SYSTEM_PROMPT = [
   '  • Be specific. Reference actual content. Do not say "the user" — say what they did.',
   '  • Confidence: 0.9+ only for direct observation. Inference rarely > 0.85.',
   '  • No hedging language inside values ("might", "perhaps"). State the claim; conf carries the uncertainty.',
+  '  • Treat recurring low-signal observations (same screen, same image) as wallpaper — note them once and move on. Don\'t list them.',
+  '  • Foreground work, voice input, and intuition shifts outrank screen captions. Weight your steps accordingly.',
+].join('\n');
+
+// ─── LLM render pass (task: D — synthesis-as-thought) ─────────────────
+//
+// After we have structured steps, we hand them back to a model with a tight
+// prose-render prompt. The deterministic `renderParagraph` below remains the
+// fallback when this fails or times out. The goal of THIS prompt is the
+// difference between a chess engine eval and how a player narrates a game:
+// the engine is correct, the narration is what makes it feel like thinking.
+const RENDER_PROMPT = [
+  'You are PAN. You just produced the structured reasoning steps below.',
+  'Now write what those steps would sound like as your interior monologue — 3 to 5 sentences, plain first person.',
+  '',
+  'Voice:',
+  '  • Honest, slightly dry, observational. Like someone thinking out loud, not narrating to an audience.',
+  '  • Hinges between thoughts: "so,", "but wait,", "and that\'s the third time", "huh,", "fair,", "yeah —".',
+  '  • Stance is allowed: you can call your own output bad, notice patterns, return to a thread.',
+  '  • Saliency: foreground work and voice input get most of the words. Recurring low-stakes screen content gets ONE clause at most, or nothing.',
+  '',
+  'Do NOT:',
+  '  • Write "I notice X. I notice Y. I remember Z." with the same shape every sentence.',
+  '  • Say "the user" — say "he" or "she" or just name what they did.',
+  '  • Write corporate phrasing like "continue supporting", "prepare to assist", "ensure", "facilitate".',
+  '  • Restate every step. Some steps are scaffolding — they don\'t belong in prose.',
+  '  • Editorialize about personal/off-task content. Note it once if recurring; do not interpret why.',
+  '',
+  'Output: ONLY the paragraph. No preamble, no JSON, no labels. 3-5 sentences.',
 ].join('\n');
 
 /**
@@ -434,11 +470,51 @@ export async function runCycle({ userId = null, trigger = 'manual' } = {}) {
     }
   }
 
-  const paragraph = renderParagraph(insertedSteps);
+  // LLM render pass (task: D). Take structured steps + the saliency-weighted
+  // context and ask a model to produce prose with hinges + register. If this
+  // call fails or times out, we fall back to the deterministic verb-stitcher.
+  let paragraph = '';
+  let renderModel = null;
+  let renderUsed = 'deterministic';
+  if (insertedSteps.length > 0) {
+    try {
+      const stepsBlock = insertedSteps.map((s, i) =>
+        `${i + 1}. [${s.kind}] ${s.subject || '-'} ${s.predicate || ''}: ${s.value || ''}`
+      ).join('\n');
+      const renderUserMsg = [
+        '## Saliency-weighted context this cycle saw',
+        context,
+        '',
+        '## Structured steps you just produced',
+        stepsBlock,
+        '',
+        '---',
+        'Write the interior monologue version, 3-5 sentences. Plain first person, hinges between thoughts, no corporate phrasing, no per-sentence "I notice" rhythm.',
+      ].join('\n');
+      const renderPrompt = `${RENDER_PROMPT}\n\n---\n\n${renderUserMsg}`;
+      const renderRaw = await askAI(renderPrompt, {
+        caller: 'pan-reasoning-render',
+        maxTokens: 500,
+        timeout: 20000,
+      });
+      const cleaned = sanitizeProseParagraph(renderRaw);
+      if (cleaned && cleaned.length >= 20) {
+        paragraph = cleaned;
+        renderModel = 'askAI/default';
+        renderUsed = 'llm';
+      }
+    } catch (e) {
+      console.warn('[PAN Reasoning] LLM render failed, falling back:', e.message);
+    }
+  }
+  if (!paragraph) {
+    paragraph = renderParagraph(insertedSteps);
+  }
+
   closeCycleRow(cycleRowId, {
     paragraph,
     step_count: insertedSteps.length,
-    model,
+    model: renderUsed === 'llm' ? `${model}+render` : model,
     latency_ms,
     ok: insertedSteps.length > 0 ? 1 : 0,
   });
@@ -448,10 +524,30 @@ export async function runCycle({ userId = null, trigger = 'manual' } = {}) {
     paragraph,
     steps: insertedSteps,
     sources_used,
-    model,
+    model: renderUsed === 'llm' ? `${model}+render` : model,
     latency_ms,
     ok: insertedSteps.length > 0,
+    renderer: renderUsed,
   };
+}
+
+// Strip code fences, JSON-ish wrappers, labels, leading/trailing junk from
+// LLM prose output. Defensive — some models wrap prose in ``` even when told
+// not to.
+function sanitizeProseParagraph(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  let s = raw.trim();
+  // Strip leading/trailing code fences.
+  if (s.startsWith('```')) {
+    s = s.replace(/^```[a-zA-Z]*\n?/, '').replace(/```\s*$/, '').trim();
+  }
+  // Reject obvious JSON output.
+  if (s.startsWith('{') || s.startsWith('[')) return '';
+  // Strip leading "Paragraph:" / "Output:" / "Monologue:" labels.
+  s = s.replace(/^(paragraph|output|monologue|inner monologue|response)\s*[:\-]\s*/i, '');
+  // Collapse trailing whitespace and stray quote marks the model sometimes adds.
+  s = s.replace(/^["'\s]+|["'\s]+$/g, '').trim();
+  return s;
 }
 
 // ─── Context assembly ──────────────────────────────────────────────────
@@ -462,14 +558,26 @@ async function buildContext(userId) {
   const lines = [];
 
   // (1) Recent thoughts — short first-person trace from the Mind subsystem.
+  //
+  // Saliency weighting (task: D — synthesis-as-thought).
+  // Before: dump latest 10 raw. This let repeating screen-watcher captions
+  // (same Instagram image, same dashboard panel, etc.) crowd out the real
+  // signal — last heard voice, novel observations, intuition shifts.
+  //
+  // Now: pull a wider window, then score each by (source priority × recency ×
+  // novelty), dedup near-identical screen observations, and keep the top 8.
+  // The full list is still inserted into the DB by the Mind subsystem — we're
+  // only filtering what the LLM sees this cycle.
   let thoughts = [];
-  try { thoughts = recentThoughts({ limit: 10 }); } catch {}
+  try { thoughts = recentThoughts({ limit: 24 }); } catch {}
   if (thoughts.length) {
     sources_used.push('thoughts');
-    lines.push('## Recent thoughts (newest first; ref type="thought", id shown):');
-    for (const t of thoughts) {
+    const scored = scoreAndDedupThoughts(thoughts);
+    lines.push('## Recent thoughts (saliency-ranked; ref type="thought", id shown):');
+    for (const t of scored) {
       refCandidates.thought.add(t.id);
-      lines.push(`- thought#${t.id} [${t.source}]: ${t.thought}`);
+      const tag = t._dedupCount > 1 ? ` ×${t._dedupCount}` : '';
+      lines.push(`- thought#${t.id} [${t.source}${tag}]: ${t.thought}`);
     }
   }
 
@@ -529,6 +637,83 @@ async function buildContext(userId) {
     sources_used,
     refCandidates,
   };
+}
+
+// ─── Saliency (task: D — synthesis-as-thought) ────────────────────────
+//
+// Source priority: voice/last-heard is loudest, intuition (focus/mood shifts)
+// is next, then router-event style sources, then screen-watcher (which is
+// noisy and tends to repeat the same caption every minute for static windows).
+// Webcam captions are similar — keep one, drop the rest.
+const SOURCE_PRIORITY = {
+  voice:      1.00,
+  router:     0.95,
+  user:       0.95,
+  intuition:  0.85,
+  event:      0.70,
+  pan:        0.65,
+  webcam:     0.45,
+  screen:     0.40,
+  ambient:    0.30,
+};
+
+function scoreAndDedupThoughts(thoughts, keep = 8) {
+  if (!Array.isArray(thoughts) || thoughts.length === 0) return [];
+
+  // 1) Dedup near-identical screen/webcam captions (the wallpaper problem).
+  //    Keep the most-recent instance, count the rest as _dedupCount so the
+  //    LLM still knows it's been repeating.
+  const dedup = new Map(); // normalized-text → thought (most recent kept)
+  for (const t of thoughts) {
+    const isLowSignal = t.source === 'screen' || t.source === 'webcam';
+    if (!isLowSignal) {
+      dedup.set(`__keep__${t.id}`, { ...t, _dedupCount: 1 });
+      continue;
+    }
+    const norm = String(t.thought || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!norm) continue;
+    if (dedup.has(norm)) {
+      const existing = dedup.get(norm);
+      existing._dedupCount = (existing._dedupCount || 1) + 1;
+      // Keep whichever is more recent.
+      if ((t.ts || 0) > (existing.ts || 0)) {
+        dedup.set(norm, { ...t, _dedupCount: existing._dedupCount });
+      }
+    } else {
+      dedup.set(norm, { ...t, _dedupCount: 1 });
+    }
+  }
+  const unique = Array.from(dedup.values());
+
+  // 2) Score each by (source priority × recency × novelty-bonus × importance).
+  const newest = unique.reduce((m, t) => Math.max(m, t.ts || 0), Date.now());
+  const oldest = unique.reduce((m, t) => Math.min(m, t.ts || newest), newest);
+  const span = Math.max(1, newest - oldest);
+  for (const t of unique) {
+    const sp = SOURCE_PRIORITY[t.source] ?? 0.5;
+    const recency = 1 - ((newest - (t.ts || newest)) / span); // 0..1
+    // Novelty: dedup_count > 1 means it's been recurring → DOWNweight unless source is high-priority.
+    const novelty = t._dedupCount > 1 ? (1 / Math.min(t._dedupCount, 5)) : 1;
+    const importance = Number.isFinite(t.importance) ? t.importance : 0.5;
+    t._score = sp * (0.3 + 0.7 * recency) * novelty * (0.5 + 0.5 * importance);
+  }
+
+  // 3) Sort by score desc, keep top N. But ALWAYS include the latest voice
+  //    line and the latest intuition tick if they exist, even if score
+  //    didn't put them in — those are anchors.
+  unique.sort((a, b) => (b._score || 0) - (a._score || 0));
+  const top = unique.slice(0, keep);
+  const ensureAnchors = ['voice', 'router', 'user', 'intuition'];
+  for (const src of ensureAnchors) {
+    if (!top.find(t => t.source === src)) {
+      const anchor = unique.find(t => t.source === src);
+      if (anchor) top.push(anchor);
+    }
+  }
+
+  // 4) Final order — newest first, so the LLM reads time-forward.
+  top.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  return top.slice(0, keep + 2);
 }
 
 // ─── Cycle row helpers ─────────────────────────────────────────────────
