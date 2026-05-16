@@ -255,7 +255,25 @@ async function waitForCraftHealth(craft, timeoutMs = 45000) {
     await new Promise(r => setTimeout(r, 500));
   }
   console.error(`[Carrier] Craft-${craft.id} failed health check after ${timeoutMs}ms`);
+  // Start background recovery — craft may still be starting (e.g. post-sleep slow boot)
+  scheduleHealthRecovery(craft);
   return false;
+}
+
+// Keeps polling an unhealthy craft every 10s until it responds or is replaced.
+// Fixes post-sleep race where craft starts after the 45s waitForCraftHealth window.
+function scheduleHealthRecovery(craft) {
+  const timer = setInterval(async () => {
+    if (craft !== primaryCraft || craft.healthy) { clearInterval(timer); return; }
+    try {
+      const res = await fetchCraft(craft.port, '/health');
+      if (res.status === 200) {
+        craft.healthy = true;
+        clearInterval(timer);
+        console.log(`[Carrier] Craft-${craft.id} recovered health (late boot)`);
+      }
+    } catch {}
+  }, 10000);
 }
 
 function fetchCraft(port, path) {
@@ -1104,6 +1122,30 @@ const carrierServer = http.createServer((req, res) => {
   if (url.pathname === '/health' || url.pathname === '/api/carrier/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, carrier: true, craftHealthy: primaryCraft?.healthy || false }));
+    return;
+  }
+
+  // Force re-check craft health — useful after post-sleep late boot where craft started
+  // after the 45s waitForCraftHealth window already timed out.
+  if (url.pathname === '/api/carrier/heal' && req.method === 'POST') {
+    if (!primaryCraft) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'no primary craft' }));
+    }
+    const craft = primaryCraft;
+    fetchCraft(craft.port, '/health').then((r) => {
+      if (r.status === 200) {
+        craft.healthy = true;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, healed: true, craftId: craft.id }));
+      } else {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'craft still not responding' }));
+      }
+    }).catch(() => {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'craft still not responding' }));
+    });
     return;
   }
 

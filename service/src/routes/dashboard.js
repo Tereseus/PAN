@@ -1856,6 +1856,7 @@ const ALERT_TYPES = {
   audit_chain_broken:   { label: 'Audit Chain Broken',   category: 'security',  defaultSeverity: 'critical', source: 'server',   description: 'HMAC audit chain verification failed — potential tampering detected' },
   context_bloat:        { label: 'Context Bloat',        category: 'usage',     defaultSeverity: 'warning',  source: 'hooks',    description: 'CLAUDE.md or injected context exceeds size threshold — burns tokens every message' },
   high_burn_rate:       { label: 'High Burn Rate',       category: 'usage',     defaultSeverity: 'warning',  source: 'hooks',    description: 'Session is consuming tokens faster than expected per message' },
+  dashboard_render:     { label: 'Dashboard Render',     category: 'ui',        defaultSeverity: 'warning',  source: 'dashboard-render-health', description: 'A dashboard widget reported state=empty/error/stale for too long (L3 of self-heal stack)' },
 };
 
 // GET /dashboard/api/alerts/types — registry of all known alert types (for dropdowns)

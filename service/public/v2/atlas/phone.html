@@ -7,12 +7,12 @@
 		<link rel="preconnect" href="https://fonts.googleapis.com">
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-		<link href="../_app/immutable/entry/start.CvmZuWk5.js" rel="modulepreload">
-		<link href="../_app/immutable/chunks/CS0wVaem.js" rel="modulepreload">
+		<link href="../_app/immutable/entry/start.hkIUXWLz.js" rel="modulepreload">
+		<link href="../_app/immutable/chunks/BlkWt6V3.js" rel="modulepreload">
 		<link href="../_app/immutable/chunks/CzL0zlXb.js" rel="modulepreload">
-		<link href="../_app/immutable/chunks/CeAAMOgI.js" rel="modulepreload">
+		<link href="../_app/immutable/chunks/DDyVdDYK.js" rel="modulepreload">
 		<link href="../_app/immutable/chunks/Ce5VyOts.js" rel="modulepreload">
-		<link href="../_app/immutable/entry/app.CPuUWhKT.js" rel="modulepreload">
+		<link href="../_app/immutable/entry/app.D5gmIkA_.js" rel="modulepreload">
 		<link href="../_app/immutable/chunks/rdpp8wXN.js" rel="modulepreload">
 		<link href="../_app/immutable/chunks/CuZRpRoS.js" rel="modulepreload">
 		<link href="../_app/immutable/chunks/ChcJu6Af.js" rel="modulepreload">
@@ -95,6 +95,8 @@
 						el.classList.add('fade-out');
 						setTimeout(function() { el.remove(); }, 350);
 						observer.disconnect();
+						// Shell rendered — clear stuck-reload counter so future load failures get a fresh budget.
+						try { sessionStorage.removeItem('pan_stuck_reload_count'); } catch(e) {}
 					}
 				});
 				observer.observe(document.body, { childList: true, subtree: true });
@@ -105,6 +107,61 @@
 						setTimeout(function() { if (el.parentNode) el.remove(); }, 350);
 					}
 				}, 5000);
+			})();
+
+			// ─── Stuck-refresh self-heal (task #503) ───────────────────────────
+			// If the app shell never appears within 8s of page load, the bundle is
+			// stuck (network hiccup, Svelte hydration crash, CSS bomb, etc).
+			// Auto-reload up to 3 times, then surface a visible error banner so
+			// we stop looping forever. Counter lives in sessionStorage so it
+			// survives across the reloads but resets on a fresh tab.
+			(function() {
+				var STUCK_TIMEOUT_MS = 8000;
+				var MAX_RELOADS = 3;
+				var COUNTER_KEY = 'pan_stuck_reload_count';
+				function shellRendered() {
+					return !!(document.querySelector('.shell')
+						|| document.querySelector('[data-sveltekit-hydrate]')
+						|| document.querySelector('nav.sidebar')
+						|| document.querySelector('[data-widget]'));
+				}
+				setTimeout(function check() {
+					if (shellRendered()) {
+						try { sessionStorage.removeItem(COUNTER_KEY); } catch(e) {}
+						return;
+					}
+					var count = 0;
+					try { count = parseInt(sessionStorage.getItem(COUNTER_KEY) || '0', 10) || 0; } catch(e) {}
+					if (count < MAX_RELOADS) {
+						try { sessionStorage.setItem(COUNTER_KEY, String(count + 1)); } catch(e) {}
+						// Tell the server we had to self-heal so it can be tracked
+						// in dashboard_health when L2 lands. Fire-and-forget.
+						try {
+							fetch('/api/v1/logs', {
+								method: 'POST',
+								headers: {'Content-Type': 'application/json'},
+								body: JSON.stringify({
+									device_id: 'desktop-dashboard',
+									level: 'warn',
+									tag: 'stuck-refresh',
+									message: 'dashboard shell did not render within ' + STUCK_TIMEOUT_MS + 'ms — auto-reload attempt ' + (count + 1) + '/' + MAX_RELOADS
+								})
+							}).catch(function(){});
+						} catch(e) {}
+						location.reload();
+						return;
+					}
+					// Reload budget exhausted — show a real error banner instead
+					// of an endless loop. User can hit "Retry" to reset the counter.
+					var banner = document.createElement('div');
+					banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:100000;background:#7f1d1d;color:#fff;padding:14px 20px;font-family:Inter,sans-serif;font-size:14px;display:flex;align-items:center;gap:12px;box-shadow:0 4px 12px rgba(0,0,0,.4)';
+					banner.innerHTML = '<strong>PAN dashboard failed to load after ' + MAX_RELOADS + ' attempts.</strong> Bundle, network, or hydration is stuck. <button id="pan-stuck-retry" style="margin-left:auto;background:#fff;color:#7f1d1d;border:0;padding:6px 14px;border-radius:4px;font-weight:600;cursor:pointer">Retry</button>';
+					document.body.appendChild(banner);
+					document.getElementById('pan-stuck-retry').addEventListener('click', function() {
+						try { sessionStorage.removeItem(COUNTER_KEY); } catch(e) {}
+						location.reload();
+					});
+				}, STUCK_TIMEOUT_MS);
 			})();
 
 			// Block mouse back/forward buttons from navigating — PAN uses them for voice hotkeys
@@ -135,7 +192,7 @@
 		<div style="display: contents">
 			<script>
 				{
-					__sveltekit_1fkmc6 = {
+					__sveltekit_f2war7 = {
 						base: new URL("..", location).pathname.slice(0, -1),
 						assets: "/v2"
 					};
@@ -143,8 +200,8 @@
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("../_app/immutable/entry/start.CvmZuWk5.js"),
-						import("../_app/immutable/entry/app.CPuUWhKT.js")
+						import("../_app/immutable/entry/start.hkIUXWLz.js"),
+						import("../_app/immutable/entry/app.D5gmIkA_.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});
