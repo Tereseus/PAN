@@ -76,10 +76,76 @@ capabilities.push('shell_exec', 'open_app', 'open_url', 'notification', 'tts_spe
 // ── HTTP registration (works through Cloudflare tunnel) ──────────────────────
 const HUB_HTTP = config.hub_http || HUB_WS.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
 
+// ── Service-state self-detection (#497) ──────────────────────────────────────
+// Probe how the OS launched us. Cached for 60s so we don't shell out on every
+// heartbeat. Returns { service_state, service_manager } where:
+//   service_state:   'system' (boot-time) | 'user' (login-time) | 'manual' | 'none'
+//   service_manager: 'nssm' | 'schtasks' | 'launchd-daemon' | 'launchd-agent'
+//                  | 'systemd-system' | 'systemd-user' | null
+let _svcCache = null;
+let _svcCacheAt = 0;
+const SVC_CACHE_MS = 60_000;
+
+function detectServiceState() {
+  if (_svcCache && Date.now() - _svcCacheAt < SVC_CACHE_MS) return _svcCache;
+  let state = 'manual', manager = null;
+  try {
+    if (IS_WINDOWS) {
+      // 1. Real Windows service via nssm or sc — boot-time
+      try {
+        const out = execSync('sc query PAN-Client', { timeout: 2000, windowsHide: true, stdio: 'pipe' }).toString();
+        if (/STATE\s*:\s*\d+\s*RUNNING/i.test(out)) {
+          state = 'system';
+          // Distinguish nssm from native sc by the binary path
+          try {
+            const cfg = execSync('sc qc PAN-Client', { timeout: 2000, windowsHide: true, stdio: 'pipe' }).toString();
+            manager = /nssm/i.test(cfg) ? 'nssm' : 'sc';
+          } catch { manager = 'sc'; }
+        }
+      } catch {}
+      // 2. Scheduled Task at logon — user-session
+      if (state === 'manual') {
+        try {
+          const out = execSync('schtasks /Query /TN "PAN-Client" /FO LIST', { timeout: 2000, windowsHide: true, stdio: 'pipe' }).toString();
+          if (/Status:\s*(Running|Ready)/i.test(out)) { state = 'user'; manager = 'schtasks'; }
+        } catch {}
+      }
+    } else if (PLATFORM === 'darwin') {
+      try {
+        const out = execSync('launchctl list | grep -i pan-client || true', { timeout: 2000, stdio: 'pipe' }).toString();
+        if (out.trim()) {
+          // System LaunchDaemon lives in /Library/LaunchDaemons/, user agent in ~/Library/LaunchAgents/
+          const daemon = existsSync('/Library/LaunchDaemons/dev.pan.client.plist');
+          state = daemon ? 'system' : 'user';
+          manager = daemon ? 'launchd-daemon' : 'launchd-agent';
+        }
+      } catch {}
+    } else if (PLATFORM === 'linux') {
+      // System-level unit (root) — boot-time
+      try {
+        const out = execSync('systemctl is-active pan-client.service 2>/dev/null || true', { timeout: 2000, stdio: 'pipe' }).toString().trim();
+        if (out === 'active') { state = 'system'; manager = 'systemd-system'; }
+      } catch {}
+      // User-level unit — login-time (or boot-time if linger is enabled, but we report 'user' either way)
+      if (state === 'manual') {
+        try {
+          const out = execSync('systemctl --user is-active pan-client.service 2>/dev/null || true', { timeout: 2000, stdio: 'pipe' }).toString().trim();
+          if (out === 'active') { state = 'user'; manager = 'systemd-user'; }
+        } catch {}
+      }
+    }
+  } catch {}
+  _svcCache = { service_state: state, service_manager: manager };
+  _svcCacheAt = Date.now();
+  return _svcCache;
+}
+
 async function httpRegister() {
+  const svc = detectServiceState();
   return httpRequest('POST', '/api/v1/client/register',
     { token: TOKEN, device_id: DEVICE_ID, name: NAME,
-      platform: PLATFORM, arch: arch(), version: VERSION, capabilities, hostname: hostname() });
+      platform: PLATFORM, arch: arch(), version: VERSION, capabilities, hostname: hostname(),
+      service_state: svc.service_state, service_manager: svc.service_manager });
 }
 
 function httpRequest(method, path, body = null) {
@@ -138,9 +204,13 @@ function connect() {
     console.log(`[PAN Client] Connected ✓ (${NAME} / ${DEVICE_ID})`);
 
     // Send registration immediately
-    send({ type: 'register', device_id: DEVICE_ID, name: NAME, version: VERSION,
-           platform: PLATFORM, arch: arch(), capabilities,
-           hostname: hostname(), token: TOKEN });
+    {
+      const svc = detectServiceState();
+      send({ type: 'register', device_id: DEVICE_ID, name: NAME, version: VERSION,
+             platform: PLATFORM, arch: arch(), capabilities,
+             hostname: hostname(), token: TOKEN,
+             service_state: svc.service_state, service_manager: svc.service_manager });
+    }
 
     // Heartbeat every 30s
     heartbeatTimer = setInterval(sendHeartbeat, 30_000);
@@ -301,6 +371,7 @@ async function sendHeartbeat() {
     }
   }
 
+  const svc = detectServiceState();
   send({
     type: 'heartbeat',
     device_id: DEVICE_ID,
@@ -309,6 +380,8 @@ async function sendHeartbeat() {
     uptime_s: Math.round(process.uptime()),
     timestamp: Date.now(),
     services,
+    service_state: svc.service_state,
+    service_manager: svc.service_manager,
   });
 }
 
@@ -800,8 +873,12 @@ async function boot() {
     // Send register immediately for the initial connection (ws.once('open') already fired,
     // so the ws.on('open') handler below won't run until the next reconnect).
     connected = true;
-    send({ type: 'register', device_id: DEVICE_ID, name: NAME, version: VERSION,
-           platform: PLATFORM, arch: arch(), capabilities, hostname: hostname(), token: TOKEN });
+    {
+      const svc = detectServiceState();
+      send({ type: 'register', device_id: DEVICE_ID, name: NAME, version: VERSION,
+             platform: PLATFORM, arch: arch(), capabilities, hostname: hostname(), token: TOKEN,
+             service_state: svc.service_state, service_manager: svc.service_manager });
+    }
     heartbeatTimer = setInterval(sendHeartbeat, 30_000);
     pingTimer = setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.ping(); }, 15_000);
     setInterval(sendPresence, 30_000);
@@ -811,8 +888,10 @@ async function boot() {
     ws.on('open', () => {
       connected = true;
       reconnectDelay = 2000;
+      const svc = detectServiceState();
       send({ type: 'register', device_id: DEVICE_ID, name: NAME, version: VERSION,
-             platform: PLATFORM, arch: arch(), capabilities, hostname: hostname(), token: TOKEN });
+             platform: PLATFORM, arch: arch(), capabilities, hostname: hostname(), token: TOKEN,
+             service_state: svc.service_state, service_manager: svc.service_manager });
       heartbeatTimer = setInterval(sendHeartbeat, 30_000);
       pingTimer = setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.ping(); }, 15_000);
       setInterval(sendPresence, 30_000);
@@ -849,12 +928,15 @@ function startHttpMode() {
             services = await probeServices();
           }
         }
+        const svc = detectServiceState();
         await httpRequest('POST', '/api/v1/client/heartbeat', {
           device_id: DEVICE_ID,
           mem_free_mb: Math.round(freemem() / 1024 / 1024),
           mem_total_mb: Math.round(totalmem() / 1024 / 1024),
           uptime_s: Math.round(process.uptime()),
           services,
+          service_state: svc.service_state,
+          service_manager: svc.service_manager,
         });
       } catch {}
       await new Promise(r => setTimeout(r, 20_000));

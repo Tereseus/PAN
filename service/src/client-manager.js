@@ -107,6 +107,16 @@ export function checkInviteToken(token) {
     `CREATE INDEX IF NOT EXISTS idx_ccq_device_pending ON client_command_queue(device_id, picked_up_at)`,
     "ALTER TABLE devices ADD COLUMN reported_services TEXT",
     "ALTER TABLE devices ADD COLUMN tailscale_ip TEXT",
+    // #497: how this device's pan-client is launched at startup.
+    // service_state:   'system'  = OS service, runs at boot (no login required)
+    //                  'user'    = user-session service, runs only after login
+    //                  'manual'  = started by hand, won't survive reboot
+    //                  'none'    = never registered
+    // service_manager: 'nssm' | 'sc' | 'schtasks' | 'launchd-daemon' | 'launchd-agent'
+    //                | 'systemd-system' | 'systemd-user' | null
+    "ALTER TABLE devices ADD COLUMN service_state TEXT",
+    "ALTER TABLE devices ADD COLUMN service_manager TEXT",
+    "ALTER TABLE devices ADD COLUMN service_installed_at TEXT",
     `CREATE TABLE IF NOT EXISTS device_audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at TEXT DEFAULT (datetime('now','localtime')),
@@ -129,7 +139,8 @@ function getDeviceTrust(device_id) {
   return row ? row.trusted : null;
 }
 
-function upsertDevice({ device_id, name, platform, capabilities, version, pending = false, tailscale_ip = null }) {
+function upsertDevice({ device_id, name, platform, capabilities, version, pending = false, tailscale_ip = null,
+                        service_state = null, service_manager = null }) {
   const existing = get("SELECT id, trusted FROM devices WHERE hostname = :h", { ':h': device_id });
   if (existing) {
     // Never downgrade trust — if already approved (1) keep it; only set pending (0) on first-ever pan-client registration
@@ -139,13 +150,22 @@ function upsertDevice({ device_id, name, platform, capabilities, version, pendin
     const existingRow = get("SELECT name FROM devices WHERE hostname = :h", { ':h': device_id });
     const keepName = existingRow?.name && existingRow.name !== device_id;
     const tsIpClause = tailscale_ip ? ', tailscale_ip = :ts_ip' : '';
+    // #497: service_state/manager — COALESCE keeps prior value if client didn't report this round
     run(`UPDATE devices SET ${keepName ? '' : 'name = :n,'} capabilities = :c, client_version = :v, online = 1, trusted = :t${tsIpClause},
+         service_state = COALESCE(:ss, service_state),
+         service_manager = COALESCE(:sm, service_manager),
+         service_installed_at = COALESCE(service_installed_at,
+           CASE WHEN :ss IN ('system','user') THEN datetime('now','localtime') ELSE NULL END),
          last_seen = datetime('now','localtime') WHERE hostname = :h`,
-      { ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': newTrust, ':h': device_id, ...(tailscale_ip ? { ':ts_ip': tailscale_ip } : {}) });
+      { ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': newTrust, ':h': device_id,
+        ':ss': service_state, ':sm': service_manager, ...(tailscale_ip ? { ':ts_ip': tailscale_ip } : {}) });
   } else {
-    run(`INSERT INTO devices (hostname, name, device_type, capabilities, client_version, online, trusted, tailscale_ip)
-         VALUES (:h, :n, 'pc', :c, :v, 1, :t, :ts_ip)`,
-      { ':h': device_id, ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': pending ? 0 : 1, ':ts_ip': tailscale_ip });
+    run(`INSERT INTO devices (hostname, name, device_type, capabilities, client_version, online, trusted, tailscale_ip,
+                              service_state, service_manager, service_installed_at)
+         VALUES (:h, :n, 'pc', :c, :v, 1, :t, :ts_ip, :ss, :sm,
+                 CASE WHEN :ss IN ('system','user') THEN datetime('now','localtime') ELSE NULL END)`,
+      { ':h': device_id, ':n': name, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': pending ? 0 : 1,
+        ':ts_ip': tailscale_ip, ':ss': service_state, ':sm': service_manager });
   }
 }
 
@@ -364,6 +384,8 @@ function handleRegister(ws, deviceId, msg) {
     version: msg.version,
     pending,
     tailscale_ip: ws._panTailscaleIp || null,
+    service_state: msg.service_state || null,
+    service_manager: msg.service_manager || null,
   });
 
   if (pending) {
@@ -389,11 +411,24 @@ function handleHeartbeat(deviceId, msg) {
     entry.last_heartbeat = msg.timestamp;
     entry.mem_free_mb = msg.mem_free_mb;
     if (msg.services) entry.reported_services = msg.services;
+    if (msg.service_state) entry.service_state = msg.service_state;
+    if (msg.service_manager) entry.service_manager = msg.service_manager;
   }
   setDeviceOnline(deviceId, true);
   if (msg.services) {
     run("UPDATE devices SET reported_services = :s WHERE hostname = :h",
       { ':s': JSON.stringify(msg.services), ':h': deviceId });
+  }
+  // #497: refresh service_state on every WS heartbeat. The CASE in the
+  // service_installed_at clause stamps first-observation only.
+  if (msg.service_state !== undefined || msg.service_manager !== undefined) {
+    run(`UPDATE devices SET
+           service_state = COALESCE(:ss, service_state),
+           service_manager = COALESCE(:sm, service_manager),
+           service_installed_at = COALESCE(service_installed_at,
+             CASE WHEN :ss IN ('system','user') THEN datetime('now','localtime') ELSE NULL END)
+         WHERE hostname = :h`,
+      { ':h': deviceId, ':ss': msg.service_state ?? null, ':sm': msg.service_manager ?? null });
   }
 }
 

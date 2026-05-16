@@ -389,10 +389,21 @@ router.post('/:id/deny', (req, res) => {
 // ── POST /api/v1/client/heartbeat ─────────────────────────────────────────────
 // HTTP fallback heartbeat (for clients where WS heartbeat may be blocked).
 router.post('/heartbeat', (req, res) => {
-  const { device_id } = req.body;
+  const { device_id, service_state, service_manager } = req.body;
   if (!device_id) return res.status(400).json({ ok: false, error: 'device_id required' });
   try {
-    run("UPDATE devices SET online = 1, last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': device_id });
+    // #497: refresh service_state/manager on every heartbeat. Clients re-evaluate
+    // local service health each loop so a service that gets uninstalled/disabled
+    // shows up in the dashboard without waiting for a re-register.
+    if (service_state !== undefined || service_manager !== undefined) {
+      run(`UPDATE devices SET online = 1,
+           service_state = COALESCE(:ss, service_state),
+           service_manager = COALESCE(:sm, service_manager),
+           last_seen = datetime('now','localtime') WHERE hostname = :h`,
+        { ':h': device_id, ':ss': service_state ?? null, ':sm': service_manager ?? null });
+    } else {
+      run("UPDATE devices SET online = 1, last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': device_id });
+    }
   } catch {}
   res.json({ ok: true, connected: isClientConnected(device_id) });
 });
@@ -415,7 +426,8 @@ router.post('/presence', (req, res) => {
 // Called by pan-client.js on first connect. Works through Cloudflare (no WebSocket needed).
 // Creates a pending device record and broadcasts approval request to dashboard.
 router.post('/register', (req, res) => {
-  const { token, device_id, name, platform, arch, version, capabilities, hostname: dHostname } = req.body || {};
+  const { token, device_id, name, platform, arch, version, capabilities,
+          hostname: dHostname, service_state, service_manager } = req.body || {};
   const deviceId = device_id || dHostname || 'unknown';
   const deviceName = name || deviceId;
 
@@ -430,15 +442,29 @@ router.post('/register', (req, res) => {
       return res.status(401).json({ ok: false, error: 'Invalid or expired token' });
     }
 
+    // #497: register-time service_state stamp. We also set service_installed_at
+    // only on first observation (or first non-null) so it represents "when this
+    // device first reported it had a real service installed".
+    const stampInstalled = (service_state && service_state !== 'none' && service_state !== 'manual')
+      ? "service_installed_at = COALESCE(service_installed_at, datetime('now','localtime')),"
+      : "";
+
     if (existing) {
       const newTrust = existing.trusted !== null ? existing.trusted : 0;
       run(`UPDATE devices SET name = :n, capabilities = :c, client_version = :v, online = 1, trusted = :t,
+           service_state = COALESCE(:ss, service_state),
+           service_manager = COALESCE(:sm, service_manager),
+           ${stampInstalled}
            last_seen = datetime('now','localtime') WHERE hostname = :h`,
-        { ':n': deviceName, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': newTrust, ':h': deviceId });
+        { ':n': deviceName, ':c': JSON.stringify(capabilities || []), ':v': version || null, ':t': newTrust,
+          ':ss': service_state ?? null, ':sm': service_manager ?? null, ':h': deviceId });
     } else {
-      run(`INSERT INTO devices (hostname, name, device_type, capabilities, client_version, online, trusted)
-           VALUES (:h, :n, 'pc', :c, :v, 1, 0)`,
-        { ':h': deviceId, ':n': deviceName, ':c': JSON.stringify(capabilities || []), ':v': version || null });
+      run(`INSERT INTO devices (hostname, name, device_type, capabilities, client_version, online, trusted,
+                                service_state, service_manager, service_installed_at)
+           VALUES (:h, :n, 'pc', :c, :v, 1, 0, :ss, :sm,
+                   CASE WHEN :ss IN ('system','user') THEN datetime('now','localtime') ELSE NULL END)`,
+        { ':h': deviceId, ':n': deviceName, ':c': JSON.stringify(capabilities || []), ':v': version || null,
+          ':ss': service_state ?? null, ':sm': service_manager ?? null });
     }
 
     broadcastNotification('device_pending', {

@@ -6761,6 +6761,12 @@
 												{dev.name || dev.hostname}
 												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
 												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+												<!-- #497: service-install pill — only meaningful for pan-client devices. boot > login > manual. -->
+												{#if isPanClient && !isHub && dev.service_state}
+													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'MANUAL'}
+													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#f38ba8'}
+													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="Started by: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
+												{/if}
 											</div>
 											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
 										</div>
@@ -6776,6 +6782,9 @@
 												<span style="color:#cdd6f4">Hostname:</span> {dev.hostname}
 												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
 												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
+												{#if dev.service_state}
+													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time)' : dev.service_state === 'user' ? 'user-session (login-time)' : dev.service_state} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
+												{/if}
 											</div>
 											{#if caps.length > 0}
 												<div style="font-size:9px;color:#6c7086;margin-bottom:3px"><span style="color:#cdd6f4">Capabilities:</span></div>
@@ -9099,6 +9108,12 @@
 												{dev.name || dev.hostname}
 												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
 												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
+												<!-- #497: service-install pill — only meaningful for pan-client devices. boot > login > manual. -->
+												{#if isPanClient && !isHub && dev.service_state}
+													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'MANUAL'}
+													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#f38ba8'}
+													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="Started by: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
+												{/if}
 											</div>
 											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
 										</div>
@@ -9114,6 +9129,9 @@
 												<span style="color:#cdd6f4">Hostname:</span> {dev.hostname}
 												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
 												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
+												{#if dev.service_state}
+													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time)' : dev.service_state === 'user' ? 'user-session (login-time)' : dev.service_state} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
+												{/if}
 											</div>
 											{#if caps.length > 0}
 												<div style="font-size:9px;color:#6c7086;margin-bottom:3px"><span style="color:#cdd6f4">Capabilities:</span></div>
