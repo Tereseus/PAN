@@ -2277,6 +2277,66 @@
 							}
 							scrollbackDiv.innerHTML += '\n<span style="color:#f9e2af">[Server restarting \u2014 will reconnect automatically...]</span>';
 							break;
+						case 'swap_failed': {
+							// Carrier hot-swap aborted (health_failed or gate_failed).
+							// /api/carrier/swap ALWAYS returns {ok:true,"Swap initiated"} because
+							// performSwap() is fire-and-forget — this WS message is the only way
+							// the dashboard can tell the user prod is still on the OLD Craft.
+							const phase = msg.phase || 'unknown';
+							const reason = msg.reason || 'unknown';
+							const detail = (msg.detail || '').toString().slice(0, 200);
+							const tail = (msg.stderr_tail || '').toString().slice(-400);
+							scrollbackDiv.innerHTML += `\n<span style="color:#f38ba8">[Craft swap aborted \u2014 ${phase}: ${reason}${detail ? ' (' + detail + ')' : ''} \u2014 prod still on ${msg.old_commit || 'old'} commit]</span>`;
+							if (typeof window !== 'undefined') {
+								const banner = document.createElement('div');
+								const escTail = tail.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+								const stderrHtml = tail ? `<div style="font-family:monospace;font-size:11px;opacity:0.75;margin-top:6px;max-height:140px;overflow:auto;white-space:pre-wrap;text-align:left;background:#11111b;padding:6px;border-radius:3px">${escTail}</div>` : '';
+								banner.innerHTML = `<div>\u274c Craft swap failed (${phase}: ${reason}) \u2014 prod kept on ${msg.old_commit || 'old'} commit</div>${stderrHtml}<button style="margin-top:8px;background:transparent;color:#f38ba8;border:1px solid #f38ba8;padding:2px 10px;border-radius:3px;cursor:pointer">dismiss</button>`;
+								banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#1e1e2e;color:#f38ba8;padding:10px 16px;text-align:left;font-family:inherit;font-weight:600;border-bottom:1px solid #f38ba8;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
+								banner.querySelector('button')?.addEventListener('click', () => { try { banner.remove(); } catch {} });
+								document.body.appendChild(banner);
+								setTimeout(() => { try { banner.remove(); } catch {} }, 30_000);
+							}
+							break;
+						}
+						case 'carrier_ready': {
+							// Carrier finished respawning after a user-requested restart and the
+							// primary Craft is healthy. Clear the blue "restarting" banner and show
+							// a one-shot green confirmation so the user knows it actually worked
+							// instead of waiting on the 30s safety timer.
+							const craftId = msg.craft_id ?? '?';
+							const commit = (msg.craft_commit || '').slice(0, 7);
+							const downtime = msg.downtime_ms ? (msg.downtime_ms / 1000).toFixed(1) + 's' : '?';
+							scrollbackDiv.innerHTML += `\n<span style="color:#a6e3a1">[\u2713 PAN back online \u2014 Craft-${craftId} ${commit} after ${downtime}]</span>`;
+							if (typeof window !== 'undefined') {
+								// Clear the existing blue "restarting" banner if it's still up.
+								if (window._panCarrierRestartBanner) {
+									document.querySelectorAll('div').forEach(d => {
+										if (d.textContent && d.textContent.startsWith('\u27f3 PAN restarting')) {
+											try { d.remove(); } catch {}
+										}
+									});
+									window._panCarrierRestartBanner = false;
+								}
+								const banner = document.createElement('div');
+								banner.textContent = `\u2713 PAN back online \u2014 Craft-${craftId} ${commit} after ${downtime}`;
+								banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#1e1e2e;color:#a6e3a1;padding:8px 16px;text-align:center;font-family:inherit;font-weight:600;border-bottom:1px solid #a6e3a1;box-shadow:0 2px 8px rgba(0,0,0,0.4);transition:opacity 0.4s';
+								document.body.appendChild(banner);
+								setTimeout(() => { banner.style.opacity = '0'; setTimeout(() => { try { banner.remove(); } catch {} }, 500); }, 4500);
+							}
+							serverRestarting = false;
+							break;
+						}
+						case 'pan_resumed': {
+							// SessionStart hook fired with source='resume' — Claude resumed an
+							// existing session (typically after carrier restart). The full ΠΑΝ
+							// Remembers preamble is suppressed by the anti-repetition rule, so
+							// render a one-line scrollback marker with the last topic instead.
+							const lastTopic = (msg.last_topic || '').toString().trim();
+							const topicText = lastTopic ? ` \u2014 last: "${lastTopic}"` : '';
+							scrollbackDiv.innerHTML += `\n<span style="color:#94e2d5">[\u21bb \u03a0\u0391\u039d resumed${topicText}]</span>`;
+							break;
+						}
 						case 'carrier_restarting': {
 							// Carrier is about to process.exit(1); pan-loop will respawn it in ~2s.
 							// Existing reconnect tokens (stored in sessionStorage per tab) will be

@@ -381,6 +381,44 @@ router.post('/:eventType', (req, res) => {
           ':tp': payload.transcript_path || null
         });
       }
+
+      // Resume-aware preamble. When Claude Code resumes an existing session
+      // (source='resume'), the CLAUDE.md "ΠΑΝ Remembers" preamble is suppressed
+      // by the anti-repetition rule — but the user just hit carrier_restart and
+      // legitimately wants to see "I'm back, last topic was X". Push a WS
+      // notification so the terminal UI can render a one-line resume banner in
+      // scrollback without making Claude re-emit the full briefing.
+      // (source='startup' = fresh process, handled by the normal first-message
+      // ΠΑΝ Remembers path; 'compact'/'clear' are user-intentional and don't
+      // need a banner.)
+      if (payload.source === 'resume') {
+        try {
+          const lastPrompt = getScoped(req,
+            `SELECT data, created_at FROM events
+             WHERE session_id = :sid
+             AND event_type = 'UserPromptSubmit'
+             AND org_id = :org_id
+             ORDER BY created_at DESC LIMIT 1`,
+            { ':sid': sessionId }
+          );
+          let lastTopic = '';
+          if (lastPrompt?.data) {
+            try {
+              const parsed = JSON.parse(lastPrompt.data);
+              lastTopic = (parsed.prompt || parsed.user_prompt || '').toString().trim().slice(0, 80);
+            } catch {}
+          }
+          broadcastNotification('pan_resumed', {
+            session_id: sessionId,
+            cwd,
+            last_topic: lastTopic,
+            last_topic_at: lastPrompt?.created_at || null,
+          });
+          console.log(`[PAN Hook] SessionStart resume → pan_resumed broadcast (session=${sessionId.slice(0,8)}, last_topic="${lastTopic.slice(0,40)}")`);
+        } catch (err) {
+          console.warn('[PAN Hook] resume preamble failed:', err.message);
+        }
+      }
     }
 
     if (eventType === 'SessionEnd') {
