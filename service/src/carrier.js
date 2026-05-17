@@ -31,9 +31,26 @@ import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync } from 'fs';
 import { hostname, tmpdir } from 'os';
 import { createHash } from 'crypto';
-import { killProcessOnPort } from './platform.js';
+import { killProcessOnPort, getDataDir } from './platform.js';
 import { PerfEngine } from './perf/engine.js';
 import { toMarkdown as perfToMarkdown, SWAP_GATE } from './perf/stages.js';
+import {
+  setupCarrierLog,
+  appendCraftStderr,
+  getCraftStderrTail,
+  recordSwapPhase,
+  getSwapHistory,
+  readLogTail,
+} from './carrier-observability.js';
+
+// Tee carrier stdout/stderr to <dataDir>/../logs/carrier.log (10MB rotation).
+// Must happen before any console.log so the first lines are captured too.
+try {
+  setupCarrierLog(join(getDataDir(), '..', 'logs'));
+} catch (e) {
+  // Non-fatal — carrier still runs, just without persistent log file.
+  process.stderr.write(`[Carrier] setupCarrierLog failed: ${e.message}\n`);
+}
 
 // Carrier has no DB — send ΠΑΝ notifications via HTTP to the Craft
 function panNotify(service, subject, body, opts = {}) {
@@ -197,11 +214,16 @@ function spawnCraft(port, label = 'primary') {
     windowsHide: true,
   });
 
-  const craft = { proc, port, id, label, startedAt: Date.now(), healthy: false, gitCommit: getGitCommit() };
+  const craft = { proc, port, id, label, startedAt: Date.now(), healthy: false, gitCommit: getGitCommit(), stderrTail: '' };
 
-  // Pipe Craft stdout/stderr to Carrier console with prefix
+  // Pipe Craft stdout/stderr to Carrier console with prefix AND keep last
+  // ~10KB of stderr in craft.stderrTail so swap failures can include the
+  // actual error message (not just "failed health check").
   proc.stdout.on('data', (d) => process.stdout.write(`[Craft-${id}] ${d}`));
-  proc.stderr.on('data', (d) => process.stderr.write(`[Craft-${id}!] ${d}`));
+  proc.stderr.on('data', (d) => {
+    process.stderr.write(`[Craft-${id}!] ${d}`);
+    appendCraftStderr(craft, d);
+  });
 
   // IPC messages from Craft → Carrier (terminal operations)
   proc.on('message', (msg) => {
@@ -243,21 +265,40 @@ function spawnCraft(port, label = 'primary') {
 // First install: DB migration can take 20-30s. Normal: <2s.
 async function waitForCraftHealth(craft, timeoutMs = 45000) {
   const deadline = Date.now() + timeoutMs;
+  let lastReason = 'timeout';
+  let lastDetail = null;
+  let lastStatus = null;
   while (Date.now() < deadline) {
     try {
       const res = await fetchCraft(craft.port, '/health');
       if (res.status === 200) {
         craft.healthy = true;
+        craft.healthReason = 'ok';
         console.log(`[Carrier] Craft-${craft.id} healthy on port ${craft.port}`);
-        return true;
+        return { healthy: true, reason: 'ok' };
       }
-    } catch {}
+      // Non-200: capture the status and a short body slice as the reason.
+      lastReason = `http_${res.status}`;
+      lastStatus = res.status;
+      try { lastDetail = String(res.body || '').slice(0, 500); } catch { lastDetail = null; }
+    } catch (e) {
+      // ECONNREFUSED / ETIMEDOUT / DNS / socket-hang-up — the most common
+      // case is ECONNREFUSED because the new Craft crashed before binding.
+      lastReason = e?.code || e?.errno || 'fetch_error';
+      lastDetail = e?.message || String(e);
+    }
     await new Promise(r => setTimeout(r, 500));
   }
-  console.error(`[Carrier] Craft-${craft.id} failed health check after ${timeoutMs}ms`);
+  // Craft exited before health passed? Annotate that — it's the most
+  // diagnostic signal we have (exit-code + signal from the proc.on('exit')).
+  if (craft.proc?.killed || craft.proc?.exitCode != null) {
+    lastReason = 'craft_exited_before_healthy';
+    lastDetail = `exitCode=${craft.proc.exitCode} signal=${craft.proc.signalCode || 'none'}`;
+  }
+  console.error(`[Carrier] Craft-${craft.id} failed health check after ${timeoutMs}ms (reason=${lastReason})`);
   // Start background recovery — craft may still be starting (e.g. post-sleep slow boot)
   scheduleHealthRecovery(craft);
-  return false;
+  return { healthy: false, reason: lastReason, detail: lastDetail, lastStatus };
 }
 
 // Keeps polling an unhealthy craft every 10s until it responds or is replaced.
@@ -734,6 +775,21 @@ const carrierServer = http.createServer((req, res) => {
     if (handleLifeboat(url, req.method, res)) return;
   }
 
+  // Swap history — in-memory ring of last 50 lifecycle phases. Always
+  // available even when Craft is down (lives in Carrier). Use this to
+  // answer "why did the swap fail?" — every aborted swap records its
+  // reason + stderr_tail here.
+  if (url.pathname === '/api/carrier/swap-history') {
+    const wantLog = url.searchParams.get('log') === '1';
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      history: getSwapHistory(),
+      log_tail: wantLog ? readLogTail(8192) : null,
+    }));
+    return;
+  }
+
   // Carrier-owned endpoints
   if (url.pathname === '/api/carrier/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1201,10 +1257,48 @@ async function performSwap() {
   console.log(`[Carrier] ═══ HOT SWAP ═══ ${oldCommit} → ${newCommit} — starting Craft on port ${newPort}...`);
 
   const newCraft = spawnCraft(newPort, 'primary');
-  const healthy = await waitForCraftHealth(newCraft);
+  recordSwapPhase('started', {
+    old_craft_id: oldCraft?.id, old_commit: oldCommit,
+    new_craft_id: newCraft.id, new_commit: newCommit, new_port: newPort,
+  });
 
-  if (!healthy) {
-    console.error('[Carrier] New Craft failed /health — aborting swap, keeping old Craft');
+  const healthResult = await waitForCraftHealth(newCraft);
+
+  if (!healthResult.healthy) {
+    const stderrTail = getCraftStderrTail(newCraft, 50);
+    console.error(`[Carrier] New Craft failed /health (reason=${healthResult.reason}) — aborting swap, keeping old Craft`);
+    if (stderrTail) console.error(`[Carrier] Craft-${newCraft.id} stderr tail:\n${stderrTail}`);
+    recordSwapPhase('health_failed', {
+      new_craft_id: newCraft.id, new_commit: newCommit,
+      reason: healthResult.reason,
+      detail: healthResult.detail,
+      last_status: healthResult.lastStatus,
+      stderr_tail: stderrTail,
+      exit_code: newCraft.proc?.exitCode,
+      exit_signal: newCraft.proc?.signalCode,
+    });
+    recordEvent('craft_swap_aborted', {
+      phase: 'health_failed',
+      old_commit: oldCommit, new_commit: newCommit,
+      new_craft_id: newCraft.id,
+      reason: healthResult.reason,
+      detail: (healthResult.detail || '').slice(0, 500),
+      stderr_tail: stderrTail.slice(-2000),
+    });
+    // #496-followup: surface the failure to the dashboard so users don't get
+    // the false "Swap initiated" success while prod silently stays on the old Craft.
+    if (terminalServer) {
+      try {
+        terminalServer.broadcastNotification('swap_failed', {
+          phase: 'health_failed',
+          reason: healthResult.reason,
+          detail: (healthResult.detail || '').slice(0, 300),
+          old_commit: oldCommit,
+          new_commit: newCommit,
+          stderr_tail: stderrTail.slice(-1500),
+        });
+      } catch {}
+    }
     try { newCraft.proc.kill(); } catch {}
     // Reset swap state so the next swap attempt starts clean
     if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
@@ -1229,6 +1323,33 @@ async function performSwap() {
   const gateCheck = perfEngine.isSwapSafe();
   if (!gateCheck.safe) {
     console.error(`[Carrier] ❌ New Craft-${newCraft.id} failed initial swap gate: ${gateCheck.reason} — aborting swap`);
+    recordSwapPhase('gate_failed', {
+      new_craft_id: newCraft.id, new_commit: newCommit,
+      reason: gateCheck.reason,
+      failed_stages: gateCheck.failed_stages || gateCheck.failedStages,
+    });
+    const gateStderrTail = getCraftStderrTail(newCraft, 50);
+    recordEvent('craft_swap_aborted', {
+      phase: 'gate_failed',
+      old_commit: oldCommit, new_commit: newCommit,
+      new_craft_id: newCraft.id,
+      reason: gateCheck.reason,
+      failed_stages: gateCheck.failed_stages || gateCheck.failedStages,
+      stderr_tail: gateStderrTail.slice(-2000),
+    });
+    // #496-followup: surface gate failures the same way as health failures.
+    if (terminalServer) {
+      try {
+        terminalServer.broadcastNotification('swap_failed', {
+          phase: 'gate_failed',
+          reason: gateCheck.reason,
+          failed_stages: gateCheck.failed_stages || gateCheck.failedStages,
+          old_commit: oldCommit,
+          new_commit: newCommit,
+          stderr_tail: gateStderrTail.slice(-1500),
+        });
+      } catch {}
+    }
     swapPending = false;
     primaryCraft = oldCraft;
     // Kill previousCraft before nulling — prevents orphan Craft leak
@@ -1243,6 +1364,15 @@ async function performSwap() {
     return;
   }
 
+  recordSwapPhase('live', {
+    old_craft_id: oldCraft?.id, old_commit: oldCommit,
+    new_craft_id: newCraft.id, new_commit: newCommit,
+    rollback_window_ms: ROLLBACK_TIMEOUT_MS,
+  });
+  recordEvent('craft_swap_live', {
+    old_commit: oldCommit, new_commit: newCommit,
+    new_craft_id: newCraft.id, new_port: newCraft.port,
+  });
   console.log(`[Carrier] ═══ SWAP LIVE ═══ Primary is now Craft-${newCraft.id} (${newCommit})`);
   console.log(`[Carrier] ⏱️  Rollback window: ${ROLLBACK_TIMEOUT_MS / 1000}s — POST /lifeboat/rollback to revert, POST /lifeboat/confirm to keep`);
 
@@ -1281,6 +1411,15 @@ function confirmSwap() {
   if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
   swapPending = false;
   perfEngine.markSwapEnd();
+
+  recordSwapPhase('confirmed', {
+    primary_craft_id: primaryCraft?.id, primary_commit: primaryCraft?.gitCommit,
+    retired_craft_id: previousCraft?.id, retired_commit: previousCraft?.gitCommit,
+  });
+  recordEvent('craft_swap_confirmed', {
+    primary_commit: primaryCraft?.gitCommit, retired_commit: previousCraft?.gitCommit,
+    primary_craft_id: primaryCraft?.id,
+  });
 
   // NOW kill the old Craft
   if (previousCraft) {
@@ -1449,6 +1588,15 @@ function performRollback() {
   perfEngine.markSwapEnd();
 
   console.log(`[Carrier] 🔙 ROLLBACK — reverting to Craft-${primaryCraft.id} (${primaryCraft.gitCommit}), killing Craft-${failedCraft.id}`);
+  recordSwapPhase('rolled_back', {
+    rolled_back_to_craft_id: primaryCraft.id, rolled_back_to_commit: primaryCraft.gitCommit,
+    killed_craft_id: failedCraft.id, killed_commit: failedCraft.gitCommit,
+    stderr_tail: getCraftStderrTail(failedCraft, 50).slice(-2000),
+  });
+  recordEvent('craft_swap_rolled_back', {
+    rolled_back_to_commit: primaryCraft.gitCommit, killed_commit: failedCraft.gitCommit,
+    killed_craft_id: failedCraft.id,
+  });
   try { failedCraft.proc.kill(); } catch {}
 
   if (terminalServer) {
@@ -1673,6 +1821,25 @@ async function boot() {
     console.warn(`[Carrier] Failed to clean port ${craftPort}: ${e.message}`);
   }
 
+  // Detect "we just respawned after a user-requested restart" so we can emit
+  // a `carrier_ready` notification once Craft is healthy. Without this the UI
+  // shows the blue "PAN restarting…" banner that only clears on a 30s safety
+  // timer — the user can't tell whether the restart actually worked until
+  // they type something. See terminal/+page.svelte 'carrier_ready' handler.
+  let _restartPendingMarker = null;
+  try {
+    const isDev = process.env.PAN_DEV === '1';
+    const markerPath = join(process.env.LOCALAPPDATA || '', 'PAN', isDev ? 'data-dev' : 'data', '.restart-pending');
+    if (existsSync(markerPath)) {
+      const ts = parseInt(readFileSync(markerPath, 'utf8'), 10);
+      _restartPendingMarker = { path: markerPath, ts: Number.isFinite(ts) ? ts : Date.now() };
+      try { unlinkSync(markerPath); } catch {}
+      console.log(`[Carrier] 🔁 Restart marker detected (age=${Date.now() - _restartPendingMarker.ts}ms) — will broadcast carrier_ready once Craft is up`);
+    }
+  } catch (err) {
+    console.warn('[Carrier] restart-pending marker read failed:', err.message);
+  }
+
   // Spawn primary Craft
   primaryCraft = spawnCraft(craftPort, 'primary');
 
@@ -1714,6 +1881,26 @@ async function boot() {
 
   // Wait for Craft to be healthy
   await waitForCraftHealth(primaryCraft);
+
+  // If we just respawned from a user-requested restart, tell the dashboards
+  // we're back. 1.5s grace gives WS clients time to reconnect first.
+  if (_restartPendingMarker && primaryCraft?.healthy) {
+    const downtimeMs = Date.now() - _restartPendingMarker.ts;
+    setTimeout(() => {
+      if (!terminalServer) return;
+      try {
+        terminalServer.broadcastNotification('carrier_ready', {
+          craft_id: primaryCraft?.id,
+          craft_commit: primaryCraft?.gitCommit || getGitCommit(),
+          downtime_ms: downtimeMs,
+          carrier_pid: process.pid,
+        });
+        console.log(`[Carrier] ✅ Broadcast carrier_ready (downtime=${downtimeMs}ms, craft=${primaryCraft?.id})`);
+      } catch (err) {
+        console.warn('[Carrier] carrier_ready broadcast failed:', err.message);
+      }
+    }, 1500);
+  }
 
   // ── Zombie self-detector ────────────────────────────────────────────────
   // Only needed in standalone mode. Under Super-Carrier, SC owns port 7777
