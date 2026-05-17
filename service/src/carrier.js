@@ -1884,17 +1884,27 @@ async function boot() {
 
   // If we just respawned from a user-requested restart, tell the dashboards
   // we're back. 1.5s grace gives WS clients time to reconnect first.
+  // Persist a `carrier_ready` event row IMMEDIATELY (not delayed) so Scout/
+  // Forge can pair it with the preceding `carrier_restart` event to detect
+  // stuck restarts: carrier_restart with no carrier_ready within 30s = bad.
   if (_restartPendingMarker && primaryCraft?.healthy) {
     const downtimeMs = Date.now() - _restartPendingMarker.ts;
+    const readyPayload = {
+      craft_id: primaryCraft?.id,
+      craft_commit: primaryCraft?.gitCommit || getGitCommit(),
+      downtime_ms: downtimeMs,
+      carrier_pid: process.pid,
+      marker_ts: _restartPendingMarker.ts,
+    };
+    try {
+      recordEvent('carrier_ready', readyPayload);
+    } catch (err) {
+      console.warn('[Carrier] carrier_ready event record failed:', err.message);
+    }
     setTimeout(() => {
       if (!terminalServer) return;
       try {
-        terminalServer.broadcastNotification('carrier_ready', {
-          craft_id: primaryCraft?.id,
-          craft_commit: primaryCraft?.gitCommit || getGitCommit(),
-          downtime_ms: downtimeMs,
-          carrier_pid: process.pid,
-        });
+        terminalServer.broadcastNotification('carrier_ready', readyPayload);
         console.log(`[Carrier] ✅ Broadcast carrier_ready (downtime=${downtimeMs}ms, craft=${primaryCraft?.id})`);
       } catch (err) {
         console.warn('[Carrier] carrier_ready broadcast failed:', err.message);
