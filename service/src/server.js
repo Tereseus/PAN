@@ -896,6 +896,21 @@ app.get('/client/pan-client.js', (req, res) => {
   res.sendFile(clientFile);
 });
 
+// Tray + status window scripts (PowerShell, Windows-only).
+// pan-installer.cjs downloads these on Windows installs so the user has a
+// real tray icon + "PAN" Start Menu shortcut after install. Same simple
+// pattern as pan-client.js — the installer fetches via /client/<name>.
+app.get('/client/PAN-tray.ps1', (req, res) => {
+  const f = join(__dirname, '../../pan-client/PAN-tray.ps1');
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.sendFile(f);
+});
+app.get('/client/PAN-status.ps1', (req, res) => {
+  const f = join(__dirname, '../../pan-client/PAN-status.ps1');
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.sendFile(f);
+});
+
 app.get('/install/:token', (req, res) => {
   const { token } = req.params;
   if (!checkInviteToken(token)) {

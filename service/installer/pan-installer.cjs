@@ -151,6 +151,124 @@ function installWinSchtasksFallback(nodeExe, clientPath, panDir) {
   try { fs.unlinkSync(xmlPath); } catch {}
 }
 
+// ── Windows shell integration ─────────────────────────────────────────────
+// Adds three things the user actually sees:
+//   1. System tray icon (PAN-tray.ps1 launched at login via PAN-Tray schtask)
+//   2. Start Menu folder "PAN" with: Dashboard, Status, Reinstall shortcuts
+//      → Win key + typing "PAN" surfaces them all.
+//   3. PAN-status.ps1 status window (launched from tray or Start Menu).
+// Idempotent: re-running the installer wipes the schtask + shortcuts and
+// recreates them. Failures are non-fatal — they shouldn't block the install.
+async function installWinShellIntegration({ panDir, hubHTTP, deviceName }) {
+  if (process.platform !== 'win32') return;
+  log('Installing shell integration (tray + Start Menu)...');
+
+  // 1. Download tray + status scripts (served by the hub alongside pan-client.js).
+  const trayScript   = path.join(panDir, 'PAN-tray.ps1');
+  const statusScript = path.join(panDir, 'PAN-status.ps1');
+  try {
+    await download(`${hubHTTP}/client/PAN-tray.ps1`,   trayScript);
+    await download(`${hubHTTP}/client/PAN-status.ps1`, statusScript);
+  } catch (e) {
+    log(`⚠ Could not download tray scripts: ${e.message.split('\n')[0]} — skipping shell integration`);
+    return;
+  }
+
+  // 2. Start Menu folder + shortcuts. Per-user folder (works without elevation):
+  //    %APPDATA%\Microsoft\Windows\Start Menu\Programs\PAN
+  const startMenuRoot = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  const startMenuPanDir = path.join(startMenuRoot, 'PAN');
+  try {
+    if (!fs.existsSync(startMenuPanDir)) fs.mkdirSync(startMenuPanDir, { recursive: true });
+  } catch (e) {
+    log(`⚠ Could not create Start Menu folder: ${e.message.split('\n')[0]}`);
+  }
+
+  // 2a. Dashboard shortcut — plain .url so Windows opens in default browser.
+  const dashboardUrl = `${hubHTTP}/v2/terminal`;
+  try {
+    fs.writeFileSync(path.join(startMenuPanDir, 'PAN.url'),
+      `[InternetShortcut]\nURL=${dashboardUrl}\nIconIndex=0\n`);
+    fs.writeFileSync(path.join(startMenuPanDir, 'PAN Dashboard.url'),
+      `[InternetShortcut]\nURL=${dashboardUrl}\nIconIndex=0\n`);
+  } catch (e) {
+    log(`⚠ Dashboard shortcut failed: ${e.message.split('\n')[0]}`);
+  }
+
+  // 2b. Reinstall — opens the hub root (where the installer page lives).
+  try {
+    fs.writeFileSync(path.join(startMenuPanDir, 'Reinstall PAN Client.url'),
+      `[InternetShortcut]\nURL=${hubHTTP}/\nIconIndex=0\n`);
+  } catch {}
+
+  // 2c. Status window — .lnk pointing at powershell.exe -File PAN-status.ps1.
+  // .lnk files have to be made via the WScript COM object. PowerShell one-liner.
+  const statusLnk = path.join(startMenuPanDir, 'PAN Status.lnk');
+  const psBuildLnk = `
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut('${statusLnk.replace(/'/g, "''")}')
+$lnk.TargetPath = 'powershell.exe'
+$lnk.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${statusScript.replace(/'/g, "''")}"'
+$lnk.WorkingDirectory = '${panDir.replace(/'/g, "''")}'
+$lnk.IconLocation = 'shell32.dll,167'
+$lnk.Description = 'PAN Client status window'
+$lnk.WindowStyle = 7
+$lnk.Save()
+`.trim().replace(/\r?\n/g, '; ');
+  try {
+    run(`powershell -NoProfile -Command "${psBuildLnk.replace(/"/g, '\\"')}"`, panDir, { shell: true });
+  } catch (e) {
+    log(`⚠ PAN Status shortcut failed: ${e.message.split('\n')[0]}`);
+  }
+
+  // 3. Tray LogonTrigger. Separate task from PAN-Client because the tray
+  //    MUST run in the user session (services run in Session 0 — no UI).
+  //    Wipe any prior task first so re-installs are idempotent.
+  const trayTaskXml = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
+    <Hidden>true</Hidden>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${trayScript}"</Arguments>
+      <WorkingDirectory>${panDir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>`;
+  const trayXmlPath = path.join(os.tmpdir(), 'pan-tray-task.xml');
+  fs.writeFileSync(trayXmlPath, trayTaskXml, 'utf16le');
+  try { run(`schtasks /Delete /TN "PAN-Tray" /F`, panDir, { shell: true }); } catch {}
+  try {
+    run(`schtasks /Create /TN "PAN-Tray" /XML "${trayXmlPath}" /F`, panDir, { shell: true });
+    log('PAN-Tray scheduled task created ✓ (starts at login)');
+  } catch (e) {
+    log(`⚠ Tray task creation failed: ${e.message.split('\n')[0]}`);
+  }
+  try { fs.unlinkSync(trayXmlPath); } catch {}
+
+  // 4. Start the tray right now so the user sees something this session
+  //    without having to log out and back in. Singleton mutex in PAN-tray.ps1
+  //    prevents a second tray if one's already running.
+  try {
+    cp.spawn('powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', trayScript],
+      { cwd: panDir, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    log('PAN tray started ✓ — check your system tray');
+  } catch (e) {
+    log(`⚠ Tray launch failed: ${e.message.split('\n')[0]} — will start on next login`);
+  }
+
+  log(`Start Menu: ${startMenuPanDir}`);
+  log(`Dashboard: ${dashboardUrl}`);
+}
+
 async function ensureNssm(targetDir) {
   const nssmExe = path.join(targetDir, 'nssm.exe');
   if (fs.existsSync(nssmExe)) return nssmExe;
@@ -524,6 +642,15 @@ async function runInstall(cfg) {
     } else {
       log('Tip: re-run installer as Administrator for a real Windows service (boot-time).');
       installWinSchtasksFallback(nodeExe, clientPath, panDir);
+    }
+
+    // Shell integration runs on BOTH elevated and non-elevated paths — it's
+    // per-user state (Start Menu + tray) that doesn't need admin. Wrapped in
+    // its own try so a failure here can't undo a working service install.
+    try {
+      await installWinShellIntegration({ panDir, hubHTTP, deviceName });
+    } catch (e) {
+      log(`⚠ Shell integration partially failed: ${e.message.split('\n')[0]}`);
     }
   } else if (IS_MAC) {
     // macOS: LaunchDaemon if root (boot), LaunchAgent if user.

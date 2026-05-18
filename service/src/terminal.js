@@ -6,12 +6,12 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pty = require('node-pty');
 import { WebSocketServer, WebSocket } from 'ws';
-import { hostname } from 'os';
+import { hostname, homedir } from 'os';
 import { join } from 'path';
 import { spawn } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, statSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { all, insert, get } from './db.js';
+import { all, insert, get, run } from './db.js';
 import { injectSessionContext } from './routes/hooks.js';
 import { subscribeToTranscript, writeSystemEvent } from './transcript-watcher.js';
 import { captureInput, captureOutput, subscribeToSession, writeSystemMessage, flushSession, destroySession, readTranscript, setSessionName, renameTranscript } from './pty-transcript.js';
@@ -1852,5 +1852,225 @@ setInterval(() => {
     }
   }
 }, 15_000); // check every 15s — catches stuck state within ~105s worst case (busy adapter)
+
+// ── Dead-claude-inside-live-PTY watchdog ──────────────────────────────────────
+// PTY sessions spawn `bash → claude`. If claude exits but bash keeps running,
+// ptyProcess.onExit never fires, _claudeCliPid points to a dead PID, and
+// session.state stays WORKING. Frontend "Claude is thinking" latches forever.
+// Detection: poll _claudeCliPid liveness; if dead, recover state + tell user.
+setInterval(() => {
+  for (const [id, session] of sessions) {
+    const pid = session._claudeCliPid;
+    if (!pid) continue;
+    // Adapter mode (pipe sessions) has no real PTY-child claude — skip.
+    if (session.mode === SessionMode.ADAPTER) continue;
+    // Liveness probe: signal 0 is a no-op that throws ESRCH if pid is gone.
+    // EPERM means the pid exists but we lack permission — still alive.
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; }
+    catch (e) { alive = (e.code === 'EPERM'); }
+    if (alive) continue;
+
+    const deadPid = pid;
+    session._claudeCliPid = null;
+    try { deregisterProcess(deadPid, -1); } catch {}
+
+    // Only escalate if the frontend would otherwise be locked (WORKING / legacy claudeRunning).
+    // If state is already IDLE, the bash-prompt detector already cleaned up — stay quiet.
+    const wasLocked =
+      session.state === SessionState.WORKING ||
+      session.state === SessionState.INTERRUPTED ||
+      !!session.claudeRunning;
+
+    session.claudeRunning = false;
+    if (!wasLocked) {
+      console.log(`[Terminal] Session ${id}: claude CLI pid ${deadPid} gone (state=${session.state}) — quiet cleanup`);
+      continue;
+    }
+
+    console.warn(`[Terminal] Session ${id}: claude CLI pid ${deadPid} exited but PTY still alive — recovering session`);
+    transitionState(session, SessionState.IDLE, `claude cli pid ${deadPid} gone, PTY alive`);
+
+    // Persist + broadcast a clear system message so the user knows what happened
+    // and how to recover (instead of staring at a stuck spinner).
+    const resumeHint =
+      (session.claudeSessionIds && session.claudeSessionIds.length)
+        ? `Run \`claude -r ${session.claudeSessionIds[session.claudeSessionIds.length - 1]}\` in this shell to resume the conversation.`
+        : `Run \`claude\` in this shell to start a new session, or check \`~/.claude/projects/\` for the JSONL transcript.`;
+    const msg = `Claude exited (PID ${deadPid} no longer running). The shell is still alive. ${resumeHint}`;
+    try {
+      appendMessage(session, {
+        role: 'system', type: 'banner',
+        text: msg,
+        ts: new Date().toISOString(),
+        source: 'system',
+      });
+    } catch {}
+    try { writeSystemMessage(id, 'claude_exit', msg); } catch {}
+    try {
+      insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+        ':sid': id,
+        ':type': 'ClaudeCliExitDetected',
+        ':data': JSON.stringify({
+          session_id: id,
+          project: session.project,
+          dead_pid: deadPid,
+          claude_session_ids: session.claudeSessionIds || [],
+          timestamp: Date.now(),
+        }),
+      });
+    } catch {}
+    for (const c of session.clients) {
+      if (c.readyState === 1) {
+        try {
+          c.send(JSON.stringify({
+            type: 'claude_exit',
+            session: id,
+            pid: deadPid,
+            message: msg,
+            resumable_session_ids: session.claudeSessionIds || [],
+          }));
+          c.send(JSON.stringify({
+            type: 'transcript_messages',
+            messages: session.messages || [],
+            version: session._messageVersion || 0,
+          }));
+        } catch {}
+      }
+    }
+  }
+}, 5_000); // 5s cadence — fast enough to feel responsive, light enough to be cheap
+
+// ── Claude-session-UUID capture watchdog ──────────────────────────────────────
+// When `claude` runs inside a PTY (PTY_WITH_CLAUDE mode), it writes its
+// transcript to `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`. PAN needs to
+// know that UUID so it can:
+//   1. Persist it on open_tabs.claude_session_ids → tab is searchable later
+//   2. Show transcript history on resume
+//   3. Pass `claude -r <uuid>` when re-attaching
+// The adapter (ADAPTER mode) captures this via getSessionId(); PTY_WITH_CLAUDE
+// has no such hook, so we scan the filesystem.
+//
+// Strategy: every 10s, for each PTY_WITH_CLAUDE session with a live
+// _claudeCliPid, list the project dir, find JSONLs modified within the last
+// 5 min, read first line, check the `cwd` field. If it matches AND the UUID
+// isn't already in session.claudeSessionIds, add it + persist to open_tabs.
+function cwdToProjectSlug(cwd) {
+  // Replicates how Claude Code mangles a cwd into its projects folder name.
+  // Observed: `%USERPROFILE%\Desktop\PAN` → `C--Users-owner-Desktop-PAN`
+  // Rule: replace any of  : \ / .  with `-`
+  return String(cwd || '').replace(/[\\/:.]/g, '-');
+}
+
+function findClaudeJsonlForSession(cwd) {
+  try {
+    const slug = cwdToProjectSlug(cwd);
+    const projectDir = join(homedir(), '.claude', 'projects', slug);
+    if (!existsSync(projectDir)) return null;
+    const cutoff = Date.now() - 5 * 60 * 1000; // last 5 min
+    const candidates = [];
+    for (const fname of readdirSync(projectDir)) {
+      if (!fname.endsWith('.jsonl')) continue;
+      const full = join(projectDir, fname);
+      let st;
+      try { st = statSync(full); } catch { continue; }
+      if (st.mtimeMs < cutoff) continue;
+      candidates.push({ uuid: fname.replace(/\.jsonl$/, ''), mtime: st.mtimeMs, path: full });
+    }
+    if (!candidates.length) return null;
+    // Newest first — most likely the live session
+    candidates.sort((a, b) => b.mtime - a.mtime);
+    // Verify the first line's cwd matches (defensive — slug collisions are rare but possible)
+    for (const c of candidates) {
+      try {
+        const head = readFileSync(c.path, 'utf-8').split('\n', 1)[0];
+        if (!head) continue;
+        const obj = JSON.parse(head);
+        const fileCwd = obj?.cwd || obj?.message?.cwd || null;
+        if (!fileCwd) {
+          // No cwd field — accept by slug match alone
+          return c.uuid;
+        }
+        if (String(fileCwd).toLowerCase() === String(cwd).toLowerCase()) return c.uuid;
+      } catch {}
+    }
+    // Fallback: just return the newest UUID if cwd verification didn't match
+    return candidates[0].uuid;
+  } catch (e) {
+    console.warn(`[Terminal] findClaudeJsonlForSession failed:`, e.message);
+    return null;
+  }
+}
+
+function persistClaudeSessionIdsToOpenTabs(panSessionId, claudeSessionIds) {
+  try {
+    // Read existing row (any org) — we update by session_id which is globally unique per tab
+    const row = get(`SELECT id, claude_session_ids FROM open_tabs WHERE session_id = :sid`, { ':sid': panSessionId });
+    if (!row) return false;
+    let existing = [];
+    try { existing = JSON.parse(row.claude_session_ids || '[]'); } catch {}
+    const merged = Array.from(new Set([...(existing || []), ...claudeSessionIds]));
+    if (merged.length === existing.length && merged.every((v, i) => v === existing[i])) {
+      return false; // no change
+    }
+    run(
+      `UPDATE open_tabs SET claude_session_ids = :ids, last_active = datetime('now','localtime') WHERE id = :id`,
+      { ':ids': JSON.stringify(merged), ':id': row.id }
+    );
+    console.log(`[Terminal] open_tabs.claude_session_ids ← [${merged.join(', ')}] for ${panSessionId}`);
+    // Mirror event so this is queryable historically
+    try {
+      insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+        ':sid': panSessionId,
+        ':type': 'ClaudeSessionLinked',
+        ':data': JSON.stringify({ pan_session_id: panSessionId, claude_session_ids: merged, ts: Date.now() }),
+      });
+    } catch {}
+    return true;
+  } catch (e) {
+    console.warn(`[Terminal] persistClaudeSessionIdsToOpenTabs failed:`, e.message);
+    return false;
+  }
+}
+
+setInterval(() => {
+  for (const [id, session] of sessions) {
+    // Only PTY-with-claude sessions need this — adapter sessions already have
+    // their UUID via _llmAdapter.getSessionId().
+    if (session.mode === SessionMode.ADAPTER) continue;
+    if (!session._claudeCliPid) continue;
+    if (!session.cwd) continue;
+
+    const uuid = findClaudeJsonlForSession(session.cwd);
+    if (!uuid) continue;
+
+    const known = session.claudeSessionIds || [];
+    if (known.includes(uuid)) continue;
+
+    session.claudeSessionIds = [...known, uuid];
+    console.log(`[Terminal] Linked claude session ${uuid} → tab ${id}`);
+
+    // Mirror to reconnect tokens so a refresh/reconnect carries the UUID
+    for (const c of session.clients) {
+      if (c._reconnectToken) {
+        try { updateTokenClaudeSessions(c._reconnectToken, session.claudeSessionIds); } catch {}
+      }
+    }
+    // Persist to DB
+    persistClaudeSessionIdsToOpenTabs(id, session.claudeSessionIds);
+    // Broadcast so the frontend can update its tab metadata in-place
+    for (const c of session.clients) {
+      if (c.readyState === 1) {
+        try {
+          c.send(JSON.stringify({
+            type: 'claude_session_linked',
+            session: id,
+            claude_session_ids: session.claudeSessionIds,
+          }));
+        } catch {}
+      }
+    }
+  }
+}, 10_000); // 10s — JSONLs are created/written immediately on claude startup
 
 export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize, delegateToPhoneToolsSession };
