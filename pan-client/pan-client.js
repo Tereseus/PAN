@@ -180,6 +180,48 @@ let pingTimer = null;
 let heartbeatTimer = null;
 let connected = false;
 
+// ── Local status file (#) ────────────────────────────────────────────────────
+// PAN-tray.ps1 + PAN-status.ps1 (system tray UI installed alongside the client)
+// poll this file every 5s to render the icon, tooltip, and status window.
+// Disk-based on purpose: no extra port to open, no auth, and survives the
+// client crashing — the tray will see a stale mtime and flip to red.
+const STATUS_FILE = join(__dirname, 'pan-status.json');
+let _lastHeartbeatOkMs = 0;
+let _approved = null; // null=unknown, true/false from server
+const BOOT_MS = Date.now();
+function writeLocalStatus() {
+  try {
+    const now = Date.now();
+    const heartbeatAgeMs = _lastHeartbeatOkMs ? (now - _lastHeartbeatOkMs) : null;
+    // Stale if no heartbeat for 2 cycles (60s WS / 40s HTTP). Use 75s as upper bound.
+    const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > 75_000;
+    const status = {
+      schema: 1,
+      pid: process.pid,
+      device_id: DEVICE_ID,
+      device_name: NAME,
+      hub_ws: HUB_WS,
+      hub_http: HUB_HTTP,
+      version: VERSION,
+      platform: PLATFORM,
+      connected: !!connected,
+      approved: _approved,
+      mode: ws ? 'ws' : (connected ? 'http' : 'connecting'),
+      last_heartbeat_ok_ms: _lastHeartbeatOkMs || null,
+      heartbeat_age_ms: heartbeatAgeMs,
+      heartbeat_stale: heartbeatStale,
+      uptime_s: Math.round((now - BOOT_MS) / 1000),
+      reconnect_delay_ms: reconnectDelay,
+      written_at_ms: now,
+    };
+    writeFileSync(STATUS_FILE, JSON.stringify(status, null, 2));
+  } catch {}
+}
+// Write once immediately, then every 5s. Fast enough for the tray to feel
+// responsive; cheap enough to be invisible on disk.
+writeLocalStatus();
+setInterval(writeLocalStatus, 5000);
+
 function getWsUrl() {
   const url = new URL(HUB_WS.replace(/^http/, 'ws'));
   url.pathname = '/ws/client';
@@ -383,6 +425,11 @@ async function sendHeartbeat() {
     service_state: svc.service_state,
     service_manager: svc.service_manager,
   });
+  // Stamp local heartbeat clock so the tray can render age accurately. We
+  // stamp on SEND (not server-ack) because WS doesn't ack at the message
+  // layer — if the socket is open and send() didn't throw, the bytes are
+  // in flight. ws.on('close') will flip `connected` back to false anyway.
+  if (ws?.readyState === WebSocket.OPEN) _lastHeartbeatOkMs = Date.now();
 }
 
 // Returns the title of the currently focused window, or null.
@@ -835,10 +882,14 @@ async function boot() {
       if (status.status === 'approved') {
         console.log('[PAN Client] Approved by hub owner! ✓ Connecting...');
         approved = true;
+        _approved = true;
         break;
       } else if (status.status === 'denied') {
         console.error('[PAN Client] Connection denied by hub owner.');
+        _approved = false;
         process.exit(1);
+      } else {
+        _approved = false; // pending = not-yet-approved for tray display
       }
       // Still pending — log every 30s so the window doesn't look frozen
       const elapsed = Math.round((Date.now() - started) / 1000);
@@ -938,7 +989,12 @@ function startHttpMode() {
           service_state: svc.service_state,
           service_manager: svc.service_manager,
         });
-      } catch {}
+        // HTTP path proves server reachability — record success for the tray.
+        _lastHeartbeatOkMs = Date.now();
+        connected = true;
+      } catch {
+        connected = false;
+      }
       await new Promise(r => setTimeout(r, 20_000));
     }
   })();

@@ -1626,12 +1626,27 @@ router.post('/api/open-tabs', (req, res) => {
     if (!tab.session_id) continue;
     const existing = getScoped(req, "SELECT id FROM open_tabs WHERE session_id = :sid AND org_id = :org_id", { ':sid': tab.session_id });
     if (existing) {
+      // Merge claude_session_ids: union of existing DB value + incoming, so the
+      // frontend (which often doesn't track Claude UUIDs) can't wipe what the
+      // server-side watchdog discovered. Source of truth is whatever has data.
+      let mergedCsids;
+      try {
+        const dbRow = getScoped(req, "SELECT claude_session_ids FROM open_tabs WHERE session_id = :sid AND org_id = :org_id", { ':sid': tab.session_id });
+        const dbArr = JSON.parse(dbRow?.claude_session_ids || '[]');
+        const incomingRaw = tab.claude_session_ids;
+        const incomingArr = Array.isArray(incomingRaw)
+          ? incomingRaw
+          : (typeof incomingRaw === 'string' ? JSON.parse(incomingRaw || '[]') : []);
+        mergedCsids = JSON.stringify(Array.from(new Set([...dbArr, ...incomingArr])));
+      } catch {
+        mergedCsids = (typeof tab.claude_session_ids === 'string') ? tab.claude_session_ids : JSON.stringify(tab.claude_session_ids || []);
+      }
       runScoped(req,
         `UPDATE open_tabs SET tab_name = :name, project_id = :pid, cwd = :cwd, tab_index = :idx,
          claude_session_ids = :csids, closed_at = NULL, last_active = datetime('now','localtime')
          WHERE session_id = :sid AND org_id = :org_id`,
         { ':sid': tab.session_id, ':name': tab.tab_name || '', ':pid': tab.project_id || null,
-          ':cwd': tab.cwd || null, ':idx': i, ':csids': tab.claude_session_ids || '[]' }
+          ':cwd': tab.cwd || null, ':idx': i, ':csids': mergedCsids }
       );
     } else {
       // Check for a closed tab with the same name+project — reuse it instead of creating a duplicate
@@ -1676,7 +1691,18 @@ router.put('/api/open-tabs/:sessionId', (req, res) => {
     if (project_id !== undefined) { updates.push("project_id = :pid"); params[':pid'] = project_id; }
     if (cwd !== undefined) { updates.push("cwd = :cwd"); params[':cwd'] = cwd; }
     if (tab_index !== undefined) { updates.push("tab_index = :idx"); params[':idx'] = tab_index; }
-    if (claude_session_ids !== undefined) { updates.push("claude_session_ids = :csids"); params[':csids'] = JSON.stringify(claude_session_ids); }
+    if (claude_session_ids !== undefined) {
+      // Merge with existing DB value so callers who only know a partial list
+      // (e.g. frontend sending []) can't wipe server-discovered UUIDs.
+      let dbArr = [];
+      try { dbArr = JSON.parse(existing.claude_session_ids || '[]'); } catch {}
+      const incomingArr = Array.isArray(claude_session_ids)
+        ? claude_session_ids
+        : (typeof claude_session_ids === 'string' ? (() => { try { return JSON.parse(claude_session_ids); } catch { return []; } })() : []);
+      const merged = Array.from(new Set([...dbArr, ...incomingArr]));
+      updates.push("claude_session_ids = :csids");
+      params[':csids'] = JSON.stringify(merged);
+    }
     updates.push("last_active = datetime('now','localtime')");
     if (updates.length > 0) runScoped(req, `UPDATE open_tabs SET ${updates.join(', ')} WHERE session_id = :sid AND org_id = :org_id`, params);
     res.json({ ok: true, action: 'updated' });
