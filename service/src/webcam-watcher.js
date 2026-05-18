@@ -11,6 +11,7 @@
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { initFaceId, identifyFromFrame, getFaceIdStatus } from './face-id.js';
 import { run, get } from './db.js';
+import { observeFace } from './routes/identity.js';
 
 // How long since last mouse/keyboard input (Windows only).
 // Returns milliseconds. Returns 0 on error (assume active).
@@ -135,13 +136,14 @@ async function runCapture(forced = false) {
     // Burst: capture up to BURST_FRAMES, stop as soon as we get a face
     const t0 = Date.now();
     let face = null;
+    let bestB64 = null; // retained for T3 identity thumbnail
     for (let i = 0; i < BURST_FRAMES; i++) {
       let b64;
       try { b64 = await captureFrame(usedCamera); }
       catch (e) { console.warn(`[WebcamWatcher] burst frame ${i+1} failed: ${e.message.slice(0, 60)}`); continue; }
       const result = await identifyFromFrame(b64);
-      if (result.present) { face = result; break; }
-      if (!face || result.confidence > (face.confidence || 0)) face = result;
+      if (result.present) { face = result; bestB64 = b64; break; }
+      if (!face || result.confidence > (face.confidence || 0)) { face = result; bestB64 = b64; }
     }
     if (!face) face = { present: false, identity: 'unknown', confidence: 0, expression: 'none' };
     const elapsed = Date.now() - t0;
@@ -199,6 +201,23 @@ async function runCapture(forced = false) {
       `INSERT INTO events (event_type, session_id, data, created_at) VALUES (:type, 'system', :data, datetime('now'))`,
       { type: 'webcam_context', data: JSON.stringify(ctx) }
     );
+
+    // T3 — feed identity_clusters when we recognise a known face.
+    // face.confidence is 0-100 (integer %); identity-router uses 0-1.
+    if (face.present && face.identity && face.identity !== 'unknown') {
+      try {
+        // Only save thumbnail on the *first* observation of a cluster or when
+        // confidence improves (the helper does its own writeFileSync — cheap).
+        observeFace({
+          label:      face.identity,
+          confidence: (face.confidence || 0) / 100,
+          thumb_b64:  bestB64 || undefined,
+          camera:     usedCamera,
+        });
+      } catch (e) {
+        console.warn(`[WebcamWatcher] observeFace failed: ${e.message}`);
+      }
+    }
 
     const tag = face.present ? (identityLocked ? '🔒' : '👤') : '🪑';
     console.log(`[WebcamWatcher] ${tag} presence=${ctx.presence} identity=${ctx.identity}${face.confidence ? ` (${face.confidence}%)` : ''} expression=${ctx.emotion} — ${elapsed}ms`);

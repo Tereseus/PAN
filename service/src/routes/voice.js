@@ -148,7 +148,26 @@ export function registerVoiceRoutes(app) {
     }
     try {
       const r = await whisperRequest('POST', '/identify', { wav_path }, 10000);
-      res.json(r.body);
+      // T3 — feed identity_clusters when whisper-server returns a confident match.
+      // Whisper response shape (per whisper-server.py): { label, score|confidence, ... }
+      const body = r.body || {};
+      const label = body.label || body.speaker || null;
+      const conf  = typeof body.confidence === 'number' ? body.confidence
+                  : typeof body.score      === 'number' ? body.score
+                  : null;
+      if (label && conf !== null && label !== 'unknown') {
+        try {
+          const { observeVoice } = await import('./identity.js');
+          observeVoice({
+            label,
+            confidence: conf > 1 ? conf / 100 : conf, // normalise % → 0-1
+            sample_path: wav_path,
+          });
+        } catch (e) {
+          console.warn('[voice/identify] observeVoice failed:', e.message);
+        }
+      }
+      res.json(body);
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
