@@ -28,6 +28,7 @@ import incognitoRouter, { cleanupExpiredIncognito } from './routes/incognito.js'
 import auditRouter from './routes/audit.js';
 import replicationRouter from './routes/replication.js';
 import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.js';
+import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
 import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
 import orgsRouter from './routes/orgs.js';
 import chatRouter, { ensureChatSchema } from './routes/chat.js';
@@ -40,6 +41,7 @@ import preferencesRouter from './routes/preferences.js';
 import { benchmarkApiRouter, benchmarkDashRouter } from './routes/benchmark.js';
 import { registerVoiceRoutes } from './routes/voice.js';
 import { ensureIntuitionSchema } from './intuition.js';
+import { ensureOwnershipSchema } from './schema/ownership.js';
 import { writeThought, recentThoughts } from './thoughts.js';
 import * as needs from './intuition/needs.js';
 import { currentUserId as needsCurrentUser } from './intuition/nourishment.js';
@@ -808,6 +810,9 @@ app.use('/api/v1/replication', replicationRouter);
 
 // Geofencing + Zones (Tier 0 Phase 7)
 app.use('/api/v1/zones', zonesRouter);
+
+// T3 — Identity → user binding
+app.use('/api/v1/identity', identityRouter);
 
 // Personal Data Sync (Tier 0 Phase 8)
 app.use('/api/v1/sync', syncRouter);
@@ -2482,6 +2487,32 @@ app.get('/api/v1/speak/preview', async (req, res) => {
   try {
     const { pickSpeakerDevice } = await import('./speak-router.js');
     const choice = pickSpeakerDevice({ target: req.query.target || undefined });
+    res.json(choice);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Cross-device MIC routing (symmetric to /api/v1/speak) ────────────────────
+// POST /api/v1/listen  { duration_ms?, target?, transcribe?, sample_rate?, fallback? }
+//   Picks the best mic device (same 5-rung chain as speak-router) and
+//   dispatches `audio_capture`. Push-to-talk: records `duration_ms` then
+//   returns base64 WAV + (optional) whisper transcript.
+//
+// GET  /api/v1/listen/preview?target=<device>
+//   Debug: returns which device WOULD be picked + why, without recording.
+app.post('/api/v1/listen', async (req, res) => {
+  try {
+    const { listenSomewhere } = await import('./mic-router.js');
+    const { duration_ms, target, transcribe, sample_rate, fallback } = req.body || {};
+    const result = await listenSomewhere({ duration_ms, target, transcribe, sample_rate, fallback });
+    if (!result.ok) return res.status(503).json(result);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/v1/listen/preview', async (req, res) => {
+  try {
+    const { pickMicDevice } = await import('./mic-router.js');
+    const choice = pickMicDevice({ target: req.query.target || undefined });
     res.json(choice);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -4854,6 +4885,14 @@ function start() {
         CREATE INDEX IF NOT EXISTS idx_identity_obs_cluster ON identity_observations(cluster_id);
         CREATE INDEX IF NOT EXISTS idx_identity_obs_created ON identity_observations(created_at);
       `);
+
+      // T1 Foundation: device ownership + identity binding + capabilities + aliases.
+      // MUST run AFTER identity_clusters is created above (adds user_id column).
+      try {
+        ensureOwnershipSchema(db);
+      } catch (e) {
+        console.error('[PAN] ownership schema migration failed:', e.message);
+      }
 
       // Seed sensor definitions (22 sensors)
       seedSensors();

@@ -15,7 +15,7 @@
 
 import { WebSocket } from 'ws';
 import { execFile, exec, execSync, spawn } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { hostname, platform, arch, totalmem, freemem, cpus } from 'os';
@@ -67,11 +67,133 @@ config.device_id = DEVICE_ID;
 saveConfig();
 
 // ── Capabilities ─────────────────────────────────────────────────────────────
-const capabilities = [];
-if (IS_WINDOWS) capabilities.push('windows', 'powershell', 'cmd');
-if (PLATFORM === 'linux') capabilities.push('linux', 'bash');
-if (PLATFORM === 'darwin') capabilities.push('macos', 'bash');
-capabilities.push('shell_exec', 'open_app', 'open_url', 'notification', 'tts_speak', 'screenshot');
+// Static base — known at startup, never changes.
+const staticCapabilities = [];
+if (IS_WINDOWS) staticCapabilities.push('windows', 'powershell', 'cmd');
+if (PLATFORM === 'linux') staticCapabilities.push('linux', 'bash');
+if (PLATFORM === 'darwin') staticCapabilities.push('macos', 'bash');
+staticCapabilities.push('shell_exec', 'open_app', 'open_url', 'notification', 'tts_speak', 'screenshot', 'audio_capture');
+
+// Live capabilities — refreshed by probeCapabilities() every CAP_REFRESH_MS.
+// Format examples: 'audio', 'audio:bluetooth', 'bt:wh-1000xm5', 'display:2',
+// 'display:projector', 'speakers'. smart-router.js scoreDevice() does substring
+// matching (caps.some(c => c.includes('projector'))), so naming is forgiving.
+let liveCapabilities = [];
+const CAP_REFRESH_MS = 5 * 60_000;
+
+// The combined set that gets POSTed to /api/v1/client/register.
+function getAllCapabilities() {
+  // De-dupe while preserving order
+  return Array.from(new Set([...staticCapabilities, ...liveCapabilities]));
+}
+
+// Back-compat: some code paths still reference `capabilities` directly.
+const capabilities = new Proxy([], {
+  get(_, prop) {
+    const arr = getAllCapabilities();
+    if (prop === 'length') return arr.length;
+    if (prop === Symbol.iterator) return arr[Symbol.iterator].bind(arr);
+    if (typeof prop === 'string' && /^\d+$/.test(prop)) return arr[Number(prop)];
+    return arr[prop];
+  },
+});
+
+// ── Capability probes (per-OS) ────────────────────────────────────────────────
+function _ps(script, timeoutMs = 4000) {
+  try {
+    const out = execSync(
+      `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${script.replace(/"/g, '\\"')}"`,
+      { timeout: timeoutMs, windowsHide: true, stdio: 'pipe' }
+    ).toString();
+    return out;
+  } catch {
+    return '';
+  }
+}
+
+function slugify(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
+function probeCapabilitiesWindows() {
+  const caps = new Set();
+
+  // Bluetooth radio + paired/active devices (radios show too; paired audio
+  // devices typically appear as AudioEndpoint, not Bluetooth class)
+  const bt = _ps(`Get-PnpDevice -Class Bluetooth -Status OK -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FriendlyName`);
+  for (const line of bt.split(/\r?\n/)) {
+    const name = line.trim();
+    if (!name) continue;
+    const slug = slugify(name);
+    if (slug) caps.add(`bt:${slug}`);
+  }
+
+  // Audio endpoints — speakers, headphones, microphones. We DON'T pre-filter
+  // in PowerShell (escape rules are brittle); categorize in JS by name.
+  const audio = _ps(`Get-PnpDevice -Class AudioEndpoint -Status OK -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FriendlyName`);
+  let speakerCount = 0, micCount = 0;
+  for (const line of audio.split(/\r?\n/)) {
+    const name = line.trim();
+    if (!name) continue;
+    const slug = slugify(name);
+    const isOut = /speaker|headphone|headset|output|hdmi/i.test(name);
+    const isIn  = /microphone|\bmic\b|input/i.test(name);
+    if (isOut && slug) { speakerCount++; caps.add(`speakers:${slug}`); }
+    if (isIn && slug)  { micCount++;     caps.add(`mic:${slug}`); }
+    if (/bluetooth|airpods|wh-1000|jbl|bose|sony|sonos|beats/i.test(name)) caps.add('audio:bluetooth');
+  }
+  if (speakerCount > 0) { caps.add('audio'); caps.add('speakers'); }
+  if (micCount > 0) caps.add('mic');
+
+  // Displays — active monitors only (Availability=3 means "running on full power")
+  const displays = _ps(`Get-CimInstance -ClassName Win32_DesktopMonitor -ErrorAction SilentlyContinue | Where-Object { $_.Availability -eq 3 } | Select-Object -ExpandProperty Name`);
+  const displayLines = displays.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (displayLines.length > 0) {
+    caps.add('display');
+    caps.add(`display:${displayLines.length}`);
+    for (const d of displayLines) {
+      if (/projector/i.test(d)) caps.add('display:projector');
+      if (/\btv\b|television/i.test(d)) { caps.add('tv'); caps.add('hdmi'); }
+    }
+  }
+
+  // GPU / external-display adapters
+  const gpu = _ps(`Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name`);
+  if (gpu.trim()) {
+    caps.add('video');
+    if (/displaylink|usb mobile monitor/i.test(gpu)) caps.add('display:external');
+    if (/nvidia|geforce|rtx|gtx/i.test(gpu)) caps.add('gpu:nvidia');
+  }
+
+  return Array.from(caps);
+}
+
+async function probeCapabilities() {
+  try {
+    let probed = [];
+    if (IS_WINDOWS) probed = probeCapabilitiesWindows();
+    // macOS + Linux stubbed for v1 — they remain on the static base set.
+    liveCapabilities = probed;
+    return probed;
+  } catch (e) {
+    console.warn('[PAN Client] probeCapabilities failed:', e.message);
+    return [];
+  }
+}
+
+async function refreshCapabilitiesAndReregister() {
+  await probeCapabilities();
+  try {
+    await httpRegister();
+    console.log(`[PAN Client] caps refreshed (${liveCapabilities.length} live): ${liveCapabilities.slice(0, 6).join(', ')}${liveCapabilities.length > 6 ? '…' : ''}`);
+  } catch (e) {
+    // non-fatal — next heartbeat will retry
+  }
+}
 
 // ── HTTP registration (works through Cloudflare tunnel) ──────────────────────
 const HUB_HTTP = config.hub_http || HUB_WS.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
@@ -549,6 +671,10 @@ async function handleCommand(msg) {
         await cmdScreenshot(params, reply);
         break;
 
+      case 'audio_capture':
+        await cmdAudioCapture(params, reply);
+        break;
+
       case 'media_control':
         await cmdMediaControl(params);
         reply({ ok: true });
@@ -815,6 +941,89 @@ function cmdDisplayControl({ action }) {
   });
 }
 
+// ── audio_capture ─────────────────────────────────────────────────────────────
+// Push-to-talk mic capture. Records `duration_ms` of audio via ffmpeg using the
+// OS-native default input device, returns base64-encoded 16-bit PCM WAV.
+//
+// Requires ffmpeg on PATH. PAN clients that ship with the whisper STT pipeline
+// already have it; clients that don't will get a clear "ffmpeg not found" error.
+function cmdAudioCapture({ duration_ms = 5000, sample_rate = 16000 }, reply) {
+  return new Promise((resolve) => {
+    const tmpDir = process.env.TEMP || process.env.TMPDIR || '/tmp';
+    const tmpFile = join(tmpDir, `pan-capture-${Date.now()}-${process.pid}.wav`);
+    const seconds = (Math.max(500, Math.min(30000, Number(duration_ms) || 5000)) / 1000).toFixed(3);
+
+    // Per-platform ffmpeg input selection.
+    //   Windows: dshow with "default" (most installs route this to the active mic)
+    //   macOS:   avfoundation with ":0" (default audio input)
+    //   Linux:   pulse "default"  (falls back to alsa "default" if pulse missing)
+    let inputArgs;
+    if (IS_WINDOWS) {
+      inputArgs = ['-f', 'dshow', '-i', 'audio=default'];
+    } else if (PLATFORM === 'darwin') {
+      inputArgs = ['-f', 'avfoundation', '-i', ':0'];
+    } else {
+      inputArgs = ['-f', 'pulse', '-i', 'default'];
+    }
+
+    const ffArgs = [
+      '-y',
+      '-hide_banner',
+      '-loglevel', 'error',
+      ...inputArgs,
+      '-t', seconds,
+      '-ac', '1',
+      '-ar', String(sample_rate),
+      '-acodec', 'pcm_s16le',
+      tmpFile,
+    ];
+
+    let child;
+    try {
+      child = spawn('ffmpeg', ffArgs, { windowsHide: true });
+    } catch (e) {
+      reply(null, `ffmpeg spawn failed: ${e.message}`);
+      return resolve();
+    }
+
+    let stderr = '';
+    child.stderr.on('data', d => { stderr += d.toString(); });
+
+    child.on('error', (err) => {
+      reply(null, `ffmpeg error: ${err.message} (ffmpeg installed?)`);
+      resolve();
+    });
+
+    // Hard stop: ffmpeg may run slightly long. Kill after duration + 3s safety.
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch {}
+    }, Number(duration_ms) + 3000);
+
+    child.on('close', (code) => {
+      clearTimeout(killTimer);
+      try {
+        if (!existsSync(tmpFile)) {
+          reply(null, `ffmpeg produced no output (code ${code}) ${stderr.slice(-300)}`);
+          return resolve();
+        }
+        const buf = readFileSync(tmpFile);
+        try { unlinkSync(tmpFile); } catch {}
+        const audio_b64 = buf.toString('base64');
+        reply({
+          audio_b64,
+          format: 'wav',
+          sample_rate,
+          seconds: Number(seconds),
+          bytes: buf.length,
+        });
+      } catch (e) {
+        reply(null, `audio_capture read failed: ${e.message}`);
+      }
+      resolve();
+    });
+  });
+}
+
 // ── file_transfer ─────────────────────────────────────────────────────────────
 function cmdFileTransfer({ direction, url, local_path }, reply) {
   return new Promise((resolve) => {
@@ -934,6 +1143,9 @@ async function boot() {
     pingTimer = setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.ping(); }, 15_000);
     setInterval(sendPresence, 30_000);
     sendPresence();
+    // T2: live capability poll — refresh devices.capabilities JSON every 5min via /register upsert
+    setInterval(refreshCapabilitiesAndReregister, CAP_REFRESH_MS);
+    refreshCapabilitiesAndReregister(); // initial probe
 
     // Normal WS path — reconnect on drop (also re-registers on every reconnect)
     ws.on('open', () => {
@@ -947,6 +1159,8 @@ async function boot() {
       pingTimer = setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.ping(); }, 15_000);
       setInterval(sendPresence, 30_000);
       sendPresence(); // initial presence on connect
+      setInterval(refreshCapabilitiesAndReregister, CAP_REFRESH_MS);
+      refreshCapabilitiesAndReregister();
     });
     ws.on('message', async (data) => { let msg; try { msg = JSON.parse(data); } catch { return; } await handleCommand(msg); });
     ws.on('close', () => { connected = false; clearInterval(heartbeatTimer); clearInterval(pingTimer); scheduleReconnect(); });
@@ -1002,6 +1216,9 @@ function startHttpMode() {
   // Presence loop — reports active window + activity every 30s
   (async function presenceLoop() {
     await sendPresence(); // initial
+    // T2: live capability poll (HTTP mode)
+    setInterval(refreshCapabilitiesAndReregister, CAP_REFRESH_MS);
+    refreshCapabilitiesAndReregister();
     while (true) {
       await new Promise(r => setTimeout(r, 30_000));
       await sendPresence();
