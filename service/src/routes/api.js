@@ -667,7 +667,7 @@ router.post('/query', async (req, res) => {
       try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; }
     }
     const result = await route(text, {
-      source: 'phone',
+      source: device_id ? `phone-${device_id}` : 'phone',
       device_id,
       intent_hint,
       _commandId: cmdId,
@@ -881,9 +881,10 @@ router.post('/query/stream', async (req, res) => {
 
   try {
     const { routeStream } = await import('../router.js');
+    const deviceId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
     for await (const event of routeStream(text, {
-      source: 'phone',
-      device_id: req.headers['x-device-id'] || req.headers['x-device-name'] || null,
+      source: deviceId ? `phone-${deviceId}` : 'phone',
+      device_id: deviceId,
       intent_hint,
       conversation_history: context,
       sensors: parsedSensors,
