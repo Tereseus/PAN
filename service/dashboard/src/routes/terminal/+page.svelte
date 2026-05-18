@@ -461,11 +461,56 @@
 	// the roster landing and the snapshots landing. See task #489.
 	let intuitionSnapshotsLoaded = $state(false);
 
+	// Retrying loader for the org context. The original code did a single-shot
+	// `api('/api/v1/org/current').then(...).catch(() => {})`, which silently
+	// dropped failures. A 502 / connection-refused during a Carrier restart
+	// left orgData null forever, and every widget gated on `orgData?.org_id`
+	// (intuition, life-needs, pan-mind) stayed blank until the user manually
+	// refreshed. This retries with exponential backoff up to ~2 minutes; the
+	// $effect on orgData?.org_id (line ~748) fires as soon as it lands and
+	// triggers refreshIntuition naturally. Also re-invoked from the WS
+	// `carrier_ready` handler so a post-restart reconnect re-validates org
+	// context immediately instead of waiting on the next user action.
+	// REGRESSION TEST: kill Carrier mid-page-load. The org fetch should retry,
+	// orgData should populate within ~10s of Carrier coming back, and the
+	// intuition card should render without any manual refresh.
+	let _orgLoaderInFlight = false;
+	async function loadOrgContextWithRetry() {
+		if (_orgLoaderInFlight) return;
+		_orgLoaderInFlight = true;
+		try {
+			const delays = [0, 500, 1000, 2000, 4000, 8000, 15000, 30000, 60000];
+			for (let i = 0; i < delays.length; i++) {
+				if (delays[i] > 0) await new Promise(res => setTimeout(res, delays[i]));
+				try {
+					const r = await api('/api/v1/org/current');
+					if (r && r.org_id) {
+						orgData = r;
+						return;
+					}
+				} catch (e) {
+					// Fall through to next retry. The network being down right
+					// after a Carrier restart is the exact failure mode we're
+					// retrying for — don't log noisily.
+				}
+			}
+			console.warn('[orgData] failed to load org context after retries — intuition widget will remain blank until next reconnect');
+		} finally {
+			_orgLoaderInFlight = false;
+		}
+	}
+
 	async function refreshIntuition() {
 		// HARD GATE: orgData must exist. Calling with null orgData produces a
 		// false "No users in this org yet" flash. The $effect on orgData?.org_id
-		// retriggers this as soon as orgData lands.
-		if (!orgData?.org_id) return;
+		// retriggers this as soon as orgData lands. If orgData is null because
+		// /api/v1/org/current failed (e.g. mid-restart), kick the retry loader
+		// here too — this is the recovery path when the WS `carrier_ready` signal
+		// was missed (e.g. tab was hidden).
+		if (!orgData?.org_id) {
+			loadOrgContextWithRetry();
+			return;
+		}
 		const orgId = orgData.org_id;
 		const orgQS = `?org_id=${encodeURIComponent(orgId)}`;
 		// Fan out independent fetches. allSettled = one failure can't take the
@@ -477,9 +522,12 @@
 			api(`/api/v1/intuition/current${orgQS}`),
 		]);
 
-		// 1. Roster. Replace only when API gave us something — a blip never
-		//    wipes the dropdown.
-		if (rosterR.status === 'fulfilled' && Array.isArray(rosterR.value?.members) && rosterR.value.members.length > 0) {
+		// 1. Roster. Replace on any fulfilled response. We used to gate this on
+		//    `members.length > 0` so a transient blip wouldn't wipe the dropdown,
+		//    but a fulfilled empty response IS the truth and should be reflected
+		//    (e.g. user just left an org). Rejected (network error) still falls
+		//    through and preserves the previous list.
+		if (rosterR.status === 'fulfilled' && Array.isArray(rosterR.value?.members)) {
 			intuitionMembers = rosterR.value.members;
 		}
 
@@ -514,10 +562,41 @@
 			}
 		}
 
-		intuitionStatus = intuitionMembers.length === 0 ? 'No users in this org yet' : '';
-		// Flip to loaded after the first roster fetch lands. Never set back to
-		// false — the card stays visible from this point on.
-		if (intuitionMembers.length > 0) intuitionLoaded = true;
+		// Status text reflects three real states:
+		//   • roster fetch failed entirely     → "Failed to load — retrying…"
+		//   • roster returned 0 members        → "No users in this org yet"
+		//   • roster returned ≥1 member        → '' (clear)
+		// Previously, a failed fetch left status '' AND intuitionLoaded=false,
+		// which pinned the widget on "loading…" forever. The vision verifier
+		// (#507) caught this as a blank-render bug and Forge (#508) kept filing
+		// duplicates because the root cause was unreachable from CSS-land.
+		if (rosterR.status === 'rejected' && intuitionMembers.length === 0) {
+			intuitionStatus = 'Failed to load — retrying…';
+		} else {
+			intuitionStatus = intuitionMembers.length === 0 ? 'No users in this org yet' : '';
+		}
+		// Flip to loaded the moment we have ANY attempted result (fulfilled or
+		// rejected). Sticky once set. Previously this only flipped on members>0
+		// which meant an empty-roster org OR a failing endpoint kept the widget
+		// pinned on the "loading…" state with no way out except a page refresh.
+		// REGRESSION TEST: load the dashboard against an org with 0 members or
+		// with /api/v1/orgs/<id>/members returning 500. The widget should
+		// transition out of "loading" within one refresh cycle and show
+		// intuitionStatus, not stay grey forever.
+		if (rosterR.status === 'fulfilled' || rosterR.status === 'rejected') {
+			intuitionLoaded = true;
+		}
+		// If the roster fetch failed but orgData is healthy, schedule a one-shot
+		// retry in 5s so the widget self-heals when the backend recovers (mid-
+		// restart, transient 502). Idempotent guard prevents stacking timers.
+		if (rosterR.status === 'rejected') {
+			if (!window._intuitionRetryTimer) {
+				window._intuitionRetryTimer = setTimeout(() => {
+					window._intuitionRetryTimer = null;
+					refreshIntuition();
+				}, 5000);
+			}
+		}
 
 		// Side-channel updates (independent endpoints).
 		loadPanMind();
@@ -2325,6 +2404,15 @@
 								setTimeout(() => { banner.style.opacity = '0'; setTimeout(() => { try { banner.remove(); } catch {} }, 500); }, 4500);
 							}
 							serverRestarting = false;
+							// Re-validate org context. If the page's initial fetch ran during
+							// the restart window and got a 502/connection-refused, orgData
+							// would be null and every gated widget (intuition, life-needs,
+							// pan-mind) would stay blank. The retry loader is idempotent
+							// (guarded by _orgLoaderInFlight) so calling it here is safe even
+							// when orgData is already populated — it'll no-op.
+							if (!orgData?.org_id) {
+								try { loadOrgContextWithRetry(); } catch (e) { /* defined at top-level */ }
+							}
 							break;
 						}
 						case 'pan_resumed': {
@@ -2707,22 +2795,30 @@
 							await new Promise(r => setTimeout(r, 300));
 						} catch {}
 
-						// Pipe mode: auto-launch Claude via HTTP pipe endpoint
-						try {
-							const launchText = briefingReady
-								? 'ΠΑΝ Remembers: summarize recent session context briefly.'
-								: 'Hello — new session starting.';
-							const pipeData = await api('/api/v1/terminal/pipe', {
-								method: 'POST',
-								body: JSON.stringify({ session_id: sessionId, text: launchText }),
-							});
-							if (pipeData.ok) {
-								console.log('[PAN Terminal] Claude auto-launched via pipe mode');
-							} else {
-								console.warn('[PAN Terminal] Pipe auto-launch failed:', pipeData.error);
+						// Pipe mode: auto-launch Claude via HTTP pipe endpoint.
+						// SKIP if we have saved claudeSessionIds — the adapter will
+						// resume from the latest one and the user's next real message
+						// should be the first thing it sees, not our greeting.
+						const hasResumeId = (tabData.claudeSessionIds || []).length > 0;
+						if (hasResumeId) {
+							console.log(`[PAN Terminal] Skipping auto-launch — will resume claude session ${tabData.claudeSessionIds[tabData.claudeSessionIds.length - 1]} on first user message`);
+						} else {
+							try {
+								const launchText = briefingReady
+									? 'ΠΑΝ Remembers: summarize recent session context briefly.'
+									: 'Hello — new session starting.';
+								const pipeData = await api('/api/v1/terminal/pipe', {
+									method: 'POST',
+									body: JSON.stringify({ session_id: sessionId, text: launchText }),
+								});
+								if (pipeData.ok) {
+									console.log('[PAN Terminal] Claude auto-launched via pipe mode');
+								} else {
+									console.warn('[PAN Terminal] Pipe auto-launch failed:', pipeData.error);
+								}
+							} catch (pipeErr) {
+								console.warn('[PAN Terminal] Pipe auto-launch error:', pipeErr);
 							}
-						} catch (pipeErr) {
-							console.warn('[PAN Terminal] Pipe auto-launch error:', pipeErr);
 						}
 						tabData._claudeLoading = false;
 						renderTranscriptToTerminal(tabData);
@@ -5390,8 +5486,9 @@
 		// Load permission matrix (gates which panel options are visible)
 		reloadPermsMatrix();
 
-		// Load org context
-		api('/api/v1/org/current').then(r => { orgData = r; }).catch(() => {});
+		// Load org context — retries with backoff. See loadOrgContextWithRetry
+		// definition at top-level for the full rationale + regression-test note.
+		loadOrgContextWithRetry();
 
 		// Load services, approvals, alerts, users, lifeboat immediately
 		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
@@ -5519,81 +5616,87 @@
 				const dashSessions = sessions.filter(s =>
 					s.id.startsWith(sessionPrefix) || s.id.startsWith('mob-')
 				);
+				const liveSessionMap = new Map(dashSessions.map(s => [s.id, s]));
 
-				if (dashSessions.length > 0) {
-					// Prefer sessions that match a DB tab (best metadata)
-					const liveSessions = dashSessions.filter(s => dbSessionIds.has(s.id));
-
-					if (liveSessions.length > 0) {
-						// Sort by DB tab index
-						liveSessions.sort((a, b) => {
-							const aTab = dbTabMap.get(a.id);
-							const bTab = dbTabMap.get(b.id);
-							if (aTab && bTab) return (aTab.tabIndex || 0) - (bTab.tabIndex || 0);
-							return (a.createdAt || 0) - (b.createdAt || 0);
-						});
-						for (const s of liveSessions) {
-							const matchedProject = projects.find(p => p.name === s.project);
-							const pid = matchedProject ? matchedProject.id : null;
-							const savedTab = dbTabMap.get(s.id);
-							await createTab(s.id, s.project || 'Shell', s.cwd || '%USERPROFILE%\\Desktop', pid, true, savedTab?.tabName || null, savedTab?.claudeSessionIds);
-							reconnected = true;
-						}
-					} else {
-						// DB empty/stale but server has live sessions — reconnect
-						// directly. This happens when DB save didn't land before
-						// refresh (race condition on hard reload).
-						console.log(`[PAN Terminal] No DB match — reconnecting to ${dashSessions.length} live server sessions`);
-						for (const s of dashSessions) {
-							const matchedProject = projects.find(p => p.name === s.project);
-							const pid = matchedProject ? matchedProject.id : null;
-							await createTab(s.id, s.project || 'Shell', s.cwd || '%USERPROFILE%\\Desktop', pid, true, null, null);
-							reconnected = true;
-						}
-					}
-
-					// Kill orphans — sessions with no DB tab AND no live clients.
-					// Grace period: only kill sessions older than 30s to avoid race
-					// conditions during hard refresh (old WS disconnects, new page
-					// hasn't connected yet — the session briefly has 0 clients).
-					if (dbTabs.length > 0) {
-						const now = Date.now();
-						for (const s of dashSessions) {
-							const age = now - (s.createdAt || 0);
-							if (!dbSessionIds.has(s.id) && (s.clients || 0) === 0 && age > 30000) {
-								fetch(`/api/v1/terminal/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' }).catch(() => {});
-							}
-						}
-					}
-
-					// Kill duplicate sessions — if multiple sessions exist for the same project,
-					// keep the one with the most clients (or newest), kill the rest.
-					const byProject = new Map();
-					for (const s of dashSessions) {
-						if (!s.project) continue;
-						if (!byProject.has(s.project)) byProject.set(s.project, []);
-						byProject.get(s.project).push(s);
-					}
-					for (const [, group] of byProject) {
-						if (group.length <= 1) continue;
-						// Keep the one with the most clients, break ties by newest createdAt
-						group.sort((a, b) => (b.clients || 0) - (a.clients || 0) || (b.createdAt || 0) - (a.createdAt || 0));
-						for (const dup of group.slice(1)) {
-							if ((dup.clients || 0) === 0) {
-								console.log(`[PAN Terminal] Killing duplicate session ${dup.id} for project ${dup.project}`);
-								fetch(`/api/v1/terminal/sessions/${encodeURIComponent(dup.id)}`, { method: 'DELETE' }).catch(() => {});
-							}
-						}
+				// ── UNIFIED RESTORE ───────────────────────────────────────────────
+				// A DB-saved tab is the source of truth for "this tab exists". A
+				// live server session is just the optional PTY backing it. We must
+				// ALWAYS materialize every DB tab, regardless of whether its PTY
+				// is currently alive — otherwise tabs vanish on refresh when their
+				// server-side session was killed (and the user has no UI to bring
+				// them back without digging into the closed-tabs list).
+				//
+				// For each DB tab:
+				//   • live session exists → reconnect (isReconnect=true)
+				//   • no live session    → recreate (isReconnect=false). The WS
+				//     handshake will spawn a fresh PTY under the same sessionId.
+				//     The saved claudeSessionIds let the adapter resume the prior
+				//     claude conversation on the first pipeSend.
+				if (dbTabs.length > 0) {
+					const sorted = [...dbTabs].sort((a, b) => (a.tabIndex || 0) - (b.tabIndex || 0));
+					for (const dt of sorted) {
+						const live = liveSessionMap.get(dt.sessionId);
+						const project = live?.project || dt.project || 'Shell';
+						const cwd = live?.cwd || dt.cwd || '%USERPROFILE%\\Desktop';
+						const matchedProject = projects.find(p => p.name === project);
+						const pid = matchedProject ? matchedProject.id : dt.projectId;
+						await createTab(dt.sessionId, project, cwd, pid, !!live, dt.tabName || null, dt.claudeSessionIds);
+						reconnected = true;
 					}
 				}
 
-				// If no live sessions, try restoring from DB-saved tabs (creates new PTY sessions)
-				if (!reconnected && dbTabs.length > 0) {
-					for (const dt of dbTabs) {
-						const matchedProject = projects.find(p => p.name === dt.project);
-						const pid = matchedProject ? matchedProject.id : dt.projectId;
-						await createTab(dt.sessionId, dt.project || 'Shell', dt.cwd || '%USERPROFILE%\\Desktop', pid, false, dt.tabName || null, dt.claudeSessionIds);
-						reconnected = true;
+				// Adopt any live sessions that the DB doesn't know about. Happens
+				// when the DB save raced a hard refresh, or sessions were created
+				// out-of-band (mobile, API). Without this, those tabs would be
+				// either killed as orphans below OR linger forever invisible.
+				const adoptedIds = new Set(dbTabs.map(t => t.sessionId));
+				for (const s of dashSessions) {
+					if (adoptedIds.has(s.id)) continue;
+					const matchedProject = projects.find(p => p.name === s.project);
+					const pid = matchedProject ? matchedProject.id : null;
+					console.log(`[PAN Terminal] Adopting unknown live session ${s.id} (no DB row)`);
+					await createTab(s.id, s.project || 'Shell', s.cwd || '%USERPROFILE%\\Desktop', pid, true, null, null);
+					adoptedIds.add(s.id);
+					reconnected = true;
+				}
+
+				// Kill server-side orphans — live sessions older than 30s with no
+				// clients AND not adopted by any tab. The 30s grace prevents
+				// killing sessions that briefly drop to 0 clients during refresh.
+				// Re-check tabs at kill time to be race-safe.
+				const now = Date.now();
+				for (const s of dashSessions) {
+					const age = now - (s.createdAt || 0);
+					if ((s.clients || 0) > 0) continue;
+					if (age < 30000) continue;
+					if (tabs.some(t => t.sessionId === s.id)) continue; // adopted
+					console.log(`[PAN Terminal] Killing orphan session ${s.id} (no tab, no clients, age ${Math.round(age/1000)}s)`);
+					fetch(`/api/v1/terminal/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' }).catch(() => {});
+				}
+
+				// Kill duplicate live sessions for the same project — keep the
+				// one a tab adopted, kill the rest. Prevents zombie PTYs eating
+				// resources after a buggy reopen flow created two sessions.
+				const byProject = new Map();
+				for (const s of dashSessions) {
+					if (!s.project) continue;
+					if (!byProject.has(s.project)) byProject.set(s.project, []);
+					byProject.get(s.project).push(s);
+				}
+				for (const [, group] of byProject) {
+					if (group.length <= 1) continue;
+					group.sort((a, b) => {
+						const aAdopted = tabs.some(t => t.sessionId === a.id) ? 1 : 0;
+						const bAdopted = tabs.some(t => t.sessionId === b.id) ? 1 : 0;
+						return (bAdopted - aAdopted) ||
+						       ((b.clients || 0) - (a.clients || 0)) ||
+						       ((b.createdAt || 0) - (a.createdAt || 0));
+					});
+					for (const dup of group.slice(1)) {
+						if ((dup.clients || 0) === 0 && !tabs.some(t => t.sessionId === dup.id)) {
+							console.log(`[PAN Terminal] Killing duplicate session ${dup.id} for project ${dup.project}`);
+							fetch(`/api/v1/terminal/sessions/${encodeURIComponent(dup.id)}`, { method: 'DELETE' }).catch(() => {});
+						}
 					}
 				}
 			} catch (e) {
@@ -6821,18 +6924,19 @@
 												{dev.name || dev.hostname}
 												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
 												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
-												<!-- #497: service-install pill — only meaningful for pan-client devices. boot > login > manual. -->
+												<!-- #497 + #700: service-install pill. boot > login > ad-hoc. Ad-hoc just means "started by hand / pre-#497 install" — not a problem state. -->
 												{#if isPanClient && !isHub && dev.service_state}
-													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'MANUAL'}
-													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#f38ba8'}
-													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="Started by: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
+													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'AD-HOC'}
+													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#fab387'}
+													{@const _ssTip = dev.service_state === 'system' ? 'Windows Service (starts at boot)' : dev.service_state === 'user' ? 'Scheduled Task (starts at user login)' : 'Ad-hoc start — no persistent service registered (pre-#497 install). Re-install client to upgrade.'}
+													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="{_ssTip} · Manager: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' · since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
 												{/if}
 											</div>
 											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
 										</div>
 										<div style="display:flex;align-items:center;gap:4px">
 											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
-											<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+											<div class="svc-detail" title={isOnline ? 'pan-client heartbeating' : 'pan-client process not heartbeating (machine may still be reachable via Tailscale)'}>{isOnline ? 'Client online' : 'Client offline'} · {ageStr}</div>
 											<span style="font-size:10px;color:#585b70;transition:transform 0.15s;display:inline-block;transform:rotate({isExpanded?'90deg':'0deg'})">&rsaquo;</span>
 										</div>
 									</div>
@@ -6843,7 +6947,7 @@
 												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
 												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
 												{#if dev.service_state}
-													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time)' : dev.service_state === 'user' ? 'user-session (login-time)' : dev.service_state} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
+													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time, Windows Service)' : dev.service_state === 'user' ? 'user-session (login-time, Scheduled Task)' : 'ad-hoc (no persistent service — pre-#497 install)'} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
 												{/if}
 											</div>
 											{#if caps.length > 0}
@@ -9168,18 +9272,19 @@
 												{dev.name || dev.hostname}
 												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
 												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
-												<!-- #497: service-install pill — only meaningful for pan-client devices. boot > login > manual. -->
+												<!-- #497 + #700: service-install pill. boot > login > ad-hoc. Ad-hoc just means "started by hand / pre-#497 install" — not a problem state. -->
 												{#if isPanClient && !isHub && dev.service_state}
-													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'MANUAL'}
-													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#f38ba8'}
-													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="Started by: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
+													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'AD-HOC'}
+													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#fab387'}
+													{@const _ssTip = dev.service_state === 'system' ? 'Windows Service (starts at boot)' : dev.service_state === 'user' ? 'Scheduled Task (starts at user login)' : 'Ad-hoc start — no persistent service registered (pre-#497 install). Re-install client to upgrade.'}
+													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="{_ssTip} · Manager: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' · since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
 												{/if}
 											</div>
 											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
 										</div>
 										<div style="display:flex;align-items:center;gap:4px">
 											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
-											<div class="svc-detail">{isOnline ? 'Online' : 'Offline'} · {ageStr}</div>
+											<div class="svc-detail" title={isOnline ? 'pan-client heartbeating' : 'pan-client process not heartbeating (machine may still be reachable via Tailscale)'}>{isOnline ? 'Client online' : 'Client offline'} · {ageStr}</div>
 											<span style="font-size:10px;color:#585b70;transition:transform 0.15s;display:inline-block;transform:rotate({isExpanded?'90deg':'0deg'})">&rsaquo;</span>
 										</div>
 									</div>
@@ -9190,7 +9295,7 @@
 												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
 												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
 												{#if dev.service_state}
-													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time)' : dev.service_state === 'user' ? 'user-session (login-time)' : dev.service_state} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
+													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time, Windows Service)' : dev.service_state === 'user' ? 'user-session (login-time, Scheduled Task)' : 'ad-hoc (no persistent service — pre-#497 install)'} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
 												{/if}
 											</div>
 											{#if caps.length > 0}
