@@ -150,40 +150,63 @@ app.use((req, res, next) => {
 
 // Auto-register/update phone device from any route (phone sends X-Device-Name + X-Device-Id headers)
 // Uses X-Device-Id as stable key (survives app reinstall) instead of IP-based hostnames
+// CRITICAL: Must use canonical phone-<id> format and properly scope to org_id
 app.use((req, res, next) => {
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
   const deviceName = req.headers['x-device-name'];
   const deviceId = req.headers['x-device-id'];
   const tailscaleHost = req.headers['x-tailscale-hostname'];
+  const orgId = req.org_id || 'org_personal';
+
   if (deviceName && ip !== '127.0.0.1' && ip !== '::1' && !ip.endsWith('127.0.0.1')) {
     // Use stable device ID if available, fall back to IP-based
-    const phoneHost = deviceId ? `phone-${deviceId}` : `phone-${ip.replace(/[^0-9.]/g, '')}`;
-    const existing = get("SELECT * FROM devices WHERE hostname = :h", { ':h': phoneHost });
+    // CANONICAL FORM: must be phone-<id> (never phone-phone-id or bare id)
+    let phoneHost;
+    if (deviceId) {
+      phoneHost = deviceId.startsWith('phone-') ? deviceId : `phone-${deviceId}`;
+    } else {
+      phoneHost = `phone-${ip.replace(/[^0-9.]/g, '')}`;
+    }
+
+    const existing = get("SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id",
+      { ':h': phoneHost, ':org_id': orgId });
     if (existing) {
-      run("UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h",
-        { ':name': deviceName, ':h': phoneHost });
+      run("UPDATE devices SET name = :name, last_seen = datetime('now','localtime') WHERE hostname = :h AND org_id = :org_id",
+        { ':name': deviceName, ':h': phoneHost, ':org_id': orgId });
       // Track Tailscale hostname changes — if it changed, the old node is stale
       if (tailscaleHost && existing.tailscale_hostname && tailscaleHost !== existing.tailscale_hostname) {
         console.log(`[PAN Device] Tailscale hostname changed: ${existing.tailscale_hostname} → ${tailscaleHost} — cleaning up stale node`);
         cleanupStaleTailscaleNode(existing.tailscale_hostname);
       }
       if (tailscaleHost && tailscaleHost !== existing.tailscale_hostname) {
-        run("UPDATE devices SET tailscale_hostname = :ts WHERE hostname = :h",
-          { ':ts': tailscaleHost, ':h': phoneHost });
+        run("UPDATE devices SET tailscale_hostname = :ts WHERE hostname = :h AND org_id = :org_id",
+          { ':ts': tailscaleHost, ':h': phoneHost, ':org_id': orgId });
       }
     } else if (deviceId) {
       // Check for legacy IP-based records for this device and migrate
+      // Also handle phantom bare-form rows that might exist from pre-canonicalization code
       const legacyIpHost = `phone-${ip.replace(/[^0-9.]/g, '')}`;
-      const legacy = get("SELECT * FROM devices WHERE hostname = :h", { ':h': legacyIpHost });
+      const bareId = deviceId.startsWith('phone-') ? deviceId.slice(6) : deviceId;
+
+      // Check legacy IP-based first
+      let legacy = get("SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id",
+        { ':h': legacyIpHost, ':org_id': orgId });
+
+      // If not found by IP, check for bare device_id form (old Android convention)
+      if (!legacy && bareId && bareId !== legacyIpHost) {
+        legacy = get("SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id",
+          { ':h': bareId, ':org_id': orgId });
+      }
+
       if (legacy) {
-        run("UPDATE devices SET hostname = :newH, name = :name, tailscale_hostname = :ts, last_seen = datetime('now','localtime') WHERE hostname = :h",
-          { ':newH': phoneHost, ':name': deviceName, ':ts': tailscaleHost || null, ':h': legacyIpHost });
-        console.log(`[PAN Device] Migrated legacy device ${legacyIpHost} → ${phoneHost}`);
+        run("UPDATE devices SET hostname = :newH, name = :name, tailscale_hostname = :ts, last_seen = datetime('now','localtime') WHERE hostname = :h AND org_id = :org_id",
+          { ':newH': phoneHost, ':name': deviceName, ':ts': tailscaleHost || null, ':h': legacy.hostname, ':org_id': orgId });
+        console.log(`[#681] Migrated legacy device ${legacy.hostname} → ${phoneHost}`);
       } else {
         try {
           insert(`INSERT INTO devices (hostname, name, device_type, capabilities, tailscale_hostname, last_seen, org_id)
-            VALUES (:h, :name, 'phone', '["mic","camera","sensors","gps"]', :ts, datetime('now','localtime'), 'org_personal')`, {
-            ':h': phoneHost, ':name': deviceName, ':ts': tailscaleHost || null
+            VALUES (:h, :name, 'phone', '["mic","camera","sensors","gps"]', :ts, datetime('now','localtime'), :org_id)`, {
+            ':h': phoneHost, ':name': deviceName, ':ts': tailscaleHost || null, ':org_id': orgId
           });
           console.log(`[PAN Device] Registered phone: ${phoneHost} (${deviceName})`);
         } catch(e) { /* UNIQUE constraint — already exists */ }
