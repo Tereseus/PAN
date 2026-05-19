@@ -10,7 +10,7 @@ import { join } from 'path';
 
 // Context size thresholds (in chars)
 const CLAUDE_MD_WARN_SIZE = 15000;  // ~3,750 tokens — alert if CLAUDE.md exceeds this
-const INJECTED_CONTEXT_WARN = 4000; // ~1,000 tokens — alert if injection alone exceeds this
+const INJECTED_CONTEXT_WARN = 6000; // ~1,500 tokens — #700 fix: raised threshold to match new cap
 
 const router = Router();
 
@@ -174,6 +174,7 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
     };
 
     // Render a list of events into chat lines (up to maxChars)
+    // #700 fix: increased message length from 250 → 800 to avoid truncating important context
     function renderEvents(events, maxChars) {
       const chatItems = [...events].reverse();
       const lines = [];
@@ -183,9 +184,9 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
           const d = JSON.parse(e.data);
           let line = null;
           if (e.event_type === 'UserPromptSubmit' && d.prompt && !isNoise(d.prompt)) {
-            line = `**User** (${e.created_at}): ${d.prompt.substring(0, 250)}`;
+            line = `**User** (${e.created_at}): ${d.prompt.substring(0, 800)}`;
           } else if (e.event_type === 'Stop' && d.last_assistant_message) {
-            line = `**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 250)}`;
+            line = `**Claude** (${e.created_at}): ${d.last_assistant_message.substring(0, 800)}`;
           }
           if (line) {
             chars += line.length;
@@ -265,8 +266,8 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
     briefing += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
     briefing += `**Session context** (for the first message of a fresh session only — see Session Continuity Rule above):\n\n`;
 
-    // Part 1 — This tab
-    const tabLines = renderEvents(tabEvents, 2000);
+    // Part 1 — This tab (#700 fix: increased budget from 2000 → 3500 for fuller context)
+    const tabLines = renderEvents(tabEvents, 3500);
     if (tabLines.length > 0) {
       briefing += `### This Tab`;
       if (tabSessionId) briefing += ` *(session: ${tabSessionId.substring(0, 12)})*`;
@@ -275,8 +276,8 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
       briefing += `### This Tab\nNew tab — no prior conversation yet.\n\n`;
     }
 
-    // Part 2 — Recent project work (most recent OTHER session)
-    const projectLines = renderEvents(projectEvents, 1800);
+    // Part 2 — Recent project work (most recent OTHER session) (#700 fix: increased budget from 1800 → 2500)
+    const projectLines = renderEvents(projectEvents, 2500);
     if (projectLines.length > 0) {
       briefing += `### Recent Project Work`;
       if (projectSession?.session_id) briefing += ` *(session: ${projectSession.session_id.substring(0, 12)})*`;
@@ -298,9 +299,9 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
     // Sanitize — strip any literal PAN-CONTEXT markers from injected content
     briefing = briefing.replace(/<!-- PAN-CONTEXT-(START|END) -->/g, '');
 
-    // Hard cap at 4100 chars (~1025 tokens) — raised from 3000 to fit two-part structure
-    if (briefing.length > 4100) {
-      briefing = briefing.substring(0, 4100) + '\n\n[... context trimmed ...]\n';
+    // Hard cap at 6500 chars (#700 fix: raised from 4100 to show fuller recent context without truncation)
+    if (briefing.length > 6500) {
+      briefing = briefing.substring(0, 6500) + '\n\n[... context trimmed ...]\n';
     }
 
     // Write to CLAUDE.md
