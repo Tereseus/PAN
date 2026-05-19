@@ -15,6 +15,46 @@ import { searchMemory } from './memory-search.js';
 import { writeThought } from './thoughts.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
+import { getCurrentSnapshot } from './intuition/index.js';
+import { recentThoughts } from './intuition/mind.js';
+
+// Recall-intent sniff — only when text matches this do we run a DB lookup on
+// the first pass. Pure conversation never touches FTS5/vector. See task #744
+// (#NEW-1) and docs/CONVERSATION-AND-INTERJECTION.md.
+const RECALL_RE = /\b(remember|recall|forgot|what (did|was|were|happened)|when (did|was|were)|where (did|was|were)|who (did|was|were|said)|find.*about|look.*up|tell me about)\b/i;
+
+// Build the situation block from the live intuition snapshot. Returns '' when
+// no snapshot is available (boot-up, isolated tests). See task #745 (#NEW-2).
+function buildSituationBlock(orgId) {
+  try {
+    const snap = getCurrentSnapshot(orgId || null);
+    const now = snap?.now;
+    if (!now) return '';
+    const lines = [];
+    if (snap.commander) lines.push(`- Commander: ${snap.commander}${now.last_seen ? ` (${now.last_seen})` : ''}`);
+    if (now.where) lines.push(`- Where: ${now.where}`);
+    if (now.activity) lines.push(`- Activity: ${now.activity}`);
+    if (now.focus) lines.push(`- Focus: ${now.focus}${now.direction ? ` — direction: ${now.direction}` : ''}`);
+    if (now.mood) lines.push(`- Mood: ${now.mood}${now.need ? ` — need: ${now.need}` : ''}`);
+    if (now.engagement) lines.push(`- Engagement: ${now.engagement}`);
+    if (now.last_heard) lines.push(`- Last heard: "${String(now.last_heard).slice(0, 140)}"`);
+    return lines.length ? `\nSituation right now:\n${lines.join('\n')}\n` : '';
+  } catch { return ''; }
+}
+
+// Build a tight recent-thoughts block — last 3 intuition verdicts within 5min.
+// Lets PAN ground replies in continuity ("as I was just noting…"). See #746.
+function buildRecentMindBlock() {
+  try {
+    const thoughts = recentThoughts({ source: 'intuition', limit: 3, sinceMs: 5 * 60_000 });
+    if (!thoughts || thoughts.length === 0) return '';
+    const lines = thoughts
+      .slice() // don't mutate
+      .reverse() // oldest first reads more naturally
+      .map(t => `- "${String(t.thought || '').slice(0, 160)}"`);
+    return `\nRecently in my mind:\n${lines.join('\n')}\n`;
+  } catch { return ''; }
+}
 
 // Log a step in the command processing pipeline
 function logStep(commandId, step, detail) {
@@ -140,12 +180,25 @@ async function handleUnified(text, context) {
   const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
 
-  // Pull relevant memories via FTS5 + vector search (searchMemory handles tokenization,
-  // so stop words are not a problem here — no more "%tell%me%about%" queries)
-  const memResults = await searchMemory(text, { limit: 5, caller: 'router' });
-  const memoryContext = memResults.length > 0
-    ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
-    : '';
+  // #NEW-1: Memory lookup is now intent-gated. Pure conversation never hits
+  // FTS5/vector — the model emits {intent:"memory",action:"recall"} when it
+  // actually needs facts, and processUnifiedResult handles that path (line 495+).
+  // Only the explicit recall sniff bypasses the gate on the first pass.
+  let memoryContext = '';
+  if (RECALL_RE.test(text)) {
+    const memResults = await searchMemory(text, { limit: 5, caller: 'router' });
+    memoryContext = memResults.length > 0
+      ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
+      : '';
+    logStep(cmdId, 'memory_recall_gate', `recall match — ${memResults.length} hits`);
+  } else {
+    logStep(cmdId, 'memory_recall_gate', 'no recall match — skipping DB lookup');
+  }
+
+  // #NEW-2 + #NEW-3: feed intuition snapshot + recent mind into the prompt so
+  // the model answers from the situation, not from raw words alone.
+  const situationBlock = buildSituationBlock(context.org_id);
+  const recentMindBlock = buildRecentMindBlock();
 
   // Include conversation history if available
   const conversationHistory = context.conversation_history || '';
@@ -203,7 +256,7 @@ async function handleUnified(text, context) {
       : '';
     raw = await claude(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
+${situationBlock}${recentMindBlock}${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
 ${isDash ? `User typed: "${safeText}"` : `Mic heard (may have STT typos/garbling — infer the most likely intent): "${safeText}"`}
 
 ${isDash ? 'Always respond.' : 'CRITICAL: If speech is clearly NOT directed at you (PAN), return EXACTLY: {"intent":"ambient","response":"[AMBIENT]"}'}
@@ -866,11 +919,19 @@ export async function* routeStream(text, context = {}) {
   const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
 
-  // FTS5 + vector search — no stop-word pollution, no hand-rolled LIKE queries
-  const memResults = await searchMemory(text, { limit: 5, caller: 'router-stream' });
-  const memoryContext = memResults.length > 0
-    ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
-    : '';
+  // #NEW-1: intent-gated memory lookup (mirror of handleUnified). Pure
+  // conversation never touches FTS5/vector; only explicit recall sniff does.
+  let memoryContext = '';
+  if (RECALL_RE.test(text)) {
+    const memResults = await searchMemory(text, { limit: 5, caller: 'router-stream' });
+    memoryContext = memResults.length > 0
+      ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
+      : '';
+  }
+
+  // #NEW-2 + #NEW-3: mirror handleUnified — feed snapshot + recent mind.
+  const situationBlock = buildSituationBlock(context.org_id);
+  const recentMindBlock = buildRecentMindBlock();
 
   const historyBlock = context.conversation_history
     ? `\nRecent conversation:\n${context.conversation_history}\n` : '';
@@ -896,7 +957,7 @@ export async function* routeStream(text, context = {}) {
   const isDash = context.source === 'dashboard';
 
   const prompt = `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${historyBlock}${sensorBlock}${hintBlock}
+${situationBlock}${recentMindBlock}${historyBlock}${sensorBlock}${hintBlock}
 ${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
 
 Every response must include "speech_act" field.
