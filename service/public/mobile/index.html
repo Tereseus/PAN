@@ -531,14 +531,14 @@ async function init() {
   startIntuitionPoll(); // #471 — banner at top of chat page, 30s refresh
   // Refresh session tabs every 10s so new sessions appear
   setInterval(loadSessionTabs, 10000);
-  // Auto-refresh active tab every 3 seconds
+  // Auto-refresh active tab every 1s (#376 fix: reduced from 3s to cut message delivery latency)
   setInterval(() => {
     const active = document.querySelector('.page.active');
     if (!active) return;
     // Don't re-render settings if QR code is visible — it would wipe it
     if (active.id === 'settings' && document.getElementById('install-qr-area')?.style.display !== 'none') return;
     loadTab(active.id);
-  }, 3000);
+  }, 1000);
   // Poll approvals every 2 seconds — independent of active tab so the banner
   // appears no matter where the user is in the app
   pollApprovals();
