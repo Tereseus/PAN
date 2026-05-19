@@ -7,11 +7,55 @@ const router = Router();
 // Device registry — each PAN instance registers itself
 // Devices are identified by their hostname + a user-set friendly name
 
+// #681 NIGHTMARE: phone-duplicate-record root cause.
+// Two registration paths exist (middleware in server.js auto-prefixes `phone-`,
+// this endpoint historically did not). Different callers with different conventions
+// produced two rows for the same phone (e.g. `pixel-10-pro` + `phone-pixel-10-pro`).
+// Canonical rule: phone hostnames MUST be `phone-<device_id>`. Server enforces it
+// regardless of what callers send. Existing duplicates are merged on register.
+function canonicalPhoneHost(rawId) {
+  if (!rawId) return null;
+  return rawId.startsWith('phone-') ? rawId : `phone-${rawId}`;
+}
+
 router.post('/register', (req, res) => {
-  const { device_id, name, device_type, capabilities } = req.body;
-  // Use device_id from body if provided (phone/remote devices).
-  // Fall back to server hostname only for local self-registration.
-  const deviceHostname = device_id || hostname();
+  // Accept both `name` and `device_name` (Android dto uses device_name).
+  const { device_id, name, device_name, device_type, capabilities } = req.body;
+  const displayName = name || device_name || null;
+
+  // Canonicalize: phone rows always live at `phone-<id>`. Reject the bare form.
+  let deviceHostname;
+  if (device_type === 'phone' && device_id) {
+    deviceHostname = canonicalPhoneHost(device_id);
+  } else {
+    // Use device_id from body if provided (non-phone remote devices).
+    // Fall back to server hostname only for local self-registration.
+    deviceHostname = device_id || hostname();
+  }
+
+  // For phones: also look up the bare form. If a phantom row exists at the
+  // bare hostname, merge it into the canonical row (or rename it in place).
+  if (device_type === 'phone' && device_id) {
+    const bareHost = device_id.startsWith('phone-') ? device_id.slice(6) : device_id;
+    if (bareHost && bareHost !== deviceHostname) {
+      const phantom = getScoped(req, "SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id", { ':h': bareHost });
+      if (phantom) {
+        const canonical = getScoped(req, "SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id", { ':h': deviceHostname });
+        if (canonical) {
+          // Both exist — keep canonical, delete phantom. Bring last_seen forward.
+          runScoped(req, "UPDATE devices SET last_seen = MAX(:phantom_seen, last_seen) WHERE hostname = :h AND org_id = :org_id",
+            { ':phantom_seen': phantom.last_seen, ':h': deviceHostname });
+          runScoped(req, "DELETE FROM devices WHERE hostname = :h AND org_id = :org_id", { ':h': bareHost });
+          console.log(`[#681] merged duplicate phone row: ${bareHost} → ${deviceHostname}`);
+        } else {
+          // Only the phantom exists — rename it to the canonical hostname.
+          runScoped(req, "UPDATE devices SET hostname = :newH WHERE hostname = :oldH AND org_id = :org_id",
+            { ':newH': deviceHostname, ':oldH': bareHost });
+          console.log(`[#681] renamed phantom phone row: ${bareHost} → ${deviceHostname}`);
+        }
+      }
+    }
+  }
 
   const existing = getScoped(req, "SELECT * FROM devices WHERE hostname = :h AND org_id = :org_id", { ':h': deviceHostname });
 
@@ -22,7 +66,7 @@ router.post('/register', (req, res) => {
       capabilities = COALESCE(:caps, capabilities),
       last_seen = datetime('now','localtime')
       WHERE hostname = :h AND org_id = :org_id`, {
-      ':name': name || null,
+      ':name': displayName,
       ':type': device_type || null,
       ':caps': capabilities ? JSON.stringify(capabilities) : null,
       ':h': deviceHostname
@@ -31,7 +75,7 @@ router.post('/register', (req, res) => {
     insertScoped(req, `INSERT INTO devices (hostname, name, device_type, capabilities, last_seen, org_id)
       VALUES (:h, :name, :type, :caps, datetime('now','localtime'), :org_id)`, {
       ':h': deviceHostname,
-      ':name': name || deviceHostname,
+      ':name': displayName || deviceHostname,
       ':type': device_type || 'pc',
       ':caps': capabilities ? JSON.stringify(capabilities) : '["terminal","filesystem","claude"]'
     });

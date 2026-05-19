@@ -2249,6 +2249,69 @@ const suites = {
         }
       },
       {
+        id: 'p1-reg-phone-duplicate',
+        name: '#681 — phone registration is idempotent across all paths (middleware + endpoint)',
+        description: 'Register same phone via: (1) middleware X-Device-Id header with bare id, (2) endpoint POST with canonical form. Must produce exactly 1 row at canonical hostname. Tests both registration paths that caused the 3x recurrence.',
+        run: async () => {
+          // Use a synthetic device_id so the test never collides with the real phone.
+          const tag = `regtest-${Date.now()}`;
+          const bareId = `pixel-fake-${tag}`;
+          const canonicalId = `phone-${bareId}`;
+
+          // PATH 1: Register via middleware (X-Device-Id header with bare form)
+          // Middleware should canonicalize bare id → phone-<id>
+          await new Promise((resolve, reject) => {
+            const req = http.request({
+              hostname: '127.0.0.1', port: 7777, path: '/api/v1/health',
+              method: 'GET',
+              headers: {
+                'X-Device-Id': bareId,
+                'X-Device-Name': 'Fake Pixel via Middleware'
+              }
+            }, (res) => {
+              res.on('data', () => {});
+              res.on('end', resolve);
+            });
+            req.on('error', reject);
+            req.end();
+          });
+
+          // PATH 2: Register via endpoint POST with canonical form
+          await prodPost('/api/v1/devices/register', {
+            device_id: canonicalId,
+            device_name: 'Fake Pixel via Endpoint',
+            device_type: 'phone'
+          });
+
+          // LIST and verify
+          const devices = await prodGet('/api/v1/devices/list');
+          if (!Array.isArray(devices)) throw new Error(`devices/list returned non-array: ${JSON.stringify(devices).slice(0, 120)}`);
+
+          // Should find exactly 1 row: either at bareId or canonicalId (middleware might create at bare, endpoint renames/merges)
+          // After fixes, both should merge to canonicalId
+          const matches = devices.filter(d =>
+            d.hostname === bareId || d.hostname === canonicalId
+          );
+
+          // Clean up before asserting, so a failure doesn't leak rows.
+          for (const m of matches) {
+            await new Promise((resolve, reject) => {
+              const req = http.request({ hostname: '127.0.0.1', port: 7777, path: `/api/v1/devices/${m.id}`, method: 'DELETE' }, r => { r.on('data', () => {}); r.on('end', resolve); });
+              req.on('error', reject);
+              req.end();
+            });
+          }
+
+          if (matches.length !== 1) {
+            throw new Error(`#681 regression: expected exactly 1 row for synthetic phone, got ${matches.length} (${matches.map(m => m.hostname).join(', ')})`);
+          }
+          if (matches[0].hostname !== canonicalId) {
+            throw new Error(`#681 regression: row exists but not at canonical hostname — got "${matches[0].hostname}", expected "${canonicalId}"`);
+          }
+          return `Middleware (${bareId}) + Endpoint (${canonicalId}) → 1 canonical row at ${canonicalId} ✓`;
+        }
+      },
+      {
         id: 'p1-reg-router-response',
         name: '#440 — router responds within 15s with non-empty result',
         description: 'Real end-to-end call through /api/v1/chat on prod. Fails if >15s or empty — catches slow/broken router regression.',
