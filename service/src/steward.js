@@ -519,41 +519,68 @@ async function checkServiceHealth(svc) {
         break;
       }
       case 'url': {
-        // Health check against a full URL — single source of truth for Ollama
-        // whether it's local or on Mini PC (getOllamaUrl() returns the configured URL).
-        // #464: 3s timeout produced false-negatives under load. Bumped to 5s, and
-        // require N consecutive failures before flipping to DOWN to debounce the
-        // "ollama bouncing" noise that propagated to memory-search timeouts.
-        const URL_FAIL_THRESHOLD = 3;
+        // Health check against a full URL — single source of truth for Ollama.
+        // #464: intermittent failures cause flapping (streak resets on success).
+        // Changed to time-window failure counting: if ≥3 failures in 5min window,
+        // transition to DOWN. Recovery requires 2 consecutive successes + 30s grace.
+        const WINDOW_MS = 5 * 60 * 1000; // 5-minute rolling window
+        const FAIL_THRESHOLD = 3;
+        const RECOVERY_SUCCESSES = 2;
+        const RECOVERY_GRACE_MS = 30 * 1000; // 30s after last failure
+
+        // Initialize tracking on first check
+        if (!svc._urlFailureHistory) svc._urlFailureHistory = [];
+        if (typeof svc._urlSuccessStreak === 'undefined') svc._urlSuccessStreak = 0;
+
+        // Clean out old failures outside the window
+        const now = Date.now();
+        svc._urlFailureHistory = svc._urlFailureHistory.filter(t => now - t < WINDOW_MS);
+
         try {
           const url = getOllamaUrl() + (svc.healthEndpoint || '/');
           const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
           if (res.ok) {
-            svc._urlFailStreak = 0;
             const data = await res.json().catch(() => ({}));
             const models = data.models || [];
             svc._modelCount = models.length;
             svc._models = models.map(m => m.name);
+            svc._urlSuccessStreak = (svc._urlSuccessStreak || 0) + 1;
+
             // Warn loudly if Ollama is up but has no models (e.g. upgrade wiped them)
             if (models.length === 0 && svc._lastModelCount > 0) {
               console.warn('[Steward] ⚠️ Ollama models WIPED — was ' + svc._lastModelCount + ', now 0. Client watchdog should pull minicpm-v.');
             }
             svc._lastModelCount = models.length;
-            transitionServiceState(svc, models.length === 0 ? ServiceState.DEGRADED : ServiceState.RUNNING, 'url health check ok');
+
+            // Recovery: need consecutive successes + time since last failure
+            const timeSinceLastFail = svc._urlFailureHistory.length > 0
+              ? now - Math.max(...svc._urlFailureHistory)
+              : Infinity;
+            const shouldRecover = svc._urlSuccessStreak >= RECOVERY_SUCCESSES && timeSinceLastFail >= RECOVERY_GRACE_MS;
+            const isDown = svc._status === ServiceState.DOWN;
+
+            // Always transition from non-DOWN states, or from DOWN only if recovery conditions met
+            if (!isDown || shouldRecover) {
+              transitionServiceState(svc, models.length === 0 ? ServiceState.DEGRADED : ServiceState.RUNNING, 'url health check ok');
+            }
           } else {
-            svc._urlFailStreak = (svc._urlFailStreak || 0) + 1;
-            if (svc._urlFailStreak >= URL_FAIL_THRESHOLD) {
-              transitionServiceState(svc, ServiceState.DOWN, `url health check HTTP ${res.status} (${svc._urlFailStreak} consecutive)`);
+            svc._urlFailureHistory.push(now);
+            svc._urlSuccessStreak = 0;
+            const failCount = svc._urlFailureHistory.length;
+            if (failCount >= FAIL_THRESHOLD) {
+              transitionServiceState(svc, ServiceState.DOWN, `url health check HTTP ${res.status} (${failCount}/${FAIL_THRESHOLD} in 5min window)`);
             } else {
-              console.warn(`[Steward] ${svc.id} HTTP ${res.status} (${svc._urlFailStreak}/${URL_FAIL_THRESHOLD}) — debouncing`);
+              console.warn(`[Steward] ${svc.id} HTTP ${res.status} (${failCount}/${FAIL_THRESHOLD} in 5min) — debouncing`);
             }
           }
         } catch (urlErr) {
-          svc._urlFailStreak = (svc._urlFailStreak || 0) + 1;
-          if (svc._urlFailStreak >= URL_FAIL_THRESHOLD) {
-            transitionServiceState(svc, ServiceState.DOWN, `url health check failed (${svc._urlFailStreak} consecutive): ${urlErr.message}`);
+          svc._urlFailureHistory.push(now);
+          svc._urlSuccessStreak = 0;
+          const failCount = svc._urlFailureHistory.length;
+          if (failCount >= FAIL_THRESHOLD) {
+            transitionServiceState(svc, ServiceState.DOWN, `url health check failed (${failCount}/${FAIL_THRESHOLD} in 5min): ${urlErr.message}`);
           } else {
-            console.warn(`[Steward] ${svc.id} health check failed (${svc._urlFailStreak}/${URL_FAIL_THRESHOLD}): ${urlErr.message} — debouncing`);
+            console.warn(`[Steward] ${svc.id} health check failed (${failCount}/${FAIL_THRESHOLD} in 5min): ${urlErr.message} — debouncing`);
           }
         }
         break;
