@@ -403,6 +403,53 @@ CREATE INDEX IF NOT EXISTS idx_pan_interjections_user_created ON pan_interjectio
 CREATE INDEX IF NOT EXISTS idx_pan_interjections_key ON pan_interjections(action_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pan_interjections_status ON pan_interjections(status);
 
+-- Session nudges — out-of-band system messages injected into the NEXT
+-- UserPromptSubmit for a given session via the hook's additionalContext
+-- mechanism. Used by behavioral-lock-breaker.js (bug #769) to break Claude
+-- out of stock-reply loops, and reserved for future kinds (e.g. forced
+-- task-status check-in, autodev nudges).
+--   kind: 'behavioral_lock' | future
+--   body: the verbatim text Claude will see as additionalContext
+--   detector_meta: JSON blob the detector wrote (for postmortem / tuning)
+--   consumed_at: NULL = pending; once set, never re-emitted
+CREATE TABLE IF NOT EXISTS session_nudges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    detector_meta TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_nudges_pending
+    ON session_nudges(session_id, consumed_at);
+
+-- === SESSION SUMMARIES (recap source for ΠΑΝ Remembers) ===
+-- Per-session deterministic recap built at SessionEnd. Replaces the prior
+-- approach where injectSessionContext pulled raw UserPromptSubmit/Stop events
+-- and re-injected whatever Claude last said — which fed back into the next
+-- session as "ΠΑΝ Remembers" and created a regurgitation loop (bug discussed
+-- 2026-05-22). Strong signals: completed TodoWrite items, git commits in the
+-- session's time window, files touched, project tasks closed. Optional one-line
+-- Cerebras polish (qwen-3-235b, default on).
+CREATE TABLE IF NOT EXISTS session_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL UNIQUE,
+    project_id INTEGER REFERENCES projects(id),
+    cwd TEXT,
+    started_at TEXT,
+    ended_at TEXT,
+    completed_todos TEXT,   -- JSON array of strings (last TodoWrite snapshot's completed items)
+    commits TEXT,           -- JSON array of {sha, subject}
+    files_touched TEXT,     -- JSON array of paths (deduped, capped at 20)
+    tasks_closed TEXT,      -- JSON array of {id, title, new_status}
+    llm_text TEXT,          -- Optional Cerebras polish: one-paragraph natural-language recap
+    model_used TEXT,        -- which model produced llm_text (or 'deterministic' if no LLM)
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_summaries(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project_id, created_at DESC);
+
 -- === THREE-TIER VECTOR MEMORY ===
 
 -- Episodic memory — records of what happened (interactions, events, outcomes)

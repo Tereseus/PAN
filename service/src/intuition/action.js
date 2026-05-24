@@ -2,7 +2,7 @@
 // an actual delivered interjection across PAN's channels.
 //
 // Channels (best-effort, all independent — one failing doesn't block the rest):
-//   1. ΠΑΝ chat thread     (panNotify → chat_messages) — dashboard sees it
+//   1. Π chat thread     (panNotify → chat_messages) — dashboard sees it
 //   2. WebSocket broadcast (broadcastNotification 'pan_interjection') — live UI signal
 //   3. Connected clients   (sendToClient → speak/notify) — phone TTS, desktop popup
 //
@@ -42,7 +42,7 @@ async function lazyChannels() {
 // ── Phrasings ─────────────────────────────────────────────────────────────────
 // Each entry: (candidate) → { subject, body, speak }
 //   subject: shown in chat list / preview
-//   body:    full message in the ΠΑΝ thread
+//   body:    full message in the Π thread
 //   speak:   what gets spoken out loud on phone/desktop (TTS-friendly, no markup)
 const phrasings = {
   'need:nourishment': (c) => ({
@@ -84,6 +84,39 @@ const phrasings = {
     subject: 'Still here when you need me',
     body: c.reason || 'Quiet for a while — just letting you know I\'m around.',
     speak: 'Still around if you need me.',
+  }),
+  // conv:* — conversation-flow interjections. These fire even in flow (see
+  // intuition/index.js deliberation: conv:* candidates bypass the flow penalty
+  // because the whole point is to unstick a stuck conversation, not preserve it).
+  'conv:confused': (c) => ({
+    subject: 'Want a summary?',
+    body: c.reason
+      ? `Picked up a lot of clarifying questions (${c.reason}). Want me to step back and summarize where we are?`
+      : 'Want me to step back and summarize where we are?',
+    speak: 'Want me to step back and summarize where we are?',
+  }),
+  'conv:stuck': (c) => ({
+    subject: 'Throw this at Scout?',
+    body: c.reason
+      ? `Sounds stuck (${c.reason}). Want me to throw this at Scout for a fresh angle?`
+      : 'Want me to throw this at Scout for a fresh angle?',
+    speak: 'Want me to throw this at Scout for a fresh angle?',
+  }),
+  'conv:tangent': (c) => {
+    const from = c.from || 'before';
+    const to = c.to || 'now';
+    return {
+      subject: `Still on ${from}?`,
+      body: `Focus shifted from ${from} to ${to}. Still on the first thing, or moving over?`,
+      speak: `Still on ${from}, or shifting to ${to}?`,
+    };
+  },
+  'conv:idle': (c) => ({
+    subject: 'Quiet — picking up?',
+    body: c.reason
+      ? `You went quiet (${c.reason}). Want to pick up where we paused?`
+      : 'You went quiet — want to pick up where we paused?',
+    speak: 'You went quiet — want to pick up where we paused?',
   }),
 };
 
@@ -143,7 +176,7 @@ export async function dispatchAction(candidate, opts = {}) {
   const phrase = phraseFor(candidate);
   await lazyChannels();
 
-  // Channel 1: ΠΑΝ chat thread (always — this is the persistent visible record)
+  // Channel 1: Π chat thread (always — this is the persistent visible record)
   let chatMsgId = null;
   try {
     chatMsgId = panNotify('intuition', phrase.subject, phrase.body, {

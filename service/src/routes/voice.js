@@ -219,6 +219,62 @@ export function registerVoiceRoutes(app) {
     }
   );
 
+  // Browser transcription — accepts raw audio (WebM/Opus or WAV) from MediaRecorder.
+  // POST with Content-Type: audio/webm. Writes temp file, calls whisper POST /,
+  // returns { text, speaker_id, speaker_confidence, seconds, action }.
+  // Used by the Comms popout call-mode push-to-talk button.
+  app.post('/api/v1/voice/transcribe-browser',
+    express.raw({ type: ['audio/webm', 'audio/ogg', 'audio/wav', 'audio/wave', 'application/octet-stream'], limit: '25mb' }),
+    async (req, res) => {
+      const audioBuffer = req.body;
+      if (!audioBuffer || audioBuffer.length < 800) {
+        return res.status(400).json({ error: 'audio too short or missing' });
+      }
+      // Pick extension from content-type so whisper can sniff the format
+      const ct = (req.headers['content-type'] || '').toLowerCase();
+      const ext = ct.includes('wav') ? 'wav' : ct.includes('ogg') ? 'ogg' : 'webm';
+      const tmpFile = join(tmpdir(), `pan-stt-${randomBytes(6).toString('hex')}.${ext}`);
+      try {
+        writeFileSync(tmpFile, audioBuffer);
+        if (!(await whisperAvailable())) {
+          return res.status(503).json({ error: 'Voice server not running' });
+        }
+        const r = await whisperRequest('POST', '/', { wav_path: tmpFile }, 15000);
+        const body = r.body || {};
+        if (!r.ok) return res.status(r.status || 500).json(body);
+        // Feed identity_clusters when whisper-server returns a confident speaker match
+        const label = body.speaker_id || body.label || null;
+        const conf  = typeof body.speaker_confidence === 'number' ? body.speaker_confidence
+                    : typeof body.confidence         === 'number' ? body.confidence
+                    : null;
+        if (label && conf !== null && label !== 'unknown') {
+          try {
+            const { observeVoice } = await import('./identity.js');
+            observeVoice({
+              label,
+              confidence: conf > 1 ? conf / 100 : conf,
+              sample_path: tmpFile,
+            });
+          } catch (e) {
+            // Non-fatal — transcript is still useful
+          }
+        }
+        res.json({
+          text: body.text || '',
+          raw_text: body.raw_text || null,
+          seconds: body.seconds || null,
+          action: body.action || null,
+          speaker_id: label,
+          speaker_confidence: conf,
+        });
+      } catch (e) {
+        res.status(500).json({ error: e.message });
+      } finally {
+        try { if (existsSync(tmpFile)) unlinkSync(tmpFile); } catch {}
+      }
+    }
+  );
+
   // Server-side recording enrollment — mic captured by whisper-server.py (no browser permission needed)
   app.post('/api/v1/voice/record-enroll', async (req, res) => {
     const { label, seconds = 10 } = req.body || {};

@@ -79,7 +79,23 @@ export class GeminiAdapter {
     });
 
     return new Promise((resolve) => {
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        if (this.childProcess) {
+          timedOut = true;
+          console.error(`[Gemini Adapter] CLI timeout (30s no response) — killing process`);
+          this.messages.push({
+            role: 'system', type: 'error',
+            text: '⚠️ Gemini not responding (timeout). Try again or check network.',
+            ts: new Date().toISOString(),
+          });
+          this._push();
+          this.childProcess.kill();
+        }
+      }, 30_000);
+
       this.childProcess.on('close', (code) => {
+        clearTimeout(timeout);
         this.busy = false;
         this.childProcess = null;
         console.log(`[Gemini Adapter] CLI exited with code ${code}`);

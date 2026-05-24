@@ -52,7 +52,7 @@ try {
   process.stderr.write(`[Carrier] setupCarrierLog failed: ${e.message}\n`);
 }
 
-// Carrier has no DB — send ΠΑΝ notifications via HTTP to the Craft
+// Carrier has no DB — send Π notifications via HTTP to the Craft
 function panNotify(service, subject, body, opts = {}) {
   const port = primaryCraft?.port;
   if (!port) return;
@@ -237,8 +237,12 @@ function spawnCraft(port, label = 'primary') {
     if (craft === primaryCraft) {
       // If rollback is available, auto-rollback to previous instead of respawning
       if (swapPending && previousCraft) {
-        console.log(`[Carrier] 💥 Primary Craft-${id} crashed during rollback window — auto-rolling back!`);
-        performRollback();
+        console.log(`[Carrier] 💥 Primary Craft-${id} crashed during rollback window — auto-rolling back! (exit code=${code} signal=${signal})`);
+        performRollback({
+          triggered_by: 'craft_crash',
+          reason: `primary Craft-${id} exited during rollback window`,
+          detail: { exit_code: code, exit_signal: signal },
+        });
       } else {
         console.log('[Carrier] Primary Craft died — respawning in 2s...');
         setTimeout(() => {
@@ -345,7 +349,8 @@ function handleCraftIPC(msg, craft) {
       break;
     }
     case 'terminal:sendToSession': {
-      if (terminalServer) terminalServer.sendToSession(msg.sessionId, msg.text);
+      // #982 — propagate provenance tag from Craft so terminal.js can log it
+      if (terminalServer) terminalServer.sendToSession(msg.sessionId, msg.text, undefined, msg.source || 'unknown');
       break;
     }
     case 'terminal:broadcastToSession': {
@@ -558,7 +563,7 @@ async function runPipelineBenchmarks() {
   });
   console.log(`[Pipeline] Benchmarks ${allPassed ? 'PASSED ✅' : 'FAILED ❌'} — ${passedSuites.length}/${passedSuites.length + failedSuites.length} suites passed`);
 
-  // Notify user via ΠΑΝ contact thread
+  // Notify user via Π contact thread
   try {
     const total = passedSuites.length + failedSuites.length;
     if (allPassed) {
@@ -854,7 +859,7 @@ const carrierServer = http.createServer((req, res) => {
   // a full window.location.reload(). On `server_swap` the client compares the
   // current hash against the one captured at page mount; if unchanged, the WS
   // reconnect handles everything and the page reload is skipped (preserving
-  // tabs, scrollback, ΠΑΝ Remembers, etc.).
+  // tabs, scrollback, Π Remembers, etc.).
   // Bug #457: prior to this, every Craft swap reloaded the page even when the
   // dashboard bundle was identical, wiping the user's visible state.
   if (url.pathname === '/api/dashboard/bundle-hash' && req.method === 'GET') {
@@ -1270,6 +1275,7 @@ async function performSwap() {
     if (stderrTail) console.error(`[Carrier] Craft-${newCraft.id} stderr tail:\n${stderrTail}`);
     recordSwapPhase('health_failed', {
       new_craft_id: newCraft.id, new_commit: newCommit,
+      triggered_by: 'new_craft_health_check',
       reason: healthResult.reason,
       detail: healthResult.detail,
       last_status: healthResult.lastStatus,
@@ -1325,6 +1331,7 @@ async function performSwap() {
     console.error(`[Carrier] ❌ New Craft-${newCraft.id} failed initial swap gate: ${gateCheck.reason} — aborting swap`);
     recordSwapPhase('gate_failed', {
       new_craft_id: newCraft.id, new_commit: newCommit,
+      triggered_by: 'initial_gate_probe',
       reason: gateCheck.reason,
       failed_stages: gateCheck.failed_stages || gateCheck.failedStages,
     });
@@ -1405,7 +1412,14 @@ function confirmSwap() {
   const safety = perfEngine.isSwapSafe();
   if (!safety.safe) {
     console.error(`[Carrier] ❌ Swap unsafe: ${safety.reason} — rolling back instead of confirming`);
-    return performRollback();
+    // Pull the leading stage id out of `safety.reason` (format from perf/engine.js
+    // isSwapSafe: "<stage_id> failed during rollback window: …" or "<stage_id> is <state>").
+    const stageMatch = /^([a-z0-9_]+)\s+(failed|is)\b/i.exec(safety.reason || '');
+    return performRollback({
+      triggered_by: 'gate_unsafe_on_confirm',
+      reason: safety.reason || 'swap unsafe at confirm time',
+      failed_stage: stageMatch ? stageMatch[1] : null,
+    });
   }
 
   if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
@@ -1576,8 +1590,26 @@ function startSwapRecovery() {
   }, 3000);
 }
 
-function performRollback() {
-  if (!swapPending || !previousCraft) return { ok: false, reason: 'No rollback available' };
+// #981: every rollback path must pass `reasonCtx` so swap-history captures
+// WHY the rollback fired. Without this the operator sees `rolled_back` rows
+// with no reason and `stderr_tail` containing unrelated boot noise, and has
+// to grep carrier stdout to figure out which gate stage tripped.
+//
+// reasonCtx shape:
+//   {
+//     triggered_by: 'auto_rollback_perf_probe' | 'gate_unsafe_on_confirm'
+//                 | 'craft_crash' | 'manual_lifeboat',
+//     reason: <short string, e.g. 'ptys_bound failed during rollback window: …'>,
+//     failed_stage: <SWAP_GATE stage id if known>,
+//     detail: <optional extra context (exit_code, exit_signal, user note, …)>
+//   }
+function performRollback(reasonCtx = {}) {
+  if (!swapPending || !previousCraft) {
+    // Even no-op rollbacks deserve a breadcrumb — diagnoses the case where
+    // something tried to rollback after the window already closed.
+    console.warn(`[Carrier] performRollback called but no rollback available (triggered_by=${reasonCtx.triggered_by || 'unknown'}, reason=${reasonCtx.reason || 'unspecified'})`);
+    return { ok: false, reason: 'No rollback available', triggered_by: reasonCtx.triggered_by };
+  }
   if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
   swapPending = false;
 
@@ -1587,15 +1619,30 @@ function performRollback() {
   perfEngine.primaryCraftPort = primaryCraft.port;
   perfEngine.markSwapEnd();
 
-  console.log(`[Carrier] 🔙 ROLLBACK — reverting to Craft-${primaryCraft.id} (${primaryCraft.gitCommit}), killing Craft-${failedCraft.id}`);
+  const triggeredBy = reasonCtx.triggered_by || 'unknown';
+  const reason = reasonCtx.reason || 'unspecified';
+  const failedStage = reasonCtx.failed_stage || null;
+  const detail = reasonCtx.detail || null;
+  const stderrTail = getCraftStderrTail(failedCraft, 50).slice(-2000);
+
+  console.log(`[Carrier] 🔙 ROLLBACK — reverting to Craft-${primaryCraft.id} (${primaryCraft.gitCommit}), killing Craft-${failedCraft.id} [triggered_by=${triggeredBy}, reason=${reason}${failedStage ? `, failed_stage=${failedStage}` : ''}]`);
+
   recordSwapPhase('rolled_back', {
     rolled_back_to_craft_id: primaryCraft.id, rolled_back_to_commit: primaryCraft.gitCommit,
     killed_craft_id: failedCraft.id, killed_commit: failedCraft.gitCommit,
-    stderr_tail: getCraftStderrTail(failedCraft, 50).slice(-2000),
+    triggered_by: triggeredBy,
+    reason,
+    failed_stage: failedStage,
+    detail,
+    stderr_tail: stderrTail,
   });
   recordEvent('craft_swap_rolled_back', {
     rolled_back_to_commit: primaryCraft.gitCommit, killed_commit: failedCraft.gitCommit,
     killed_craft_id: failedCraft.id,
+    triggered_by: triggeredBy,
+    reason,
+    failed_stage: failedStage,
+    detail: typeof detail === 'string' ? detail.slice(0, 500) : detail,
   });
   try { failedCraft.proc.kill(); } catch {}
 
@@ -1603,9 +1650,12 @@ function performRollback() {
     terminalServer.broadcastNotification('swap_rollback', {
       rolledBackTo: primaryCraft.id,
       killed: failedCraft.id,
+      triggered_by: triggeredBy,
+      reason,
+      failed_stage: failedStage,
     });
   }
-  return { ok: true, activeCraft: primaryCraft.id, commit: primaryCraft.gitCommit };
+  return { ok: true, activeCraft: primaryCraft.id, commit: primaryCraft.gitCommit, triggered_by: triggeredBy, reason, failed_stage: failedStage };
 }
 
 // ==================== Lifeboat ====================
@@ -1642,7 +1692,10 @@ function handleLifeboat(url, method, res) {
   }
 
   if (url.pathname === '/lifeboat/rollback' && method === 'POST') {
-    const result = performRollback();
+    const result = performRollback({
+      triggered_by: 'manual_lifeboat',
+      reason: 'user requested rollback via /lifeboat/rollback',
+    });
     json(result.ok ? 200 : 409, result);
     return true;
   }
@@ -1688,7 +1741,7 @@ async function triggerClaudeHandoff(session) {
   const uptimeH = ((Date.now() - (session.createdAt || Date.now())) / 3_600_000).toFixed(1);
   console.log(`[Carrier] Phase 5: Sending /compact to session ${session.id} (running ${uptimeH}h)`);
   try {
-    terminalServer.sendToSession(session.id, '/compact\n');
+    terminalServer.sendToSession(session.id, '/compact\n', undefined, 'carrier_handoff');
   } catch (e) {
     console.warn(`[Carrier] Phase 5: /compact failed for ${session.id}: ${e.message}`);
   }
@@ -1786,7 +1839,12 @@ async function boot() {
     const safety = perfEngine.isSwapSafe();
     if (!safety.safe) {
       console.error(`[Carrier] 🚨 Perf probe failed during rollback window: ${safety.reason} — auto-rolling back`);
-      performRollback();
+      const stageMatch = /^([a-z0-9_]+)\s+(failed|is)\b/i.exec(safety.reason || '');
+      performRollback({
+        triggered_by: 'auto_rollback_perf_probe',
+        reason: safety.reason || 'perf probe failed during rollback window',
+        failed_stage: stageMatch ? stageMatch[1] : null,
+      });
     }
   });
 

@@ -80,6 +80,18 @@ export class ClaudeAdapter {
 
     this.busy = true;
     this.abortController = new AbortController();
+    let timedOut = false;
+    const _msgsBefore = this.messages.length; // track if any visible output is produced
+
+    // 30s timeout for first message to appear. If stream hangs after that, let it run —
+    // long responses are OK, but stuck streams must be detected.
+    const timeoutHandle = setTimeout(() => {
+      if (this.abortController) {
+        timedOut = true;
+        console.error(`[Claude Adapter] Query timeout (30s no response) — aborting`);
+        this.abortController.abort();
+      }
+    }, 30_000);
 
     try {
       console.log(`[Claude Adapter] Query: "${text.substring(0, 60)}" (${isFirst ? 'new' : 'resume'}) cwd=${this.cwd}`);
@@ -167,14 +179,40 @@ export class ClaudeAdapter {
           this._push();
         }
       }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        console.log(`[Claude Adapter] Query interrupted`);
+      // If the stream completed but produced no visible assistant output, show a
+      // fallback so the user isn't left staring at silence. This happens when
+      // Claude resumes a broken/mid-tool-call session and emits only whitespace.
+      const _hadVisibleOutput = this.messages.slice(_msgsBefore).some(m =>
+        (m.role === 'assistant' && m.type === 'text') || (m.role === 'assistant' && m.type === 'tool')
+      );
+      if (!_hadVisibleOutput && !timedOut) {
+        console.warn(`[Claude Adapter] Stream completed with no visible output (turn_out=${this._turnOutputTokens}) — session likely in bad state`);
         this.messages.push({
-          role: 'system', type: 'interrupt',
-          text: 'Interrupted',
+          role: 'system', type: 'banner',
+          text: `No response received. Claude session may be in a broken state (turn_out=${this._turnOutputTokens}). A fresh session will be started on your next message.`,
           ts: new Date().toISOString(),
         });
+        // Wipe claudeSessionId so next send starts fresh
+        this.claudeSessionId = null;
+        this._push();
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        if (timedOut) {
+          console.error(`[Claude Adapter] Query stalled (no response for 30s)`);
+          this.messages.push({
+            role: 'system', type: 'error',
+            text: '⚠️ Claude not responding (timeout). Try again or check network.',
+            ts: new Date().toISOString(),
+          });
+        } else {
+          console.log(`[Claude Adapter] Query interrupted`);
+          this.messages.push({
+            role: 'system', type: 'interrupt',
+            text: 'Interrupted',
+            ts: new Date().toISOString(),
+          });
+        }
         this._push();
       } else if (opts.resume && (err.message?.includes('session') || err.message?.includes('resume') || err.message?.includes('not found'))) {
         // Resume failed — session expired or invalid. Retry as fresh session.
@@ -193,6 +231,7 @@ export class ClaudeAdapter {
         this._push();
       }
     } finally {
+      clearTimeout(timeoutHandle);
       this.busy = false;
       this.abortController = null;
     }

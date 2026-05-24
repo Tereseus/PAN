@@ -4,6 +4,7 @@ import { broadcastNotification, broadcastChatUpdate, addPendingPermission, getPe
 import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
 import { reconcileTasks } from '../memory/consolidation.js';
+import { buildSessionSummary, getSessionRecapText, getRecentProjectRecap } from '../session-summary.js';
 import { createAlert } from './dashboard.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
@@ -168,7 +169,7 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
           || p.startsWith('<tool-use-id>')
           || p.startsWith('You are PAN')
           || p.startsWith('CURRENT STATE')
-          || /^ΠΑΝ Remembers:/i.test(p)       // break the self-injection loop
+          || /^Π Remembers:/i.test(p)       // break the self-injection loop
           || p.toLowerCase().startsWith('pan remembers:')
           || p.length < 2;
     };
@@ -266,25 +267,49 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
     briefing += `IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — read it first.\n\n`;
     briefing += `**Session context** (for the first message of a fresh session only — see Session Continuity Rule above):\n\n`;
 
-    // Part 1 — This tab (#700 fix: increased budget from 2000 → 3500 for fuller context)
-    const tabLines = renderEvents(tabEvents, 3500);
-    if (tabLines.length > 0) {
-      briefing += `### This Tab`;
-      if (tabSessionId) briefing += ` *(session: ${tabSessionId.substring(0, 12)})*`;
-      briefing += `\n${tabLines.join('\n')}\n\n`;
-    } else if (tabClaudeSessionIds.length > 0) {
-      briefing += `### This Tab\nNew tab — no prior conversation yet.\n\n`;
+    // Part 1 — This tab
+    // PREFER recap from session_summaries (the deterministic + Cerebras-polished
+    // row written at SessionEnd). Falls back to raw event rendering only if no
+    // summary row exists yet (e.g. session hasn't ended, or it's pre-recap-pipeline).
+    let usedRecapTab = false;
+    if (tabSessionId) {
+      const recap = getSessionRecapText(tabSessionId);
+      if (recap) {
+        briefing += `### This Tab *(session: ${tabSessionId.substring(0, 12)}, recap)*\n${recap}\n\n`;
+        usedRecapTab = true;
+      }
+    }
+    if (!usedRecapTab) {
+      const tabLines = renderEvents(tabEvents, 3500);
+      if (tabLines.length > 0) {
+        briefing += `### This Tab`;
+        if (tabSessionId) briefing += ` *(session: ${tabSessionId.substring(0, 12)})*`;
+        briefing += `\n${tabLines.join('\n')}\n\n`;
+      } else if (tabClaudeSessionIds.length > 0) {
+        briefing += `### This Tab\nNew tab — no prior conversation yet.\n\n`;
+      }
     }
 
-    // Part 2 — Recent project work (most recent OTHER session) (#700 fix: increased budget from 1800 → 2500)
-    const projectLines = renderEvents(projectEvents, 2500);
-    if (projectLines.length > 0) {
-      briefing += `### Recent Project Work`;
-      if (projectSession?.session_id) briefing += ` *(session: ${projectSession.session_id.substring(0, 12)})*`;
-      briefing += `\n${projectLines.join('\n')}\n\n`;
-    } else if (!tabClaudeSessionIds.length) {
-      // No tab context AND no project context — fresh install
-      briefing += `### Recent Conversation\nFresh session — no previous conversation on record.\n\n`;
+    // Part 2 — Recent project work (most recent OTHER session)
+    // PREFER recap; fall back to raw events.
+    let usedRecapProject = false;
+    if (project?.id) {
+      const recap = getRecentProjectRecap(project.id, tabClaudeSessionIds);
+      if (recap) {
+        briefing += `### Recent Project Work *(session: ${recap.session_id.substring(0, 12)}, recap)*\n${recap.text}\n\n`;
+        usedRecapProject = true;
+      }
+    }
+    if (!usedRecapProject) {
+      const projectLines = renderEvents(projectEvents, 2500);
+      if (projectLines.length > 0) {
+        briefing += `### Recent Project Work`;
+        if (projectSession?.session_id) briefing += ` *(session: ${projectSession.session_id.substring(0, 12)})*`;
+        briefing += `\n${projectLines.join('\n')}\n\n`;
+      } else if (!tabClaudeSessionIds.length) {
+        // No tab context AND no project context — fresh install
+        briefing += `### Recent Conversation\nFresh session — no previous conversation on record.\n\n`;
+      }
     }
 
     // Tasks (with IDs for auto-closer)
@@ -332,6 +357,122 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
     console.error(`[PAN Hook] Failed to inject session context:`, err.message);
   }
 }
+
+// ───────────────────────── Internal: session nudges (bug #769) ─────────────────────────
+// Local-only endpoint hit by service/src/hooks/behavioral-lock-breaker.js to enqueue
+// a system-level nudge that the next UserPromptSubmit will inject as
+// additionalContext. Cooldown-guarded so we don't spam the same session.
+router.post('/internal/session-nudges', (req, res) => {
+  try {
+    const { session_id, kind, body, detector_meta, cooldown_s } = req.body || {};
+    if (!session_id || !kind || !body) {
+      return res.status(400).json({ ok: false, error: 'missing session_id, kind, or body' });
+    }
+    // Cooldown check — don't insert if we already nudged the same (session, kind)
+    // within the cooldown window. Uses raw `run`/`get` (not scoped) because the
+    // hook script doesn't carry an org context; session_id is globally unique.
+    const cooldownSec = Math.max(60, Number(cooldown_s) || 600);
+    const recent = get(
+      `SELECT id, created_at FROM session_nudges
+       WHERE session_id = :sid AND kind = :kind
+         AND created_at > datetime('now', 'localtime', :delta)
+       ORDER BY id DESC LIMIT 1`,
+      { ':sid': session_id, ':kind': kind, ':delta': `-${cooldownSec} seconds` }
+    );
+    if (recent) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'cooldown', last_id: recent.id });
+    }
+    const newId = insert(
+      `INSERT INTO session_nudges (session_id, kind, body, detector_meta)
+       VALUES (:sid, :kind, :body, :meta)`,
+      { ':sid': session_id, ':kind': kind, ':body': body, ':meta': detector_meta || null }
+    );
+    // Surface as a high-urgency pan_alert so the dashboard can show "PAN
+    // detected a loop and nudged itself" without waiting on the next turn.
+    try {
+      broadcastNotification('pan_alert', {
+        category: 'behavioral_lock',
+        urgency: 'high',
+        session_id,
+        body,
+      });
+    } catch {}
+    // better-sqlite3 lastInsertRowid is a BigInt; coerce for JSON.
+    const idNum = typeof newId === 'bigint' ? Number(newId) : newId;
+    console.log(`[PAN #769] session_nudge enqueued kind=${kind} session=${session_id.slice(0, 8)} id=${idNum}`);
+    res.status(200).json({ ok: true, id: idNum });
+  } catch (err) {
+    console.error('[PAN #769] internal/session-nudges failed:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Inspect recent recaps — local debugging only.
+router.get('/internal/recap-inspect', (req, res) => {
+  try {
+    const limit = Math.min(20, Number(req.query.limit) || 5);
+    const rows = all(
+      `SELECT session_id, model_used, completed_todos, commits, files_touched, tasks_closed, llm_text, created_at
+       FROM session_summaries ORDER BY id DESC LIMIT :lim`,
+      { ':lim': limit }
+    );
+    const out = rows.map(r => ({
+      session_id: r.session_id,
+      model_used: r.model_used,
+      created_at: r.created_at,
+      completed_todos: JSON.parse(r.completed_todos || '[]').slice(0, 5),
+      commits: JSON.parse(r.commits || '[]').slice(0, 5),
+      files_touched: JSON.parse(r.files_touched || '[]').slice(0, 8),
+      tasks_closed: JSON.parse(r.tasks_closed || '[]').slice(0, 5),
+      llm_text: r.llm_text,
+    }));
+    res.status(200).json({ ok: true, rows: out });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// One-shot backfill — walks recent sessions in this project and builds
+// session_summaries rows for any that don't have one. Idempotent. Local-only.
+router.post('/internal/recap-backfill', async (req, res) => {
+  try {
+    const { cwd, limit = 10, useLLM = true } = req.body || {};
+    if (!cwd) return res.status(400).json({ ok: false, error: 'missing cwd' });
+    const fwd = cwd.replace(/\\/g, '/');
+    const jsonEscaped = cwd.replace(/\\/g, '\\\\');
+    const orgId = 'org_personal';
+
+    // Pull recent distinct session_ids that have a Stop event (i.e. are real sessions)
+    // touching this cwd. Skip ones that already have a summary.
+    const sessions = all(
+      `SELECT DISTINCT e.session_id, MIN(e.created_at) AS first_seen
+       FROM events e
+       WHERE e.event_type = 'UserPromptSubmit'
+         AND (e.data LIKE :pp1 OR e.data LIKE :pp2)
+         AND e.org_id = :org_id
+         AND e.session_id NOT IN (SELECT session_id FROM session_summaries)
+         AND e.session_id IN (SELECT DISTINCT session_id FROM events WHERE event_type = 'Stop')
+       GROUP BY e.session_id
+       ORDER BY first_seen DESC
+       LIMIT :lim`,
+      { ':pp1': '%' + jsonEscaped + '%', ':pp2': '%' + fwd + '%', ':org_id': orgId, ':lim': Number(limit) }
+    );
+
+    const results = [];
+    for (const s of sessions) {
+      try {
+        const r = await buildSessionSummary(s.session_id, cwd, orgId, { useLLM });
+        results.push({ session_id: s.session_id, ok: !!r, model: r?.model_used });
+      } catch (err) {
+        results.push({ session_id: s.session_id, ok: false, error: err.message });
+      }
+    }
+    res.status(200).json({ ok: true, processed: results.length, results });
+  } catch (err) {
+    console.error('[recap-backfill] failed:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 router.post('/:eventType', (req, res) => {
   const eventType = req.params.eventType;
@@ -384,13 +525,13 @@ router.post('/:eventType', (req, res) => {
       }
 
       // Resume-aware preamble. When Claude Code resumes an existing session
-      // (source='resume'), the CLAUDE.md "ΠΑΝ Remembers" preamble is suppressed
+      // (source='resume'), the CLAUDE.md "Π Remembers" preamble is suppressed
       // by the anti-repetition rule — but the user just hit carrier_restart and
       // legitimately wants to see "I'm back, last topic was X". Push a WS
       // notification so the terminal UI can render a one-line resume banner in
       // scrollback without making Claude re-emit the full briefing.
       // (source='startup' = fresh process, handled by the normal first-message
-      // ΠΑΝ Remembers path; 'compact'/'clear' are user-intentional and don't
+      // Π Remembers path; 'compact'/'clear' are user-intentional and don't
       // need a banner.)
       if (payload.source === 'resume') {
         try {
@@ -428,14 +569,27 @@ router.post('/:eventType', (req, res) => {
         ':tp': payload.transcript_path || null
       });
 
-      // Inject context into CLAUDE.md NOW so the NEXT session opens with fresh context
-      // (Claude Code reads CLAUDE.md before SessionStart hooks run, so this must happen on SessionEnd)
-      // Pass sessionId as a single-item tab array so Part 1 is scoped to the ending session.
-      if (cwd) {
-        injectSessionContext(cwd, req.org_id || 'org_personal', sessionId ? [sessionId] : []).catch(err => {
-          console.error('[PAN Hook] SessionEnd context injection failed:', err.message);
-        });
-      }
+      // Build the session recap row FIRST (deterministic + optional Cerebras
+      // polish), then inject context. This breaks the regurgitation loop where
+      // the previous approach pulled raw last-Stop text and re-injected
+      // whatever Claude last said. The recap is built from real signals:
+      // completed todos, git commits, files touched, tasks closed.
+      const orgIdForRecap = req.org_id || 'org_personal';
+      (async () => {
+        try {
+          await buildSessionSummary(sessionId, cwd, orgIdForRecap);
+        } catch (err) {
+          console.error('[PAN Hook] SessionEnd buildSessionSummary failed:', err.message);
+        }
+        // Inject context into CLAUDE.md NOW so the NEXT session opens with fresh context
+        // (Claude Code reads CLAUDE.md before SessionStart hooks run, so this must happen on SessionEnd)
+        // Pass sessionId as a single-item tab array so Part 1 is scoped to the ending session.
+        if (cwd) {
+          injectSessionContext(cwd, orgIdForRecap, sessionId ? [sessionId] : []).catch(err => {
+            console.error('[PAN Hook] SessionEnd context injection failed:', err.message);
+          });
+        }
+      })();
 
       // Task reconciliation — check if this session completed any open tasks
       // Runs async in background, non-blocking
@@ -545,6 +699,52 @@ router.post('/:eventType', (req, res) => {
       }
     }
 
+    // Auto-recap watermark — fire buildSessionSummary periodically during long
+    // sessions so ΠΑΝ Remembers stays fresh even if SessionEnd never fires
+    // (user leaves session open for days). Triggers if:
+    //   - no summary row for this session yet, OR
+    //   - >recap_watermark_minutes since last summary (default 30), OR
+    //   - >=recap_watermark_turns Stop events since last summary (default 10)
+    // ON CONFLICT UPDATE in buildSessionSummary handles overwriting cleanly.
+    if (eventType === 'Stop') {
+      try {
+        const watermarkMin = Number(get(`SELECT value FROM settings WHERE key = 'recap_watermark_minutes'`)?.value) || 30;
+        const watermarkTurns = Number(get(`SELECT value FROM settings WHERE key = 'recap_watermark_turns'`)?.value) || 10;
+        const existing = get(
+          `SELECT created_at FROM session_summaries WHERE session_id = :sid`,
+          { ':sid': sessionId }
+        );
+        let shouldWrite = false;
+        if (!existing) {
+          shouldWrite = true;
+        } else {
+          const ageMin = get(
+            `SELECT (julianday('now','localtime') - julianday(:c)) * 1440 AS m`,
+            { ':c': existing.created_at }
+          )?.m || 0;
+          if (ageMin >= watermarkMin) {
+            shouldWrite = true;
+          } else {
+            const stopsSince = get(
+              `SELECT COUNT(*) AS n FROM events
+               WHERE session_id = :sid AND event_type = 'Stop' AND created_at > :c`,
+              { ':sid': sessionId, ':c': existing.created_at }
+            )?.n || 0;
+            if (stopsSince >= watermarkTurns) shouldWrite = true;
+          }
+        }
+        if (shouldWrite) {
+          const orgIdForRecap = req.org_id || 'org_personal';
+          // Fire and forget — never block the Stop response on Cerebras latency
+          buildSessionSummary(sessionId, cwd, orgIdForRecap).catch(err => {
+            console.error('[PAN] watermark buildSessionSummary failed:', err.message);
+          });
+        }
+      } catch (err) {
+        console.error('[PAN] watermark check failed:', err.message);
+      }
+    }
+
     // Burn rate alert — check on Stop events if this session is consuming too much per message
     if (eventType === 'Stop' && payload.transcript_path && existsSync(payload.transcript_path)) {
       try {
@@ -589,6 +789,37 @@ router.post('/:eventType', (req, res) => {
           timestamp: new Date().toISOString(),
         });
       } catch {}
+    }
+
+    // Bug #769: on UserPromptSubmit, claim-and-consume any pending session_nudges
+    // for this session and return them as additionalContext so Claude sees them
+    // prepended to the user's prompt. This is how behavioral-lock-breaker.js
+    // breaks Claude out of stock-reply loops on turn N+1.
+    if (eventType === 'UserPromptSubmit') {
+      try {
+        const pending = get(
+          `SELECT id, body FROM session_nudges
+           WHERE session_id = :sid AND consumed_at IS NULL
+           ORDER BY id ASC LIMIT 1`,
+          { ':sid': sessionId }
+        );
+        if (pending) {
+          run(
+            `UPDATE session_nudges SET consumed_at = datetime('now','localtime') WHERE id = :id`,
+            { ':id': pending.id }
+          );
+          console.log(`[PAN #769] UPS injecting nudge id=${pending.id} session=${sessionId.slice(0, 8)}`);
+          return res.status(200).json({
+            ok: true,
+            hookSpecificOutput: {
+              hookEventName: 'UserPromptSubmit',
+              additionalContext: pending.body,
+            },
+          });
+        }
+      } catch (err) {
+        console.error('[PAN #769] UPS nudge claim failed:', err.message);
+      }
     }
 
     res.status(200).json({ ok: true });

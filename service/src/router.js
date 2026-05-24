@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
-import { claude, askAIStream, getConfiguredModel } from './claude.js';
+import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './claude.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
@@ -16,6 +16,7 @@ import { writeThought } from './thoughts.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
 import { getCurrentSnapshot } from './intuition/index.js';
+import { getConversationState } from './conv-state-watcher.js';
 import { recentThoughts } from './intuition/mind.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
@@ -39,6 +40,29 @@ function buildSituationBlock(orgId) {
     if (now.engagement) lines.push(`- Engagement: ${now.engagement}`);
     if (now.last_heard) lines.push(`- Last heard: "${String(now.last_heard).slice(0, 140)}"`);
     return lines.length ? `\nSituation right now:\n${lines.join('\n')}\n` : '';
+  } catch { return ''; }
+}
+
+// Build the conversation-state block. Reads the in-memory distilled state
+// maintained by conv-state-watcher.js (a sibling of webcam/screen watchers,
+// stream-paced — debounce-distills 500ms after each STT Final). Gives the
+// router pre-chewed context about the dialogue itself: topic, phase,
+// pending question, user's phrasing tempo, and whether the LAST utterance
+// looked like a complete thought or mid-sentence. This is the conversation
+// "endpointing" signal we're growing toward — see #NEW-conv-state.
+function buildConvStateBlock(orgId) {
+  try {
+    const cs = getConversationState(orgId || null);
+    if (!cs) return '';
+    const lines = [];
+    if (cs.topic)             lines.push(`- Topic: ${cs.topic}`);
+    if (cs.phase)             lines.push(`- Phase: ${cs.phase}`);
+    if (cs.pending_question)  lines.push(`- Pending question: "${cs.pending_question}"`);
+    if (cs.user_pattern)      lines.push(`- User pattern: ${cs.user_pattern}`);
+    if (typeof cs.likely_turn_complete === 'boolean')
+                              lines.push(`- Last utterance looked ${cs.likely_turn_complete ? 'complete' : 'mid-sentence'}`);
+    if (cs.summary)           lines.push(`- Summary: ${cs.summary}`);
+    return lines.length ? `\nConversation state:\n${lines.join('\n')}\n` : '';
   } catch { return ''; }
 }
 
@@ -176,6 +200,30 @@ async function tryQuickSystem(text) {
 async function handleUnified(text, context) {
   const cmdId = context._commandId || null;
 
+  // Debug trace — captured so callers (chat surfaces, comms popout) can show
+  // PAN's reasoning alongside the reply. Filled progressively as the call
+  // proceeds. Attached to the returned result as `_debug` so it survives the
+  // intent-specific shaping in processUnifiedResult.
+  const dbg = {
+    started_at: Date.now(),
+    ai_started_at: null,
+    ai_latency_ms: null,
+    total_latency_ms: null,
+    model: null,
+    caller: 'router',
+    source: context.source || null,
+    intent: null,
+    why: null,
+    recall_hit: false,
+    skill_matched: null,
+    situation: null,
+    conversation: null,
+    mind: null,
+    raw_response: null,
+    error: null,
+  };
+  try { dbg.model = getModelForCaller('router'); } catch {}
+
   // Build project list for context
   const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
   const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
@@ -190,6 +238,7 @@ async function handleUnified(text, context) {
     memoryContext = memResults.length > 0
       ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
       : '';
+    dbg.recall_hit = memResults.length > 0;
     logStep(cmdId, 'memory_recall_gate', `recall match — ${memResults.length} hits`);
   } else {
     logStep(cmdId, 'memory_recall_gate', 'no recall match — skipping DB lookup');
@@ -197,8 +246,48 @@ async function handleUnified(text, context) {
 
   // #NEW-2 + #NEW-3: feed intuition snapshot + recent mind into the prompt so
   // the model answers from the situation, not from raw words alone.
+  // #NEW-conv-state: also feed the live conversation-state distillation
+  // (topic/phase/pending_question/user_pattern/likely_turn_complete/summary)
+  // maintained by conv-state-watcher. The router doesn't think about the
+  // whole conversation — it just reads the pre-chewed state.
   const situationBlock = buildSituationBlock(context.org_id);
   const recentMindBlock = buildRecentMindBlock();
+  const convStateBlock  = buildConvStateBlock(context.org_id);
+  try {
+    const cs = getConversationState(context.org_id || null);
+    if (cs) {
+      dbg.conversation = {
+        topic: cs.topic || null,
+        phase: cs.phase || null,
+        pending_question: cs.pending_question || null,
+        user_pattern: cs.user_pattern || null,
+        likely_turn_complete: cs.likely_turn_complete ?? null,
+        summary: cs.summary || null,
+        distilled_at: cs.distilled_at || null,
+        latency_ms: cs.latency_ms || null,
+      };
+    }
+  } catch {}
+
+  // Capture raw versions for the debug trace shown in the comms popout.
+  try {
+    const snap = getCurrentSnapshot(context.org_id || null);
+    dbg.situation = snap?.now ? {
+      where: snap.now.where || null,
+      activity: snap.now.activity || null,
+      focus: snap.now.focus || null,
+      direction: snap.now.direction || null,
+      mood: snap.now.mood || null,
+      need: snap.now.need || null,
+      engagement: snap.now.engagement || null,
+      commander: snap.commander || null,
+      last_heard: snap.now.last_heard ? String(snap.now.last_heard).slice(0, 200) : null,
+    } : null;
+  } catch {}
+  // Raw mind stream is fed to the prompt (situation+mind blocks above) but NOT
+  // exposed in the UI debug — the user only wants the synthesized `mind`
+  // sentence from the model, not the raw 6-thought list. Keep collecting in
+  // buildRecentMindBlock; just don't echo it back.
 
   // Include conversation history if available
   const conversationHistory = context.conversation_history || '';
@@ -233,6 +322,9 @@ async function handleUnified(text, context) {
   const skillBlock = skillMatch
     ? (logStep(cmdId, 'skill_matched', `${skillMatch.skill.name}${Object.keys(skillMatch.params).length ? ' params:' + JSON.stringify(skillMatch.params) : ''}`), getSkillPrompt(skillMatch))
     : '';
+  if (skillMatch) {
+    try { dbg.skill_matched = { name: skillMatch.skill.name, params: skillMatch.params || {} }; } catch {}
+  }
 
   logStep(cmdId, 'unified_call', 'single Claude call for classify+handle');
 
@@ -254,9 +346,10 @@ async function handleUnified(text, context) {
     const hintBlock = context.intent_hint
       ? `\nOVERRIDE: Server pattern matched — your response MUST use {"intent":"${context.intent_hint}",...}. Do not use a different intent.\n`
       : '';
+    dbg.ai_started_at = Date.now();
     raw = await claude(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${situationBlock}${recentMindBlock}${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
+${situationBlock}${convStateBlock}${recentMindBlock}${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
 ${isDash ? `User typed: "${safeText}"` : `Mic heard (may have STT typos/garbling — infer the most likely intent): "${safeText}"`}
 
 ${isDash ? 'Always respond.' : 'CRITICAL: If speech is clearly NOT directed at you (PAN), return EXACTLY: {"intent":"ambient","response":"[AMBIENT]"}'}
@@ -265,6 +358,16 @@ Return ambient for: side-conversations to another person, personal statements/th
 Ambient examples: "no no I told him it was fine" → ambient. "I was thinking we could go to dinner" → ambient. "yeah that makes sense" → ambient. "the weather looks nice today" → ambient.
 Not ambient: "what the weather" (question). "remind me to buy milk" (command). "what time is it" (question). "open spotify" (command).
 Rule: if there is no question and no command for PAN — return ambient.`}
+
+Every response MUST ALSO include two debug fields:
+- "why": ONE short sentence (≤ 20 words) explaining why you chose THIS specific reply for THIS utterance. Reasoning about the current turn only.
+- "mind": ONE short sentence (≤ 25 words) synthesizing your CURRENT MENTAL STATE — what you sense about the user/situation right now, blending the situation block and recent-mind block above into a single coherent thought ("Watching the user debug PAN routing in the dashboard; they're focused and asking direct questions"). NOT a list, NOT bullets, NOT repeating raw thoughts.
+
+CLASSIFICATION RULES (read carefully — most utterances are NOT terminal):
+- A QUESTION about PAN's abilities ("can you do X", "does this work", "is it possible") → intent: "query". NEVER terminal.
+- A request to OPEN a terminal/project ("open WoE terminal") → intent: "terminal", action: "open".
+- A request to SEND/TYPE text into a terminal tab ("send hello to the terminal", "send 'hello' to the PAN terminal", "type ls in the WoE tab", "tell the terminal X") → intent: "terminal", action: "pipe". Put the literal text to send in "text" (without quotes). For "target": ONLY use a real project or tab name (e.g. "PAN", "WoE", "Claude-Discord-Bot"). NEVER set target to generic words like "terminal", "tab", "console", "shell" — if no specific tab name is mentioned, OMIT "target" entirely so PAN uses the most-recently-active tab. NEVER claim you sent something without using this action.
+- When in doubt between query and terminal → choose query.
 
 Every response must include "speech_act" field:
 "command" — direct instruction to execute something
@@ -276,7 +379,7 @@ Every response must include "speech_act" field:
 
 Response formats:
 {"intent":"query","speech_act":"query","response":"answer"} — questions/conversation
-{"intent":"terminal","speech_act":"command","action":"open|send-text|get-text|list-panes","project":"path","name":"name","pane_id":0,"text":"cmd","response":"msg"}
+{"intent":"terminal","speech_act":"command","action":"open|pipe|send-text|get-text|list-panes","project":"path","name":"name","target":"tab/project name (for pipe)","text":"text to type","pane_id":0,"response":"msg"}
 {"intent":"system","speech_act":"command","command":"PowerShell cmd","response":"msg"}
 {"intent":"browser","speech_act":"command","action":"list_tabs|read_tab|activate_tab|type_text|click_element|navigate","query":"tab/URL","text":"input","response":"msg"}
 {"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg"}
@@ -289,6 +392,8 @@ ${memoryContext}`,
       { caller: 'router', _skipAnonymize: true, source: context.source, device_id: context.device_id }
     );
 
+    dbg.ai_latency_ms = Date.now() - dbg.ai_started_at;
+    dbg.raw_response = (raw || '').slice(0, 2000);
     logStep(cmdId, 'unified_response', raw.slice(0, 200));
 
     // Strip thinking tags (Qwen 235B sometimes wraps in <think>...</think>)
@@ -298,6 +403,9 @@ ${memoryContext}`,
     if (jsonMatch) cleaned = jsonMatch[0];
 
     const action = JSON.parse(cleaned);
+    dbg.intent = action.intent || null;
+    dbg.why = typeof action.why === 'string' ? action.why.slice(0, 400) : null;
+    dbg.mind = typeof action.mind === 'string' ? action.mind.slice(0, 500) : null;
 
     // PAN's-Mind thought — describe what PAN heard and what it decided to do.
     // Ambient utterances get a quieter line; real commands get a higher-importance one.
@@ -324,11 +432,89 @@ ${memoryContext}`,
       }
     } catch { /* non-fatal */ }
 
-    return processUnifiedResult(action, text, context);
+    const finalResult = await processUnifiedResult(action, text, context);
+    dbg.total_latency_ms = Date.now() - dbg.started_at;
+    try { finalResult._debug = dbg; } catch {}
+    return finalResult;
   } catch (e) {
     console.error('[PAN Router] Unified call error:', e.message, '| raw:', typeof raw === 'string' ? raw.slice(0, 300) : raw);
-    return { intent: 'query', response: 'PAN is having trouble thinking right now.' };
+    dbg.error = e.message || String(e);
+    dbg.total_latency_ms = Date.now() - dbg.started_at;
+    return { intent: 'query', response: 'PAN is having trouble thinking right now.', _debug: dbg };
   }
+}
+
+// Resolve which terminal tab/session a "send to terminal" action should hit.
+//
+// Strategy:
+//   1. If `targetHint` is given, match against session id, project name, or
+//      session id substring — exact > project-exact > fuzzy. When multiple
+//      match, pick the most-recently-active.
+//   2. If no hint, pick the most-recently-active PTY, preferring sessions
+//      that have a real project tag AND have claude running (the user is
+//      almost certainly "talking to" the tab they're actively working in,
+//      not the leftover 'default' shell).
+//
+// Cross-device routing (sending to a tab on a *remote* PC like Predator) is
+// not wired here yet — the resolver only sees local PTYs from terminal.js
+// `listSessions()`. The user wants this next: device + tab name → remote pipe
+// via client-manager. Marked TODO #DEVICE-ROUTE so it doesn't get lost.
+async function resolveTerminalTarget(targetHint, context = {}) {
+  // PTYs live on the Carrier process, not Craft — direct `listSessions()`
+  // import here would read an empty Map. Go through the Super-Carrier HTTP
+  // surface which routes terminal endpoints to the Carrier.
+  let sessions = [];
+  try {
+    const PAN_PORT = process.env.PAN_CARRIER_PORT || '7777';
+    const res = await fetch(`http://127.0.0.1:${PAN_PORT}/api/v1/terminal/sessions`, { method: 'GET' });
+    if (res.ok) {
+      const body = await res.json();
+      sessions = Array.isArray(body?.sessions) ? body.sessions : [];
+    }
+  } catch (e) {
+    console.warn('[PAN Router] terminal sessions fetch failed:', e?.message);
+    sessions = [];
+  }
+
+  if (!sessions.length) return { ok: false, reason: 'no_sessions' };
+
+  const norm = (s) => String(s || '').toLowerCase().replace(/[\s_-]+/g, '');
+  // Strip generic words the LLM tends to literally pass through ("terminal",
+  // "tab", "console", "shell", "the terminal") — these mean "any/default",
+  // not a real target. Without this guard, "send X to the terminal" fails
+  // because no tab is literally named 'terminal'.
+  const GENERIC = new Set(['terminal', 'tab', 'console', 'shell', 'theterminal', 'thetab', 'cmd', 'commandline']);
+  let hintNorm = norm(targetHint);
+  if (GENERIC.has(hintNorm)) hintNorm = '';
+
+  if (hintNorm) {
+    const exactId = sessions.find(s => norm(s.id) === hintNorm);
+    if (exactId) return { ok: true, session: exactId, match: 'id' };
+    const exactProj = sessions.filter(s => norm(s.project) === hintNorm);
+    if (exactProj.length) {
+      exactProj.sort((a, b) => (b.lastInputTs || 0) - (a.lastInputTs || 0));
+      return { ok: true, session: exactProj[0], match: 'project-exact' };
+    }
+    const fuzzy = sessions.filter(s => norm(s.project).includes(hintNorm) || norm(s.id).includes(hintNorm));
+    if (fuzzy.length) {
+      fuzzy.sort((a, b) => (b.lastInputTs || 0) - (a.lastInputTs || 0));
+      return { ok: true, session: fuzzy[0], match: 'fuzzy' };
+    }
+    return {
+      ok: false,
+      reason: 'no_match',
+      hint: targetHint,
+      available: sessions.map(s => s.project || s.id).filter(Boolean),
+    };
+  }
+
+  // No hint — rank: claudeRunning > has project > most-recent input
+  const ranked = sessions.slice().sort((a, b) => {
+    if (!!a.claudeRunning !== !!b.claudeRunning) return (b.claudeRunning ? 1 : 0) - (a.claudeRunning ? 1 : 0);
+    if (!!a.project !== !!b.project) return (b.project ? 1 : 0) - (a.project ? 1 : 0);
+    return (b.lastInputTs || b.lastOutputTs || 0) - (a.lastInputTs || a.lastOutputTs || 0);
+  });
+  return { ok: true, session: ranked[0], match: 'mru' };
 }
 
 // Post-process the unified response into the correct return format
@@ -366,6 +552,69 @@ async function processUnifiedResult(action, text, context) {
     }
 
     case 'terminal': {
+      // pipe — actually send text into a PAN dashboard PTY (the most common
+      // "send X to the terminal" / "type Y in the WoE tab" case). Resolver
+      // picks the target by project/tab name, or falls back to MRU when no
+      // hint is given. Returns a transparent ack including the resolved
+      // session so the user can correct PAN if it picked wrong.
+      if (action.action === 'pipe') {
+        const sendText = (action.text || '').toString();
+        if (!sendText.trim()) {
+          return { intent: 'terminal', speech_act, response: `I need to know what to send. What text should I type?` };
+        }
+        const targetHint = action.target || action.tab || action.project_name || action.name || null;
+        const resolved = await resolveTerminalTarget(targetHint, context);
+        if (!resolved.ok) {
+          if (resolved.reason === 'no_sessions') {
+            return { intent: 'terminal', speech_act, response: `No terminal tabs are open right now.` };
+          }
+          if (resolved.reason === 'no_match') {
+            const avail = resolved.available?.length ? resolved.available.join(', ') : '(none)';
+            return { intent: 'terminal', speech_act, response: `Can't find a terminal matching "${resolved.hint}". Open tabs: ${avail}.` };
+          }
+          return { intent: 'terminal', speech_act, response: `Couldn't pick a terminal (${resolved.reason}).` };
+        }
+        const sess = resolved.session;
+        try {
+          // Pipe runs on the Carrier — call via HTTP so we reach the process
+          // that actually owns the PTY map. /api/v1/terminal/pipe handles
+          // dedupe + auto-recreate of lost sessions on its own.
+          const PAN_PORT = process.env.PAN_CARRIER_PORT || '7777';
+          const pipeRes = await fetch(`http://127.0.0.1:${PAN_PORT}/api/v1/terminal/pipe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // #982 — voice-pipeline-originated PTY input gets tagged so phantom-prompt audits
+            //         can distinguish it from user_keyboard / mcp_tool / test_harness.
+            body: JSON.stringify({ session_id: sess.id, text: sendText, source: 'voice_pipeline' }),
+          });
+          const pipeJson = pipeRes.ok ? await pipeRes.json() : { ok: false };
+          const ok = !!pipeJson?.ok;
+          if (!ok) {
+            return { intent: 'terminal', speech_act, response: `Tried to send to ${sess.project || sess.id} but the pipe failed.` };
+          }
+          const where = sess.project ? `the ${sess.project} tab` : sess.id;
+          const preview = sendText.length > 40 ? sendText.slice(0, 40) + '…' : sendText;
+          // Force a deterministic ack including the resolved target so PAN
+          // can never lie about what it sent or where. The LLM's own ack
+          // (action.response) is ignored on purpose — that's the pattern
+          // that caused the original "Sending hello…" / "I haven't sent
+          // anything" contradiction.
+          return {
+            intent: 'terminal',
+            speech_act,
+            response: `Sent "${preview}" to ${where} (${sess.id}).`,
+            terminal_target: {
+              session_id: sess.id,
+              project: sess.project || null,
+              match: resolved.match,
+              text_sent: sendText.slice(0, 200),
+            },
+          };
+        } catch (e) {
+          return { intent: 'terminal', speech_act, response: `Pipe error: ${e.message}` };
+        }
+      }
+
       if (action.action === 'open') {
         const path = action.project || process.env.USERPROFILE + '\\Desktop';
         const name = action.name || 'PAN Terminal';
@@ -929,9 +1178,11 @@ export async function* routeStream(text, context = {}) {
       : '';
   }
 
-  // #NEW-2 + #NEW-3: mirror handleUnified — feed snapshot + recent mind.
+  // #NEW-2 + #NEW-3 + #NEW-conv-state: mirror handleUnified — feed snapshot,
+  // recent mind, and live conversation-state distillation into the prompt.
   const situationBlock = buildSituationBlock(context.org_id);
   const recentMindBlock = buildRecentMindBlock();
+  const convStateBlock  = buildConvStateBlock(context.org_id);
 
   const historyBlock = context.conversation_history
     ? `\nRecent conversation:\n${context.conversation_history}\n` : '';
@@ -957,7 +1208,7 @@ export async function* routeStream(text, context = {}) {
   const isDash = context.source === 'dashboard';
 
   const prompt = `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${situationBlock}${recentMindBlock}${historyBlock}${sensorBlock}${hintBlock}
+${situationBlock}${convStateBlock}${recentMindBlock}${historyBlock}${sensorBlock}${hintBlock}
 ${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
 
 Every response must include "speech_act" field.

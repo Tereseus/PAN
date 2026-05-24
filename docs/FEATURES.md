@@ -97,6 +97,85 @@ Rules:
 
 ---
 
+## Terminal input bar → Call ΠΑΝ button (phone-handset icon, between mic and model picker)
+
+- **Purpose:** Open a live conversation with ΠΑΝ in a floating Tauri window. The
+  conversation surface reuses the existing Comms thread view, focused on the
+  ΠΑΝ system thread (`thread-pan-system`).
+- **Calls:** `openPanCall()` in `terminal/+page.svelte` → POSTs to local Tauri
+  server (`http://127.0.0.1:${TAURI_PORT}/open`) with URL
+  `/v2/comms?view=contacts&thread=thread-pan-system&call=1`. Falls back to
+  `window.open()` if Tauri isn't running.
+- **Semantics:** Single conversational surface. Same thread renders:
+  user-typed/voice-in messages, PAN reactive replies, PAN proactive interjections
+  (via `pan-notify.js`), and PAN intuition traces (`body_type='pan_intuition_trace'`,
+  collapsible like Claude tool-call rendering).
+- **Preserves:** ΠΑΝ thread continuity (single hardcoded thread ID across sessions,
+  webcam/screen presence, dream cycles). Call log in `chat_calls` table.
+- **Replaces:** N/A — additive. Was previously only reachable via Comms tab.
+- **Pre-gate:** None on click. Voice loop (when wired) will respect PAN's quiet
+  mode (#764) and TTS throttle (#763).
+- **Style:** Round 36px button, green hover (`#a6e3a1`) to distinguish from
+  mic (red/listening) and send (blue).
+
+---
+
+## Comms thread → Call mode (`?call=1` URL param)
+
+- **Purpose:** Surface an in-progress voice conversation with the active contact.
+- **Calls:** `startCall()` posts to `POST /api/v1/chat/threads/:id/calls`
+  (creates `chat_calls` row, status='ringing'). `endCall()` posts to
+  `POST /api/v1/chat/calls/:id/end` with `duration_ms`.
+- **Semantics:** v1 = visible call banner with elapsed timer + End button.
+  Phone icon in detail header starts a call manually. Voice loop (STT → router →
+  TTS via `/api/v1/speak`) wires in a follow-up commit once F5-TTS endpoint lands.
+- **Preserves:** Call history in `chat_calls`. Existing chat send flow continues
+  to work alongside an active call.
+- **Pre-gate:** None for ΠΑΝ thread. PAN↔PAN federated calls (future) go through
+  `trust-ladder.js` evaluation.
+
+---
+
+## Comms thread → Intuition trace rendering (`body_type='pan_intuition_trace'`)
+
+- **Purpose:** Show PAN's reasoning inline in the conversation, the same way
+  Claude exposes tool-call traces.
+- **Renders as:** `<details>` element with `🧠 PAN intuition · <time>` summary;
+  click to expand the body (monospace, scrollable, dashed border).
+- **Source:** Any service writing to `chat_messages` with
+  `body_type='pan_intuition_trace'` (intuition engine, router, dream cycle).
+- **Pre-gate:** None — collapsed by default so it doesn't dominate the thread.
+
+---
+
+## Trust ladder (`service/src/trust-ladder.js`)
+
+- **Purpose:** Gate PAN↔PAN federated communication. Composes three axes
+  (org relationship × sender power_lvl × scope sensitivity) into one of:
+  `auto` | `approve-once` | `approve-always` | `deny`.
+- **Inputs:** `{ senderUserId, senderOrgId, recipientOrgId, scopeTag, threadAllowlist }`.
+- **Org relationship:**
+  - `same` — sender and recipient share an org_id.
+  - `partner` — active (non-revoked) row in `org_shares` between them.
+  - `stranger` — no relationship.
+- **Sensitive scopes** (default): `health, finance, family, location-precise,
+  private-notes, credentials`. Override via `settings.scope_sensitivity` JSON.
+- **Ladder:**
+  - Stranger + sensitive scope → **deny** (hard block).
+  - Per-thread `denied` list → **deny**.
+  - Per-thread `allowed` list (when non-empty) excludes scope → **approve-always**.
+  - Sensitive + same org + power ≥ 75 → **auto**; else **approve-always**.
+  - Non-sensitive: same → **auto**, partner → **approve-once**, stranger → **approve-always**.
+- **Pure module:** No side effects. Caller (chat.js send path) is responsible
+  for writing the decision to `audit_log` via `middleware/org-context.js#auditLog`.
+- **Schema:**
+  - `chat_threads.org_id TEXT` — which org owns this thread (nullable for
+    backward compat).
+  - `chat_threads.scope_allowlist TEXT` — JSON `{ allowed: [...], denied: [...] }`
+    per-thread allowlist. `null` = unrestricted (your own PAN, no gate).
+
+---
+
 ## Phone dashboard (WebView)
 
 - **Purpose:** Phone-sized mirror of the desktop dashboard.
@@ -1069,3 +1148,72 @@ The only app-specific bits are the `applicationId` and the FileProvider authorit
 1. Point its `UpdateChecker` at a different version endpoint (e.g. `/api/v1/apk/<app-id>/version`) — server reads from a different gradle output dir.
 2. Update the `FILE_PROVIDER_AUTHORITY` constant to match its manifest.
 Everything else (Tailscale routing, sha256 verification, install flow) is generic.
+
+## Conv-State Watcher (`service/src/conv-state-watcher.js`)
+
+A sibling of `webcam-watcher.js` and `screen-watcher.js`, but stream-paced
+instead of timer-paced. Maintains a per-org **Conversation State** doc that
+the router reads on every turn so it doesn't have to think about the full
+dialogue itself.
+
+### What it tracks
+Per `org_id`, a distilled blob produced by Cerebras Qwen 235B (caller
+`conv-state`):
+- **topic** — what's being discussed right now
+- **phase** — opening · discussing · deciding · command · wrapping_up · idle
+- **pending_question** — what PAN (or commander) asked that's still unanswered
+- **user_pattern** — how the user is talking (verbose · self-correcting · long-pauses-mid-thought · …)
+- **likely_turn_complete** — whether the last utterance looks like a complete thought or mid-sentence
+- **summary** — one sentence grounding the router's reply
+
+Also exposes the last 5 finals + last 3 partials raw for debugging.
+
+### Cadence
+Not on a fixed timer. Two triggers:
+1. **~500ms after each Final** (debounced — gives STT a beat to deliver more partials)
+2. **Every 30s if utterances arrived since last distill** (idle fallback)
+
+Pure in-memory ring buffer (20 utterances/org). No DB writes in v1.
+
+### What feeds it
+Called via `noteUtterance({orgId, text, isFinal, source, deviceId})`:
+- `POST /api/v1/voice/result` (Whisper/dictate-vad finals + partials)
+- `POST /api/v1/chat` (dashboard/comms typed messages — every message = one final)
+
+Extensible: any new STT/voice surface (phone, pendant, future devices) just
+calls `noteUtterance` and gets included automatically.
+
+### What reads it
+- **Router** (`service/src/router.js`) — `buildConvStateBlock(orgId)` injects
+  the distilled state into the LLM prompt right after the intuition
+  situation block, and copies the structured fields into `_debug.conversation`
+  so the comms popout "🧠 why" disclosure can show it.
+- **Dashboard / debug** — `GET /api/v1/conversation/state?org_id=…` returns
+  `{ state, buffer }`; `GET /api/v1/conversation/status` lists all active orgs.
+
+### Why separate from intuition
+Intuition is *ambient* — webcam every 30s, screen every 60s, slow-changing
+facts about the user and the room. Conv-state is *utterance-paced* — updates
+sub-second on Finals. Different clocks. Mechanically separate watcher,
+conceptually still "what PAN knows right now."
+
+### Pre-gate
+- Cerebras (`cerebras:qwen-3-235b`) reachable — falls back gracefully (state
+  stays null, router proceeds without the block).
+- `startConvStateWatcher()` called from `server.js` boot block alongside
+  `startScreenWatcher` / `startWebcamWatcher`. Safe in dev (no DB writes).
+
+### Replaces
+- Hardcoded silence-timer endpointing (mid-sentence "I'm done" failures —
+  the AMBIENT-fire-during-user-still-talking bug).
+- The router having to read the whole utterance history every turn — now
+  pre-chewed and ready.
+
+### Doesn't do (yet)
+- **Persistence.** State lives only in RAM. Reboot = empty state. Add a
+  `conversation_states` table if we want Atlas replay.
+- **Hard endpointing decision.** Router still fires on every message — the
+  `likely_turn_complete` field is currently advisory. The "don't fire if
+  mid-sentence" gate is the next step (#NEW-conv-endpoint).
+- **Cross-thread distinction.** One state per org, not per thread. Multi-
+  conversation orgs will smear topics until we add `thread_id` to the slot key.

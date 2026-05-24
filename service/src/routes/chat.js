@@ -80,6 +80,25 @@ export function ensureChatSchema(db) {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_type ON chat_messages(message_type)`);
   } catch {}
 
+  // Migration: federation columns on chat_threads (trust ladder + N-party PAN convos)
+  // - org_id          → which org owns this thread (scoping for PAN↔PAN comms)
+  // - scope_allowlist → JSON {"allowed":["calendar","work"], "denied":["health"]} per-thread allowlist
+  //                     null = unrestricted (your own PAN, no federation gate)
+  try {
+    db.exec(`ALTER TABLE chat_threads ADD COLUMN org_id TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE chat_threads ADD COLUMN scope_allowlist TEXT`);                 // JSON
+  } catch {}
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_threads_org ON chat_threads(org_id)`);
+  } catch {}
+
+  // Migration: PAN↔PAN body_types and intuition trace.
+  // body_type extends to: 'pan_intuition_trace' (collapsible reasoning in the thread),
+  //                       'pan_to_pan_proposal' / 'pan_to_pan_reply' (federation messages).
+  // No schema change — body_type is already TEXT — but documenting the enum here.
+
   db.exec(`
 
     -- Call log
@@ -125,12 +144,12 @@ export function ensureChatSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_call_signals_call ON chat_call_signals(call_id, consumed);
   `);
 
-  // Seed the ΠΑΝ system contact + thread (idempotent)
+  // Seed the Π system contact + thread (idempotent)
   ensurePanContact();
 }
 
-// ─── ΠΑΝ persona reply ───
-// Called when user sends a message in the ΠΑΝ thread — generates a context-aware reply
+// ─── Π persona reply ───
+// Called when user sends a message in the Π thread — generates a context-aware reply
 router.post('/pan-reply', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
@@ -304,7 +323,7 @@ router.post('/threads/:threadId/messages', async (req, res) => {
   // Update thread timestamp
   db.prepare('UPDATE chat_threads SET updated_at = ? WHERE id = ?').run(now, req.params.threadId);
 
-  // NOTE: ΠΑΝ auto-replies are triggered by the client via POST /api/v1/chat/pan-reply.
+  // NOTE: Π auto-replies are triggered by the client via POST /api/v1/chat/pan-reply.
   // Do NOT also fire panReply() here — that causes duplicate replies.
   // The /pan-reply endpoint is the single source of truth for PAN responses.
 

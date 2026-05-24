@@ -889,14 +889,14 @@ async function cleanZombieSessions() {
       // Stuck-thinking: Claude running, no connected clients, no output for 20min → Ctrl+C
       if (s.clients === 0 && s.thinking && s.claudeRunning && idleMs > 20 * 60 * 1000) {
         console.log(`[Steward] ⚡ Stuck-thinking session ${s.id} (no clients, silent ${Math.round(idleMs / 60000)}min) — interrupting`);
-        try { sendToSession(s.id, '\x03'); } catch {}
+        try { sendToSession(s.id, '\x03', 'steward'); } catch {}
         continue;
       }
 
       // Dead zombie: no clients, no output for 2 hours → send exit
       if (s.clients === 0 && lastOut && idleMs > 2 * 60 * 60 * 1000) {
         console.log(`[Steward] 🧹 Zombie session ${s.id} (no clients, idle ${Math.round(idleMs / 60000)}min) — sending exit`);
-        try { sendToSession(s.id, 'exit\r'); } catch {}
+        try { sendToSession(s.id, 'exit\r', 'steward'); } catch {}
       }
     }
   } catch {}
@@ -1079,7 +1079,7 @@ $map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProces
 
       console.log(`[Steward] No Claude process in session ${s.id} (pty=${s.pid}) — relaunching`);
       try {
-        sendToSession(s.id, 'claude\r');
+        sendToSession(s.id, 'claude\r', 'steward');
         _claudeRelaunchTimes.set(s.id, Date.now());
         logServiceEvent('claude-relaunch', 'auto_relaunch', { session: s.id, pty_pid: s.pid });
       } catch (err) {

@@ -56,8 +56,18 @@ function pipeSend(sessionId, userText) {
       if (row) provider = row.value.replace(/^"|"$/g, '').toLowerCase() || 'claude';
     } catch {}
 
-    const resumeId = session.claudeSessionIds?.[session.claudeSessionIds.length - 1] || null;
-    
+    // Don't resume the old Claude session if this PAN session is fresh (no messages yet).
+    // Fresh = recreated after a PAN crash. The old session may have been mid-tool-call;
+    // resuming it produces an empty/whitespace response that the user never sees (#BUG-resume).
+    // Once the first message is exchanged, subsequent sends resume within the same new session.
+    const _sessionFresh = (session.messages || []).length === 0;
+    const resumeId = (!_sessionFresh && session.claudeSessionIds?.length)
+      ? session.claudeSessionIds[session.claudeSessionIds.length - 1]
+      : null;
+    if (_sessionFresh && session.claudeSessionIds?.length) {
+      console.log(`[PAN LLM] Session ${sessionId} is fresh — starting new Claude session (not resuming ${session.claudeSessionIds.slice(-1)[0]})`);
+    }
+
     // 2. Instantiate the correct adapter
     let _adapterMsgCount = 0; // tracks how many adapter messages we've already appended
     const onMessage = (messages) => {
@@ -208,7 +218,7 @@ function delegateToPhoneToolsSession(userText) {
     try {
       if (err) {
         const { panNotify } = await import('./pan-notify.js');
-        panNotify('ΠΑΝ · ⚡',
+        panNotify('Π · ⚡',
           `Task failed: "${userText.slice(0, 80)}"`,
           `The delegated task errored: ${err.message || err}`,
           { severity: 'error', metadata: { delegated: true, sessionId, error: String(err?.message || err) } });
@@ -229,7 +239,7 @@ function delegateToPhoneToolsSession(userText) {
         ? assistantText.slice(0, 1500) + '…'
         : assistantText;
       const { panNotify } = await import('./pan-notify.js');
-      panNotify('ΠΑΝ · ⚡',
+      panNotify('Π · ⚡',
         `✅ Done: "${userText.slice(0, 80)}"`,
         summary,
         { severity: 'info', metadata: { delegated: true, sessionId, originalRequest: userText } });
@@ -470,10 +480,30 @@ function flushBroadcast(session) {
     messages: session.messages || [],
     version: session._messageVersion || 0,
   });
+  // Bug #768: silently swallowing send errors + leaving non-OPEN clients in
+  // the set meant a transcript could "broadcast" to zero usable clients and
+  // the message was effectively lost (the JSONL still had it, but the
+  // dashboard never saw it). Drop dead/closing clients eagerly so reconnect
+  // logic kicks in and so the next broadcast attempt skips them cleanly.
+  const dead = [];
   for (const client of session.clients) {
     if (client.readyState === 1) {
-      try { client.send(payload); } catch {}
+      try { client.send(payload); }
+      catch (e) {
+        dead.push(client);
+        console.warn(`[PAN #768] flushBroadcast send failed for session ${session.id || session.sessionId}: ${e?.message}`);
+      }
+    } else {
+      // readyState 0=CONNECTING (rare, leave it), 2=CLOSING, 3=CLOSED.
+      if (client.readyState === 2 || client.readyState === 3) dead.push(client);
     }
+  }
+  for (const c of dead) {
+    session.clients.delete(c);
+    try { c.terminate?.(); } catch {}
+  }
+  if (dead.length > 0) {
+    console.log(`[PAN #768] flushBroadcast pruned ${dead.length} dead client(s) from session ${session.id || session.sessionId}; ${session.clients.size} remain`);
   }
 }
 
@@ -740,11 +770,40 @@ async function startTerminalServer(httpServer) {
   });
 
   wss.on('connection', (ws, req) => {
+    // Bug #768: server-side ping/pong heartbeat. Without this, a dashboard
+    // tab that backgrounded for hours (or a NAT that silently dropped the
+    // flow) leaves the socket in OPEN state on the server forever — and
+    // flushBroadcast happily sends transcripts into a black hole. Pong
+    // restores liveness; missing 2 pongs terminates the socket so the
+    // dashboard's reconnect path runs.
+    ws._isAlive = true;
+    ws._missedPongs = 0;
+    ws.on('pong', () => { ws._isAlive = true; ws._missedPongs = 0; });
+
     try { _handleTerminalConnection(ws, req); } catch (err) {
       console.error(`[PAN Terminal] FATAL connection handler error:`, err);
       try { ws.send(JSON.stringify({ type: 'error', message: err.message })); } catch {}
     }
   });
+
+  // Heartbeat sweep — every 30s ping every client; after 2 missed pongs (~60s)
+  // terminate. clearInterval on wss close so test/dev restarts don't leak.
+  const heartbeatInterval = setInterval(() => {
+    if (!wss || !wss.clients) return;
+    for (const ws of wss.clients) {
+      if (ws._isAlive === false) {
+        ws._missedPongs = (ws._missedPongs || 0) + 1;
+        if (ws._missedPongs >= 2) {
+          console.warn(`[PAN #768] terminating dead WS after ${ws._missedPongs} missed pongs`);
+          try { ws.terminate(); } catch {}
+          continue;
+        }
+      }
+      ws._isAlive = false;
+      try { ws.ping(); } catch {}
+    }
+  }, 30_000);
+  wss.on('close', () => clearInterval(heartbeatInterval));
 
   async function _handleTerminalConnection(ws, req) {
     // Parse query params: ?session=<id>&project=<name>&cwd=<path>&cols=80&rows=24
@@ -1168,7 +1227,7 @@ async function startTerminalServer(httpServer) {
 
         // Claude auto-launch is handled by the FRONTEND (not here).
         // The frontend's onopen/reconnect handler calls /api/v1/inject-context
-        // first, then sends `claude --permission-mode auto "ΠΑΝ remembers..."`.
+        // first, then sends `claude --permission-mode auto "Π remembers..."`.
         // A server-side launch here races with the frontend's launch, causing
         // the second command to be typed INTO the already-loading Claude session
         // as user input — which swallows the user's first real message.
@@ -1228,7 +1287,7 @@ async function startTerminalServer(httpServer) {
     // Send current screen state immediately (for new/reconnecting clients)
     broadcastRenderedScreen(session, ws);
 
-    // NOTE: No session-start banner here — Claude's own "ΠΑΝ Remembers:" response
+    // NOTE: No session-start banner here — Claude's own "Π Remembers:" response
     // (triggered by the dashboard auto-launch) IS the briefing. A separate system
     // banner was rendering as a red warning box which looked wrong.
 
@@ -1263,12 +1322,17 @@ async function startTerminalServer(httpServer) {
             }
             if (session.pty) {
               session.lastInputTs = Date.now();
+              // #982 — WS 'input' frame = keystroke from dashboard terminal client.
+              // Allow the client to override (e.g. test harness can self-tag) but
+              // default to 'user_keyboard' since this is the typed-input path.
+              const wsSource = parsed.source || 'user_keyboard';
+              logPtyInput(session.id, parsed.data, wsSource, { route: 'ws:input', via: 'dashboard_ws' });
               session.pty.write(parsed.data);
               // Extract user message for transcript when PTY sends pipe-mode commands
               const pipeMatch = parsed.data.match(/claude\s+-p\s+--continue\s+.*--permission-mode\s+\w+\s+'((?:[^'\\]|\\.)*)'/);
               if (pipeMatch) {
                 const userText = pipeMatch[1].replace(/'\\''/g, "'");
-                if (userText.trim() && !/ΠΑΝ remembers/i.test(userText)) {
+                if (userText.trim() && !/Π remembers/i.test(userText)) {
                   appendMessage(session, {
                     role: 'user', type: 'prompt',
                     text: userText.trim(),
@@ -1582,10 +1646,44 @@ function getTerminalProjects() {
   return projects;
 }
 
+// #982 — every byte written to a PTY's stdin gets logged with a provenance tag
+// so phantom prompts ("send a message to Alex" arriving in the user's chat with
+// no breadcrumb) can be traced to the actual source. event_type='pty_input'.
+function logPtyInput(sessionId, text, source, extra = {}) {
+  try {
+    // Skip noisy control-only writes (single \r, \x03, escape sequences)
+    const t = String(text || '');
+    if (!t.trim() || /^[\r\n\x03\x1b]+$/.test(t)) return;
+    const dataStr = JSON.stringify({
+      session_id: sessionId,
+      text: t.slice(0, 200),
+      text_len: t.length,
+      source: source || 'unknown',
+      ts: Date.now(),
+      ...extra,
+    });
+    insert(`INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, :type, :data, :oid)`, {
+      ':sid': sessionId || 'pty-unknown',
+      ':type': 'pty_input',
+      ':data': dataStr,
+      ':oid': 'org_personal',
+    });
+    if (source === 'unknown') {
+      console.warn(`[PAN PTY] UNKNOWN-source input → ${sessionId}: ${JSON.stringify(t.slice(0, 80))}`);
+    }
+  } catch (e) {
+    // Never let logging break a PTY write
+    console.warn(`[PAN PTY] logPtyInput failed: ${e.message}`);
+  }
+}
+
 // Send text to a terminal session (used by phone voice commands)
 // If no sessionId given, sends to the most recently active session
-function sendToSession(sessionId, text, label) {
-  console.log(`[PAN Terminal] sendToSession(${sessionId}, ${JSON.stringify(text)}) bytes: ${[...text].map(c => c.charCodeAt(0).toString(16)).join(' ')}`);
+// #982 — `source` is REQUIRED provenance: 'user_keyboard', 'voice_pipeline',
+// 'test_harness', 'agent_handoff', 'mcp_tool', 'steward', 'carrier_handoff', 'system'.
+// `label` is the legacy 3rd arg (rarely used) preserved for compat.
+function sendToSession(sessionId, text, label, source = 'unknown') {
+  console.log(`[PAN Terminal] sendToSession(${sessionId}, ${JSON.stringify(text)}, source=${source}) bytes: ${[...text].map(c => c.charCodeAt(0).toString(16)).join(' ')}`);
   let session;
   if (sessionId) {
     session = sessions.get(sessionId);
@@ -1602,6 +1700,7 @@ function sendToSession(sessionId, text, label) {
 
   if (session && session.pty) {
     session.lastInputTs = Date.now();
+    logPtyInput(session.id, text, source, { label: label || null, route: 'sendToSession' });
     session.pty.write(text);
     return true;
   }

@@ -531,4 +531,4 @@ export function logUsage(caller, model, usage, promptPreview, opts = {}) {
   }
 }
 
-export { getConfiguredModel, getCustomModelConfig, MODEL_PRICING, CEREBRAS_MODELS };
+export { getConfiguredModel, getCustomModelConfig, getModelForCaller, MODEL_PRICING, CEREBRAS_MODELS };

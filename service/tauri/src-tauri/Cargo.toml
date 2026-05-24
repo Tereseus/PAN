@@ -26,3 +26,11 @@ tiny_http = "0.12"
 image = "0.25"
 rdev = "0.5"
 ureq = { version = "2", features = ["json"] }
+
+# Windows-only: native WebView2 interop for granting getUserMedia (mic/cam/geo/sensors)
+# via ICoreWebView2::add_PermissionRequested. Tauri 2's wry depends on webview2-com 0.38,
+# so we pin to the same major to avoid duplicate type definitions.
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
+windows-core = "0.61"

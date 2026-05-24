@@ -1050,7 +1050,7 @@
 			await tick();
 			if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 
-			// ΠΑΝ persona — poll for server-generated reply
+			// Π persona — poll for server-generated reply
 			if (isPan) {
 				const sentAt = Date.now();
 				let attempts = 0;
@@ -1204,6 +1204,8 @@
 	}
 
 	// ─── Expanded views: open full panel in Tauri window ───
+	// Uses the same-origin /api/v1/popout proxy so we avoid Tauri's CORS preflight
+	// bug (its tiny-http server returns 404 on OPTIONS, killing direct browser fetches).
 	async function openExpandedView(section) {
 		const urls = {
 			contacts: `${window.location.origin}/v2/comms?view=contacts`,
@@ -1214,15 +1216,35 @@
 		const url = urls[section];
 		if (!url) return;
 
+		let opened = false;
 		try {
-			await fetch(`http://127.0.0.1:${TAURI_PORT}/open`, {
+			const r = await fetch('/api/v1/popout', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ url, title: titles[section] || section, width: 900, height: 700 })
 			});
-		} catch {
-			window.open(url, '_blank', 'width=900,height=700');
-		}
+			if (r.ok) opened = true;
+		} catch {}
+		if (!opened) window.open(url, '_blank', 'width=900,height=700');
+	}
+
+	// ─── Call Π: opens the Comms expand window focused on the Π thread,
+	//     passing ?call=1 so the page starts a live voice session immediately.
+	//     Goes through /api/v1/popout (same-origin proxy) to dodge Tauri's CORS
+	//     preflight bug. Falls back to window.open() if Tauri isn't running
+	//     (e.g. dashboard opened in plain browser).
+	async function openPanCall() {
+		const url = `${window.location.origin}/v2/comms?view=contacts&thread=thread-pan-system&call=1`;
+		let opened = false;
+		try {
+			const r = await fetch('/api/v1/popout', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url, title: 'Call Π', width: 720, height: 820 })
+			});
+			if (r.ok) opened = true;
+		} catch {}
+		if (!opened) window.open(url, '_blank', 'width=720,height=820');
 	}
 
 	function formatMailDate(dateStr) {
@@ -1396,13 +1418,13 @@
 					const sepCells = tableLines[1].split('|').slice(1).map(c => c.trim()).filter(c => c);
 					const isSep = sepCells.length > 0 && sepCells.every(c => /^[\s\-:]+$/.test(c));
 					const dataRows = isSep ? [tableLines[0], ...tableLines.slice(2)] : tableLines;
-					let table = '<table class="md-table">';
+					let table = '<div class="md-table-wrap"><table class="md-table">';
 					dataRows.forEach((row, ri) => {
 						const cells = row.split('|').slice(1).map(c => c.trim()).filter((c, ci, arr) => ci < arr.length - 1 || c !== '');
 						const tag = (ri === 0 && isSep) ? 'th' : 'td';
 						table += '<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>';
 					});
-					table += '</table>';
+					table += '</table></div>';
 					lines.splice(tableStart, i - tableStart, table);
 					i = tableStart + 1;
 				}
@@ -2060,16 +2082,31 @@
 							// Svelte proxy vs raw object stale-comparison bug (#444).
 							if (msg.version !== undefined && tabData._lastMessageVersion === msg.version) break;
 							if (msg.version !== undefined) tabData._lastMessageVersion = msg.version;
-							tabData._pushedMessages = msg.messages || [];
+							const _serverMsgs = msg.messages || [];
+							// When the session was reset (PAN crashed), _preservedHistory holds the
+							// messages from before the crash. Merge them with new server messages so
+							// the user doesn't lose their conversation history visually.
+							if (tabData._preservedHistory?.length && _serverMsgs.length > 0) {
+								const _serverTexts = new Set(_serverMsgs.map(m => (m.text || '').slice(0, 120)));
+								const _histMsgs = tabData._preservedHistory.filter(m => !_serverTexts.has((m.text || '').slice(0, 120)));
+								tabData._pushedMessages = _histMsgs.length > 0
+									? [..._histMsgs, { role: 'system', type: 'session_reset_marker', text: 'Session reset — new conversation', source: 'client', ts: tabData._sessionLostAt || new Date().toISOString() }, ..._serverMsgs]
+									: _serverMsgs;
+							} else {
+								tabData._pushedMessages = _serverMsgs;
+							}
 							_pushedMsgsCache.set(tabData.id, tabData._pushedMessages); // bypass proxy
 							tabData._lastTranscriptPush = Date.now();
-							// Clear loading indicator once real transcript data arrives
-							if (tabData._claudeLoading && msg.messages?.length) {
+							// Clear loading + session-lost indicators once real transcript data arrives
+							if (tabData._claudeLoading && _serverMsgs.length) {
 								tabData._claudeLoading = false;
+							}
+							if (tabData._sessionLost && _serverMsgs.length) {
+								tabData._sessionLost = false;
 							}
 							// Clear echoes that now have matching JSONL entries
 							if (tabData._echoMessages?.length) {
-								const jsonlTexts = new Set((msg.messages || [])
+								const jsonlTexts = new Set(_serverMsgs
 									.filter(m => m.role === 'user')
 									.map(m => (m.text || '').replace(/\s+/g, ' ').trim()));
 								tabData._echoMessages = tabData._echoMessages
@@ -2146,21 +2183,27 @@
 							// of our own message appears before Claude starts "Thinking...", so the ❯
 							// prompt is briefly still visible and would defeat the duplicate-send guard.
 							const msSinceSend = Date.now() - _lastSendTime;
-							if (ptySaysReady && msSinceSend >= 2000) {
-								if (tabData.claudeReady === false) {
-									tabData.claudeReady = true;
-									tabData._htmlAtSend = null;
-									if (tabData._readyTimer) { clearTimeout(tabData._readyTimer); tabData._readyTimer = null; }
-								}
-								if (activeTabId === tabData.id && !claudeReady) {
-									claudeReady = true;
-								}
-							} else {
-								// PTY says busy — make sure the flag agrees so the indicator
-								// shows even when the user did not initiate the activity
-								// (e.g. AutoDev sent a prompt, or a hook is running).
-								if (activeTabId === tabData.id && claudeReady) {
-									claudeReady = false;
+							// Only apply PTY-screen ready detection when the screen has actual content.
+							// Empty screens come from pipe/adapter sessions (no PTY) and must not
+							// reset claudeReady — pipe sessions use state/pipe_ready events instead.
+							const hasScreenContent = plainLines.some(l => l.trim().length > 0);
+							if (hasScreenContent) {
+								if (ptySaysReady && msSinceSend >= 2000) {
+									if (tabData.claudeReady === false) {
+										tabData.claudeReady = true;
+										tabData._htmlAtSend = null;
+										if (tabData._readyTimer) { clearTimeout(tabData._readyTimer); tabData._readyTimer = null; }
+									}
+									if (activeTabId === tabData.id && !claudeReady) {
+										claudeReady = true;
+									}
+								} else {
+									// PTY says busy — make sure the flag agrees so the indicator
+									// shows even when the user did not initiate the activity
+									// (e.g. AutoDev sent a prompt, or a hook is running).
+									if (activeTabId === tabData.id && claudeReady) {
+										claudeReady = false;
+									}
 								}
 							}
 							const linesChanged = 0;
@@ -2317,7 +2360,7 @@
 							// Bug #457: Don't blindly reload — first check whether the dashboard
 							// bundle actually changed. If the bundle is identical, the WS reconnect
 							// + adapter (which lives on the Carrier, NOT the Craft) is enough to
-							// restore everything. Reloading wipes tabs/scrollback/ΠΑΝ Remembers
+							// restore everything. Reloading wipes tabs/scrollback/Π Remembers
 							// for no benefit.
 							if (!window._panSwapReloading) {
 								window._panSwapReloading = true;
@@ -2365,16 +2408,12 @@
 							const reason = msg.reason || 'unknown';
 							const detail = (msg.detail || '').toString().slice(0, 200);
 							const tail = (msg.stderr_tail || '').toString().slice(-400);
+							// Terminal scrollback is the primary surface — no top banner needed.
+							// If stderr tail exists, include it inline in the scrollback so the user can read it without a popup.
 							scrollbackDiv.innerHTML += `\n<span style="color:#f38ba8">[Craft swap aborted \u2014 ${phase}: ${reason}${detail ? ' (' + detail + ')' : ''} \u2014 prod still on ${msg.old_commit || 'old'} commit]</span>`;
-							if (typeof window !== 'undefined') {
-								const banner = document.createElement('div');
+							if (tail) {
 								const escTail = tail.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-								const stderrHtml = tail ? `<div style="font-family:monospace;font-size:11px;opacity:0.75;margin-top:6px;max-height:140px;overflow:auto;white-space:pre-wrap;text-align:left;background:#11111b;padding:6px;border-radius:3px">${escTail}</div>` : '';
-								banner.innerHTML = `<div>\u274c Craft swap failed (${phase}: ${reason}) \u2014 prod kept on ${msg.old_commit || 'old'} commit</div>${stderrHtml}<button style="margin-top:8px;background:transparent;color:#f38ba8;border:1px solid #f38ba8;padding:2px 10px;border-radius:3px;cursor:pointer">dismiss</button>`;
-								banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#1e1e2e;color:#f38ba8;padding:10px 16px;text-align:left;font-family:inherit;font-weight:600;border-bottom:1px solid #f38ba8;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
-								banner.querySelector('button')?.addEventListener('click', () => { try { banner.remove(); } catch {} });
-								document.body.appendChild(banner);
-								setTimeout(() => { try { banner.remove(); } catch {} }, 30_000);
+								scrollbackDiv.innerHTML += `\n<span style="color:#6c7086;font-family:monospace;font-size:11px;white-space:pre-wrap">${escTail}</span>`;
 							}
 							break;
 						}
@@ -2417,7 +2456,7 @@
 						}
 						case 'pan_resumed': {
 							// SessionStart hook fired with source='resume' — Claude resumed an
-							// existing session (typically after carrier restart). The full ΠΑΝ
+							// existing session (typically after carrier restart). The full Π
 							// Remembers preamble is suppressed by the anti-repetition rule, so
 							// render a one-line scrollback marker with the last topic instead.
 							const lastTopic = (msg.last_topic || '').toString().trim();
@@ -2516,8 +2555,26 @@
 							}
 							if (msg.mode) tabData._sessionMode = msg.mode;
 							if (Array.isArray(msg.messages) && msg.messages.length > 0) {
-								tabData._unifiedMessages = msg.messages;
+								tabData._pushedMessages = msg.messages;
+								_pushedMsgsCache.set(tabData.id, msg.messages);
+								tabData._sessionLost = false; // real messages arrived — session is live
 								renderTranscriptToTerminal(tabData);
+							} else if (msg.messages !== undefined && msg.messages.length === 0) {
+								// Server has 0 messages but client has a cached conversation — PAN
+								// crashed hard (no graceful server_restart signal) and restarted fresh.
+								// The session lost its adapter. Set a flag so renderTranscriptToTerminal
+								// appends a persistent recovery banner (direct innerHTML += gets wiped
+								// by the next full re-render, so the flag survives it).
+								const cachedMsgs = (tabData._pushedMessages || []).filter(m => m.role !== 'system');
+								if (cachedMsgs.length > 0 && !tabData._sessionLost) {
+									tabData._sessionLost = true;
+									tabData._sessionLostAt = new Date().toISOString();
+									tabData._preservedHistory = cachedMsgs;
+									renderTranscriptToTerminal(tabData);
+									// Ensure input is enabled so user can send
+									if (activeTabId === tabData.id) claudeReady = true;
+									tabData.claudeReady = true;
+								}
 							}
 							break;
 						}
@@ -2671,7 +2728,7 @@
 								try {
 									const pipeData = await api('/api/v1/terminal/pipe', {
 										method: 'POST',
-										body: JSON.stringify({ session_id: sessionId, text: 'ΠΑΝ Remembers: summarize recent session context briefly.' }),
+										body: JSON.stringify({ session_id: sessionId, text: 'Π Remembers: summarize recent session context briefly.' }),
 									});
 									if (pipeData.ok) console.log('[PAN Terminal] Claude auto-launched on reconnect');
 								} catch (e) {
@@ -2710,7 +2767,7 @@
 											const pipeRes = await fetch('/api/v1/terminal/pipe', {
 												method: 'POST',
 												headers: { 'Content-Type': 'application/json' },
-												body: JSON.stringify({ session_id: sessionId, text: 'ΠΑΝ Remembers: summarize recent session context briefly.' }),
+												body: JSON.stringify({ session_id: sessionId, text: 'Π Remembers: summarize recent session context briefly.' }),
 											});
 											const pipeData = await pipeRes.json();
 											if (pipeData.ok) console.log('[PAN Terminal] Claude fallback auto-launched');
@@ -2739,6 +2796,31 @@
 			ws.onopen = () => {
 				_markLoad('wsOpen');
 				startPing();
+
+				// Explicitly request session state on connect — belt-and-suspenders with server's
+				// automatic push (lines 1217-1222 in terminal.js). Ensures claudeReady is correctly
+				// initialized even if the server's proactive push races with the WS handshake.
+				try {
+					ws.send(JSON.stringify({ type: 'sync_request', kinds: ['session'] }));
+				} catch {}
+
+				// Safety fallback: if claudeReady is still false 5s after connect and the server
+				// hasn't said the session is actively working, force it to true. This handles
+				// edge cases where the state message is dropped or arrives before the handler
+				// is fully wired (e.g. after Tauri shell rebuild with fresh WebView2).
+				setTimeout(() => {
+					if (!tabData._wsOpen) return; // tab was closed
+					const sessionState = tabData._sessionState;
+					const isWorking = sessionState === 'working' || sessionState === 'interrupted';
+					if (activeTabId === tabData.id && !claudeReady && !isWorking) {
+						console.warn('[PAN] claudeReady safety timer fired — forcing ready (tab=%s sessionState=%s)', tabData.id, sessionState || 'unknown');
+						tabData.claudeReady = true;
+						claudeReady = true;
+					} else if (tabData.claudeReady === false && !isWorking) {
+						tabData.claudeReady = true; // fix non-active tabs too for when user switches
+					}
+				}, 5000);
+				tabData._wsOpen = true;
 
 				// Re-apply per-tab model override after reconnect. Server-side session may
 				// have been recreated (Carrier restart) and lost the in-memory model field —
@@ -2805,7 +2887,7 @@
 						} else {
 							try {
 								const launchText = briefingReady
-									? 'ΠΑΝ Remembers: summarize recent session context briefly.'
+									? 'Π Remembers: summarize recent session context briefly.'
 									: 'Hello — new session starting.';
 								const pipeData = await api('/api/v1/terminal/pipe', {
 									method: 'POST',
@@ -2829,6 +2911,7 @@
 			ws.onmessage = handleMessage;
 
 			ws.onclose = () => {
+				tabData._wsOpen = false;
 				stopPing();
 				if (!tabData._closing) reconnect();
 			};
@@ -3095,7 +3178,7 @@
 					// added to long multi-line pasted prompts. The actual user text
 					// follows immediately after the placeholder in the same string.
 					raw = raw.replace(/^\[Pasted text #\d+ \+\d+ lines\]/, '').trimStart();
-					// Skip short auto-generated ΠΑΝ remembers trigger prompts (not real user messages)
+					// Skip short auto-generated Π remembers trigger prompts (not real user messages)
 					if (/^\u03A0\u0391\u039D remembers/i.test(raw) && raw.length < 120) return null;
 					if (/claude\s+--permission-mode\s+auto\s+["']\u03A0\u0391\u039D\s*remembers/i.test(raw)) return null;
 					// Skip Claude Code system-injected messages that come in as "user" role
@@ -3170,6 +3253,14 @@
 						`<div style="margin:2px 0;padding:3px 10px;font-size:0.78em;color:#6c7086;display:flex;justify-content:space-between;border-top:1px solid #1e1e2e;">` +
 						`<span>↑${inK}K ↓${outK}K` + (cacheK ? ` 📦${cacheK}K` : '') + ` ${cost}</span>` +
 						`<span style="opacity:0.6">session: ↑${totInK}K ↓${totOutK}K ${totCost}</span>` +
+						`</div>`
+					);
+				} else if (msg.role === 'system' && msg.type === 'session_reset_marker') {
+					return (
+						`<div style="margin:16px 0;display:flex;align-items:center;gap:8px;color:#585b70;font-size:0.78em;padding:0 4px;">` +
+						`<div style="flex:1;height:1px;background:#313244;"></div>` +
+						`<span style="white-space:nowrap;padding:0 6px;">↻ Session reset — Claude started fresh here</span>` +
+						`<div style="flex:1;height:1px;background:#313244;"></div>` +
 						`</div>`
 					);
 				} else if (msg.role === 'system') {
@@ -3316,6 +3407,18 @@
 				parts.push(
 					`<div style="margin:8px 0;padding:8px 12px;background:#1a2332;border-left:3px solid #89b4fa;color:#89b4fa;font-weight:600">` +
 					`↻ Claude is loading... transcript will update when ready</div>`
+				);
+			}
+			// Session-lost banner — shown when PAN crashed (no graceful restart signal)
+			// and the server restarted with an empty session while the client has a
+			// cached conversation. Stays visible until a new message arrives from the server.
+			if (tabData._sessionLost) {
+				parts.push(
+					`<div style="margin:16px 0;padding:12px 16px;background:#2a1a1a;border:1px solid #f38ba8;border-left:4px solid #f38ba8;color:#f38ba8;font-weight:600;text-align:center">` +
+					`⚠ PAN restarted — session was reset` +
+					`<div style="font-size:0.82em;font-weight:400;color:#cdd6f4;margin-top:5px">` +
+					`Conversation above is cached locally. Send a message to resume with Claude.` +
+					`</div></div>`
 				);
 			}
 			// Append PTY exit banner if the PTY died — rendered here so it
@@ -3795,7 +3898,7 @@
 			console.warn('[PAN Terminal] sendTerminalInput: already in-flight for session', active.sessionId, '— dropping duplicate');
 			return;
 		}
-		if (active.claudeReady === false) {
+		if (!claudeReady) {
 			console.warn('[PAN Terminal] sendTerminalInput: Claude not ready (still processing) — dropping send');
 			return;
 		}
@@ -3892,6 +3995,24 @@
 		}
 		claudeReady = false;
 		_lastSendTime = Date.now(); // freeze PTY ready-detection for 2s to prevent duplicate-send race
+
+		// Optimistic echo — user's message appears immediately in the scrollback
+		// without waiting for the server's 100ms-delayed transcript_messages broadcast.
+		// The transcript_messages handler removes this echo once the real JSONL entry arrives.
+		// Always snap to bottom on send so the user sees the echo + incoming response.
+		if (active) {
+			active.userScrolledUp = false;
+			if (active.container) active.container.scrollTop = active.container.scrollHeight;
+			if (!active._echoMessages) active._echoMessages = [];
+			active._echoMessages.push({
+				role: 'user', type: 'prompt',
+				text: savedText,
+				ts: new Date().toISOString(),
+				_echo: true,
+			});
+			renderTranscriptToTerminal(active);
+		}
+
 		setTimeout(() => {
 			if (active && active.claudeReady === false) {
 				active.claudeReady = true;
@@ -3941,6 +4062,7 @@
 		const active = getActiveTab();
 		const ws = active?.ws?.readyState === 1 ? active.ws : null;
 
+		// Enter (no Shift) = send. Shift+Enter = newline (default textarea behavior).
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			// Block Enter while Claude is thinking — same guard as the button
@@ -4041,6 +4163,11 @@
 	function autoGrowInput(e) {
 		const el = e?.target || terminalInputEl;
 		if (!el) return;
+		// Resize-only. Do NOT write terminalInputText = el.value here — bind:value
+		// already syncs DOM → state on 'input' events, and writing here from the same
+		// event causes Svelte to push the state back to the DOM mid-keystroke, which
+		// clobbers the cursor and drops typed characters. The Win+H / IME sync that
+		// this branch used to do is moved to a non-input event path (see bug #816).
 		el.style.height = 'auto';
 		const lineHeight = 20;
 		const maxLines = 10;
@@ -5325,7 +5452,7 @@
 
 	/**
 	 * Silently poll /health every 500ms until the server is ready, then reload.
-	 * No overlay — the existing ΠΑΝ loading screen in app.html covers the load.
+	 * No overlay — the existing Π loading screen in app.html covers the load.
 	 */
 	function waitForServerAndReload() {
 		if (window._panSwapPolling) return;
@@ -5501,7 +5628,59 @@
 
 		// --- Polling intervals (visibility-aware: pause when tab is hidden) ---
 		let _pageVisible = true;
-		const visCb = () => { _pageVisible = !document.hidden; };
+		const visCb = () => {
+			const wasHidden = !_pageVisible;
+			_pageVisible = !document.hidden;
+			// Bug #768: when the tab wakes from a long background sleep, the WS may be
+			// silently dead (OS kept socket nominally "open" through suspend, server
+			// already dropped us). The 15s transcript heartbeat and 8s PTY status poll
+			// won't fire for up to their interval, so any replies that landed while we
+			// were hidden stay invisible. Force an immediate sync on every visible
+			// transition. Cheap (one HTTP + one WS frame per tab) and idempotent.
+			if (_pageVisible && wasHidden) {
+				try {
+					const tab = getActiveTab();
+					if (tab) {
+						// Force the heartbeat to re-poll on its next tick (and now).
+						tab._lastTranscriptPush = 0;
+						if (tab.sessionId) {
+							api(`/api/v1/terminal/messages/${encodeURIComponent(tab.sessionId)}`)
+								.then(msgs => {
+									if (!msgs) return;
+									const serverVersion = msgs?._messageVersion;
+									const arr = Array.isArray(msgs) ? msgs : msgs.messages;
+									const hasNew = serverVersion !== undefined
+										? serverVersion !== tab._lastMessageVersion
+										: Array.isArray(arr) && arr.length > (tab._pushedMessages?.length || 0);
+									if (hasNew && Array.isArray(arr)) {
+										if (serverVersion !== undefined) tab._lastMessageVersion = serverVersion;
+										tab._pushedMessages = arr;
+										_pushedMsgsCache.set(tab.id, arr);
+										renderTranscriptToTerminal(tab);
+									}
+								})
+								.catch(() => {});
+						}
+					}
+					// WS-level wakeup. If our socket is dead or closing, close it
+					// explicitly so the existing reconnect logic kicks in. If it's
+					// alive, fire a sync_request so we get the authoritative state
+					// snapshot right now instead of waiting for the next push.
+					const allTabs = (typeof tabs !== 'undefined' && Array.isArray(tabs)) ? tabs : [];
+					for (const t of allTabs) {
+						const sock = t.ws;
+						if (!sock) continue;
+						if (sock.readyState === 1) {
+							try { sock.send(JSON.stringify({ type: 'sync_request', kinds: ['session'] })); } catch {}
+						} else if (sock.readyState === 2 || sock.readyState === 3) {
+							try { sock.close(); } catch {}
+						}
+					}
+				} catch (e) {
+					console.warn('[PAN #768] visibilitychange wakeup sync failed:', e?.message);
+				}
+			}
+		};
 		document.addEventListener('visibilitychange', visCb);
 
 		// Start chat refresh
@@ -5858,7 +6037,7 @@
 			}
 		};
 		// AI settings change in Settings page. Previously this cleared every launch
-		// guard so ΠΑΝ Remembers would re-fire on next WS reconnect — but that also
+		// guard so Π Remembers would re-fire on next WS reconnect — but that also
 		// caused a fresh launch printf into ALREADY-RUNNING tabs, which the user
 		// experienced as "changing a model restarts the chat in other tabs."
 		//
@@ -7490,7 +7669,7 @@
 										{#if chatActiveThread.contact?.id === 'contact-pan-system'}
 											<div style="color:#a6adc8;text-align:center;padding:20px 12px;font-size:13px;">
 												<div style="font-size:24px;margin-bottom:8px;">Π</div>
-												ΠΑΝ is listening. Ask anything about what's going on, or wait for system reports.
+												Π is listening. Ask anything about what's going on, or wait for system reports.
 											</div>
 										{:else}
 											No messages yet
@@ -7516,7 +7695,7 @@
 								{/if}
 							</div>
 							<div class="dm-input-bar">
-								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask ΠΑΝ anything…' : 'Message…'}
+								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask Π anything…' : 'Message…'}
 									bind:value={chatInputText}
 									onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} />
 								<button class="dm-send" onclick={sendChatMessage} disabled={!chatInputText.trim()}>↑</button>
@@ -7547,15 +7726,15 @@
 					{/if}
 
 					{#each [contactsData.filter(c => !chatSearchQuery || c.display_name.toLowerCase().includes(chatSearchQuery.toLowerCase()))] as filtered}
-					<!-- ΠΑΝ system contact — always pinned at top -->
+					<!-- Π system contact — always pinned at top -->
 					{#each [filtered.find(c => c.id === 'contact-pan-system')] as panContact}
 						{#if panContact}
-							<div class="svc-category">ΠΑΝ</div>
+							<div class="svc-category">Π</div>
 							<div class="svc-row contact-row pan-contact-row" onclick={() => openChat(panContact)} role="button" tabindex="0">
 								<span class="contact-avatar pan-avatar">Π</span>
 								<div class="svc-info">
 									<div class="svc-name">
-										ΠΑΝ
+										Π
 										{#if panContact.unread_count > 0}
 											<span class="contact-badge">{panContact.unread_count}</span>
 										{/if}
@@ -7568,7 +7747,7 @@
 						{/if}
 					{/each}
 
-					<!-- Favorites (excluding ΠΑΝ which is pinned above) -->
+					<!-- Favorites (excluding Π which is pinned above) -->
 					{#each [filtered.filter(c => c.favorited && c.id !== 'contact-pan-system')] as favorites}
 						{#if favorites.length > 0}
 							<div class="svc-category">Favorites</div>
@@ -7599,7 +7778,7 @@
 						{/if}
 					{/each}
 
-					<!-- All contacts (excluding ΠΑΝ which is always pinned at top) -->
+					<!-- All contacts (excluding Π which is always pinned at top) -->
 					{#each [filtered.filter(c => !c.favorited && c.id !== 'contact-pan-system')] as others}
 						{#if others.length > 0}
 							<div class="svc-category">Contacts</div>
@@ -8379,6 +8558,7 @@
 		{/if}
 		<div class="center-input-bar">
 			<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+			<button class="call-btn" onclick={openPanCall} title="Call Π"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
 			<select
 				class="model-pill-select"
 				title="Switch model — applies to THIS tab only. Other tabs keep their own model."
@@ -9587,7 +9767,7 @@
 										{#if chatActiveThread.contact?.id === 'contact-pan-system'}
 											<div style="color:#a6adc8;text-align:center;padding:20px 12px;font-size:13px;">
 												<div style="font-size:24px;margin-bottom:8px;">Π</div>
-												ΠΑΝ is listening. Ask anything about what's going on, or wait for system reports.
+												Π is listening. Ask anything about what's going on, or wait for system reports.
 											</div>
 										{:else}
 											No messages yet
@@ -9613,7 +9793,7 @@
 								{/if}
 							</div>
 							<div class="dm-input-bar">
-								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask ΠΑΝ anything…' : 'Message…'}
+								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask Π anything…' : 'Message…'}
 									bind:value={chatInputText}
 									onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} />
 								<button class="dm-send" onclick={sendChatMessage} disabled={!chatInputText.trim()}>↑</button>
@@ -9644,11 +9824,11 @@
 					{#each [contactsData.filter(c => !chatSearchQuery || c.display_name.toLowerCase().includes(chatSearchQuery.toLowerCase()))] as filtered}
 					{#each [filtered.find(c => c.id === 'contact-pan-system')] as panContact}
 						{#if panContact}
-							<div class="svc-category">ΠΑΝ</div>
+							<div class="svc-category">Π</div>
 							<div class="svc-row contact-row pan-contact-row" onclick={() => openChat(panContact)} role="button" tabindex="0">
 								<span class="contact-avatar pan-avatar">Π</span>
 								<div class="svc-info">
-									<div class="svc-name">ΠΑΝ {#if panContact.unread_count > 0}<span class="contact-badge">{panContact.unread_count}</span>{/if}</div>
+									<div class="svc-name">Π {#if panContact.unread_count > 0}<span class="contact-badge">{panContact.unread_count}</span>{/if}</div>
 									<div class="svc-detail"><span class="contact-status online"></span> System · always on</div>
 								</div>
 							</div>
@@ -10113,6 +10293,23 @@
 		0%, 100% { box-shadow: 0 0 0 0 rgba(243, 139, 168, 0.3); }
 		50% { box-shadow: 0 0 0 6px rgba(243, 139, 168, 0); }
 	}
+
+	/* Call Π button — same shape as mic, green-accent hover (live call). */
+	.call-btn {
+		width: 36px;
+		height: 36px;
+		border-radius: 50%;
+		border: 1px solid #1e1e2e;
+		background: #1a1a25;
+		color: #6c7086;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		transition: all 0.15s;
+	}
+	.call-btn:hover { color: #a6e3a1; border-color: #a6e3a1; }
 
 	.direct-mode-btn {
 		width: 32px;
@@ -10851,22 +11048,131 @@
 	.chat-stats-total { opacity: 0.6; }
 
 	/* ==================== Markdown in chat bubbles ==================== */
-	.chat-bubble strong { font-weight: 700; color: #cdd6f4; }
-	.chat-bubble em { font-style: italic; color: #bac2de; }
-	.chat-bubble .md-bullet { padding-left: 14px; position: relative; margin: 2px 0; }
-	.chat-bubble .md-bullet::before { content: '•'; position: absolute; left: 2px; color: #6c7086; }
-	.chat-bubble .md-numbered::before { content: counter(md-list) '.'; counter-increment: md-list; }
-	.chat-bubble .md-code { background: rgba(137,180,250,0.12); padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
-	.chat-bubble .md-codeblock { background: #11111b; padding: 6px 8px; border-radius: 4px; font-family: monospace; font-size: 0.85em; overflow-x: auto; margin: 4px 0; white-space: pre; }
-	.chat-bubble .md-codeblock code { background: none; padding: 0; }
-	.chat-bubble .md-h1 { font-size: 1.2em; font-weight: 700; margin: 6px 0 4px; color: #cdd6f4; }
-	.chat-bubble .md-h2 { font-size: 1.1em; font-weight: 600; margin: 4px 0 2px; color: #cdd6f4; }
-	.chat-bubble .md-h3 { font-size: 1.0em; font-weight: 600; margin: 4px 0 2px; color: #bac2de; }
-	.chat-bubble .md-table { border-collapse: collapse; margin: 6px 0; width: 100%; font-size: 0.9em; }
-	.chat-bubble .md-table th, .chat-bubble .md-table td { border: 1px solid #313244; padding: 4px 8px; text-align: left; }
-	.chat-bubble .md-table th { background: rgba(137,180,250,0.1); font-weight: 600; color: #cdd6f4; }
-	.chat-bubble .md-table td { color: #bac2de; }
-	.chat-bubble .md-table tr:nth-child(even) td { background: rgba(49,50,68,0.3); }
+	/* Bug #484 root cause: ALL .md-* selectors target elements injected via
+	   {@html} from the markdown renderer (parseMarkdown). Svelte's CSS scoping
+	   can't see those elements in the template, so it STRIPS every md-* rule
+	   from the compiled bundle as "unused" — leaving tables, bullets, code
+	   blocks, headings unstyled. Verified: `grep md-table public/v2/_app/.../*.css`
+	   returns zero hits. Fix: wrap the whole markdown CSS block in :global so
+	   the rules survive scoping and actually reach the rendered HTML. */
+	/* Use `.chat-bubble :global(...)` pattern so .chat-bubble stays SCOPED
+	   (transcript view doesn't get smashed) while .md-* survives scoping
+	   (it targets {@html}-injected elements Svelte can't see in template). */
+	.chat-bubble :global(strong) { font-weight: 700; color: #cdd6f4; }
+	.chat-bubble :global(em) { font-style: italic; color: #bac2de; }
+	.chat-bubble :global(.md-bullet) { padding-left: 14px; position: relative; margin: 2px 0; }
+	.chat-bubble :global(.md-bullet::before) { content: '•'; position: absolute; left: 2px; color: #6c7086; }
+	.chat-bubble :global(.md-numbered::before) { content: counter(md-list) '.'; counter-increment: md-list; }
+	.chat-bubble :global(.md-code) { background: rgba(137,180,250,0.12); padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
+	.chat-bubble :global(.md-codeblock) { background: #11111b; padding: 6px 8px; border-radius: 4px; font-family: monospace; font-size: 0.85em; overflow-x: auto; margin: 4px 0; white-space: pre; }
+	.chat-bubble :global(.md-codeblock code) { background: none; padding: 0; }
+	.chat-bubble :global(.md-h1) { font-size: 1.2em; font-weight: 700; margin: 6px 0 4px; color: #cdd6f4; }
+	.chat-bubble :global(.md-h2) { font-size: 1.1em; font-weight: 600; margin: 4px 0 2px; color: #cdd6f4; }
+	.chat-bubble :global(.md-h3) { font-size: 1.0em; font-weight: 600; margin: 4px 0 2px; color: #bac2de; }
+	/* Tables — visible borders + clear header row so it actually LOOKS like a table.
+	   Default cells nowrap (preserves atomic tokens like paths/IDs); last column
+	   wraps as prose. Wrapper div scrolls horizontally when content is wider than bubble. */
+	.chat-bubble :global(.md-table-wrap) {
+		display: block;
+		overflow-x: auto;
+		max-width: 100%;
+		margin: 8px 0;
+		border: 1px solid #45475a;
+		border-radius: 4px;
+		background: #181825;
+		-webkit-overflow-scrolling: touch;
+	}
+	.chat-bubble :global(.md-table) {
+		border-collapse: collapse;
+		font-size: 0.9em;
+		width: auto;
+		min-width: 100%;
+		table-layout: auto;
+		background: transparent;
+	}
+	.chat-bubble :global(.md-table th),
+	.chat-bubble :global(.md-table td) {
+		border: 1px solid #45475a;
+		padding: 6px 10px;
+		text-align: left;
+		vertical-align: top;
+		word-break: keep-all;
+		overflow-wrap: normal;
+		white-space: nowrap;
+		color: #cdd6f4;
+	}
+	.chat-bubble :global(.md-table th:last-child),
+	.chat-bubble :global(.md-table td:last-child) {
+		white-space: normal;
+		word-break: normal;
+		overflow-wrap: anywhere;
+		max-width: 60ch;
+		min-width: 20ch;
+	}
+	.chat-bubble :global(.md-table th) {
+		background: #313244;
+		font-weight: 700;
+		color: #cdd6f4;
+		border-bottom: 2px solid #585b70;
+	}
+	.chat-bubble :global(.md-table td) { color: #bac2de; }
+	.chat-bubble :global(.md-table tbody tr:nth-child(odd) td),
+	.chat-bubble :global(.md-table tr:nth-child(even) td) { background: #1e1e2e; }
+	.chat-bubble :global(.md-table tr:nth-child(odd) td) { background: #11111b; }
+
+	/* SAME ruleset for the center TERMINAL panel (.term-scrollback). That div is
+	   built via document.createElement (not in the Svelte template), so the whole
+	   selector must be :global() to survive scoping. Its inline styles include
+	   `word-break:break-word; white-space:pre-wrap` which would inherit down to
+	   td cells — these rules override at the cell level. */
+	:global(.term-scrollback .md-table-wrap) {
+		display: block;
+		overflow-x: auto;
+		max-width: 100%;
+		margin: 8px 0;
+		border: 1px solid #45475a;
+		border-radius: 4px;
+		background: #181825;
+		-webkit-overflow-scrolling: touch;
+		white-space: normal;
+	}
+	:global(.term-scrollback .md-table) {
+		border-collapse: collapse;
+		font-size: 0.9em;
+		width: auto;
+		min-width: 100%;
+		table-layout: auto;
+		background: transparent;
+		white-space: normal;
+	}
+	:global(.term-scrollback .md-table th),
+	:global(.term-scrollback .md-table td) {
+		border: 1px solid #45475a;
+		padding: 6px 10px;
+		text-align: left;
+		vertical-align: top;
+		word-break: keep-all;
+		overflow-wrap: normal;
+		white-space: nowrap;
+		color: #cdd6f4;
+	}
+	:global(.term-scrollback .md-table th:last-child),
+	:global(.term-scrollback .md-table td:last-child) {
+		white-space: normal;
+		word-break: normal;
+		overflow-wrap: anywhere;
+		max-width: 60ch;
+		min-width: 20ch;
+	}
+	:global(.term-scrollback .md-table th) {
+		background: #313244;
+		font-weight: 700;
+		color: #cdd6f4;
+		border-bottom: 2px solid #585b70;
+	}
+	:global(.term-scrollback .md-table td) { color: #bac2de; }
+	:global(.term-scrollback .md-table tr:nth-child(even) td) { background: #1e1e2e; }
+	:global(.term-scrollback .md-table tr:nth-child(odd) td) { background: #11111b; }
 
 	/* ==================== Project Info ==================== */
 	.project-info {
@@ -12497,7 +12803,7 @@
 	}
 	.contact-action-btn:hover { color: #f9e2af; }
 
-	/* ── ΠΑΝ contact special styling ── */
+	/* ── Π contact special styling ── */
 	.pan-contact-row { border-bottom: 1px solid #313244; margin-bottom: 4px; }
 	.pan-avatar { background: linear-gradient(135deg, #cba6f7, #89b4fa) !important; color: #1e1e2e !important; font-weight: 900; font-size: 15px; }
 

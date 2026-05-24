@@ -576,7 +576,7 @@
 	let currentTheme = $state('cool-guy');
 	let vibeBgIndex = $state(0);
 	const VIBE_IMAGES = ['/dashboard/vibe-1.png', '/dashboard/vibe-2.png', '/dashboard/vibe-3.png', '/dashboard/vibe-4.png', '/dashboard/vibe-5.png', '/dashboard/vibe-6.png', '/dashboard/vibe-7.png'];
-	let brandingLogo = $state('ΠΑΝ');
+	let brandingLogo = $state('Π');
 	let brandingImage = $state('');
 	if (typeof window !== 'undefined') {
 		const bl = localStorage.getItem('pan_branding_logo');

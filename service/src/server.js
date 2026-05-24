@@ -48,6 +48,7 @@ import { currentUserId as needsCurrentUser } from './intuition/nourishment.js';
 import { recentInterjections, recordFeedback } from './intuition/action.js';
 import { startScreenWatcher, startBurst, resetBackoff, getScreenWatcherStatus } from './screen-watcher.js';
 import { startWebcamWatcher, getWebcamStatus, getWebcamContext } from './webcam-watcher.js';
+import { startConvStateWatcher, noteUtterance as noteConvUtterance, getConversationState, getConvStateStatus, getConversationBuffer } from './conv-state-watcher.js';
 import { startWatchdog, notifyDashboardLoaded } from './dashboard-watchdog.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
@@ -72,6 +73,7 @@ import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import https from 'https';
+import http from 'node:http';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
 import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
@@ -849,7 +851,20 @@ app.use('/api/v1/guardian', guardianRouter);
 // Differential Privacy — budget tracking and config
 app.use('/api/v1/privacy', privacyRouter);
 
-// Chat — text messaging, contacts, calls
+// ── Voice/text chat front door ───────────────────────────────────────────────
+// POST /api/v1/chat lives in routes/api.js (router.post('/chat', ...) mounted
+// at /api/v1 above on the `apiRouter` line). It accepts { message, source?,
+// thread_id?, org_id?, project_id? } and returns
+// { response, intent, action?, user_message_id, pan_message_id, _diag_marker }.
+// When thread_id is provided (Comms popout voice-call loop, terminal chat) it
+// also persists both sides to chat_messages so the conversation shows up in
+// the thread UI and survives reloads.
+//
+// History: this handler was originally defined here, but apiRouter is mounted
+// at /api/v1 earlier (see `app.use('/api/v1', apiRouter)` above), so Express
+// dispatched POST /api/v1/chat to api.js first and the handler here never ran.
+// All chat logic now lives in api.js to keep the routing match consistent.
+// Chat — text messaging, contacts, calls (POST / lives in api.js, see above)
 app.use('/api/v1/chat', chatRouter);
 
 // Email — universal IMAP/SMTP integration
@@ -1052,7 +1067,7 @@ kbd{display:inline-block;background:#313244;border:1px solid #45475a;border-radi
 .expiry{font-size:11px;color:#f38ba8;text-align:center;margin-top:18px}
 </style></head>
 <body><div class="card">
-  <div class="logo">ΠΑΝ</div>
+  <div class="logo">Π</div>
   <div class="tagline">Personal AI Network</div>
   <h2>Connect this ${osLabel} computer to PAN</h2>
   <div class="sub">Download the script, then <strong>right-click → Run with PowerShell</strong>.</div>
@@ -1193,7 +1208,7 @@ function generateBATDownload_UNUSED(host, proto, wsProto, token) {
     '',
     'Write-Host ""',
     'Write-Host "  ╔═══════════════════════╗" -ForegroundColor Cyan',
-    'Write-Host "  ║       ΠΑΝ             ║" -ForegroundColor Cyan',
+    'Write-Host "  ║       Π             ║" -ForegroundColor Cyan',
     'Write-Host "  ╚═══════════════════════╝" -ForegroundColor Cyan',
     'Write-Host ""',
     'Write-Host "  Hub loaded from filename — connecting..." -ForegroundColor White',
@@ -1303,7 +1318,7 @@ function generateWindowsClientInstaller(token, hubWs, clientJsUrl) {
     '',
     'Write-Host ""',
     'Write-Host "  ╔═══════════════════════╗" -ForegroundColor Cyan',
-    'Write-Host "  ║       ΠΑΝ             ║" -ForegroundColor Cyan',
+    'Write-Host "  ║       Π             ║" -ForegroundColor Cyan',
     'Write-Host "  ╚═══════════════════════╝" -ForegroundColor Cyan',
     'Write-Host ""',
     '',
@@ -3221,6 +3236,38 @@ app.get('/api/v1/terminal/sessions', async (req, res) => {
   res.json({ sessions: await listSessions() });
 });
 
+// Per-session adapter health — surfaces whether each Claude adapter is alive
+// and when it last responded. /health says "server running" but doesn't track
+// individual adapter sessions. This endpoint fills that gap.
+app.get('/api/v1/terminal/adapter-health', async (req, res) => {
+  const now = Date.now();
+  const sessions = await listSessions();
+  const adapters = sessions
+    .filter(s => s.pipeMode || s.mode === 'ADAPTER')
+    .map(s => {
+      const agoMs = s.lastOutputTs ? now - s.lastOutputTs : null;
+      const agoSec = agoMs != null ? Math.floor(agoMs / 1000) : null;
+      const agoStr = agoSec == null ? 'never'
+        : agoSec < 60 ? `${agoSec}s`
+        : agoSec < 3600 ? `${Math.floor(agoSec / 60)}m ${agoSec % 60}s`
+        : `${Math.floor(agoSec / 3600)}h ${Math.floor((agoSec % 3600) / 60)}m`;
+      const stale = agoSec != null && agoSec > 300 && s.state !== 'working';
+      const stuck = s.state === 'working' && agoSec != null && agoSec > 90;
+      return {
+        id: s.id,
+        project: s.project || null,
+        state: s.state,
+        lastOutputTs: s.lastOutputTs || null,
+        lastOutputAgo: agoStr,
+        clients: s.clients,
+        stale,
+        stuck,
+        healthy: !stuck && s.clients > 0,
+      };
+    });
+  res.json({ ok: true, adapters, count: adapters.length });
+});
+
 // Create a new pipe-mode session (mobile new-tab button)
 app.post('/api/v1/terminal/new', async (req, res) => {
   try {
@@ -3299,7 +3346,18 @@ app.post('/api/v1/terminal/send', requireNotChild, async (req, res) => {
 
   // Fallback: raw PTY write (legacy)
   const toSend = raw ? text : text + '\r';
-  const sent = sendToSession(session_id || null, toSend);
+  // #982 — derive provenance early so we can pass it through sendToSession
+  // for pty_input event logging in terminal.js (Carrier side).
+  const _ua_send = String(req.headers['user-agent'] || '');
+  const _hdr_send = req.headers['x-pan-source'];
+  let _src_send = bodySource || _hdr_send;
+  if (!_src_send) {
+    if (/Electron/i.test(_ua_send)) _src_send = 'desktop_electron';
+    else if (/Android|iPhone|Mobile/i.test(_ua_send)) _src_send = 'mobile';
+    else if (/Mozilla/i.test(_ua_send)) _src_send = 'desktop_browser';
+    else _src_send = 'unknown';
+  }
+  const sent = sendToSession(session_id || null, toSend, _src_send);
 
   // Immediate echo — broadcast user message to all WS clients for this session
   // so it appears in the transcript instantly, without waiting for Claude Code
@@ -3396,11 +3454,39 @@ app.post('/api/v1/terminal/interrupt', (req, res) => {
 // Dedup: reject identical text to same session within 5 seconds
 const _pipeDedup = new Map(); // key: `${session_id}:${text}` → timestamp
 app.post('/api/v1/terminal/pipe', requireNotChild, async (req, res) => {
-  const { text, session_id } = req.body;
+  const { text, session_id, source: bodySource } = req.body;
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
   console.log(`[PAN Pipe] POST /pipe session_id=${session_id} text=${(text||'').slice(0,50)} ip=${ip} user=${req.user?.email || 'NONE'}`);
   if (!text) return res.status(400).json({ error: 'text required' });
   if (!session_id) return res.status(400).json({ error: 'session_id required' });
+
+  // #982 — log every pipe input as pty_input event with provenance.
+  // /pipe doesn't write to a raw PTY (it spawns claude -p) but it's still an
+  // input-into-an-assistant-session, so the same provenance audit applies.
+  try {
+    const _ua_pipe = String(req.headers['user-agent'] || '');
+    const _hdr_pipe = req.headers['x-pan-source'];
+    let _src_pipe = bodySource || _hdr_pipe;
+    if (!_src_pipe) {
+      if (/Electron/i.test(_ua_pipe)) _src_pipe = 'desktop_electron';
+      else if (/Android|iPhone|Mobile/i.test(_ua_pipe)) _src_pipe = 'mobile';
+      else if (/Mozilla/i.test(_ua_pipe)) _src_pipe = 'desktop_browser';
+      else _src_pipe = 'unknown';
+    }
+    const _data_pipe = JSON.stringify({
+      session_id, text: String(text).slice(0, 200), text_len: String(text).length,
+      source: _src_pipe, ip, ua: _ua_pipe.slice(0, 120), route: 'http:/pipe', ts: Date.now(),
+    });
+    const _eid_pipe = insert(`INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, :type, :data, :oid)`, {
+      ':sid': session_id, ':type': 'pty_input', ':data': _data_pipe, ':oid': req.org_id || 'org_personal',
+    });
+    if (_src_pipe === 'unknown') {
+      console.warn(`[PAN Pipe] UNKNOWN-source pipe input → ${session_id}: ${JSON.stringify(String(text).slice(0,80))} ua=${_ua_pipe.slice(0,80)}`);
+    }
+    if (typeof indexEventFTS === 'function') indexEventFTS(_eid_pipe, 'pty_input', _data_pipe);
+  } catch (e) {
+    console.warn(`[PAN Pipe] pty_input log failed: ${e.message}`);
+  }
 
   // Dedup: block identical message to same session within 5s window
   const dedupKey = `${session_id}:${text}`;
@@ -4268,12 +4354,37 @@ app.post('/api/v1/voice/dictate', async (req, res) => {
 
 // Voice result — receives partial/final transcription from dictate-vad.py and pushes to dashboard
 app.post('/api/v1/voice/result', (req, res) => {
-  const { text, action, partial } = req.body || {};
+  const { text, action, partial, org_id, source, device_id } = req.body || {};
   console.log(`[PAN Voice] voice_result: partial=${partial} action=${action} text="${(text||'').substring(0,50)}"`);
   broadcastNotification('voice_result', { text: text || '', action: action || '', partial: !!partial });
+  // Feed conv-state watcher — every partial/final from voice goes through here
+  try {
+    noteConvUtterance({
+      orgId: org_id || 'org_personal',
+      text: text || '',
+      isFinal: !partial,
+      source: source || 'voice',
+      deviceId: device_id || null,
+    });
+  } catch (e) { /* never block voice path */ }
   // Reset dictate state when final result arrives
   if (!partial) _dictateActive = false;
   res.json({ ok: true });
+});
+
+// GET /api/v1/conversation/state — distilled conversation state for an org
+app.get('/api/v1/conversation/state', (req, res) => {
+  const orgId = req.query.org_id || 'org_personal';
+  res.json({
+    ok: true,
+    state: getConversationState(orgId),
+    buffer: getConversationBuffer(orgId),
+  });
+});
+
+// GET /api/v1/conversation/status — watcher status across all orgs
+app.get('/api/v1/conversation/status', (req, res) => {
+  res.json({ ok: true, ...getConvStateStatus() });
 });
 
 // Whisper transcription — accepts multipart form with WebM audio from dashboard mic button
@@ -4464,7 +4575,7 @@ app.post('/api/internal/event', async (req, res) => {
   }
 });
 
-// Internal: Carrier posts ΠΑΝ notifications here (Carrier has no DB, Craft does)
+// Internal: Carrier posts Π notifications here (Carrier has no DB, Craft does)
 app.post('/api/internal/pan-notify', async (req, res) => {
   try {
     const { panNotify, ensurePanContact } = await import('./pan-notify.js');
@@ -4707,6 +4818,15 @@ function start() {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
       console.log(`[PAN] Listening for Claude Code hooks...`);
 
+      // Eager-import router.js so first /api/v1/chat call doesn't pay
+      // ~1.5-3s cold-start cost (intuition + llm + thoughts + skills graph).
+      // Fire-and-forget — non-blocking, just warms the module cache.
+      import('./router.js').then(() => {
+        console.log('[PAN] router.js pre-warmed');
+      }).catch((err) => {
+        console.error('[PAN] router.js pre-warm failed:', err?.message || err);
+      });
+
       // ── SHARED BOOT (prod + dev) ─────────────────────────────────
       // Dev is an exact copy of prod on a different port + database.
       // Only system-wide singletons (steward, device heartbeat) are
@@ -4936,6 +5056,14 @@ function start() {
 
       // Webcam watcher — frame every 60s → vision AI → presence + identity signal
       if (!IS_DEV) startWebcamWatcher();
+
+      // Conv-state watcher — stream-paced "Conversation State" distiller.
+      // Reads STT partials/finals (fed via noteUtterance) and maintains a
+      // per-org snapshot of {topic, phase, pending_question, user_pattern,
+      // likely_turn_complete, summary}. Router reads this to ground replies
+      // and to decide if an utterance is a real complete turn or mid-sentence.
+      // Safe in dev — pure in-memory, no DB writes.
+      try { startConvStateWatcher(); } catch (e) { console.warn('[PAN] conv-state watcher failed to start:', e?.message); }
 
       // Activity tracker — foreground window poll every 3s → app_focus events
       if (!IS_DEV) startActivityTracker();
@@ -5394,6 +5522,69 @@ app.post('/api/v1/logs', (req, res) => {
     console.error('[Client Logs] Insert error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// POST /api/v1/popout — same-origin proxy to the Tauri desktop shell's /open endpoint.
+// Browser fetch() to 127.0.0.1:7790 fails because Tauri's tiny-http server returns
+// 404 on the CORS preflight (OPTIONS), so the actual POST never goes out. By
+// proxying through the dashboard's own origin we sidestep CORS entirely.
+//
+// Uses node's native http module rather than global fetch — Tauri's tiny-http
+// server has keep-alive/Content-Length quirks that hang undici (Node's fetch impl).
+// Body: { url, title?, width?, height? }
+app.post('/api/v1/popout', (req, res) => {
+  const { url, title, width, height } = req.body || {};
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'url required' });
+  }
+  const payload = JSON.stringify({
+    url,
+    title: title || 'PAN',
+    width: width || 900,
+    height: height || 700,
+  });
+  let responded = false;
+  const respond = (status, body) => {
+    if (responded || res.headersSent) return;
+    responded = true;
+    res.status(status).json(body);
+  };
+  const proxyReq = http.request(
+    {
+      host: '127.0.0.1',
+      port: 7790,
+      path: '/open',
+      method: 'POST',
+      timeout: 3000,
+      agent: false,  // disable keep-alive pool — Tauri's tiny-http chokes on reused sockets
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'Connection': 'close',
+      },
+    },
+    (proxyRes) => {
+      // Tauri's response headers have arrived — that's all we need to know it
+      // accepted (or rejected) the request. Reply to the dashboard NOW; let the
+      // body drain in the background. This avoids ~7s tail waiting for Tauri's
+      // keep-alive socket to settle.
+      if (proxyRes.statusCode === 200) {
+        respond(200, { ok: true });
+      } else {
+        respond(502, { error: `tauri returned ${proxyRes.statusCode}`, tauri_status: proxyRes.statusCode });
+      }
+      proxyRes.resume(); // drain body to allow socket cleanup
+    }
+  );
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    respond(504, { error: 'tauri timeout' });
+  });
+  proxyReq.on('error', (err) => {
+    respond(503, { error: 'tauri shell unreachable', detail: err?.message || String(err) });
+  });
+  proxyReq.write(payload);
+  proxyReq.end();
 });
 
 // GET /api/v1/logs — query logs with filters

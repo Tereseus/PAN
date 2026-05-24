@@ -11,6 +11,102 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+// ==================== WebView2 Permission Auto-Grant (Windows) ====================
+// Tauri 2's wry backend defers to WebView2 (Edge Chromium) on Windows. By default
+// WebView2 *silently denies* navigator.mediaDevices.getUserMedia, Geolocation API,
+// generic sensor APIs, notifications, clipboard read, autoplay, etc. — even on
+// loopback origins. There is no JS-level prompt; the promise just rejects.
+//
+// The fix is native: register an ICoreWebView2::add_PermissionRequested handler
+// per webview and set State=ALLOW for requests from http://127.0.0.1 / localhost.
+// PAN is a single-user personal AI shell talking to the user's own loopback server,
+// so granting locally is the correct posture. Non-loopback origins (anything the
+// user navigates to in a wrapped window) fall through to WebView2's default,
+// which still prompts via the system UI.
+#[cfg(target_os = "windows")]
+mod webview_perms {
+    use tauri::WebviewWindow;
+    use webview2_com::take_pwstr;
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    use webview2_com::PermissionRequestedEventHandler;
+    use windows_core::PWSTR;
+
+    pub fn attach_auto_grant(window: &WebviewWindow) {
+        let label = window.label().to_string();
+        let _ = window.with_webview(move |webview| unsafe {
+            let controller = webview.controller();
+            let core = match controller.CoreWebView2() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(
+                        "[PAN Shell] CoreWebView2 fetch failed for '{}': {:?}",
+                        label, e
+                    );
+                    return;
+                }
+            };
+
+            let handler_label = label.clone();
+            let handler =
+                PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    if let Some(args) = args {
+                        // SAFETY: COM out-param calls on ICoreWebView2PermissionRequestedEventArgs.
+                        {
+                            let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                            let _ = args.PermissionKind(&mut kind);
+
+                            let mut uri_pwstr = PWSTR::null();
+                            let uri = if args.Uri(&mut uri_pwstr).is_ok() {
+                                take_pwstr(uri_pwstr)
+                            } else {
+                                String::new()
+                            };
+
+                            let is_local = uri.starts_with("http://127.0.0.1")
+                                || uri.starts_with("http://localhost")
+                                || uri.starts_with("https://127.0.0.1")
+                                || uri.starts_with("https://localhost");
+
+                            if is_local {
+                                let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                                println!(
+                                    "[PAN Shell] [{}] perm kind={:?} uri={} -> ALLOW",
+                                    handler_label, kind, uri
+                                );
+                            } else {
+                                // Leave State=Default so WebView2 falls back to its
+                                // built-in UI prompt for non-loopback origins.
+                                println!(
+                                    "[PAN Shell] [{}] perm kind={:?} uri={} -> DEFAULT (prompt)",
+                                    handler_label, kind, uri
+                                );
+                            }
+                        }
+                    }
+                    Ok(())
+                }));
+
+            let mut token: i64 = 0;
+            match core.add_PermissionRequested(&handler, &mut token) {
+                Ok(_) => println!(
+                    "[PAN Shell] PermissionRequested auto-grant attached to '{}'",
+                    label
+                ),
+                Err(e) => eprintln!(
+                    "[PAN Shell] add_PermissionRequested failed for '{}': {:?}",
+                    label, e
+                ),
+            }
+        });
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod webview_perms {
+    use tauri::WebviewWindow;
+    pub fn attach_auto_grant(_window: &WebviewWindow) {}
+}
+
 const PAN_SERVER: &str = "http://127.0.0.1:7777";
 const SHELL_PORT: u16 = 7790;
 const DICTATE_SCRIPT: &str = r"%USERPROFILE%\Desktop\PAN\service\src\dictate-vad.py";
@@ -100,6 +196,9 @@ async fn open_window(
         .inner_size(1280.0, 800.0)
         .build()
         .map_err(|e| format!("{}", e))?;
+
+    // Grant mic/cam/sensors for loopback before the page hits getUserMedia.
+    webview_perms::attach_auto_grant(&window);
 
     let _ = window.maximize();
 
@@ -274,6 +373,9 @@ fn start_http_api(app_handle: AppHandle, registry: Registry) {
                                 }
                                 if let Ok(window) = builder.build()
                                 {
+                                    // Grant mic/cam/sensors for loopback origins on this webview.
+                                    webview_perms::attach_auto_grant(&window);
+
                                     // Only maximize if no custom size was requested
                                     if !custom_size {
                                         let _ = window.maximize();
@@ -631,31 +733,84 @@ fn start_dictation() {
     });
 }
 
-/// Listen for mouse XButton1/XButton2 globally via rdev.
-/// XButton codes are OS-specific — we match broadly and log unknowns for debugging.
+/// Listen for mouse XButton1/XButton2 globally.
+/// On Windows: uses a native WH_MOUSE_LL hook (mouse-only, no WH_KEYBOARD_LL interference).
+/// On other platforms: falls back to rdev::listen().
+#[cfg(target_os = "windows")]
 fn start_mouse_listener() {
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+        MSLLHOOKSTRUCT, MSG, WH_MOUSE_LL, WM_XBUTTONDOWN,
+    };
+
+    // The hook callback must be an extern "system" fn (no closure capture).
+    // It reads the module-level OnceLock statics directly.
+    unsafe extern "system" fn mouse_ll_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 && wparam.0 as u32 == WM_XBUTTONDOWN {
+            let info = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+            // High word of mouseData = XBUTTON1 (1) or XBUTTON2 (2)
+            let xbutton = (info.mouseData >> 16) as u16;
+            match xbutton {
+                1 => { if let Some(a) = XBUTTON1_ACTION.get() { execute_voice_action(a); } }
+                2 => { if let Some(a) = XBUTTON2_ACTION.get() { execute_voice_action(a); } }
+                _ => {}
+            }
+        }
+        CallNextHookEx(None, code, wparam, lparam)
+    }
+
     std::thread::spawn(|| {
-        println!("[PAN Shell] Mouse button listener started (XButton1=Win+H, XButton2=Dictate)");
-        let action1 = XBUTTON1_ACTION.get().map(|s| s.as_str()).unwrap_or("winh");
-        let action2 = XBUTTON2_ACTION.get().map(|s| s.as_str()).unwrap_or("dictate");
-        let a1 = action1.to_string();
-        let a2 = action2.to_string();
-        if let Err(e) = rdev::listen(move |event| {
-            if let rdev::EventType::ButtonPress(button) = event.event_type {
-                match button {
-                    rdev::Button::Unknown(code) => {
-                        println!("[PAN Shell] Mouse Unknown({}) pressed", code);
+        println!("[PAN Shell] Mouse button listener started (WH_MOUSE_LL, no keyboard hook)");
+        let result = unsafe {
+            SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_ll_proc), None, 0)
+        };
+        match result {
+            Ok(hook) => {
+                println!("[PAN Shell] WH_MOUSE_LL hook installed");
+                unsafe {
+                    let mut msg = MSG::default();
+                    // GetMessageW drives the message loop required for low-level hooks.
+                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {}
+                    let _ = UnhookWindowsHookEx(hook);
+                }
+            }
+            Err(e) => {
+                eprintln!("[PAN Shell] WH_MOUSE_LL hook failed: {:?} — rdev fallback", e);
+                // rdev::listen installs both WH_MOUSE_LL and WH_KEYBOARD_LL; only reached
+                // if the native hook above fails (permission/OS issue).
+                let a1 = XBUTTON1_ACTION.get().map(|s| s.as_str()).unwrap_or("winh").to_string();
+                let a2 = XBUTTON2_ACTION.get().map(|s| s.as_str()).unwrap_or("dictate").to_string();
+                let _ = rdev::listen(move |event| {
+                    if let rdev::EventType::ButtonPress(rdev::Button::Unknown(code)) = event.event_type {
                         match code {
                             1 | 5 | 8 => execute_voice_action(&a1),
                             2 | 6 | 9 => execute_voice_action(&a2),
-                            _ => println!("[PAN Shell] Unmapped mouse code {} — add to match if needed", code),
+                            _ => {}
                         }
                     }
+                });
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_mouse_listener() {
+    std::thread::spawn(|| {
+        println!("[PAN Shell] Mouse button listener started (rdev)");
+        let a1 = XBUTTON1_ACTION.get().map(|s| s.as_str()).unwrap_or("winh").to_string();
+        let a2 = XBUTTON2_ACTION.get().map(|s| s.as_str()).unwrap_or("dictate").to_string();
+        if let Err(e) = rdev::listen(move |event| {
+            if let rdev::EventType::ButtonPress(rdev::Button::Unknown(code)) = event.event_type {
+                match code {
+                    1 | 5 | 8 => execute_voice_action(&a1),
+                    2 | 6 | 9 => execute_voice_action(&a2),
                     _ => {}
                 }
             }
         }) {
-            eprintln!("[PAN Shell] Mouse listener error: {:?}", e);
+            eprintln!("[PAN Shell] rdev mouse listener error: {:?}", e);
         }
     });
 }
@@ -673,6 +828,32 @@ fn chrono_now() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ---- WebView2 (Chromium) browser flags ----
+    // Must be set BEFORE Tauri's WebView2 environment is constructed.
+    //   --use-fake-ui-for-media-stream
+    //       Auto-accepts navigator.mediaDevices.getUserMedia without requiring
+    //       a user-gesture in the calling window. WebView2's PermissionRequested
+    //       event normally fires AFTER the gesture check; popouts opened
+    //       programmatically don't carry an activation from the opener, so the
+    //       call is silently denied before our handler runs. This flag bypasses
+    //       that gate. Safe on a single-user loopback origin.
+    //   --autoplay-policy=no-user-gesture-required
+    //       Allows <audio>.play() for the TTS reply without a per-window click.
+    //       Same reasoning: the popout was opened by a real click in the parent
+    //       terminal, but the activation doesn't cross window boundaries.
+    #[cfg(target_os = "windows")]
+    {
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        let extra = "--use-fake-ui-for-media-stream --autoplay-policy=no-user-gesture-required";
+        let merged = if existing.is_empty() {
+            extra.to_string()
+        } else {
+            format!("{} {}", existing, extra)
+        };
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &merged);
+        println!("[PAN Shell] WebView2 args: {}", merged);
+    }
+
     let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
 
     tauri::Builder::default()
@@ -708,6 +889,14 @@ pub fn run() {
             close_window,
         ])
         .setup(move |app| {
+            // ---- WebView2 permission auto-grant on the main window (Windows) ----
+            // The main window is created from tauri.conf.json before setup() runs,
+            // so we grab it by label and attach the handler post-hoc. Any popouts
+            // (open_window cmd, /open HTTP) attach their own handlers at build time.
+            if let Some(main_window) = app.get_webview_window("main") {
+                webview_perms::attach_auto_grant(&main_window);
+            }
+
             // ---- System Tray ----
             let show_i = MenuItem::with_id(app, "show", "Show Dashboard", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit PAN", true, None::<&str>)?;

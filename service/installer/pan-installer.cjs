@@ -853,7 +853,7 @@ const HTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<div class="logo">ΠΑΝ</div>
+<div class="logo">Π</div>
 <div class="subtitle">Personal AI Network — Device Installer</div>
 
 <div class="card">
@@ -1062,7 +1062,7 @@ async function main() {
   console.log('');
   console.log('  ╔══════════════════════════════════════╗');
   console.log('  ║                                      ║');
-  console.log('  ║          ΠΑΝ  ·  Personal AI Network ║');
+  console.log('  ║          Π  ·  Personal AI Network ║');
   console.log('  ║                                      ║');
   console.log('  ╚══════════════════════════════════════╝');
   console.log('');
