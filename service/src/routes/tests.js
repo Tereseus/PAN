@@ -19,7 +19,7 @@
 //   1. Open Electron window to the dev dashboard
 //   2. Maximize it (doesn't need focus — screenshot works regardless)
 //   3. Take a screenshot and VERIFY the dashboard loaded correctly:
-//      - "ΠΑΝ remembers" must be visible (proves memory loaded + PAN started)
+//      - "Π remembers" must be visible (proves memory loaded + PAN started)
 //      - Dashboard UI is fully rendered (not blank/crashed/error state)
 //      - If this fails, the ENTIRE suite stops here. Nothing else runs.
 //
@@ -323,7 +323,7 @@ const suites = {
 
   'pan-remembers': {
     name: 'PAN Remembers',
-    description: 'THE GATE: Start PAN terminal session, wait for "ΠΑΝ remembers" (proves memory + context injection works). NOTHING runs if this fails.',
+    description: 'THE GATE: Start PAN terminal session, wait for "Π remembers" (proves memory + context injection works). NOTHING runs if this fails.',
     dependsOn: ['startup'],
     tests: [
       {
@@ -360,7 +360,7 @@ const suites = {
         }
       },
       {
-        id: 'pan-remembers-wait', name: 'Wait for "ΠΑΝ remembers"',
+        id: 'pan-remembers-wait', name: 'Wait for "Π remembers"',
         description: 'Claude starts, loads CLAUDE.md with memory context, outputs briefing. Wait up to 90s.',
         run: async (ctx) => {
           const startTime = Date.now();
@@ -382,19 +382,19 @@ const suites = {
             await waitCancellable(2000);
           }
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-          if (!found) throw new Error(`"ΠΑΝ remembers" not seen after ${elapsed}s — memory system broken`);
+          if (!found) throw new Error(`"Π remembers" not seen after ${elapsed}s — memory system broken`);
           return `PAN memory briefing appeared in ${elapsed}s`;
         }
       },
       {
         id: 'pan-remembers-screenshot', name: 'PAN Remembers (screenshot)',
-        description: 'Screenshot proving "ΠΑΝ remembers" is visible in the terminal',
+        description: 'Screenshot proving "Π remembers" is visible in the terminal',
         run: async (ctx) => {
           await wait(2000);
           const ssPath = await takeScreenshot('pan_remembers');
           if (ctx.ws) ctx.ws.close();
           if (!ssPath) throw new Error('Screenshot failed');
-          return `VERIFY SCREENSHOT: ${ssPath} — "ΠΑΝ remembers" must be visible in terminal output`;
+          return `VERIFY SCREENSHOT: ${ssPath} — "Π remembers" must be visible in terminal output`;
         }
       }
     ]
@@ -958,7 +958,7 @@ const suites = {
 
   'refresh': {
     name: 'Page Refresh',
-    description: 'The #1 bug: opens PAN session, waits for Claude to fully start (ΠΑΝ remembers → ❯), sends message, simulates F5, verifies session and history survive.',
+    description: 'The #1 bug: opens PAN session, waits for Claude to fully start (Π remembers → ❯), sends message, simulates F5, verifies session and history survive.',
     dependsOn: ['pan-remembers'],
     tests: [
       {

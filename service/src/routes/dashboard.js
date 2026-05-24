@@ -1403,11 +1403,11 @@ router.put('/api/tasks/:id', (req, res) => {
   if (status !== undefined && status !== existing.status) {
     try {
       if (status === 'in_test') {
-        panNotify('ΠΑΝ · ⚡', `🧪 Task #${id} is now being tested: ${existing.title}`,
+        panNotify('Π · ⚡', `🧪 Task #${id} is now being tested: ${existing.title}`,
           `Task #${id} moved to in_test.\nTitle: ${existing.title}`,
           { severity: 'info', metadata: { task_id: id } });
       } else if (status === 'done' && existing.status === 'in_test') {
-        panNotify('ΠΑΝ · ⚡', `✅ Task #${id} passed tests and closed: ${existing.title}`,
+        panNotify('Π · ⚡', `✅ Task #${id} passed tests and closed: ${existing.title}`,
           `Task #${id} passed tests and was closed.\nTitle: ${existing.title}`,
           { severity: 'info', metadata: { task_id: id } });
       }
@@ -1454,11 +1454,11 @@ router.put('/api/tasks/reorder', (req, res) => {
     if (t.status !== undefined && t.status !== existing.status) {
       try {
         if (t.status === 'in_test') {
-          panNotify('ΠΑΝ · ⚡', `🧪 Task #${t.id} is now being tested: ${existing.title}`,
+          panNotify('Π · ⚡', `🧪 Task #${t.id} is now being tested: ${existing.title}`,
             `Task #${t.id} moved to in_test.\nTitle: ${existing.title}`,
             { severity: 'info', metadata: { task_id: t.id } });
         } else if (t.status === 'done' && existing.status === 'in_test') {
-          panNotify('ΠΑΝ · ⚡', `✅ Task #${t.id} passed tests and closed: ${existing.title}`,
+          panNotify('Π · ⚡', `✅ Task #${t.id} passed tests and closed: ${existing.title}`,
             `Task #${t.id} passed tests and was closed.\nTitle: ${existing.title}`,
             { severity: 'info', metadata: { task_id: t.id } });
         }

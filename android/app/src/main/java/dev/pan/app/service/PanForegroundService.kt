@@ -444,7 +444,7 @@ class PanForegroundService : Service() {
         )
 
         val notification = NotificationCompat.Builder(this, permChannelId)
-            .setContentTitle("ΠΑΝ Permission Required")
+            .setContentTitle("Π Permission Required")
             .setContentText(perm.prompt)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -1711,7 +1711,7 @@ class PanForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = if (listening) "ΠΑΝ Active" else "ΠΑΝ Muted"
+        val title = if (listening) "Π Active" else "Π Muted"
         val statusParts = mutableListOf<String>()
         statusParts.add(if (listening) "Listening" else "Silent")
         statusParts.add(if (connected) "Server OK" else "Offline")

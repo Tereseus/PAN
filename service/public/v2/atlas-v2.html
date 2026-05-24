@@ -3,16 +3,16 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>ΠΑΝ</title>
+		<title>Π</title>
 		<link rel="preconnect" href="https://fonts.googleapis.com">
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-		<link href="./_app/immutable/entry/start.oUw26oxm.js" rel="modulepreload">
-		<link href="./_app/immutable/chunks/CpIPM9xw.js" rel="modulepreload">
+		<link href="./_app/immutable/entry/start.CYGmgHOB.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/DUbqu4gl.js" rel="modulepreload">
 		<link href="./_app/immutable/chunks/CzL0zlXb.js" rel="modulepreload">
-		<link href="./_app/immutable/chunks/CF5DVWm_.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/Cvmm_Hh_.js" rel="modulepreload">
 		<link href="./_app/immutable/chunks/Ce5VyOts.js" rel="modulepreload">
-		<link href="./_app/immutable/entry/app.gkhQMlpT.js" rel="modulepreload">
+		<link href="./_app/immutable/entry/app.CDyQ7qNT.js" rel="modulepreload">
 		<link href="./_app/immutable/chunks/rdpp8wXN.js" rel="modulepreload">
 		<link href="./_app/immutable/chunks/CuZRpRoS.js" rel="modulepreload">
 		<link href="./_app/immutable/chunks/ChcJu6Af.js" rel="modulepreload">
@@ -61,7 +61,7 @@
 	<body data-sveltekit-preload-data="hover" style="background:#0a0a0f;margin:0;padding:0">
 		<!-- Loading screen: shows immediately, removed after SvelteKit hydrates -->
 		<div id="pan-loading">
-			<div class="logo-mark" id="pan-loading-logo">ΠΑΝ</div>
+			<div class="logo-mark" id="pan-loading-logo">Π</div>
 			<div class="loading-sub"></div>
 		</div>
 		<script>
@@ -83,6 +83,28 @@
 					}
 				} catch(e) {}
 			})();
+			// Universal "SvelteKit has rendered SOMETHING" detector.
+			// SvelteKit mounts the page into a "display:contents" div.
+			// Any non-script/style child means a route hydrated — works for ALL pages
+			// (terminal with .shell, comms with .comms-app, future routes, etc).
+			function panAppRendered() {
+				if (document.querySelector('.shell')) return true;
+				if (document.querySelector('[data-sveltekit-hydrate]')) return true;
+				if (document.querySelector('nav.sidebar')) return true;
+				if (document.querySelector('[data-widget]')) return true;
+				if (document.querySelector('.comms-app')) return true;
+				// Universal fallback: SvelteKit's target container has rendered content
+				var targets = document.querySelectorAll('div[style*="display: contents"], div[style*="display:contents"]');
+				for (var t = 0; t < targets.length; t++) {
+					var kids = targets[t].children;
+					for (var i = 0; i < kids.length; i++) {
+						var tag = kids[i].tagName;
+						if (tag !== 'SCRIPT' && tag !== 'STYLE') return true;
+					}
+				}
+				return false;
+			}
+
 			// Remove loading screen once SvelteKit has mounted
 			(function() {
 				var el = document.getElementById('pan-loading');
@@ -90,8 +112,7 @@
 				// SvelteKit replaces the body placeholder on hydrate.
 				// Use a MutationObserver on the body to detect when the app shell appears.
 				var observer = new MutationObserver(function() {
-					// Check if the Svelte app has rendered (sidebar/shell exists)
-					if (document.querySelector('.shell') || document.querySelector('[data-sveltekit-hydrate]') || document.querySelector('nav.sidebar')) {
+					if (panAppRendered()) {
 						el.classList.add('fade-out');
 						setTimeout(function() { el.remove(); }, 350);
 						observer.disconnect();
@@ -120,10 +141,7 @@
 				var MAX_RELOADS = 3;
 				var COUNTER_KEY = 'pan_stuck_reload_count';
 				function shellRendered() {
-					return !!(document.querySelector('.shell')
-						|| document.querySelector('[data-sveltekit-hydrate]')
-						|| document.querySelector('nav.sidebar')
-						|| document.querySelector('[data-widget]'));
+					return panAppRendered();
 				}
 				setTimeout(function check() {
 					if (shellRendered()) {
@@ -155,7 +173,7 @@
 					// of an endless loop. User can hit "Retry" to reset the counter.
 					var banner = document.createElement('div');
 					banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:100000;background:#7f1d1d;color:#fff;padding:14px 20px;font-family:Inter,sans-serif;font-size:14px;display:flex;align-items:center;gap:12px;box-shadow:0 4px 12px rgba(0,0,0,.4)';
-					banner.innerHTML = '<strong>PAN dashboard failed to load after ' + MAX_RELOADS + ' attempts.</strong> Bundle, network, or hydration is stuck. <button id="pan-stuck-retry" style="margin-left:auto;background:#fff;color:#7f1d1d;border:0;padding:6px 14px;border-radius:4px;font-weight:600;cursor:pointer">Retry</button>';
+					banner.innerHTML = '<strong>Π dashboard failed to load after ' + MAX_RELOADS + ' attempts.</strong> Bundle, network, or hydration is stuck. <button id="pan-stuck-retry" style="margin-left:auto;background:#fff;color:#7f1d1d;border:0;padding:6px 14px;border-radius:4px;font-weight:600;cursor:pointer">Retry</button>';
 					document.body.appendChild(banner);
 					document.getElementById('pan-stuck-retry').addEventListener('click', function() {
 						try { sessionStorage.removeItem(COUNTER_KEY); } catch(e) {}
@@ -192,7 +210,7 @@
 		<div style="display: contents">
 			<script>
 				{
-					__sveltekit_j2ji38 = {
+					__sveltekit_knouyl = {
 						base: new URL(".", location).pathname.slice(0, -1),
 						assets: "/v2"
 					};
@@ -200,8 +218,8 @@
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("./_app/immutable/entry/start.oUw26oxm.js"),
-						import("./_app/immutable/entry/app.gkhQMlpT.js")
+						import("./_app/immutable/entry/start.CYGmgHOB.js"),
+						import("./_app/immutable/entry/app.CDyQ7qNT.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});

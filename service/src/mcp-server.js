@@ -144,7 +144,8 @@ server.tool(
   { text: z.string(), session_id: z.string().optional() },
   async ({ text, session_id }) => {
     try {
-      const body = { text };
+      // #982 — tag MCP-originated PTY input so phantom-prompt audits can identify it
+      const body = { text, source: 'mcp_tool' };
       if (session_id) body.session_id = session_id;
       return ok(await panFetch('/api/v1/terminal/send', { method: 'POST', body }));
     } catch (e) { return err(e); }

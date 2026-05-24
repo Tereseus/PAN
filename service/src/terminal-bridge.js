@@ -79,9 +79,13 @@ export async function getActivePtyPids() {
   return t.getActivePtyPids() || [];
 }
 
-export function sendToSession(sessionId, text) {
-  if (IS_CRAFT) return ipcFire('terminal:sendToSession', { sessionId, text });
-  return directTerminal?.sendToSession(sessionId, text);
+// #982 — `source` is provenance of the input: 'user_keyboard', 'voice_pipeline',
+// 'test_harness', 'agent_handoff', 'mcp_tool', 'steward', 'system', 'unknown'.
+// Every caller MUST pass a source; defaulting to 'unknown' makes phantom-prompt
+// debugging possible (we log every pty_input event with this tag).
+export function sendToSession(sessionId, text, source = 'unknown') {
+  if (IS_CRAFT) return ipcFire('terminal:sendToSession', { sessionId, text, source });
+  return directTerminal?.sendToSession(sessionId, text, undefined, source);
 }
 
 export function broadcastToSession(sessionId, messageType, data) {

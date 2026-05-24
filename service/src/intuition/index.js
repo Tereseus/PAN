@@ -1103,24 +1103,46 @@ async function classifyAxes(snap) {
       // Build candidate list. Each: { id, kind, score, reason }
       const candidates = [];
 
+      // ── Staleness gate ──────────────────────────────────────────────────
+      // If the user is *actively interacting* (events flowing) but the
+      // sensory observation layer hasn't refreshed in a long time, the
+      // need-decay model is unreliable: PAN literally can't see whether
+      // Commander ate, drank, or rested. Suppress need:* and state:emergency
+      // in that case so we don't fire "no nourishment in 2 days" while the
+      // user is clearly alive and typing. See user note 2026-05-22.
+      const STALE_SENSOR_MS = 6 * 60 * 60_000; // 6h
+      const wcAge = snap?.signals?.webcam_context?.age_ms;
+      const scAge = snap?.signals?.screen_context?.age_ms;
+      const wcStale = wcAge == null || wcAge > STALE_SENSOR_MS;
+      const scStale = scAge == null || scAge > STALE_SENSOR_MS;
+      const userActive = sinceMin != null && sinceMin < 30;
+      const sensorsStale = wcStale && scStale && userActive;
+
       // (1) Life Needs candidates — one per need that's hurting.
       const NEED_THRESHOLD = 0.5; // urgency >= this → considered a candidate
       try {
-        const evald = needs.evaluate(userId);
-        for (const n of evald) {
-          if (n.urgency >= NEED_THRESHOLD) {
-            candidates.push({
-              id: `need:${n.need_id}`,
-              kind: 'need',
-              score: n.urgency,           // 0..2 — naturally higher when weight=2
-              reason: `${n.label.toLowerCase()} at ${Math.round(n.level)}/100 (weight ${n.weight})`,
-            });
+        if (sensorsStale) {
+          dbg(`[Intuition] need:* candidates suppressed — sensors stale (wc=${wcAge}ms, sc=${scAge}ms) while user active (${sinceMin}m)`);
+        } else {
+          const evald = needs.evaluate(userId);
+          for (const n of evald) {
+            if (n.urgency >= NEED_THRESHOLD) {
+              candidates.push({
+                id: `need:${n.need_id}`,
+                kind: 'need',
+                score: n.urgency,           // 0..2 — naturally higher when weight=2
+                reason: `${n.label.toLowerCase()} at ${Math.round(n.level)}/100 (weight ${n.weight})`,
+              });
+            }
           }
         }
       } catch (e) { dbg(`[Intuition] needs.evaluate failed: ${e.message}`); }
 
       // (2) State-signal candidates.
-      if (snap.now.assumption === 'emergency') {
+      // state:emergency depends on assumption inference which leans on the
+      // same stale sensors → suppress when sensorsStale. state:not_ok / mood
+      // / quiet come from conversation tone, which is independent → keep.
+      if (snap.now.assumption === 'emergency' && !sensorsStale) {
         candidates.push({ id: 'state:emergency', kind: 'state', score: 1.5, reason: 'assumption=emergency' });
       } else if (snap.now.assumption === 'not_ok' || snap.now.assumption === 'not ok') {
         candidates.push({ id: 'state:not_ok', kind: 'state', score: 0.6, reason: 'assumption=not_ok' });
@@ -1132,7 +1154,89 @@ async function classifyAxes(snap) {
         candidates.push({ id: 'state:quiet', kind: 'state', score: 0.45, reason: `quiet ${sinceMin}m` });
       }
 
+      // (3) Conversation-flow candidates (conv:*) — fire even in flow.
+      // Detect confusion, stuck-ness, tangents, and idle gaps from the
+      // event stream + intuition snapshot history.
+      try {
+        // conv:confused — ≥3 clarifying ?-ending prompts in 5 min
+        const confusedCount = get(
+          `SELECT COUNT(*) AS n FROM events
+           WHERE event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
+             AND created_at > datetime('now','localtime','-5 minutes')
+             AND data LIKE '%?%'`
+        )?.n || 0;
+        if (confusedCount >= 3) {
+          candidates.push({
+            id: 'conv:confused',
+            kind: 'conv',
+            score: 0.75,
+            reason: `${confusedCount} clarifying questions in 5m`,
+          });
+        }
+
+        // conv:stuck — ≥2 stuck-phrase prompts in 10 min
+        const stuckRows = all(
+          `SELECT data FROM events
+           WHERE event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
+             AND created_at > datetime('now','localtime','-10 minutes')`
+        );
+        const STUCK_RE = /stuck|don'?t know|not working|why isn'?t|why does(?:n'?t)?|broken|doesn'?t work|won'?t work/i;
+        let stuckCount = 0;
+        for (const r of stuckRows) {
+          if (r?.data && STUCK_RE.test(r.data)) stuckCount++;
+        }
+        if (stuckCount >= 2) {
+          candidates.push({
+            id: 'conv:stuck',
+            kind: 'conv',
+            score: 0.80,
+            reason: `${stuckCount} stuck-phrase prompts in 10m`,
+          });
+        }
+
+        // conv:tangent — focus changed in last 5 min
+        const recentFoci = all(
+          `SELECT snapshot FROM intuition_snapshots
+           WHERE as_of > datetime('now','localtime','-5 minutes')
+           ORDER BY as_of DESC LIMIT 10`
+        );
+        const currentFocus = snap?.now?.focus || null;
+        if (currentFocus && recentFoci.length >= 2) {
+          let prevFocus = null;
+          for (const r of recentFoci) {
+            try {
+              const s = JSON.parse(r.snapshot);
+              const f = s?.now?.focus;
+              if (f && f !== currentFocus) { prevFocus = f; break; }
+            } catch {}
+          }
+          if (prevFocus) {
+            candidates.push({
+              id: 'conv:tangent',
+              kind: 'conv',
+              score: 0.70,
+              reason: `focus shifted ${prevFocus} → ${currentFocus}`,
+              from: prevFocus,
+              to: currentFocus,
+            });
+          }
+        }
+
+        // conv:idle — quiet 10-30 min (state:quiet handles 60+)
+        if (sinceMin != null && sinceMin >= 10 && sinceMin <= 30) {
+          candidates.push({
+            id: 'conv:idle',
+            kind: 'conv',
+            score: 0.65,
+            reason: `quiet ${sinceMin}m`,
+          });
+        }
+      } catch (e) { dbg(`[Intuition] conv:* candidates failed: ${e.message}`); }
+
       // Flow penalty — deep coding/writing suppresses non-emergency candidates.
+      // EXCEPTION: conv:* candidates bypass flow because the whole point is to
+      // unstick a stalled conversation; the user explicitly opted them past
+      // the flow gate. (2026-05-22)
       const inFlow = snap.now.focus && /coding|writing|building|debugging/i.test(snap.now.focus);
 
       // Pick the top candidate (or none).
@@ -1141,7 +1245,8 @@ async function classifyAxes(snap) {
       const threshold = 0.7;
 
       let verdict, key, thought, importance;
-      if (top && (top.score >= threshold) && !(inFlow && top.score < 1.2)) {
+      const convBypass = top && top.id.startsWith('conv:');
+      if (top && (top.score >= threshold) && !(inFlow && top.score < 1.2 && !convBypass)) {
         verdict = 'act';
         key = `act:${top.id}`;
         thought = `I should speak up about ${top.reason} (score ${top.score.toFixed(2)} ≥ ${threshold}${inFlow ? ', overriding flow' : ''}).`;
@@ -1177,7 +1282,7 @@ async function classifyAxes(snap) {
         _lastInterjectionKey = key;
 
         // If the verdict is "act", hand off to the action engine which
-        // delivers to all channels (ΠΑΝ thread, dashboard WS, connected
+        // delivers to all channels (Π thread, dashboard WS, connected
         // devices). Fire-and-forget — dispatch has its own persistence dedupe
         // (30-min by action_key) so duplicate calls from rapid flips are safe.
         if (verdict === 'act' && top) {

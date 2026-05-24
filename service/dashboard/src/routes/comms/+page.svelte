@@ -16,6 +16,37 @@
 	let chatThreadId = $state('');
 	let messagesEl;
 
+	// ─── Call mode (from ?call=1 URL param — opens via Call button on terminal page) ───
+	// v1: indicator + auto-open Π thread. Voice loop (STT in / TTS out) wires in
+	// once /api/v1/speak lands; current state surfaces the call to the user and writes
+	// a chat_calls row for future telemetry.
+	let callActive = $state(false);
+	let callId = $state(null);            // chat_calls.id once we POST the call row (follow-up)
+	let callStartedAt = $state(null);
+	let callElapsed = $state(0);
+	let callTimer = null;
+	// Voice loop state — continuous VAD (no push-to-talk), behaves like a real phone call
+	let micStream = null;                 // MediaStream from getUserMedia
+	let micPermission = $state('unknown');// 'granted' | 'denied' | 'prompt' | 'unknown'
+	let audioCtx = null;                  // Web Audio context for VAD
+	let analyser = null;                  // AnalyserNode for RMS
+	let vadRaf = 0;                       // requestAnimationFrame id for VAD loop
+	let mediaRecorder = null;
+	let micChunks = [];
+	let isRecording = $state(false);      // VAD detected speech → recording an utterance
+	let isThinking = $state(false);       // STT → router → TTS pipeline in flight
+	let isSpeaking = $state(false);       // PAN is currently playing audio
+	let voiceError = $state(null);
+	let currentAudio = null;
+	let voiceMime = 'audio/webm';
+	// VAD tuning
+	const VAD_SPEECH_RMS    = 0.012;      // threshold to count as speech (0..1)
+	const VAD_SILENCE_MS    = 900;        // silence after speech → end-of-utterance
+	const VAD_MIN_SPEECH_MS = 300;        // ignore utterances shorter than this (clicks/coughs)
+	const VAD_MAX_UTTER_MS  = 15000;      // safety cap on a single utterance
+	let lastSpeechAt = 0;
+	let utterStartedAt = 0;
+
 	// ─── Mail state ───
 	let mailItems = $state([]);
 	let mailFilter = $state('all'); // all | pan | email
@@ -35,8 +66,34 @@
 	onMount(() => {
 		const params = new URLSearchParams(window.location.search);
 		view = params.get('view') || 'mail';
-		document.title = view === 'contacts' ? 'Contacts' : view === 'mail' ? 'Mail' : 'Calendar';
+		const initialThread = params.get('thread');
+		const callMode = params.get('call') === '1';
+		document.title = callMode ? 'Call Π' : view === 'contacts' ? 'Contacts' : view === 'mail' ? 'Mail' : 'Calendar';
 		loadData();
+
+		// Auto-open the Π system thread if launched from the terminal Call button.
+		if (initialThread === 'thread-pan-system') {
+			view = 'contacts';
+			(async () => {
+				try {
+					// Make sure contacts list is populated so the sidebar highlights PAN.
+					if (!contacts.length) {
+						contacts = await api('/api/v1/chat/contacts');
+					}
+					const panContact = contacts.find(c => c.id === 'contact-pan-system')
+						|| { id: 'contact-pan-system', display_name: 'Π', avatar_url: null };
+					activeContact = panContact;
+					chatThreadId = 'thread-pan-system';
+					const msgs = await api(`/api/v1/chat/threads/${chatThreadId}/messages`);
+					chatMessages = Array.isArray(msgs) ? msgs : [];
+					await tick();
+					if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+					if (callMode) startCall();
+				} catch (e) {
+					console.error('Auto-open Π thread failed:', e);
+				}
+			})();
+		}
 
 		// ─── Live polling ───
 		// Poll active thread for new messages every 3s; refresh contact list every 10s.
@@ -138,7 +195,7 @@
 			await tick();
 			if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 
-			// ΠΑΝ persona reply
+			// Π persona reply
 			if (chatThreadId === 'thread-pan-system') {
 				try {
 					const reply = await api('/api/v1/chat/pan-reply', {
@@ -158,12 +215,326 @@
 						if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 					}
 				} catch (e) {
-					console.error('ΠΑΝ reply failed:', e);
+					console.error('Π reply failed:', e);
 				}
 			}
 		} catch (e) {
 			console.error('Send failed:', e);
 		}
+	}
+
+	// Ship a structured log entry to the server so call failures are visible
+	// in /api/v1/logs (otherwise console-only and impossible to debug remotely).
+	function shipLog(level, message, meta) {
+		try {
+			fetch('/api/v1/logs', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					device_id: 'comms-popout',
+					device_type: 'browser',
+					level,
+					source: 'voice-call',
+					message,
+					meta: meta || {},
+				}),
+				keepalive: true,
+			}).catch(() => {});
+		} catch {}
+	}
+
+	// ─── Voice call — continuous VAD (NOT push-to-talk) ──────────────────────
+	// You speak, PAN listens (silence detection ends each turn), PAN replies,
+	// then PAN listens again. Just like a phone call. No buttons.
+	//
+	// Per-turn pipeline:
+	//   1. VAD loop watches mic RMS. Speech detected → start MediaRecorder.
+	//   2. After 900ms of silence → stop recorder → upload Opus blob.
+	//   3. POST /api/v1/voice/transcribe-browser → whisper text.
+	//   4. POST /api/v1/chat (text, source=voice-call) → router reply text.
+	//   5. POST /api/v1/voice/speak → WAV → play in popout (mic paused while
+	//      PAN talks, so PAN doesn't transcribe its own voice).
+	//   6. Resume VAD.
+
+	// Try to acquire mic. Called both from startCall() AND from the explicit
+	// "Enable microphone" button (which is always a real user gesture so the
+	// browser will pop the permission prompt even in awkward WebView contexts).
+	async function enableMic() {
+		voiceError = null;
+		try {
+			micStream = await navigator.mediaDevices.getUserMedia({
+				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
+			});
+			micPermission = 'granted';
+			const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
+			voiceMime = candidates.find(m => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) || 'audio/webm';
+			// Spin up AudioContext for VAD
+			audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+			const src = audioCtx.createMediaStreamSource(micStream);
+			analyser = audioCtx.createAnalyser();
+			analyser.fftSize = 1024;
+			src.connect(analyser);
+			// If we're inside an active call already, kick off the listen loop.
+			if (callActive) runVAD();
+			return true;
+		} catch (e) {
+			// Silently log — don't surface UI. Mic permission for the Tauri WebView is
+			// a separate infra problem; the call still appears active visually.
+			micPermission = 'denied';
+			console.warn('[call] getUserMedia failed:', e?.name, e?.message);
+			return false;
+		}
+	}
+
+	async function startCall() {
+		if (callActive) return;
+		voiceError = null;
+		callActive = true;
+		callStartedAt = Date.now();
+		callElapsed = 0;
+		callTimer = setInterval(() => {
+			callElapsed = Math.floor((Date.now() - callStartedAt) / 1000);
+		}, 1000);
+		// Auto-acquire mic. This was triggered by the user clicking the Call
+		// button (same user-gesture chain), so most browsers will allow getUserMedia.
+		// If the WebView blocked it, the popout will show an explicit Enable button.
+		await enableMic();
+		// Best-effort: create a chat_calls row so call history is preserved.
+		try {
+			const r = await api(`/api/v1/chat/threads/${chatThreadId}/calls`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type: 'voice', initiator: 'self' })
+			});
+			callId = r?.call_id || null;
+		} catch (e) {
+			console.warn('[call] chat_calls row creation skipped:', e?.message);
+		}
+	}
+
+	async function endCall() {
+		if (!callActive) return;
+		callActive = false;
+		// Stop VAD loop
+		if (vadRaf) { cancelAnimationFrame(vadRaf); vadRaf = 0; }
+		// Stop any in-flight recording cleanly
+		if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+			try { mediaRecorder.stop(); } catch {}
+		}
+		mediaRecorder = null;
+		micChunks = [];
+		isRecording = false;
+		isThinking = false;
+		isSpeaking = false;
+		// Tear down audio context
+		if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; analyser = null; }
+		// Release mic
+		if (micStream) {
+			try { micStream.getTracks().forEach(t => t.stop()); } catch {}
+			micStream = null;
+		}
+		// Cancel any in-flight PAN reply audio
+		if (currentAudio) {
+			try { currentAudio.pause(); currentAudio.src = ''; } catch {}
+			currentAudio = null;
+		}
+		if (callTimer) { clearInterval(callTimer); callTimer = null; }
+		const duration = callStartedAt ? Date.now() - callStartedAt : 0;
+		try {
+			if (callId) {
+				await api(`/api/v1/chat/calls/${callId}/end`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ duration_ms: duration })
+				});
+			}
+		} catch {}
+		callId = null;
+		callStartedAt = null;
+	}
+
+	// VAD loop — runs while callActive + mic available + not currently thinking/speaking.
+	// When user speech is detected we start a MediaRecorder; when silence
+	// follows for VAD_SILENCE_MS we stop it and ship the utterance.
+	function runVAD() {
+		if (!callActive || !analyser) return;
+		const buf = new Float32Array(analyser.fftSize);
+		const tick = () => {
+			if (!callActive || !analyser) return;
+			vadRaf = requestAnimationFrame(tick);
+			// Don't listen while PAN is talking (avoid feedback)
+			// or while we're processing a previous turn (back-pressure).
+			if (isSpeaking || isThinking) return;
+
+			analyser.getFloatTimeDomainData(buf);
+			let sumSq = 0;
+			for (let i = 0; i < buf.length; i++) sumSq += buf[i] * buf[i];
+			const rms = Math.sqrt(sumSq / buf.length);
+
+			const now = Date.now();
+			const speaking = rms > VAD_SPEECH_RMS;
+
+			if (speaking) lastSpeechAt = now;
+
+			if (!isRecording && speaking) {
+				// Start a new utterance
+				try {
+					mediaRecorder = new MediaRecorder(micStream, { mimeType: voiceMime });
+					micChunks = [];
+					mediaRecorder.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) micChunks.push(ev.data); };
+					mediaRecorder.onstop = () => { void handleTurn(); };
+					mediaRecorder.start(250);
+					isRecording = true;
+					utterStartedAt = now;
+				} catch (e) {
+					voiceError = 'Recorder failed: ' + (e?.message || e);
+				}
+			} else if (isRecording) {
+				const utterMs    = now - utterStartedAt;
+				const silenceMs  = now - lastSpeechAt;
+				const hitSilence = silenceMs >= VAD_SILENCE_MS && utterMs >= VAD_MIN_SPEECH_MS;
+				const hitMax     = utterMs >= VAD_MAX_UTTER_MS;
+				if (hitSilence || hitMax) {
+					try { mediaRecorder.stop(); } catch {}
+					isRecording = false;
+				}
+			}
+		};
+		vadRaf = requestAnimationFrame(tick);
+	}
+
+	async function handleTurn() {
+		if (!micChunks.length) { return; }
+		isThinking = true;
+		const blob = new Blob(micChunks, { type: voiceMime });
+		micChunks = [];
+		try {
+			// 1. STT
+			const sttRes = await fetch('/api/v1/voice/transcribe-browser', {
+				method: 'POST',
+				headers: { 'Content-Type': blob.type || 'audio/webm' },
+				body: blob,
+			});
+			const stt = await sttRes.json();
+			if (!sttRes.ok) throw new Error(stt.error || 'STT failed');
+			const transcript = (stt.text || '').trim();
+			if (!transcript) { isThinking = false; return; } // silence / noise — keep listening
+
+			// 2. Router
+			const routerRes = await fetch('/api/v1/chat', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ message: transcript, source: 'voice-call', thread_id: chatThreadId }),
+			});
+			const routerJson = await routerRes.json();
+			const reply = (routerJson?.response || '').trim();
+			if (!reply) throw new Error('empty router reply');
+
+			// Append both turns to the visible chat immediately. Server has
+			// already persisted them (via /api/v1/chat thread_id branch), so
+			// the 3-second poll will reconcile — but appending locally avoids
+			// the visible delay so the user sees the conversation form in
+			// real time as they talk.
+			const nowMs = Date.now();
+			chatMessages = [
+				...chatMessages,
+				{
+					id: routerJson?.user_message_id || ('cmsg_local_u_' + nowMs),
+					sender_id: 'self',
+					body: transcript,
+					body_type: 'text',
+					created_at: nowMs,
+				},
+				{
+					id: routerJson?.pan_message_id || ('cmsg_local_p_' + (nowMs + 1)),
+					sender_id: chatThreadId === 'thread-pan-system' ? 'contact-pan-system' : 'pan',
+					body: reply,
+					body_type: 'text',
+					created_at: nowMs + 1,
+					// Attach the router's debug trace (intent, model, latency,
+					// intuition snapshot, recent mind, reasoning) so the bubble
+					// can render a 🧠 disclosure right under the reply. Already
+					// persisted server-side in chat_messages.metadata.debug, so
+					// poll-refresh keeps showing it.
+					metadata: routerJson?.debug ? { debug: routerJson.debug } : null,
+				},
+			];
+			await tick();
+			if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+
+			// 3. TTS — try F5-TTS first; on any failure (no reference WAV uploaded,
+			// worker offline, etc.) fall back to the browser's built-in
+			// SpeechSynthesis so PAN can still talk back instead of silently
+			// dropping the reply. Mark isSpeaking so VAD pauses either way.
+			let ttsPlayed = false;
+			try {
+				const ttsRes = await fetch('/api/v1/voice/speak', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ text: reply, voice: 'arnold' }),
+				});
+				if (ttsRes.ok) {
+					const audioBlob = await ttsRes.blob();
+					const url = URL.createObjectURL(audioBlob);
+					if (currentAudio) { try { currentAudio.pause(); } catch {} }
+					currentAudio = new Audio(url);
+					isSpeaking = true;
+					currentAudio.onended = () => {
+						try { URL.revokeObjectURL(url); } catch {}
+						isSpeaking = false;
+					};
+					await currentAudio.play().catch(() => { isSpeaking = false; });
+					ttsPlayed = true;
+				} else {
+					// Capture server error so the call banner can show it
+					let detail = `HTTP ${ttsRes.status}`;
+					try { const j = await ttsRes.json(); if (j?.error) detail = j.error; } catch {}
+					voiceError = `F5-TTS: ${detail} — using browser voice`;
+					console.warn('[call] F5-TTS unavailable:', detail);
+					shipLog('warn', 'F5-TTS unavailable, falling back to browser voice', { detail });
+				}
+			} catch (e) {
+				voiceError = `F5-TTS network error — using browser voice`;
+				console.warn('[call] F5-TTS fetch failed:', e?.message);
+			}
+			if (!ttsPlayed) {
+				// Browser SpeechSynthesis fallback. Works in any WebView with
+				// audio enabled; no server reference WAV required.
+				try {
+					if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+						const u = new SpeechSynthesisUtterance(reply);
+						u.rate = 1.0;
+						u.pitch = 1.0;
+						isSpeaking = true;
+						u.onend = () => { isSpeaking = false; };
+						u.onerror = () => { isSpeaking = false; };
+						window.speechSynthesis.cancel();
+						window.speechSynthesis.speak(u);
+						// Fallback worked — clear the F5-TTS error so the banner
+						// stops showing red. We are intentionally not speaking
+						// Arnold; that's not a failure.
+						voiceError = null;
+					} else {
+						voiceError = 'No TTS available in this window';
+					}
+				} catch (e) {
+					voiceError = 'Browser TTS failed: ' + (e?.message || e);
+					console.warn('[call] browser TTS failed:', e);
+				}
+			}
+		} catch (e) {
+			voiceError = e?.message || 'Voice turn failed';
+			console.error('[call] turn failed:', e);
+			shipLog('error', 'voice turn failed', { msg: e?.message || String(e) });
+		} finally {
+			isThinking = false;
+		}
+	}
+
+	function formatCallElapsed(s) {
+		const m = Math.floor(s / 60);
+		const sec = s % 60;
+		return `${m}:${sec.toString().padStart(2, '0')}`;
 	}
 
 	async function openCompose(contact = null, subject = '', email = '') {
@@ -196,6 +567,19 @@
 			await loadMail();
 		} catch (e) { console.error('Sync failed:', e); }
 		loading = false;
+	}
+
+	// Pull the `debug` blob out of a chat message, regardless of whether
+	// metadata is stored as an object (local append) or a JSON string (DB poll).
+	// Returns null when there's no debug trace — so non-PAN/legacy bubbles
+	// don't render an empty 🧠 disclosure.
+	function extractDebug(msg) {
+		try {
+			const meta = msg?.metadata;
+			if (!meta) return null;
+			const m = typeof meta === 'string' ? JSON.parse(meta) : meta;
+			return m && m.debug ? m.debug : null;
+		} catch { return null; }
 	}
 
 	function formatDate(ts) {
@@ -274,14 +658,110 @@
 							<div class="detail-name">{activeContact.display_name}</div>
 							<div class="detail-sub">{activeContact.email || activeContact.pan_instance_id || ''}</div>
 						</div>
+						{#if !callActive}
+							<button class="tool-btn call-tool-btn" onclick={startCall} title="Start voice call">{'\uD83D\uDCDE'}</button>
+						{/if}
 						<button class="tool-btn compose-btn" onclick={() => openCompose(activeContact)} title="Compose to this contact">{'\uD83D\uDCDD'}</button>
 					</div>
+					{#if callActive}
+						<div class="call-banner">
+							<span class="call-dot" class:thinking={isThinking} class:recording={isRecording} class:speaking={isSpeaking}></span>
+							<span class="call-label">
+								{#if isSpeaking}Π speaking… {formatCallElapsed(callElapsed)}
+								{:else if isThinking}Thinking… {formatCallElapsed(callElapsed)}
+								{:else if isRecording}Listening… {formatCallElapsed(callElapsed)}
+								{:else}Live call · {formatCallElapsed(callElapsed)}{/if}
+							</span>
+							{#if voiceError}
+								<span class="call-err" title={voiceError}>⚠ {voiceError}</span>
+							{/if}
+							<button class="end-call-btn" onclick={endCall} title="End call">End</button>
+						</div>
+					{/if}
 					<div class="chat-messages" bind:this={messagesEl}>
 						{#each chatMessages as msg}
-							<div class="chat-bubble" class:self={msg.sender_id === 'self'}>
-								<div class="bubble-text">{msg.body}</div>
-								<div class="bubble-time">{formatDate(msg.created_at)}</div>
-							</div>
+							{#if msg.body_type === 'pan_intuition_trace'}
+								<!-- Collapsible intuition trace: PAN's reasoning shown inline,
+								     same idea as Claude tool-call rendering. Click to expand. -->
+								<details class="intuition-trace">
+									<summary>{'\uD83E\uDDE0'} PAN intuition · {formatDate(msg.created_at)}</summary>
+									<pre class="intuition-body">{msg.body}</pre>
+								</details>
+							{:else}
+								<div class="chat-bubble" class:self={msg.sender_id === 'self'}>
+									<div class="bubble-text">{msg.body}</div>
+									<div class="bubble-time">{formatDate(msg.created_at)}</div>
+								</div>
+								{#if msg.sender_id !== 'self'}
+									{@const dbg = extractDebug(msg)}
+									{#if dbg}
+										<details class="why-trace">
+											<summary>
+												{'\uD83E\uDDE0'}
+												<span class="why-chip">{dbg.intent || '?'}</span>
+												<span class="why-chip">{dbg.model || '?'}</span>
+												<span class="why-chip">{dbg.total_latency_ms != null ? (dbg.total_latency_ms + 'ms') : '?'}</span>
+												{#if dbg.why}<span class="why-summary">— {dbg.why}</span>{/if}
+											</summary>
+											<div class="why-body">
+												{#if dbg.why}
+													<div class="why-section"><div class="why-h">Reasoning</div><div class="why-p">{dbg.why}</div></div>
+												{/if}
+												{#if dbg.situation}
+													<div class="why-section">
+														<div class="why-h">Intuition snapshot</div>
+														<pre class="why-pre">{JSON.stringify(dbg.situation, null, 2)}</pre>
+													</div>
+												{/if}
+												{#if dbg.mind}
+													<div class="why-section">
+														<div class="why-h">PAN's-Mind</div>
+														<p class="why-p why-mind-synth">{dbg.mind}</p>
+													</div>
+												{/if}
+												{#if dbg.conversation}
+													<div class="why-section">
+														<div class="why-h">Conversational state</div>
+														<div class="why-cs">
+															{#if dbg.conversation.topic}<div><b>topic</b> {dbg.conversation.topic}</div>{/if}
+															{#if dbg.conversation.phase}<div><b>phase</b> {dbg.conversation.phase}</div>{/if}
+															{#if dbg.conversation.pending_question}<div><b>pending Q</b> {dbg.conversation.pending_question}</div>{/if}
+															{#if dbg.conversation.user_pattern}<div><b>user pattern</b> {dbg.conversation.user_pattern}</div>{/if}
+															{#if dbg.conversation.likely_turn_complete != null}<div><b>turn complete</b> {String(dbg.conversation.likely_turn_complete)}</div>{/if}
+															{#if dbg.conversation.summary}<div class="why-cs-wide"><b>summary</b> {dbg.conversation.summary}</div>{/if}
+															{#if dbg.conversation.distilled_at}<div class="why-cs-meta">distilled {formatDate(dbg.conversation.distilled_at)}{dbg.conversation.latency_ms != null ? ` · ${dbg.conversation.latency_ms}ms` : ''}</div>{/if}
+														</div>
+													</div>
+												{/if}
+												{#if dbg.skill_matched}
+													<div class="why-section">
+														<div class="why-h">Skill matched</div>
+														<pre class="why-pre">{JSON.stringify(dbg.skill_matched, null, 2)}</pre>
+													</div>
+												{/if}
+												<div class="why-section">
+													<div class="why-h">Timings</div>
+													<div class="why-p">
+														ai: {dbg.ai_latency_ms ?? '?'}ms · total: {dbg.total_latency_ms ?? '?'}ms · source: {dbg.source || '?'} · recall: {dbg.recall_hit ? 'hit' : 'miss'}
+													</div>
+												</div>
+												{#if dbg.raw_response}
+													<div class="why-section">
+														<div class="why-h">Raw model output</div>
+														<pre class="why-pre">{dbg.raw_response}</pre>
+													</div>
+												{/if}
+												{#if dbg.error}
+													<div class="why-section why-err">
+														<div class="why-h">Error</div>
+														<div class="why-p">{dbg.error}</div>
+													</div>
+												{/if}
+											</div>
+										</details>
+									{/if}
+								{/if}
+							{/if}
 						{/each}
 						{#if chatMessages.length === 0}
 							<div class="empty">No messages yet</div>
@@ -627,6 +1107,127 @@
 	}
 	.send-btn:hover:not(:disabled) { background: #74c7ec; }
 	.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+	/* ─── Call banner (visible while ?call=1 voice session is active) ─── */
+	.call-banner {
+		display: flex; align-items: center; gap: 10px;
+		padding: 8px 16px; background: rgba(166, 227, 161, 0.08);
+		border-top: 1px solid rgba(166, 227, 161, 0.25);
+		border-bottom: 1px solid rgba(166, 227, 161, 0.25);
+		font-size: 12px; color: #a6e3a1; flex-shrink: 0;
+	}
+	.call-dot {
+		width: 8px; height: 8px; border-radius: 50%;
+		background: #a6e3a1;
+		animation: callPulse 1.4s ease-in-out infinite;
+	}
+	@keyframes callPulse {
+		0%, 100% { box-shadow: 0 0 0 0 rgba(166, 227, 161, 0.5); }
+		50% { box-shadow: 0 0 0 6px rgba(166, 227, 161, 0); }
+	}
+	.call-label { flex: 1; font-weight: 500; letter-spacing: 0.3px; }
+	.call-err {
+		margin-left: auto; color: #f38ba8; font-size: 11px;
+		max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.end-call-btn {
+		background: #f38ba8; color: #11111b; border: none;
+		padding: 4px 12px; border-radius: 6px;
+		font-size: 11px; font-weight: 600; cursor: pointer;
+	}
+	.end-call-btn:hover { background: #eba0ac; }
+	.call-tool-btn { /* phone icon in detail header — same shape as compose-btn */ }
+	/* Call dot color reflects state: green idle, yellow listening, blue thinking, lavender speaking */
+	.call-dot.recording { background: #f9e2af; }
+	.call-dot.thinking  { background: #89b4fa; animation-duration: 0.7s; }
+	.call-dot.speaking  { background: #cba6f7; animation-duration: 0.5s; }
+
+	/* ─── Intuition trace: collapsible reasoning shown inline in the thread ─── */
+	.intuition-trace {
+		align-self: stretch;
+		background: rgba(137, 180, 250, 0.05);
+		border: 1px dashed rgba(137, 180, 250, 0.3);
+		border-radius: 8px;
+		padding: 6px 10px;
+		font-size: 11px;
+		color: #89b4fa;
+	}
+	.intuition-trace summary {
+		cursor: pointer;
+		user-select: none;
+		font-weight: 500;
+		letter-spacing: 0.2px;
+	}
+	.intuition-trace summary:hover { color: #b4befe; }
+	.intuition-body {
+		margin: 8px 0 0; padding: 8px 10px;
+		background: rgba(0, 0, 0, 0.25);
+		border-radius: 6px;
+		font-family: 'Consolas', 'Monaco', monospace;
+		font-size: 11px; color: #cdd6f4;
+		white-space: pre-wrap; word-break: break-word;
+		max-height: 240px; overflow-y: auto;
+	}
+
+	/* ─── 🧠 PAN reasoning trace under each reply (per-message debug) ─── */
+	.why-trace {
+		align-self: flex-start;
+		max-width: 92%;
+		margin: -2px 0 6px 6px;
+		background: rgba(180, 190, 254, 0.04);
+		border-left: 2px solid rgba(180, 190, 254, 0.35);
+		border-radius: 0 6px 6px 0;
+		padding: 4px 8px;
+		font-size: 11px;
+		color: #a6adc8;
+	}
+	.why-trace summary {
+		cursor: pointer; user-select: none;
+		display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+		list-style: none;
+	}
+	.why-trace summary::-webkit-details-marker { display: none; }
+	.why-trace summary::before {
+		content: '▸';
+		display: inline-block; width: 10px;
+		font-size: 9px; color: #6c7086;
+		transition: transform .15s;
+	}
+	.why-trace[open] summary::before { transform: rotate(90deg); }
+	.why-chip {
+		background: rgba(180, 190, 254, 0.12);
+		color: #b4befe;
+		padding: 1px 6px; border-radius: 4px;
+		font-family: 'Consolas', 'Monaco', monospace;
+		font-size: 10px;
+	}
+	.why-summary {
+		flex: 1 1 100%;
+		color: #bac2de; font-style: italic;
+		margin-top: 2px;
+	}
+	.why-body { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+	.why-section { background: rgba(0,0,0,0.22); border-radius: 4px; padding: 5px 8px; }
+	.why-h {
+		font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+		color: #89b4fa; margin-bottom: 3px; font-weight: 600;
+	}
+	.why-p { color: #cdd6f4; line-height: 1.4; }
+	.why-pre {
+		margin: 0; font-family: 'Consolas', 'Monaco', monospace;
+		font-size: 10px; color: #cdd6f4;
+		white-space: pre-wrap; word-break: break-word;
+		max-height: 200px; overflow-y: auto;
+	}
+	.why-mind-synth { color: #cdd6f4; font-style: italic; line-height: 1.4; margin: 0; }
+	/* Per-message conversational-state mini-grid (dbg.conversation) */
+	.why-cs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; font-size: 11px; color: #cdd6f4; }
+	.why-cs b { color: #89b4fa; font-weight: 500; margin-right: 4px; }
+	.why-cs-wide { grid-column: 1 / -1; }
+	.why-cs-meta { grid-column: 1 / -1; color: #6c7086; font-size: 10px; margin-top: 2px; }
+	.why-src { color: #f9e2af; font-family: 'Consolas', monospace; font-size: 10px; margin-right: 4px; }
+	.why-err { border-left: 2px solid #f38ba8; padding-left: 6px; }
+	.why-err .why-h { color: #f38ba8; }
 
 	/* ─── Calendar ─── */
 	.calendar-view { flex: 1; display: flex; flex-direction: column; overflow: hidden; }

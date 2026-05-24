@@ -4,6 +4,12 @@
 > FEATURES.md is the per-widget spec; this doc explains **what each section
 > IS** and how the system is organized as a whole. Update this doc when you
 > add a new module that doesn't fit cleanly into an existing section.
+>
+> **Wiring between conversation, classifier, PAN's-Mind, and interjections lives in
+> [CONVERSATION-AND-INTERJECTION.md](./CONVERSATION-AND-INTERJECTION.md)** —
+> read that doc before touching `router.js`, `intuition/index.js` deliberation,
+> or `intuition/action.js`. It maps wire-by-wire status (✅ live / ⚠️ partial /
+> ❌ missing) and lists the gaps as `#NEW-N` tasks.
 
 ---
 

@@ -1566,7 +1566,7 @@
 		<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
 	{:else if currentTab === 'setup'}
 		<div class="setup-guide">
-			<div class="setup-title">How to Use ΠΑΝ</div>
+			<div class="setup-title">How to Use Π</div>
 			<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
 			<div class="setup-items">
 				<div><strong>Create a Project:</strong> "Create a new project called my-app"</div>
@@ -1784,7 +1784,7 @@
 			{#if tabs.length === 0}
 				<div class="term-empty">
 					<div class="term-empty-icon">&loz;</div>
-					<div class="term-empty-title">ΠΑΝ Terminal</div>
+					<div class="term-empty-title">Π Terminal</div>
 					<div class="term-empty-sub">Select a project to start</div>
 				</div>
 			{/if}

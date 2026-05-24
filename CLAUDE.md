@@ -18,9 +18,22 @@ PAN is a persistent AI operating system across all devices, projects, and conver
 > before touching anything in `terminal/+page.svelte` related to messages, chat bubbles,
 > or rendering. The Svelte proxy vs raw object distinction is the #1 source of bugs here.
 
+> **Dashboard CSS for markdown/chat: read [docs/DASHBOARD-CSS-SCOPING.md](./docs/DASHBOARD-CSS-SCOPING.md) FIRST**
+> before adding any CSS rule targeting `.md-*`, `.chat-bubble`, or `.term-scrollback`.
+> Svelte silently strips CSS that targets `{@html}`-injected or `document.createElement`-built
+> elements. Use `.parent :global(.child)` (parent in template) or `:global(.parent .child)`
+> (parent built imperatively). After build, `grep` the bundle to verify the rule shipped.
+> This trap killed every `.md-*` style in the dashboard for months (bug #484).
+
 > **Nightmare bugs: read [docs/NIGHTMARE_BUGS.md](./docs/NIGHTMARE_BUGS.md) before fixing any recurring bug.**
 > These 8 bugs (#444, #439, #438, #431, #430, #435, #432, #376) keep coming back because of
 > architectural root causes — not one-off mistakes. Do NOT mark them done without a regression test.
+
+> **Conversation ↔ Interjection wiring: read [docs/CONVERSATION-AND-INTERJECTION.md](./docs/CONVERSATION-AND-INTERJECTION.md)**
+> before touching `router.js`, `intuition/index.js` deliberation, or `intuition/action.js`.
+> It maps the reactive loop (user → PAN), the proactive loop (PAN → user), and the
+> feedback loop wire-by-wire with status. Where the router *should* read intuition
+> but doesn't lives there with task IDs (#NEW-1…#NEW-8).
 
 ## Architecture
 
@@ -228,6 +241,11 @@ Three-tier hierarchy. See `docs/SUPER-CARRIER.md` for full details.
 - **PAN.bat**: Launches `pan-loop.bat` → spawns `node super-carrier.js`. Loop restarts on crash (exit ≠ 0), stops on clean exit
 - **Sleep/wake**: After system sleep, old Craft may hold port 17700. Carrier cleanup + PAN.bat exit-on-healthy prevents loops
 
+> **⚠️ CODE-RELOAD RULE (bug #753 — nightmare bug #8):**
+> To reload server code (`router.js`, `claude.js`, `terminal.js`, anything under `service/src/`), **use Craft swap** (`POST /api/carrier/swap`). It only touches HTTP routing — PTYs, claude child processes, and active assistant sessions survive.
+> **Do NOT use `POST /api/carrier/restart`** from inside an active assistant session. The Carrier owns the PTY process tree, so restarting it kills the running claude child mid-task. TodoWrite state, transcript, and in-flight work are lost. See `docs/NIGHTMARE_BUGS.md` entry for #753 for the full story and the architectural fix needed.
+> **Mnemonic: swap = safe, restart = death.**
+
 <!-- PAN-CONTEXT-START -->
 ## PAN Session Context
 
@@ -236,48 +254,22 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 33f7601d-32c)*
-**Claude** (2026-05-16 10:36:51): ΠΑΝ Remembers: post-sleep Craft health lock (#500 filed, fix shipped), caveman-compress Windows fixes (#501 done), Carrier stabilized after the async handler fix, and you asked about locating the Star Sector download + OneDrive reinstalling itself.
-**User** (2026-05-16 10:37:24): OK so no we are working on another system before show me all the tasks and what we are working on today We were working on a system that had to do with the steward and auto corrections with the forge and the scout and all that stuff so that their wid
-**Claude** (2026-05-16 10:37:53): Here's the widget self-healing stack — that's the cluster you spun up yesterday/today (#503–#508), built on top of the existing Forge/Scout loop (#459):
+### This Tab *(session: 59a5a699-96b, recap)*
+Shipped fixes to table cell word-breaking and completed the dashboard rebuild deployed via Craft swap. Delivered Craft-side pty_input event logging with provenance through sendToSession, now live; Carrier update awaits restart. Researched Supertonic 3/TTS model facts. Remaining: finalize Carrier integration and close open tasks.
 
-**Dashboard Auto-Recovery Chain**
-- **#503** `in_progress p1` — Dashboard auto-recovery: black-s
-**User** (2026-05-16 10:41:39): OK where did we get to I mean we should finish right but we're not actually done until we make all of these steps And then of course once we do all of these we have to test it
-**Claude** (2026-05-16 10:42:39): OK here's the real state — substrate is mostly there, but coverage and wiring are incomplete, and **the telemetry itself proves the system is working but not closing the loop yet**:
-
-## Layer-by-layer status
-
-| # | Layer | Built? | Gap |
-|---|---|---
-**User** (2026-05-16 11:05:32): Yeah go ahead and do that
-**Claude** (2026-05-16 11:07:56): **Status: most of the system works. There's one real bug and one coverage gap.**
-
-| Layer | Wired? | Firing? | Evidence |
-|---|---|---|---|
-| L1 substrate | partial | n/a | 16 `data-widget` attrs — dozens of panels still untagged |
-| L2 telemetry | ✓
-
-### Recent Project Work *(session: 9f1e7e0b-39e)*
-**User** (2026-05-16 10:56:20): You
-**Claude** (2026-05-16 10:57:39): Found them! You have Star Sector in **three locations**:
-
-1. **%USERPROFILE%\Downloads** — Installer
-   - `starsector_install-0.98a-RC8.exe` (280 MB, downloaded today at 10:02 AM)
-
-2. **%USERPROFILE%\StarSector\StarsectorOld** — Old installation
-  
+### Recent Project Work *(session: 44a7504b-409, recap)*
+No notable activity recorded.
 
 ### Open Tasks
 - [#466 backlog] Voice trace ID: end-to-end correlation across phone log + server router + AI usage + TTS
-- [#470 in_test] steward: ollama restart action is a no-op (startFn disabled) but logs success — clean up the lie
 - [#458 backlog] Tab list rebuild fragile across Craft swap — pan-4 tab disappeared after swap
 - [#459 backlog] Forge: Opus auto-fix loop on Scout-detected bugs
-- [#462 in_test] router.js: emit empty chunk for [AMBIENT] verdicts so phone sees a fast 'no-op' response
 - [#464 in_test] steward: ollama health check 3s ping produces false-negatives under load — phantom DOWN→RUNNING bounces every ~2min
-- [#465 in_test] AI usage tracking: tag every router call with source (phone-id / dashboard / scout / etc.) — 'router' bucket too coarse
 - [#468 backlog] Phone: health-aware degradation banner — show 'PAN running on backup' when ollama/embeddings/whisper degraded
 - [#469 backlog] Voice timeline panel in Kronos — per-prompt route, latency, response
-- [#484 backlog] Terminal: markdown table columns word-wrap on path separators � short cells should stay one line
+- [#485 backlog] PAN federation: cross-node org communication (arch spike)
+- [#460 backlog] Phone: cancel in-flight stream when new STT Final arrives
+- [#461 in_test] router.js: searchMemory has no timeout — stalls every voice prompt when ollama embeddings degraded
+- [#463 backlog] Phone STT truncates leading/trailing words — 'what are you doing' became 'are you doing', Genie follow-up cut entirely
 
 <!-- PAN-CONTEXT-END -->

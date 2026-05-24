@@ -28,18 +28,113 @@ router.use(requireOrg);
 
 // Org management moved to /api/v1/orgs (routes/orgs.js)
 
-// Dashboard chat — routes through AI router with dashboard source tag
+// Dashboard chat — routes through AI router with dashboard source tag.
+// Also persists BOTH sides to chat_messages when thread_id is provided
+// (voice call loop, comms popout) so the conversation appears in the thread
+// UI and survives page reloads.
 router.post('/chat', async (req, res) => {
-  const { message, project_id, source } = req.body;
+  const { message, project_id, source, thread_id, org_id } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
   try {
+    // Feed conv-state watcher: every chat-line is a "final" turn from the user.
+    // The watcher debounce-distills ~500ms after this; the router below reads
+    // the previous state synchronously so the very first turn after boot will
+    // see a null state — that's fine, it just falls back to the live utterance.
+    try {
+      const { noteUtterance } = await import('../conv-state-watcher.js');
+      noteUtterance({
+        orgId: org_id || 'org_personal',
+        text: message,
+        isFinal: true,
+        source: source || 'dashboard',
+        deviceId: req.headers['x-device-name'] || null,
+      });
+    } catch (e) { /* never block chat */ }
+
+    // Pull recent thread history so the router sees prior turns. Without
+    // this, every voice-call turn was a cold prompt — PAN had no memory of
+    // its own last reply, so it'd claim to do X, then a turn later deny
+    // ever saying it. See conversation 2026-05-22 ~01:13 PM.
+    // Format: "You: ...\nPAN: ..." one per line, oldest → newest, last 10
+    // exchanges (=20 lines max). Self-sender = "You", anything else = "PAN".
+    let conversation_history = '';
+    if (thread_id) {
+      try {
+        const rows = db.prepare(`
+          SELECT sender_id, body FROM chat_messages
+          WHERE thread_id = ? AND body_type = 'text'
+          ORDER BY created_at DESC LIMIT 20
+        `).all(thread_id);
+        if (rows.length > 0) {
+          conversation_history = rows.reverse().map(r => {
+            const who = r.sender_id === 'self' ? 'You' : 'PAN';
+            const body = String(r.body || '').slice(0, 400);
+            return `${who}: ${body}`;
+          }).join('\n');
+        }
+      } catch (e) { console.warn('[PAN Chat] history pull failed:', e?.message); }
+    }
+
     const { route } = await import('../router.js');
-    const result = await route(message, { source: source || 'dashboard', project_id });
+    const result = await route(message, {
+      source: source || 'dashboard',
+      project_id,
+      thread_id: thread_id || null,
+      org_id:   org_id   || 'org_personal',
+      conversation_history,
+    });
+    const response = (result?.response || '').trim() || 'No response';
+
     insertEvent('dashboard-chat', 'DashboardChat', JSON.stringify({
-      query: message, response: (result.response || '').slice(0, 2000), project_id, source: 'dashboard',
+      query: message, response: response.slice(0, 2000), project_id, source: source || 'dashboard',
       speech_act: result.speech_act || null, intent: result.intent || null
     }), req.user?.id);
-    res.json({ response: result.response || 'No response' });
+
+    // Debug trace — router captures the prompt context, model, latency, and
+    // reasoning into result._debug. We persist it in the PAN message metadata
+    // so the comms popout can show a "🧠 why" disclosure under each bubble.
+    const debug = result?._debug || null;
+
+    // Persist to chat thread if a thread_id is provided
+    let userMsgId = null, panMsgId = null;
+    if (thread_id && response && response !== 'No response') {
+      try {
+        const crypto = await import('crypto');
+        const now = Date.now();
+        userMsgId = 'cmsg_' + crypto.randomBytes(8).toString('hex');
+        panMsgId  = 'cmsg_pan_' + now + '_' + crypto.randomBytes(4).toString('hex');
+        const senderForPan = thread_id === 'thread-pan-system' ? 'contact-pan-system' : 'pan';
+
+        db.prepare(`
+          INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
+          VALUES (?, ?, 'self', ?, 'text', ?, ?)
+        `).run(userMsgId, thread_id, message, JSON.stringify({ source: source || 'dashboard' }), now);
+
+        db.prepare(`
+          INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
+          VALUES (?, ?, ?, ?, 'text', ?, ?)
+        `).run(panMsgId, thread_id, senderForPan, response,
+               JSON.stringify({
+                 intent: result?.intent || null,
+                 source: source || 'dashboard',
+                 debug,
+               }),
+               now + 1);
+
+        db.prepare('UPDATE chat_threads SET updated_at = ? WHERE id = ?').run(now + 1, thread_id);
+      } catch (e) {
+        console.warn('[PAN Chat] thread persist failed:', e?.message);
+      }
+    }
+
+    res.json({
+      response,
+      intent: result?.intent || null,
+      action: result?.action || null,
+      user_message_id: userMsgId,
+      pan_message_id:  panMsgId,
+      debug,
+    });
   } catch (err) {
     console.error('[PAN Chat]', err.message);
     res.status(500).json({ error: err.message });

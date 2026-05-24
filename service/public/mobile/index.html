@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <script src="/v2/pan-telemetry.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
-<title>PAN</title>
+<title>Π</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 :root { --bg:#0a0a0f; --bg2:#1e1e2e; --bg3:#313244; --text:#cdd6f4; --text2:#6c7086; --accent:#89b4fa; --green:#a6e3a1; --red:#f38ba8; --border:#313244; --radius:8px; }
@@ -220,7 +220,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 
 <!-- Session tab row — PTY sessions -->
 <div class="session-row" id="session-row">
-  <div class="session-tab active" data-session="" id="session-tab-default">PAN</div>
+  <div class="session-tab active" data-session="" id="session-tab-default">Π</div>
   <button class="session-tab-new" onclick="newSession()" title="New tab">+</button>
 </div>
 
@@ -289,7 +289,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
   <div id="chat-status" class="status-bar" style="display:none"><span class="spinner"></span><span>Claude is thinking…</span></div>
   <div class="input-bar" id="input-bar">
     <button id="model-btn" onclick="showModelPicker()" style="background:var(--bg2);color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:12px;font-weight:600;white-space:nowrap;flex-shrink:0" title="Switch AI model">Model</button>
-    <textarea id="chat-input" rows="1" placeholder="Message PAN..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
+    <textarea id="chat-input" rows="1" placeholder="Message Π..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" oninput="autoGrowTextarea(this)"></textarea>
     <button onclick="if(window.PAN&&typeof window.PAN.openCamera==='function'){panToast('📷 Calling JS bridge...');window.PAN.openCamera();}else{panToast('⚠️ window.PAN not found: '+(typeof window.PAN));document.getElementById('photo-input').click();}" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:18px;align-self:flex-end;flex-shrink:0" title="Open camera">&#128247;</button>
     <button onclick="document.getElementById('gallery-input').click()" style="background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:18px;align-self:flex-end;flex-shrink:0" aria-label="Attach screenshot or photo from gallery" title="Attach screenshot or photo from gallery">&#128206;</button>
     <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none" onchange="uploadScreenshot(this)">
@@ -593,8 +593,8 @@ function renderMsgLine(msg) {
   const type = msg.type || '';
   const text = msg.text || '';
   if (!text || text.length < 1) return null;
-  // Filter out the "ΠΑΝ remembers" trigger
-  if (role === 'user' && /^ΠΑΝ remembers/i.test(text.trim())) return null;
+  // Filter out the "Π remembers" trigger
+  if (role === 'user' && /^Π remembers/i.test(text.trim())) return null;
   if (role === 'user' && type === 'prompt') {
     return '<div class="t-line t-user"><span class="name">' + esc(USERNAME) + '</span><span class="sep">$ </span>' + esc(text) + '</div>';
   }

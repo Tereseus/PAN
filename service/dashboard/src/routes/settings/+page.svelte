@@ -128,7 +128,7 @@
 	};
 	let termSettings = $state({ ...TERM_DEFAULTS });
 	// Branding — logo image (data URL) or text, shown in sidebar + loading screen
-	let brandingLogo = $state('ΠΑΝ');
+	let brandingLogo = $state('Π');
 	let brandingImage = $state('');
 	if (typeof localStorage !== 'undefined') {
 		for (const [field, key] of Object.entries(TERM_KEY_MAP)) {
@@ -638,7 +638,7 @@
 		try {
 			await api('/api/v1/settings', { method: 'PUT', body: JSON.stringify(payload) });
 			flash('Terminal AI saved');
-			// Signal all open terminal tabs to clear their launch guard so ΠΑΝ Remembers re-fires
+			// Signal all open terminal tabs to clear their launch guard so Π Remembers re-fires
 			localStorage.setItem('pan_ai_changed', Date.now().toString());
 		} catch { flash('Save failed'); }
 	}
@@ -963,7 +963,7 @@
 				</div>
 				<div class="row">
 					<span class="label">Logo Text (Fallback)</span>
-					<input type="text" class="term-input" value={brandingLogo} oninput={(e) => updateBrandingLogo(e.target.value)} placeholder="ΠΑΝ" />
+					<input type="text" class="term-input" value={brandingLogo} oninput={(e) => updateBrandingLogo(e.target.value)} placeholder="Π" />
 				</div>
 				<div class="row">
 					<span class="label">Preview</span>
@@ -971,7 +971,7 @@
 						{#if brandingImage}
 							<img src={brandingImage} alt="Logo" style="max-height:48px; max-width:120px; object-fit:contain;" />
 						{:else}
-							<span style="font-family: serif; font-size: 32px; font-weight: 700; color: #89b4fa;">{brandingLogo || 'ΠΑΝ'}</span>
+							<span style="font-family: serif; font-size: 32px; font-weight: 700; color: #89b4fa;">{brandingLogo || 'Π'}</span>
 						{/if}
 					</div>
 				</div>
