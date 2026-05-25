@@ -223,13 +223,28 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
 }
 
 // Public streaming API — yields text chunks. Falls back to single yield for non-streaming models.
-export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id } = {}) {
+// #986 batch 2: accept an external `signal` (AbortSignal) so callers (router /chat/stream,
+// /cancel endpoint) can abort the in-flight Cerebras fetch mid-stream. The internal
+// timeout controller still fires, and either abort source short-circuits the fetch.
+export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id, signal: externalSignal = null } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
   const startedAt = Date.now(); // #471: t0 for ai_usage.latency_ms
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  // Wire external abort: if the caller's signal fires (user said "cancel", new
+  // utterance, route swap), forward to the internal controller so the underlying
+  // fetch unwinds and the generator's finally{} flushes logUsage with whatever
+  // tokens Cerebras had sent before the cut.
+  let externalAbortHandler = null;
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else {
+      externalAbortHandler = () => controller.abort();
+      externalSignal.addEventListener('abort', externalAbortHandler, { once: true });
+    }
+  }
   // #465: declare usage holder outside try{} so finally{} can flush logUsage even
   // when the consumer break-s out of `for await` early (router does this once it
   // has parsed enough JSON). Otherwise the generator's return() short-circuits
@@ -248,6 +263,9 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
     }
   } finally {
     clearTimeout(timer);
+    if (externalSignal && externalAbortHandler) {
+      try { externalSignal.removeEventListener('abort', externalAbortHandler); } catch {}
+    }
     if (cerebrasUsage) {
       // Always log — even on early break (router) or abort (timeout). usage tokens
       // may be 0 if cerebras hadn't sent the final SSE frame yet, which is fine —

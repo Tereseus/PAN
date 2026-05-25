@@ -131,6 +131,12 @@ router.post('/chat', async (req, res) => {
       response,
       intent: result?.intent || null,
       action: result?.action || null,
+      // #986 Batch 4: surface prosody plan so non-streaming consumers
+      // (dashboard, older phone path) can drive TTS rate/pitch the same as
+      // /chat/stream's done event. Falls back to null if the router didn't
+      // attach one (e.g. legacy error paths).
+      prosody: result?.prosody || null,
+      importance: typeof result?.importance === 'number' ? result.importance : null,
       user_message_id: userMsgId,
       pan_message_id:  panMsgId,
       debug,
@@ -139,6 +145,196 @@ router.post('/chat', async (req, res) => {
     console.error('[PAN Chat]', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── #986 batch 2: streaming chat + cancellation ─────────────────────────────
+// Map of in-flight stream_id → AbortController. Used by /chat/stream to register
+// a controller per request, and by /cancel to abort one mid-stream when the user
+// says "stop" / "cancel" / "shut up" or clicks the cancel button. Entries are
+// removed when the stream completes naturally OR after a 30s TTL safety net so
+// we never leak controllers if the client disconnects without /cancel firing.
+const streamControllers = new Map(); // stream_id → { controller, expiresAt }
+const STREAM_TTL_MS = 60_000;
+function registerStream(streamId, controller) {
+  streamControllers.set(streamId, { controller, expiresAt: Date.now() + STREAM_TTL_MS });
+}
+function clearStream(streamId) {
+  streamControllers.delete(streamId);
+}
+// Periodic GC — strictly safety; the per-request finally{} clears entries in the
+// happy path. Runs every 30s, drops anything past its TTL.
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of streamControllers) {
+    if (entry.expiresAt < now) {
+      try { entry.controller.abort(); } catch {}
+      streamControllers.delete(id);
+    }
+  }
+}, 30_000).unref?.();
+
+// POST /api/v1/chat/stream — SSE version of /chat. Streams the model's response
+// token-by-token so the dashboard renders incrementally (no 1.5-13s blank wait).
+// Emits:
+//   data: {"type":"stream_start","stream_id":"..."}
+//   data: {"type":"chunk","text":"..."}          (repeated; partial response field)
+//   data: {"type":"done","result":{response,intent,action,...}}
+// Cancel by POSTing { stream_id } to /api/v1/cancel.
+router.post('/chat/stream', async (req, res) => {
+  const { message, project_id, source, thread_id, org_id } = req.body;
+  if (!message) return res.status(400).json({ error: 'message required' });
+
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const send = (obj) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
+  const sendKeepalive = () => { if (!res.writableEnded) res.write(': keepalive\n\n'); };
+  const keepalive = setInterval(sendKeepalive, 5000);
+
+  // Generate a stream_id and register an AbortController under it. The client
+  // gets it in the first frame so it can POST to /cancel later.
+  const streamId = 'stream_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  const controller = new AbortController();
+  registerStream(streamId, controller);
+  send({ type: 'stream_start', stream_id: streamId });
+
+  // Client disconnect → abort. Listen on `res` (not `req`) because Node's
+  // IncomingMessage emits 'close' as soon as the request body is fully consumed,
+  // even while the response is still being sent — that fired our abort within
+  // microseconds of registration. `res.on('close')` only fires when the response
+  // stream itself terminates, so we use writableEnded to distinguish a clean
+  // server-side end (don't abort) from a client disconnect (do abort).
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      try { controller.abort(); } catch {}
+    }
+  });
+
+  // Feed conv-state watcher (same as non-streaming /chat).
+  try {
+    const { noteUtterance } = await import('../conv-state-watcher.js');
+    noteUtterance({
+      orgId: org_id || 'org_personal',
+      text: message,
+      isFinal: true,
+      source: source || 'dashboard',
+      deviceId: req.headers['x-device-name'] || null,
+    });
+  } catch {}
+
+  // Same conversation_history pull as /chat for thread continuity.
+  let conversation_history = '';
+  if (thread_id) {
+    try {
+      const rows = db.prepare(`
+        SELECT sender_id, body FROM chat_messages
+        WHERE thread_id = ? AND body_type = 'text'
+        ORDER BY created_at DESC LIMIT 20
+      `).all(thread_id);
+      if (rows.length > 0) {
+        conversation_history = rows.reverse().map(r => {
+          const who = r.sender_id === 'self' ? 'You' : 'PAN';
+          return `${who}: ${String(r.body || '').slice(0, 400)}`;
+        }).join('\n');
+      }
+    } catch {}
+  }
+
+  let finalResult = null;
+  let assembledText = '';
+  try {
+    const { routeStream } = await import('../router.js');
+    for await (const event of routeStream(message, {
+      source: source || 'dashboard',
+      project_id,
+      thread_id: thread_id || null,
+      org_id:   org_id   || 'org_personal',
+      conversation_history,
+      signal: controller.signal,
+    })) {
+      // If cancellation fired, swap the generic error 'done' frame routeStream
+      // emits on abort for a clean 'cancelled' frame so the client can render
+      // an "interrupted" affordance instead of an error toast.
+      if (controller.signal.aborted) {
+        send({ type: 'cancelled', stream_id: streamId, partial: assembledText });
+        break;
+      }
+      if (event.type === 'chunk') assembledText += event.text || '';
+      if (event.type === 'done') finalResult = event.result || null;
+      send(event);
+      if (event.type === 'done') break;
+    }
+  } catch (err) {
+    if (controller.signal.aborted) {
+      send({ type: 'cancelled', stream_id: streamId, partial: assembledText });
+    } else {
+      console.error('[chat/stream]', err.message);
+      send({ type: 'done', result: { intent: 'query', response: 'Something went wrong.' } });
+    }
+  } finally {
+    clearInterval(keepalive);
+    clearStream(streamId);
+  }
+
+  // Persist to thread + log the event (same as /chat) — only on successful
+  // completion (not cancellation), so cancelled replies don't pollute history.
+  const response = (finalResult?.response || assembledText || '').trim();
+  if (response && !controller.signal.aborted) {
+    try {
+      insertEvent('dashboard-chat-stream', 'DashboardChat', JSON.stringify({
+        query: message, response: response.slice(0, 2000), project_id,
+        source: source || 'dashboard', stream_id: streamId,
+        speech_act: finalResult?.speech_act || null, intent: finalResult?.intent || null,
+      }), req.user?.id);
+    } catch {}
+    if (thread_id) {
+      try {
+        const crypto = await import('crypto');
+        const now = Date.now();
+        const userMsgId = 'cmsg_' + crypto.randomBytes(8).toString('hex');
+        const panMsgId  = 'cmsg_pan_' + now + '_' + crypto.randomBytes(4).toString('hex');
+        const senderForPan = thread_id === 'thread-pan-system' ? 'contact-pan-system' : 'pan';
+        db.prepare(`INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
+                    VALUES (?, ?, 'self', ?, 'text', ?, ?)`)
+          .run(userMsgId, thread_id, message, JSON.stringify({ source: source || 'dashboard', stream_id: streamId }), now);
+        db.prepare(`INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
+                    VALUES (?, ?, ?, ?, 'text', ?, ?)`)
+          .run(panMsgId, thread_id, senderForPan, response,
+               JSON.stringify({ intent: finalResult?.intent || null, source: source || 'dashboard', stream_id: streamId }), now + 1);
+        db.prepare('UPDATE chat_threads SET updated_at = ? WHERE id = ?').run(now + 1, thread_id);
+      } catch {}
+    }
+  }
+
+  if (!res.writableEnded) res.end();
+});
+
+// POST /api/v1/cancel — abort an in-flight stream by stream_id. Returns
+// { ok: true, aborted: bool }. Idempotent: cancelling an unknown stream_id is
+// not an error (the stream may have already finished).
+router.post('/cancel', (req, res) => {
+  const { stream_id } = req.body || {};
+  if (!stream_id) return res.status(400).json({ error: 'stream_id required' });
+  const entry = streamControllers.get(stream_id);
+  if (!entry) return res.json({ ok: true, aborted: false, reason: 'unknown_or_complete' });
+  try { entry.controller.abort(); } catch {}
+  streamControllers.delete(stream_id);
+  res.json({ ok: true, aborted: true });
+});
+
+// GET /api/v1/cancel/active — debug visibility into live streams.
+router.get('/cancel/active', (_req, res) => {
+  const now = Date.now();
+  res.json({
+    count: streamControllers.size,
+    streams: [...streamControllers.entries()].map(([id, e]) => ({
+      stream_id: id, ttl_ms: Math.max(0, e.expiresAt - now)
+    })),
+  });
 });
 
 // Centralized event logging — scope-aware. Reads X-PAN-Scope from the request
