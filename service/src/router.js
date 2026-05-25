@@ -10,6 +10,7 @@ import {
   smartPickApp, rankedAppsForAction, pickDevice,
   detectCorrection, learnCorrection,
   setLastAction, getLastAction, intentToActionType,
+  setDialogState, getDialogState,
 } from './smart-router.js';
 import { searchMemory } from './memory-search.js';
 import { writeThought } from './thoughts.js';
@@ -18,6 +19,7 @@ import { noteSignalsInUtterance } from './intuition/signals.js';
 import { getCurrentSnapshot } from './intuition/index.js';
 import { getConversationState } from './conv-state-watcher.js';
 import { recentThoughts } from './intuition/mind.js';
+import { planFromResult as planProsody } from './tts-prosody.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
@@ -66,17 +68,163 @@ function buildConvStateBlock(orgId) {
   } catch { return ''; }
 }
 
-// Build a tight recent-thoughts block — last 3 intuition verdicts within 5min.
-// Lets PAN ground replies in continuity ("as I was just noting…"). See #746.
+// Build a wider recent-thoughts block — last 15 thoughts within 20min, blends
+// intuition verdicts + router thoughts so PAN grounds replies in real continuity
+// across a multi-turn conversation. See #746 + #986 (epic batch 1).
 function buildRecentMindBlock() {
   try {
-    const thoughts = recentThoughts({ source: 'intuition', limit: 3, sinceMs: 5 * 60_000 });
+    const thoughts = recentThoughts({ limit: 15, sinceMs: 20 * 60_000 });
     if (!thoughts || thoughts.length === 0) return '';
     const lines = thoughts
-      .slice() // don't mutate
+      .slice()
       .reverse() // oldest first reads more naturally
-      .map(t => `- "${String(t.thought || '').slice(0, 160)}"`);
-    return `\nRecently in my mind:\n${lines.join('\n')}\n`;
+      .map(t => {
+        const src = t.source ? `[${String(t.source).slice(0, 12)}]` : '';
+        const txt = String(t.thought || '').slice(0, 200);
+        return `- ${src} "${txt}"`;
+      });
+    return `\nRecently in my mind (last 20 min):\n${lines.join('\n')}\n`;
+  } catch { return ''; }
+}
+
+// ─── #986 batch 1: deeper context builders ──────────────────────────────────
+// All defensive — return '' on any error so a missing table never breaks the
+// router. Goal: ~5k tokens of grounded context per turn for ~250ms prefill
+// cost on Cerebras Qwen 3 235B. See epic #986.
+
+// Last 15 dialog turns from events table. Pulls UserPromptSubmit + Stop
+// (assistant reply) pairs. Falls back silently if events schema differs.
+// IMPORTANT: bounded by created_at when no session_id — otherwise the
+// full-table scan on a multi-million-row events table will time out the
+// router (~30s hang). With the (event_type, created_at) filter the planner
+// hits idx_events_created and returns in <50ms.
+function buildDialogHistoryBlock(sessionId) {
+  try {
+    const sql = sessionId
+      ? `SELECT event_type, data, created_at FROM events
+         WHERE session_id = :sid
+           AND event_type IN ('UserPromptSubmit','Stop','AssistantMessage','DashboardChat','MobileSend','VoiceCommand','RouterCommand')
+         ORDER BY id DESC LIMIT 15`
+      : `SELECT event_type, data, created_at FROM events
+         WHERE created_at > datetime('now','-2 hours','localtime')
+           AND event_type IN ('UserPromptSubmit','Stop','AssistantMessage','DashboardChat','MobileSend','VoiceCommand','RouterCommand')
+         ORDER BY id DESC LIMIT 15`;
+    const rows = all(sql, sessionId ? { ':sid': sessionId } : {});
+    if (!rows || rows.length === 0) return '';
+    const lines = rows.slice().reverse().map(r => {
+      let txt = '';
+      try {
+        const d = JSON.parse(r.data || '{}');
+        txt = d.prompt || d.last_assistant_message || d.text || d.message || d.command || '';
+      } catch { txt = String(r.data || '').slice(0, 200); }
+      if (!txt) return null;
+      const who = (r.event_type === 'UserPromptSubmit' || r.event_type === 'DashboardChat' || r.event_type === 'MobileSend' || r.event_type === 'VoiceCommand' || r.event_type === 'RouterCommand') ? 'commander' : 'PAN';
+      const ts = (r.created_at || '').slice(11, 16); // HH:MM
+      return `- ${ts} ${who}: "${String(txt).replace(/\s+/g,' ').slice(0, 200)}"`;
+    }).filter(Boolean);
+    return lines.length ? `\nRecent dialog (last 15 turns):\n${lines.join('\n')}\n` : '';
+  } catch { return ''; }
+}
+
+// Top 5 active tasks (in_progress). Grounds the model in what we're working on
+// right now so "the bug" / "that task" / "yeah ship it" can resolve correctly.
+function buildActiveTasksBlock() {
+  try {
+    const rows = all(
+      `SELECT title, status, priority FROM project_tasks
+       WHERE status IN ('in_progress','in_test')
+       ORDER BY priority DESC, id DESC LIMIT 5`
+    );
+    if (!rows || rows.length === 0) return '';
+    const lines = rows.map(r => `- [${r.status}/p${r.priority || 0}] ${String(r.title || '').slice(0, 120)}`);
+    return `\nActive tasks:\n${lines.join('\n')}\n`;
+  } catch { return ''; }
+}
+
+// Recent foreground apps from activity_events (screen-watcher). Last hour, top
+// 5 unique apps by most-recent timestamp. Tells PAN what surfaces you've been
+// touching so "yes do that one" can resolve to a specific app/window.
+function buildRecentTopicsBlock() {
+  try {
+    const rows = all(
+      `SELECT app_name, window_title, MAX(created_at) AS last_seen, COUNT(*) AS hits
+       FROM activity_events
+       WHERE created_at > datetime('now','-1 hour','localtime')
+         AND app_name IS NOT NULL AND app_name != ''
+       GROUP BY app_name
+       ORDER BY last_seen DESC LIMIT 5`
+    );
+    if (!rows || rows.length === 0) return '';
+    const lines = rows.map(r => `- ${String(r.app_name).slice(0, 60)}${r.window_title ? ` — ${String(r.window_title).slice(0, 80)}` : ''} (${r.hits}×)`);
+    return `\nRecent surfaces (last hour):\n${lines.join('\n')}\n`;
+  } catch { return ''; }
+}
+
+// Dismissal feedback. If user has been shutting down PAN's interjections,
+// the model should tone down. Reads pan_interjections last 30min.
+function buildDismissalFeedbackBlock() {
+  try {
+    const row = get(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN status IN ('dismiss','ignored') THEN 1 ELSE 0 END) AS dismissed,
+         SUM(CASE WHEN status IN ('accept','thanks') THEN 1 ELSE 0 END) AS positive
+       FROM pan_interjections
+       WHERE created_at > datetime('now','-30 minutes','localtime')`
+    );
+    if (!row || !row.total) return '';
+    if (row.dismissed > 1 || (row.dismissed && row.total >= 3)) {
+      return `\nUser reactions (last 30 min): dismissed ${row.dismissed} of my last ${row.total} nudges. Tone DOWN — be brief, don't push.\n`;
+    }
+    if (row.positive >= 2) {
+      return `\nUser reactions (last 30 min): ${row.positive} positive of ${row.total}. Engagement is good.\n`;
+    }
+    return '';
+  } catch { return ''; }
+}
+
+// Top 10 memory_items by confidence — durable facts about the commander.
+// Single SELECT, ~2ms. Helps with "remember when I said…" / personalization.
+function buildMemoryFactsBlock() {
+  try {
+    const rows = all(
+      `SELECT item_type, content, confidence FROM memory_items
+       WHERE content IS NOT NULL AND content != ''
+       ORDER BY confidence DESC, id DESC LIMIT 10`
+    );
+    if (!rows || rows.length === 0) return '';
+    const lines = rows.map(r => `- (${r.item_type}) ${String(r.content || '').slice(0, 160)}`);
+    return `\nWhat I know about the commander:\n${lines.join('\n')}\n`;
+  } catch { return ''; }
+}
+
+// Dialog-state block: the lightweight per-session state we keep in-memory in
+// smart-router.js. Includes the last topic PAN talked about and any question
+// PAN asked that's still awaiting an answer. Critical for "yes/no" replies
+// and "do the same" references to resolve correctly.
+function buildDialogStateBlock(sessionId) {
+  if (!sessionId) return '';
+  try {
+    const ds = getDialogState(sessionId);
+    if (!ds) return '';
+    const lines = [];
+    if (ds.last_topic)    lines.push(`- Last topic I was on: ${String(ds.last_topic).slice(0, 200)}`);
+    if (ds.open_question) lines.push(`- I asked the commander: "${String(ds.open_question).slice(0, 200)}" (${Math.round(ds.awaiting_answer_age_ms/1000)}s ago — they may be answering this)`);
+    return lines.length ? `\nDialog state:\n${lines.join('\n')}\n` : '';
+  } catch { return ''; }
+}
+
+// Top 3 most-important recent episodic memories — past sessions that matter.
+function buildEpisodicHitsBlock() {
+  try {
+    const rows = all(
+      `SELECT summary, outcome, importance, created_at FROM episodic_memories
+       WHERE created_at > datetime('now','-7 days','localtime')
+       ORDER BY importance DESC, id DESC LIMIT 3`
+    );
+    if (!rows || rows.length === 0) return '';
+    const lines = rows.map(r => `- [${r.outcome}/${(r.importance ?? 0).toFixed(1)}] ${String(r.summary || '').slice(0, 200)}`);
+    return `\nRecent episodes:\n${lines.join('\n')}\n`;
   } catch { return ''; }
 }
 
@@ -253,6 +401,20 @@ async function handleUnified(text, context) {
   const situationBlock = buildSituationBlock(context.org_id);
   const recentMindBlock = buildRecentMindBlock();
   const convStateBlock  = buildConvStateBlock(context.org_id);
+  // #986 batch 1: deeper context — dialog history, active tasks, surfaces,
+  // dismissal feedback, memory facts, episodic hits. ~5k tokens total, ~250ms
+  // prefill on Cerebras. All defensive: missing table → empty block.
+  // Dialog-state key: use session_id when present (voice/PTY), thread_id when
+  // the call comes through /api/v1/chat (dashboard), or a fixed 'global' key
+  // so the in-memory Map still works for ad-hoc calls without continuity loss.
+  const dialogKey = context.session_id || context.thread_id || 'global';
+  const dialogHistoryBlock     = buildDialogHistoryBlock(context.session_id || null);
+  const dialogStateBlock       = buildDialogStateBlock(dialogKey);
+  const activeTasksBlock       = buildActiveTasksBlock();
+  const recentTopicsBlock      = buildRecentTopicsBlock();
+  const dismissalFeedbackBlock = buildDismissalFeedbackBlock();
+  const memoryFactsBlock       = buildMemoryFactsBlock();
+  const episodicHitsBlock      = buildEpisodicHitsBlock();
   try {
     const cs = getConversationState(context.org_id || null);
     if (cs) {
@@ -349,8 +511,11 @@ async function handleUnified(text, context) {
     dbg.ai_started_at = Date.now();
     raw = await claude(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${situationBlock}${convStateBlock}${recentMindBlock}${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
-${isDash ? `User typed: "${safeText}"` : `Mic heard (may have STT typos/garbling — infer the most likely intent): "${safeText}"`}
+${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${dialogHistoryBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${memoryFactsBlock}${episodicHitsBlock}${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
+
+=== CURRENT TURN ===
+${isDash ? `The commander just said: "${safeText}"` : `Mic heard (may have STT typos/garbling — infer the most likely intent): "${safeText}"`}
+Answer THIS message specifically. The blocks above are background context — use them to ground your answer, but the response must address what the commander just said, not what was said before.
 
 ${isDash ? 'Always respond.' : 'CRITICAL: If speech is clearly NOT directed at you (PAN), return EXACTLY: {"intent":"ambient","response":"[AMBIENT]"}'}
 ${isDash ? '' : `NEVER return ambient for: questions (what/when/where/how/why/who/can you), commands (play/open/set/remind/add), anything addressed to "Pan"/"Pam".
@@ -377,15 +542,21 @@ Every response must include "speech_act" field:
 "social" — talking to someone else in the room, not PAN
 "ambient" — background speech, not directed at anyone
 
+Every response should also include "importance" (0..1, default 0.5):
+  • 0.0–0.3 = casual ack, ambient nudge, small-talk        ("ok", "got it", "still here")
+  • 0.3–0.7 = normal answer, command confirmation            (most replies — DEFAULT)
+  • 0.7–1.0 = critical info, emergency, time-sensitive       ("call 911 now", "deploy failed", "battery 2%")
+Drives TTS prosody — low importance is spoken slower/quieter; high is brisk/bright.
+
 Response formats:
-{"intent":"query","speech_act":"query","response":"answer"} — questions/conversation
-{"intent":"terminal","speech_act":"command","action":"open|pipe|send-text|get-text|list-panes","project":"path","name":"name","target":"tab/project name (for pipe)","text":"text to type","pane_id":0,"response":"msg"}
-{"intent":"system","speech_act":"command","command":"PowerShell cmd","response":"msg"}
-{"intent":"browser","speech_act":"command","action":"list_tabs|read_tab|activate_tab|type_text|click_element|navigate","query":"tab/URL","text":"input","response":"msg"}
-{"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg"}
-{"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg"}
-{"intent":"calendar","speech_act":"command","response":"msg"}
-{"intent":"task","speech_act":"command","text":"command for the Claude session","response":"short ack for TTS"} — for things that need full capability: writing/fixing/reading code, multi-step file ops, running commands, debugging. The "text" is what gets handed to the live Claude session. The "response" is a short ack the user hears immediately ("On it.", "Working on that now."). Use task ONLY when query/system/browser/terminal can't do it — code edits, file searches, multi-step reasoning over the codebase.
+{"intent":"query","speech_act":"query","response":"answer","importance":0.5} — questions/conversation
+{"intent":"terminal","speech_act":"command","action":"open|pipe|send-text|get-text|list-panes","project":"path","name":"name","target":"tab/project name (for pipe)","text":"text to type","pane_id":0,"response":"msg","importance":0.4}
+{"intent":"system","speech_act":"command","command":"PowerShell cmd","response":"msg","importance":0.4}
+{"intent":"browser","speech_act":"command","action":"list_tabs|read_tab|activate_tab|type_text|click_element|navigate","query":"tab/URL","text":"input","response":"msg","importance":0.4}
+{"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg","importance":0.4}
+{"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg","importance":0.4}
+{"intent":"calendar","speech_act":"command","response":"msg","importance":0.4}
+{"intent":"task","speech_act":"command","text":"command for the Claude session","response":"short ack for TTS","importance":0.4} — for things that need full capability: writing/fixing/reading code, multi-step file ops, running commands, debugging. The "text" is what gets handed to the live Claude session. The "response" is a short ack the user hears immediately ("On it.", "Working on that now."). Use task ONLY when query/system/browser/terminal can't do it — code edits, file searches, multi-step reasoning over the codebase.
 
 Projects: ${projectList}
 ${memoryContext}`,
@@ -432,6 +603,26 @@ ${memoryContext}`,
       }
     } catch { /* non-fatal */ }
 
+    // #986 batch 1: persist dialog state for next turn.
+    // - If model emitted a question (speech_act:'question' or response ends '?'),
+    //   record it as open_question so next user utterance is read as the answer.
+    // - If user reply was a one-word affirmation/negation, clear any open_question.
+    // - Always update last_topic with the model's `mind` synthesis or response.
+    try {
+      const sid = context?.session_id || context?.thread_id || 'global';
+      if (sid) {
+        const respTxt   = String(action.response || '').trim();
+        const isQuestion = (action.speech_act === 'question') || (/\?\s*$/.test(respTxt) && respTxt.length < 200);
+        const userShort  = String(text || '').trim().toLowerCase();
+        const isYesNo    = /^(yes|yeah|yep|sure|ok|okay|no|nope|nah|sounds good|do it|go ahead|cancel)\.?$/.test(userShort);
+        const topicSeed  = (typeof action.mind === 'string' && action.mind) || respTxt.slice(0, 200);
+        const fields = { last_topic: topicSeed };
+        if (isQuestion)  fields.open_question = respTxt;
+        if (isYesNo)     fields.clear_question = true;
+        setDialogState(sid, fields);
+      }
+    } catch { /* non-fatal */ }
+
     const finalResult = await processUnifiedResult(action, text, context);
     dbg.total_latency_ms = Date.now() - dbg.started_at;
     try { finalResult._debug = dbg; } catch {}
@@ -440,7 +631,9 @@ ${memoryContext}`,
     console.error('[PAN Router] Unified call error:', e.message, '| raw:', typeof raw === 'string' ? raw.slice(0, 300) : raw);
     dbg.error = e.message || String(e);
     dbg.total_latency_ms = Date.now() - dbg.started_at;
-    return { intent: 'query', response: 'PAN is having trouble thinking right now.', _debug: dbg };
+    const errResult = { intent: 'query', response: 'PAN is having trouble thinking right now.', importance: 0.5, _debug: dbg };
+    try { errResult.prosody = planProsody(errResult); } catch {}
+    return errResult;
   }
 }
 
@@ -1075,6 +1268,12 @@ async function route(text, context = {}) {
   logStep(cmdId, 'completed', result.response?.slice(0, 200));
   insertRouterEvent(text, result.intent, result.response, context);
 
+  // Batch 4 (#986): attach prosody plan so non-streaming consumers (older
+  // phone code path, dashboard `/api/v1/chat`, MCP) get the same prosody
+  // hints the streaming path emits in the `done` event. Additive — callers
+  // that don't read `prosody` are unaffected.
+  try { result.prosody = planProsody(result); } catch (e) { /* non-fatal */ }
+
   return result;
 }
 
@@ -1144,13 +1343,18 @@ function extractResponseField(buf) {
 }
 
 export async function* routeStream(text, context = {}) {
+  // Batch 4 (#986): every `done` emit gets a prosody plan derived from
+  // `result.importance`. Wrap once, use everywhere — keeps the diff small
+  // and guarantees consumers always see a `prosody` field.
+  const withProsody = (result) => ({ ...result, prosody: planProsody(result) });
+
   // Fast local intents — no LLM, return immediately
   const serverIntent = serverClassify(text);
   if (serverIntent === 'system') {
     const quick = await tryQuickSystem(text);
     if (quick) {
       yield { type: 'chunk', text: quick.response };
-      yield { type: 'done', result: quick };
+      yield { type: 'done', result: withProsody(quick) };
       return;
     }
   }
@@ -1160,7 +1364,7 @@ export async function* routeStream(text, context = {}) {
   const isVoice = context.source === 'voice' || context.source === 'mic' || context.source === 'phone';
   if (isVoice && quickAmbientCheck(text)) {
     yield { type: 'chunk', text: '' };
-    yield { type: 'done', result: { intent: 'ambient', response: '' } };
+    yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', importance: 0.1 }) };
     return;
   }
 
@@ -1178,11 +1382,18 @@ export async function* routeStream(text, context = {}) {
       : '';
   }
 
-  // #NEW-2 + #NEW-3 + #NEW-conv-state: mirror handleUnified — feed snapshot,
-  // recent mind, and live conversation-state distillation into the prompt.
+  // #NEW-2 + #NEW-3 + #NEW-conv-state + #986 batch 1: mirror handleUnified —
+  // snapshot, recent mind, conv-state, plus the deeper context blocks.
   const situationBlock = buildSituationBlock(context.org_id);
   const recentMindBlock = buildRecentMindBlock();
   const convStateBlock  = buildConvStateBlock(context.org_id);
+  const dialogHistoryBlock     = buildDialogHistoryBlock(context.session_id || null);
+  const dialogStateBlock       = buildDialogStateBlock(context.session_id || null);
+  const activeTasksBlock       = buildActiveTasksBlock();
+  const recentTopicsBlock      = buildRecentTopicsBlock();
+  const dismissalFeedbackBlock = buildDismissalFeedbackBlock();
+  const memoryFactsBlock       = buildMemoryFactsBlock();
+  const episodicHitsBlock      = buildEpisodicHitsBlock();
 
   const historyBlock = context.conversation_history
     ? `\nRecent conversation:\n${context.conversation_history}\n` : '';
@@ -1208,15 +1419,20 @@ export async function* routeStream(text, context = {}) {
   const isDash = context.source === 'dashboard';
 
   const prompt = `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${situationBlock}${convStateBlock}${recentMindBlock}${historyBlock}${sensorBlock}${hintBlock}
+${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${dialogHistoryBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${memoryFactsBlock}${episodicHitsBlock}${historyBlock}${sensorBlock}${hintBlock}
 ${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
 
 Every response must include "speech_act" field.
+Every response should also include "importance" (0..1, default 0.5):
+  • 0.0–0.3 = casual ack, ambient nudge, small-talk        ("ok", "got it", "still here")
+  • 0.3–0.7 = normal answer, command confirmation            (most replies — DEFAULT)
+  • 0.7–1.0 = critical info, emergency, time-sensitive       ("call 911 now", "deploy failed", "battery 2%")
+This drives TTS prosody — low importance is spoken slower/quieter, high is brisk/bright.
 Response formats:
-{"intent":"query","speech_act":"query","response":"answer"}
-{"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg"}
-{"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg"}
-{"intent":"ambient","response":"[AMBIENT]"}
+{"intent":"query","speech_act":"query","response":"answer","importance":0.5}
+{"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg","importance":0.4}
+{"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg","importance":0.4}
+{"intent":"ambient","response":"[AMBIENT]","importance":0.1}
 
 Projects: ${projectList}
 ${memoryContext}`;
@@ -1227,7 +1443,7 @@ ${memoryContext}`;
   let lastLen = 0;
 
   try {
-    for await (const chunk of askAIStream(prompt, { model, caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id })) {
+    for await (const chunk of askAIStream(prompt, { model, caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null })) {
       fullBuf += chunk;
       const { text: extracted, done } = extractResponseField(fullBuf);
       if (extracted.length > lastLen) {
@@ -1239,7 +1455,7 @@ ${memoryContext}`;
   } catch (e) {
     console.error('[routeStream] LLM error:', e.message);
     // Always yield a response — silence on the phone means the user thinks PAN is broken
-    yield { type: 'done', result: { intent: 'query', response: "Sorry, I ran into a problem thinking that through. Try again." } };
+    yield { type: 'done', result: withProsody({ intent: 'query', response: "Sorry, I ran into a problem thinking that through. Try again.", importance: 0.5 }) };
     return;
   }
 
@@ -1271,7 +1487,7 @@ ${memoryContext}`;
         }
         // Emit the recall response text as a chunk so TTS picks it up
         if (lastLen === 0) yield { type: 'chunk', text: recallResponse };
-        yield { type: 'done', result: { ...parsed, response: recallResponse } };
+        yield { type: 'done', result: withProsody({ ...parsed, response: recallResponse }) };
         return;
       }
 
@@ -1279,16 +1495,16 @@ ${memoryContext}`;
       // so phone client doesn't speak "[AMBIENT]" literal.
       if (parsed.intent === 'ambient') {
         yield { type: 'chunk', text: '' };
-        yield { type: 'done', result: { ...parsed, response: '' } };
+        yield { type: 'done', result: withProsody({ ...parsed, response: '', importance: 0.1 }) };
         return;
       }
 
-      yield { type: 'done', result: { ...parsed, response: parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '') } };
+      yield { type: 'done', result: withProsody({ ...parsed, response: parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '') }) };
     } else {
-      yield { type: 'done', result: { intent: 'query', response: "I didn't catch that — could you try again?" } };
+      yield { type: 'done', result: withProsody({ intent: 'query', response: "I didn't catch that — could you try again?", importance: 0.4 }) };
     }
   } catch {
-    yield { type: 'done', result: { intent: 'query', response: "I didn't catch that — could you try again?" } };
+    yield { type: 'done', result: withProsody({ intent: 'query', response: "I didn't catch that — could you try again?", importance: 0.4 }) };
   }
 }
 
