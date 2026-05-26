@@ -1132,6 +1132,12 @@ router.post('/query', async (req, res) => {
       query: result.query || result.searchTerm || null,
       action: result.action || null,
       response_time_ms: result.response_time_ms || null,
+      // #986 Batch 4: surface prosody plan + importance for phone TTS.
+      // Phone currently ignores these (see #994); shipping them server-side
+      // means the data is already there the moment Piper rate/pitch wiring
+      // lands. Additive — existing consumers that don't read these are unaffected.
+      prosody: result?.prosody || null,
+      importance: typeof result?.importance === 'number' ? result.importance : null,
       actions
     });
   } catch (err) {
