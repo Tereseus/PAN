@@ -6,8 +6,24 @@
 
 import { Router } from 'express';
 import { all, get } from '../db.js';
-import { runBenchmark, runBenchmarkWithVerification, BENCHMARK_SUITES } from '../benchmark.js';
+import { runBenchmark, runBenchmarkWithVerification, BENCHMARK_SUITES, benchmarkLogPath } from '../benchmark.js';
 import { panNotify } from '../pan-notify.js';
+import { appendFileSync } from 'fs';
+
+// Headless logging — mirror benchmark.js bmLog/bmErr so route handlers don't
+// spam stdout either. Same %LOCALAPPDATA%/PAN/data/benchmark.log destination.
+function bmLog(...args) {
+  try {
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+    appendFileSync(benchmarkLogPath(), `${new Date().toISOString()} INFO  ${msg}\n`, 'utf8');
+  } catch {}
+}
+function bmErr(...args) {
+  try {
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+    appendFileSync(benchmarkLogPath(), `${new Date().toISOString()} ERROR ${msg}\n`, 'utf8');
+  } catch {}
+}
 
 export const benchmarkApiRouter = Router();
 export const benchmarkDashRouter = Router();
@@ -40,16 +56,16 @@ benchmarkApiRouter.post('/benchmark', async (req, res) => {
 
   try {
     if (withVerification) {
-      console.log(`[PAN Benchmark] /api/v1/ai/benchmark?verify=1 — suite=${suite} model=${model}`);
+      bmLog(`[PAN Benchmark] /api/v1/ai/benchmark?verify=1 — suite=${suite} model=${model}`);
       const result = await runBenchmarkWithVerification(suite, model);
       res.json({ ok: true, ...result });
     } else {
-      console.log(`[PAN Benchmark] /api/v1/ai/benchmark — suite=${suite} model=${model}`);
+      bmLog(`[PAN Benchmark] /api/v1/ai/benchmark — suite=${suite} model=${model}`);
       const result = await runBenchmark(suite, model);
       res.json({ ok: true, ...result });
     }
   } catch (e) {
-    console.error('[PAN Benchmark] Run failed:', e.message);
+    bmErr('[PAN Benchmark] Run failed:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -60,10 +76,10 @@ benchmarkApiRouter.post('/benchmark/all', async (req, res) => {
   const { model = 'cerebras:qwen-3-235b' } = req.body || {};
 
   try {
-    console.log(`[PAN Benchmark] Running all suites — model=${model}`);
+    bmLog(`[PAN Benchmark] Running all suites — model=${model}`);
     const results = {};
     for (const suite of BENCHMARK_SUITES) {
-      console.log(`[PAN Benchmark] Running suite: ${suite}`);
+      bmLog(`[PAN Benchmark] Running suite: ${suite}`);
       try {
         results[suite] = await runBenchmark(suite, model);
       } catch (e) {
@@ -100,7 +116,7 @@ benchmarkApiRouter.post('/benchmark/all', async (req, res) => {
 
     res.json({ ok: true, allPassed, results, model });
   } catch (e) {
-    console.error('[PAN Benchmark] All-suite run failed:', e.message);
+    bmErr('[PAN Benchmark] All-suite run failed:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -216,7 +232,7 @@ benchmarkDashRouter.get('/autodev/report', (req, res) => {
       generated_at: new Date().toISOString(),
     });
   } catch (e) {
-    console.error('[AutoDev Report]', e.message);
+    bmErr('[AutoDev Report]', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -255,7 +271,7 @@ benchmarkDashRouter.get('/benchmarks/latest', (req, res) => {
     const suites_passed = rows.filter(r => r.passed).length;
     res.json({ ok: true, latest, suites_run, suites_passed, total_suites: BENCHMARK_SUITES.length, suites: BENCHMARK_SUITES });
   } catch (e) {
-    console.error('[Benchmark /latest]', e.message);
+    bmErr('[Benchmark /latest]', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
