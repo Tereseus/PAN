@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
 import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './claude.js';
+import { askAIWithFallback, askAIStreamWithFallback } from './llm-fallback.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
@@ -509,7 +510,10 @@ async function handleUnified(text, context) {
       ? `\nOVERRIDE: Server pattern matched — your response MUST use {"intent":"${context.intent_hint}",...}. Do not use a different intent.\n`
       : '';
     dbg.ai_started_at = Date.now();
-    raw = await claude(
+    // #996: route through fallback chain (cerebras → claude → ollama by default).
+    // Honors `ai_fallback_enabled=false` for users who want single-backend semantics.
+    const _fallbackMeta = {};
+    raw = await askAIWithFallback(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
 ${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${dialogHistoryBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${memoryFactsBlock}${episodicHitsBlock}${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
 
@@ -560,11 +564,17 @@ Response formats:
 
 Projects: ${projectList}
 ${memoryContext}`,
-      { caller: 'router', _skipAnonymize: true, source: context.source, device_id: context.device_id }
+      { caller: 'router', callerClass: 'voice', _skipAnonymize: true, source: context.source, device_id: context.device_id, outMeta: _fallbackMeta }
     );
 
     dbg.ai_latency_ms = Date.now() - dbg.ai_started_at;
     dbg.raw_response = (raw || '').slice(0, 2000);
+    // #996: surface fallback metadata so the "🧠 why" dashboard panel shows
+    // which backend actually answered. Single-attempt is omitted to keep payload small.
+    if (_fallbackMeta.attempts && _fallbackMeta.attempts.length > 1) {
+      dbg.fallback_attempts = _fallbackMeta.attempts;
+      dbg.served_by = _fallbackMeta.model;
+    }
     logStep(cmdId, 'unified_response', raw.slice(0, 200));
 
     // Strip thinking tags (Qwen 235B sometimes wraps in <think>...</think>)
@@ -1443,7 +1453,10 @@ ${memoryContext}`;
   let lastLen = 0;
 
   try {
-    for await (const chunk of askAIStream(prompt, { model, caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null })) {
+    // #996: streaming fallback wrapper. Connect-time failures cascade through
+    // chain (cerebras → claude → ollama); mid-stream failures propagate as
+    // truncation (no mid-stream switching — would corrupt the chunk sequence).
+    for await (const chunk of askAIStreamWithFallback(prompt, { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null })) {
       fullBuf += chunk;
       const { text: extracted, done } = extractResponseField(fullBuf);
       if (extracted.length > lastLen) {
