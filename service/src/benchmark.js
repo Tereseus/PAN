@@ -18,13 +18,62 @@
 
 import { run, get, insert, all } from './db.js';
 import { claude } from './llm.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, appendFileSync, mkdirSync, statSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { getDataDir } from './platform.js';
 
 // State file path (dream cycle writes .pan-state.md to the project root)
 const __bench_dirname = dirname(fileURLToPath(import.meta.url));
 const PAN_STATE_FILE = join(__bench_dirname, '..', '..', '.pan-state.md');
+
+// ── Headless logging ─────────────────────────────────────────────────────────
+// Benchmarks used to spam the dashboard terminal via console.log. Now every
+// benchmark line goes to %LOCALAPPDATA%/PAN/data/benchmark.log instead. Results
+// are still written to the `ai_benchmark` DB table (AutoDev panel reads from
+// there), and failures still trigger Scout. Nothing surfaces to the terminal
+// or chat — check the AutoDev panel or `tail benchmark.log` to inspect.
+//   • Why: user explicitly asked benchmarks run headlessly; "Why should never
+//     be printed in here. The benchmark should be run headlessly and results
+//     reprinted in specific area" (2026-05-26).
+//   • Rotation: 5 MB cap → rolled to benchmark.log.1 on next write past cap.
+const BENCHMARK_LOG_MAX_BYTES = 5 * 1024 * 1024;
+let _bmLogPath = null;
+function _benchmarkLogPath() {
+  if (_bmLogPath) return _bmLogPath;
+  try {
+    const dir = getDataDir();
+    try { mkdirSync(dir, { recursive: true }); } catch {}
+    _bmLogPath = join(dir, 'benchmark.log');
+  } catch {
+    _bmLogPath = join(process.cwd(), 'benchmark.log');
+  }
+  return _bmLogPath;
+}
+function _rotateIfBig(p) {
+  try {
+    const st = statSync(p);
+    if (st.size > BENCHMARK_LOG_MAX_BYTES) {
+      try { renameSync(p, p + '.1'); } catch {}
+    }
+  } catch { /* file doesn't exist yet — fine */ }
+}
+function _bmWrite(level, args) {
+  try {
+    const p = _benchmarkLogPath();
+    _rotateIfBig(p);
+    const ts = new Date().toISOString();
+    const msg = args.map(a => {
+      if (typeof a === 'string') return a;
+      try { return JSON.stringify(a); } catch { return String(a); }
+    }).join(' ');
+    appendFileSync(p, `${ts} ${level} ${msg}\n`, 'utf8');
+  } catch { /* never let logging break the suite */ }
+}
+function bmLog(...args)  { _bmWrite('INFO ', args); }
+function bmErr(...args)  { _bmWrite('ERROR', args); }
+function bmWarn(...args) { _bmWrite('WARN ', args); }
+export { _benchmarkLogPath as benchmarkLogPath };
 
 // ── Rate limiter ─────────────────────────────────────────────────────────────
 const delay = ms => new Promise(r => setTimeout(r, ms));
@@ -50,7 +99,7 @@ async function callRoute(text, context = {}, retries = 3) {
     if (attempt > 0) {
       // Cerebras rate limits reset after ~60s — give it real breathing room
       const backoff = attempt === 1 ? 8000 : attempt === 2 ? 25000 : 45000;
-      console.log(`[PAN Benchmark] Rate limited, waiting ${backoff/1000}s (attempt ${attempt}/${retries})...`);
+      bmLog(`[PAN Benchmark] Rate limited, waiting ${backoff/1000}s (attempt ${attempt}/${retries})...`);
       await delay(backoff);
     }
     try {
@@ -139,13 +188,13 @@ async function notifyScoutOfFailures(scores, floors, model, suite) {
     run("INSERT OR REPLACE INTO settings (key, value) VALUES ('autodev_config', :val)",
       { ':val': JSON.stringify(config) });
 
-    console.log(`[PAN Benchmark] ⚠️  ${suite} — failing: ${failureSummary}`);
+    bmLog(`[PAN Benchmark] ⚠️  ${suite} — failing: ${failureSummary}`);
 
     import('./scout.js').then(({ scout }) => {
-      scout().catch(e => console.error('[PAN Benchmark] Scout trigger error:', e.message));
+      scout().catch(e => bmErr('[PAN Benchmark] Scout trigger error:', e.message));
     }).catch(() => {});
   } catch (e) {
-    console.error('[PAN Benchmark] Scout notify error:', e.message);
+    bmErr('[PAN Benchmark] Scout notify error:', e.message);
   }
 }
 
@@ -318,32 +367,32 @@ async function testVoice() {
 }
 
 export async function runIntuitionBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting intuition suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting intuition suite — model: ${model}`);
   const t0 = Date.now();
   const details = {};
 
   // Reflex runs FIRST to measure raw latency before rate limits accumulate
-  console.log('[PAN Benchmark] → Reflex...');
+  bmLog('[PAN Benchmark] → Reflex...');
   details.reflex = await testReflex();
   await delay(3000); // wait for rate limit window to partially reset
 
-  console.log('[PAN Benchmark] → Hearing...');
+  bmLog('[PAN Benchmark] → Hearing...');
   details.hearing = await testHearing();
   await delay(3000);
 
-  console.log('[PAN Benchmark] → Clarity...');
+  bmLog('[PAN Benchmark] → Clarity...');
   details.clarity = await testClarity();
   await delay(3000);
 
-  console.log('[PAN Benchmark] → Reasoning...');
+  bmLog('[PAN Benchmark] → Reasoning...');
   details.reasoning = await testReasoning();
   await delay(2000);
 
-  console.log('[PAN Benchmark] → Memory (multi-turn)...');
+  bmLog('[PAN Benchmark] → Memory (multi-turn)...');
   details.memory = await testMemoryMultiTurn();
   await delay(3000);
 
-  console.log('[PAN Benchmark] → Voice...');
+  bmLog('[PAN Benchmark] → Voice...');
   details.voice = await testVoice();
 
   const scores = {
@@ -363,12 +412,12 @@ export async function runIntuitionBenchmark(model) {
   const r_ok = scores.reasoning >= INTUITION_FLOORS.reasoning;
   const m_ok = scores.memory    >= INTUITION_FLOORS.memory;
   const v_ok = scores.voice     >= INTUITION_FLOORS.voice;
-  console.log(`[PAN Benchmark] Intuition pass-check: h=${scores.hearing}>=${INTUITION_FLOORS.hearing}(${h_ok}) c=${scores.clarity}>=${INTUITION_FLOORS.clarity}(${c_ok}) r=${scores.reasoning}>=${INTUITION_FLOORS.reasoning}(${r_ok}) m=${scores.memory}>=${INTUITION_FLOORS.memory}(${m_ok}) v=${scores.voice}>=${INTUITION_FLOORS.voice}(${v_ok})`);
+  bmLog(`[PAN Benchmark] Intuition pass-check: h=${scores.hearing}>=${INTUITION_FLOORS.hearing}(${h_ok}) c=${scores.clarity}>=${INTUITION_FLOORS.clarity}(${c_ok}) r=${scores.reasoning}>=${INTUITION_FLOORS.reasoning}(${r_ok}) m=${scores.memory}>=${INTUITION_FLOORS.memory}(${m_ok}) v=${scores.voice}>=${INTUITION_FLOORS.voice}(${v_ok})`);
   const passed = (h_ok && c_ok && r_ok && m_ok && v_ok) ? 1 : 0;
 
   const elapsed = Date.now() - t0;
   _storeResult('intuition', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Intuition done in ${elapsed}ms — passed=${!!passed}`, scores);
+  bmLog(`[PAN Benchmark] Intuition done in ${elapsed}ms — passed=${!!passed}`, scores);
 
   if (!passed) await notifyScoutOfFailures(scores, INTUITION_FLOORS, model, 'intuition');
 
@@ -384,7 +433,7 @@ export async function runIntuitionBenchmark(model) {
 const DREAM_FLOORS = { coherence: 8.0, novelty: 7.0, accuracy: 8.0, composite: 8.0 };
 
 export async function runDreamBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting dream suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting dream suite — model: ${model}`);
   const t0 = Date.now();
   const details = {};
 
@@ -424,10 +473,10 @@ export async function runDreamBenchmark(model) {
       if (id) seededIds.push(typeof id === 'object' ? id.lastInsertRowid : id);
     }
     details.seeded = seededIds.length;
-    console.log(`[PAN Benchmark] Dream — seeded ${seededIds.length} events in scope ${scope}`);
+    bmLog(`[PAN Benchmark] Dream — seeded ${seededIds.length} events in scope ${scope}`);
   } catch (e) {
     details.seed_error = e.message;
-    console.error('[PAN Benchmark] Dream seed error:', e.message);
+    bmErr('[PAN Benchmark] Dream seed error:', e.message);
   }
 
   // 2. Read current state file (dream writes to .pan-state.md — PAN_STATE_FILE defined at module level)
@@ -442,10 +491,10 @@ export async function runDreamBenchmark(model) {
   try {
     const { dream } = await import('./dream.js');
     await dream();
-    console.log('[PAN Benchmark] Dream cycle completed');
+    bmLog('[PAN Benchmark] Dream cycle completed');
   } catch (e) {
     dreamError = e.message;
-    console.error('[PAN Benchmark] Dream error:', e.message);
+    bmErr('[PAN Benchmark] Dream error:', e.message);
   }
 
   // 4. Read state file after dream
@@ -526,7 +575,7 @@ Return ONLY JSON: {"coherence": N, "novelty": N, "accuracy": N, "reason": "brief
   const passed = scores.composite >= DREAM_FLOORS.composite ? 1 : 0;
   const elapsed = Date.now() - t0;
   _storeResult('dream', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Dream done in ${elapsed}ms — composite=${scores.composite} passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Dream done in ${elapsed}ms — composite=${scores.composite} passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, DREAM_FLOORS, model, 'dream');
 
@@ -555,7 +604,7 @@ const MEMORY_FACTS = [
 ];
 
 export async function runMemoryBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting memory suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting memory suite — model: ${model}`);
   const t0 = Date.now();
   const details = { facts: [] };
 
@@ -599,7 +648,7 @@ export async function runMemoryBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('memory', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Memory done — recall=${recall_score}/10 drift=${drift_pct}% passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Memory done — recall=${recall_score}/10 drift=${drift_pct}% passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, { recall: MEMORY_FLOORS.recall }, model, 'memory');
 
@@ -615,7 +664,7 @@ export async function runMemoryBenchmark(model) {
 const SCOUT_FLOORS = { relevance: 7.0, findings_count: 3 };
 
 export async function runScoutBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting scout suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting scout suite — model: ${model}`);
   const t0 = Date.now();
   const details = {};
 
@@ -648,10 +697,10 @@ export async function runScoutBenchmark(model) {
   try {
     const { scout } = await import('./scout.js');
     newFindingsCount = await scout();
-    console.log(`[PAN Benchmark] Scout returned ${newFindingsCount} new findings`);
+    bmLog(`[PAN Benchmark] Scout returned ${newFindingsCount} new findings`);
   } catch (e) {
     scoutError = e.message;
-    console.error('[PAN Benchmark] Scout error:', e.message);
+    bmErr('[PAN Benchmark] Scout error:', e.message);
   }
 
   details.scout_error = scoutError;
@@ -709,7 +758,7 @@ export async function runScoutBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('scout', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Scout done — relevance=${relevance} findings=${newFindingsCount} passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Scout done — relevance=${relevance} findings=${newFindingsCount} passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, SCOUT_FLOORS, model, 'scout');
 
@@ -748,7 +797,7 @@ const AUGUR_TEST_EVENTS = [
 ];
 
 export async function runAugurBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting augur suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting augur suite — model: ${model}`);
   const t0 = Date.now();
   const details = { events: [] };
 
@@ -773,10 +822,10 @@ export async function runAugurBenchmark(model) {
   try {
     const { classify } = await import('./classifier.js');
     await classify();
-    console.log('[PAN Benchmark] Augur — classifier ran');
+    bmLog('[PAN Benchmark] Augur — classifier ran');
   } catch (e) {
     classifierError = e.message;
-    console.error('[PAN Benchmark] Classifier error:', e.message);
+    bmErr('[PAN Benchmark] Classifier error:', e.message);
   }
 
   details.classifier_error = classifierError;
@@ -811,7 +860,7 @@ export async function runAugurBenchmark(model) {
 
   // If classifier doesn't classify events (possible — it may use its own logic), do a manual LLM classification test
   if (total === 0 || correct === 0) {
-    console.log('[PAN Benchmark] Augur — direct DB check got 0, trying LLM classification test');
+    bmLog('[PAN Benchmark] Augur — direct DB check got 0, trying LLM classification test');
     const sample = AUGUR_TEST_EVENTS.slice(0, 10);
     const judgeResult = await judgeScore(
       `You are evaluating an event classifier. For each event below, would a competent classifier
@@ -837,7 +886,7 @@ ${sample.map((ev, i) => `${i+1}. "${ev.text}" → expected: [${ev.expected_types
   const elapsed = Date.now() - t0;
 
   _storeResult('augur', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Augur done — accuracy=${accuracy_score}/10 passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Augur done — accuracy=${accuracy_score}/10 passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, AUGUR_FLOORS, model, 'augur');
 
@@ -853,7 +902,7 @@ ${sample.map((ev, i) => `${i+1}. "${ev.text}" → expected: [${ev.expected_types
 const IDENTITY_FLOORS = { auth_accuracy: 9.0, false_positive: 5.0 };
 
 export async function runIdentityBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting identity suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting identity suite — model: ${model}`);
   const t0 = Date.now();
   const details = { tests: [] };
 
@@ -942,7 +991,7 @@ export async function runIdentityBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('identity', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Identity done — auth=${auth_accuracy}/10 fp=${fp_pct}% passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Identity done — auth=${auth_accuracy}/10 fp=${fp_pct}% passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, { auth_accuracy: IDENTITY_FLOORS.auth_accuracy }, model, 'identity');
 
@@ -997,7 +1046,7 @@ const SENSOR_TEST_CASES = [
 ];
 
 export async function runSensorBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting sensor suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting sensor suite — model: ${model}`);
   const t0 = Date.now();
   const details = { cases: [] };
 
@@ -1036,7 +1085,7 @@ export async function runSensorBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('sensor', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Sensor done — usage=${usage_rate}/10 passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Sensor done — usage=${usage_rate}/10 passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, SENSOR_FLOORS, model, 'sensor');
 
@@ -1076,7 +1125,7 @@ const PIPELINE_QUERIES = [
 ];
 
 export async function runPipelineBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting pipeline suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting pipeline suite — model: ${model}`);
   const t0 = Date.now();
   const details = { queries: [] };
   // Dynamic floor based on model tier
@@ -1109,7 +1158,7 @@ export async function runPipelineBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('pipeline', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Pipeline done — P50=${p50}ms floor=${effectiveFloor}ms grade=${grade} passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Pipeline done — P50=${p50}ms floor=${effectiveFloor}ms grade=${grade} passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, dynamicFloors, model, 'pipeline');
 
@@ -1188,7 +1237,7 @@ const ORCHESTRATION_CASES = [
 ];
 
 export async function runOrchestrationBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting orchestration suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting orchestration suite — model: ${model}`);
   const t0 = Date.now();
   const details = { cases: [] };
 
@@ -1225,7 +1274,7 @@ export async function runOrchestrationBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('orchestration', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Orchestration done — success=${success_rate}/10 passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Orchestration done — success=${success_rate}/10 passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, ORCHESTRATION_FLOORS, model, 'orchestration');
 
@@ -1241,7 +1290,7 @@ export async function runOrchestrationBenchmark(model) {
 const EVOLUTION_FLOORS = { decay_accuracy: 7.0, relevance_improvement: 0 }; // relevance_improvement >= 0 = didn't get worse
 
 export async function runEvolutionBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting evolution suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting evolution suite — model: ${model}`);
   const t0 = Date.now();
   const details = {};
 
@@ -1298,7 +1347,7 @@ export async function runEvolutionBenchmark(model) {
     await dream();
   } catch (e) {
     evoError = e.message;
-    console.error('[PAN Benchmark] Evolution — dream error:', e.message);
+    bmErr('[PAN Benchmark] Evolution — dream error:', e.message);
   }
   details.evolution_error = evoError;
 
@@ -1352,7 +1401,7 @@ export async function runEvolutionBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('evolution', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Evolution done — decay=${decay_accuracy} rel_delta=${relevance_improvement} passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Evolution done — decay=${decay_accuracy} rel_delta=${relevance_improvement} passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, EVOLUTION_FLOORS, model, 'evolution');
 
@@ -1366,7 +1415,7 @@ export async function runEvolutionBenchmark(model) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function runPrivacyBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting privacy suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting privacy suite — model: ${model}`);
   const t0 = Date.now();
   const details = { checks: [] };
 
@@ -1450,10 +1499,10 @@ export async function runPrivacyBenchmark(model) {
   _storeResult('privacy', model, scores, passed, details);
 
   if (!passed) {
-    console.error(`[PAN Benchmark] ⛔ PRIVACY FAIL — ${leaks} leak(s) detected! This is a hard gate.`);
+    bmErr(`[PAN Benchmark] ⛔ PRIVACY FAIL — ${leaks} leak(s) detected! This is a hard gate.`);
     await notifyScoutOfFailures(scores, {}, model, 'privacy');
   } else {
-    console.log(`[PAN Benchmark] Privacy done — ${total_checks} checks, 0 leaks ✓`);
+    bmLog(`[PAN Benchmark] Privacy done — ${total_checks} checks, 0 leaks ✓`);
   }
 
   return { scores, passed: !!passed, details, elapsed_ms: elapsed, model, suite: 'privacy' };
@@ -1468,7 +1517,7 @@ export async function runPrivacyBenchmark(model) {
 const CONTEXT_FLOORS = { relevance: 8.0, coverage: 8.0 };
 
 export async function runContextBenchmark(model) {
-  console.log(`[PAN Benchmark] Starting context suite — model: ${model}`);
+  bmLog(`[PAN Benchmark] Starting context suite — model: ${model}`);
   const t0 = Date.now();
   const details = { cases: [] };
 
@@ -1583,7 +1632,7 @@ export async function runContextBenchmark(model) {
   const elapsed = Date.now() - t0;
 
   _storeResult('context', model, scores, passed, details);
-  console.log(`[PAN Benchmark] Context done — relevance=${relevance} coverage=${coverage} vs baseline=${baseline_hits}/${CONTEXT_CASES.length} passed=${!!passed}`);
+  bmLog(`[PAN Benchmark] Context done — relevance=${relevance} coverage=${coverage} vs baseline=${baseline_hits}/${CONTEXT_CASES.length} passed=${!!passed}`);
 
   if (!passed) await notifyScoutOfFailures(scores, CONTEXT_FLOORS, model, 'context');
 
@@ -1608,7 +1657,7 @@ function _storeResult(suite, model, scores, passed, details) {
       }
     );
   } catch (e) {
-    console.error(`[PAN Benchmark] Failed to store ${suite} result:`, e.message);
+    bmErr(`[PAN Benchmark] Failed to store ${suite} result:`, e.message);
   }
 }
 
@@ -1671,13 +1720,13 @@ export async function runBenchmarkWithVerification(suite, model = 'cerebras:qwen
     attempts = attempt;
 
     // ── Step 1: Executor ──────────────────────────────────────────────────────
-    console.log(`[PAN Benchmark+V] Executor run — suite=${suite} model=${model} attempt=${attempt}/${maxAttempts}`);
+    bmLog(`[PAN Benchmark+V] Executor run — suite=${suite} model=${model} attempt=${attempt}/${maxAttempts}`);
     result = await runBenchmark(suite, model);
 
     // ── Step 2: Verifier ──────────────────────────────────────────────────────
-    console.log(`[PAN Benchmark+V] Verifier running — suite=${suite}`);
+    bmLog(`[PAN Benchmark+V] Verifier running — suite=${suite}`);
     verifierVerdict = await verify(suite, result);
-    console.log(`[PAN Benchmark+V] Verifier verdict — agree=${verifierVerdict.agree} confidence=${verifierVerdict.confidence} verified=${verifierVerdict.verified} reason="${verifierVerdict.reason}"`);
+    bmLog(`[PAN Benchmark+V] Verifier verdict — agree=${verifierVerdict.agree} confidence=${verifierVerdict.confidence} verified=${verifierVerdict.verified} reason="${verifierVerdict.reason}"`);
 
     // ── Step 3: Auto-correction decision ─────────────────────────────────────
     const shouldRetry = (
@@ -1687,7 +1736,7 @@ export async function runBenchmarkWithVerification(suite, model = 'cerebras:qwen
     );
 
     if (shouldRetry) {
-      console.log(`[PAN Benchmark+V] Verifier disagrees (confidence ${verifierVerdict.confidence}/10) — retrying in 5s...`);
+      bmLog(`[PAN Benchmark+V] Verifier disagrees (confidence ${verifierVerdict.confidence}/10) — retrying in 5s...`);
       corrected = true;
       await delay_ms(5000);
       continue;
@@ -1716,7 +1765,7 @@ export async function runBenchmarkWithVerification(suite, model = 'cerebras:qwen
       }
     );
   } catch (e) {
-    console.error(`[PAN Benchmark+V] Failed to store verified result for ${suite}:`, e.message);
+    bmErr(`[PAN Benchmark+V] Failed to store verified result for ${suite}:`, e.message);
   }
 
   return {

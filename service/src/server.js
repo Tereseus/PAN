@@ -75,7 +75,7 @@ import { createHash } from 'crypto';
 import https from 'https';
 import http from 'node:http';
 import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, pipeResetAdapter, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
 import { WebSocketServer as WsServer } from 'ws';
 import clientRouter from './routes/client.js';
@@ -3449,6 +3449,15 @@ app.post('/api/v1/terminal/interrupt', (req, res) => {
   }
 });
 
+// Adapter reset — clears broken adapter state so next message creates a fresh adapter
+// and resumes from JSONL. Use when session.messages is frozen or claudeRunning is stuck.
+app.post('/api/v1/terminal/adapter-reset', async (req, res) => {
+  const session_id = req.body?.session_id || req.query.session;
+  if (!session_id) return res.status(400).json({ error: 'session_id required' });
+  const ok = await pipeResetAdapter(session_id);
+  res.json({ ok: !!ok, session: session_id });
+});
+
 // PIPE MODE: send user message to a terminal session via pipe_send.
 // Spawns claude -p as a child process, returns clean JSON responses.
 // Dedup: reject identical text to same session within 5 seconds
@@ -5199,28 +5208,40 @@ function start() {
           ], { windowsHide: true, timeout: 5000 });
         } catch { /* rule may already exist or not on Windows */ }
 
-        // Daily 3am benchmark — runs ALL 12 suites sequentially on the active model
+        // Daily 3am benchmark — runs ALL 12 suites sequentially on the active model.
+        // Headless: all output → %LOCALAPPDATA%/PAN/data/benchmark.log via bmLog().
+        // Results land in `ai_benchmark` table (AutoDev panel). Failures still fire Scout.
+        // User explicitly asked these never print to the dashboard terminal (2026-05-26).
         {
           async function runDailyBenchmarks() {
             try {
-              const { runBenchmark, BENCHMARK_SUITES } = await import('./benchmark.js');
+              const { runBenchmark, BENCHMARK_SUITES, benchmarkLogPath } = await import('./benchmark.js');
               const modelRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
               const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : 'cerebras:qwen-3-235b';
-              console.log(`[PAN Benchmark] Daily 3am — running all ${BENCHMARK_SUITES.length} suites on model: ${model}`);
+              // Lazy import of bmLog via the module's file-logger
+              const fs = await import('fs');
+              const ts = () => new Date().toISOString();
+              const logLine = (lvl, msg) => { try { fs.appendFileSync(benchmarkLogPath(), `${ts()} ${lvl} ${msg}\n`, 'utf8'); } catch {} };
+              logLine('INFO ', `[PAN Benchmark] Daily 3am — running all ${BENCHMARK_SUITES.length} suites on model: ${model}`);
               for (const suite of BENCHMARK_SUITES) {
                 try {
                   await runBenchmark(suite, model);
                 } catch (e) {
-                  console.error(`[PAN Benchmark] Daily suite "${suite}" failed:`, e.message);
+                  logLine('ERROR', `[PAN Benchmark] Daily suite "${suite}" failed: ${e.message}`);
                 }
               }
-              console.log('[PAN Benchmark] Daily run complete');
+              logLine('INFO ', '[PAN Benchmark] Daily run complete');
             } catch (e) {
-              console.error('[PAN Benchmark] Daily run failed:', e.message);
+              // Last-resort: still file-log; never spam stdout.
+              try {
+                const fs = await import('fs');
+                const { benchmarkLogPath } = await import('./benchmark.js');
+                fs.appendFileSync(benchmarkLogPath(), `${new Date().toISOString()} ERROR [PAN Benchmark] Daily run failed: ${e.message}\n`, 'utf8');
+              } catch {}
             }
           }
 
-          function scheduleDailyBenchmark() {
+          async function scheduleDailyBenchmark() {
             const now = new Date();
             const next3am = new Date(now);
             next3am.setHours(3, 0, 0, 0);
@@ -5230,7 +5251,12 @@ function start() {
               await runDailyBenchmarks();
               setInterval(runDailyBenchmarks, 24 * 60 * 60 * 1000);
             }, msUntil3am);
-            console.log(`[PAN Benchmark] Daily run scheduled for 3am (in ${Math.round(msUntil3am / 60000)}m) — all 12 suites`);
+            // Scheduler boot message → file only.
+            try {
+              const fs = await import('fs');
+              const { benchmarkLogPath } = await import('./benchmark.js');
+              fs.appendFileSync(benchmarkLogPath(), `${new Date().toISOString()} INFO  [PAN Benchmark] Daily run scheduled for 3am (in ${Math.round(msUntil3am / 60000)}m) — all 12 suites\n`, 'utf8');
+            } catch {}
           }
           scheduleDailyBenchmark();
         }
