@@ -22,7 +22,7 @@
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
-import { db, get, all, getOllamaUrl } from '../db.js';
+import { db, get, all, getOllamaUrl, getModelForPurpose } from '../db.js';
 import { askAI } from '../llm.js';
 import { getLatestScreenContext, getLatestScreenContextFromDB } from '../screen-watcher.js';
 import { getWebcamContext } from '../webcam-watcher.js';
@@ -871,9 +871,31 @@ function persistSnapshot(snap, trigger) {
 
 // ─── Cerebras axis classification (async, non-blocking) ───
 // Fires after each tick to fill in axes that the aggregator can't determine.
-// Uses Cerebras Qwen 235B (free, ~220ms). Updates the snapshot in-place.
+// Model selection now reads from model_selections via getModelForPurpose
+// so swapping the cloud model is a one-row DB edit, not a code change.
+// Local fallback uses chat_local (currently qwen3:4b on the MiniPC).
 let _classifyPending = false;
-const CLASSIFY_MODELS = ['cerebras:qwen-3-235b', 'ollama:qwen3:4b']; // try in order
+function _classifyModels() {
+  const refs = [];
+  try {
+    const cloud = getModelForPurpose('reasoning_cloud');
+    const local = getModelForPurpose('chat_local');
+    // Strip the @device suffix from provider names ("ollama@minipc"
+    // → "ollama") so the dispatcher in llm.js routes via getOllamaUrl()
+    // for any local Ollama instance.
+    if (cloud) refs.push(`${cloud.provider.split('@')[0]}:${cloud.model}`);
+    if (local) refs.push(`ollama:${local.model}`);
+  } catch {}
+  // Last-resort backstop only if the registry table isn't initialised yet.
+  if (refs.length === 0) return ['cerebras:qwen-3-235b', 'ollama:qwen3:4b'];
+  return refs;
+}
+// IMPORTANT: don't freeze this at module load. The user can change the
+// reasoning_cloud / chat_local rows in model_selections via the admin
+// endpoint at runtime; if we cache the value here, the running Craft will
+// keep using the old model until next swap. Wrap as a getter so each
+// classify call sees the current DB state.
+function getClassifyModels() { return _classifyModels(); }
 const CLASSIFY_COOLDOWN_MS = 15000;         // min gap between classify calls
 const CLASSIFY_FORCE_MS = 5 * 60_000;      // force classify at least every 5min even if unchanged
 let _lastClassifyTime = 0;
@@ -973,7 +995,10 @@ async function classifyAxes(snap) {
     let usedModel = null;
 
     // Try Cerebras first, fall back to local Ollama
-    for (const model of CLASSIFY_MODELS) {
+    // NOTE: getClassifyModels() reads model_selections from DB at call time —
+    // do NOT cache this in a module-level const, or DB changes won't propagate
+    // to the running Craft and we'll keep hitting retired/billing-blocked models.
+    for (const model of getClassifyModels()) {
       try {
         if (model.startsWith('ollama:')) {
           raw = await callOllama(prompt, model.replace('ollama:', ''));

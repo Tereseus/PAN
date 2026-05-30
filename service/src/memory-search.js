@@ -17,6 +17,7 @@ const require = createRequire(import.meta.url);
 const sqliteVec = require('sqlite-vec');
 
 import { getDb } from './db-registry.js';
+import { get as _settingsGet } from './db.js';
 import { embed, embedForWrite, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
 import { privatizeSearch } from './privacy.js';
 
@@ -206,10 +207,99 @@ async function embedEvent(db, eventRow) {
  * should kick this off in a setImmediate / async tick.
  */
 let _backfillAborted = false;
-let _backfillRunning = false;
-function abortBackfill() { _backfillAborted = true; }
+let _backfillRunning = false; // legacy — only the unused _mainThread fn reads this
+function abortBackfill() {
+  _backfillAborted = true;     // legacy path
+  if (_backfillWorker) {
+    try { _backfillWorker.postMessage({ type: 'abort' }); }
+    catch (e) { console.warn('[PAN MemorySearch] failed to send abort to worker:', e.message); }
+  }
+}
 
-async function backfillEmbeddings(scope = 'main', concurrency = 5) {
+// Worker-thread backfill — see memory-search-worker.js for the full loop.
+//
+// Before this refactor the backfill ran on the MAIN Node thread. Every
+// vec0 vector-index INSERT was a synchronous 100-500ms CPU burst (HNSW
+// graph maintenance over 200k+ vectors) that froze the HTTP server, the
+// WebSocket layer, Carrier's perf probes, and everything else. Dashboards
+// went unresponsive even though Ollama itself was on a separate machine —
+// the bottleneck was the local index write, not the embedding compute.
+//
+// Now: backfillEmbeddings spawns a Worker thread that opens its own
+// better-sqlite3 connection and does the writes on a separate Node event
+// loop. SQLite is in WAL mode (see db-registry.js), which lets the worker
+// (writer) and the main thread (readers serving HTTP) touch the database
+// simultaneously without lock contention. Dashboard endpoints stay
+// responsive even during 24/7 backfill.
+//
+// The worker also lets us keep going from where it left off across Craft
+// swaps — the existing event_embeddings rows persist, and the next worker
+// start just picks up the remaining unindexed events.
+let _backfillWorker = null;
+let _backfillLastStats = { indexed: 0, total: 0, added: 0, rate: 0, etaMin: null };
+
+async function backfillEmbeddings(scope = 'main', concurrency = 1) {
+  if (_backfillWorker) {
+    console.log('[PAN MemorySearch] backfill: worker already running — skipping duplicate invocation');
+    return null;
+  }
+  // Persistent disable — survives Craft swaps. Set via:
+  //   UPDATE settings SET value = 'true' WHERE key = 'embeddings_backfill_disabled'
+  // or POST /api/v1/memory/backfill-disable. Until cleared, the backfill
+  // never runs even though it's auto-scheduled on Craft boot.
+  try {
+    const disabledRow = _settingsGet(`SELECT value FROM settings WHERE key = 'embeddings_backfill_disabled'`);
+    if (disabledRow && /^"?true"?$/i.test(disabledRow.value)) {
+      console.log('[PAN MemorySearch] backfill: skipped — embeddings_backfill_disabled setting is true');
+      return { indexed: 0, total: 0, added: 0, skipped: 'disabled_via_setting' };
+    }
+  } catch {}
+
+  const { Worker } = await import('node:worker_threads');
+  const { fileURLToPath } = await import('node:url');
+  const workerUrl = new URL('./memory-search-worker.js', import.meta.url);
+
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    _backfillWorker = new Worker(fileURLToPath(workerUrl), {
+      workerData: { scope, concurrency },
+    });
+
+    _backfillWorker.on('message', (msg) => {
+      if (msg?.type === 'progress' && msg.stats) {
+        _backfillLastStats = { ...msg.stats, running: true };
+      } else if (msg?.type === 'log') {
+        console.log(`[${msg.tag}] ${msg.message}`);
+      } else if (msg?.type === 'done') {
+        _backfillLastStats = { ...(msg.result || {}), rate: 0, etaMin: 0, running: false };
+        if (!resolved) { resolved = true; resolve(msg.result); }
+      } else if (msg?.type === 'error') {
+        console.error('[PAN MemorySearch] worker error:', msg.error);
+        if (!resolved) { resolved = true; reject(new Error(msg.error)); }
+      }
+    });
+
+    _backfillWorker.on('error', (err) => {
+      console.error('[PAN MemorySearch] worker crashed:', err.message);
+      if (!resolved) { resolved = true; reject(err); }
+    });
+
+    _backfillWorker.on('exit', (code) => {
+      if (code !== 0) console.warn(`[PAN MemorySearch] worker exited with code ${code}`);
+      _backfillWorker = null;
+      if (!resolved) {
+        resolved = true;
+        resolve(_backfillLastStats);
+      }
+    });
+  });
+}
+
+// Original main-thread backfill code preserved below for reference, but
+// the export now goes through the worker. Don't call _backfillEmbeddings_mainThread
+// directly — it will block the event loop for hours.
+// eslint-disable-next-line no-unused-vars
+async function _backfillEmbeddings_mainThread(scope = 'main', concurrency = 1) {
   if (_backfillRunning) {
     console.log('[PAN MemorySearch] backfill: already running — skipping duplicate invocation');
     return null;
@@ -235,8 +325,14 @@ async function backfillEmbeddings(scope = 'main', concurrency = 5) {
   // anywhere in the pool trigger the backoff, not per-worker independently.
   let poolConsecFails = 0;
   let poolBackoffUntil = 0;
+  let poolBackoffTier = 0;
   const POOL_FAIL_LIMIT = 5;
-  const POOL_BACKOFF_MS = 30_000;
+  // Exponential-tier backoff. The previous flat 30s meant a fresh wave of
+  // 5 Ollama failures fired every 30 seconds whenever Ollama was offline,
+  // and with a 19k-event backlog that meant constant CPU + log churn that
+  // wedged the dashboard. New schedule: 30s → 2min → 10min → 30min →
+  // 30min (capped). Resets to tier 0 on the first successful embed.
+  const POOL_BACKOFF_TIERS_MS = [30_000, 120_000, 600_000, 1_800_000];
 
   // Rate tracking — one log line per minute with actual embeds/sec.
   let rateWindowStart = Date.now();
@@ -258,6 +354,16 @@ async function backfillEmbeddings(scope = 'main', concurrency = 5) {
     rateWindowAdded = 0;
   }
 
+  function _triggerPoolBackoff() {
+    const tierIdx = Math.min(poolBackoffTier, POOL_BACKOFF_TIERS_MS.length - 1);
+    const backoffMs = POOL_BACKOFF_TIERS_MS[tierIdx];
+    poolBackoffUntil = Date.now() + backoffMs;
+    poolBackoffTier++;
+    const human = backoffMs >= 60_000 ? `${Math.round(backoffMs/60_000)}min` : `${Math.round(backoffMs/1000)}s`;
+    console.warn(`[PAN MemorySearch] backfill: pool paused ${human} after ${POOL_FAIL_LIMIT} consecutive Ollama failures (tier ${tierIdx + 1}/${POOL_BACKOFF_TIERS_MS.length})`);
+    poolConsecFails = 0;
+  }
+
   async function processRow(row) {
     try {
       const ok = await embedEvent(db, row);
@@ -265,6 +371,7 @@ async function backfillEmbeddings(scope = 'main', concurrency = 5) {
         added++;
         rateWindowAdded++;
         poolConsecFails = 0;
+        poolBackoffTier = 0; // Ollama is back — reset the escalation
       } else if (ok === 'skip') {
         // No-content event — sentinel written, not an Ollama failure
         poolConsecFails = 0;
@@ -272,18 +379,15 @@ async function backfillEmbeddings(scope = 'main', concurrency = 5) {
         // false = embedForWrite returned null — Ollama unavailable on write path
         poolConsecFails++;
         if (poolConsecFails >= POOL_FAIL_LIMIT) {
-          poolBackoffUntil = Date.now() + POOL_BACKOFF_MS;
-          console.warn(`[PAN MemorySearch] backfill: pool paused 30s after ${POOL_FAIL_LIMIT} consecutive Ollama failures`);
-          poolConsecFails = 0;
+          _triggerPoolBackoff();
         }
       }
     } catch (err) {
       console.warn(`[PAN MemorySearch] backfill embed failed for event ${row.id}:`, err.message);
       poolConsecFails++;
       if (poolConsecFails >= POOL_FAIL_LIMIT) {
-        poolBackoffUntil = Date.now() + POOL_BACKOFF_MS;
-        console.warn(`[PAN MemorySearch] backfill: pool paused 30s after ${POOL_FAIL_LIMIT} consecutive Ollama failures`);
-        poolConsecFails = 0;
+        _triggerPoolBackoff();
+        return;
       }
     }
   }
@@ -497,7 +601,18 @@ function backfillStatus(scope = 'main') {
     const db = getDb(scope);
     const total = db.prepare('SELECT COUNT(*) as c FROM events').get().c;
     const indexed = db.prepare('SELECT COUNT(*) as c FROM event_embeddings').get().c;
-    return { total, indexed, remaining: total - indexed, running: _backfillRunning };
+    // running reflects whether the worker thread is alive. Live rate + ETA
+    // come from the worker's last 'progress' postMessage.
+    return {
+      total,
+      indexed,
+      remaining: total - indexed,
+      running: _backfillWorker !== null,
+      worker_thread: true,
+      rate_per_sec: _backfillLastStats?.rate ?? 0,
+      eta_min: _backfillLastStats?.etaMin ?? null,
+      added_this_run: _backfillLastStats?.added ?? 0,
+    };
   } catch (err) {
     return { error: err.message };
   }

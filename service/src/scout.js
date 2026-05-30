@@ -9,12 +9,22 @@
 
 import { insert, all, get, run } from './db.js';
 import { claude } from './claude.js';
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
+// Promisified async exec — replaces execSync to avoid blocking the event loop
+// during the Start Menu / registry scan that fires on Craft startup. Each
+// execSync call could take up to 10s; with 8 of them in sequence, Craft's
+// event loop was frozen for up to 80s after boot, blowing every Carrier
+// health probe and triggering an endless swap/rollback loop.
+const execAsync = promisify(exec);
+
 let timer = null;
+let _startupIntervals_providerModels = null;
+let _startupIntervals_deviceModels = null;
 
 // Sources to monitor
 const SOURCES = [
@@ -75,6 +85,53 @@ try {
   )`);
   run(`CREATE INDEX IF NOT EXISTS idx_scout_status ON scout_findings(status)`);
   run(`CREATE INDEX IF NOT EXISTS idx_scout_score ON scout_findings(relevance_score DESC)`);
+} catch {}
+
+// provider_models — live source of truth for which model IDs each LLM
+// provider currently serves. Populated by scanProviderModels() which hits
+// the OpenAI-compatible /v1/models endpoint of each configured provider.
+// llm.js consults this table to short-circuit dead-model calls (e.g. when
+// Cerebras retires qwen-3-235b-a22b-instruct-2507) before paying the full
+// HTTP round-trip on every Intuition / Orchestrator / Dream cycle.
+try {
+  run(`CREATE TABLE IF NOT EXISTS provider_models (
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    metadata TEXT,
+    first_seen TEXT DEFAULT (datetime('now','localtime')),
+    last_seen TEXT DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (provider, model_id)
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS idx_provider_models_provider ON provider_models(provider)`);
+} catch {}
+
+// device_models — same idea but for LOCAL inference servers running on
+// devices enrolled via pan-client. Mostly Ollama right now (port 11434)
+// but the schema is provider-tagged so we can add LM Studio etc. later.
+//
+// Why a table and not hardcoded constants in embeddings.js / llm.js:
+//  - The user controls what's actually installed on each device. PAN
+//    learns it by probing /api/tags, not by guessing.
+//  - When the user runs `ollama pull <model>` on the MiniPC, the next
+//    Scout sweep picks it up — code doesn't need to be redeployed.
+//  - findDeviceWithModel(name) lets callers ask "who has *this exact
+//    model name*?" which is critical for embeddings (1024-dim qwen3-
+//    embedding:0.6b output cannot be silently substituted with a 2560-
+//    dim variant — the dimensions are wedded to the existing
+//    event_embeddings rows on disk).
+try {
+  run(`CREATE TABLE IF NOT EXISTS device_models (
+    device_hostname TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'ollama',
+    model_name TEXT NOT NULL,
+    size_bytes INTEGER,
+    metadata TEXT,
+    first_seen TEXT DEFAULT (datetime('now','localtime')),
+    last_seen TEXT DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (device_hostname, provider, model_name)
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS idx_device_models_model ON device_models(model_name)`);
+  run(`CREATE INDEX IF NOT EXISTS idx_device_models_device ON device_models(device_hostname)`);
 } catch {}
 
 // Fetch a URL with timeout
@@ -335,6 +392,42 @@ function startScout(intervalMs = 24 * 60 * 60 * 1000) {
     }
   }, 5000);
 
+  // Refresh provider model lists (Cerebras, Groq) — single source of truth
+  // for llm.js to validate model IDs against. Delayed 12s so we run well
+  // after Craft is healthy on Carrier's perf probes, then a 6h interval
+  // catches any model rename/retirement.
+  setTimeout(async () => {
+    try {
+      const summary = await scanProviderModels();
+      const parts = Object.entries(summary).map(([p, r]) => r.ok ? `${p}=${r.count}` : `${p}=fail(${r.reason})`);
+      console.log(`[PAN Scout] Provider model scan: ${parts.join(' ')}`);
+    } catch (e) {
+      console.error('[PAN Scout] Provider model scan failed:', e.message);
+    }
+  }, 12000);
+  _startupIntervals_providerModels = setInterval(() => {
+    scanProviderModels().catch(e => console.warn('[PAN Scout] Provider refresh failed:', e.message));
+  }, 6 * 60 * 60 * 1000);
+
+  // Refresh local device model registry — discovers which models each
+  // enrolled device has installed on its local Ollama. embeddings.js +
+  // llm.js use findDeviceWithModel() instead of hardcoding names. Same
+  // 12s startup delay + 6h refresh as the cloud-provider scan; also
+  // re-triggered ad-hoc when client-manager.handleHeartbeat sees an
+  // ollama service-status change in a device's heartbeat.
+  setTimeout(async () => {
+    try {
+      const summary = await scanDeviceModels();
+      const parts = Object.entries(summary).map(([h, r]) => r.ok ? `${h}=${r.count}` : `${h}=fail(${r.reason})`);
+      console.log(`[PAN Scout] Device model scan: ${parts.join(' ') || '(no devices report ollama)'}`);
+    } catch (e) {
+      console.error('[PAN Scout] Device model scan failed:', e.message);
+    }
+  }, 12000);
+  _startupIntervals_deviceModels = setInterval(() => {
+    scanDeviceModels().catch(e => console.warn('[PAN Scout] Device model refresh failed:', e.message));
+  }, 6 * 60 * 60 * 1000);
+
   const runRemote = async () => {
     try {
       // Re-scan local apps too (picks up new installs)
@@ -367,14 +460,30 @@ function startScout(intervalMs = 24 * 60 * 60 * 1000) {
       console.error('[PAN Scout]', err.message);
     }
   };
-  setTimeout(runRemote, 30000);
+  // INTENTIONALLY no `setTimeout(runRemote, 30000)` here.
+  //
+  // Previously the Web scout (4 GitHub source fetches + 15 sequential
+  // `npx a2asearch` spawns @ 15s timeout each = up to 225s of heavy work)
+  // fired 30 seconds after EVERY Craft startup. With auto-rollback + sleep-
+  // wake swaps + manual swaps during dev, this meant Scout was permanently
+  // hammering the event loop and the npx process pool, contributing to the
+  // CPU runaway that wedged Craft.
+  //
+  // scanLocalApps already runs at the 5s mark above — that's the part that
+  // matters for the dashboard's Apps widget. The Web scout phase (which
+  // discovers brand-new third-party tools) is a discovery convenience, not
+  // a UX-critical path, so the 24-hour interval is plenty.
   timer = setInterval(runRemote, intervalMs);
-  console.log(`[PAN Scout] Running every ${Math.round(intervalMs / 3600000)}h`);
+  console.log(`[PAN Scout] Web scout scheduled every ${Math.round(intervalMs / 3600000)}h (no on-startup run)`);
 }
 
 function stopScout() {
   if (timer) clearInterval(timer);
   timer = null;
+  if (_startupIntervals_providerModels) clearInterval(_startupIntervals_providerModels);
+  _startupIntervals_providerModels = null;
+  if (_startupIntervals_deviceModels) clearInterval(_startupIntervals_deviceModels);
+  _startupIntervals_deviceModels = null;
 }
 
 // ─── Local App Discovery ───────────────────────────────────────────
@@ -394,8 +503,14 @@ function loadKnownApps() {
   }
 }
 
-// Scan Windows Start Menu and registry for installed apps
-function scanInstalledApps() {
+// Scan Windows Start Menu and registry for installed apps.
+//
+// MUST be async + use execAsync — see import block. Old execSync version
+// blocked the event loop for up to 80s on startup and was the root cause
+// of the never-ending Craft swap/rollback loop (every health probe failed
+// during the freeze). Running these 8 commands in parallel via Promise.all
+// is also much faster wall-clock: ~3-5s total instead of summing.
+async function scanInstalledApps() {
   const found = new Set();
   const paths = [
     process.env.APPDATA ? join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs') : null,
@@ -405,42 +520,50 @@ function scanInstalledApps() {
     process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)',
   ].filter(Boolean);
 
-  // Method 1: Search Start Menu shortcuts for app names
-  for (const dir of paths) {
-    try {
-      const output = execSync(`dir /s /b "${dir}" 2>nul`, {
-        encoding: 'utf-8',
-        timeout: 10000,
-        windowsHide: true,
-        maxBuffer: 1024 * 1024,
-      });
-      for (const line of output.split('\n')) {
+  const regPaths = [
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ];
+
+  // Fan out all 8 child-process scans in parallel. Each one yields to the
+  // event loop while its child process runs — health probes can answer
+  // normally throughout the scan window.
+  const dirJobs = paths.map(dir =>
+    execAsync(`dir /s /b "${dir}" 2>nul`, {
+      encoding: 'utf-8',
+      timeout: 10000,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    }).then(({ stdout }) => ({ kind: 'dir', stdout }))
+      .catch(() => ({ kind: 'dir', stdout: '' }))
+  );
+
+  const regJobs = regPaths.map(regPath =>
+    execAsync(`reg query "${regPath}" /s /v DisplayName 2>nul`, {
+      encoding: 'utf-8',
+      timeout: 10000,
+      windowsHide: true,
+      maxBuffer: 2 * 1024 * 1024,
+    }).then(({ stdout }) => ({ kind: 'reg', stdout }))
+      .catch(() => ({ kind: 'reg', stdout: '' }))
+  );
+
+  const results = await Promise.all([...dirJobs, ...regJobs]);
+
+  for (const r of results) {
+    if (r.kind === 'dir') {
+      for (const line of r.stdout.split('\n')) {
         const name = line.trim().split('\\').pop()?.replace(/\.lnk$/i, '').replace(/\.exe$/i, '');
         if (name) found.add(name);
       }
-    } catch {}
-  }
-
-  // Method 2: Registry scan for installed programs (display names)
-  try {
-    const regPaths = [
-      'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-      'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-      'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-    ];
-    for (const regPath of regPaths) {
-      try {
-        const output = execSync(
-          `reg query "${regPath}" /s /v DisplayName 2>nul`,
-          { encoding: 'utf-8', timeout: 10000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }
-        );
-        for (const line of output.split('\n')) {
-          const match = line.match(/DisplayName\s+REG_SZ\s+(.+)/i);
-          if (match) found.add(match[1].trim());
-        }
-      } catch {}
+    } else {
+      for (const line of r.stdout.split('\n')) {
+        const match = line.match(/DisplayName\s+REG_SZ\s+(.+)/i);
+        if (match) found.add(match[1].trim());
+      }
     }
-  } catch {}
+  }
 
   return found;
 }
@@ -455,7 +578,11 @@ async function scanLocalApps() {
 
   console.log('[PAN Scout] Scanning for installed applications...');
   const known = loadKnownApps();
-  const installed = scanInstalledApps();
+  // scanInstalledApps is now async — without await, we'd get back a Promise
+  // and "installed.size" would be undefined, matching zero apps. The async
+  // change exists so the 8 child-process scans yield to the event loop
+  // (health probes keep answering) instead of blocking for up to 80s.
+  const installed = await scanInstalledApps();
   console.log(`[PAN Scout] Found ${installed.size} installed programs, matching against ${known.apps.length} known web apps...`);
 
   let matched = 0;
@@ -503,6 +630,223 @@ async function scanLocalApps() {
   return matched;
 }
 
+// ── Provider model discovery ─────────────────────────────────────────────────
+// Cerebras and Groq both expose OpenAI-compatible /v1/models endpoints. We
+// fetch the live list per provider and store the model IDs in
+// provider_models. llm.js uses getKnownProviderModels(provider) to short-circuit
+// calls to retired models (e.g. when Cerebras renames qwen-3-235b-a22b-instruct-2507).
+//
+// Returns counts by provider. Failures per-provider are isolated — a Groq
+// key with no Cerebras key still scans Groq cleanly.
+
+const PROVIDER_ENDPOINTS = {
+  cerebras: 'https://api.cerebras.ai/v1/models',
+  groq:     'https://api.groq.com/openai/v1/models',
+};
+
+async function _fetchProviderModels(provider, apiKey, timeoutMs = 8000) {
+  const url = PROVIDER_ENDPOINTS[provider];
+  if (!url) throw new Error(`Unknown provider: ${provider}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    // Both Cerebras and Groq return { data: [{ id: "...", ... }, ...] }
+    return Array.isArray(body.data) ? body.data : [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function _getProviderApiKey(provider) {
+  // Read directly from settings — avoids importing from llm.js (which
+  // would create a circular dep: scout → llm → router → ... → scout).
+  const keyMap = { cerebras: 'cerebras_api_key', groq: 'groq_api_key' };
+  const settingKey = keyMap[provider];
+  if (!settingKey) return null;
+  try {
+    const row = get(`SELECT value FROM settings WHERE key = :k`, { ':k': settingKey });
+    return row?.value?.replace(/^"|"$/g, '').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function scanProviderModels() {
+  const summary = {};
+  for (const provider of Object.keys(PROVIDER_ENDPOINTS)) {
+    const apiKey = _getProviderApiKey(provider);
+    if (!apiKey) {
+      summary[provider] = { ok: false, reason: 'no_api_key' };
+      continue;
+    }
+    try {
+      const models = await _fetchProviderModels(provider, apiKey);
+      if (models.length === 0) {
+        summary[provider] = { ok: false, reason: 'empty_response' };
+        continue;
+      }
+      // Upsert each model. We DON'T delete missing rows immediately —
+      // a transient network blip shouldn't make llm.js think every
+      // model retired. Stale rows age out via last_seen during the
+      // 6-hour refresh cycle and the dashboard can show "last seen X
+      // days ago" if needed.
+      let stored = 0;
+      for (const m of models) {
+        if (!m?.id) continue;
+        try {
+          run(`INSERT INTO provider_models (provider, model_id, metadata, first_seen, last_seen)
+               VALUES (:p, :id, :meta, datetime('now','localtime'), datetime('now','localtime'))
+               ON CONFLICT(provider, model_id) DO UPDATE SET
+                 metadata = :meta,
+                 last_seen = datetime('now','localtime')`,
+            { ':p': provider, ':id': m.id, ':meta': JSON.stringify(m) });
+          stored++;
+        } catch {}
+      }
+      summary[provider] = { ok: true, count: stored };
+      console.log(`[PAN Scout] Provider ${provider}: ${stored} models discovered`);
+    } catch (e) {
+      summary[provider] = { ok: false, reason: e.message };
+      console.warn(`[PAN Scout] Provider ${provider} scan failed: ${e.message}`);
+    }
+  }
+  return summary;
+}
+
+// Cached read for llm.js callers — synchronous since better-sqlite3 is sync.
+// Returns Set<string> of model IDs the provider currently serves, or null
+// if the table is empty (never scanned). llm.js treats null as "trust the
+// caller, no info yet" (don't block first calls before scout runs).
+function getKnownProviderModels(provider) {
+  try {
+    const rows = all(`SELECT model_id FROM provider_models WHERE provider = :p`, { ':p': provider });
+    if (rows.length === 0) return null;
+    return new Set(rows.map(r => r.model_id));
+  } catch {
+    return null;
+  }
+}
+
+// ── Local-device model discovery (Ollama / LM Studio / etc.) ─────────────────
+// Probes every enrolled device whose reported_services advertises a local
+// inference server, lists its currently-installed models via /api/tags,
+// and upserts into device_models. embeddings.js / llm.js consult the result
+// via findDeviceWithModel(name) instead of hardcoding model IDs that might
+// not be installed on the user's actual hardware.
+
+const _LOCAL_INFERENCE_DEFAULT_PORT = 11434; // Ollama default
+
+async function scanDeviceModels() {
+  // Find every device that ever reported ollama. We don't filter by recency
+  // because we want to KNOW which devices have ollama configured even when
+  // they're temporarily offline — getOllamaUrl uses the same permissive
+  // logic. Unreachable devices just get { ok: false, reason: ... } in the
+  // summary and their device_models rows stay stale until next contact.
+  const devices = all(`
+    SELECT hostname, tailscale_ip, tailscale_hostname, reported_services
+    FROM devices
+    WHERE reported_services IS NOT NULL
+  `);
+
+  const summary = {};
+  for (const d of devices) {
+    let svcs;
+    try { svcs = JSON.parse(d.reported_services); } catch { continue; }
+    if (!Array.isArray(svcs)) continue;
+    const ollamaSvc = svcs.find(s => s.name === 'ollama');
+    if (!ollamaSvc) continue;
+
+    // Address column priority is the same as getOllamaUrl — see db.js for
+    // the rationale on why tailscale_hostname often contains the actual IP.
+    const host = d.tailscale_ip || d.tailscale_hostname || d.hostname;
+    if (!host) {
+      summary[d.hostname] = { ok: false, reason: 'no_address' };
+      continue;
+    }
+    const port = Number(ollamaSvc.port) || _LOCAL_INFERENCE_DEFAULT_PORT;
+    const url = `http://${host}:${port}`;
+
+    try {
+      const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) {
+        summary[d.hostname] = { ok: false, reason: `HTTP ${res.status}`, url };
+        continue;
+      }
+      const data = await res.json();
+      const models = Array.isArray(data?.models) ? data.models : [];
+
+      let stored = 0;
+      for (const m of models) {
+        if (!m?.name) continue;
+        try {
+          run(`INSERT INTO device_models
+                 (device_hostname, provider, model_name, size_bytes, metadata, first_seen, last_seen)
+               VALUES (:h, 'ollama', :n, :sz, :meta,
+                       datetime('now','localtime'), datetime('now','localtime'))
+               ON CONFLICT(device_hostname, provider, model_name) DO UPDATE SET
+                 size_bytes = :sz,
+                 metadata = :meta,
+                 last_seen = datetime('now','localtime')`,
+            { ':h': d.hostname, ':n': m.name, ':sz': m.size || 0, ':meta': JSON.stringify(m) });
+          stored++;
+        } catch {}
+      }
+      summary[d.hostname] = { ok: true, url, count: stored };
+      console.log(`[PAN Scout] Device ${d.hostname} (${url}): ${stored} ollama models`);
+    } catch (e) {
+      summary[d.hostname] = { ok: false, reason: e.message, url };
+    }
+  }
+  return summary;
+}
+
+// Find a connected device that has the given model installed. Used by
+// embeddings.js when it needs an EXACT model name match (dimensional
+// compatibility). Returns { hostname, url, model, last_seen } or null.
+// Prefers most-recently-confirmed device when multiple have the same model.
+function findDeviceWithModel(modelName) {
+  try {
+    const row = get(`
+      SELECT dm.device_hostname, dm.model_name, dm.last_seen,
+             d.tailscale_ip, d.tailscale_hostname, d.hostname
+      FROM device_models dm
+      JOIN devices d ON d.hostname = dm.device_hostname
+      WHERE dm.model_name = :name
+      ORDER BY dm.last_seen DESC
+      LIMIT 1
+    `, { ':name': modelName });
+    if (!row) return null;
+    const host = row.tailscale_ip || row.tailscale_hostname || row.hostname;
+    if (!host) return null;
+    return {
+      hostname: row.device_hostname,
+      url: `http://${host}:${_LOCAL_INFERENCE_DEFAULT_PORT}`,
+      model: row.model_name,
+      last_seen: row.last_seen,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// All models known to be installed on one device (or all devices if hostname omitted).
+function getDeviceModelList(hostname = null) {
+  try {
+    if (hostname) {
+      return all(`SELECT model_name, size_bytes, last_seen FROM device_models WHERE device_hostname = :h ORDER BY model_name`, { ':h': hostname });
+    }
+    return all(`SELECT device_hostname, model_name, size_bytes, last_seen FROM device_models ORDER BY device_hostname, model_name`);
+  } catch {
+    return [];
+  }
+}
+
 // Get discovered local apps (for the Apps widget)
 function getLocalApps({ category, installed_only = true } = {}) {
   let sql = 'SELECT * FROM local_apps';
@@ -523,4 +867,4 @@ function getLocalApps({ category, installed_only = true } = {}) {
   return all(sql, params);
 }
 
-export { scout, startScout, stopScout, getFindings, updateFinding, scanLocalApps, getLocalApps };
+export { scout, startScout, stopScout, getFindings, updateFinding, scanLocalApps, getLocalApps, scanProviderModels, getKnownProviderModels, scanDeviceModels, findDeviceWithModel, getDeviceModelList };

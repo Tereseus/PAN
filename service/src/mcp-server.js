@@ -204,7 +204,7 @@ server.tool(
   'pan',
   `PAN router — single dispatch for all PAN actions. Use @pan://actions to see full action list with parameters.
 
-Actions: conversations, projects, tasks, services, devices, stats, sessions, sensors, photos, scout, alerts, recording, windows, settings, logs, runner, library, context, processes, carrier`,
+Actions: conversations, projects, tasks, services, devices, stats, sessions, sensors, photos, scout, alerts, recording, windows, settings, logs, runner, library, context, processes, carrier, ops`,
   {
     action: z.string().describe('Action name (see @pan://actions for full list)'),
     params: z.record(z.any()).optional().describe('Action parameters as key-value pairs')
@@ -241,10 +241,46 @@ Actions: conversations, projects, tasks, services, devices, stats, sessions, sen
         case 'services':
           return ok(await panFetch('/dashboard/api/services'));
         case 'devices': {
+          // device_action values:
+          //   list        → /api/v1/devices/list (only recently-active, default)
+          //   list_all    → /dashboard/api/devices (every row, even offline)
+          //   command     → send arbitrary command to a connected pan-client
+          //   exec        → shorthand for command_type='shell_exec' (most common case)
+          //   invite      → generate a fresh enrollment token + install one-liner
+          //   record      → inspect a single device by hostname or id (dumps DB row)
           if (params.device_action === 'command') {
             return ok(await panFetch('/api/v1/devices/command', {
               method: 'POST', body: { target_device: params.target_device, type: params.command_type, command: params.command, text: params.text }
             }));
+          }
+          if (params.device_action === 'exec') {
+            // Shorthand: run a shell command on a connected pan-client.
+            // Requires the target device to be currently heartbeating via WS.
+            return ok(await panFetch('/api/v1/devices/command', {
+              method: 'POST',
+              body: { target_device: params.target_device, type: 'shell_exec', command: params.command, cwd: params.cwd, timeout_ms: params.timeout_ms || 30000 }
+            }));
+          }
+          if (params.device_action === 'invite') {
+            const name = encodeURIComponent(params.name || 'new-device');
+            const ttl  = params.ttl_minutes || 30;
+            return ok(await panFetch(`/api/v1/client/invite?name=${name}&ttl_minutes=${ttl}`));
+          }
+          if (params.device_action === 'list_all') {
+            // Returns every row in the devices table — including stale/offline
+            // ones. Use this for ops diagnostics (e.g. "which devices ever
+            // reported ollama?") rather than the live /devices/active feed.
+            return ok(await panFetch('/dashboard/api/devices'));
+          }
+          if (params.device_action === 'record') {
+            const all = await panFetch('/dashboard/api/devices');
+            const rows = Array.isArray(all) ? all : (all.devices || []);
+            const match = rows.find(r =>
+              r.id === Number(params.id) ||
+              r.hostname?.toLowerCase() === String(params.hostname || '').toLowerCase() ||
+              r.name?.toLowerCase() === String(params.name || '').toLowerCase()
+            );
+            return ok(match || { found: false, searched: { id: params.id, hostname: params.hostname, name: params.name } });
           }
           return ok(await panFetch('/api/v1/devices/list'));
         }
@@ -340,11 +376,46 @@ Actions: conversations, projects, tasks, services, devices, stats, sessions, sen
         case 'processes':
           return ok(await panFetch('/api/v1/processes'));
 
-        // --- Carrier / Crucible ---
+        // --- Carrier / Crucible / Ops Diagnostics ---
         case 'carrier': {
           const sub = params.carrier_action || 'status';
           if (sub === 'status') return ok(await panFetch('/api/carrier/status'));
           if (sub === 'swap') return ok(await panFetch('/api/carrier/swap', { method: 'POST' }));
+          if (sub === 'restart') {
+            // Full Carrier restart — picks up changes in carrier.js / probes.js
+            // / engine.js / stages.js. Default refuses if perfEngine.system_ready
+            // is false; pass force=true to override. **Kills active Claude PTY**
+            // because Carrier owns it as a parent process.
+            const qs = params.force ? '?force=1' : '';
+            return ok(await panFetch(`/api/carrier/restart${qs}`, { method: 'POST' }));
+          }
+          if (sub === 'swap_history') {
+            // Returns the in-memory ring of the last ~50 swap lifecycle phases
+            // (started → live → confirmed / rolled_back). Pass log=true to
+            // include the tail of Craft's stderr — invaluable for "why did
+            // this swap fail?" and "what is the new Craft logging?" questions.
+            const qs = params.log ? '?log=1' : '';
+            return ok(await panFetch(`/api/carrier/swap-history${qs}`));
+          }
+          if (sub === 'perf_trace') {
+            // Carrier's perf engine snapshot — all 26 boot/runtime stages with
+            // current state (ready/pending/running/failed), last probe latency,
+            // and error message. Use this to answer "why is Craft slow?" by
+            // checking which probes are timing out.
+            return ok(await panFetch('/api/v1/perf/trace'));
+          }
+          if (sub === 'log_tail') {
+            // Convenience wrapper around swap-history's log_tail — pulls the
+            // log buffer and optionally filters/limits lines client-side.
+            const r = await panFetch('/api/carrier/swap-history?log=1');
+            let lines = (r.log_tail || '').split('\n');
+            if (params.filter) {
+              const f = String(params.filter).toLowerCase();
+              lines = lines.filter(l => l.toLowerCase().includes(f));
+            }
+            const tail = lines.slice(-(params.lines || 60));
+            return ok({ lines: tail.length, log: tail.join('\n') });
+          }
           if (sub === 'shadow_start') return ok(await panFetch('/api/carrier/shadow', { method: 'POST' }));
           if (sub === 'shadow_stop') return ok(await panFetch('/api/carrier/shadow', { method: 'DELETE' }));
           if (sub === 'shadow_promote') return ok(await panFetch('/api/carrier/shadow/promote', { method: 'POST' }));
@@ -357,7 +428,49 @@ Actions: conversations, projects, tasks, services, devices, stats, sessions, sen
           if (sub === 'rollback') return ok(await panFetch('/lifeboat/rollback', { method: 'POST' }));
           if (sub === 'confirm') return ok(await panFetch('/lifeboat/confirm', { method: 'POST' }));
           if (sub === 'lifeboat') return ok(await panFetch('/lifeboat/status'));
-          return err(new Error(`Unknown carrier_action: "${sub}". Options: status, swap, shadow_start, shadow_stop, shadow_promote, shadow_stats, crucible, open_crucible, rollback, confirm, lifeboat`));
+          return err(new Error(`Unknown carrier_action: "${sub}". Options: status, swap, restart, swap_history, perf_trace, log_tail, shadow_start, shadow_stop, shadow_promote, shadow_stats, crucible, open_crucible, rollback, confirm, lifeboat`));
+        }
+
+        // --- Ops diagnostics — the things I had to grep + curl manually this session ---
+        case 'ops': {
+          const sub = params.ops_action || 'overview';
+          if (sub === 'overview') {
+            // Quick health snapshot: carrier status + perf trace counts + last
+            // few log lines. Useful first call when something feels broken.
+            const [status, perf, hist] = await Promise.all([
+              panFetch('/api/carrier/status').catch(e => ({ error: e.message })),
+              panFetch('/api/v1/perf/trace').catch(e => ({ error: e.message })),
+              panFetch('/api/carrier/swap-history?log=1').catch(e => ({ error: e.message })),
+            ]);
+            const failed = (perf.stages || []).filter(s => s.state === 'failed').map(s => `${s.id} (${s.error || 'unknown'})`);
+            const recentLog = (hist.log_tail || '').split('\n').slice(-10).join('\n');
+            return ok({
+              carrier: status.carrier,
+              primary_craft: status.primaryCraft,
+              swap_pending: status.swapPending,
+              perf_counts: perf.counts,
+              system_ready: perf.system_ready,
+              failed_stages: failed,
+              recent_log_tail: recentLog,
+            });
+          }
+          if (sub === 'probe') {
+            // Hit a specific endpoint via the proxy and report timing — the
+            // ad-hoc "is /services slow?" diagnostic I ran ~50 times this session.
+            const path = params.path || '/dashboard/api/services';
+            const max  = (params.timeout_ms || 8000) / 1000;
+            const startedAt = Date.now();
+            try {
+              await panFetch(path);
+              return ok({ path, ms: Date.now() - startedAt, http: 200 });
+            } catch (e) {
+              return ok({ path, ms: Date.now() - startedAt, error: e.message });
+            }
+          }
+          if (sub === 'processes') {
+            return ok(await panFetch('/api/v1/processes'));
+          }
+          return err(new Error(`Unknown ops_action: "${sub}". Options: overview, probe, processes`));
         }
 
         // --- Voice / TTS ---
@@ -403,8 +516,16 @@ Use with: \`pan\` tool, \`action\` parameter + \`params\` object.
 | projects | List projects with progress/milestones | (none) |
 | tasks | List/create/update project tasks | project_id, task_action?(list/create/update), task_id?, title?, description?, status?(todo/in_progress/done/backlog), milestone_id?, priority? |
 | services | Service status (steward, devices) | (none) |
-| devices | List devices or send command | device_action?(list/command), target_device?, command_type?, command?, text? |
+| devices | List devices, send commands, enroll | device_action?(list/list_all/command/exec/invite/record), target_device?, command_type?, command?, cwd?, timeout_ms?, hostname?, id?, name?, ttl_minutes? |
 | stats | Database statistics | (none) |
+
+### devices sub-actions explained
+- **list** → only devices seen in last 5 min (live view)
+- **list_all** → every row in the devices table including offline (use for ops queries like "which device ever reported ollama?")
+- **record** → inspect ONE device by id, hostname, or name. Returns full DB row including tailscale_ip, tailscale_hostname, reported_services, last_seen.
+- **command** → send any command type to a connected pan-client (notification, open_app, screenshot, etc.)
+- **exec** → SHORTHAND for shell_exec; pass \`command\` and optional \`cwd\` / \`timeout_ms\`. Requires the target client to be currently heartbeating.
+- **invite** → generate a fresh enrollment token + install one-liner for adding a new device. Returns the install URL and platform-specific commands.
 | sessions | Active terminal sessions | (none) |
 | sensors | 22 sensor definitions | (none) |
 | photos | Photo library | (none) |
@@ -438,6 +559,10 @@ Status lifecycle: open → acknowledged → resolved (with notes) or dismissed
 Carrier actions:
 - **status** — Carrier + Craft health, shadow status
 - **swap** — Hot-swap: spawn new Craft, health-check, switch proxy
+- **restart** — Full Carrier restart (force? param to override system_ready gate). **Kills active Claude PTY** — only use when nothing important is running.
+- **swap_history** — Last ~50 swap lifecycle entries. \`log:true\` includes Craft stderr tail.
+- **perf_trace** — All 26 boot/runtime stages with state + last probe latency. First stop for "why is Craft slow?"
+- **log_tail** — Filter Craft's stderr buffer. params: \`lines?\` (default 60), \`filter?\` (substring match)
 - **shadow_start** — Launch shadow Craft for canary testing (mirrors traffic)
 - **shadow_stop** — Kill shadow Craft (reject variant)
 - **shadow_promote** — Promote shadow to primary (with 30s rollback)
@@ -447,6 +572,17 @@ Carrier actions:
 - **rollback** — Rollback to previous Craft (during 30s window)
 - **confirm** — Confirm current swap (kill old Craft)
 - **lifeboat** — Lifeboat status (minimal, always works even if Craft is hung)|
+
+## Ops Diagnostics — \`pan\` action: \`ops\`, params.ops_action
+
+When something feels broken, start with \`ops_action: overview\`. That returns
+Carrier status, perf-trace counts, failed stages, and the last 10 log lines
+in one call — the diagnostic I had to assemble manually a dozen times during
+the 2026-05-29 debugging session.
+
+- **overview** — Combined health snapshot (carrier + perf + log tail).
+- **probe** — Hit a specific HTTP path and report timing + status. params: \`path\` (default /dashboard/api/services), \`timeout_ms\`.
+- **processes** — All PIDs spawned by PAN (PTY children, Claude CLI, agent-sdk subprocesses) with uptime, type, session.
 `
     }]
   })

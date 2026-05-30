@@ -4,42 +4,110 @@
 // 0.6B params, 100+ languages, ~0.5 GB download.
 // Falls back to simple TF-IDF-like keyword vectors when Ollama is down.
 
-import { getOllamaUrl } from '../db.js';
-const EMBED_MODEL = 'qwen3-embedding:0.6b';
-const EMBED_DIM = 1024;
+import { getOllamaUrl, getModelForPurpose } from '../db.js';
+
+// The embedding model is part of the data contract — every event_embeddings
+// row in the DB is wedded to its dim. We do NOT silently substitute another
+// embedding tag (the 4B/8B variants have different dimensions; swapping
+// would corrupt search ranking).
+//
+// Reading from the model_selections table (purpose='embedding') so the
+// user can re-point to a different model via the dashboard without code
+// changes. If the table read fails (cold boot before db.js initializes),
+// we fall back to the canonical defaults below — same values the table
+// is seeded with.
+//
+// Decision history: 1024-dim is the deliberate choice from an earlier
+// design session. Diminishing returns past ~1024-dim on PAN's recall
+// workload (short events, conversational text). Do not change EMBED_DIM
+// without rebuilding event_embeddings from scratch.
+const EMBED_FALLBACK_MODEL = 'qwen3-embedding:0.6b';
+const EMBED_FALLBACK_DIM   = 1024;
+
+function _getEmbedSelection() {
+  const sel = getModelForPurpose('embedding');
+  return {
+    model: sel?.model || EMBED_FALLBACK_MODEL,
+    dim:   sel?.dim   || EMBED_FALLBACK_DIM,
+  };
+}
+
+// Backwards-compat exports — other files still import these names. Both
+// now resolve via the registry on every call so the user updating the
+// table is picked up without a Craft restart.
+const EMBED_MODEL = _getEmbedSelection().model;
+const EMBED_DIM   = _getEmbedSelection().dim;
 
 let ollamaAvailable = null; // null = unknown, true/false = cached
 let ollamaLastCheck = 0;    // ms timestamp of last availability check
 const OLLAMA_RECHECK_MS = 60_000; // re-probe Ollama every 60s when it's down
 
-// Check if Ollama is running and has the embedding model
+// Resolve which Ollama URL actually has EMBED_MODEL installed.
+//
+// Order:
+//   1. Scout's device_models registry — if a connected device reports
+//      that specific model name, use its URL. This is the new source of
+//      truth (table-driven, populated from /api/tags on each enrolled
+//      device).
+//   2. Fall back to getOllamaUrl() — covers cold-boot before Scout has
+//      run, and the operator-set PAN_OLLAMA_URL env var path.
+//
+// Returns { url, model, viaRegistry: bool } so callers can log whether
+// the device_models table is doing its job.
+async function _resolveEmbedTarget() {
+  try {
+    // Lazy import so we don't pull all of scout.js into the embedding hot
+    // path before Craft has finished booting. After the first call Node
+    // caches the module, so subsequent calls are a single property lookup.
+    const scout = await import('../scout.js').catch(() => null);
+    if (scout?.findDeviceWithModel) {
+      const hit = scout.findDeviceWithModel(EMBED_MODEL);
+      if (hit) return { url: hit.url, model: hit.model, viaRegistry: true };
+    }
+  } catch {}
+  return { url: getOllamaUrl(), model: EMBED_MODEL, viaRegistry: false };
+}
+
+let _loggedMissing = false; // throttle the "model not installed" hint to once per process
+
+// Check if Ollama is running and has the EXACT embedding model installed.
+// Strict match — see EMBED_MODEL comment above for why we don't accept
+// "any qwen3-embedding:*" tag.
 async function checkOllama() {
   try {
-    const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    const { url } = await _resolveEmbedTarget();
+    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) return false;
     const data = await res.json();
-    const hasModel = data.models?.some(m => m.name.startsWith(EMBED_MODEL));
-    if (!hasModel) {
-      console.log(`[PAN Memory] Ollama running but ${EMBED_MODEL} not found. Run: ollama pull ${EMBED_MODEL}`);
+    const hasExact = data.models?.some(m => m.name === EMBED_MODEL);
+    if (!hasExact) {
+      if (!_loggedMissing) {
+        const installed = data.models?.map(m => m.name).join(', ') || '(none)';
+        console.log(`[PAN Memory] Ollama at ${url} reachable but ${EMBED_MODEL} not installed. Currently has: ${installed}. Run on that device: ollama pull ${EMBED_MODEL}`);
+        _loggedMissing = true;
+      }
+      return false;
     }
-    return hasModel;
+    _loggedMissing = false; // reset so a future uninstall re-logs once
+    return true;
   } catch {
     return false;
   }
 }
 
-// Get embedding from Ollama
+// Get embedding from Ollama. EXACT model match required.
 // timeout: 3s default keeps query-time searches snappy; write path passes 30s.
 async function embedOllama(text, timeout = 3000) {
-  const res = await fetch(`${getOllamaUrl()}/api/embeddings`, {
+  const { url, model } = await _resolveEmbedTarget();
+  const res = await fetch(`${url}/api/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 8000) }),
+    body: JSON.stringify({ model, prompt: text.slice(0, 8000) }),
     signal: AbortSignal.timeout(timeout),
   });
   if (!res.ok) throw new Error(`Ollama ${res.status}`);
   const data = await res.json();
-  return data.embedding; // float64 array
+  return data.embedding; // float64 array, EMBED_DIM length
 }
 
 // Simple fallback: hash-based pseudo-embedding (deterministic, fast, no ML)

@@ -22,19 +22,24 @@ const sessionName = process.env.SESSIONNAME || '';
 const username = process.env.USERNAME || '';
 const userProfile = process.env.USERPROFILE || '';
 
-// Detection signals (any one of these → service mode):
-//   1. USERPROFILE points to the SYSTEM profile (definitive — Windows always
-//      sets this for SYSTEM services and never for real users).
-//   2. Username ends with "$" (computer/machine account, e.g. "desktop-pc$").
-//   3. Username is literally "SYSTEM" or "LOCAL SERVICE" / "NETWORK SERVICE".
+// Detection signals:
+//   USERPROFILE is the primary signal. If it points to a real user home
+//   (C:\Users\<anyone> that isn't the SYSTEM profile), it's user mode —
+//   regardless of what USERNAME says. This means a Windows service can run
+//   in user mode simply by setting USERPROFILE in its pan.xml config, which
+//   any installer does automatically for the installing user. No hardcoded
+//   username needed — it's portable across any install.
 //
-// SESSIONNAME used to be the primary signal, but it doesn't reliably
-// propagate through Start-Process / Tauri spawn / detached children even
-// when the parent IS in an interactive session. So we trust USERPROFILE first.
+//   Service mode only when USERPROFILE clearly indicates a system account
+//   (config\systemprofile) AND no other user-mode signal is present.
 const isSystemProfile = /\\config\\systemprofile/i.test(userProfile);
+// Real user profile: C:\Users\<anything> but NOT the system profile path
+const isRealUserProfile = /[/\\]users[/\\][^/\\]+/i.test(userProfile) && !isSystemProfile;
 const isMachineAccount = username.endsWith('$');
 const isServiceAccount = /^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$/i.test(username);
-const isInteractiveSession = !(isSystemProfile || isMachineAccount || isServiceAccount);
+// User mode if USERPROFILE looks like a real user home — that overrides USERNAME.
+// Service mode only when the profile is clearly a system profile with no user override.
+const isInteractiveSession = isRealUserProfile || !(isSystemProfile || isMachineAccount || isServiceAccount);
 
 export const PAN_MODE = isInteractiveSession ? 'user' : 'service';
 export const IS_USER_MODE = PAN_MODE === 'user';

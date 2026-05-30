@@ -2,7 +2,7 @@
 // Supports Anthropic, Gemini, Cerebras, Ollama, and LM Studio.
 // Routes based on Settings > AI & Usage.
 
-import { insert, get, getOllamaUrl } from './db.js';
+import { insert, get, run, getOllamaUrl, getModelForPurpose } from './db.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
@@ -141,11 +141,241 @@ async function callGemini(prompt, model, maxTokens, signal) {
   };
 }
 
+// Classify a model ID into { tier, sizeB } from its name.
+//
+// Used by the resolver's substitution path: when an exact and prefix-family
+// match both miss, we pick the closest-classified live model instead of
+// falling all the way through to the next provider. Heuristic only —
+// providers don't publish structured metadata via /v1/models — but the
+// naming conventions are stable enough (size suffix in "B", role keywords
+// in the model id) that this picks sensible substitutes in practice.
+function _classifyModel(modelId) {
+  const id = String(modelId || '').toLowerCase();
+
+  // Vision-language models — output is different from text chat; we don't
+  // substitute across vision/non-vision because the caller's prompt format
+  // (image payload) is incompatible with chat-only models.
+  if (/moondream|llava|minicpm-v|qwen[-_.]?vl|gpt-4o[-_.]?vision/.test(id)) {
+    return { tier: 'vision', sizeB: null };
+  }
+
+  // Embedding models — different output vector dimensionality between
+  // families means we cannot silently substitute one for another (the
+  // existing event_embeddings rows are tied to the original model's
+  // dimension count). Return tier='embedding' so the resolver explicitly
+  // refuses substitution.
+  if (/embed|embedding/.test(id)) {
+    return { tier: 'embedding', sizeB: null };
+  }
+
+  // Pull a parameter count out of the name: "8b", "20b", "32b", "70b",
+  // "120b", "235b", "405b", etc. Pick the FIRST match — for compound
+  // names like "qwen-3-235b-a22b" the 235b is the headline total, a22b
+  // is the active expert count we don't care about for tier sorting.
+  const sizeMatch = id.match(/(\d{1,3})b\b/);
+  const sizeB = sizeMatch ? Number(sizeMatch[1]) : null;
+
+  // Reasoning / thinking tier — either explicit role keyword or >= 100B
+  // params (which is where the dedicated reasoning class lives across
+  // providers right now: gpt-oss-120b, qwen-3-235b, deepseek-r1-…).
+  if (/thinking|reasoning|\bo[13]-|deepseek[-_.]?r1|\br1\b/.test(id) || (sizeB && sizeB >= 100)) {
+    return { tier: 'reasoning', sizeB };
+  }
+
+  // Default: chat tier, sized by the param count if we found one.
+  return { tier: 'chat', sizeB };
+}
+
+// Models blocked by the user's current billing tier — per-provider.
+//
+// Populated when a provider returns HTTP 402 ("payment required"). We
+// remember them so the substitute picker doesn't keep choosing the same
+// paid-tier model over and over after the first 402.
+//
+// PERSISTENCE (added with task #60 fix): the in-memory Map used to be cleared
+// on every Craft swap, which meant every fresh Craft re-discovered the same
+// 402s on its first call to each model — typically 3-5 round-trips through
+// the retry chain per LLM invocation for the first 60 seconds. With a paid
+// tier locked out this was free taxes on every voice prompt, every Intuition
+// classify, every Dream/Evolution/Orchestrator cycle. Now we mirror to the
+// `settings` table so subsequent Crafts skip them on first try.
+//
+// When the user pays the bill: clear the row via DELETE FROM settings WHERE
+// key = 'llm_billing_blocked', then restart Craft (or call
+// `_clearBillingBlocked()` via dev MCP).
+const _billingBlockedModels = new Map(); // provider -> Set<modelId>
+let _billingBlockedHydrated = false;
+
+function _hydrateBillingBlockedFromDb() {
+  if (_billingBlockedHydrated) return;
+  _billingBlockedHydrated = true;
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'llm_billing_blocked'");
+    if (!row?.value) return;
+    const parsed = JSON.parse(row.value);
+    if (parsed && typeof parsed === 'object') {
+      for (const [provider, ids] of Object.entries(parsed)) {
+        if (Array.isArray(ids) && ids.length) {
+          _billingBlockedModels.set(provider, new Set(ids));
+        }
+      }
+      const totalCount = Array.from(_billingBlockedModels.values()).reduce((a, s) => a + s.size, 0);
+      if (totalCount) console.log(`[LLM] Hydrated ${totalCount} billing-blocked model(s) from settings`);
+    }
+  } catch {}
+}
+
+function _persistBillingBlockedToDb() {
+  try {
+    const obj = {};
+    for (const [provider, set] of _billingBlockedModels.entries()) {
+      if (set.size) obj[provider] = Array.from(set);
+    }
+    const json = JSON.stringify(obj);
+    // Upsert into settings — works on every PAN install (settings table is
+    // part of the base schema).
+    run(`INSERT INTO settings (key, value) VALUES ('llm_billing_blocked', :v)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      { ':v': json });
+  } catch {} // settings write is best-effort; in-memory state always wins
+}
+
+function _markBillingBlocked(provider, modelId) {
+  _hydrateBillingBlockedFromDb();
+  if (!_billingBlockedModels.has(provider)) _billingBlockedModels.set(provider, new Set());
+  const set = _billingBlockedModels.get(provider);
+  if (set.has(modelId)) return; // already marked + persisted
+  set.add(modelId);
+  _persistBillingBlockedToDb();
+}
+function _isBillingBlocked(provider, modelId) {
+  _hydrateBillingBlockedFromDb();
+  return _billingBlockedModels.get(provider)?.has(modelId) || false;
+}
+
+// Exposed for ops / dev use — call after the user pays their bill.
+export function _clearBillingBlocked(provider = null) {
+  _hydrateBillingBlockedFromDb();
+  if (provider) _billingBlockedModels.delete(provider);
+  else _billingBlockedModels.clear();
+  _persistBillingBlockedToDb();
+}
+
+// Pick the most-similar live model when no exact / prefix match was found.
+// Order:
+//   1. Same tier as the requested model, closest by parameter count —
+//      excluding any model the provider has already 402'd this Craft session.
+//   2. If the request was 'reasoning' but nothing in the live list is
+//      classified that way, fall back to the LARGEST 'chat' model (still
+//      better than a 404).
+//   3. Refuse substitution for 'embedding' and 'vision' tiers (see
+//      _classifyModel comments above — substitution would silently break
+//      callers that depend on shape compatibility).
+function _findSubstitute(provider, modelId, knownSet) {
+  const target = _classifyModel(modelId);
+  if (target.tier === 'embedding' || target.tier === 'vision') return null;
+
+  const classified = [...knownSet]
+    .filter(id => !_isBillingBlocked(provider, id))
+    .map(id => ({ id, ...(_classifyModel(id)) }));
+  const sameTier = classified.filter(c => c.tier === target.tier);
+
+  if (sameTier.length > 0) {
+    if (target.sizeB != null) {
+      sameTier.sort((a, b) => Math.abs((a.sizeB || 0) - target.sizeB) - Math.abs((b.sizeB || 0) - target.sizeB));
+    } else {
+      sameTier.sort((a, b) => (b.sizeB || 0) - (a.sizeB || 0));
+    }
+    return sameTier[0].id;
+  }
+
+  // Reasoning requested but provider has no reasoning class right now —
+  // grab the largest chat model as the next-best.
+  if (target.tier === 'reasoning') {
+    const chats = classified.filter(c => c.tier === 'chat');
+    if (chats.length > 0) {
+      chats.sort((a, b) => (b.sizeB || 0) - (a.sizeB || 0));
+      return chats[0].id;
+    }
+  }
+
+  return null;
+}
+
+// Resolve & validate a model ID against Scout's live source of truth.
+//
+// Scout's scanProviderModels() runs after Craft boot + every 6h, hitting
+// Cerebras /v1/models and Groq /v1/models, and writes the live list to
+// provider_models. llm.js consults that table on every provider call to
+// avoid hammering Intuition / Orchestrator / Dream / voice-router with
+// HTTP round-trips + 404 log lines every cycle when a provider retires a
+// model (e.g. qwen-3-235b-a22b-instruct-2507 → 404 model_not_found).
+//
+// Resolution order:
+//   1. Exact match in live list → use as-is.
+//   2. Prefix family match (qwen-3-235b-…-2507 → qwen-3-235b-…-2509) →
+//      use the longest matching candidate (most-specific / likely newest).
+//   3. Smart substitution by tier (see _findSubstitute): pick the closest
+//      live model in the same class. So when Cerebras retires the whole
+//      qwen-3-235b family, the resolver auto-routes to gpt-oss-120b (or
+//      whatever the largest reasoning model is in the live list) rather
+//      than throwing and falling through to claude-haiku.
+//   4. No match found → throw, fallback chain takes over.
+//
+// Permissive on cold boots: if Scout hasn't populated the table yet
+// (returns null), we trust the caller and let the real API decide.
+let _scoutModForValidation = null;
+async function _resolveModelLive(provider, modelId) {
+  if (!_scoutModForValidation) {
+    try { _scoutModForValidation = await import('./scout.js'); }
+    catch { _scoutModForValidation = { getKnownProviderModels: () => null }; }
+  }
+  try {
+    const known = _scoutModForValidation.getKnownProviderModels(provider);
+    if (!known) return { live: modelId, reason: null }; // cold boot, trust caller
+    // Exact match: model is live AND not billing-blocked → use as-is.
+    // Pre-emptive billing-blocked check: skip the 402 round-trip if we already
+    // know the user can't access this model. Previously the resolver returned
+    // the model as-is here, the API call fired, returned 402, marked the model,
+    // then the next call substituted — which meant every cold-boot Craft paid
+    // 3-5 retry cycles before settling. Now the persisted state (see
+    // _hydrateBillingBlockedFromDb) carries forward and the very first call
+    // routes to a live, accessible substitute.
+    if (known.has(modelId) && !_isBillingBlocked(provider, modelId)) {
+      return { live: modelId, reason: null };
+    }
+
+    // (2) Prefix family match — handles "qwen-3-235b-…-2507" → "qwen-3-235b-…-2509"
+    const baseFamily = modelId.replace(/-\d{4}$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+    const candidates = [...known].filter(id => id.startsWith(baseFamily));
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.length - a.length); // most-specific first
+      console.warn(`[LLM] ${provider} model "${modelId}" retired; routing to "${candidates[0]}" (prefix family match)`);
+      return { live: candidates[0], reason: null };
+    }
+
+    // (3) Smart tier-based substitution (filters out billing-blocked models)
+    const sub = _findSubstitute(provider, modelId, known);
+    if (sub) {
+      console.warn(`[LLM] ${provider} model "${modelId}" retired; substituting "${sub}" (same tier classification)`);
+      return { live: sub, reason: null };
+    }
+
+    return { live: null, reason: `${provider} model "${modelId}" not in live list (no tier substitute available — billing tier may be limiting choices)` };
+  } catch { return { live: modelId, reason: null }; }
+}
+
 async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) {
   const apiKey = getApiKey('cerebras');
   if (!apiKey) throw new Error('No Cerebras API key found.');
 
-  const modelId = CEREBRAS_MODELS[cerebrasModel] || cerebrasModel.replace('cerebras:', '');
+  const mappedId = CEREBRAS_MODELS[cerebrasModel] || cerebrasModel.replace('cerebras:', '');
+
+  // Resolve against Scout's live /v1/models list — auto-route to the
+  // current name if the static map is stale, or fast-fail if no match.
+  const { live: modelId, reason } = await _resolveModelLive('cerebras', mappedId);
+  if (reason) throw new Error(`Cerebras 404 (pre-check): ${reason}`);
+
   const oaiMessages = messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n') }));
 
   const response = await fetch(CEREBRAS_URL, {
@@ -157,6 +387,22 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
 
   if (!response.ok) {
     const errText = await Promise.race([response.text(), new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000))]).catch(() => 'error body unreadable');
+    // 404 — model retired. Kick a Scout refresh so the live-list table
+    // catches up before the next caller's resolver runs.
+    if (response.status === 404 && /model_not_found|does not exist/.test(errText)) {
+      console.warn(`[LLM] Cerebras model ${modelId} returned 404 — triggering Scout refresh`);
+      import('./scout.js')
+        .then(m => m.scanProviderModels?.().catch(() => {}))
+        .catch(() => {});
+    }
+    // 402 — payment required (model is on a paid tier the user isn't on).
+    // Remember this so the resolver's tier-based substitution stops picking
+    // it on subsequent calls. The substitution will fall through to the
+    // next-closest live model (e.g. a free-tier llama variant).
+    if (response.status === 402 || /payment_required|payment required|billing/i.test(errText)) {
+      _markBillingBlocked('cerebras', modelId);
+      console.warn(`[LLM] Cerebras model ${modelId} returned 402 (paid tier) — marking billing-blocked, future calls will substitute elsewhere`);
+    }
     throw new Error(`Cerebras ${response.status}: ${errText}`);
   }
   const data = await response.json();
@@ -173,7 +419,12 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
   const apiKey = getApiKey('cerebras');
   if (!apiKey) throw new Error('No Cerebras API key found.');
 
-  const modelId = CEREBRAS_MODELS[cerebrasModel] || cerebrasModel.replace('cerebras:', '');
+  const mappedId = CEREBRAS_MODELS[cerebrasModel] || cerebrasModel.replace('cerebras:', '');
+  // Streaming uses the same Scout-backed resolver as non-streaming — voice
+  // routing hits Cerebras stream every utterance, so a dead model would
+  // otherwise spam 404s into the SSE response.
+  const { live: modelId, reason } = await _resolveModelLive('cerebras', mappedId);
+  if (reason) throw new Error(`Cerebras 404 (pre-check): ${reason}`);
   const oaiMessages = messages.map(m => ({
     role: m.role,
     content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
@@ -190,7 +441,19 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
     signal,
   });
 
-  if (!response.ok) throw new Error(`Cerebras stream ${response.status}: ${await response.text()}`);
+  if (!response.ok) {
+    const errText = await response.text().catch(() => 'error body unreadable');
+    // Same 402 detection as the non-streaming path — mark the model
+    // billing-blocked so the next resolver call picks a free-tier sub.
+    if (response.status === 402 || /payment_required|payment required|billing/i.test(errText)) {
+      _markBillingBlocked('cerebras', modelId);
+      console.warn(`[LLM] Cerebras stream model ${modelId} returned 402 — marking billing-blocked`);
+    }
+    if (response.status === 404 && /model_not_found|does not exist/.test(errText)) {
+      import('./scout.js').then(m => m.scanProviderModels?.().catch(() => {})).catch(() => {});
+    }
+    throw new Error(`Cerebras stream ${response.status}: ${errText}`);
+  }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -334,6 +597,18 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
   else if (model.startsWith('cerebras:')) provider = 'cerebras';
   else if (model.startsWith('groq:'))     provider = 'groq';
   else if (model.startsWith('openai:'))   provider = 'openai';
+  else if (model.startsWith('anthropic:')) {
+    // Strip prefix so the SDK/CLI gets a clean model name. This is the
+    // path model_selections uses when reasoning_cloud is set to a Claude
+    // model — keeps the table consistent (provider:model) without
+    // requiring a separate Anthropic API integration here. The 'sdk'
+    // provider routes via claude -p which uses the user's subscription.
+    model = model.replace(/^anthropic:/, '');
+    try {
+      const row = get("SELECT value FROM settings WHERE key = 'ai_backend'");
+      if (row) provider = row.value.replace(/^"|"$/g, '');
+    } catch {}
+  }
   else if (model.startsWith('claude-')) {
     try {
       const row = get("SELECT value FROM settings WHERE key = 'ai_backend'");
@@ -353,9 +628,15 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
     } else if (provider === 'groq') {
       const key = getApiKey('groq');
       if (!key) throw new Error('No Groq API key in Settings. Add groq_api_key.');
+      const groqRequested = model.replace('groq:', '');
+      // Same Scout-backed resolver as Cerebras — auto-route to current
+      // model name when ours has retired, fast-fail when there's no
+      // prefix family match.
+      const { live: groqModelId, reason } = await _resolveModelLive('groq', groqRequested);
+      if (reason) throw new Error(`Groq 404 (pre-check): ${reason}`);
       result = await callOpenAIEndpoint(
         [{ role: 'user', content: prompt }],
-        model.replace('groq:', ''), GROQ_URL, key, maxTokens, controller.signal
+        groqModelId, GROQ_URL, key, maxTokens, controller.signal
       );
     } else if (provider === 'openai') {
       const key = getApiKey('openai');
@@ -401,11 +682,20 @@ export const claude = askAI;
 
 // --- Vision (screenshot understanding via local Qwen2.5-VL or cloud API fallback) ---
 
-// qwen2.5vl:3b crashes on CPU vision. moondream generates empty responses.
-// llava-phi3 (2.9GB) is proven reliable with Ollama's API on CPU.
-// moondream: 1.7GB, purpose-built for image description, fast on CPU (~10-15s/query).
-// minicpm-v: 5.4GB, higher quality but 3min+/query on CPU — unusable without GPU.
-const VISION_MODEL = 'moondream';
+// Hardware notes the user enforced:
+//   - mini PC is CPU-only (AMD integrated GPU; force num_gpu=0 in body below)
+//   - qwen2.5vl:3b crashes on CPU vision
+//   - llava-phi3 (2.9GB) is proven reliable on CPU
+//   - moondream (1.7GB) is the default — purpose-built, ~10-15s/query on CPU
+//   - minicpm-v (5.4GB) is too slow on CPU (3min+/query) — never auto-select
+//
+// Read the canonical name from the model_selections table (purpose='vision')
+// so the user can swap to llava-phi3 / qwen2.5vl from the dashboard without
+// editing source. Falls back to 'moondream' if the registry isn't initialised.
+function _getVisionModel() {
+  const sel = getModelForPurpose('vision');
+  return sel?.model || 'moondream';
+}
 
 export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [] } = {}) {
   // referenceImages: optional array of base64 strings prepended before the main image.
@@ -413,32 +703,44 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   const allImages = [...referenceImages, imageBase64];
   const startedAt = Date.now(); // #471: t0 for ai_usage.latency_ms — vision is the slowest caller
 
-  // Primary: mini PC Ollama (100.72.237.137:11434) — getOllamaUrl() returns that address
+  // Hard wall-clock budget across the WHOLE fallback chain (Ollama →
+  // Claude → Gemini). Previously each provider got its own `timeout`
+  // (default 70s), so a fully-broken vision stack burned 210s+ per call —
+  // we observed `WebcamWatcher 222s` in the field, which kept Craft pinned
+  // and made the dashboard unresponsive. Cap the total run at 1/3 of the
+  // per-provider budget. Successful Ollama returns in ~10-15s on CPU so
+  // this still leaves headroom for the primary path.
+  const overallDeadline = startedAt + Math.max(15000, Math.round(timeout / 3));
+  const remaining = () => Math.max(500, overallDeadline - Date.now());
+
+  // Primary: mini PC Ollama (getOllamaUrl() returns the discovered address)
   try {
     const ollamaUrl = (getOllamaUrl() || 'http://localhost:11434').replace(/\/$/, '');
+    const visionModel = _getVisionModel();
     const res = await fetch(`${ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: VISION_MODEL,
+        model: visionModel,
         prompt,
         images: allImages,
         stream: false,
         keep_alive: -1,   // never unload — vision model stays hot between captures
         options: { num_gpu: 0 }, // mini PC has AMD integrated GPU — force CPU inference
       }),
-      signal: AbortSignal.timeout(timeout),
+      // Use the shared overall budget — each provider can take at most what's left.
+      signal: AbortSignal.timeout(remaining()),
     });
     if (res.ok) {
       const data = await res.json();
       const text = data.response?.trim() || '';
       if (text) {
-        logUsage(caller, VISION_MODEL, { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 }, prompt.slice(0, 100), { started_at: startedAt });
+        logUsage(caller, visionModel, { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 }, prompt.slice(0, 100), { started_at: startedAt });
         return text;
       }
     }
   } catch (e) {
-    console.error(`[PAN Vision] Ollama ${VISION_MODEL} failed: ${e.message}`);
+    console.error(`[PAN Vision] Ollama ${_getVisionModel()} failed: ${e.message}`);
   }
 
   // Fallback: Claude API with vision (requires API key)
@@ -463,7 +765,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
             ],
           }],
         }),
-        signal: AbortSignal.timeout(timeout),
+        signal: AbortSignal.timeout(remaining()),
       });
 
       if (res.ok) {
@@ -475,6 +777,12 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
     } catch (e) {
       console.error(`[PAN Vision] Claude API fallback failed: ${e.message}`);
     }
+  }
+
+  // If the overall budget already exhausted, bail before even calling Gemini.
+  if (Date.now() >= overallDeadline) {
+    console.warn('[PAN Vision] Overall budget exhausted before Gemini fallback — returning empty result');
+    return '';
   }
 
   // Fallback: Gemini (if key available)
@@ -501,7 +809,7 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
     }
   }
 
-  throw new Error(`No vision provider available — ${VISION_MODEL} unreachable on mini PC and no API keys configured`);
+  throw new Error(`No vision provider available — ${_getVisionModel()} unreachable on mini PC and no API keys configured`);
 }
 
 // #465: source = phone | dashboard | mcp | scout | dream | intuition | router | internal

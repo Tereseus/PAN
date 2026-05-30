@@ -24,24 +24,12 @@ if %ERRORLEVEL% NEQ 0 goto CARRIERLOOP
 goto WAITCRAFT
 
 :: ── Already running ─────────────────────────────────────────
+:: PAN.bat is invoked to OPEN the dashboard. If you actually want to shut
+:: down the whole server, do it from the dashboard's Settings panel or stop
+:: the PAN Windows service from services.msc — don't accidentally Q-quit
+:: here and kill the Carrier mid-task.
 :ALREADY_RUNNING
-echo.
-echo  PAN is running.
-echo.
-echo  [O] Open dashboard  (default)
-echo  [Q] Quit PAN
-echo.
-choice /c OQ /t 5 /d O /n /m "  Choice: "
-if %ERRORLEVEL% EQU 2 goto QUIT
 goto WAITCRAFT
-
-:QUIT
-echo.
-echo [PAN] Shutting down...
-"%SYS%\curl.exe" -s -X POST --max-time 3 "http://127.0.0.1:7777/api/carrier/shutdown" >NUL 2>&1
-echo [PAN] Done.
-"%SYS%\timeout.exe" /t 2 /nobreak >NUL
-exit /b 0
 
 :: ── Wait for Craft to be ready ───────────────────────────────
 :WAITCRAFT

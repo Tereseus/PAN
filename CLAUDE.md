@@ -25,6 +25,26 @@ PAN is a persistent AI operating system across all devices, projects, and conver
 > (parent built imperatively). After build, `grep` the bundle to verify the rule shipped.
 > This trap killed every `.md-*` style in the dashboard for months (bug #484).
 
+> **Dashboard widgets: read [docs/DASHBOARD-WIDGETS.md](./docs/DASHBOARD-WIDGETS.md) FIRST**
+> before touching anything in the dashboard. It maps every panel widget to its
+> file under `service/dashboard/src/lib/components/widgets/`, the foundation
+> store at `lib/stores/terminal.svelte.js`, the `pan:*-update` WS event
+> registry, the exact extraction pattern, and what's still inlined in
+> `+page.svelte`. Update this doc in the same commit as any widget change.
+
+> **Svelte file-creation override (read before adding ANY new dashboard feature):**
+> The default Claude system instruction says "prefer editing existing files; never create new files unless required."
+> For backend code, follow that. **For Svelte pages, do the OPPOSITE.**
+> If a panel, widget, or feature is more than ~200 lines, it MUST be its own component file
+> under `service/dashboard/src/lib/components/`. Shared reactive state goes in a `.svelte.js`
+> store under `service/dashboard/src/lib/stores/` using Svelte 5 runes (`$state`, `$derived`, `$effect`).
+> Reason: Svelte 5's fine-grained reactivity only works at component boundaries. A 13,000-line single
+> `+page.svelte` (which is what `terminal/+page.svelte` became after 14 months of "edit existing" sessions)
+> defeats every speed advantage Svelte was supposed to give and is the root cause of:
+> the dashboard's full-page-refresh feel, the "Claude is thinking" stuck-input bug (#430), the transcript
+> left/right desync (#444), and the session-frozen-after-Craft-swap bug (#807). When in doubt: extract,
+> don't append. Future sessions thank you.
+
 > **Nightmare bugs: read [docs/NIGHTMARE_BUGS.md](./docs/NIGHTMARE_BUGS.md) before fixing any recurring bug.**
 > These 8 bugs (#444, #439, #438, #431, #430, #435, #432, #376) keep coming back because of
 > architectural root causes — not one-off mistakes. Do NOT mark them done without a regression test.
@@ -209,7 +229,10 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 | `pan-client/pan-client.js` | Client agent — runs on remote PCs, receives + executes commands |
 | `service/pan-loop.bat` | Windows respawn loop — restarts node on crash, stops on clean exit (code 0) |
 | `service/public/mobile/index.html` | Phone dashboard — static HTML, no build step, served at /mobile/ |
-| `service/dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (6000+ lines, both prod and dev) |
+| `service/dashboard/src/routes/terminal/+page.svelte` | Main dashboard UI (~9.4k lines, down from 13k). **Shape-2 refactor in progress** — 18 widgets extracted to `service/dashboard/src/lib/components/widgets/`, 1 modal under `components/modals/`, shared store at `lib/stores/terminal.svelte.js`. Center column (Terminal + Transcript + chat send) + Mail/Compose/Contacts + Perf still inline — see `docs/DASHBOARD-WIDGETS.md`. |
+| `service/dashboard/src/lib/components/widgets/` | 18 dashboard panel widgets (Intuition, Alerts, Approvals, Apps, Benchmarks, Bugs, Devices, Instances, Library, Lifeboat, Pipeline, Project, Services, Setup, Tasks, Teams, Tests, Users). Each is a self-contained Svelte 5 component using runes with its own state, polling, WS subscription via `window.dispatchEvent(new CustomEvent('pan:<panel>-update'))`. **See `docs/DASHBOARD-WIDGETS.md` for the full catalog** (per-widget props, WS events, API endpoints, line counts). |
+| `service/dashboard/src/lib/components/modals/ImpersonatePanel.svelte` | Owner-only impersonation modal (power level / user / group). Bindable `open` prop, `onApplied` callback. |
+| `service/dashboard/src/lib/stores/terminal.svelte.js` | Terminal-page shared reactive store: tabs, activeTabId, ws lifecycle, claudeReady, ptyStatus, permsMatrix, layout selectors, and the per-tab message Map (nightmare-bug #444 fix) with setPushed/getPushed/pushEcho helpers. |
 
 ### Phone Dashboard Architecture
 The phone opens the dashboard via **Android WebView** (not a browser — no address bar).
@@ -254,10 +277,10 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 59a5a699-96b, recap)*
-Shipped fixes to table cell word-breaking and completed the dashboard rebuild deployed via Craft swap. Delivered Craft-side pty_input event logging with provenance through sendToSession, now live; Carrier update awaits restart. Researched Supertonic 3/TTS model facts. Remaining: finalize Carrier integration and close open tasks.
+### This Tab *(session: c2d021b5-8e5, recap)*
+No notable activity recorded.
 
-### Recent Project Work *(session: 44a7504b-409, recap)*
+### Recent Project Work *(session: 755edb11-1e5, recap)*
 No notable activity recorded.
 
 ### Open Tasks

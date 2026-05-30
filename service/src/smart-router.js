@@ -350,10 +350,38 @@ export function learnCorrection(action_type, device, app, org_id = 'org_personal
 // Keeps track of the last routed action per session so corrections can reference it.
 // In-memory — cleared on restart. That's fine: corrections need immediate context.
 // ─────────────────────────────────────────────────────────────────────────────
-const lastAction = new Map(); // session_id → { action_type, device, app, text, ts }
+// #986 batch 1: lastAction Map now also carries multi-turn dialog state:
+//   - last_topic        : free-text topic the model said it was talking about
+//   - open_question     : question PAN asked that's still awaiting an answer
+//   - awaiting_answer   : ts when the question was asked (TTL 90s)
+// Reused for: "yes/no" replies (consume open_question), "do the same"
+// (resolve via last_topic), and the existing device-correction path.
+const lastAction = new Map();
 
 export function setLastAction(session_id, action_type, device, app, text) {
-  lastAction.set(session_id, { action_type, device, app, text, ts: Date.now() });
+  const prev = lastAction.get(session_id) || {};
+  lastAction.set(session_id, {
+    ...prev,
+    action_type, device, app, text,
+    ts: Date.now(),
+  });
+}
+
+// Update dialog fields without disturbing the device-correction fields.
+export function setDialogState(session_id, fields = {}) {
+  if (!session_id) return;
+  const prev = lastAction.get(session_id) || {};
+  const next = { ...prev, ts: Date.now() };
+  if (Object.prototype.hasOwnProperty.call(fields, 'last_topic'))     next.last_topic = fields.last_topic;
+  if (Object.prototype.hasOwnProperty.call(fields, 'open_question'))  {
+    next.open_question = fields.open_question;
+    next.awaiting_answer = fields.open_question ? Date.now() : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(fields, 'clear_question') && fields.clear_question) {
+    next.open_question = null;
+    next.awaiting_answer = null;
+  }
+  lastAction.set(session_id, next);
 }
 
 export function getLastAction(session_id) {
@@ -362,6 +390,21 @@ export function getLastAction(session_id) {
   // Corrections only make sense within 5 minutes
   if (Date.now() - a.ts > 5 * 60 * 1000) return null;
   return a;
+}
+
+// Returns dialog-state slice with TTL filters applied:
+//   - open_question expires after 90s
+//   - last_topic expires with the entry itself (5min via getLastAction)
+export function getDialogState(session_id) {
+  const a = lastAction.get(session_id);
+  if (!a) return null;
+  if (Date.now() - a.ts > 5 * 60 * 1000) return null;
+  const out = { last_topic: a.last_topic || null };
+  if (a.awaiting_answer && (Date.now() - a.awaiting_answer) < 90_000) {
+    out.open_question = a.open_question || null;
+    out.awaiting_answer_age_ms = Date.now() - a.awaiting_answer;
+  }
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

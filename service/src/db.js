@@ -160,6 +160,20 @@ db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = OFF');
 
+// WAL TUNING (attempted 2026-05-29, reverted same day).
+//
+// First attempt: set wal_autocheckpoint=0 + journal_size_limit=16MB + one-shot
+// TRUNCATE checkpoint at boot. Result: things got WORSE — Craft event loop
+// fully wedged after the swap. wal_autocheckpoint=0 means the WAL can grow
+// indefinitely, and a one-shot TRUNCATE at boot can stall if any concurrent
+// reader is active (schema migrations run reads immediately on connect).
+//
+// Reverted to default SQLite WAL behavior. The 72MB WAL + recurring 200s
+// blocks remain open issues for a future, more careful pass. The right fix
+// is likely to (a) move heavy reads to a SQLite worker thread, or (b) split
+// the events table into a separate database that can be checkpointed
+// independently. Both are multi-day refactors; left for #61 / future.
+
 // Pre-schema migrations: add columns that the schema now references but old DBs lack.
 // Must run BEFORE db.exec(schema) so index creation doesn't fail on missing columns.
 {
@@ -845,18 +859,186 @@ function insertScoped(req, sql, params = {}) {
   return insert(sql, { ...params, ':org_id': req?.org_id || 'org_personal' });
 }
 
+// ── Model Selection Registry ───────────────────────────────────────────────
+//
+// Single source of truth for "which model do we use for X?".
+//
+// Every consumer of an LLM (embeddings, intuition, vision, voice routing,
+// dream/evolution cycles, etc.) used to hardcode model names as module
+// constants. When a provider retired a name (Cerebras dropping
+// qwen-3-235b-a22b-instruct-2507) or a device's installed tags changed
+// (the MiniPC having qwen3-embedding:latest instead of :0.6b), every
+// caller broke in a slightly different way and we had to grep + edit.
+//
+// New design: one table, one helper. Callers ask
+//   getModelForPurpose('embedding')
+//   getModelForPurpose('chat_local')
+//   getModelForPurpose('vision')
+//   getModelForPurpose('reasoning_cloud')
+//   getModelForPurpose('chat_cloud_fallback')
+// and get back { purpose, provider, model, dim, context_window }. Changing
+// a model is a one-row UPDATE — no code edit, no Carrier restart.
+//
+// Provider naming convention is "provider[@device]":
+//   'ollama@minipc'   — Ollama running on the device with hostname minipc
+//   'ollama@local'        — Ollama on the same machine as PAN (single-PC setup)
+//   'cerebras'            — cloud, no device suffix needed
+//   'groq', 'anthropic', 'openai' — same
+//
+// This naming is what scout.js's findDeviceWithModel + scanDeviceModels keys
+// on, so swapping the MiniPC for a new machine is just changing the suffix.
+try {
+  run(`CREATE TABLE IF NOT EXISTS model_selections (
+    purpose TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dim INTEGER,
+    context_window INTEGER,
+    notes TEXT,
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+  // Seed with the current canonical choices. INSERT OR IGNORE so we never
+  // clobber a row the user has explicitly changed via the dashboard.
+  const seeds = [
+    ['embedding',            'ollama@minipc', 'qwen3-embedding:0.6b', 1024, null,  'Vector embeddings — must match event_embeddings dim'],
+    ['chat_local',           'ollama@minipc', 'qwen3:4b',             null, 32768, 'Local chat / intuition / classifier fallback'],
+    ['vision',               'ollama@minipc', 'moondream',            null, null,  'Screen + webcam understanding'],
+    ['reasoning_cloud',      'cerebras',          'qwen-3-235b',          null, null,  'Smart cloud reasoning (substituted by Scout if retired)'],
+    ['chat_cloud_fallback',  'anthropic',         'claude-haiku-4-5-20251001', null, null, 'Universal fallback when local + reasoning_cloud both fail'],
+  ];
+  for (const [purpose, provider, model, dim, ctx, notes] of seeds) {
+    run(`INSERT OR IGNORE INTO model_selections (purpose, provider, model, dim, context_window, notes)
+         VALUES (:p, :pr, :m, :d, :c, :n)`,
+      { ':p': purpose, ':pr': provider, ':m': model, ':d': dim, ':c': ctx, ':n': notes });
+  }
+} catch {}
+
+export function getModelForPurpose(purpose) {
+  try {
+    const row = get(`SELECT purpose, provider, model, dim, context_window, notes
+                     FROM model_selections WHERE purpose = :p`, { ':p': purpose });
+    return row || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setModelForPurpose(purpose, provider, model, options = {}) {
+  try {
+    run(`INSERT INTO model_selections (purpose, provider, model, dim, context_window, notes, updated_at)
+         VALUES (:p, :pr, :m, :d, :c, :n, datetime('now','localtime'))
+         ON CONFLICT(purpose) DO UPDATE SET
+           provider = :pr, model = :m, dim = :d, context_window = :c, notes = :n,
+           updated_at = datetime('now','localtime')`,
+      { ':p': purpose, ':pr': provider, ':m': model,
+        ':d': options.dim ?? null, ':c': options.context_window ?? null, ':n': options.notes ?? null });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export function listModelSelections() {
+  try { return all(`SELECT * FROM model_selections ORDER BY purpose`); }
+  catch { return []; }
+}
+
 // ── Ollama URL ─────────────────────────────────────────────────────────────
-// Single source of truth for where Ollama lives. Defaults to localhost but
-// can be pointed at a remote machine (e.g. mini PC over Tailscale) via the
-// 'ollama_url' setting in the DB or the PAN_OLLAMA_URL env var.
+// Single source of truth for where Ollama lives. We resolve in this order:
+//
+//   1. PAN_OLLAMA_URL env var          — operator override, highest priority
+//   2. ollama_url setting in DB        — user-pinned override from the
+//                                        Settings panel
+//   3. CONNECTED-CLIENT AUTO-DISCOVERY — find a device that joined via the
+//                                        QR-code enrollment + is currently
+//                                        heartbeating + reports ollama:up.
+//                                        Use its tailscale_ip:11434. IP
+//                                        survives reboots because Tailscale
+//                                        keeps the same node-IP, and the
+//                                        client's WS heartbeat keeps the row
+//                                        fresh so the dashboard's "MiniPC has
+//                                        Ollama" knowledge is never stale.
+//   4. localhost:11434 fallback        — single-machine setup
+//
+// Cached for 30s so the DB lookup doesn't run on every Steward probe + every
+// dashboard refresh + every embeddings batch.
+let _ollamaUrlCache = { url: null, ts: 0 };
+const _OLLAMA_URL_TTL_MS = 30_000;
+const OLLAMA_DEFAULT_PORT = 11434;
+
 export function getOllamaUrl() {
   const envUrl = process.env.PAN_OLLAMA_URL;
   if (envUrl) return envUrl.replace(/\/$/, '');
+
+  const now = Date.now();
+  if (_ollamaUrlCache.url && (now - _ollamaUrlCache.ts) < _OLLAMA_URL_TTL_MS) {
+    return _ollamaUrlCache.url;
+  }
+
+  let url = null;
+
+  // (2) Explicit setting wins over auto-discovery — user chose to pin a URL.
   try {
     const row = get("SELECT value FROM settings WHERE key = 'ollama_url'");
-    if (row?.value) return row.value.replace(/\/$/, '');
+    if (row?.value) {
+      url = row.value.replace(/\/$/, '');
+    }
   } catch {}
-  return 'http://localhost:11434';
+
+  // (3) Auto-discover from devices that EVER reported ollama:up. We don't
+  // filter by last_seen because Tailscale node IPs are stable across reboots
+  // and offline windows — if the MiniPC was enrolled once with Ollama, that
+  // IP is the right target whenever it comes back up. Prefer most-recently-
+  // seen device so the latest known good host wins. Steward + the embeddings
+  // backfill back off naturally if the chosen URL doesn't actually answer.
+  if (!url) {
+    try {
+      const candidates = all(`
+        SELECT name, hostname, tailscale_ip, tailscale_hostname, reported_services, last_seen
+        FROM devices
+        WHERE reported_services IS NOT NULL
+        ORDER BY last_seen DESC
+      `);
+      for (const d of candidates) {
+        let svcs = null;
+        try { svcs = JSON.parse(d.reported_services); } catch { continue; }
+        if (!Array.isArray(svcs)) continue;
+        const ollamaSvc = svcs.find(s => s.name === 'ollama' && s.status === 'up');
+        if (!ollamaSvc) continue;
+
+        // Prefer the explicit port the client reported, fall back to the default.
+        const port = Number(ollamaSvc.port) || OLLAMA_DEFAULT_PORT;
+        // Address-column priority:
+        //   tailscale_ip       — set by pan-client on register
+        //   tailscale_hostname — also populated by enrollment; for most rows
+        //                        this actually contains the Tailscale IPv4
+        //                        (e.g. "100.72.237.137"), not a hostname.
+        //                        Confusingly-named column but it's where the
+        //                        usable address lives when tailscale_ip is null.
+        //   hostname           — last resort; only useful if MagicDNS resolves it.
+        const host = d.tailscale_ip || d.tailscale_hostname || d.hostname;
+        if (host) {
+          url = `http://${host}:${port}`;
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  // (4) Final fallback — same-machine Ollama.
+  if (!url) url = 'http://localhost:11434';
+
+  _ollamaUrlCache = { url, ts: now };
+  return url;
+}
+
+// Force-invalidate the URL cache. Callers should fire this when a device
+// reconnects (so the next probe picks up the newly-online host) or when
+// the user updates the ollama_url setting.
+export function invalidateOllamaUrlCache() {
+  _ollamaUrlCache = { url: null, ts: 0 };
 }
 
 export { db, run, get, all, insert, detectProject, syncProjects, save, DB_PATH, indexEventFTS, logEvent, logDecision, anonymize, anonymizeEventData, _extractEventText, allScoped, getScoped, runScoped, insertScoped };
+// Note: getOllamaUrl, invalidateOllamaUrlCache, and getApiKey are exported
+// inline above with `export function`.

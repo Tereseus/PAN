@@ -21,11 +21,12 @@ export class ClaudeAdapter {
     this.cwd = cwd;                       // Working directory
     this.onMessage = onMessage;           // Callback: (messages: Message[]) => void
     this.messages = [];                   // Transcript: [{role, type, text, ts, model?}]
-    this.MAX_MESSAGES = 500;              // Cap to prevent memory leak
+    this.MAX_MESSAGES = 2000;             // Cap to prevent memory leak
     this.claudeSessionId = resumeClaudeSessionId; // Claude's internal session UUID (restored from token on restart)
     this.busy = false;                    // True while a query is running
     this.abortController = null;          // For interrupting
     this._queryCount = 0;
+    this.lastExitReason = null;           // 'natural'|'timeout'|'interrupted'|'error:<msg>'|'no_output'
     this.model = null;                    // Override model — null = use CLI default
     this._turnInputTokens = 0;           // Token counters for current turn
     this._turnOutputTokens = 0;
@@ -83,15 +84,18 @@ export class ClaudeAdapter {
     let timedOut = false;
     const _msgsBefore = this.messages.length; // track if any visible output is produced
 
-    // 30s timeout for first message to appear. If stream hangs after that, let it run —
-    // long responses are OK, but stuck streams must be detected.
+    // Timeout waiting for the FIRST message from the stream.
+    // Resume sessions load a large context before producing any output — allow more time.
+    // Cleared as soon as ANY message arrives (not just in finally), so long responses are fine.
+    const firstMsgTimeoutMs = this.claudeSessionId ? 90_000 : 30_000;
+    let firstMsgReceived = false;
     const timeoutHandle = setTimeout(() => {
-      if (this.abortController) {
+      if (this.abortController && !firstMsgReceived) {
         timedOut = true;
-        console.error(`[Claude Adapter] Query timeout (30s no response) — aborting`);
+        console.error(`[Claude Adapter] Query timeout (${firstMsgTimeoutMs / 1000}s no response) — aborting`);
         this.abortController.abort();
       }
-    }, 30_000);
+    }, firstMsgTimeoutMs);
 
     try {
       console.log(`[Claude Adapter] Query: "${text.substring(0, 60)}" (${isFirst ? 'new' : 'resume'}) cwd=${this.cwd}`);
@@ -103,6 +107,11 @@ export class ClaudeAdapter {
       });
 
       for await (const msg of stream) {
+        // Clear first-message timeout on any stream event — context is flowing
+        if (!firstMsgReceived) {
+          firstMsgReceived = true;
+          clearTimeout(timeoutHandle);
+        }
         if (msg.type === 'system' && msg.subtype === 'init') {
           if (_attemptedResumeId && msg.session_id && msg.session_id !== _attemptedResumeId) {
             console.warn(`[Claude Adapter] Resume FAILED silently — requested ${_attemptedResumeId} got ${msg.session_id}`);
@@ -158,7 +167,9 @@ export class ClaudeAdapter {
           this.totalInputTokens += this._turnInputTokens;
           this.totalOutputTokens += this._turnOutputTokens;
           this.totalCost += cost;
-          console.log(`[Claude Adapter] Result: turns=${msg.num_turns} cost=$${cost.toFixed(4)} turn_in=${this._turnInputTokens} turn_out=${this._turnOutputTokens} session_total_in=${this.totalInputTokens} session_total_out=${this.totalOutputTokens} session=${msg.session_id}`);
+          const stopReason = msg.stop_reason || 'end_turn';
+          console.log(`[Claude Adapter] Result: turns=${msg.num_turns} stop=${stopReason} cost=$${cost.toFixed(4)} turn_in=${this._turnInputTokens} turn_out=${this._turnOutputTokens} session_total_in=${this.totalInputTokens} session_total_out=${this.totalOutputTokens} session=${msg.session_id}`);
+          this.lastExitReason = `natural:${stopReason}:turns=${msg.num_turns}`;
           // Inject a turn_stats message so the frontend can display per-message token usage
           this.messages.push({
             role: 'system', type: 'turn_stats',
@@ -173,6 +184,8 @@ export class ClaudeAdapter {
               total_input: this.totalInputTokens,
               total_output: this.totalOutputTokens,
               total_cost: this.totalCost,
+              stop_reason: stopReason,
+              num_turns: msg.num_turns,
             },
           });
           if (msg.session_id) this.claudeSessionId = msg.session_id;
@@ -187,6 +200,7 @@ export class ClaudeAdapter {
       );
       if (!_hadVisibleOutput && !timedOut) {
         console.warn(`[Claude Adapter] Stream completed with no visible output (turn_out=${this._turnOutputTokens}) — session likely in bad state`);
+        this.lastExitReason = 'no_output';
         this.messages.push({
           role: 'system', type: 'banner',
           text: `No response received. Claude session may be in a broken state (turn_out=${this._turnOutputTokens}). A fresh session will be started on your next message.`,
@@ -199,14 +213,17 @@ export class ClaudeAdapter {
     } catch (err) {
       if (err.name === 'AbortError') {
         if (timedOut) {
-          console.error(`[Claude Adapter] Query stalled (no response for 30s)`);
+          const timeoutSec = firstMsgTimeoutMs / 1000;
+          console.error(`[Claude Adapter] Query stalled (no response for ${timeoutSec}s)`);
+          this.lastExitReason = `timeout_${timeoutSec}s`;
           this.messages.push({
             role: 'system', type: 'error',
-            text: '⚠️ Claude not responding (timeout). Try again or check network.',
+            text: `⚠️ Claude not responding (${timeoutSec}s timeout). Session preserved — your next message will resume it.`,
             ts: new Date().toISOString(),
           });
         } else {
           console.log(`[Claude Adapter] Query interrupted`);
+          this.lastExitReason = 'interrupted';
           this.messages.push({
             role: 'system', type: 'interrupt',
             text: 'Interrupted',
@@ -217,12 +234,14 @@ export class ClaudeAdapter {
       } else if (opts.resume && (err.message?.includes('session') || err.message?.includes('resume') || err.message?.includes('not found'))) {
         // Resume failed — session expired or invalid. Retry as fresh session.
         console.warn(`[Claude Adapter] Resume threw, falling back to fresh session: ${err.message}`);
+        this.lastExitReason = `resume_failed:${err.message?.substring(0, 80)}`;
         this.claudeSessionId = null;
         this._queryCount = 1;
         this.busy = false;
         return this.send(text);
       } else {
         console.error(`[Claude Adapter] Query error:`, err.message);
+        this.lastExitReason = `error:${err.message?.substring(0, 120)}`;
         this.messages.push({
           role: 'system', type: 'error',
           text: `Error: ${err.message}`,
@@ -337,14 +356,17 @@ export class ClaudeAdapter {
     }
   }
 
-  // Push transcript update to callback
+  // Push transcript update to callback.
+  // If messages exceeded the cap, pass the trim offset so the onMessage handler
+  // can adjust its counter (prevents new messages being silently dropped after trim).
   _push() {
-    // Trim to cap — old messages already persisted to transcript files
+    let trimOffset = 0;
     if (this.messages.length > this.MAX_MESSAGES) {
+      trimOffset = this.messages.length - this.MAX_MESSAGES;
       this.messages = this.messages.slice(-this.MAX_MESSAGES);
     }
     try {
-      this.onMessage(this.getMessages());
+      this.onMessage(this.getMessages(), trimOffset);
     } catch (err) {
       console.error(`[Claude Adapter] Push error:`, err.message);
     }

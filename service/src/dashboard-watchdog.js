@@ -7,7 +7,7 @@
 // This approach needs no WS hooks (which live in Carrier and can't be swapped).
 // Target: user back in dashboard within ~20s of any stuck load.
 
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -75,7 +75,7 @@ async function runPoll() {
 
   try {
     const base64     = await captureFrame();
-    const brightness = averageBrightness(base64);
+    const brightness = await averageBrightness(base64);
 
     if (brightness < BRIGHTNESS_THRESHOLD) {
       strikeCount++;
@@ -113,28 +113,50 @@ async function captureFrame() {
   return json.base64;
 }
 
+// async — see screen-watcher.js resizeForVision for why we can't spawnSync.
+// FFmpeg hanging blocked the event loop and made the dashboard unresponsive;
+// here we promise-wrap spawn() with a hard timer that resolves with the safe
+// fallback (128 = mid-gray) so a single bad screenshot never freezes Craft.
 function averageBrightness(base64) {
-  // Decode the compressed image (PNG or JPEG) to actual raw pixels via ffmpeg.
-  // Sampling raw compressed bytes is WRONG — deflate data averages ~128 regardless
-  // of image content. We need real pixel values.
-  try {
-    const inputBuf = Buffer.from(base64, 'base64');
-    const result = spawnSync('ffmpeg', [
-      '-i', 'pipe:0',
-      '-vf', 'scale=120:-2',   // downsample to 120px wide — fast, enough for brightness
-      '-f', 'rawvideo',
-      '-pix_fmt', 'gray',      // single luminance channel (0=black, 255=white)
-      'pipe:1',
-    ], { input: inputBuf, windowsHide: true, timeout: 5000, maxBuffer: 2 * 1024 * 1024 });
-
-    if (result.status === 0 && result.stdout?.length > 0) {
-      const pixels = result.stdout;
-      let sum = 0;
-      for (let i = 0; i < pixels.length; i++) sum += pixels[i];
-      return sum / pixels.length;
+  return new Promise((resolve) => {
+    let done = false;
+    let proc;
+    const finish = (val) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} resolve(val); };
+    try {
+      const inputBuf = Buffer.from(base64, 'base64');
+      proc = spawn('ffmpeg', [
+        '-i', 'pipe:0',
+        '-vf', 'scale=120:-2',   // downsample to 120px wide — fast, enough for brightness
+        '-f', 'rawvideo',
+        '-pix_fmt', 'gray',      // single luminance channel (0=black, 255=white)
+        'pipe:1',
+      ], { windowsHide: true, shell: false });
+      const chunks = [];
+      let bytes = 0;
+      const MAX = 2 * 1024 * 1024;
+      proc.stdout.on('data', (c) => {
+        bytes += c.length;
+        if (bytes > MAX) { finish(128); return; }
+        chunks.push(c);
+      });
+      proc.on('error', () => finish(128));
+      proc.on('close', (code) => {
+        if (code === 0 && chunks.length) {
+          const pixels = Buffer.concat(chunks);
+          let sum = 0;
+          for (let i = 0; i < pixels.length; i++) sum += pixels[i];
+          finish(sum / pixels.length);
+        } else {
+          finish(128);
+        }
+      });
+      proc.stdin.on('error', () => {});
+      proc.stdin.end(inputBuf);
+      setTimeout(() => finish(128), 5000);
+    } catch {
+      finish(128);
     }
-  } catch {}
-  return 128; // safe fallback — don't trigger recovery on error
+  });
 }
 
 // ── Recovery ──────────────────────────────────────────────────────────────────

@@ -8,14 +8,17 @@
 //
 // This cuts captures from ~103/day → ~20/day with no loss in accuracy.
 
-import { spawn, spawnSync, execFileSync } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import { initFaceId, identifyFromFrame, getFaceIdStatus } from './face-id.js';
 import { run, get } from './db.js';
 import { observeFace } from './routes/identity.js';
 
 // How long since last mouse/keyboard input (Windows only).
 // Returns milliseconds. Returns 0 on error (assume active).
-function getIdleMs() {
+// async — see screen-watcher.js for the loop-blocking explanation.
+async function getIdleMs() {
   try {
     const ps = [
       'Add-Type @"',
@@ -28,18 +31,32 @@ function getIdleMs() {
       '"@',
       'Write-Output ([IL]::IdleMs())',
     ].join('\n');
-    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
-      { windowsHide: true, timeout: 3000 }).toString().trim();
-    return parseInt(out) || 0;
+    const { stdout } = await execFileAsync(
+      'powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, timeout: 3000, killSignal: 'SIGKILL' }
+    );
+    return parseInt(stdout.toString().trim()) || 0;
   } catch { return 0; }
 }
 
-const INTERVAL_MS      = 30_000;   // base polling interval (when not locked)
-const STALE_MS         = 90_000;   // context stale after 90s
-const BURST_FRAMES     = 3;        // capture N frames, use best
+// EVENT-LOOP BUDGET NOTE (see also runCapture below):
+// face-api.js runs tfjs-node tensor ops synchronously on the main thread.
+// Each .withFaceLandmarks().withFaceExpressions().withFaceDescriptor() is
+// 4 sequential CNN inferences. Under CPU contention these have been observed
+// to spike to 30-50s each, multiplied by BURST_FRAMES, producing 149s+
+// event-loop blocks that froze the dashboard. Until face-api gets moved
+// into a worker thread (the real fix), we mitigate by: (1) polling less
+// often, (2) capturing 1 frame per cycle instead of 3, and (3) a hard
+// wall-clock budget on the whole capture cycle that at least bounds how
+// catastrophic any single bad cycle can be.
+const INTERVAL_MS      = 60_000;   // base polling interval (was 30s — halved to cut block frequency)
+const STALE_MS         = 120_000;  // context stale after 2min (raised to match INTERVAL_MS x2)
+const BURST_FRAMES     = 1;        // capture 1 frame per cycle (was 3 — kills 2/3 of inference CPU)
 const MISS_REQUIRED    = 2;        // consecutive misses before "desk empty"
 const LOCK_CONF_MIN    = 35;       // min confidence % to lock identity (face-api 30-50% is normal for a good match)
 const LOCK_RECHECK_MS  = 5 * 60_000; // recheck every 5min when locked (prove still there)
+const CAPTURE_FRAME_TIMEOUT_MS = 8000;   // hard kill on FFmpeg if dshow hangs
+const CAPTURE_CYCLE_BUDGET_MS  = 15_000; // overall budget per cycle; abort if exceeded
 
 // Virtual camera keywords — exclude software cameras that open system dialogs
 const VIRTUAL_CAM_HINTS = ['virtual', 'obs', 'steam', 'snap', 'manycam', 'droidcam', 'ivcam', 'epoccam', 'phone link'];
@@ -56,12 +73,19 @@ let lockLastRecheck   = 0;      // timestamp of last recheck while locked
 
 // ── Camera detection ──────────────────────────────────────────────────────────
 
-function detectCameras() {
+async function detectCameras() {
   if (detectedCams) return detectedCams;
   try {
-    const result = spawnSync('ffmpeg', ['-f', 'dshow', '-list_devices', 'true', '-i', 'dummy'],
-      { windowsHide: true, timeout: 5000, encoding: 'utf8' });
-    const output = (result.stderr || '') + (result.stdout || '');
+    // FFmpeg writes the device list to stderr and exits non-zero — that's
+    // expected. Use execFile (async) instead of spawnSync so the 5s wait
+    // doesn't pin the event loop during webcam-watcher startup.
+    let output = '';
+    await new Promise((resolve) => {
+      const proc = execFile('ffmpeg', ['-f', 'dshow', '-list_devices', 'true', '-i', 'dummy'],
+        { windowsHide: true, timeout: 5000, killSignal: 'SIGKILL' },
+        (_err, stdout, stderr) => { output = (stderr || '') + (stdout || ''); resolve(); });
+      proc.on?.('error', () => resolve());
+    });
     const names = [];
     for (const line of output.split('\n')) {
       const m = line.match(/"([^"]+)"\s+\(video\)/);
@@ -83,7 +107,12 @@ function detectCameras() {
 
 function captureFrame(cameraName) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('ffmpeg', [
+    let done = false;
+    let proc;
+    const finishOk = (b64) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} resolve(b64); };
+    const finishErr = (err) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} reject(err); };
+
+    proc = spawn('ffmpeg', [
       '-f', 'dshow', '-i', `video=${cameraName}`,
       '-vframes', '1',
       '-vf', 'scale=640:-2',
@@ -97,10 +126,14 @@ function captureFrame(cameraName) {
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('close', code => {
       const buf = Buffer.concat(chunks);
-      if (buf.length > 1000) resolve(buf.toString('base64'));
-      else reject(new Error(`FFmpeg exit ${code}. ${stderr.slice(-120)}`));
+      if (buf.length > 1000) finishOk(buf.toString('base64'));
+      else finishErr(new Error(`FFmpeg exit ${code}. ${stderr.slice(-120)}`));
     });
-    proc.on('error', e => reject(new Error(`FFmpeg spawn: ${e.message}`)));
+    proc.on('error', e => finishErr(new Error(`FFmpeg spawn: ${e.message}`)));
+    // Hard kill if FFmpeg hangs (camera locked by another app, driver glitch).
+    // Without this, the Promise never resolves and the watcher's burst loop
+    // sits open while subsequent ticks queue behind isCapturing.
+    setTimeout(() => finishErr(new Error(`captureFrame timeout > ${CAPTURE_FRAME_TIMEOUT_MS}ms`)), CAPTURE_FRAME_TIMEOUT_MS);
   });
 }
 
@@ -123,7 +156,7 @@ async function runCapture(forced = false) {
 
   isCapturing = true;
   try {
-    const cameras = detectCameras();
+    const cameras = await detectCameras();
     if (!cameras.length) { console.warn('[WebcamWatcher] No cameras — skipping'); return; }
 
     let usedCamera = null;
@@ -151,7 +184,7 @@ async function runCapture(forced = false) {
     // Debounce: don't flip to "desk empty" on a single missed frame
     if (!face.present) {
       // If user has been typing/clicking recently, they're clearly still here — camera just missed them
-      const idleMs = getIdleMs();
+      const idleMs = await getIdleMs();
       const activeAtKeyboard = idleMs < 2 * 60_000; // active within last 2min
       if (activeAtKeyboard) {
         console.log(`[WebcamWatcher] No face but keyboard active ${Math.round(idleMs/1000)}s ago — staying locked`);
@@ -233,7 +266,7 @@ async function runCapture(forced = false) {
 
 export async function startWebcamWatcher() {
   if (watcherTimer) return;
-  detectCameras();
+  detectCameras().catch(() => {}); // fire-and-forget warmup
   initFaceId().catch(e => console.warn(`[WebcamWatcher] face-id init failed: ${e.message}`));
   console.log(`[WebcamWatcher] Started — poll every ${INTERVAL_MS/1000}s, lock after ${LOCK_CONF_MIN}% conf → recheck every ${LOCK_RECHECK_MS/60000}min`);
   setTimeout(() => runCapture(true), 5_000);

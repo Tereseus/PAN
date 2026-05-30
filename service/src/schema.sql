@@ -20,6 +20,13 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+-- The events.org_id indexes are built in a deferred step in server.js
+-- (see _buildEventsOrgIndexes) — NOT here. Reason: on a 1.6 GB events table
+-- the first-time build takes 30-90 seconds of sync CPU, and schema.sql runs
+-- during db.js module init, BEFORE server.listen(). Building here would
+-- delay Craft's HTTP server coming up and the perf-probe boot grace would
+-- expire before /health ever answered. Deferring to +10s after listen()
+-- means Craft is already serving by the time the build starts.
 
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

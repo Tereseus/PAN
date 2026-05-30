@@ -25,11 +25,48 @@ import { startStackScanner, stopStackScanner } from './stack-scanner.js';
 import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
 import { consolidate as consolidateMemory } from './memory/consolidation.js';
 import { evolve as runEvolution } from './evolution/engine.js';
-import { listSessions, sendToSession, broadcastToSession, broadcastNotification, getProcessRegistry } from './terminal-bridge.js';
+import { listSessions, sendToSession, broadcastToSession, broadcastNotification, getProcessRegistry, pipeResetAdapter } from './terminal-bridge.js';
 import { createAlert } from './routes/dashboard.js';
 import { hostname } from 'os';
 import http from 'http';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
+
+// Run a PowerShell script with a hard wall-clock timeout that ACTUALLY kills
+// the process. execSync's `timeout` option is unreliable on Windows when
+// PowerShell stalls in COM init (observed 180+ second hangs during heavy
+// load). This wrapper guarantees: (a) async — never blocks the event loop;
+// (b) hard timer always resolves the promise, even if SIGKILL is ignored.
+// Returns the stdout string, or null on any failure / timeout.
+function runPowerShellFile(psFile, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    let done = false;
+    let proc;
+    const finish = (val) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} resolve(val); };
+    try {
+      proc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psFile], {
+        windowsHide: true, shell: false,
+      });
+      const chunks = [];
+      let bytes = 0;
+      const MAX = 8 * 1024 * 1024;
+      proc.stdout.on('data', (c) => {
+        bytes += c.length;
+        if (bytes > MAX) { finish(null); return; }
+        chunks.push(c);
+      });
+      proc.on('error', () => finish(null));
+      proc.on('close', (code) => {
+        finish(code === 0 && chunks.length ? Buffer.concat(chunks).toString('utf-8').trim() : null);
+      });
+      proc.stdin?.end();
+      setTimeout(() => finish(null), timeoutMs);
+    } catch {
+      finish(null);
+    }
+  });
+}
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { writeFileSync, existsSync } from 'fs';
@@ -162,23 +199,42 @@ const services = [
       // one. Each instance commits ~1.95GB and steward used to leak one per
       // PAN restart (detached + .unref() means they outlived the parent node).
       // We saw 11 zombies eating ~21GB committed in the wild — never again.
+      // Was execSync — PowerShell COM init can hang past `timeout` on Windows,
+      // and this fires at boot, so a stall here stalls the whole Craft boot →
+      // Carrier perf probe fails → auto-rollback. Now: kill is fully async,
+      // and the new whisper-server is launched from the kill's close handler
+      // (or a timeout fallback) so they can't race.
+      const launchWhisper = () => {
+        try {
+          spawn('python', [whisperScript], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+          }).unref();
+          console.log('[Steward] Launched whisper-server.py (killed any prior instances first)');
+        } catch (err) {
+          console.error('[Steward] Failed to launch whisper-server.py:', err.message);
+        }
+      };
+      let launched = false;
+      const launchOnce = () => { if (!launched) { launched = true; launchWhisper(); } };
       try {
-        execSync(
-          'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'python.exe\'\\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like \'*whisper-server*\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"',
-          { stdio: 'ignore', timeout: 8000, windowsHide: true }
-        );
+        const killProc = spawn('powershell', [
+          '-NoProfile',
+          '-Command',
+          "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*whisper-server*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+        ], { stdio: 'ignore', windowsHide: true, shell: false });
+        killProc.on('error', () => launchOnce()); // kill couldn't even start → just spawn new
+        killProc.on('close', () => launchOnce()); // kill finished → safe to spawn
+        // Hard fallback: PowerShell COM init hung → force-kill + spawn anyway.
+        // Old whisper instances will still get reaped on next reboot if any survived.
+        setTimeout(() => {
+          try { killProc.kill('SIGKILL'); } catch {}
+          launchOnce();
+        }, 8000);
       } catch (err) {
-        console.warn('[Steward] Whisper pre-kill failed (non-fatal):', err.message);
-      }
-      try {
-        spawn('python', [whisperScript], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-        }).unref();
-        console.log('[Steward] Launched whisper-server.py (killed any prior instances first)');
-      } catch (err) {
-        console.error('[Steward] Failed to launch whisper-server.py:', err.message);
+        console.warn('[Steward] Whisper pre-kill spawn failed (non-fatal):', err.message);
+        launchOnce();
       }
     },
     stopFn: null,
@@ -482,27 +538,57 @@ async function checkPortHealth(port, path = '/') {
   });
 }
 
+// Cache process-existence checks across heartbeats. tasklist + PowerShell
+// both spawn conhost.exe on Windows; running them every 60s per service
+// contributed to the orphan conhost pile (413 observed in the field).
+// 30s cache means the heartbeat reuses a result that's at most one cycle
+// stale, which is harmless: a process going up/down is detected on the next
+// real check, not just within the heartbeat tick.
+const _processCheckCache = new Map(); // key -> { result, ts }
+const PROCESS_CHECK_TTL_MS = 30_000;
+
 async function checkProcessRunning(processName, cmdLineMatch) {
+  const cacheKey = `${processName}::${cmdLineMatch || ''}`;
+  const cached = _processCheckCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < PROCESS_CHECK_TTL_MS) {
+    return cached.result;
+  }
   try {
-    const { exec } = await import('child_process');
-    return new Promise((resolve) => {
-      // If a cmdLineMatch is given, use PowerShell to verify the process is
-      // running THE EXPECTED script — not just any instance of the binary.
-      // This stops Steward from being fooled by a stale AHK process running
-      // an old/manually-launched script.
-      if (cmdLineMatch) {
-        const escaped = cmdLineMatch.replace(/'/g, "''");
-        const ps = `Get-CimInstance Win32_Process -Filter "Name = '${processName}'" | Where-Object { $_.CommandLine -like '*${escaped}*' } | Select-Object -First 1 -ExpandProperty ProcessId`;
-        exec(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 5000, windowsHide: true }, (err, stdout) => {
-          if (err) return resolve(false);
-          resolve(/\d+/.test(stdout.trim()));
+    return await new Promise((resolve) => {
+      let done = false;
+      let proc;
+      const finish = (result) => {
+        if (done) return; done = true;
+        try { proc?.kill('SIGKILL'); } catch {}
+        _processCheckCache.set(cacheKey, { result, ts: Date.now() });
+        resolve(result);
+      };
+      try {
+        if (cmdLineMatch) {
+          // PowerShell-Get-CimInstance: verify the process is running THE EXPECTED
+          // script — not just any instance of the binary. Stops Steward from being
+          // fooled by stale AHK processes running an old/manually-launched script.
+          const escaped = cmdLineMatch.replace(/'/g, "''");
+          const ps = `Get-CimInstance Win32_Process -Filter "Name = '${processName}'" | Where-Object { $_.CommandLine -like '*${escaped}*' } | Select-Object -First 1 -ExpandProperty ProcessId`;
+          proc = spawn('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true, shell: false });
+        } else {
+          // tasklist is faster and works for any-instance checks (tailscaled.exe etc.).
+          proc = spawn('tasklist', ['/FI', `IMAGENAME eq ${processName}`, '/NH'], { windowsHide: true, shell: false });
+        }
+        const chunks = [];
+        proc.stdout?.on('data', (c) => chunks.push(c));
+        proc.on('error', () => finish(false));
+        proc.on('close', () => {
+          const out = Buffer.concat(chunks).toString('utf-8');
+          finish(cmdLineMatch ? /\d+/.test(out.trim()) : out.includes(processName));
         });
-        return;
+        // Hard kill — PowerShell COM init can ignore SIGTERM (the documented
+        // Windows pathology that left tailscale.exe / wmic / netsh hanging
+        // and leaking conhost.exe parents).
+        setTimeout(() => finish(false), 5000);
+      } catch {
+        finish(false);
       }
-      exec(`tasklist /FI "IMAGENAME eq ${processName}" /NH`, { encoding: 'utf8', timeout: 5000, windowsHide: true }, (err, stdout) => {
-        if (err) return resolve(false);
-        resolve(stdout.includes(processName));
-      });
     });
   } catch {
     return false;
@@ -688,6 +774,9 @@ async function bootAll() {
   // Start health monitoring (every 60 seconds)
   _healthInterval = setInterval(healthCheck, 60 * 1000);
 
+  // Sleep/wake recovery — must start after boot so first gap doesn't false-trigger
+  startSleepWakeDetector();
+
   // Run initial health check
   await healthCheck();
 
@@ -820,6 +909,16 @@ async function healthCheck() {
     }
   }
 
+  // Craft HTTP responsiveness check — if the proxy at 7777 doesn't respond within 5s,
+  // Craft is hung (Super-Carrier is permanent and always responds, but it proxies to Craft).
+  // Trigger a swap so the next page load or WS reconnect gets a healthy Craft.
+  try {
+    await fetch('http://127.0.0.1:7777/health', { signal: AbortSignal.timeout(5_000) });
+  } catch (err) {
+    console.warn(`[Steward] Craft appears unresponsive (${err.message}) — triggering swap`);
+    triggerCraftSwap(`craft-http-timeout: ${err.message}`);
+  }
+
   // Clean zombie PTY sessions (connected but no activity for 2 hours)
   await cleanZombieSessions();
 
@@ -873,16 +972,90 @@ async function healthCheck() {
   } catch {}
 }
 
+// ── Sleep/Wake + Craft self-healing ──────────────────────────────────────────
+// Craft swap cooldown — prevents thrashing if wake fires multiple times quickly
+let _craftSwapCooldownUntil = 0;
+
+async function triggerCraftSwap(reason) {
+  const now = Date.now();
+  if (now < _craftSwapCooldownUntil) {
+    console.log(`[Steward] Craft swap suppressed (cooldown ${Math.round((_craftSwapCooldownUntil - now) / 1000)}s): ${reason}`);
+    return;
+  }
+  _craftSwapCooldownUntil = now + 90_000; // 90s between swaps
+  console.log(`[Steward] 🔄 Triggering Craft swap: ${reason}`);
+  try {
+    const res = await fetch('http://127.0.0.1:7777/api/carrier/swap', {
+      method: 'POST',
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await res.json().catch(() => ({}));
+    console.log(`[Steward] Craft swap result: ok=${body.ok}`);
+  } catch (err) {
+    console.error(`[Steward] Craft swap failed: ${err.message}`);
+  }
+}
+
+// Sleep/wake detector: setInterval fires late after system sleep.
+// If two consecutive 5s heartbeats are > 30s apart, the system slept and woke.
+// On wake: Craft HTTP/WS connections are dead — swap Craft to get a clean slate.
+// Pipe adapters that were mid-response are also reset so sessions accept input immediately.
+let _lastHeartbeatMs = 0;
+function startSleepWakeDetector() {
+  _lastHeartbeatMs = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const gap = now - _lastHeartbeatMs;
+    _lastHeartbeatMs = now;
+    // Threshold raised from 30s → 5min to eliminate false positives caused
+    // by CPU saturation (embeddings backfill, vision callbacks, etc.).
+    // The old 30s window was within range of normal event-loop blocking
+    // under heavy load → Steward fired triggerCraftSwap on a perfectly
+    // alive Craft, kicking off another boot, which blocked the loop, which
+    // triggered ANOTHER false swap. Infinite cascade observed today.
+    //
+    // A REAL sleep is multiple minutes; the OS suspends timers entirely.
+    // Anything under 5 minutes is overwhelmingly likely to be load-induced
+    // and we should NOT thrash the Craft swap pipeline for it.
+    if (gap > 5 * 60_000) {
+      const gapSec = Math.round(gap / 1000);
+      console.log(`[Steward] 💤 Wake from sleep detected (gap=${gapSec}s) — swapping Craft + resetting adapters`);
+      triggerCraftSwap(`wake-from-sleep gap=${gapSec}s`);
+      listSessions().then(sessions => {
+        for (const s of sessions) {
+          if (s.pipeMode && s.claudeRunning) {
+            console.log(`[Steward] 🔄 Post-wake adapter reset: ${s.id}`);
+            pipeResetAdapter(s.id).catch(() => {});
+          }
+        }
+      }).catch(() => {});
+    } else if (gap > 30_000) {
+      // Log but don't act on suspected CPU-pressure events so we have
+      // visibility into "Craft was hung but we didn't make it worse".
+      console.warn(`[Steward] ⚠️  Heartbeat gap=${Math.round(gap/1000)}s — likely CPU pressure, not actual sleep (no swap triggered)`);
+    }
+  }, 5_000);
+}
+
 // Remote Ollama watchdog removed (Part 4 refactor).
 // The ollama service entry uses healthCheck:'url' against getOllamaUrl() which
 // already handles both local and remote Ollama via the configured URL.
 // Two sources of truth (local health check + remote device report) caused #438.
 
+// #807 — Frozen adapter detection: tracks messageCount per session across health cycles.
+// If claudeRunning=true but messageCount hasn't moved for 5 consecutive cycles (~5min),
+// the onMessage closure is likely writing to a stale session reference (after a Craft swap).
+// lastOutputTs is NOT used — it updates on any PTY output and would false-positive on long tasks.
+const _frozenAdapterTracker = new Map(); // sessionId → { count, cycles }
+
 async function cleanZombieSessions() {
   try {
     const sessions = await listSessions();
     const now = Date.now();
+    const seenIds = new Set();
+
     for (const s of sessions) {
+      seenIds.add(s.id);
       const lastOut = s.lastOutputTs || 0;
       const idleMs = lastOut ? now - lastOut : 0;
 
@@ -890,6 +1063,7 @@ async function cleanZombieSessions() {
       if (s.clients === 0 && s.thinking && s.claudeRunning && idleMs > 20 * 60 * 1000) {
         console.log(`[Steward] ⚡ Stuck-thinking session ${s.id} (no clients, silent ${Math.round(idleMs / 60000)}min) — interrupting`);
         try { sendToSession(s.id, '\x03', 'steward'); } catch {}
+        _frozenAdapterTracker.delete(s.id);
         continue;
       }
 
@@ -897,7 +1071,39 @@ async function cleanZombieSessions() {
       if (s.clients === 0 && lastOut && idleMs > 2 * 60 * 60 * 1000) {
         console.log(`[Steward] 🧹 Zombie session ${s.id} (no clients, idle ${Math.round(idleMs / 60000)}min) — sending exit`);
         try { sendToSession(s.id, 'exit\r', 'steward'); } catch {}
+        _frozenAdapterTracker.delete(s.id);
+        continue;
       }
+
+      // #807 — Frozen adapter detection via message count (not lastOutputTs).
+      // Only check pipe sessions where Claude is running AND the user is present (clients > 0).
+      // Track message count across cycles — if it doesn't grow for 5 cycles while claudeRunning,
+      // the onMessage closure is stale. Reset the adapter so the next send creates a fresh one.
+      if (s.pipeMode && s.claudeRunning && s.clients > 0) {
+        const tracker = _frozenAdapterTracker.get(s.id);
+        const count = s.messageCount ?? -1;
+        if (!tracker || tracker.count !== count) {
+          // Count moved (or first time seeing this session) — reset counter
+          _frozenAdapterTracker.set(s.id, { count, cycles: 0 });
+        } else {
+          // Count frozen — increment cycle counter
+          const cycles = tracker.cycles + 1;
+          _frozenAdapterTracker.set(s.id, { count, cycles });
+          if (cycles >= 5) {
+            console.log(`[Steward] 🔄 Frozen adapter on ${s.id} (messageCount=${count} unchanged for ${cycles} cycles, claudeRunning) — auto-resetting`);
+            try { await pipeResetAdapter(s.id); } catch {}
+            _frozenAdapterTracker.delete(s.id);
+          }
+        }
+      } else {
+        // claudeRunning=false or no clients — clear any frozen state tracking
+        _frozenAdapterTracker.delete(s.id);
+      }
+    }
+
+    // Purge tracker entries for sessions that no longer exist
+    for (const id of _frozenAdapterTracker.keys()) {
+      if (!seenIds.has(id)) _frozenAdapterTracker.delete(id);
     }
   } catch {}
 }
@@ -905,26 +1111,50 @@ async function cleanZombieSessions() {
 // Detect AI CLI (cli.js or gemini) processes whose ancestor chain does NOT include
 // any of our tracked PTY pids and is older than 30 minutes.
 // ALERT ONLY — never kill. User investigates orphans manually.
+//
+// Throttle: even though healthCheck() runs every 60s, the function still costs
+// 1-3s of sync JS work (Get-CimInstance returns ~500 processes → 1-10MB of
+// JSON → JSON.parse + ancestor-walk Map build all on the main thread).
+// Orphan detection doesn't need real-time precision; once every 5 minutes is
+// plenty. This collapses the residual periodic event-loop blocks to a
+// background nuisance rather than a steady drumbeat.
+const _ORPHAN_DETECT_INTERVAL_MS = 5 * 60 * 1000;
+let _orphanDetectLastRun = 0;
+
 async function detectOrphanAiProcesses() {
   if (process.platform !== 'win32') return;
+  const now = Date.now();
+  if (now - _orphanDetectLastRun < _ORPHAN_DETECT_INTERVAL_MS) return;
+  _orphanDetectLastRun = now;
   try {
     const sessions = await listSessions();
     const ourPtyPids = new Set(sessions.map(s => s.pid).filter(Boolean));
     ourPtyPids.add(process.pid);
     if (process.ppid) ourPtyPids.add(process.ppid);
 
-    // Search for both Claude Code and Gemini patterns
-    const ps = `$all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CreationDate, @{N='Cmd';E={$_.CommandLine}}
-$ai = $all | Where-Object { $_.Cmd -like '*@anthropic-ai/claude-code/cli.js*' -or $_.Cmd -like '*gemini*' }
+    // Search for both Claude Code and Gemini patterns.
+    //
+    // IMPORTANT: do NOT include CommandLine in the $all dump. The dump becomes
+    // the pidmap (pid→ppid), and we only need cmd lines on the AI matches.
+    // Including CommandLine for ~500 system processes was producing 5-10MB of
+    // JSON every call, which JSON.parse blocked the loop on for 1-3 seconds.
+    // Two passes: small full pidmap (no Cmd), separate AI-only filter (with Cmd).
+    const ps = `$all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId
+$ai  = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*@anthropic-ai/claude-code/cli.js*' -or $_.CommandLine -like '*gemini*' } | Select-Object ProcessId, ParentProcessId, CreationDate, @{N='Cmd';E={ if ($_.CommandLine) { $_.CommandLine.Substring(0, [Math]::Min(200, $_.CommandLine.Length)) } else { '' } }}
 $map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProcessId }
 $result = @{ ai = $ai; pidmap = $map }
 $result | ConvertTo-Json -Compress -Depth 3`;
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
     const psFile = join(tmpDir, 'pan-detect-orphans.ps1');
     writeFileSync(psFile, ps);
-    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true }).trim();
+    // CRITICAL: was execSync(...) — that blocked the event loop for 180+ seconds
+    // when PowerShell stalled in COM init under load, which made Carrier's perf
+    // probe fail and triggered the entire Craft swap/rollback cascade.
+    // runPowerShellFile is fully async with a hard kill-timer.
+    const out = await runPowerShellFile(psFile, 15000);
     if (!out) return;
-    const parsed = JSON.parse(out);
+    let parsed;
+    try { parsed = JSON.parse(out); } catch { return; }
     const aiProcs = parsed.ai ? (Array.isArray(parsed.ai) ? parsed.ai : [parsed.ai]) : [];
     if (!aiProcs.length) return;
 
@@ -980,10 +1210,12 @@ $result | ConvertTo-Json -Compress -Depth 3`;
       const toKill = orphans.filter(o => o.ageMin >= KILL_AGE_MIN);
       const toWarn = orphans.filter(o => o.ageMin < KILL_AGE_MIN);
 
-      // Auto-kill old orphans — these are confirmed leaks
+      // Auto-kill old orphans — these are confirmed leaks.
+      // Was execSync — taskkill is normally fast, but keeping it sync inside
+      // this every-5s heartbeat is needless event-loop risk. Use execFileAsync.
       for (const o of toKill) {
         try {
-          execSync(`taskkill /F /PID ${o.pid}`, { windowsHide: true, timeout: 5000 });
+          await execFileAsync('taskkill', ['/F', '/PID', String(o.pid)], { windowsHide: true, timeout: 5000, killSignal: 'SIGKILL' });
           console.log(`[Steward] ☠ Killed orphan pid=${o.pid} (${o.ageMin}min old): ${o.cmd}`);
         } catch (killErr) {
           console.warn(`[Steward] Failed to kill orphan pid=${o.pid}: ${killErr.message}`);
@@ -1035,11 +1267,15 @@ $map = @{}; $all | ForEach-Object { $map[[string]$_.ProcessId] = $_.ParentProces
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
     const psFile = join(tmpDir, 'pan-check-claude.ps1');
     writeFileSync(psFile, ps);
-    const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 10000, windowsHide: true }).trim();
+    // Was execSync — same PowerShell-COM-init hang trap as detectOrphanAiProcesses.
+    // Currently this function isn't called (line ~845 is commented out), but if it
+    // gets re-enabled the sync version would block the loop. Pre-emptively async.
+    const out = await runPowerShellFile(psFile, 10000);
 
     if (!out) return; // Can't enumerate — don't blindly relaunch
 
-    const parsed = JSON.parse(out);
+    let parsed;
+    try { parsed = JSON.parse(out); } catch { return; }
     const claudeProcs = parsed.claude ? (Array.isArray(parsed.claude) ? parsed.claude : [parsed.claude]) : [];
 
     // Build pid→ppid map for ancestor walking

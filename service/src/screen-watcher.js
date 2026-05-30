@@ -6,9 +6,11 @@
 //
 // Falls back to FFmpeg gdigrab if Tauri shell is not running.
 
-import { spawn, execFileSync, spawnSync } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import { join } from 'path';
 import { unlinkSync, readFileSync, existsSync } from 'fs';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import { tmpdir } from 'os';
 import { analyzeImage } from './llm.js';
 import { run, all } from './db.js';
@@ -40,7 +42,13 @@ let visionBackoffUntil = 0;       // timestamp when backoff expires
 const VISION_BACKOFF_STEPS = [2, 5, 10, 20]; // minutes per failure tier
 
 // ── How long since last mouse/keyboard input (Windows only) ───────────────────
-function getIdleMs() {
+// async — previously execFileSync blocked the event loop for the full PowerShell
+// cold-start (~700-1500ms), which compounded with FFmpeg/PowerShell stalls
+// elsewhere in the cycle to produce multi-minute event-loop freezes that made
+// the dashboard unusable. The 3-second timeout on execFileSync was a paper
+// shield: when PowerShell hangs in COM init (a real Windows pathology), the
+// kill never reaches it and we wait the full system timeout.
+async function getIdleMs() {
   try {
     const ps = [
       'Add-Type @"',
@@ -53,9 +61,11 @@ function getIdleMs() {
       '"@',
       'Write-Output ([IL]::IdleMs())',
     ].join('\n');
-    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
-      { windowsHide: true, timeout: 3000 }).toString().trim();
-    return parseInt(out) || 0;
+    const { stdout } = await execFileAsync(
+      'powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, timeout: 3000, killSignal: 'SIGKILL' }
+    );
+    return parseInt(stdout.toString().trim()) || 0;
   } catch { return 0; }
 }
 
@@ -74,7 +84,8 @@ function isPanRecentlyActive() {
 }
 
 // ── Foreground window title (Windows only) ────────────────────────────────────
-function getForegroundTitle() {
+// async for same reason as getIdleMs() — sync PowerShell starts froze the loop.
+async function getForegroundTitle() {
   try {
     const ps = [
       'Add-Type @"',
@@ -87,8 +98,11 @@ function getForegroundTitle() {
       '$h=[FW]::GetForegroundWindow();$b=New-Object System.Text.StringBuilder(512);',
       '[FW]::GetWindowText($h,$b,512)|Out-Null;Write-Output $b.ToString()',
     ].join('\n');
-    return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
-      { windowsHide: true, timeout: 3000 }).toString().trim();
+    const { stdout } = await execFileAsync(
+      'powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, timeout: 3000, killSignal: 'SIGKILL' }
+    );
+    return stdout.toString().trim();
   } catch { return ''; }
 }
 
@@ -108,26 +122,66 @@ async function captureViaTauri() {
 }
 
 // ── Resize base64 image to 640px wide JPEG for vision inference ───────────────
-// Full HD PNG → 640px JPEG cuts CPU inference from >60s to ~10-15s
+// Full HD PNG → 640px JPEG cuts CPU inference from >60s to ~10-15s.
+//
+// **NIGHTMARE BUG ROOT CAUSE (#NEW-9):** previously this used spawnSync. When
+// the FFmpeg subprocess hung (and it did, repeatedly — observed exit code
+// 4294967274 / NULL pointer deref on certain PNG inputs), spawnSync blocked
+// the Node event loop for the full duration of the hang. Carrier-log
+// evidence: a 178-second event-loop block whose start ALWAYS coincided with
+// `[ScreenWatcher] Vision failed: FFmpeg exited 4294967274`. The ScreenWatcher
+// lock watchdog (CAPTURE_MAX_MS=150_000) cleared the in-app flag, but the
+// underlying spawnSync had already pinned the loop for the full 178s.
+//
+// Now: spawn(), pipe stdin/stdout, race against a real abort-on-timeout. The
+// FFmpeg child is killed AND the promise rejects within FFMPEG_TIMEOUT_MS no
+// matter what state the subprocess is in. Even if FFmpeg refuses SIGTERM, the
+// promise resolves on the timer and the rest of the screen-watch cycle
+// continues — the event loop is never blocked beyond Promise scheduling.
+const FFMPEG_TIMEOUT_MS = 8000;
 function resizeForVision(base64Input) {
-  try {
+  return new Promise((resolve) => {
     const inputBuf = Buffer.from(base64Input, 'base64');
-    const result = spawnSync('ffmpeg', [
-      '-i', 'pipe:0',
-      '-vf', 'scale=640:-2',
-      '-q:v', '5',
-      '-vframes', '1',
-      '-f', 'image2',
-      '-vcodec', 'mjpeg',
-      'pipe:1',
-    ], { input: inputBuf, windowsHide: true, timeout: 8000, maxBuffer: 10 * 1024 * 1024 });
-    if (result.status === 0 && result.stdout?.length > 0) {
-      return result.stdout.toString('base64');
+    let done = false;
+    let proc;
+    const finish = (b64) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} resolve(b64); };
+    try {
+      proc = spawn('ffmpeg', [
+        '-i', 'pipe:0',
+        '-vf', 'scale=640:-2',
+        '-q:v', '5',
+        '-vframes', '1',
+        '-f', 'image2',
+        '-vcodec', 'mjpeg',
+        'pipe:1',
+      ], { windowsHide: true, shell: false });
+      const chunks = [];
+      let bytes = 0;
+      const MAX = 10 * 1024 * 1024;
+      proc.stdout.on('data', (c) => {
+        bytes += c.length;
+        if (bytes > MAX) { finish(base64Input); return; }
+        chunks.push(c);
+      });
+      proc.on('error', () => finish(base64Input));
+      proc.on('close', (code) => {
+        if (code === 0 && chunks.length) finish(Buffer.concat(chunks).toString('base64'));
+        else finish(base64Input);
+      });
+      // Write input asynchronously, ignore EPIPE if the process already died.
+      proc.stdin.on('error', () => {});
+      proc.stdin.end(inputBuf);
+      setTimeout(() => {
+        if (!done) {
+          console.warn('[ScreenWatcher] ffmpeg resize timed out — using original PNG');
+          finish(base64Input);
+        }
+      }, FFMPEG_TIMEOUT_MS);
+    } catch (e) {
+      console.warn(`[ScreenWatcher] resize spawn failed: ${e.message}`);
+      finish(base64Input);
     }
-  } catch (e) {
-    console.warn(`[ScreenWatcher] resize failed: ${e.message}`);
-  }
-  return base64Input; // fallback: send original
+  });
 }
 
 // ── Screenshot via FFmpeg gdigrab (fallback) ──────────────────────────────────
@@ -168,7 +222,7 @@ async function runCapture() {
   // Skip if user has been idle too long — pendant takes over when away.
   // Primary check: recent PAN activity (voice/router events) — more reliable than Windows keyboard idle
   // for voice-first users who never touch the keyboard.
-  const idleMs = getIdleMs();
+  const idleMs = await getIdleMs();
   const panRecentlyActive = isPanRecentlyActive();
   if (!panRecentlyActive && idleMs > IDLE_THRESH) {
     const now = Date.now();
@@ -192,7 +246,7 @@ async function runCapture() {
   captureStartMs = Date.now();
   try {
     // Grab window title before screenshot (tells AI what app is open)
-    const windowTitle = getForegroundTitle();
+    const windowTitle = await getForegroundTitle();
 
     let base64;
     let source;
@@ -207,7 +261,7 @@ async function runCapture() {
     }
 
     // Resize to 640px wide JPEG — full HD is too large for CPU vision inference
-    base64 = resizeForVision(base64);
+    base64 = await resizeForVision(base64);
 
     // No title hint in moondream prompt — it garbles window names (generates URN/UUID-like garbage).
     // windowTitle is stored separately in the event data.

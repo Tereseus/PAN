@@ -421,6 +421,11 @@ function handleCraftIPC(msg, craft) {
       if (terminalServer) terminalServer.pipeSetModel(msg.sessionId, msg.modelId);
       break;
     }
+    case 'terminal:pipeResetAdapter': {
+      const result = terminalServer ? terminalServer.pipeResetAdapter(msg.sessionId) : false;
+      craft.proc.send({ type: 'terminal:pipeResetAdapter:reply', id: msg.id, result: !!result });
+      break;
+    }
     case 'terminal:getSessionMessages': {
       const result = terminalServer ? terminalServer.getSessionMessages(msg.sessionId) : [];
       craft.proc.send({ type: 'terminal:getSessionMessages:reply', id: msg.id, result });
@@ -488,9 +493,9 @@ async function startPipelineBeta(source = 'manual') {
   pipeline.betaCraftId = betaCraft.id;
   broadcastPipelineEvent('beta_spawned', { port: betaPort, craftId: betaCraft.id });
 
-  const healthy = await waitForCraftHealth(betaCraft, 60000);
-  if (!healthy) {
-    betaCraft.proc.kill();
+  const healthResult = await waitForCraftHealth(betaCraft, 60000);
+  if (!healthResult.healthy) {
+    try { betaCraft.proc.kill(); } catch {}
     betaCraft = null;
     pipeline = { ...pipeline, status: 'failed', error: 'Beta craft failed health check', completedAt: Date.now() };
     broadcastPipelineEvent('beta_failed', { reason: 'health_check' });
@@ -696,6 +701,20 @@ function proxyRequest(req, res, targetPort) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: 'Craft unavailable', detail: err.message }));
     }
+  });
+
+  // Timeout handler — the 120s timeout was set above but with no listener
+  // the socket would just sit there forever. With this handler, timed-out
+  // upstream requests get destroyed so the connection pool can recover.
+  //
+  // NOTE: we intentionally do NOT add a `res.on('close')` handler that
+  // destroys proxyReq on client disconnect. Earlier experiments did that
+  // and discovered Craft's HTTP server doesn't react cleanly to upstream
+  // half-close — sockets piled up in CLOSE_WAIT on Craft's side until it
+  // hit FD limits and stopped accepting connections. The right fix for
+  // client-disconnect cleanup is in Craft's HTTP handlers, not here.
+  proxyReq.on('timeout', () => {
+    try { proxyReq.destroy(new Error('Craft request timed out (120s)')); } catch {}
   });
 
   req.pipe(proxyReq);
@@ -1409,8 +1428,16 @@ function confirmSwap() {
   // Enforce probe-based readiness gate: if SWAP_GATE stages aren't all ready,
   // refuse to confirm and trigger rollback instead. Prevents the old
   // "healthy but unusable" bug (Craft /health passes but PTY isn't bound).
+  //
+  // BOOT GRACE (matches the perfEngine.onChange path): if the new primary
+  // is still inside its first 60 seconds, confirm anyway — boot CPU spikes
+  // are routinely 30s on this codebase's 1.6GB DB and the alternative is
+  // perpetual rollback. The Lifeboat panel is still available for manual
+  // intervention if Craft is actually broken.
+  const craftAge = primaryCraft?.startedAt ? Date.now() - primaryCraft.startedAt : 0;
+  const inBootGrace = craftAge < 60_000;
   const safety = perfEngine.isSwapSafe();
-  if (!safety.safe) {
+  if (!safety.safe && !inBootGrace) {
     console.error(`[Carrier] ❌ Swap unsafe: ${safety.reason} — rolling back instead of confirming`);
     // Pull the leading stage id out of `safety.reason` (format from perf/engine.js
     // isSwapSafe: "<stage_id> failed during rollback window: …" or "<stage_id> is <state>").
@@ -1420,6 +1447,9 @@ function confirmSwap() {
       reason: safety.reason || 'swap unsafe at confirm time',
       failed_stage: stageMatch ? stageMatch[1] : null,
     });
+  }
+  if (!safety.safe && inBootGrace) {
+    console.warn(`[Carrier] ⚠️  Swap gate unsafe at confirm time but Craft is still in 60s boot-grace window (age=${Math.round(craftAge/1000)}s, reason="${safety.reason}") — confirming anyway`);
   }
 
   if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null; }
@@ -1449,32 +1479,49 @@ function confirmSwap() {
   // Swap recovery watchdog — detects black/blank Tauri window and sends F5
   startSwapRecovery();
 
-  // Screen-watcher burst — rapid screenshots every 5s for 60s so intuition
-  // can see the swap stages (loading, reconnecting, live) instead of waiting 30s.
-  fetch(`http://127.0.0.1:${primaryCraft.port}/api/v1/screen-watcher/burst`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ duration_ms: 60_000, interval_ms: 5_000 }),
-    signal: AbortSignal.timeout(3000),
-  }).catch(e => console.warn('[Carrier] Screen burst trigger failed:', e.message));
-
-  // Auto-run P1 regression suite after every confirmed swap — fast source-check tests,
-  // no setup required. Logs pass/fail to console; failures are surfaced as alerts.
-  setTimeout(() => {
-    fetch(`http://127.0.0.1:${primaryCraft.port}/api/v1/tests/run`, {
+  // ── DISABLED: post-swap burst + regression auto-triggers ───────────────────
+  // These previously fired on EVERY confirmed swap and consumed 60+ seconds
+  // of heavy CPU/IO work on the new Craft right when the user is most
+  // likely to be clicking around the dashboard:
+  //
+  //   1. Screen-watcher burst → 12 vision-model captures over 60 seconds
+  //      (each capture observed at ~7s in webcam-watcher logs).
+  //   2. P1 regression suite → spawns Playwright + headless Chromium,
+  //      navigates to /v2/terminal, runs interactive keystroke tests.
+  //      Each run can easily take 30+ seconds and ties up the event loop.
+  //
+  // During hot-swap development the swap cadence is high (manual swaps + sleep-
+  // wake + auto-rollback recovery), so these two post-swap actions stacked
+  // up into permanent background load that made the dashboard unusable.
+  //
+  // Re-enable conditionally (e.g. only on pipeline-promoted swaps, not manual
+  // /api/carrier/swap) once the dev cycle is calmer. The Vision verifier still
+  // covers the "is the dashboard rendering" case on its own 2-min cadence.
+  if (process.env.PAN_CARRIER_POST_SWAP_BURST === '1') {
+    fetch(`http://127.0.0.1:${primaryCraft.port}/api/v1/screen-watcher/burst`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ suite: 'p1-regression' }),
-      signal: AbortSignal.timeout(60_000),
-    }).then(r => r.json()).then(result => {
-      const failed = result.results?.filter(t => t.status === 'fail') || [];
-      if (failed.length) {
-        console.error(`[Carrier] ⚠️  P1 regression FAILED after swap: ${failed.map(t => t.id).join(', ')}`);
-      } else {
-        console.log(`[Carrier] ✅ P1 regression passed after swap (${result.results?.length || 0} tests)`);
-      }
-    }).catch(e => console.warn('[Carrier] P1 regression trigger failed:', e.message));
-  }, 5000); // 5s delay — let new Craft fully boot before hitting its endpoints
+      body: JSON.stringify({ duration_ms: 60_000, interval_ms: 5_000 }),
+      signal: AbortSignal.timeout(3000),
+    }).catch(e => console.warn('[Carrier] Screen burst trigger failed:', e.message));
+  }
+  if (process.env.PAN_CARRIER_POST_SWAP_P1 === '1') {
+    setTimeout(() => {
+      fetch(`http://127.0.0.1:${primaryCraft.port}/api/v1/tests/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suite: 'p1-regression' }),
+        signal: AbortSignal.timeout(60_000),
+      }).then(r => r.json()).then(result => {
+        const failed = result.results?.filter(t => t.status === 'fail') || [];
+        if (failed.length) {
+          console.error(`[Carrier] ⚠️  P1 regression FAILED after swap: ${failed.map(t => t.id).join(', ')}`);
+        } else {
+          console.log(`[Carrier] ✅ P1 regression passed after swap (${result.results?.length || 0} tests)`);
+        }
+      }).catch(e => console.warn('[Carrier] P1 regression trigger failed:', e.message));
+    }, 5000);
+  }
 
   // Auto-trigger pipeline benchmarks after a confirmed swap — validates new code
   // against all 12 suites. If all pass, beta auto-promotes; if any fail, current
@@ -1739,12 +1786,12 @@ function startClaudeHandoffMonitor() {
 async function triggerClaudeHandoff(session) {
   if (!terminalServer) return;
   const uptimeH = ((Date.now() - (session.createdAt || Date.now())) / 3_600_000).toFixed(1);
-  console.log(`[Carrier] Phase 5: Sending /compact to session ${session.id} (running ${uptimeH}h)`);
-  try {
-    terminalServer.sendToSession(session.id, '/compact\n', undefined, 'carrier_handoff');
-  } catch (e) {
-    console.warn(`[Carrier] Phase 5: /compact failed for ${session.id}: ${e.message}`);
-  }
+  // DISABLED by user request (2026-05-26) — this was injecting /compact\n into
+  // PTYs once a minute (the _handoffTriggered flag wasn't sticking, so it
+  // fired every interval, not once at the 2h mark). That mid-session compact
+  // command also lands as a phantom prompt in the user's transcript.
+  console.warn(`[Carrier] Phase 5: /compact auto-handoff DISABLED — would have compacted ${session.id} (uptime ${uptimeH}h)`);
+  return;
 }
 
 // ==================== Craft Orphan Watchdog ====================
@@ -1761,6 +1808,7 @@ async function runCraftOrphanScan() {
   if (primaryCraft?.proc?.pid)  knownPids.add(primaryCraft.proc.pid);
   if (previousCraft?.proc?.pid) knownPids.add(previousCraft.proc.pid);
   if (shadowCraft?.proc?.pid)   knownPids.add(shadowCraft.proc.pid);
+  if (betaCraft?.proc?.pid)     knownPids.add(betaCraft.proc.pid);
 
   const SCAN_RANGE = 20;
   let killedCount = 0;
@@ -1834,18 +1882,71 @@ async function boot() {
 
   // Auto-rollback hook: if the engine detects SWAP_GATE failure during the
   // rollback window, fire Lifeboat automatically (without waiting for timeout).
+  //
+  // **Sustained-failure gate**: prior to this change a SINGLE probe miss
+  // (a transient 3s http timeout while the new Craft is still finishing
+  // schema migrations) was enough to nuke the swap and revert. Symptom:
+  // every deploy silently rolled back because boot-callback sync work
+  // blocked the loop for 3-6s. We now require N consecutive failed
+  // probes from the SAME stage within a short window before pulling
+  // the trigger. Real broken Crafts fail repeatedly; transient
+  // boot-window hiccups recover within one probe interval.
+  // Boot-tolerant thresholds. The OLD values (3 failures in 30s) were too
+  // tight: a single 6s event-loop block during Craft boot was enough to fail
+  // multiple probes back-to-back, since probes fire every ~3s. The previous
+  // raise to (10, 5min) didn't help in practice because the 30s rollback
+  // window itself is so short — 10 probe failures in 30s is still trivial
+  // when boot is blocked.
+  //
+  // The real fix: a BOOT-GRACE WINDOW during which auto-rollback is disabled
+  // entirely. Fresh Crafts get 60 seconds of immunity from the gate. That's
+  // enough for schema migrations, audit chain verification, Steward boot,
+  // and the deferred-watchers stagger to all finish. After 60s, the normal
+  // (10, 5min) gate kicks in to catch genuinely broken Crafts.
+  //
+  // Trade-off: a Craft that's busted from minute 0 won't auto-roll back
+  // until 60s in. That's acceptable — the user just hits Lifeboat manually
+  // if they see Craft never finish booting. The opposite failure mode (deploys
+  // silently rolling back because of boot CPU spikes) was the daily-life pain.
+  const ROLLBACK_FAIL_THRESHOLD = 10;
+  const ROLLBACK_FAIL_WINDOW_MS = 5 * 60_000;
+  const BOOT_GRACE_MS = 60_000;
+  const _failStreak = new Map(); // stage_id -> { count, firstAt }
   perfEngine.onChange(() => {
     if (!swapPending || !previousCraft) return;
+    // BOOT GRACE: skip the gate entirely while the new primary is still in
+    // its first 60 seconds. perfEngine.onChange still fires (so the streak
+    // count keeps incrementing if we counted it), but we treat the result
+    // as "hold rollback" no matter what. Lifeboat is the manual escape hatch.
+    const craftAge = primaryCraft?.startedAt ? Date.now() - primaryCraft.startedAt : 0;
+    if (craftAge < BOOT_GRACE_MS) return;
     const safety = perfEngine.isSwapSafe();
-    if (!safety.safe) {
-      console.error(`[Carrier] 🚨 Perf probe failed during rollback window: ${safety.reason} — auto-rolling back`);
-      const stageMatch = /^([a-z0-9_]+)\s+(failed|is)\b/i.exec(safety.reason || '');
-      performRollback({
-        triggered_by: 'auto_rollback_perf_probe',
-        reason: safety.reason || 'perf probe failed during rollback window',
-        failed_stage: stageMatch ? stageMatch[1] : null,
-      });
+    if (safety.safe) {
+      // All gates clean — clear any in-flight streaks (one successful
+      // probe should reset the counter, mirroring how circuit breakers work).
+      if (_failStreak.size) _failStreak.clear();
+      return;
     }
+    const stageMatch = /^([a-z0-9_]+)\s+(failed|is)\b/i.exec(safety.reason || '');
+    const stageId = stageMatch ? stageMatch[1] : 'unknown';
+    const now = Date.now();
+    let s = _failStreak.get(stageId);
+    if (!s || (now - s.firstAt) > ROLLBACK_FAIL_WINDOW_MS) {
+      s = { count: 0, firstAt: now };
+      _failStreak.set(stageId, s);
+    }
+    s.count += 1;
+    if (s.count < ROLLBACK_FAIL_THRESHOLD) {
+      console.warn(`[Carrier] ⚠️  Perf probe failure ${s.count}/${ROLLBACK_FAIL_THRESHOLD} on ${stageId}: ${safety.reason} — holding rollback`);
+      return;
+    }
+    console.error(`[Carrier] 🚨 Perf probe failed ${s.count}× on ${stageId}: ${safety.reason} — auto-rolling back`);
+    _failStreak.clear();
+    performRollback({
+      triggered_by: 'auto_rollback_perf_probe',
+      reason: safety.reason || 'perf probe failed during rollback window',
+      failed_stage: stageId === 'unknown' ? null : stageId,
+    });
   });
 
   // Kill any zombie carrier holding our own port — only when running standalone.

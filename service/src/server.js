@@ -68,13 +68,13 @@ import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir } from './platform.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, logDecision } from './db.js';
-import { searchMemory, backfillEmbeddings, backfillStatus } from './memory-search.js';
+import { searchMemory, backfillEmbeddings, backfillStatus, abortBackfill } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import https from 'https';
 import http from 'node:http';
-import { execFileSync, execSync, spawn as spawnChild } from 'child_process';
+import { execFileSync, execSync, execFile, exec, spawn as spawnChild } from 'child_process';
 import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, pipeResetAdapter, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
 import { WebSocketServer as WsServer } from 'ws';
@@ -124,6 +124,72 @@ app.use(express.json({ limit: '10mb' }));
 // Tracks request latency per route for the /dashboard/api/perf endpoint.
 const _perfStats = { requests: 0, slowRequests: 0, totalMs: 0, slowest: [] };
 const _perfByRoute = new Map(); // route → { count, totalMs, maxMs }
+
+// ==================== Event-Loop Lag Monitor ====================
+//
+// Why: when the user reports "dashboard tab takes 60+ seconds to load even
+// though the route handler is a pure in-memory read," the only possible
+// explanation is that the Node event loop was BLOCKED between accept and
+// dispatch. The handler ran fast — it just got dispatched 60 seconds late
+// because some synchronous code (sync SQLite, JSON.parse on huge buffer,
+// execSync, etc.) was hogging the thread.
+//
+// What this does:
+//   - perf_hooks.monitorEventLoopDelay() runs a hi-res histogram in the libuv
+//     thread, sampling every 20ms. We read max/p99/mean every 5s and keep a
+//     rolling 60-sample buffer (= 5 min of history at 5s cadence).
+//   - A setImmediate-based heartbeat detects single blocks > 1500ms. When it
+//     fires, we log the block duration AND the active timer/handle count so
+//     we can correlate the block with what was running.
+//
+// Surface: /dashboard/api/perf gets new fields:
+//   event_loop_lag_ms.{max, p99, mean, current}
+//   recent_blocks: [{ duration_ms, at, handles }] — last 20 detected blocks
+//
+// Read first. Optimize second.
+import { monitorEventLoopDelay } from 'perf_hooks';
+const _loopMonitor = monitorEventLoopDelay({ resolution: 20 });
+_loopMonitor.enable();
+const _recentBlocks = []; // [{ duration_ms, at_iso, handles }]
+const _BLOCK_THRESHOLD_MS = 1500;
+const _BLOCK_HISTORY = 20;
+let _loopHeartbeatLast = performance.now();
+function _loopHeartbeat() {
+  const now = performance.now();
+  const elapsed = now - _loopHeartbeatLast;
+  // Expected: ~50ms (setImmediate fires roughly that fast under no load).
+  // If elapsed >> 50ms, the previous tick blocked the loop.
+  if (elapsed > _BLOCK_THRESHOLD_MS) {
+    const handles = process._getActiveHandles?.().length ?? -1;
+    const requests = process._getActiveRequests?.().length ?? -1;
+    const entry = {
+      duration_ms: Math.round(elapsed),
+      at_iso: new Date().toISOString(),
+      handles,
+      requests,
+    };
+    _recentBlocks.push(entry);
+    if (_recentBlocks.length > _BLOCK_HISTORY) _recentBlocks.shift();
+    // Also write to stderr so it shows up in carrier-piped logs immediately
+    console.warn(`[loop-block] ${entry.duration_ms}ms · handles=${handles} reqs=${requests} at ${entry.at_iso}`);
+  }
+  _loopHeartbeatLast = now;
+  setImmediate(_loopHeartbeat);
+}
+setImmediate(_loopHeartbeat);
+
+function _getLoopStats() {
+  const ns_to_ms = 1e6;
+  return {
+    max:  +(_loopMonitor.max  / ns_to_ms).toFixed(1),
+    p99:  +(_loopMonitor.percentile(99) / ns_to_ms).toFixed(1),
+    p95:  +(_loopMonitor.percentile(95) / ns_to_ms).toFixed(1),
+    mean: +(_loopMonitor.mean / ns_to_ms).toFixed(1),
+    min:  +(_loopMonitor.min  / ns_to_ms).toFixed(1),
+    stddev: +(_loopMonitor.stddev / ns_to_ms).toFixed(1),
+  };
+}
+function _resetLoopStats() { _loopMonitor.reset(); }
 app.use((req, res, next) => {
   const start = performance.now();
   const original = res.end;
@@ -635,9 +701,19 @@ app.get('/dashboard/api/perf', async (req, res) => {
     external_mb: Math.round((mem.external || 0) / 1048576),
     ws_connections: wsConnections,
     uptime_s: Math.round(process.uptime()),
-    event_loop_lag_ms: null, // placeholder for future event loop monitoring
+    event_loop_lag_ms: _getLoopStats(),
+    recent_blocks: _recentBlocks.slice().reverse(), // newest first
     scanned_at: new Date().toISOString(),
   });
+});
+
+// Reset event-loop histogram — useful when investigating a specific
+// time window (clear, wait 30s, re-read). POST so it doesn't get hit by
+// stray probes.
+app.post('/dashboard/api/perf/reset-loop', (_req, res) => {
+  _resetLoopStats();
+  _recentBlocks.length = 0;
+  res.json({ ok: true });
 });
 
 app.get('/dashboard/api/processes', async (req, res) => {
@@ -652,10 +728,13 @@ app.get('/dashboard/api/processes', async (req, res) => {
   // in a small `other` list so the user can still spot zombie hogs without
   // them polluting the main PAN process panel.
   try {
-    const raw = execSync(
-      "powershell -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('node.exe','python.exe','python3.exe','AutoHotkey64.exe','tailscaled.exe','ollama.exe','claude.exe')} | Select-Object ProcessId, Name, CommandLine, CreationDate, KernelModeTime, UserModeTime, WorkingSetSize | ConvertTo-Json -Depth 2\"",
-      { encoding: 'utf8', timeout: 10000, windowsHide: true }
-    );
+    const raw = await new Promise((resolve, reject) => {
+      exec(
+        "powershell -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('node.exe','python.exe','python3.exe','AutoHotkey64.exe','tailscaled.exe','ollama.exe','claude.exe')} | Select-Object ProcessId, Name, CommandLine, CreationDate, KernelModeTime, UserModeTime, WorkingSetSize | ConvertTo-Json -Depth 2\"",
+        { encoding: 'utf8', timeout: 10000, windowsHide: true },
+        (err, stdout) => err ? reject(err) : resolve(stdout)
+      );
+    });
     const parsed = JSON.parse(raw || '[]');
     const procList = Array.isArray(parsed) ? parsed : [parsed];
     const now = Date.now();
@@ -3207,11 +3286,33 @@ app.all('/api/v1/dev/proxy/*proxyPath', async (req, res) => {
 
 // GET  /api/v1/tunnel/status  — returns current public tunnel URL (or null)
 // POST /api/v1/tunnel/start   — (re)starts Cloudflare Quick Tunnel without a full server restart
-app.get('/api/v1/tunnel/status', (req, res) => {
+// Cache funnel state for 60s. The dashboard polls this endpoint as part of its
+// settings page render, and the tunnel state changes on the order of human
+// action — so caching prevents back-to-back `tailscale funnel status` spawns
+// from leaking conhost when admin tools or browser auto-refresh hit us.
+let _funnelStatusCache = null; // { active, ts }
+app.get('/api/v1/tunnel/status', async (req, res) => {
   const cfURL = getTunnelURL();
-  const tailscaleActive = (() => {
-    try { execSync(`tailscale funnel status`, { timeout: 2000, windowsHide: true, stdio: 'pipe' }); return true; } catch { return false; }
-  })();
+  let tailscaleActive;
+  if (_funnelStatusCache && Date.now() - _funnelStatusCache.ts < 60_000) {
+    tailscaleActive = _funnelStatusCache.active;
+  } else {
+    tailscaleActive = await new Promise(resolve => {
+      let done = false;
+      let proc;
+      const finish = (v) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} resolve(v); };
+      try {
+        proc = spawnChild('tailscale', ['funnel', 'status'], { windowsHide: true, shell: false });
+        proc.on('error', () => finish(false));
+        proc.on('close', (code) => finish(code === 0));
+        // Hard kill — exec's `timeout` option only sends SIGTERM, which
+        // tailscale.exe ignores during COM init, leaving the child + conhost
+        // orphaned. SIGKILL on a hard timer guarantees cleanup.
+        setTimeout(() => finish(false), 3000);
+      } catch { finish(false); }
+    });
+    _funnelStatusCache = { active: tailscaleActive, ts: Date.now() };
+  }
   res.json({
     ok: true,
     cloudflare: cfURL || null,
@@ -3705,6 +3806,87 @@ app.get('/api/v1/memory/backfill-status', (req, res) => {
   res.json(backfillStatus(req.query.scope || 'main'));
 });
 
+// Quick admin endpoint to update model_selections without code edits or
+// swaps. Body: { purpose, provider, model, dim?, context_window?, notes? }
+// Returns the resulting row. Used to redirect reasoning_cloud away from
+// Cerebras (which 402s for every model on this billing tier) to Claude
+// without having to grep + edit + rebuild.
+app.post('/api/v1/admin/model-selection', async (req, res) => {
+  try {
+    const { setModelForPurpose, getModelForPurpose } = await import('./db.js');
+    const { purpose, provider, model, dim, context_window, notes } = req.body || {};
+    if (!purpose || !provider || !model) {
+      return res.status(400).json({ error: 'purpose, provider, and model are required' });
+    }
+    const ok = setModelForPurpose(purpose, provider, model, { dim, context_window, notes });
+    if (!ok) return res.status(500).json({ error: 'setModelForPurpose failed' });
+    res.json({ ok: true, selection: getModelForPurpose(purpose) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PHASE 4: dashboard polling bundle.
+//
+// The dashboard layout polls several small endpoints on tight intervals
+// (version.json every 5s, chat/unread every 15s, /health every 10s, etc).
+// Each one consumes a slot from the browser's HTTP/1.1 6-per-origin
+// connection pool — saturating it and queueing real panel data fetches
+// behind the polls. Bundling them into one endpoint cuts the poll
+// connection count from 5+ to 1, freeing the rest of the pool for
+// genuine user navigation.
+//
+// Real HTTP/2 on Carrier would solve this at the protocol layer (no
+// per-origin connection limit) but requires localhost TLS + Tauri webview
+// cooperation. The bundle endpoint is the pragmatic equivalent and works
+// today.
+app.get('/api/v1/dashboard/poll', (req, res) => {
+  // Pure in-memory bundle — no DB queries. Each field is cheap to compute
+  // and the whole response is < 1KB. The dashboard's $effect can poll
+  // this once every 5-10s instead of firing 3 separate fetches.
+  res.json({
+    ts: Date.now(),
+    health: {
+      carrier: true,
+      craft_pid: process.pid,
+      craft_uptime_s: Math.round(process.uptime()),
+    },
+    version_url: '/v2/_app/version.json',
+  });
+});
+
+// Stop the running embeddings backfill in the current Craft. Useful when the
+// vec0 index writes are hogging CPU and the user wants the dashboard
+// responsive RIGHT NOW. After abort, the next Craft startup will re-pick-up
+// where it left off (rows already in event_embeddings stay), unless
+// PAN_DISABLE_EMBEDDINGS_BACKFILL=1 is set on that boot OR the persistent
+// embeddings_backfill_disabled setting is true.
+app.post('/api/v1/memory/backfill-abort', (req, res) => {
+  try {
+    abortBackfill();
+    res.json({ ok: true, aborted: true, message: 'backfill abort signal sent — current iteration finishes then loop exits' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Persistent disable — flips the embeddings_backfill_disabled setting + sends
+// the same abort signal so the current iteration also stops. Survives Craft
+// swaps and Carrier restarts. POST { enabled: false } to clear it.
+app.post('/api/v1/memory/backfill-disable', (req, res) => {
+  try {
+    const disable = req.body?.disable !== false; // default true
+    run("INSERT INTO settings (key, value) VALUES ('embeddings_backfill_disabled', :v) ON CONFLICT(key) DO UPDATE SET value = :v",
+      { ':v': disable ? 'true' : 'false' });
+    if (disable) abortBackfill();
+    res.json({ ok: true, disabled: disable, message: disable
+      ? 'embeddings_backfill_disabled=true + abort signal sent — backfill will not auto-start on future Craft boots until cleared'
+      : 'embeddings_backfill_disabled=false — backfill will auto-start on next Craft boot' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Tier 0 Phase 4: org policy lookup for the phone.
 // Returns the active org's policy fields so the phone can grey out toggles
 // (incognito, blackout) when the org disallows them.
@@ -3901,27 +4083,13 @@ app.get('/api/v1/diagnostics', (req, res) => {
   const hrs = Math.floor(mins / 60);
   const uptime = hrs > 0 ? `${hrs}h ${mins % 60}m` : mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
 
-  let tailscaleIp = null;
-  let tailscaleStatus = 'unknown';
-  try {
-    tailscaleIp = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
-    tailscaleStatus = 'connected';
-  } catch {
-    try {
-      tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
-      tailscaleStatus = 'connected';
-    } catch {
-      tailscaleStatus = 'disconnected';
-    }
-  }
-
   res.json({
     server_pid: process.pid,
     uptime,
     uptime_ms: uptimeMs,
     started_at: _serverStartedAt,
-    tailscale_ip: tailscaleIp,
-    tailscale_status: tailscaleStatus,
+    tailscale_ip: _tailscaleIpCache,
+    tailscale_status: _tailscaleIpCache ? 'connected' : 'unknown',
     node_version: process.version,
     platform: process.platform,
     mode: PAN_MODE,
@@ -4610,22 +4778,66 @@ app.get('/api/v1/ollama-url', async (req, res) => {
   res.json({ url, reachable });
 });
 
+// Tailscale IP cache.
+//
+// Was: refreshed every 30s via two sequential execFile calls (full path then
+// PATH fallback). execFile's `timeout` option on Windows only sends SIGTERM,
+// which tailscale.exe routinely ignores during COM init — so the children
+// kept running, conhost.exe per child piled up, and a long-running Craft
+// accumulated hundreds of stuck Tailscale processes (observed: 413 conhost
+// at one point, ~5,760 spawns/day worst case). The 30s cadence was also
+// pointless: a machine's Tailscale IP basically never changes during a
+// process's lifetime.
+//
+// Now:
+//   - Single attempt per cycle (no fallback double-spawn).
+//   - 5-minute cadence (Tailscale IP is essentially static).
+//   - spawn + hard SIGKILL timer guarantees we never leak a child.
+//   - Skip refresh entirely if cache is fresh (extra safety against bursts).
+let _tailscaleIpCache = null;
+let _tailscaleIpFetchedAt = 0;
+const TAILSCALE_IP_REFRESH_MS = 5 * 60_000;
+const TAILSCALE_IP_HARD_KILL_MS = 4_000;
+
+function _refreshTailscaleIp() {
+  // Skip if cache is fresh — guards against rapid re-fires after sleep/wake.
+  if (_tailscaleIpCache && (Date.now() - _tailscaleIpFetchedAt) < TAILSCALE_IP_REFRESH_MS) return;
+
+  const tsExe = process.platform === 'win32'
+    ? 'C:\\Program Files\\Tailscale\\tailscale.exe'
+    : 'tailscale';
+  let done = false;
+  let proc;
+  const finish = (ip) => {
+    if (done) return; done = true;
+    try { proc?.kill('SIGKILL'); } catch {}
+    if (ip) { _tailscaleIpCache = ip; _tailscaleIpFetchedAt = Date.now(); }
+  };
+  try {
+    proc = spawnChild(tsExe, ['ip', '-4'], { windowsHide: true, shell: false });
+    const chunks = [];
+    proc.stdout?.on('data', (c) => chunks.push(c));
+    proc.on('error', () => finish(null));
+    proc.on('close', () => {
+      const ip = Buffer.concat(chunks).toString('utf-8').trim() || null;
+      finish(ip);
+    });
+    // Hard kill — even if Windows ignores SIGTERM during tailscale.exe COM
+    // init, SIGKILL terminates the handle immediately so conhost gets reaped.
+    setTimeout(() => finish(null), TAILSCALE_IP_HARD_KILL_MS);
+  } catch {
+    finish(null);
+  }
+}
+_refreshTailscaleIp();
+setInterval(_refreshTailscaleIp, TAILSCALE_IP_REFRESH_MS).unref();
+
 app.get('/health', (req, res) => {
   const uptimeMs = Date.now() - _serverStartedAt;
   const secs = Math.floor(uptimeMs / 1000);
   const mins = Math.floor(secs / 60);
   const hrs = Math.floor(mins / 60);
   const uptime = hrs > 0 ? `${hrs}h ${mins % 60}m` : mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
-  // Include Tailscale IP so phone can discover the server's remote address
-  let tailscaleIp = null;
-  try {
-    tailscaleIp = execFileSync('C:\\Program Files\\Tailscale\\tailscale.exe', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
-  } catch {
-    // Try PATH fallback
-    try {
-      tailscaleIp = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, encoding: 'utf8', windowsHide: true }).trim();
-    } catch {}
-  }
 
   // Get current AI provider for dashboard labeling
   let terminal_ai_provider = 'claude';
@@ -4648,7 +4860,7 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     startedAt: _serverStartedAt,
     uptime,
-    tailscaleIp,
+    tailscaleIp: _tailscaleIpCache,
     hubName: hubName || 'PAN Hub',
     mode: PAN_MODE,
     craftId: process.env.PAN_CRAFT_ID || null,
@@ -4892,11 +5104,68 @@ function start() {
         console.log('[PAN] Terminal server SKIPPED — service mode (no console)');
       }
 
-      // Sync projects with disk reality on startup
-      syncProjects();
+      // Sync projects with disk reality on startup — was running sync at boot,
+      // doing FS walks + DB writes for every project. Could take many seconds
+      // on machines with lots of projects and a large pan.db. Defer 5s after
+      // listen so /health doesn't sit behind it. The 10-min interval below
+      // keeps subsequent syncs on schedule.
+      setTimeout(() => {
+        try { syncProjects(); } catch (e) { console.warn('[PAN] syncProjects (deferred) failed:', e?.message); }
+      }, 5000);
 
-      // Incognito TTL cleanup — purge expired incognito events on startup and every 5 minutes
-      cleanupExpiredIncognito();
+      // ── ONE-TIME EVENTS-INDEX BUILD (the actual root-cause fix) ──
+      //
+      // events.org_id was added via ALTER TABLE in the tier0-org-foundation
+      // migration. No index was created for it, so EVERY dashboard / Intuition
+      // / Steward query that filters by org_id (almost all of them) did a
+      // full table scan of a 1.6 GB events table. That's the single biggest
+      // contributor to the 170-220s event-loop blocks that survived every
+      // other patch.
+      //
+      // CREATE INDEX IF NOT EXISTS is idempotent — the first Craft that ever
+      // boots this code pays the build cost (~30-90s on the existing 1.6GB
+      // db), every Craft after that sees it as a no-op (a few ms).
+      //
+      // Deferred to +10s after listen so Craft's HTTP server is already up
+      // and Carrier has confirmed the swap before the index build starts.
+      // The build itself blocks the loop for its duration (sync better-sqlite3),
+      // but that's a one-time event the user experiences once.
+      setTimeout(() => {
+        try {
+          const t0 = Date.now();
+          // Composite (org_id, event_type) — leftmost-prefix means it covers
+          // BOTH "WHERE org_id = X" and "WHERE org_id = X AND event_type = Y"
+          // patterns with a single index.
+          console.log('[DB] Building idx_events_org_id_type (one-time, may take 30-60s on 1.6GB DB)...');
+          db.exec(`CREATE INDEX IF NOT EXISTS idx_events_org_id_type ON events(org_id, event_type)`);
+          console.log(`[DB] idx_events_org_id_type built in ${Date.now() - t0}ms`);
+          const t1 = Date.now();
+          // (org_id, created_at DESC) for "WHERE org_id = X ORDER BY created_at DESC LIMIT N"
+          // — the dominant pattern for dashboard event-list panels.
+          console.log('[DB] Building idx_events_org_id_created (one-time)...');
+          db.exec(`CREATE INDEX IF NOT EXISTS idx_events_org_id_created ON events(org_id, created_at DESC)`);
+          console.log(`[DB] idx_events_org_id_created built in ${Date.now() - t1}ms`);
+          // memory_items.event_id — the classifier (Augur) runs every 5 min and
+          // does `LEFT JOIN memory_items m ON m.event_id = e.id WHERE m.id IS NULL`
+          // to find unprocessed events. Without this index, that anti-join does
+          // a full scan of memory_items for every candidate event — observed to
+          // block the loop for 3 minutes every 5 minutes. THE second 5-min trigger
+          // (first one was the /api/stats background ticker I already killed).
+          const t2 = Date.now();
+          console.log('[DB] Building idx_memory_event_id (one-time)...');
+          db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_event_id ON memory_items(event_id)`);
+          console.log(`[DB] idx_memory_event_id built in ${Date.now() - t2}ms`);
+          console.log(`[DB] All deferred indexes complete in ${Date.now() - t0}ms total — subsequent boots no-op`);
+        } catch (e) {
+          console.error('[DB] Events index build failed:', e?.message);
+        }
+      }, 10_000);
+
+      // Incognito TTL cleanup — defer 10s. It's just a DB delete on stale rows,
+      // never time-critical at boot. The 5-min interval still runs.
+      setTimeout(() => {
+        try { cleanupExpiredIncognito(); } catch {}
+      }, 10_000);
       _startupIntervals.push(setInterval(cleanupExpiredIncognito, 5 * 60 * 1000));
 
       // ── MEMORY HEALTH MONITOR — every 2 minutes ──────────────────
@@ -4940,6 +5209,19 @@ function start() {
       _checkMemoryHealth(); // Run on startup
       _startupIntervals.push(setInterval(_checkMemoryHealth, 2 * 60 * 1000));
 
+      // ── BOOT TIMING ──────────────────────────────────────────────
+      // Wrap each sync boot step with a duration log. If any step blocks
+      // the event loop > 500ms it shows up immediately in carrier-piped
+      // logs and the diagnostic perf endpoint. Without this, slow boot
+      // is invisible — Craft just appears "not ready" with no clue why.
+      function _bootStep(label, fn) {
+        const t0 = performance.now();
+        try { fn(); } catch (e) { console.error(`[boot-step ${label}] threw: ${e?.message}`); }
+        const ms = Math.round(performance.now() - t0);
+        if (ms > 500) console.warn(`[boot-step] ${label}: ${ms}ms  ⚠ blocks event loop`);
+        else if (ms > 50) console.log(`[boot-step] ${label}: ${ms}ms`);
+      }
+
       // Tier 0 Phase 6 — Verify audit chain integrity on startup and every 1 hour
       function _verifyAuditChains() {
         try {
@@ -4969,7 +5251,11 @@ function start() {
           console.error('[PAN Audit] Chain verification failed:', e.message);
         }
       }
-      _verifyAuditChains();
+      // Audit chain verification — was running sync at boot, but on a 1.6GB DB
+      // with millions of audit entries this can chew seconds of sync CPU.
+      // Defer 15s after listen so /health responds promptly; the 1-hour cadence
+      // means we lose ~no integrity guarantee from a 15s delay.
+      setTimeout(() => _verifyAuditChains(), 15_000);
       _startupIntervals.push(setInterval(_verifyAuditChains, 60 * 60 * 1000)); // every 1 hour
 
       // Tier 0 Phase 8 — Start background personal data sync (every 1 hour)
@@ -4978,7 +5264,7 @@ function start() {
       // Migrate timestamp-based tab session IDs to stable name-based IDs.
       // e.g. "dash-pan-1775843785916" → "dash-pan-main" (derived from tab_name).
       // This runs once — stable IDs don't change, so future boots are no-ops.
-      try {
+      _bootStep('migrate_tab_session_ids', () => {
         const openTabs = all("SELECT ot.id, ot.session_id, ot.tab_name, p.name as project_name FROM open_tabs ot LEFT JOIN projects p ON p.id = ot.project_id WHERE ot.closed_at IS NULL");
         for (const t of openTabs) {
           if (t.session_id && /^dash-.*\d{10,}$/.test(t.session_id)) {
@@ -4988,27 +5274,17 @@ function start() {
             console.log(`[PAN] Migrated tab "${t.tab_name}" session: ${t.session_id} → ${stableId}`);
           }
         }
-      } catch (err) {
-        console.error('[PAN] Tab migration error:', err.message);
-      }
+      });
 
       // Chat schema (contacts, threads, messages, calls)
-      ensureChatSchema(db);
-
-      // Email schema (IMAP/SMTP cache)
-      initEmail(db);
-
-      // Wrapper schema (Tauri app wrappers: Discord, Slack, etc.)
-      ensureWrapSchema(db);
-
-      // Messaging prefs schema (per-user/per-org default + per-contact channel routing)
-      ensureMessagingPrefsSchema(db);
-
-      // Intuition schema — snapshots of live situational state
-      ensureIntuitionSchema(db);
+      _bootStep('ensureChatSchema',    () => ensureChatSchema(db));
+      _bootStep('initEmail',           () => initEmail(db));
+      _bootStep('ensureWrapSchema',    () => ensureWrapSchema(db));
+      _bootStep('ensureMsgPrefsSchema', () => ensureMessagingPrefsSchema(db));
+      _bootStep('ensureIntuitionSchema', () => ensureIntuitionSchema(db));
 
       // Identity schema — clusters + per-frame observations for multi-modal person identification
-      db.exec(`
+      _bootStep('identity_schema_ddl', () => db.exec(`
         CREATE TABLE IF NOT EXISTS identity_clusters (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           label TEXT,
@@ -5036,20 +5312,16 @@ function start() {
         );
         CREATE INDEX IF NOT EXISTS idx_identity_obs_cluster ON identity_observations(cluster_id);
         CREATE INDEX IF NOT EXISTS idx_identity_obs_created ON identity_observations(created_at);
-      `);
+      `));
 
       // T1 Foundation: device ownership + identity binding + capabilities + aliases.
       // MUST run AFTER identity_clusters is created above (adds user_id column).
-      try {
-        ensureOwnershipSchema(db);
-      } catch (e) {
-        console.error('[PAN] ownership schema migration failed:', e.message);
-      }
+      _bootStep('ensureOwnershipSchema', () => ensureOwnershipSchema(db));
 
       // Seed sensor definitions (22 sensors)
-      seedSensors();
+      _bootStep('seedSensors', () => seedSensors());
 
-      // Auto-detect local model providers (Ollama, LM Studio)
+      // Auto-detect local model providers (Ollama, LM Studio) — async, just kicked off
       autoDetectLocalModels();
 
       // Plugin setup — install Claude Code plugins + wire hooks (idempotent, runs in background)
@@ -5057,58 +5329,44 @@ function start() {
         console.warn('[PAN] Plugin setup skipped:', e.message)
       );
 
-      // Screen watcher — screenshot every 30s → vision AI → activity signal for intuition
-      if (!IS_DEV) startScreenWatcher();
-
-      // Remote screen watcher — same as above but for connected pan-client devices
-      if (!IS_DEV) { import('./remote-screen-watcher.js').then(m => m.startRemoteScreenWatcher()); }
-
-      // Webcam watcher — frame every 60s → vision AI → presence + identity signal
-      if (!IS_DEV) startWebcamWatcher();
-
-      // Conv-state watcher — stream-paced "Conversation State" distiller.
-      // Reads STT partials/finals (fed via noteUtterance) and maintains a
-      // per-org snapshot of {topic, phase, pending_question, user_pattern,
-      // likely_turn_complete, summary}. Router reads this to ground replies
-      // and to decide if an utterance is a real complete turn or mid-sentence.
-      // Safe in dev — pure in-memory, no DB writes.
+      // Conv-state watcher — stays at boot. In-memory only, ~no cost, but
+      // the router needs it from the first request.
       try { startConvStateWatcher(); } catch (e) { console.warn('[PAN] conv-state watcher failed to start:', e?.message); }
 
-      // Activity tracker — foreground window poll every 3s → app_focus events
-      if (!IS_DEV) startActivityTracker();
-
-      // Dashboard watchdog — polls Tauri every 10s, auto-recovers black/stuck loading screen
-      if (!IS_DEV) startWatchdog();
-
-      // Dashboard render health (task #506, L3 of dashboard self-heal) —
-      // Scans dashboard_health every 30s and auto-files bugs for widgets stuck
-      // in empty/error/stale states. Builds on the telemetry pushed by L2
-      // (browser → /api/v1/dashboard/health every 30s).
+      // ── POST-BOOT STAGGER (task #60) ─────────────────────────────────────
+      // Everything below was firing in parallel at boot, all importing heavy
+      // modules (face-api, tfjs-node, FFmpeg, vision pipelines) and racing
+      // for the CPU at exactly the moment Carrier needed the perf probe to
+      // come back green. Observed result: 167-second event-loop freeze during
+      // every Craft boot. Symptom users saw: a 2-3 minute dead dashboard
+      // after every swap.
+      //
+      // The fix: defer these to +20 seconds after boot, so Carrier confirms
+      // the swap with a clean baseline, the dashboard's first paint completes,
+      // and these watchers come online quietly after the user is already
+      // working. None are time-critical — screen captures, dashboard vision
+      // verifier, etc. all run on multi-second polls anyway, so a 20s
+      // late start is invisible. The cost is the first webcam/screen sample
+      // shows up ~20s later than before; nothing else changes.
+      const POST_BOOT_DELAY_MS = 20_000;
       if (!IS_DEV) {
-        import('./dashboard-render-health.js')
-          .then(m => m.startDashboardRenderHealth())
-          .catch(e => console.warn('[DashboardRenderHealth] failed to start:', e.message));
-      }
-
-      // Dashboard vision verifier (task #507, L4 — THE ULTIMATE FIX) —
-      // Every 2 minutes, captures the dashboard and asks a vision model what
-      // it actually sees. Cross-checks vision verdict against the markup state
-      // from L2 and files P1 bugs on disagreement. Catches the class of bug
-      // markup can never expose (CSS broke, font failed, z-index covered).
-      if (!IS_DEV) {
-        import('./dashboard-vision-verifier.js')
-          .then(m => m.startDashboardVisionVerifier())
-          .catch(e => console.warn('[VisionVerifier] failed to start:', e.message));
-      }
-
-      // Forge: dashboard bug auto-fixer (task #508, L5 — closes the loop) —
-      // Picks dashboard-render bugs filed by L3/L4 and spawns a constrained
-      // claude -p session to fix them. Off by default; enable via the
-      // `forge_dashboard_autofix` setting with { enabled: true }.
-      if (!IS_DEV) {
-        import('./forge-dashboard.js')
-          .then(m => m.startForgeDashboard())
-          .catch(e => console.warn('[ForgeDashboard] failed to start:', e.message));
+        setTimeout(() => {
+          console.log('[PAN] post-boot stagger firing — starting deferred watchers');
+          try { startScreenWatcher(); } catch (e) { console.warn('[PAN] screen-watcher start failed:', e?.message); }
+          import('./remote-screen-watcher.js').then(m => m.startRemoteScreenWatcher()).catch(() => {});
+          try { startWebcamWatcher(); } catch (e) { console.warn('[PAN] webcam-watcher start failed:', e?.message); }
+          try { startActivityTracker(); } catch (e) { console.warn('[PAN] activity-tracker start failed:', e?.message); }
+          try { startWatchdog(); } catch (e) { console.warn('[PAN] watchdog start failed:', e?.message); }
+          import('./dashboard-render-health.js')
+            .then(m => m.startDashboardRenderHealth())
+            .catch(e => console.warn('[DashboardRenderHealth] failed to start:', e.message));
+          import('./dashboard-vision-verifier.js')
+            .then(m => m.startDashboardVisionVerifier())
+            .catch(e => console.warn('[VisionVerifier] failed to start:', e.message));
+          import('./forge-dashboard.js')
+            .then(m => m.startForgeDashboard())
+            .catch(e => console.warn('[ForgeDashboard] failed to start:', e.message));
+        }, POST_BOOT_DELAY_MS);
       }
 
       // Re-sync projects every 10 minutes (picks up renames, new .pan files)
@@ -5121,28 +5379,39 @@ function start() {
       if (!IS_DEV) {
         const pcHost = hostname();
         const existingHub = get("SELECT * FROM devices WHERE hostname = :h", { ':h': pcHost });
-        let pcModel = pcHost;
-        try {
-          const raw = execSync('wmic computersystem get model /value', { windowsHide: true, encoding: 'utf8', timeout: 3000 });
-          const model = raw.match(/Model=(.+)/)?.[1]?.trim();
-          if (model && model !== 'System Product Name' && model.length > 2) pcModel = model;
-        } catch {}
 
+        // BOOT FAST PATH: register/heartbeat IMMEDIATELY using hostname.
+        // The wmic call to get the hardware model was execSync with 3s timeout,
+        // but Windows WMI can stall far longer under load — observed to add
+        // 10-20s to Craft boot, contributing to the dashboard "loading..." after
+        // every swap. Run wmic async AFTER the immediate insert, then UPDATE
+        // the row when (or if) the model comes back. User never sees the gap.
         if (!existingHub) {
-          // First time: use hardware model as name only if we got one, else use hostname
           insert(`INSERT INTO devices (hostname, name, device_type, capabilities, last_seen, org_id, online)
             VALUES (:h, :name, 'pc', '["terminal","files","browser","apps"]', datetime('now','localtime'), 'org_personal', 1)`,
-            { ':h': pcHost, ':name': pcModel });
-          console.log(`[PAN] Registered hub PC: ${pcHost} (${pcModel})`);
+            { ':h': pcHost, ':name': pcHost });
+          console.log(`[PAN] Registered hub PC: ${pcHost} (resolving model async)`);
         } else {
-          // NEVER overwrite a name that was manually set — only update last_seen + online
-          // Only auto-fill name if it's still the raw hostname (never been named)
-          if (existingHub.name === existingHub.hostname) {
-            run("UPDATE devices SET last_seen = datetime('now','localtime'), online = 1, device_type = 'pc', name = :name WHERE hostname = :h",
-              { ':h': pcHost, ':name': pcModel });
-          } else {
-            run("UPDATE devices SET last_seen = datetime('now','localtime'), online = 1 WHERE hostname = :h", { ':h': pcHost });
-          }
+          run("UPDATE devices SET last_seen = datetime('now','localtime'), online = 1 WHERE hostname = :h", { ':h': pcHost });
+        }
+        // Async hardware-model lookup. Fires-and-forgets; updates the row when ready.
+        if (process.platform === 'win32') {
+          execFile('wmic', ['computersystem', 'get', 'model', '/value'],
+            { windowsHide: true, timeout: 8000, killSignal: 'SIGKILL' },
+            (err, stdout) => {
+              if (err || !stdout) return;
+              const model = stdout.toString().match(/Model=(.+)/)?.[1]?.trim();
+              if (!model || model === 'System Product Name' || model.length <= 2) return;
+              try {
+                // Only auto-fill name if it's still the raw hostname (never been manually named).
+                const row = get("SELECT name, hostname FROM devices WHERE hostname = :h", { ':h': pcHost });
+                if (row && row.name === row.hostname) {
+                  run("UPDATE devices SET device_type = 'pc', name = :name WHERE hostname = :h",
+                    { ':h': pcHost, ':name': model });
+                  console.log(`[PAN] Hub PC model resolved: ${model}`);
+                }
+              } catch {}
+            });
         }
 
         _startupIntervals.push(setInterval(() => {
@@ -5162,12 +5431,48 @@ function start() {
       } else {
         // ── PROD-ONLY (always runs as Craft in the three-tier architecture) ─────
 
-        // Hybrid memory search: backfill embeddings
-        setImmediate(() => {
-          backfillEmbeddings('main')
-            .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
-            .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
-        });
+        // Phase 3: panel-broadcaster — DISABLED by default.
+        //
+        // The original design polled Craft's OWN routes via loopback HTTP
+        // every 10-60s for each topic. With dashboard tabs open, that put
+        // 6 extra concurrent handler invocations on the main thread per
+        // cycle, competing with real user traffic. Net effect was making
+        // the dashboard SLOWER, not faster. Phase 2's SWR cache already
+        // handles the "instant on tab switch" UX without server-side push.
+        //
+        // Set PAN_ENABLE_PANEL_BROADCASTER=1 to re-enable for testing once
+        // the broadcaster is refactored to read panel data DIRECTLY from
+        // the route handlers' module-level caches instead of via HTTP.
+        if (process.env.PAN_ENABLE_PANEL_BROADCASTER === '1') {
+          import('./panel-broadcaster.js')
+            .then(m => m.startPanelBroadcaster())
+            .catch(err => console.warn('[PAN] panel-broadcaster failed to start:', err.message));
+        }
+
+        // Hybrid memory search: backfill embeddings.
+        //
+        // Schedule MUCH more conservatively than before:
+        //   - 90s startup delay (was 10s). Every Craft swap restarted the
+        //     backfill from scratch and pinned CPU at 96% within seconds,
+        //     starving Carrier's perf probes AND vision/intuition Ollama
+        //     calls — which triggered another auto-rollback, another fresh
+        //     Craft, repeat ad infinitum. Result: 20k pending events never
+        //     actually finished. 90s gives Carrier's 30s rollback window
+        //     plenty of slack to confirm the swap before any vec0 writes start.
+        //   - PAN_DISABLE_EMBEDDINGS_BACKFILL env var honors a complete pause
+        //     for users who want maximum dashboard responsiveness over
+        //     completing the index. Set to "1" to skip the auto-start entirely
+        //     (you can still trigger it manually via the MCP `pan_dev` /
+        //     embeddings endpoint).
+        if (process.env.PAN_DISABLE_EMBEDDINGS_BACKFILL !== '1') {
+          setTimeout(() => {
+            backfillEmbeddings('main')
+              .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
+              .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
+          }, 90_000);
+        } else {
+          console.log('[PAN MemorySearch] backfill auto-start DISABLED via PAN_DISABLE_EMBEDDINGS_BACKFILL=1');
+        }
 
         // Clean up stale Tailscale pan-* nodes on startup (delay to let Tailscale stabilize)
         setTimeout(() => cleanupStaleTailscaleNodes(), 30000);
@@ -5198,14 +5503,18 @@ function start() {
         // without manual IP entry. Installer broadcasts "PAN_DISCOVER", we reply.
         startDiscovery(PORT, '0.3.1');
 
-        // Ensure Windows Firewall allows inbound on PORT so LAN discovery works
-        // (silently ignored if rule already exists or on non-Windows)
+        // Ensure Windows Firewall allows inbound on PORT so LAN discovery works.
+        // Was execFileSync — netsh under heavy CPU load can block 3-8 seconds,
+        // which mattered during Craft boot (added to the 167s startup freeze).
+        // It's idempotent (returns "rule already exists" for re-adds), so we
+        // fire-and-forget. The rule exists after the first successful boot
+        // anyway; this is mostly a no-op on subsequent boots.
         try {
-          execFileSync('netsh', [
+          execFile('netsh', [
             'advfirewall', 'firewall', 'add', 'rule',
             `name=PAN Hub (${PORT})`, 'dir=in', 'action=allow',
             'protocol=TCP', `localport=${PORT}`, 'profile=private,domain'
-          ], { windowsHide: true, timeout: 5000 });
+          ], { windowsHide: true, timeout: 8000, killSignal: 'SIGKILL' }, () => {});
         } catch { /* rule may already exist or not on Windows */ }
 
         // Daily 3am benchmark — runs ALL 12 suites sequentially on the active model.

@@ -56,43 +56,52 @@ function pipeSend(sessionId, userText) {
       if (row) provider = row.value.replace(/^"|"$/g, '').toLowerCase() || 'claude';
     } catch {}
 
-    // Don't resume the old Claude session if this PAN session is fresh (no messages yet).
-    // Fresh = recreated after a PAN crash. The old session may have been mid-tool-call;
-    // resuming it produces an empty/whitespace response that the user never sees (#BUG-resume).
-    // Once the first message is exchanged, subsequent sends resume within the same new session.
-    const _sessionFresh = (session.messages || []).length === 0;
-    const resumeId = (!_sessionFresh && session.claudeSessionIds?.length)
+    // Always resume the last Claude session if one exists — even after a PTY restart or
+    // adapter reset. If the session was mid-tool-call, the adapter's no_output fallback
+    // will emit a banner and clear claudeSessionId so the NEXT send starts fresh cleanly.
+    // Previously _sessionFresh blocked resume when session.messages was empty, but that
+    // caused the broken-adapter recovery path to silently lose all context.
+    const resumeId = session.claudeSessionIds?.length
       ? session.claudeSessionIds[session.claudeSessionIds.length - 1]
       : null;
-    if (_sessionFresh && session.claudeSessionIds?.length) {
-      console.log(`[PAN LLM] Session ${sessionId} is fresh — starting new Claude session (not resuming ${session.claudeSessionIds.slice(-1)[0]})`);
-    }
 
     // 2. Instantiate the correct adapter
     let _adapterMsgCount = 0; // tracks how many adapter messages we've already appended
-    const onMessage = (messages) => {
-      // Append only new messages since last callback — adapter passes its full array each time
-      session.lastOutputTs = Date.now();
-      const adapterBusy = session._llmAdapter?.busy || false;
-      session.claudeRunning = adapterBusy; // legacy compat
+    const onMessage = (messages, trimOffset = 0) => {
+      // Always resolve the LIVE session from the Map — never use the closed-over `session`
+      // reference for writes. If sessions.set() was called (e.g. after PTY respawn or adapter
+      // reset) the closed-over reference would be stale and all appends would go to an orphaned
+      // object that the API never reads. Using sessions.get() here is the root-cause fix for
+      // the session.messages freeze bug.
+      const live = sessions.get(sessionId);
+      if (!live) return; // session was cleaned up — discard
+      // Append only new messages since last callback — adapter passes its full array each time.
+      // trimOffset > 0 means the adapter trimmed old messages from the front — adjust counter
+      // so we don't skip new messages that landed after the trim.
+      if (trimOffset > 0) {
+        _adapterMsgCount = Math.max(0, _adapterMsgCount - trimOffset);
+      }
+      live.lastOutputTs = Date.now();
+      const adapterBusy = live._llmAdapter?.busy || false;
+      live.claudeRunning = adapterBusy; // legacy compat
       if (adapterBusy) {
-        transitionState(session, SessionState.WORKING, 'adapter onMessage busy');
+        transitionState(live, SessionState.WORKING, 'adapter onMessage busy');
       } else {
         // Adapter finished — transition back to IDLE so the next send isn't blocked.
         // This is a belt-and-suspenders recovery alongside the .then()/.catch() below.
-        transitionState(session, SessionState.IDLE, 'adapter onMessage idle');
+        transitionState(live, SessionState.IDLE, 'adapter onMessage idle');
       }
       const newMsgs = messages.slice(_adapterMsgCount);
       _adapterMsgCount = messages.length;
       for (const msg of newMsgs) {
-        appendMessage(session, { ...msg, source: 'adapter' });
+        appendMessage(live, { ...msg, source: 'adapter' });
       }
       // Persist the session ID back to the session + token (for resume)
-      const csid = session._llmAdapter?.getSessionId?.();
-      if (csid && !(session.claudeSessionIds || []).includes(csid)) {
-        session.claudeSessionIds = [...(session.claudeSessionIds || []), csid];
-        for (const c of session.clients) {
-          if (c._reconnectToken) updateTokenClaudeSessions(c._reconnectToken, session.claudeSessionIds);
+      const csid = live._llmAdapter?.getSessionId?.();
+      if (csid && !(live.claudeSessionIds || []).includes(csid)) {
+        live.claudeSessionIds = [...(live.claudeSessionIds || []), csid];
+        for (const c of live.clients) {
+          if (c._reconnectToken) updateTokenClaudeSessions(c._reconnectToken, live.claudeSessionIds);
         }
       }
     };
@@ -134,30 +143,67 @@ function pipeSend(sessionId, userText) {
   transitionState(session, SessionState.WORKING, 'pipeSend start');
   session._llmAdapter.send(userText)
     .then(() => {
-      session.claudeRunning = false; // legacy compat
-      transitionState(session, SessionState.IDLE, 'pipeSend complete');
+      const live = sessions.get(sessionId);
+      if (!live) return;
+      live.claudeRunning = false; // legacy compat
+      transitionState(live, SessionState.IDLE, 'pipeSend complete');
+      // Log adapter exit to DB so we can diagnose future silent deaths
+      const exitReason = live._llmAdapter?.lastExitReason || 'natural';
+      const isAbnormal = exitReason.startsWith('timeout') || exitReason.startsWith('error') || exitReason === 'no_output';
+      try {
+        insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+          ':sid': sessionId,
+          ':type': 'AdapterExit',
+          ':data': JSON.stringify({
+            session_id: sessionId,
+            project: live.project,
+            exit_reason: exitReason,
+            abnormal: isAbnormal,
+            claude_session_id: live._llmAdapter?.claudeSessionId || null,
+            total_cost: live._llmAdapter?.totalCost || 0,
+            timestamp: Date.now(),
+          }),
+        });
+      } catch {}
       // Notify ready
-      for (const c of session.clients) {
+      for (const c of live.clients) {
         if (c.readyState === WebSocket.OPEN) {
           try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
         }
       }
       // Drain any pending completion callbacks (e.g. delegateToPhoneToolsSession
       // registers a panNotify hook so the phone hears the result).
-      drainPipeCompleteCallbacks(session, null);
+      drainPipeCompleteCallbacks(live, null);
     })
     .catch((err) => {
+      const live = sessions.get(sessionId);
+      if (!live) return;
       // Send failed — must return to IDLE or the session is stuck WORKING forever
-      session.claudeRunning = false; // legacy compat
+      live.claudeRunning = false; // legacy compat
       console.error(`[PAN LLM] pipeSend error for ${sessionId}: ${err?.message}`);
-      transitionState(session, SessionState.IDLE, `pipeSend error: ${err?.message}`);
+      transitionState(live, SessionState.IDLE, `pipeSend error: ${err?.message}`);
+      // Log to DB
+      try {
+        insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
+          ':sid': sessionId,
+          ':type': 'AdapterExit',
+          ':data': JSON.stringify({
+            session_id: sessionId,
+            project: live.project,
+            exit_reason: `pipeSend_error:${err?.message?.substring(0, 120)}`,
+            abnormal: true,
+            claude_session_id: live._llmAdapter?.claudeSessionId || null,
+            timestamp: Date.now(),
+          }),
+        });
+      } catch {}
       // Notify clients of the error so the UI can recover
-      for (const c of session.clients) {
+      for (const c of live.clients) {
         if (c.readyState === WebSocket.OPEN) {
           try { c.send(JSON.stringify({ type: 'error', message: `Send failed: ${err?.message}` })); } catch {}
         }
       }
-      drainPipeCompleteCallbacks(session, err);
+      drainPipeCompleteCallbacks(live, err);
     });
   return true;
 }
@@ -277,6 +323,34 @@ function pipeInterrupt(sessionId) {
       transitionState(session, SessionState.IDLE, 'pipeInterrupt cleanup');
     }
   }, 500);
+  return true;
+}
+
+// Reset a session's LLM adapter — clears broken state so the NEXT pipeSend creates a fresh
+// adapter and resumes from JSONL. Safe to call without restarting PAN or killing the PTY.
+// Use this when a session gets stuck (session.messages frozen, claudeRunning stuck, etc.).
+function pipeResetAdapter(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    console.error(`[PAN LLM] pipeResetAdapter: session not found: ${sessionId}`);
+    return false;
+  }
+  console.log(`[PAN LLM] Resetting adapter for session ${sessionId}`);
+  // Abort any in-flight query first
+  if (session._llmAdapter) {
+    try { session._llmAdapter.interrupt?.(); } catch {}
+  }
+  session._llmAdapter = null;
+  session.claudeRunning = false;
+  if (session.state === SessionState.WORKING || session.state === SessionState.INTERRUPTED) {
+    transitionState(session, SessionState.IDLE, 'pipeResetAdapter');
+  }
+  // Tell the frontend it can send again
+  for (const c of session.clients) {
+    if (c.readyState === WebSocket.OPEN) {
+      try { c.send(JSON.stringify({ type: 'pipe_ready' })); } catch {}
+    }
+  }
   return true;
 }
 
@@ -758,6 +832,15 @@ async function startTerminalServer(httpServer) {
     } else if (pathname === '/ws/client') {
       // Handled by client-manager — do not interfere
       return;
+    } else if (pathname === '/ws/panels') {
+      // Phase 3: dashboard tabs subscribe here for periodic panel data
+      // pushes. See panel-broadcaster.js for the full design.
+      import('./panel-broadcaster.js').then(m => {
+        m.handlePanelWsUpgrade(request, socket, head);
+      }).catch((err) => {
+        console.error('[PAN Terminal] panel-broadcaster import failed:', err.message);
+        try { socket.write('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n'); socket.destroy(); } catch {}
+      });
     } else {
       // Unknown paths: reject fast so misconfigured probes/clients don't
       // eat their timeout budget. Previously we let the socket hang which
@@ -1555,6 +1638,7 @@ function listSessions() {
       // Legacy compat — derived from state machine, not from scattered booleans
       claudeRunning: stateMachineWorking || !!session.claudeRunning,
       pipeMode: (session.mode === SessionMode.ADAPTER) || !!session.pipeMode,
+      messageCount: (session.messages || []).length,
       currentTool: inFlight ? {
         tool: inFlight.tool,
         summary: inFlight.summary,
@@ -2172,4 +2256,4 @@ setInterval(() => {
   }
 }, 10_000); // 10s — JSONLs are created/written immediately on claude startup
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, getSessionMessages, createPipeSession, getSessionBufferSize, delegateToPhoneToolsSession };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, pipeResetAdapter, getSessionMessages, createPipeSession, getSessionBufferSize, delegateToPhoneToolsSession };

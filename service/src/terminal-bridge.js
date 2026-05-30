@@ -224,6 +224,14 @@ export async function pipeSetModel(sessionId, modelId) {
   return t.pipeSetModel(sessionId, modelId);
 }
 
+// Reset a session's LLM adapter — clears broken state (frozen session.messages, stuck
+// claudeRunning, etc.) so the next message creates a fresh adapter that resumes from JSONL.
+export async function pipeResetAdapter(sessionId) {
+  if (IS_CRAFT) return ipcRequest('terminal:pipeResetAdapter', { sessionId });
+  const t = await getTerminal();
+  return t.pipeResetAdapter(sessionId);
+}
+
 export async function createPipeSession(sessionId, opts = {}) {
   if (IS_CRAFT) return ipcRequest('terminal:createPipeSession', { sessionId, opts });
   const t = await getTerminal();
