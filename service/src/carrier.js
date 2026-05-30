@@ -28,7 +28,7 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, createReadStream } from 'fs';
 import { hostname, tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { killProcessOnPort, getDataDir } from './platform.js';
@@ -1255,6 +1255,53 @@ const carrierServer = http.createServer((req, res) => {
       }
     });
     return;
+  }
+
+  // ── DASHBOARD STATIC BUNDLES — SERVED DIRECTLY BY CARRIER ──
+  //
+  // SvelteKit code-splits each dashboard route into its own immutable chunk
+  // under /v2/_app/immutable/nodes/<N>.<hash>.js. Without this short-circuit,
+  // every chunk request gets proxied to Craft, which means whenever Craft is
+  // mid-block (a sync DB query, a slow handler), even tiny .js files 502 —
+  // and SvelteKit's `Failed to fetch dynamically imported module` fires,
+  // which silently breaks navigation (the Automation page would just not
+  // load until you refreshed).
+  //
+  // Carrier has the same filesystem access; serving these files directly
+  // from disk is sub-millisecond and never depends on Craft's loop state.
+  // The bundle filenames embed content hashes, so we can mark them
+  // immutable for the browser cache.
+  if (req.method === 'GET' && url.pathname.startsWith('/v2/_app/')) {
+    try {
+      const safePath = url.pathname.replace(/\.\./g, ''); // path traversal guard
+      const filePath = join(__dirname, '..', 'public', safePath);
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+        const mime = ext === '.js' ? 'application/javascript'
+                   : ext === '.css' ? 'text/css'
+                   : ext === '.json' ? 'application/json'
+                   : ext === '.svg' ? 'image/svg+xml'
+                   : ext === '.png' ? 'image/png'
+                   : ext === '.woff2' ? 'font/woff2'
+                   : 'application/octet-stream';
+        // _app/immutable/ files carry a content hash in their name — they're
+        // truly immutable, so 1y immutable cache is correct.
+        // _app/version.json (and similar non-immutable bundle metadata) must
+        // stay no-store so the version-check polling still works.
+        const isImmutable = url.pathname.startsWith('/v2/_app/immutable/');
+        const cacheControl = isImmutable
+          ? 'public, max-age=31536000, immutable'
+          : 'no-store, must-revalidate';
+        res.writeHead(200, {
+          'Content-Type': mime,
+          'Cache-Control': cacheControl,
+        });
+        // Use a stream to avoid loading the whole file into memory for big chunks.
+        createReadStream(filePath).pipe(res);
+        return;
+      }
+    } catch {}
+    // fall through to proxy if anything went wrong (file missing / read err)
   }
 
   // Everything else → proxy to primary Craft

@@ -277,10 +277,10 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: c2d021b5-8e5, recap)*
+### This Tab *(session: 2f6176fd-780, recap)*
 No notable activity recorded.
 
-### Recent Project Work *(session: 755edb11-1e5, recap)*
+### Recent Project Work *(session: 30ed3dcc-960, recap)*
 No notable activity recorded.
 
 ### Open Tasks

@@ -790,18 +790,32 @@ function clearInFlightTool(cwd, claudeSessionId) {
 }
 
 function getInFlightTool(cwd, claudeSessionIds) {
-  // If we have specific Claude session IDs (from a tab), look those up first
-  if (claudeSessionIds && claudeSessionIds.length > 0) {
-    for (const csid of claudeSessionIds) {
-      const tool = inFlightTools.get(csid);
-      if (tool) return tool;
-    }
-    return null;
-  }
-  // Fallback: find any entry matching this cwd
-  const cwdNorm = _cwdKey(cwd);
-  for (const [, cur] of inFlightTools) {
-    if (_cwdKey(cur.cwd) === cwdNorm) return cur;
+  // In-flight tools are keyed by Claude session ID (set in setInFlightTool).
+  // The ONLY way to confidently say "this tool belongs to this dashboard tab"
+  // is to match by claudeSessionId — that's the unique fingerprint of a
+  // claude -p process that we registered as belonging to this tab via the
+  // chat_update WS event handshake.
+  //
+  // The previous fallback ("match any inFlightTool whose cwd === session.cwd")
+  // looked plausible but was wrong-by-design: session.cwd is set from the
+  // reconnect token, which can carry stale cwd state from a prior tab life
+  // (e.g. user switched the tab's project at some point, the token persisted
+  // the OLD cwd, the next reconnect inherits it). Combined with an empty
+  // claudeSessionIds (which is the normal state for a tab that hasn't seen
+  // its first chat_update yet), the fallback would happily return a tool
+  // belonging to a *different* project that happened to share the same cwd.
+  // Field evidence (2026-05-30): PAN tab whose reconnect token had cwd set
+  // to WoE/Dev — bottom status bar persistently showed WoE Bash tool calls
+  // while the actual conversation (top) was PAN. Removing the fallback fixes
+  // the leak.
+  //
+  // Cost: a freshly-attached tab won't show a tool indicator until the first
+  // chat_update WS event populates claudeSessionIds. That's the right
+  // trade-off — empty status bar is correct, wrong-project status bar is not.
+  if (!claudeSessionIds || claudeSessionIds.length === 0) return null;
+  for (const csid of claudeSessionIds) {
+    const tool = inFlightTools.get(csid);
+    if (tool) return tool;
   }
   return null;
 }
