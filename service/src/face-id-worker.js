@@ -148,6 +148,42 @@ parentPort?.on('message', async (msg) => {
       parentPort.postMessage(statusSnapshot());
       return;
     }
+    if (msg?.type === 'enroll') {
+      // Enroll a new face descriptor from a base64 image. The descriptor
+      // joins enrolledDescriptors immediately (no model reload, no main-thread
+      // bounce) so the very next webcam capture can identify the person.
+      // Parent saves the image to disk so it survives Craft restart.
+      if (!modelsLoaded) {
+        parentPort.postMessage({ type: 'enroll_result', id: msg.id, ok: false, error: 'models not loaded' });
+        return;
+      }
+      try {
+        const buf = Buffer.from(msg.base64, 'base64');
+        const img = await loadImage(buf);
+        const canvas = createCanvas(img.width, img.height);
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        const det = await faceapi
+          .detectSingleFace(canvas, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }))
+          .withFaceLandmarks()
+          .withFaceDescriptor();
+        if (!det) {
+          parentPort.postMessage({ type: 'enroll_result', id: msg.id, ok: false, error: 'no face detected in image' });
+          return;
+        }
+        enrolledDescriptors.push(det.descriptor);
+        // If the parent provided a new label (first enrollment for a person),
+        // adopt it so identify() returns this label going forward.
+        if (msg.label) enrolledLabel = msg.label;
+        parentPort.postMessage({
+          type: 'enroll_result', id: msg.id, ok: true,
+          enrolledCount: enrolledDescriptors.length,
+          label: enrolledLabel,
+        });
+      } catch (err) {
+        parentPort.postMessage({ type: 'enroll_result', id: msg.id, ok: false, error: err.message });
+      }
+      return;
+    }
   } catch (err) {
     if (msg?.type === 'init') {
       parentPort.postMessage({ type: 'init_err', error: err.message });
@@ -159,6 +195,8 @@ parentPort?.on('message', async (msg) => {
         present: false, identity: 'unknown', confidence: 0, expression: 'none',
         error: err.message,
       });
+    } else if (msg?.type === 'enroll') {
+      parentPort.postMessage({ type: 'enroll_result', id: msg.id, ok: false, error: err.message });
     }
   }
 });

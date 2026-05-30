@@ -153,7 +153,12 @@ async function scanOnce() {
     const prompt = buildPrompt(widgetNames);
     let raw = '';
     try {
-      raw = await analyzeImage(prompt, base64, { caller: 'dashboard-vision-verifier', timeout: 60_000 });
+      // 240_000 → 80s vision budget. Was 60_000 → 20s, which produced the
+      // "[PAN Vision] Ollama minicpm-v:latest failed: The operation was
+      // aborted due to timeout" log spam after the vision model upgrade
+      // (moondream→minicpm-v). Same reasoning as screen-watcher.js: minicpm-v
+      // needs more CPU inference time on the Mini-PC than the old moondream.
+      raw = await analyzeImage(prompt, base64, { caller: 'dashboard-vision-verifier', timeout: 240_000 });
     } catch (e) {
       console.warn('[VisionVerifier] analyzeImage failed:', e.message);
       return;
