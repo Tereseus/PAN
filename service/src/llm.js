@@ -597,6 +597,7 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
   else if (model.startsWith('cerebras:')) provider = 'cerebras';
   else if (model.startsWith('groq:'))     provider = 'groq';
   else if (model.startsWith('openai:'))   provider = 'openai';
+  else if (model.startsWith('ollama:'))   provider = 'ollama';
   else if (model.startsWith('anthropic:')) {
     // Strip prefix so the SDK/CLI gets a clean model name. This is the
     // path model_selections uses when reasoning_cloud is set to a Claude
@@ -649,6 +650,32 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       const config = getCustomModelConfig(model);
       if (!config) throw new Error(`Unknown model: ${model}`);
       result = await callOpenAICompat(prompt, [{ role: 'user', content: prompt }], config, maxTokens, controller.signal);
+    } else if (provider === 'ollama') {
+      // `ollama:` prefix path. llm-fallback's default chain emits these
+      // (e.g. "ollama:qwen3:4b") via _formatModelRef. Previously this fell
+      // through to the 'custom' branch which looked up custom_models by id
+      // — but custom_models stores the bare model id ("qwen3:4b"), not
+      // "ollama:qwen3:4b", so the lookup missed and threw "Unknown model"
+      // in 1ms, killing the local fallback. Route directly to Ollama here.
+      const ollamaModel = model.replace(/^ollama:/, '');
+      const ollamaUrl   = (getOllamaUrl() || 'http://localhost:11434').replace(/\/$/, '');
+      const resp = await fetch(`${ollamaUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: ollamaModel,
+          messages: [{ role: 'user', content: prompt }],
+          stream: false,
+          options: { num_predict: maxTokens },
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) throw new Error(`Ollama ${resp.status}: ${await resp.text().catch(() => '')}`);
+      const data = await resp.json();
+      result = {
+        text: data.message?.content || '',
+        usage: { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 },
+      };
     } else if (provider === 'api') {
       const apiKey = getApiKey('anthropic');
       const resp = await fetch(ANTHROPIC_URL, {
@@ -660,14 +687,50 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       const data = await resp.json();
       result = { text: data.content?.[0]?.text || '', usage: data.usage };
     } else {
-      const q = sdkQuery({ prompt, options: { model, maxTurns: 1, persistSession: false, permissionMode: 'plan', abortController: controller, tools: [], env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `pan-server/${caller}` } } });
-      let text = '';
-      let usage = null;
-      for await (const event of q) {
-        if (event.type === 'result' && event.subtype === 'success') { text = event.result || ''; usage = event.usage; }
-        else if (event.type === 'assistant' && event.message?.content) text = event.message.content.find(b => b.type === 'text')?.text || text;
-      }
-      result = { text, usage };
+      // Claude Agent SDK path. The SDK spawns a `claude -p` subprocess and
+      // streams events back; passing `abortController` is supposed to kill
+      // the subprocess when the controller fires. Empirically it doesn't
+      // always — the for-await loop has been seen hanging 150-200s past
+      // the 15s timeout (see ai_fallback_attempt logs with ms:152433,
+      // 195410, 204709). The router's outer code then has nothing to fall
+      // back to because the "timeout" never actually fired.
+      //
+      // Hard-cap via Promise.race against the same timer: if the SDK
+      // doesn't yield a result by `timeout`ms, abort the controller AND
+      // throw — the fallback chain in llm-fallback.js sees a clean
+      // timeout error and moves to the next backend.
+      result = await new Promise((resolve, reject) => {
+        let settled = false;
+        const hardCap = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { controller.abort(); } catch {}
+          const e = new Error(`SDK timeout > ${timeout}ms`);
+          e.name = 'AbortError';
+          reject(e);
+        }, timeout);
+        (async () => {
+          try {
+            const q = sdkQuery({ prompt, options: { model, maxTurns: 1, persistSession: false, permissionMode: 'plan', abortController: controller, tools: [], env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `pan-server/${caller}` } } });
+            let text = '';
+            let usage = null;
+            for await (const event of q) {
+              if (settled) return;
+              if (event.type === 'result' && event.subtype === 'success') { text = event.result || ''; usage = event.usage; }
+              else if (event.type === 'assistant' && event.message?.content) text = event.message.content.find(b => b.type === 'text')?.text || text;
+            }
+            if (settled) return;
+            settled = true;
+            clearTimeout(hardCap);
+            resolve({ text, usage });
+          } catch (err) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(hardCap);
+            reject(err);
+          }
+        })();
+      });
       model = `sdk:${model}`;
     }
 
