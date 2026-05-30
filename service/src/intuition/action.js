@@ -161,12 +161,19 @@ export async function dispatchAction(candidate, opts = {}) {
   // Persistence dedupe: same key within 30 min → skip. (Different from the
   // upstream verdict-flip dedupe, which catches re-firing within a single
   // process — this catches restart loops and parallel callers.)
+  //
+  // Timezone-correctness note: `created_at` is stored via
+  // `datetime('now','localtime')` (column default), so we MUST use the
+  // 'localtime' modifier on the cutoff too. Without it the comparison was
+  // localtime-string vs UTC-string and the dedupe silently never matched
+  // — that's why the Nourishment alert fired every 4-8 minutes for hours
+  // on 2026-05-27 (interjections #564..#581 within ~1.5h, all delivered).
   const DEDUPE_MS = 30 * 60_000;
   try {
     const recent = get(
       `SELECT id, created_at FROM pan_interjections
        WHERE user_id = :u AND action_key = :k
-         AND created_at > datetime('now', '-30 minutes')
+         AND created_at > datetime('now', 'localtime', '-30 minutes')
        ORDER BY id DESC LIMIT 1`,
       { ':u': userId, ':k': key }
     );

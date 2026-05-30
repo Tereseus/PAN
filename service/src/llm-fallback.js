@@ -144,6 +144,15 @@ export function classifyError(err, externalSignal = null) {
     if (code === 429) return { retriable: true,  reason: 'rate-limit' };
     if (code >= 500)  return { retriable: true,  reason: `http-${code}` };
     if (code === 404) return { retriable: true,  reason: 'model-unknown' }; // bad model id → next backend may have it
+    // 402 (Payment Required) — Cerebras returns this when the requested
+    // model is on a paid tier the user isn't on. Was previously bucketed
+    // into the default "unknown 4xx → break" branch, which meant the very
+    // first attempt stopped the whole chain. Free-tier users got zero
+    // fallback (chat reply: nothing). Treat as retriable so we move on to
+    // the next backend (Claude SDK / Ollama). The provider-side billing
+    // block list (_markBillingBlocked) already remembers this so subsequent
+    // calls won't retry the same model.
+    if (code === 402) return { retriable: true,  reason: 'payment-required' };
     if (code === 400) return { retriable: false, reason: 'bad-request' };
     if (code === 401 || code === 403) return { retriable: false, reason: 'auth' };
     return { retriable: false, reason: `http-${code}` };
@@ -232,6 +241,27 @@ export async function askAIWithFallback(prompt, opts = {}) {
   const attempts = [];
   let lastErr = null;
 
+  // Wall-clock budget across the entire chain. Previously the only cap was
+  // the per-attempt timeout, so a sequence of (SDK 200s-hang) + (Ollama 30s
+  // CPU inference) could keep a voice turn "thinking" for 4 minutes —
+  // dashboard shows a stale "Thinking 0:40 ⚠ timeout" warning and the user
+  // gives up. Cap at 45s total: enough for SDK + 1 backup, refuses to drag
+  // out longer than the user's patience.
+  const WALL_BUDGET_MS = passthrough.totalTimeout ?? 45_000;
+  const wallDeadline = Date.now() + WALL_BUDGET_MS;
+  delete passthrough.totalTimeout;
+
+  // Per-attempt timeout heuristic. The router currently sends `timeout:15000`
+  // which is fine for Cerebras/Claude (network) but too tight for Ollama on
+  // a CPU-only mini PC (qwen3:4b ~ 10-30s/turn). And the SDK path empirically
+  // hangs at 12-14s for healthy calls, so we want headroom.
+  // Strategy: keep caller's timeout for cloud, bump for ollama.
+  const baseTimeout = passthrough.timeout ?? 15_000;
+  const timeoutForModel = (m) => {
+    if (m?.startsWith('ollama:')) return 30_000;
+    return baseTimeout;
+  };
+
   for (let i = 0; i < chain.length; i++) {
     const model = chain[i];
     const t0 = Date.now();
@@ -241,8 +271,16 @@ export async function askAIWithFallback(prompt, opts = {}) {
       lastErr.name = 'AbortError';
       break;
     }
+    // Wall-clock check — if we're out of time, stop trying.
+    const remaining = wallDeadline - Date.now();
+    if (remaining <= 500) {
+      lastErr = lastErr || new Error(`fallback chain exceeded ${WALL_BUDGET_MS}ms wall budget`);
+      break;
+    }
+    // Per-attempt timeout = min(model-default, remaining wall budget).
+    const attemptTimeout = Math.min(timeoutForModel(model), remaining);
     try {
-      const text = await askAI(prompt, { ...passthrough, caller, model });
+      const text = await askAI(prompt, { ...passthrough, caller, model, timeout: attemptTimeout });
       const ms = Date.now() - t0;
       attempts.push({ model, ok: true, ms });
       if (i > 0) logAttempt(caller, model, i + 1, 'recovered', true, ms);
