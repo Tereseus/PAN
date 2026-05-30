@@ -657,6 +657,19 @@ router.post('/recall/stream', async (req, res) => {
   // Keepalive every 5s — prevents OkHttp 30s readTimeout from firing during slow LLM calls
   const keepaliveInterval = setInterval(sendKeepalive, 5000);
 
+  // Client-disconnect cleanup: without this the keepalive interval keeps
+  // firing forever and the socket sits in CLOSE_WAIT on Craft's side
+  // (caused 39+ leaked sockets and event-loop pressure in field testing).
+  // We listen on `res` (not `req`) per the comment on the /chat/stream
+  // handler above — `req.on('close')` fires too eagerly.
+  let clientGone = false;
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      clientGone = true;
+      clearInterval(keepaliveInterval);
+    }
+  });
+
   try {
     // Use searchMemory (FTS5 + vector/semantic RRF) — same engine as router recall.
     // The old hand-rolled FTS-only query missed semantic matches and accumulated
@@ -1172,6 +1185,16 @@ router.post('/query/stream', async (req, res) => {
 
   // Keepalive every 5s — prevents OkHttp 30s readTimeout from firing during slow LLM calls
   const keepaliveInterval = setInterval(sendKeepalive, 5000);
+
+  // Client-disconnect cleanup — same fix as /recall/stream above. Without
+  // this the keepalive interval leaked forever and the underlying socket
+  // stayed in CLOSE_WAIT on Craft's side, piling up until Craft's HTTP
+  // server stopped accepting new connections.
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      clearInterval(keepaliveInterval);
+    }
+  });
 
   let parsedSensors = sensors;
   if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }

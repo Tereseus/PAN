@@ -27,7 +27,7 @@ import { upsertDevicePresence } from '../intuition.js';
 import { broadcastNotification } from '../terminal-bridge.js';
 import crypto from 'crypto';
 import os from 'os';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { getTunnelURL } from '../cloudflare-tunnel.js';
 
 // Returns the best IP for a NEW device to reach this hub over LAN.
@@ -54,18 +54,55 @@ function getServerIP() {
 // Returns the Tailscale Funnel HTTPS hostname if Funnel is active for the given port,
 // otherwise null. Funnel exposes the service publicly at https://<host>.ts.net (port 443)
 // so any device on the internet can reach it — no Tailscale enrollment needed.
-function getTailscaleFunnelHost(port) {
+//
+// Was sync execSync × 2 per call → 2 conhost.exe per invocation; the invite-token
+// endpoint that calls this can be hit in bursts (browser auto-retries). Plus the
+// `timeout: 3000` option on Windows execSync only sends SIGTERM, which tailscale.exe
+// ignores during COM init, so the children orphaned. Combined with the periodic
+// IP refresh and process check elsewhere, this leaked ~400 conhosts in 7 hours.
+//
+// Now: async spawn + hard SIGKILL timer + 60s cache so back-to-back invite
+// requests share one Tailscale lookup. The funnel state changes on the order
+// of human action (enabling/disabling in admin console), so a minute of
+// staleness is invisible.
+let _funnelCache = null; // { host, port, ts }
+const FUNNEL_CACHE_TTL_MS = 60_000;
+const FUNNEL_KILL_TIMER_MS = 4_000;
+
+function _spawnTailscale(args) {
+  return new Promise((resolve) => {
+    let done = false;
+    let proc;
+    const finish = (out) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} resolve(out); };
+    try {
+      proc = spawn('tailscale', args, { windowsHide: true, shell: false });
+      const chunks = [];
+      proc.stdout?.on('data', (c) => chunks.push(c));
+      proc.on('error', () => finish(null));
+      proc.on('close', () => finish(Buffer.concat(chunks).toString('utf-8')));
+      setTimeout(() => finish(null), FUNNEL_KILL_TIMER_MS);
+    } catch { finish(null); }
+  });
+}
+
+async function getTailscaleFunnelHost(port) {
+  if (_funnelCache && _funnelCache.port === port &&
+      Date.now() - _funnelCache.ts < FUNNEL_CACHE_TTL_MS) {
+    return _funnelCache.host;
+  }
   try {
-    const statusRaw = execSync('tailscale status --json', { timeout: 3000, windowsHide: true }).toString();
+    const statusRaw = await _spawnTailscale(['status', '--json']);
+    if (!statusRaw) return null;
     const status = JSON.parse(statusRaw);
     const dnsName = status?.Self?.DNSName?.replace(/\.$/, ''); // strip trailing dot
     if (!dnsName) return null;
 
-    // Check if funnel is active. Output contains "Funnel on:" when enabled.
-    // We also check for the port number in case multiple ports are funneled.
-    const funnelRaw = execSync('tailscale funnel status', { timeout: 3000, windowsHide: true }).toString();
+    const funnelRaw = await _spawnTailscale(['funnel', 'status']);
+    if (!funnelRaw) return null;
     const isActive = funnelRaw.includes('Funnel on') || funnelRaw.includes(`${port}/`);
-    return isActive ? dnsName : null;
+    const host = isActive ? dnsName : null;
+    _funnelCache = { host, port, ts: Date.now() };
+    return host;
   } catch {
     return null; // tailscale not installed, not running, or funnel not enabled
   }
@@ -260,7 +297,7 @@ router.post('/shell', async (req, res) => {
 // ── GET /api/v1/client/invite ─────────────────────────────────────────────────
 // Generates a one-time install token + install instructions.
 // Query: ?name=bedroom-pc&ttl_minutes=30  (default 30 min — enough time to download + run installer)
-router.get('/invite', (req, res) => {
+router.get('/invite', async (req, res) => {
   const name = req.query.name || 'new-device';
   const ttlMinutes = parseInt(req.query.ttl_minutes) || 30;
   const token = createInviteToken(name, ttlMinutes * 60 * 1000);
@@ -270,7 +307,9 @@ router.get('/invite', (req, res) => {
   // Priority: Cloudflare Tunnel > Tailscale Funnel > LAN IP > Tailscale IP > loopback
   // Cloudflare and Tailscale Funnel are publicly reachable — no enrollment needed on the client.
   const cfURL = getTunnelURL(); // Set by cloudflare-tunnel.js on boot
-  const funnelHost = !cfURL ? getTailscaleFunnelHost(port) : null;
+  // getTailscaleFunnelHost is now async (spawn-based with hard kill timer).
+  // The handler is already an async function so we just await it.
+  const funnelHost = !cfURL ? await getTailscaleFunnelHost(port) : null;
   let host, proto, httpProto, via;
 
   if (cfURL) {

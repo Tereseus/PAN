@@ -2,133 +2,156 @@
 	import { onMount, tick } from 'svelte';
 	import { api, wsUrl } from '$lib/api.js';
 	import { getActiveProject, setActiveProject, sortProjects, getTerminalInput, setTerminalInput } from '$lib/stores.svelte.js';
+	// Terminal-page shared state — single source of truth across panels.
+	// See $lib/stores-terminal.svelte.js + docs/DASHBOARD-REFACTOR-MAP.md.
+	import {
+		setPushed, getPushed,
+		pushEcho, getEchoes, setEchoes,
+		pushBtw, getBtws,
+		clearTabStore,
+	} from '$lib/stores/terminal.svelte.js';
+	// Extracted panel components (Shape-2 refactor). Each owns its own state +
+	// lifecycle. The parent passes the cross-cutting context it needs (orgData,
+	// etc.) as props. See docs/DASHBOARD-REFACTOR-MAP.md.
+	import IntuitionPanel from '$lib/components/widgets/IntuitionPanel.svelte';
+	import ImpersonatePanel from '$lib/components/modals/ImpersonatePanel.svelte';
+	import ServicesPanel from '$lib/components/widgets/ServicesPanel.svelte';
+	import ApprovalsPanel from '$lib/components/widgets/ApprovalsPanel.svelte';
+	import AlertsPanel from '$lib/components/widgets/AlertsPanel.svelte';
+	import UsersPanel from '$lib/components/widgets/UsersPanel.svelte';
+	import TeamsPanel from '$lib/components/widgets/TeamsPanel.svelte';
+	import LibraryPanel from '$lib/components/widgets/LibraryPanel.svelte';
+	import ProjectPanel from '$lib/components/widgets/ProjectPanel.svelte';
+	import LifeboatPanel from '$lib/components/widgets/LifeboatPanel.svelte';
+	import SetupPanel from '$lib/components/widgets/SetupPanel.svelte';
+	import TasksPanel from '$lib/components/widgets/TasksPanel.svelte';
+	import BugsPanel from '$lib/components/widgets/BugsPanel.svelte';
+	import BenchmarksPanel from '$lib/components/widgets/BenchmarksPanel.svelte';
+	import PipelinePanel from '$lib/components/widgets/PipelinePanel.svelte';
+	import InstancesPanel from '$lib/components/widgets/InstancesPanel.svelte';
+	import AppsPanel from '$lib/components/widgets/AppsPanel.svelte';
+	import TestsPanel from '$lib/components/widgets/TestsPanel.svelte';
+	import DevicesPanel from '$lib/components/widgets/DevicesPanel.svelte';
+	import TranscriptPanel from '$lib/components/widgets/TranscriptPanel.svelte';
+	import ContactsPanel from '$lib/components/widgets/ContactsPanel.svelte';
+	import MailPanel from '$lib/components/widgets/MailPanel.svelte';
+	import AtlasPanel from '$lib/components/widgets/AtlasPanel.svelte';
+	import PerfPanel from '$lib/components/widgets/PerfPanel.svelte';
+	import PtyStatusBar from '$lib/components/widgets/PtyStatusBar.svelte';
+	import ApprovalBar from '$lib/components/widgets/ApprovalBar.svelte';
+	import CenterChatView from '$lib/components/widgets/CenterChatView.svelte';
+	import ImagePreviewBar from '$lib/components/widgets/ImagePreviewBar.svelte';
+	import UsagePanel from '$lib/components/widgets/UsagePanel.svelte';
+	import { terminal as terminalStore } from '$lib/stores/terminal.svelte.js';
+	import { usage as usageStore, loadUsageData as storeLoadUsageData } from '$lib/stores/usage.svelte.js';
+	// 2026-05-28: perf store. Parent keeps the trigger sites
+	// (`_markLoad('mounted')`, `_trackWsMsg(type)`, etc.) but they are now
+	// thin wrappers around the store's exported functions so the perf panel
+	// sees every observation in real time.
+	import {
+		perf as perfStore,
+		markLoad      as _markLoad,
+		markSend      as _markSend,
+		markSendPhase as _markSendPhase,
+		trackWidget   as _trackWidget,
+		trackWsMsg    as _trackWsMsg,
+		loadPerfTrace,
+		loadPerfProcesses,
+		startPerfPolling,
+		stopPerfPolling,
+		postPerfEvent,
+	} from '$lib/stores/perf.svelte.js';
+	// Aliases so the existing template ({@const _wEntries = Object.entries(_widgetHealth)})
+	// and existing reactive reads keep working without rewriting every call site.
+	const _loadTimings   = perfStore.loadTimings;
+	const _sendTimings   = perfStore.sendTimings;
+	const _widgetHealth  = perfStore.widgetHealth;
+	const _wsMsgCounts   = perfStore.wsMsgCounts;
+	// Atlas store — `switchCenterView` now lazily triggers loadAtlasData()
+	// inside AtlasPanel's onMount; parent no longer needs to drive it.
+	import { loadAtlasData } from '$lib/stores/atlas.svelte.js';
+	import { renderMarkdown } from '$lib/markdown.js';
+	import { openCompose, openExpandedView, openPanCall } from '$lib/compose.js';
+	import { mail as mailStore } from '$lib/stores/mail.svelte.js';
+	import {
+		loadContacts as storeLoadContacts,
+		loadChatMessages as storeLoadChatMessages,
+		endCall as storeEndCall,
+	} from '$lib/stores/chat.svelte.js';
 
-	// --- Load Timer (tracks every page load phase, in ms since page start) ---
-	// Each field = time from navigation start to when that milestone fires.
-	// Human names used in the Performance panel are defined in STAGE_LABELS below.
-	const _loadT0 = performance.now();
-	const _loadTimings = $state({
-		scriptInit: 0,        // Script parsed + top-level state initialized
-		mounted: 0,           // Svelte onMount ran — DOM trees exist
-		wsOpen: 0,            // WebSocket handshake with server succeeded
-		ptyAttached: 0,       // Server replied — PTY session is alive
-		firstScreen: 0,       // First screen/scrollback bytes painted in terminal
-		firstTranscript: 0,   // First JSONL transcript delivered via WS
-		transcriptWidget: 0,  // Left transcript panel rendered its first bubble
-		usageWidget: 0,       // Usage widget finished its first fetch
-		interactive: 0,       // Everything ready — user can type with no lag
-	});
-	function _markLoad(key) { if (!_loadTimings[key]) _loadTimings[key] = Math.round(performance.now() - _loadT0); }
-	_markLoad('scriptInit');
+	// 2026-05-28: domain stores. Widgets now import directly from these
+	// instead of receiving props from this page. We keep the parent's local
+	// `$state` declarations as the canonical write sites (fetch handlers,
+	// WS pushes, etc.) and mirror them into the stores via the $effect
+	// block lower in this script. The widgets always see whatever the parent
+	// last wrote. See docs/DASHBOARD-WIDGETS.md "Centralized state".
+	import { services as servicesStore } from '$lib/stores/services.svelte.js';
+	import { org as orgStore } from '$lib/stores/org.svelte.js';
+	import { voice as voiceStore } from '$lib/stores/voice.svelte.js';
+	import { project as projectStore } from '$lib/stores/project.svelte.js';
+	import { devices as devicesStore } from '$lib/stores/devices.svelte.js';
+	import { chat as chatStore } from '$lib/stores/chat.svelte.js';
 
-	// Human-readable labels + soft budgets (ms) for the Performance panel.
-	// Budgets are aspirational — anything over the yellow threshold flags as slow,
-	// over red is a real problem worth investigating.
-	const STAGE_LABELS = {
-		scriptInit:       { name: 'Script parsed',        warn: 300,  bad: 1000, help: 'Browser downloaded + parsed the JS bundle.' },
-		mounted:          { name: 'Page mounted',         warn: 600,  bad: 1500, help: 'Svelte built the DOM tree. You see the layout.' },
-		wsOpen:           { name: 'WebSocket connected',  warn: 800,  bad: 2000, help: 'Handshake with server done. Terminal can send keys.' },
-		ptyAttached:      { name: 'PTY attached',         warn: 1200, bad: 3000, help: 'Server confirmed a live terminal session is ready.' },
-		firstScreen:      { name: 'Terminal painted',     warn: 1800, bad: 4000, help: 'First bytes of terminal output rendered on screen.' },
-		firstTranscript:  { name: 'Transcript loaded',    warn: 2000, bad: 5000, help: 'JSONL transcript for this session arrived via WS.' },
-		transcriptWidget: { name: 'Left panel ready',     warn: 2000, bad: 5000, help: 'Left transcript panel rendered its first message.' },
-		usageWidget:      { name: 'Usage widget ready',   warn: 2500, bad: 6000, help: 'Usage/cost data fetched + rendered.' },
-		interactive:      { name: 'Interactive',          warn: 2500, bad: 6000, help: 'Everything loaded. Keystrokes hit the PTY instantly.' },
-	};
+	// Load Timer + STAGE_LABELS migrated to $lib/stores/perf.svelte.js
 
-	// --- Send Timer (measures keystroke → echo → assistant response) ---
-	// Reset on every sendTerminalInput call. Shown live in the Performance panel.
-	const _sendTimings = $state({
-		lastSendAt: 0,       // performance.now() of last send
-		lastAckMs: 0,        // time from send → HTTP 200 from /pipe
-		lastEchoMs: 0,       // time from send → user_echo arrived on WS
-		lastAssistantMs: 0,  // time from send → first assistant char appeared
-		lastSendText: '',    // preview of what was sent (first 40 chars)
-		awaitingAssistant: false, // true between send and first assistant message
-	});
-	// Guard against double-sends (Enter key + button click within same tick, or rapid double-tap).
+	// Send Timer + _markSend/_markSendPhase migrated to $lib/stores/perf.svelte.js
+	// — but the send-path's local helper state (in-flight guards, queue, log,
+	// pipeSending flag) stays here because it's used by sendTerminalInput and
+	// templated into the send button. Restored 2026-05-28 after a too-greedy
+	// regex deleted them with the perf state.
 	const _sendInFlight = new Set();
-	// Timestamp of last successful send — PTY screen detection must not override claudeReady=false
-	// within 2s of a send (prevents race where echo hasn't appeared yet and ❯ is still visible).
+	// Timestamp of last successful send — PTY screen detection must not override
+	// claudeReady=false within 2s of a send (prevents race where echo hasn't
+	// appeared yet and ❯ is still visible).
 	let _lastSendTime = 0;
-	// Reactive flag — true while the pipe POST is in-flight. Drives the send button spinner.
+	// Reactive flag — true while the pipe POST is in-flight. Drives the
+	// send-button spinner. (Also mirrored into terminalStore.pipeSending lower
+	// in this script for widgets that read from the store.)
 	let pipeSending = $state(false);
 
-	function _markSend(text) {
-		_sendTimings.lastSendAt = performance.now();
-		_sendTimings.lastAckMs = 0;
-		_sendTimings.lastEchoMs = 0;
-		_sendTimings.lastAssistantMs = 0;
-		_sendTimings.lastSendText = (text || '').slice(0, 40);
-		_sendTimings.awaitingAssistant = true;
+	// Message send log — every attempted send is saved to localStorage so
+	// nothing is silently lost. Retrievable from the browser console via
+	// `JSON.parse(localStorage.getItem('pan_send_log'))`.
+	function _logSendAttempt(sessionId, text, status) {
+		try {
+			const key = 'pan_send_log';
+			const log = JSON.parse(localStorage.getItem(key) || '[]');
+			log.push({ ts: new Date().toISOString(), sessionId, text: text.slice(0, 500), status });
+			if (log.length > 200) log.splice(0, log.length - 200);
+			localStorage.setItem(key, JSON.stringify(log));
+		} catch {}
 	}
-	function _markSendPhase(key) {
-		if (!_sendTimings.lastSendAt) return;
-		const dt = Math.round(performance.now() - _sendTimings.lastSendAt);
-		if (key === 'ack' && !_sendTimings.lastAckMs) {
-			_sendTimings.lastAckMs = dt;
-			// Feed the carrier perf engine so hot.keystroke_ack scores against budget.
-			try { fetch('/api/v1/perf/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'sendAck', ms: dt }), cache: 'no-store' }).catch(() => {}); } catch {}
-		}
-		if (key === 'echo' && !_sendTimings.lastEchoMs) {
-			_sendTimings.lastEchoMs = dt;
-			try { fetch('/api/v1/perf/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'sendEcho', ms: dt }), cache: 'no-store' }).catch(() => {}); } catch {}
-		}
-		if (key === 'assistant' && !_sendTimings.lastAssistantMs) {
-			_sendTimings.lastAssistantMs = dt;
-			_sendTimings.awaitingAssistant = false;
-			try { fetch('/api/v1/perf/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'sendAssistant', ms: dt }), cache: 'no-store' }).catch(() => {}); } catch {}
+
+	// Per-session queue for messages that arrived when claudeReady=false.
+	// Flushed by _flushQueue() as soon as claudeReady becomes true.
+	const _pendingQueue = new Map();
+
+	function _queueMessage(sessionId, text) {
+		if (!_pendingQueue.has(sessionId)) _pendingQueue.set(sessionId, []);
+		_pendingQueue.get(sessionId).push(text);
+		_logSendAttempt(sessionId, text, 'queued');
+		console.warn('[PAN Terminal] claudeReady=false — message queued, will send when ready:', text.slice(0, 80));
+	}
+
+	async function _flushQueue(sessionId) {
+		const queue = _pendingQueue.get(sessionId);
+		if (!queue?.length) return;
+		_pendingQueue.delete(sessionId);
+		for (const text of queue) {
+			console.log('[PAN Terminal] Flushing queued message:', text.slice(0, 80));
+			await sendTerminalInput(text);
 		}
 	}
 
-	// ── Widget Health Tracker ──────────────────────────────────────────────────
-	// Records when each widget was last updated and whether it came from a WS push
-	// or a fallback poll. Displayed in the Performance panel so we can see in real
-	// time what's actually refreshing and what's stale or stuck.
-	const _widgetHealth = $state({
-		intuition:  { ts: 0, source: null, pushes: 0, polls: 0 },
-		approvals:  { ts: 0, source: null, pushes: 0, polls: 0 },
-		alerts:     { ts: 0, source: null, pushes: 0, polls: 0 },
-		services:   { ts: 0, source: null, pushes: 0, polls: 0 },
-		pipeline:   { ts: 0, source: null, pushes: 0, polls: 0 },
-		devices:    { ts: 0, source: null, pushes: 0, polls: 0 },
-		transcript: { ts: 0, source: null, pushes: 0, polls: 0 },
-		lifeboat:   { ts: 0, source: null, pushes: 0, polls: 0 },
-	});
-	// WS message type counter — how many messages of each type we've received
-	const _wsMsgCounts = $state({});
-	let _wsTotalMsgs = $state(0);
-	let _wsLastMsgTs = $state(0);
+	// _widgetHealth / _wsMsgCounts / _wsTotalMsgs / _wsLastMsgTs +
+	// _trackWidget / _trackWsMsg migrated to $lib/stores/perf.svelte.js
 
-	function _trackWidget(name, source) {
-		const w = _widgetHealth[name];
-		if (!w) return;
-		w.ts = Date.now();
-		w.source = source;
-		if (source === 'push') w.pushes++; else w.polls++;
-	}
-	function _trackWsMsg(type) {
-		_wsMsgCounts[type] = (_wsMsgCounts[type] || 0) + 1;
-		_wsTotalMsgs++;
-		_wsLastMsgTs = Date.now();
-	}
-
-	// Ordered list of load stages for the Performance panel.
-	// Shown in the order the user experiences them.
-	const LOAD_STAGE_ORDER = [
-		'scriptInit', 'mounted', 'wsOpen', 'ptyAttached',
-		'firstScreen', 'firstTranscript', 'transcriptWidget', 'usageWidget', 'interactive',
-	];
-	function _fmtMs(ms) {
-		if (!ms) return '—';
-		if (ms < 1000) return ms + 'ms';
-		return (ms / 1000).toFixed(2) + 's';
-	}
+	// LOAD_STAGE_ORDER + _fmtMs migrated to $lib/stores/perf.svelte.js
 
 	// --- Session Cost (derived from active tab's turn_stats in transcript) ---
 	let sessionCost = $derived.by(() => {
 		const active = tabs.find(t => t.id === activeTabId);
-		const msgs = active?._pushedMessages || [];
+		const msgs = getPushed(active?.id);
 		// Find the LAST turn_stats message — it has cumulative totals
 		for (let i = msgs.length - 1; i >= 0; i--) {
 			const m = msgs[i];
@@ -183,75 +206,19 @@
 	let permsMatrix = $state(/** @type {{power:number, realPower:number, isImpersonating:boolean, widgets:Record<string,{visible:boolean}>}} */ (null));
 
 	// ── Impersonation ─────────────────────────────────────────────────────────
-	// Owner-only: preview the UI as a different power level, specific user, or org group.
-	const IMPERSONATE_PRESETS = [
-		{ label: 'Child',   power: 5  },
-		{ label: 'Guest',   power: 15 },
-		{ label: 'User',    power: 25 },
-		{ label: 'Manager', power: 50 },
-		{ label: 'Admin',   power: 75 },
-	];
-
-	// Modal state
-	let impersonateOpen = $state(false);
-	let impersonateTab  = $state('power'); // 'power' | 'user' | 'group'
-	let impPowerSlider  = $state(25);
-	let impUsers        = $state([]);
-	let impUsersLoaded  = $state(false);
-	let impSelectedUser = $state(null);
-	let impOrgs         = $state([]);
-	let impOrgsLoaded   = $state(false);
-	let impSelectedOrg  = $state(null);
-	let impGroupPower   = $state(25);
-	let impGroupRole    = $state('Member');
-	let impRoles        = $state([]);
-	let impApplying     = $state(false);
+	// Modal moved to $lib/components/ImpersonatePanel.svelte (Shape-2 refactor
+	// 2026-05-27). The component owns all modal state, lazy-loads
+	// users/orgs/roles on open, and calls back via onApplied to refresh perms.
+	// Parent only owns: the open/close trigger, the toolbar banner, the Exit
+	// button (which still calls stopImpersonation here), and impersonationLabel
+	// for rendering the banner text.
+	let impersonateModalOpen = $state(false);
 
 	async function reloadPermsMatrix() {
 		try {
 			const r = await api('/api/v1/permissions/matrix');
 			permsMatrix = r;
 		} catch { permsMatrix = { power: 100, realPower: 100, isImpersonating: false, widgets: {} }; }
-	}
-
-	async function openImpersonateModal() {
-		impersonateOpen = true;
-		// Lazy-load users + orgs + roles on first open
-		if (!impUsersLoaded) {
-			try {
-				const r = await api('/api/v1/users');
-				impUsers = (r.users || []).filter(u => (u.power_lvl ?? 0) < 100);
-			} catch { impUsers = []; }
-			impUsersLoaded = true;
-		}
-		if (!impOrgsLoaded) {
-			try {
-				const r = await api('/api/v1/orgs');
-				impOrgs = r.orgs || [];
-				if (impOrgs.length) impSelectedOrg = impOrgs[0].id;
-				const rr = await api('/api/v1/roles');
-				impRoles = rr.roles || [];
-			} catch { impOrgs = []; impRoles = []; }
-			impOrgsLoaded = true;
-		}
-	}
-
-	async function applyImpersonation() {
-		impApplying = true;
-		try {
-			if (impersonateTab === 'power') {
-				await api('/api/v1/impersonate', { method: 'POST', body: JSON.stringify({ type: 'power', power: impPowerSlider }), headers: { 'Content-Type': 'application/json' } });
-			} else if (impersonateTab === 'user') {
-				if (!impSelectedUser) return;
-				await api('/api/v1/impersonate', { method: 'POST', body: JSON.stringify({ type: 'user', userId: impSelectedUser.id }), headers: { 'Content-Type': 'application/json' } });
-			} else if (impersonateTab === 'group') {
-				if (!impSelectedOrg) return;
-				const roleName = impRoles.find(r => r.level === impGroupPower)?.name || impGroupRole;
-				await api('/api/v1/impersonate', { method: 'POST', body: JSON.stringify({ type: 'group', orgId: impSelectedOrg, power: impGroupPower, roleName }), headers: { 'Content-Type': 'application/json' } });
-			}
-			await reloadPermsMatrix();
-			impersonateOpen = false;
-		} finally { impApplying = false; }
 	}
 
 	async function stopImpersonation() {
@@ -341,13 +308,9 @@
 	let ptyStatus = $state(null);
 	let ptyStatusNow = $state(Date.now()); // ticks every 1s for live duration display
 
-	// Users
-	let usersData = $state([]);
+	// Users migrated to $lib/components/UsersPanel.svelte
 
-	// Teams
-	let teamsData = $state([]);
-	let selectedTeamWidget = $state(null);
-	let teamMembersWidget = $state([]);
+	// Teams migrated to $lib/components/TeamsPanel.svelte
 
 	// PAN Clients (connected secondary machines)
 	let panClientDevices = $state([]);
@@ -357,65 +320,23 @@
 	let allDevicesPollTimer = null;
 	let allDevices = $state([]);
 
-	// Webcam force capture
-	let forcingCapture = $state(false);
-	async function forceCamCapture() {
-		if (forcingCapture) return;
-		forcingCapture = true;
-		try {
-			await fetch(`${window.location.origin}/api/v1/webcam-watcher/force`, { method: 'POST' });
-			// Poll status every 3s; stop when a fresh capture appears (ts < 10s ago)
-			const start = Date.now();
-			while (Date.now() - start < 120_000) {
-				await new Promise(r => setTimeout(r, 3000));
-				const s = await fetch(`${window.location.origin}/api/v1/webcam-watcher/status`).then(r => r.json()).catch(() => null);
-				if (s?.lastCapture?.ts && Date.now() - s.lastCapture.ts < 10_000) {
-					// Capture landed — mutate the atomic individual-snap piece directly
-					// so the side blocks (webcam_context) update before the next
-					// loadIntuition() resolves. intuitionData is a derivation now, so
-					// we write to the ATOMIC source, not the composite.
-					if (intuitionIndSnap) {
-						const next = { ...intuitionIndSnap };
-						next.signals = { ...(next.signals || {}), webcam_context: { ...s.lastCapture } };
-						intuitionIndSnap = next;
-					}
-					await loadIntuition(); // full refresh
-					break;
-				}
-			}
-		} finally {
-			forcingCapture = false;
-		}
-	}
-
-	// Voice enrollment
-	let voiceEnrollLabel = $state('Tereseus');
-	let voiceEnrollStatus = $state('');  // '', 'recording', 'uploading', 'done', 'error'
-	let voiceEnrollMsg = $state('');
-	let voiceEnrollSpeakers = $state([]);
-	let voiceServerOk = $state(false);
-	let voiceEnrollSeconds = $state(0);
-	let _voiceTimer = null;
+	// Webcam force capture + Voice enrollment — moved to IntuitionPanel.svelte
+	// (Shape-2 refactor 2026-05-27). The Identity card embeds both controls,
+	// so the state + handlers travel with the component.
 	let deviceRenameId = $state(null);
 	let deviceRenameName = $state('');
 	let deviceDeleteConfirmId = $state(null);
-	let deviceFilter = $state('all'); // 'all' | 'computers' | 'phones' | 'pendants' | 'other'
-	let deviceExpandedIds = $state(new Set()); // set of hostname strings that are expanded
+	// deviceFilter + deviceExpandedIds migrated to $lib/components/widgets/DevicesPanel.svelte
 
-	// Alerts
-	let alertsData = $state([]);
-	let alertTypes = $state([]);
-	let alertFilterType = $state('all');
-	let alertFilterStatus = $state('open');
+	// Alerts state migrated to $lib/components/AlertsPanel.svelte
+	// (Shape-2 refactor 2026-05-27). Parent only keeps `alertOpenCount`
+	// as a bindable prop so the panel-selector dropdown can show "(N)".
 	let alertOpenCount = $state(0);
-	let alertFlash = $state(false); // true when new alert arrives, flashes the indicator
+	let approvalsCount = $state(0);
 
 	// Tests
-	let testSuites = $state([]);
-	let selectedSuite = $state('');
-	let testResults = $state([]);
-	let testsRunning = $state(false);
-	let usageData = $state(null);
+	// Test state migrated to $lib/components/widgets/TestsPanel.svelte
+	// usageData migrated to $lib/stores/usage.svelte.js
 	let rightMilestoneFilter = $state(null);
 
 	// Panel resize state
@@ -433,47 +354,22 @@
 	let tasksData = $state(null);
 	let sectionsData = $state([]);
 	let servicesData = $state([]);
-	// ─── Intuition state — DEAD SIMPLE ───────────────────────────────────────
-	// Five atomic pieces. ONE refresh function. No nested deriveds writing back
-	// into state. No synthetic ghost users. If a fetch returns nothing, we keep
-	// what we had so a transient blip doesn't blank the UI — but we never
-	// invent data.
-	//
-	// intuitionMembers          — roster from /api/v1/orgs/:id/members
-	// intuitionSnapsByCommander — { [display_name]: snapshot row }
-	// intuitionOrgSnap          — org-level snapshot (devices, org_state)
-	// intuitionIndSnap          — individual snapshot (side detail blocks)
-	// selectedIntuitionUser     — currently-viewed user's display_name
-	let intuitionMembers = $state([]);
-	let intuitionSnapsByCommander = $state({});
-	let intuitionOrgSnap = $state(null);
-	let intuitionIndSnap = $state(null);
-	let selectedIntuitionUser = $state('');
-	let intuitionStatus = $state('');
-	let intuitionPolling = null;
-	// `intuitionLoaded` flips true after the FIRST successful roster fetch.
-	// Plain $state — never reset to false — so a slow follow-up fetch can
-	// never collapse the card back to its loading state.
-	let intuitionLoaded = $state(false);
-	// Flips true after the FIRST snapshots fetch resolves (whether or not it
-	// returned rows). Gates the "(no data)" label in the dropdown so we don't
-	// flash "(no data)" against every name during the brief window between
-	// the roster landing and the snapshots landing. See task #489.
-	let intuitionSnapshotsLoaded = $state(false);
+	// ─── Intuition state — MOVED TO IntuitionPanel.svelte ────────────────────
+	// All intuition state (intuitionMembers, intuitionSnapsByCommander,
+	// intuitionOrgSnap, intuitionIndSnap, selectedIntuitionUser, intuitionLoaded,
+	// intuitionSnapshotsLoaded, intuitionStatus) now lives inside the component.
+	// Parent only owns `orgData` which is passed in as a prop.
+	// See $lib/components/IntuitionPanel.svelte + docs/DASHBOARD-REFACTOR-MAP.md.
 
-	// Retrying loader for the org context. The original code did a single-shot
-	// `api('/api/v1/org/current').then(...).catch(() => {})`, which silently
-	// dropped failures. A 502 / connection-refused during a Carrier restart
-	// left orgData null forever, and every widget gated on `orgData?.org_id`
-	// (intuition, life-needs, pan-mind) stayed blank until the user manually
-	// refreshed. This retries with exponential backoff up to ~2 minutes; the
-	// $effect on orgData?.org_id (line ~748) fires as soon as it lands and
-	// triggers refreshIntuition naturally. Also re-invoked from the WS
+	// Retrying loader for the org context. orgData is shared with multiple
+	// widgets (Intuition, life-needs, pan-mind), so it stays in the parent
+	// and gets passed down as a prop. Retries with exponential backoff up to
+	// ~2 minutes. The $effect inside IntuitionPanel watches the orgData prop
+	// and refreshes as soon as org_id lands. Also re-invoked from the WS
 	// `carrier_ready` handler so a post-restart reconnect re-validates org
-	// context immediately instead of waiting on the next user action.
-	// REGRESSION TEST: kill Carrier mid-page-load. The org fetch should retry,
-	// orgData should populate within ~10s of Carrier coming back, and the
-	// intuition card should render without any manual refresh.
+	// context immediately.
+	// REGRESSION TEST: kill Carrier mid-page-load. orgData should populate
+	// within ~10s of Carrier coming back, intuition card renders automatically.
 	let _orgLoaderInFlight = false;
 	async function loadOrgContextWithRetry() {
 		if (_orgLoaderInFlight) return;
@@ -489,9 +385,7 @@
 						return;
 					}
 				} catch (e) {
-					// Fall through to next retry. The network being down right
-					// after a Carrier restart is the exact failure mode we're
-					// retrying for — don't log noisily.
+					// Fall through to next retry.
 				}
 			}
 			console.warn('[orgData] failed to load org context after retries — intuition widget will remain blank until next reconnect');
@@ -500,293 +394,43 @@
 		}
 	}
 
-	async function refreshIntuition() {
-		// HARD GATE: orgData must exist. Calling with null orgData produces a
-		// false "No users in this org yet" flash. The $effect on orgData?.org_id
-		// retriggers this as soon as orgData lands. If orgData is null because
-		// /api/v1/org/current failed (e.g. mid-restart), kick the retry loader
-		// here too — this is the recovery path when the WS `carrier_ready` signal
-		// was missed (e.g. tab was hidden).
-		if (!orgData?.org_id) {
-			loadOrgContextWithRetry();
-			return;
-		}
-		const orgId = orgData.org_id;
-		const orgQS = `?org_id=${encodeURIComponent(orgId)}`;
-		// Fan out independent fetches. allSettled = one failure can't take the
-		// others down with it.
-		const [rosterR, snapsR, orgR, indR] = await Promise.allSettled([
-			api(`/api/v1/orgs/${encodeURIComponent(orgId)}/members`),
-			api(`/api/v1/intuition/org/members${orgQS}`),
-			api(`/api/v1/intuition/org/current${orgQS}`),
-			api(`/api/v1/intuition/current${orgQS}`),
-		]);
+	// Intuition + PAN-Mind + Motives + Voice enrollment + force-cam-capture:
+	// all migrated to $lib/components/IntuitionPanel.svelte (Shape-2 refactor
+	// 2026-05-27). The component owns its own state, polling, and WS event
+	// subscription via window CustomEvent("pan:intuition-update").
 
-		// 1. Roster. Replace on any fulfilled response. We used to gate this on
-		//    `members.length > 0` so a transient blip wouldn't wipe the dropdown,
-		//    but a fulfilled empty response IS the truth and should be reflected
-		//    (e.g. user just left an org). Rejected (network error) still falls
-		//    through and preserves the previous list.
-		if (rosterR.status === 'fulfilled' && Array.isArray(rosterR.value?.members)) {
-			intuitionMembers = rosterR.value.members;
-		}
-
-		// 2. Snapshots map. MERGE (don't replace): a fetch that's missing a
-		//    known commander must NOT flip that user's has_snapshot to false
-		//    (which would collapse their axes table).
-		if (snapsR.status === 'fulfilled' && Array.isArray(snapsR.value?.members)) {
-			const merged = { ...intuitionSnapsByCommander };
-			for (const row of snapsR.value.members) merged[row.commander] = row;
-			intuitionSnapsByCommander = merged;
-		}
-		// Flip the "snapshots have been fetched at least once" gate as soon as
-		// the call resolves (fulfilled OR rejected). Suppresses the "(no data)"
-		// flash on the dropdown for the few hundred ms between roster-landed
-		// and snapshots-landed. Never flipped back to false. (Task #489.)
-		if (snapsR.status === 'fulfilled' || snapsR.status === 'rejected') {
-			intuitionSnapshotsLoaded = true;
-		}
-
-		// 3. Org-level + individual snapshots. Keep previous on empty response.
-		if (orgR.status === 'fulfilled' && orgR.value?.snapshot) intuitionOrgSnap = orgR.value.snapshot;
-		if (indR.status === 'fulfilled' && indR.value?.snapshot) intuitionIndSnap = indR.value.snapshot;
-
-		// 4. Repair selection if it points at a user no longer in the roster.
-		if (!selectedIntuitionUser || !intuitionMembers.some(m => m.display_name === selectedIntuitionUser)) {
-			let saved = '';
-			try { saved = localStorage.getItem('pan_intuition_user') || ''; } catch {}
-			if (saved && intuitionMembers.some(m => m.display_name === saved)) {
-				selectedIntuitionUser = saved;
-			} else {
-				selectedIntuitionUser = orgData?.user_display_name || intuitionMembers[0]?.display_name || '';
-			}
-		}
-
-		// Status text reflects three real states:
-		//   • roster fetch failed entirely     → "Failed to load — retrying…"
-		//   • roster returned 0 members        → "No users in this org yet"
-		//   • roster returned ≥1 member        → '' (clear)
-		// Previously, a failed fetch left status '' AND intuitionLoaded=false,
-		// which pinned the widget on "loading…" forever. The vision verifier
-		// (#507) caught this as a blank-render bug and Forge (#508) kept filing
-		// duplicates because the root cause was unreachable from CSS-land.
-		if (rosterR.status === 'rejected' && intuitionMembers.length === 0) {
-			intuitionStatus = 'Failed to load — retrying…';
-		} else {
-			intuitionStatus = intuitionMembers.length === 0 ? 'No users in this org yet' : '';
-		}
-		// Flip to loaded the moment we have ANY attempted result (fulfilled or
-		// rejected). Sticky once set. Previously this only flipped on members>0
-		// which meant an empty-roster org OR a failing endpoint kept the widget
-		// pinned on the "loading…" state with no way out except a page refresh.
-		// REGRESSION TEST: load the dashboard against an org with 0 members or
-		// with /api/v1/orgs/<id>/members returning 500. The widget should
-		// transition out of "loading" within one refresh cycle and show
-		// intuitionStatus, not stay grey forever.
-		if (rosterR.status === 'fulfilled' || rosterR.status === 'rejected') {
-			intuitionLoaded = true;
-		}
-		// If the roster fetch failed but orgData is healthy, schedule a one-shot
-		// retry in 5s so the widget self-heals when the backend recovers (mid-
-		// restart, transient 502). Idempotent guard prevents stacking timers.
-		if (rosterR.status === 'rejected') {
-			if (!window._intuitionRetryTimer) {
-				window._intuitionRetryTimer = setTimeout(() => {
-					window._intuitionRetryTimer = null;
-					refreshIntuition();
-				}, 5000);
-			}
-		}
-
-		// Side-channel updates (independent endpoints).
-		loadPanMind();
-		loadPanNeeds();
-		loadPanSynthesis();
-	}
-	// PAN's Mind — first-person thought stream (modeled on Claude's extended
-	// thinking blocks). Replaces the old `ai_usage` feed which showed static
-	// system prompts. Each row is a sentence PAN wrote about what it just
-	// concluded — see service/src/thoughts.js for the producers.
-	let panThoughts = $state([]);
-	async function loadPanThoughts() {
-		try {
-			const r = await fetch('/api/v1/thoughts/recent?limit=20');
-			if (!r.ok) return;
-			const d = await r.json();
-			panThoughts = Array.isArray(d?.thoughts) ? d.thoughts : [];
-		} catch { /* leave previous data */ }
-	}
-	// Legacy alias retained so existing callers keep working during the
-	// transition. Same payload, new label.
-	const loadPanMind = loadPanThoughts;
-
-	// Life Needs — Sims-style motive bars (0..100). Populated from
-	// /api/v1/needs?user=<commander>. Sorted server-side by urgency descending.
-	// Scoped to whichever user is currently selected in the Intuition dropdown
-	// so the bars track that user — not always Tereseus.
-	let panNeeds = $state([]);
-	async function loadPanNeeds() {
-		try {
-			const u = selectedIntuitionUser || orgData?.user_display_name || '';
-			const qs = u ? `?user=${encodeURIComponent(u)}` : '';
-			const r = await fetch(`/api/v1/needs${qs}`);
-			if (!r.ok) return;
-			const d = await r.json();
-			panNeeds = Array.isArray(d?.needs) ? d.needs : [];
-		} catch { /* keep last */ }
-	}
-
-	// PAN's-Mind synthesis — a single first-person paragraph (LLM-generated).
-	// Replaces the old icon-count "gist" line (task #494). Cached server-side
-	// for 3 min per user, so this fetch is cheap to call alongside other
-	// refreshes. We still cache the last good payload locally so a transient
-	// fetch failure never blanks the box.
-	// Synthesis payload now also carries reasoning_steps[] (task #495) —
-	// the substrate the paragraph was rendered from. panReasoningOpen
-	// toggles the structured trace view in the widget.
-	let panSynthesis = $state(null); // { synthesis, generated_at_ms, sources_used, model, cached, cycle_id, steps }
-	let panReasoningOpen = $state(false);
-	async function loadPanSynthesis() {
-		try {
-			const u = selectedIntuitionUser || orgData?.user_display_name || '';
-			const qs = u ? `?user=${encodeURIComponent(u)}` : '';
-			const r = await fetch(`/api/v1/pan/synthesis${qs}`);
-			if (!r.ok) return;
-			const d = await r.json();
-			if (d?.ok) panSynthesis = d;
-		} catch { /* keep last */ }
-	}
-	// Force a fresh reasoning cycle — bypasses both the in-process and
-	// DB-row cache and re-runs runCycle. Used by the ↻ button in the
-	// synthesis box.
-	async function forcePanSynthesis() {
-		try {
-			const u = selectedIntuitionUser || orgData?.user_display_name || '';
-			const qs = u ? `?user=${encodeURIComponent(u)}&force=1` : '?force=1';
-			const r = await fetch(`/api/v1/pan/synthesis${qs}`);
-			if (!r.ok) return;
-			const d = await r.json();
-			if (d?.ok) panSynthesis = d;
-		} catch { /* keep last */ }
-	}
-	function needBarColor(level) {
-		// Green > 70, yellow 30-70, red < 30
-		if (level >= 70) return '#22c55e';
-		if (level >= 30) return '#eab308';
-		return '#ef4444';
-	}
-
-	// Composite view the template reads. PURE DERIVATION — never assigned to.
-	// Re-evaluates whenever any atomic piece changes, so the merged members
-	// list always reflects the latest roster + latest snapshots. There's no
-	// intermediate "writing the composite" step that could blank the panel
-	// mid-flight.
-	let _intuitionMergedMembers = $derived.by(() => {
-		const snaps = intuitionSnapsByCommander;
-		return (intuitionMembers || []).map(u => {
-			const snap = snaps[u.display_name]?.snapshot || null;
-			const n = snap?.now || {};
-			const age_ms = snap?.as_of ? Date.now() - snap.as_of : null;
-			return {
-				user_id: u.id,
-				commander: u.display_name,
-				role_name: u.role_name,
-				role_color: u.role_color,
-				avatar_url: u.avatar_url,
-				as_of: snap?.as_of || null,
-				age_ms,
-				is_active: age_ms !== null && age_ms < 5 * 60 * 1000,
-				has_snapshot: !!snap,
-				activity: n.activity || null,
-				focus: n.focus || null,
-				mood: n.mood || null,
-				where: n.where || null,
-				last_seen: n.last_seen || null,
-				last_heard: n.last_heard || null,
-				urgency: n.urgency || null,
-				engagement: n.engagement || null,
-				recent_topics: n.recent_topics || [],
-				assumption: n.assumption || null,
-				confidence: snap?.signals?.confidence ?? 0,
-			};
-		});
-	});
-	let intuitionData = $derived(
-		!intuitionLoaded
-			? null
-			: {
-				org_id: orgData?.org_id || '',
-				org_name: orgData?.org_name || intuitionOrgSnap?.org_name || 'Personal',
-				as_of: intuitionOrgSnap?.as_of || null,
-				members: _intuitionMergedMembers,
-				devices: intuitionOrgSnap?.devices || [],
-				org_state: intuitionOrgSnap?.org_state || {},
-				individualSnap: intuitionIndSnap || {},
-				snapshot: intuitionIndSnap || null, // legacy alias for forceCamCapture
-			}
-	);
-
-	// ─── Widget self-identification contract (task #504, L1 of dashboard self-heal) ───
-	// Every dashboard panel exposes (data-widget, data-widget-state,
-	// data-widget-rendered-at, data-widget-data-source-at). Downstream layers
-	// (browser telemetry L2, steward UI lane L3, vision verifier L4) read these
-	// to detect "panel rendered but is empty/stale" without having to guess.
-	// States: loading | empty | ok | error | stale
-	let intuitionWidgetState = $derived.by(() => {
-		if (!intuitionLoaded) return 'loading';
-		if (!Array.isArray(intuitionMembers) || intuitionMembers.length === 0) return 'empty';
-		const sel = intuitionMembers.find(u => u.display_name === selectedIntuitionUser) || intuitionMembers[0];
-		if (!sel) return 'empty';
-		const snap = intuitionSnapsByCommander[sel.display_name]?.snapshot;
-		if (!snap) return 'empty';
-		const ageMs = snap.as_of ? Date.now() - snap.as_of : null;
-		if (ageMs !== null && ageMs > 5 * 60 * 1000) return 'stale';
-		return 'ok';
-	});
-	let intuitionWidgetDataSourceAt = $derived(
-		(() => {
-			const sel = intuitionMembers.find(u => u.display_name === selectedIntuitionUser) || intuitionMembers[0];
-			return sel ? (intuitionSnapsByCommander[sel.display_name]?.snapshot?.as_of || 0) : 0;
-		})()
-	);
-
-	// Generic per-section state resolver. Pessimistic by default: a section
-	// reports 'empty' if its primary data array is empty, otherwise 'ok'.
-	// Sections without a known data shape are reported 'ok' once the page
-	// has mounted (we can't usefully assert empty/ok if we don't know what
-	// "data" means for them yet).
+	// Generic widget-state resolver for the L1 dashboard self-heal substrate
+	// (task #504). Each panel emits data-widget-state on its container so the
+	// browser-telemetry L2 / steward L3 / vision-verifier L4 layers can detect
+	// rendered-but-empty/stale states without guessing. Sections whose state
+	// lives inside an extracted component return 'ok' here — the child sets
+	// its own data-widget-state attribute on its root.
 	function widgetStateOf(section) {
 		if (!section) return 'empty';
 		switch (section) {
-			case 'intuition': return intuitionWidgetState;
+			case 'intuition': return 'ok'; // IntuitionPanel emits its own state
 			case 'services': return (Array.isArray(servicesData) && servicesData.length > 0) ? 'ok' : 'loading';
 			case 'devices': {
 				const have = (Array.isArray(panClientDevices) && panClientDevices.length > 0)
 					|| (Array.isArray(allDevices) && allDevices.length > 0);
 				return have ? 'ok' : 'loading';
 			}
-			case 'alerts': return Array.isArray(alertsData) ? 'ok' : 'loading';
-			case 'approvals': return Array.isArray(approvalsData) ? 'ok' : 'loading';
-			case 'tests': return (Array.isArray(testSuites) && testSuites.length > 0) ? 'ok' : 'loading';
-			case 'library': return (Array.isArray(libraryItems) && libraryItems.length > 0) ? 'ok' : 'loading';
-			case 'usage': return usageData ? 'ok' : 'loading';
-			case 'transcript': return 'ok'; // transcript widget owns its own empty state
-
+			case 'alerts': return 'ok';     // AlertsPanel manages own state
+			case 'approvals': return 'ok';  // ApprovalsPanel manages own state
+			case 'tests': return 'ok';  // TestsPanel manages own state
+			case 'library': return 'ok';  // LibraryPanel manages own state
+			case 'usage': return 'ok';  // UsagePanel manages own state
+			case 'transcript': return 'ok';
 			case 'tasks':
 			case 'bugs': return 'ok';
-
-			// Extended coverage for L1 substrate (task #504). Previously these
-			// fell to default:'ok' so L3 render-health could never see them as
-			// empty. Now they reflect their backing $state vars.
 			case 'project': return projectData ? 'ok' : 'loading';
 			case 'lifeboat': return lifeboatData ? 'ok' : 'loading';
-			case 'users': return (Array.isArray(usersData) && usersData.length > 0) ? 'ok' : 'loading';
-			case 'teams': return (Array.isArray(teamsData) && teamsData.length > 0) ? 'ok' : 'loading';
-			case 'contacts': return Array.isArray(contactsData) ? 'ok' : 'loading';
-			case 'benchmarks': return benchmarksData ? 'ok' : 'loading';
-			case 'pipeline': return pipelineData ? 'ok' : 'loading';
-			case 'mail': return Array.isArray(mailMessages) ? 'ok' : 'loading';
-			// perf/apps/instances/setup/calendar: static or composite — 'ok' is honest
+			case 'users': return 'ok';  // UsersPanel manages own state
+			case 'teams': return 'ok';  // TeamsPanel manages own state
+			case 'contacts': return 'ok';  // ContactsPanel manages own state
+			case 'benchmarks': return 'ok';  // BenchmarksPanel manages own state
+			case 'pipeline': return 'ok';  // PipelinePanel manages own state
+			case 'mail': return 'ok';  // MailPanel manages own state
 			case 'perf':
 			case 'apps':
 			case 'instances':
@@ -796,467 +440,26 @@
 		}
 	}
 
-	// Legacy alias — `loadIntuition` is referenced from a few places (WS push,
-	// section-show $effect, forceCamCapture). Point them all at the new
-	// `refreshIntuition`. Same single source of truth.
-	const loadIntuition = refreshIntuition;
-
-	function startIntuitionPolling() {
-		// NO setInterval polling. WS `widget_update:'intuition'` from
-		// intuition.js is the only refresh trigger. On reconnect, sync_response
-		// re-fires it. Polling was the original source of the
-		// disappearing-user-block race.
-		if (intuitionPolling) { clearInterval(intuitionPolling); intuitionPolling = null; }
-		if (orgData?.org_id) refreshIntuition();
-	}
-
-	// When the user picks a different user from the dropdown, persist the choice
-	// then refresh so detail blocks + Life Needs both track the new selection.
-	function onIntuitionUserChange() {
-		try { localStorage.setItem('pan_intuition_user', selectedIntuitionUser || ''); } catch {}
-		refreshIntuition();
-	}
-
-	// React to the bottom-left org switcher changing the active org. We only
-	// want to re-fetch when the org_id ACTUALLY changes — Svelte 5 effects
-	// deeply track $state, so a naked `orgData?.org_id` read fires on any
-	// mutation inside orgData (role change, avatar change, etc.). Cache the
-	// last-seen org_id and bail when unchanged so we don't blank the roster
-	// every tick.
-	let _lastIntuitionOrgId = null;
-	$effect(() => {
-		const activeOrgId = orgData?.org_id;
-		if (!activeOrgId) return;
-		if (activeOrgId === _lastIntuitionOrgId) return;
-		_lastIntuitionOrgId = activeOrgId;
-		// DON'T blank the roster here — if the new fetch is slow, blanking
-		// causes a flash-of-empty-panel. refreshIntuition replaces atomically
-		// when the new data lands. Clear the selection so the default-to-self
-		// logic re-runs against the new org's roster.
-		selectedIntuitionUser = '';
-		refreshIntuition();
-	});
-	function stopIntuitionPolling() {
-		if (intuitionPolling) { clearInterval(intuitionPolling); intuitionPolling = null; }
-	}
-	let approvalsData = $state([]);
+	// approvalsData migrated to $lib/components/ApprovalsPanel.svelte. Parent
+	// only keeps `approvalsCount` (declared above) for the dropdown badge.
 
 	// Benchmarks
-	let benchmarksData = $state(null); // { latest: {suite: run|null}, suites_run, suites_passed, total_suites, suites }
-	let benchmarkRunning = $state(false);
-	let benchmarkRunningSuite = $state(null);
-	let benchmarkPolling = null;
+	// Benchmarks state + functions migrated to $lib/components/BenchmarksPanel.svelte
 
-	async function loadBenchmarks() {
-		try {
-			[benchmarksData, autodevReport] = await Promise.all([
-				api('/dashboard/api/benchmarks/latest'),
-				api('/dashboard/api/autodev/report').catch(() => null),
-			]);
-		} catch {}
-	}
-	function startBenchmarkPolling() {
-		loadBenchmarks();
-		if (benchmarkPolling) clearInterval(benchmarkPolling);
-		benchmarkPolling = setInterval(loadBenchmarks, 30000);
-	}
-	function stopBenchmarkPolling() {
-		if (benchmarkPolling) { clearInterval(benchmarkPolling); benchmarkPolling = null; }
-	}
-	async function runBenchmark(suite) {
-		benchmarkRunning = true;
-		benchmarkRunningSuite = suite;
-		try {
-			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || 'cerebras:qwen-3-235b';
-			await api('/api/v1/ai/benchmark', { method: 'POST', body: JSON.stringify({ suite, model }) });
-			await loadBenchmarks();
-		} catch (e) {
-			console.error('[Benchmarks] run failed', e);
-		} finally {
-			benchmarkRunning = false;
-			benchmarkRunningSuite = null;
-		}
-	}
-	async function runAllBenchmarks() {
-		benchmarkRunning = true;
-		benchmarkRunningSuite = 'all';
-		try {
-			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || 'cerebras:qwen-3-235b';
-			await api('/api/v1/ai/benchmark/all', { method: 'POST', body: JSON.stringify({ model }) });
-			await loadBenchmarks();
-		} catch (e) {
-			console.error('[Benchmarks] run-all failed', e);
-		} finally {
-			benchmarkRunning = false;
-			benchmarkRunningSuite = null;
-		}
-	}
-	// AutoDev report
-	let autodevReport = $state(null);
-	async function loadAutodevReport() {
-		try {
-			autodevReport = await api('/dashboard/api/autodev/report');
-		} catch {}
-	}
+	// Beta Pipeline state + functions migrated to $lib/components/PipelinePanel.svelte
 
-	// Returns display-friendly label for a score key
-	function benchScoreLabel(key) {
-		const MAP = {
-			hearing: 'Hearing', reflex_ms: 'Reflex', clarity: 'Clarity', reasoning: 'Reasoning',
-			memory: 'Memory', voice: 'Voice', coherence: 'Coherence', novelty: 'Novelty',
-			accuracy: 'Accuracy', store: 'Store', recall: 'Recall', associative: 'Assoc',
-			relevance: 'Relevance', coverage: 'Coverage', freshness: 'Freshness',
-			pattern_det: 'Pattern', inference: 'Infer', auth_accuracy: 'Auth',
-			persona_consistency: 'Persona', hit_rate: 'Hit Rate', e2e_pass: 'E2E',
-			multi_intent: 'Multi-Intent', decay_ok: 'Decay', bump_ok: 'Bump',
-			policy_ok: 'Policy', scope_ok: 'Scope',
-		};
-		return MAP[key] || key;
-	}
+	// Chat/Contacts state migrated to $lib/stores/chat.svelte.js
 
-	// ─── Beta Pipeline state ───
-	let pipelineData = $state(null);  // { pipeline, beta, production, pending }
-	let pipelinePolling = null;
-	let pipelineStarting = $state(false);
+	// Mail state migrated to $lib/stores/mail.svelte.js
 
-	async function loadPipeline() {
-		try {
-			pipelineData = await api('/api/carrier/pipeline/status');
-		} catch {}
-	}
-	function startPipelinePolling() {
-		loadPipeline();
-		if (pipelinePolling) clearInterval(pipelinePolling);
-		// 10s fallback — pipeline_event WS push is the primary real-time path
-		pipelinePolling = setInterval(loadPipeline, 10_000);
-	}
-	function stopPipelinePolling() {
-		if (pipelinePolling) { clearInterval(pipelinePolling); pipelinePolling = null; }
-	}
-	async function triggerPipeline() {
-		pipelineStarting = true;
-		try {
-			await api('/api/carrier/pipeline/start', { method: 'POST', body: JSON.stringify({ source: 'manual' }) });
-			await loadPipeline();
-		} catch (e) { console.error('[Pipeline] start failed', e); }
-		finally { pipelineStarting = false; }
-	}
-	async function abortPipelineAction() {
-		try {
-			await api('/api/carrier/pipeline/abort', { method: 'POST', body: '{}' });
-			await loadPipeline();
-		} catch (e) { console.error('[Pipeline] abort failed', e); }
-	}
-	async function promotePipelineManual() {
-		try {
-			await api('/api/carrier/pipeline/promote', { method: 'POST', body: '{}' });
-			await loadPipeline();
-		} catch (e) { console.error('[Pipeline] promote failed', e); }
-	}
-	function pipelineStatusColor(status) {
-		if (!status || status === 'idle') return '#666';
-		if (status === 'failed') return '#e55';
-		if (status === 'ready' || status === 'promoting') return '#5e5';
-		return '#f90';  // spawning, benchmarking
-	}
+	// Compose (openCompose, openExpandedView) migrated to $lib/compose.js
 
-	// ─── Chat / Contacts state ───
-	let contactsData = $state([]);
-	let chatThreads = $state([]);
-	let chatMessages = $state([]);
-	let chatActiveThread = $state(null); // thread object currently open
-	let chatInputText = $state('');
-	let chatUnreadTotal = $state(0);
-	let chatSearchQuery = $state('');
-	let addContactModal = $state(false);
-	let newContactName = $state('');
-	let newContactPanId = $state('');
-	let newContactPhone = $state('');
-	let newContactEmail = $state('');
-	let chatCallActive = $state(null); // { call_id, type, thread_id, status }
-	let chatMessagesEl; // scroll container ref
-
-	// ─── Mail state ───
-	let mailMessages = $state([]);
-	let mailLoading = $state(false);
-	let mailTotal = $state(0);
-	let mailPage = $state(0);
-	let mailStatus = $state(null); // { connected, configured, user }
-
-	// ─── Compose (opens in Tauri window) ───
-	const TAURI_PORT = 7790;
-
-	async function loadContacts() {
-		try {
-			const data = await api('/api/v1/chat/contacts');
-			contactsData = Array.isArray(data) ? data : [];
-			const unread = await api('/api/v1/chat/unread');
-			chatUnreadTotal = unread?.unread || 0;
-		} catch (e) {
-			console.error('Failed to load contacts:', e);
-		}
-	}
-
-	async function loadChatThreads() {
-		try {
-			const data = await api('/api/v1/chat/threads');
-			chatThreads = Array.isArray(data) ? data : [];
-		} catch (e) {
-			console.error('Failed to load threads:', e);
-		}
-	}
-
-	async function openChat(contact) {
-		try {
-			const res = await api('/api/v1/chat/threads/dm', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ contact_id: contact.id })
-			});
-			chatActiveThread = { id: res.thread_id, contact, type: 'dm' };
-			await loadChatMessages(res.thread_id);
-			// Mark as read
-			await api(`/api/v1/chat/threads/${res.thread_id}/read`, { method: 'POST' });
-			loadContacts(); // refresh unread counts
-			centerView = 'chat';
-		} catch (e) {
-			console.error('Failed to open chat:', e);
-		}
-	}
-
-	async function loadChatMessages(threadId) {
-		try {
-			const data = await api(`/api/v1/chat/threads/${threadId}/messages`);
-			chatMessages = Array.isArray(data) ? data : [];
-			await tick();
-			if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-		} catch (e) {
-			console.error('Failed to load messages:', e);
-		}
-	}
-
-	async function sendChatMessage() {
-		if (!chatInputText.trim() || !chatActiveThread) return;
-		const body = chatInputText.trim();
-		chatInputText = '';
-		const isPan = chatActiveThread.id === 'thread-pan-system';
-		try {
-			const res = await api(`/api/v1/chat/threads/${chatActiveThread.id}/messages`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ body })
-			});
-			chatMessages = [...chatMessages, { id: res.id, thread_id: chatActiveThread.id, sender_id: 'self', body, body_type: 'text', created_at: res.created_at }];
-			await tick();
-			if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-
-			// Π persona — poll for server-generated reply
-			if (isPan) {
-				const sentAt = Date.now();
-				let attempts = 0;
-				const pollForReply = async () => {
-					attempts++;
-					try {
-						const msgs = await api(`/api/v1/chat/threads/${chatActiveThread?.id}/messages`);
-						if (Array.isArray(msgs)) {
-							const hasNewReply = msgs.some(m => m.sender_id === 'contact-pan-system' && m.created_at >= sentAt);
-							chatMessages = msgs;
-							await tick();
-							if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-							if (hasNewReply || attempts >= 8) return; // got it or gave up
-						}
-					} catch {}
-					if (attempts < 8) setTimeout(pollForReply, 2000);
-				};
-				setTimeout(pollForReply, 2000);
-			}
-		} catch (e) {
-			console.error('Failed to send message:', e);
-		}
-	}
-
-	async function addContact() {
-		if (!newContactName.trim()) return;
-		try {
-			await api('/api/v1/chat/contacts', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					display_name: newContactName.trim(),
-					pan_instance_id: newContactPanId.trim() || undefined,
-					phone: newContactPhone.trim() || undefined,
-					email: newContactEmail.trim() || undefined
-				})
-			});
-			newContactName = ''; newContactPanId = ''; newContactPhone = ''; newContactEmail = '';
-			addContactModal = false;
-			loadContacts();
-		} catch (e) {
-			console.error('Failed to add contact:', e);
-		}
-	}
-
-	async function deleteContact(contactId) {
-		try {
-			await api(`/api/v1/chat/contacts/${contactId}`, { method: 'DELETE' });
-			loadContacts();
-		} catch (e) {
-			console.error('Failed to delete contact:', e);
-		}
-	}
-
-	async function toggleFavorite(contact) {
-		try {
-			await api(`/api/v1/chat/contacts/${contact.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ favorited: !contact.favorited })
-			});
-			loadContacts();
-		} catch (e) {
-			console.error('Failed to toggle favorite:', e);
-		}
-	}
-
-	async function startCall(threadId, type) {
-		try {
-			const res = await api('/api/v1/chat/calls/start', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ thread_id: threadId, type })
-			});
-			chatCallActive = { call_id: res.call_id, type, thread_id: threadId, status: 'ringing' };
-		} catch (e) {
-			console.error('Failed to start call:', e);
-		}
-	}
-
-	async function endCall() {
-		if (!chatCallActive) return;
-		try {
-			await api(`/api/v1/chat/calls/${chatCallActive.call_id}/end`, { method: 'POST' });
-			chatCallActive = null;
-			if (chatActiveThread) loadChatMessages(chatActiveThread.id);
-		} catch (e) {
-			console.error('Failed to end call:', e);
-		}
-	}
-
-	// ─── Mail functions ───
-	async function loadMail(page = 0) {
-		mailLoading = true;
-		try {
-			const data = await api(`/api/v1/chat/mail?limit=50&offset=${page * 50}`);
-			mailMessages = Array.isArray(data?.messages) ? data.messages : [];
-			mailTotal = data?.total || mailMessages.length;
-			mailPage = page;
-		} catch (e) {
-			console.error('Failed to load mail:', e);
-			mailMessages = [];
-		}
-		mailLoading = false;
-	}
-
-	async function loadMailStatus() {
-		try {
-			mailStatus = await api('/api/v1/email/status');
-		} catch (e) {
-			mailStatus = { connected: false, configured: false };
-		}
-	}
-
-	async function syncMail() {
-		mailLoading = true;
-		try {
-			await api('/api/v1/email/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: 'INBOX' }) });
-			await loadMail(0);
-		} catch (e) {
-			console.error('Failed to sync mail:', e);
-		}
-		mailLoading = false;
-	}
-
-	// ─── Compose: opens in Tauri window ───
-	async function openCompose(contact = null, prefillSubject = '', prefillEmail = '') {
-		const params = new URLSearchParams();
-		if (contact) {
-			params.set('contact', contact.id);
-			params.set('name', contact.display_name);
-			if (contact.email) params.set('email', contact.email);
-		} else if (prefillEmail) {
-			params.set('email', prefillEmail);
-		}
-		if (prefillSubject) params.set('subject', prefillSubject);
-
-		const composeUrl = `${window.location.origin}/v2/compose?${params.toString()}`;
-
-		try {
-			// Try Tauri window first
-			await fetch(`http://127.0.0.1:${TAURI_PORT}/open`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ url: composeUrl, title: 'Compose', width: 640, height: 520 })
-			});
-		} catch {
-			// Fallback: browser popup
-			window.open(composeUrl, '_blank', 'width=640,height=520');
-		}
-	}
-
-	// ─── Expanded views: open full panel in Tauri window ───
-	// Uses the same-origin /api/v1/popout proxy so we avoid Tauri's CORS preflight
-	// bug (its tiny-http server returns 404 on OPTIONS, killing direct browser fetches).
-	async function openExpandedView(section) {
-		const urls = {
-			contacts: `${window.location.origin}/v2/comms?view=contacts`,
-			mail: `${window.location.origin}/v2/comms?view=mail`,
-			calendar: `${window.location.origin}/v2/comms?view=calendar`,
-		};
-		const titles = { contacts: 'Contacts', mail: 'Mail', calendar: 'Calendar' };
-		const url = urls[section];
-		if (!url) return;
-
-		let opened = false;
-		try {
-			const r = await fetch('/api/v1/popout', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ url, title: titles[section] || section, width: 900, height: 700 })
-			});
-			if (r.ok) opened = true;
-		} catch {}
-		if (!opened) window.open(url, '_blank', 'width=900,height=700');
-	}
-
-	// ─── Call Π: opens the Comms expand window focused on the Π thread,
-	//     passing ?call=1 so the page starts a live voice session immediately.
-	//     Goes through /api/v1/popout (same-origin proxy) to dodge Tauri's CORS
-	//     preflight bug. Falls back to window.open() if Tauri isn't running
-	//     (e.g. dashboard opened in plain browser).
-	async function openPanCall() {
-		const url = `${window.location.origin}/v2/comms?view=contacts&thread=thread-pan-system&call=1`;
-		let opened = false;
-		try {
-			const r = await fetch('/api/v1/popout', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ url, title: 'Call Π', width: 720, height: 820 })
-			});
-			if (r.ok) opened = true;
-		} catch {}
-		if (!opened) window.open(url, '_blank', 'width=720,height=820');
-	}
-
-	function formatMailDate(dateStr) {
-		if (!dateStr) return '';
-		const d = new Date(dateStr);
-		const now = new Date();
-		const isToday = d.toDateString() === now.toDateString();
-		if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-		const isThisYear = d.getFullYear() === now.getFullYear();
-		if (isThisYear) return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-		return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-	}
+	// loadContacts / loadChatThreads / openChat / loadChatMessages /
+	// sendChatMessage / addContact / deleteContact / toggleFavorite /
+	// startCall / endCall / loadMail / loadMailStatus / syncMail /
+	// openCompose / openExpandedView / formatMailDate — all migrated
+	// to $lib/stores/chat.svelte.js, $lib/stores/mail.svelte.js, and
+	// $lib/compose.js.
 
 	function formatChatTime(ts) {
 		if (!ts) return '';
@@ -1268,92 +471,14 @@
 	}
 
 	// Lifeboat state
-	let lifeboatData = $state(null); // /api/carrier/status response
-	let lifeboatCountdown = $state(0); // seconds remaining in rollback window
-	let lifeboatSwapping = $state(false); // true while swap in progress
-	let lifeboatSwapStarted = 0; // timestamp when swap was detected
-	let lifeboatRollbackMs = 0; // total rollback window from server
+	// Lifeboat state migrated to $lib/components/LifeboatPanel.svelte
 
-	// Wrapped apps state
-	let wrapServices = $state([]);
-	let wrapOpening = $state(null);
-	let wrapMsg = $state('');
-	let appsView = $state('root'); // 'root' | 'apps'
-
-	// App metadata: what PAN knows about each detected app
-	const APP_META = {
-		vlc:      { label: 'VLC',        cat: 'Media',    icon: '🎬', actions: ['Play / Pause', 'Volume', 'Open file'], setup: 'none' },
-		mpv:      { label: 'MPV',        cat: 'Media',    icon: '▶️', actions: ['Play / Pause', 'Seek', 'Volume'],      setup: 'none' },
-		spotify:  { label: 'Spotify',    cat: 'Media',    icon: '🎵', actions: ['Play / Pause', 'Next', 'Search song'], setup: 'none' },
-		chrome:   { label: 'Chrome',     cat: 'Browser',  icon: '🌐', actions: ['Open URL', 'Search', 'New tab'],       setup: 'none' },
-		firefox:  { label: 'Firefox',    cat: 'Browser',  icon: '🦊', actions: ['Open URL', 'Search', 'New tab'],       setup: 'none' },
-		discord:  { label: 'Discord',    cat: 'Comms',    icon: '💬', actions: ['Send message', 'Join call', 'Mute'],   setup: 'none' },
-		obs:      { label: 'OBS',        cat: 'Creative', icon: '📺', actions: ['Start stream', 'Switch scene', 'Record'], setup: 'none' },
-		steam:    { label: 'Steam',      cat: 'Gaming',   icon: '🎮', actions: ['Launch game', 'View library'],         setup: 'none' },
-		code:     { label: 'VS Code',    cat: 'Dev',      icon: '💻', actions: ['Open file', 'Open folder', 'Run task'], setup: 'none' },
-		'windows-media-player': { label: 'Windows Media', cat: 'Media', icon: '🎞️', actions: ['Play', 'Volume'], setup: 'none' },
-		rustdesk: { label: 'RustDesk',   cat: 'Remote',   icon: '🖥️', actions: ['Remote control'], setup: 'none' },
-	};
-
-	// Aggregate detected apps from all devices
-	const detectedApps = $derived(() => {
-		const map = {};
-		for (const dev of allDevices) {
-			const caps = Array.isArray(dev.capabilities) ? dev.capabilities
-				: (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : []);
-			for (const cap of caps) {
-				if (!cap.startsWith('app:')) continue;
-				const key = cap.slice(4);
-				if (!map[key]) map[key] = { key, devices: [] };
-				map[key].devices.push({ name: dev.name || dev.hostname, hostname: dev.hostname, online: dev.online });
-			}
-		}
-		return Object.values(map).sort((a, b) => {
-			// Known apps first, then alphabetical
-			const aKnown = APP_META[a.key] ? 0 : 1;
-			const bKnown = APP_META[b.key] ? 0 : 1;
-			return aKnown - bKnown || a.key.localeCompare(b.key);
-		});
-	});
-
-	async function loadWrapServices() {
-		try {
-			const res = await fetch(`${window.location.origin}/api/v1/wrap/services`);
-			if (res.ok) {
-				const data = await res.json();
-				wrapServices = data.services || [];
-			}
-		} catch (e) { console.error('[PAN Wrap] services load failed:', e); }
-	}
-
-	async function openWrapper(serviceId) {
-		wrapOpening = serviceId;
-		wrapMsg = '';
-		try {
-			const res = await fetch(`${window.location.origin}/api/v1/wrap/open/${serviceId}`, { method: 'POST' });
-			const data = await res.json();
-			if (!res.ok || !data.ok) wrapMsg = data.error || 'Failed to open wrapper';
-			else wrapMsg = `Opened ${serviceId}`;
-		} catch (e) {
-			wrapMsg = e.message || 'Failed to open wrapper';
-		} finally {
-			wrapOpening = null;
-			setTimeout(() => { wrapMsg = ''; }, 3000);
-		}
-	}
+	// Apps state + functions migrated to $lib/components/AppsPanel.svelte
 
 	// Atlas state
-	let atlasData = $state(null);
-	let atlasLoading = $state(false);
-	let atlasTransform = $state({ x: 0, y: 0, scale: 1 });
-	let atlasDragging = $state(false);
-	let atlasDragStart = $state({ x: 0, y: 0 });
-	let atlasHovered = $state(null);
-	let atlasSelected = $state(null);
+	// Atlas state migrated to $lib/stores/atlas.svelte.js
 	let atlasSvgEl;
-	let atlasElapsed = $state(0);
-	let atlasAnimTimer = null;
-	let atlasAnimT0 = 0;
+	// Atlas elapsed/timers migrated to $lib/stores/atlas.svelte.js
 	let chatBubbles = $state([]);
 	let chatCurrentProject = $state('');
 
@@ -1399,61 +524,7 @@
 	}
 
 	// Lightweight markdown → HTML for chat bubbles (bold, bullets, inline code, links)
-	function renderMarkdown(text) {
-		if (!text) return '';
-		// Escape HTML first
-		let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-		// Code blocks (```...```) — must come before inline code
-		html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre class="md-codeblock"><code>$2</code></pre>');
-		// Tables — detect consecutive lines starting with |
-		const lines = html.split('\n');
-		let tableStart = -1;
-		for (let i = 0; i <= lines.length; i++) {
-			const trimmed = i < lines.length ? lines[i].trim() : '';
-			const isTableLine = trimmed.startsWith('|') && trimmed.includes('|', 1);
-			if (isTableLine && tableStart === -1) tableStart = i;
-			if (!isTableLine && tableStart !== -1) {
-				const tableLines = lines.slice(tableStart, i).map(l => l.trim());
-				if (tableLines.length >= 2) {
-					const sepCells = tableLines[1].split('|').slice(1).map(c => c.trim()).filter(c => c);
-					const isSep = sepCells.length > 0 && sepCells.every(c => /^[\s\-:]+$/.test(c));
-					const dataRows = isSep ? [tableLines[0], ...tableLines.slice(2)] : tableLines;
-					let table = '<div class="md-table-wrap"><table class="md-table">';
-					dataRows.forEach((row, ri) => {
-						const cells = row.split('|').slice(1).map(c => c.trim()).filter((c, ci, arr) => ci < arr.length - 1 || c !== '');
-						const tag = (ri === 0 && isSep) ? 'th' : 'td';
-						table += '<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>';
-					});
-					table += '</table></div>';
-					lines.splice(tableStart, i - tableStart, table);
-					i = tableStart + 1;
-				}
-				tableStart = -1;
-			}
-		}
-		html = lines.join('\n');
-		// Inline code (`...`)
-		html = html.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
-		// Bold (**...**)
-		html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-		// Italic (*...*)
-		html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
-		// Headings (## ...)
-		html = html.replace(/^### (.+)$/gm, '<div class="md-h3">$1</div>');
-		html = html.replace(/^## (.+)$/gm, '<div class="md-h2">$1</div>');
-		html = html.replace(/^# (.+)$/gm, '<div class="md-h1">$1</div>');
-		// Bullet lists (- item or * item)
-		html = html.replace(/^[\-\*] (.+)$/gm, '<div class="md-bullet">$1</div>');
-		// Numbered lists (1. item)
-		html = html.replace(/^\d+\. (.+)$/gm, '<div class="md-bullet md-numbered">$1</div>');
-		// Line breaks
-		html = html.replace(/\n/g, '<br>');
-		// Clean up <br> after block elements
-		html = html.replace(/(<\/div>)<br>/g, '$1');
-		html = html.replace(/(<\/pre>)<br>/g, '$1');
-		html = html.replace(/(<\/table>)<br>/g, '$1');
-		return html;
-	}
+	// renderMarkdown migrated to $lib/markdown.js — see import above
 
 	// Persist chat across refresh (localStorage survives tab close + refresh)
 	function saveChatToStorage() {
@@ -1636,162 +707,29 @@
 	let recognition = null;
 	let pastedImages = $state([]); // { dataUrl, path } — preview before send
 
-	// Library widget
-	let libraryItems = $state([]);
-	let libraryFilter = $state('all');
-	let libraryQuery = $state('');
-	async function loadLibrary() {
-		try {
-			const r = await fetch('/api/v1/library');
-			const j = await r.json();
-			libraryItems = j.items || [];
-		} catch (e) { libraryItems = []; }
-	}
-	function openLibraryItem(item) {
-		const url = `${window.location.origin}/api/v1/library/view?path=${encodeURIComponent(item.path)}`;
-		const win = window.open(url, '_blank', 'width=1100,height=800');
-		if (!win) {
-			fetch('/api/v1/ui-commands', {
-				method: 'POST', headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ type: 'open_window', url })
-			});
-		}
-	}
-	function filteredLibrary() {
-		const q = libraryQuery.trim().toLowerCase();
-		return libraryItems.filter(i => {
-			if (libraryFilter !== 'all' && i.type !== libraryFilter) return false;
-			if (q && !i.title.toLowerCase().includes(q) && !(i.snippet || '').toLowerCase().includes(q)) return false;
-			return true;
-		});
-	}
+	// Library widget migrated to $lib/components/LibraryPanel.svelte
 
 	// Perf widget
-	let perfData = $state({ wsLatency: 0, domTime: 0, linesChanged: 0, serverRender: 0, serverTotal: 0, msgSize: 0, fps: 0 });
-	let perfProcesses = $state([]);
-	// New panel data: canonical PAN services from steward + outside-PAN noise.
-	let perfServices = $state([]);
-	let perfOther = $state([]);
-	let perfServer = $state({ heap_mb: 0, rss_mb: 0, avg_ms: 0, total_requests: 0, slow_requests: 0, ws_connections: 0, uptime_s: 0, top_routes: [] });
-	let perfProcessTimer = null;
-	let perfFrames = 0;
-	let perfLastFpsTime = Date.now();
+	// Perf engine state + PERF_PHASE constants migrated to $lib/stores/perf.svelte.js
 
-	// --- New: canonical perf trace from /api/v1/perf/trace on the carrier.
-	// This replaces the ad-hoc health checks with the probe-driven DAG.
-	// See service/src/perf/stages.js for the registry.
-	let perfTrace = $state({
-		now: 0,
-		engine_started_at: 0,
-		system_ready: false,
-		interactive_ready: false,
-		swap_safe: { safe: false, reason: '' },
-		critical_path_ms: 0,
-		counts: { ready: 0, pending: 0, running: 0, failed: 0, total: 0 },
-		stages: [],
-	});
-	let perfTraceTimer = null;
-	let perfTraceLoadedOnce = $state(false);
-	let perfPanelView = $state(typeof window !== 'undefined' && localStorage.getItem('pan_perf_view') || 'list'); // 'list' | 'gantt'
-	$effect(() => { if (typeof window !== 'undefined') localStorage.setItem('pan_perf_view', perfPanelView); });
-
-	// Human-readable phase labels for grouping stages in the panel.
-	const PERF_PHASE_LABELS = {
-		boot: 'Boot',
-		attach: 'Attach',
-		service: 'Services',
-		widget: 'Widgets',
-		hot_path: 'Hot path',
-	};
-	const PERF_PHASE_ORDER = ['boot', 'attach', 'service', 'hot_path', 'widget'];
-
-	async function loadPerfTrace() {
-		try {
-			const r = await fetch('/api/v1/perf/trace', { cache: 'no-store' });
-			if (!r.ok) return;
-			const j = await r.json();
-			if (j && Array.isArray(j.stages)) {
-				perfTrace = j;
-				perfTraceLoadedOnce = true;
-			}
-		} catch {}
-	}
-
-	// Force a re-probe on click — immediate feedback for the user.
-	async function forceProbeStage(stageId) {
-		try {
-			await fetch('/api/v1/perf/probe/' + encodeURIComponent(stageId), {
-				method: 'POST',
-				cache: 'no-store',
-			});
-			// Give the engine a beat, then refresh.
-			setTimeout(loadPerfTrace, 200);
-		} catch {}
-	}
-
-	// Post a hot-path timing event so the engine can score it against budgets.
-	function postPerfEvent(name, ms) {
-		try {
-			fetch('/api/v1/perf/event', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name, ms }),
-				cache: 'no-store',
-			}).catch(() => {});
-		} catch {}
-	}
-
-	async function loadPerfProcesses() {
-		try {
-			const [procData, serverData] = await Promise.all([
-				api('/dashboard/api/processes').catch(() => null),
-				api('/dashboard/api/perf').catch(() => null),
-			]);
-			if (procData?.services) {
-				perfServices = procData.services;
-				perfOther = procData.other || [];
-				perfProcesses = procData.processes || [];
-			} else if (procData?.processes) {
-				perfProcesses = procData.processes;
-			}
-			if (serverData) {
-				perfServer = serverData;
-			}
-		} catch {}
-	}
-
-	function startPerfPolling() {
-		if (perfProcessTimer) return;
-		loadPerfProcesses();
-		loadPerfTrace();
-		perfProcessTimer = setInterval(() => {
-			loadPerfProcesses();
-			loadPerfTrace();
-		}, 5000);
-	}
-	function stopPerfPolling() {
-		if (perfProcessTimer) { clearInterval(perfProcessTimer); perfProcessTimer = null; }
-		if (perfTraceTimer) { clearInterval(perfTraceTimer); perfTraceTimer = null; }
-	}
-
-	async function killProcess(pid) {
-		try {
-			await api('/dashboard/api/processes/kill', { method: 'POST', body: JSON.stringify({ pid }), headers: { 'Content-Type': 'application/json' } });
-			setTimeout(loadPerfProcesses, 500);
-		} catch {}
-	}
-
+	// Perf loaders + pollers + killProcess migrated to $lib/stores/perf.svelte.js
+	// — but `updatePerfOverlay` stays here because it's called from the WS
+	// frame handler on every screen/screen-v2 message (hot path) and it
+	// computes a rolling FPS that needs module-local state (_perfFrames,
+	// _perfLastFpsTime). It just writes the result into the perf store.
+	let _perfFrames = 0;
+	let _perfLastFpsTime = Date.now();
 	function updatePerfOverlay(data) {
-		perfFrames++;
+		_perfFrames++;
 		const now = Date.now();
-		if (now - perfLastFpsTime >= 1000) {
-			data.fps = perfFrames;
-			perfFrames = 0;
-			perfLastFpsTime = now;
+		if (now - _perfLastFpsTime >= 1000) {
+			data.fps = _perfFrames;
+			_perfFrames = 0;
+			_perfLastFpsTime = now;
 		} else {
-			data.fps = perfData.fps;
+			data.fps = perfStore.data.fps;
 		}
-		perfData = data;
+		perfStore.data = data;
 	}
 
 	// Intervals
@@ -1974,15 +912,14 @@
 			renderTranscriptToTerminal(tabData);
 			// If still no messages after 100ms (WebSocket push didn't arrive),
 			// fetch from HTTP endpoint as fallback
-			if (!(tabData._pushedMessages?.length > 0)) {
+			if (!(getPushed(tabData.id).length > 0)) {
 				try {
 					const ctrl = new AbortController();
 					setTimeout(() => ctrl.abort(), 2000);
 					const r = await fetch(`/api/v1/terminal/messages/${encodeURIComponent(sessionId)}`, { signal: ctrl.signal });
 					const d = await r.json();
 					if (d.ok && d.messages?.length > 0) {
-						tabData._pushedMessages = d.messages;
-						_pushedMsgsCache.set(tabData.id, d.messages);
+						setPushed(tabData.id, d.messages);
 						renderTranscriptToTerminal(tabData);
 					}
 				} catch {}
@@ -2057,8 +994,7 @@
 							_markSendPhase('echo');
 							// Immediate echo from server — user message appears instantly
 							// without waiting for JSONL. Dedup handles overlap when JSONL arrives.
-							if (!tabData._echoMessages) tabData._echoMessages = [];
-							tabData._echoMessages.push({
+							pushEcho(tabData.id, {
 								role: 'user', type: 'prompt',
 								text: msg.text, ts: msg.ts,
 								_echo: true,
@@ -2086,16 +1022,17 @@
 							// When the session was reset (PAN crashed), _preservedHistory holds the
 							// messages from before the crash. Merge them with new server messages so
 							// the user doesn't lose their conversation history visually.
+							let _newPushed;
 							if (tabData._preservedHistory?.length && _serverMsgs.length > 0) {
 								const _serverTexts = new Set(_serverMsgs.map(m => (m.text || '').slice(0, 120)));
 								const _histMsgs = tabData._preservedHistory.filter(m => !_serverTexts.has((m.text || '').slice(0, 120)));
-								tabData._pushedMessages = _histMsgs.length > 0
+								_newPushed = _histMsgs.length > 0
 									? [..._histMsgs, { role: 'system', type: 'session_reset_marker', text: 'Session reset — new conversation', source: 'client', ts: tabData._sessionLostAt || new Date().toISOString() }, ..._serverMsgs]
 									: _serverMsgs;
 							} else {
-								tabData._pushedMessages = _serverMsgs;
+								_newPushed = _serverMsgs;
 							}
-							_pushedMsgsCache.set(tabData.id, tabData._pushedMessages); // bypass proxy
+							setPushed(tabData.id, _newPushed); // single source of truth
 							tabData._lastTranscriptPush = Date.now();
 							// Clear loading + session-lost indicators once real transcript data arrives
 							if (tabData._claudeLoading && _serverMsgs.length) {
@@ -2105,18 +1042,19 @@
 								tabData._sessionLost = false;
 							}
 							// Clear echoes that now have matching JSONL entries
-							if (tabData._echoMessages?.length) {
+							const _existingEchoes = getEchoes(tabData.id);
+							if (_existingEchoes.length) {
 								const jsonlTexts = new Set(_serverMsgs
 									.filter(m => m.role === 'user')
 									.map(m => (m.text || '').replace(/\s+/g, ' ').trim()));
-								tabData._echoMessages = tabData._echoMessages
-									.filter(e => !jsonlTexts.has((e.text || '').replace(/\s+/g, ' ').trim()));
+								setEchoes(tabData.id, _existingEchoes
+									.filter(e => !jsonlTexts.has((e.text || '').replace(/\s+/g, ' ').trim())));
 							}
 							renderTranscriptToTerminal(tabData);
 							// Update left panel bubbles synchronously — same messages array,
 							// no async, no lock, no proxy. Mirrors how right panel renders.
 							if (activeTabId === tabData.id) {
-								const b = bubblesFromMessages(tabData._pushedMessages);
+								const b = bubblesFromMessages(getPushed(tabData.id));
 								if (b !== null) {
 									const isFirstChatLoad = !chatServerLoaded;
 									chatBubbles = b;
@@ -2352,7 +1290,7 @@
 							}
 							// Refresh full status on terminal events (beta healthy, promoted, etc.)
 							if (['beta_healthy', 'promoted', 'aborted', 'benchmarks_passed', 'benchmarks_failed'].includes(msg.type)) {
-								loadPipeline();
+								if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("pan:pipeline-update"));
 							}
 							break;
 						case 'server_swap':
@@ -2493,22 +1431,29 @@
 							_trackWidget(w, 'push'); // record WS push in perf panel
 							if (w === 'alerts') {
 								loadAlertCount();
-								if (leftSection === 'alerts' || rightSection === 'alerts') loadAlerts();
+								if (typeof window !== 'undefined') {
+									window.dispatchEvent(new CustomEvent('pan:alerts-update'));
+								}
 							} else if (w === 'services') {
 								api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 							} else if (w === 'approvals') {
-								loadApprovals();
+								if (typeof window !== 'undefined') {
+									window.dispatchEvent(new CustomEvent('pan:approvals-update'));
+								}
 							} else if (w === 'intuition') {
-								// Intuition snapshot ready — update immediately regardless of which panel is open
-								loadIntuition();
+								// Intuition snapshot ready — notify the IntuitionPanel
+								// component (it subscribes to this event in onMount).
+								if (typeof window !== 'undefined') {
+									window.dispatchEvent(new CustomEvent('pan:intuition-update'));
+								}
 							} else if (w === 'library') {
-								if (leftSection === 'library' || rightSection === 'library') loadLibrary();
+								if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('pan:library-update'));
 							} else if (w === 'users') {
-								if (leftSection === 'users' || rightSection === 'users') loadUsers();
+								if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('pan:users-update'));
 							} else if (w === 'teams') {
-								if (leftSection === 'teams' || rightSection === 'teams') loadTeamsWidget();
+								if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('pan:teams-update'));
 							} else if (w === 'tests') {
-								if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
+								if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('pan:tests-update'));
 							} else if (w === 'devices') {
 								loadClientDevices();
 								loadAllDevices();
@@ -2540,6 +1485,8 @@
 							console.log(`[PAN #447] pipe_ready received — setting claudeReady=true (tab=${tabData.id}, active=${activeTabId === tabData.id})`);
 							tabData.claudeReady = true;
 							if (activeTabId === tabData.id) claudeReady = true;
+							// Flush any messages queued while claudeReady was false
+							_flushQueue(tabData.id);
 							break;
 						}
 						case 'sync_response': {
@@ -2555,8 +1502,7 @@
 							}
 							if (msg.mode) tabData._sessionMode = msg.mode;
 							if (Array.isArray(msg.messages) && msg.messages.length > 0) {
-								tabData._pushedMessages = msg.messages;
-								_pushedMsgsCache.set(tabData.id, msg.messages);
+								setPushed(tabData.id, msg.messages);
 								tabData._sessionLost = false; // real messages arrived — session is live
 								renderTranscriptToTerminal(tabData);
 							} else if (msg.messages !== undefined && msg.messages.length === 0) {
@@ -2565,7 +1511,7 @@
 								// The session lost its adapter. Set a flag so renderTranscriptToTerminal
 								// appends a persistent recovery banner (direct innerHTML += gets wiped
 								// by the next full re-render, so the flag survives it).
-								const cachedMsgs = (tabData._pushedMessages || []).filter(m => m.role !== 'system');
+								const cachedMsgs = getPushed(tabData.id).filter(m => m.role !== 'system');
 								if (cachedMsgs.length > 0 && !tabData._sessionLost) {
 									tabData._sessionLost = true;
 									tabData._sessionLostAt = new Date().toISOString();
@@ -2664,7 +1610,11 @@
 						tabData.ws = newWs;
 						prevLines = [];
 						// Refresh all panels immediately on reconnect (after swap or restart)
-						if (leftSection === 'intuition' || rightSection === 'intuition') loadIntuition();
+						if (leftSection === 'intuition' || rightSection === 'intuition') {
+							if (typeof window !== 'undefined') {
+								window.dispatchEvent(new CustomEvent('pan:intuition-update'));
+							}
+						}
 						api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 						// Clear the global "PAN restarting…" banner now that we're reconnected.
 						if (typeof window !== 'undefined' && window._panCarrierRestartBanner) {
@@ -2853,7 +1803,7 @@
 						// Previously this checked for '❯' prompt which fired on EVERY fresh
 						// session before Claude had a chance to respond, eating the greeting.
 						await new Promise(r => setTimeout(r, 500));
-						const existingMsgs = (tabData._pushedMessages || []).filter(m => m.role !== 'system');
+						const existingMsgs = getPushed(tabData.id).filter(m => m.role !== 'system');
 						if (existingMsgs.length > 0) {
 							tabData.claudeStarted = true;
 							sessionStorage.setItem(launchKey, '1');
@@ -3015,7 +1965,7 @@
 			if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
 		}
 		if (tab === 'devices') { loadClientDevices(); loadAllDevices(); }
-		if (tab === 'intuition') { loadVoiceSpeakers(); }
+		if (tab === 'intuition') { /* IntuitionPanel auto-loads voice speakers on mount */ }
 	}
 
 	function handleTranscriptScroll() {
@@ -3071,9 +2021,9 @@
 			// via the WebSocket `transcript_messages` event, stored on tabData.
 			// No more HTTP polling, no session ID resolution, no stale cache.
 			// Merge JSONL transcript messages with any pending echo messages
-			const pushed = tabData._pushedMessages || [];
-			const echoes = tabData._echoMessages || [];
-			const btws = (tabData._btwMessages || []);
+			const pushed = getPushed(tabData.id);
+			const echoes = getEchoes(tabData.id);
+			const btws = getBtws(tabData.id);
 			const allMessages = [...pushed, ...echoes, ...btws].sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
 			console.log('[PAN DIAG] RENDER ← tab.sessionId =', tabData.sessionId, '| messages =', allMessages.length, '| echoes =', echoes.length);
 			// Don't short-circuit when there are no messages — the loading indicator
@@ -3494,11 +2444,24 @@
 	let chatLoadDirty = false; // true if an update arrived while load was in progress
 	let chatLoadDebounceTimer = null;
 
-	// Module-level cache that bypasses Svelte proxy indirection.
-	// Written by the WS transcript_messages handler (raw tabData path).
-	// Read by loadChatHistory for ALL call paths — interval, WS, manual.
-	// This prevents stale HTTP fetches from overwriting live WS data.
-	const _pushedMsgsCache = new Map(); // tabId → messages[]
+	// ─── ARCHITECTURAL FIX FOR NIGHTMARE BUG #444 (2026-05-26) ───────────────
+	// SINGLE SOURCE OF TRUTH for all per-tab message storage.
+	//
+	// Storage is ONE Map keyed by tabId, exposed through helper functions
+	// imported from $lib/stores-terminal.svelte.js. The tab object NEVER
+	// holds messages directly. This eliminates the Svelte-proxy-vs-raw-object
+	// split that caused #444.
+	//
+	// If you find yourself writing `tabData._pushedMessages = X` or
+	// `tabData._echoMessages.push(X)` — STOP. Use setPushed / pushEcho instead.
+	// See docs/NIGHTMARE_BUGS.md #444 for the full story.
+	//
+	// 2026-05-27: lifted out of +page.svelte into the module-level store as
+	// part of the Shape-2 component refactor. Extracted components on the
+	// terminal page (IntuitionPanel, TerminalPanel, TranscriptPanel, …) all
+	// hit the same backing Map by importing these helpers — no duplication,
+	// no drift. See docs/DASHBOARD-REFACTOR-MAP.md.
+	// ─────────────────────────────────────────────────────────────────────────
 
 	// Synchronous bubble builder — used by both the real-time WS path and loadChatHistory.
 	// Keeps both paths in sync without any async/lock/proxy indirection.
@@ -3553,12 +2516,11 @@
 		}
 
 		try {
-			// Fast path: read from _pushedMsgsCache (written by WS handler via raw tabData,
-			// bypasses Svelte proxy entirely). Falls back to proxy prop, then HTTP API.
-			// Cache prevents stale HTTP responses from overwriting live WS data when
-			// interval-based loadChatHistory runs without a tabOverride.
-			const pushed = _pushedMsgsCache.get(active?.id) || active._pushedMessages || [];
-			const echoes = active._echoMessages || [];
+			// Single source of truth: _messageStore via helpers. No proxy, no cache
+			// drift, no stale HTTP override. Falls through to HTTP only if the store
+			// is empty for this tab (fresh page load before first WS push).
+			const pushed = getPushed(active?.id);
+			const echoes = getEchoes(active?.id);
 			let allMessages;
 			if (pushed.length > 0) {
 				allMessages = echoes.length
@@ -3895,13 +2857,15 @@
 		// Drop duplicate sends — guards against Enter+click race, rapid double-tap,
 		// and spamming while Claude is still processing the previous message.
 		if (_sendInFlight.has(active.sessionId)) {
+			_logSendAttempt(active.sessionId, text, 'dropped-inflight');
 			console.warn('[PAN Terminal] sendTerminalInput: already in-flight for session', active.sessionId, '— dropping duplicate');
 			return;
 		}
 		if (!claudeReady) {
-			console.warn('[PAN Terminal] sendTerminalInput: Claude not ready (still processing) — dropping send');
+			_queueMessage(active.sessionId, text);
 			return;
 		}
+		_logSendAttempt(active.sessionId, text, 'sending');
 
 		// ── Slash command interception ──────────────────────────────────────────
 		if (text.startsWith('/')) {
@@ -3944,8 +2908,7 @@
 				// no full re-render (which would read stale proxy._pushedMessages
 				// and wipe all existing transcript content).
 				if (!arg) { terminalInputText = ''; setTerminalInput(''); return; }
-				if (!active._btwMessages) active._btwMessages = [];
-				active._btwMessages.push({ role: 'user', type: 'btw', text: arg, ts: new Date().toISOString() });
+				pushBtw(active.id, { role: 'user', type: 'btw', text: arg, ts: new Date().toISOString() });
 				if (active.scrollbackDiv) {
 					active.scrollbackDiv.innerHTML +=
 						`<div class="t-line" style="margin-left:20px;border-left:2px solid #89b4fa44;padding-left:8px;margin-top:2px;margin-bottom:2px;">` +
@@ -4003,8 +2966,7 @@
 		if (active) {
 			active.userScrolledUp = false;
 			if (active.container) active.container.scrollTop = active.container.scrollHeight;
-			if (!active._echoMessages) active._echoMessages = [];
-			active._echoMessages.push({
+			pushEcho(active.id, {
 				role: 'user', type: 'prompt',
 				text: savedText,
 				ts: new Date().toISOString(),
@@ -4065,8 +3027,9 @@
 		// Enter (no Shift) = send. Shift+Enter = newline (default textarea behavior).
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			// Block Enter while Claude is thinking — same guard as the button
-			if (!claudeReady || pipeSending) return;
+			// Always send on Enter — server/PTY queues if Claude is mid-response.
+			// Keep only the in-flight HTTP guard so we don't double-fire the same POST.
+			if (pipeSending) return;
 			// Delay 50ms to let Svelte state and DOM value fully sync before reading
 			const el = e.target;
 			setTimeout(() => {
@@ -4075,7 +3038,16 @@
 			}, 50);
 			return;
 		}
-		// Escape → interrupt Claude (sends Ctrl+C + logs system message)
+		// Escape → interrupt Claude (sends Ctrl+C + logs system message).
+		// 2026-05-28: bug #430 fix — also locally reset the in-flight UI state.
+		// Previously we only sent the interrupt over WS and waited for the
+		// server to confirm via a state push, which sometimes never arrived
+		// (PTY mid-stream, dropped frame, etc). The input stayed disabled with
+		// "Claude is thinking…" until the user refreshed. Now Escape optimistically
+		// flips us back to IDLE: claudeReady = true, pipeSending = false,
+		// pendingSendCount = 0, _sendTimings.awaitingAssistant = false. If the
+		// server actually keeps streaming, the next state push from the server
+		// will reconcile correctly — but at minimum the user can type again.
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
@@ -4086,11 +3058,17 @@
 				const sid = active?.sessionId;
 				if (sid) api('/api/v1/terminal/interrupt', { method: 'POST', body: JSON.stringify({ session_id: sid }) }).catch(() => {});
 			}
+			// Optimistic local reset so the user isn't stuck even if the server
+			// state push never lands.
+			claudeReady = true;
+			pipeSending = false;
+			pendingSendCount = 0;
+			if (_sendTimings) _sendTimings.awaitingAssistant = false;
 			return;
 		}
 		// Number keys 1-3 when input is empty AND there's a pending approval prompt
 		// The prompt is a TUI select list: arrow-down to move, Enter to confirm
-		if (/^[1-3]$/.test(e.key) && (e.target.value.length === 0 || !e.target.value.trim()) && approvalsData.length > 0) {
+		if (/^[1-3]$/.test(e.key) && (e.target.value.length === 0 || !e.target.value.trim()) && approvalsCount > 0) {
 			e.preventDefault();
 			e.stopImmediatePropagation();
 			e.target.value = '';
@@ -4134,13 +3112,20 @@
 	}
 
 	async function handleCenterChatKey(e) {
-		// Escape → interrupt Claude from center chat too
+		// Escape → interrupt Claude from center chat too.
+		// 2026-05-28: bug #430 fix — same optimistic local IDLE reset as the
+		// main terminal input handler. See L3482 comment for the full reasoning.
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			const active = getActiveTab();
 			if (active?.ws?.readyState === 1) {
 				active.ws.send(JSON.stringify({ type: 'interrupt' }));
 			}
+			centerChatLoading = false;
+			claudeReady = true;
+			pipeSending = false;
+			pendingSendCount = 0;
+			if (_sendTimings) _sendTimings.awaitingAssistant = false;
 			return;
 		}
 		if (e.key === 'Enter' && !e.shiftKey) {
@@ -4404,156 +3389,9 @@
 		}
 	}
 
-	// --- Atlas ---
-	let atlasRefreshTimer = null;
-	async function loadAtlasData() {
-		atlasLoading = !atlasData;
-		try {
-			const [svcResp, atlasResp, statsResp, projResp] = await Promise.all([
-				api('/dashboard/api/services'),
-				api('/api/v1/atlas/services'),
-				api('/dashboard/api/stats'),
-				api('/dashboard/api/projects'),
-			]);
-			atlasData = buildAtlasGraph(svcResp, atlasResp, statsResp, projResp);
-		} catch (e) {
-			console.error('Atlas load failed:', e);
-		}
-		atlasLoading = false;
-		if (!atlasRefreshTimer) atlasRefreshTimer = setInterval(loadAtlasData, 30000);
-		// Start animation loop
-		if (!atlasAnimTimer) {
-			atlasAnimT0 = Date.now();
-			atlasAnimTimer = setInterval(() => { atlasElapsed = (Date.now() - atlasAnimT0) / 1000; }, 50);
-		}
-	}
-
-	function buildAtlasGraph(svcResp, atlasResp, statsResp, projResp) {
-		const atlasSvcs = atlasResp?.services || [];
-		const am = Object.fromEntries(atlasSvcs.map(s => [s.id, s]));
-		const projs = projResp || [];
-
-		function ss(id) {
-			const s = am[id];
-			if (!s) return 'unknown';
-			if (s.status === 'running') return 'up';
-			if (s.status === 'stopped') return 'idle';
-			return (s.status === 'down' || s.status === 'error') ? 'down' : 'unknown';
-		}
-		function sd(id) {
-			const s = am[id]; if (!s) return '';
-			const p = [];
-			if (s.port) p.push(`Port ${s.port}`);
-			if (s.interval) p.push(`Every ${s.interval}`);
-			if (s.lastRun) { const a = Math.round((Date.now()-s.lastRun)/60000); p.push(a < 60 ? `${a}m ago` : `${Math.round(a/60)}h ago`); }
-			return p.join(' · ') || s.status;
-		}
-		function rv(id) {
-			switch(id) {
-				case 'pan-server': return statsResp ? `${(statsResp.total_events/1000).toFixed(1)}K events` : null;
-				case 'database': return statsResp ? `${(statsResp.db_size_bytes/1048576).toFixed(0)}MB` : null;
-				case 'embeddings': return '1024D';
-				case 'memory-hub': return statsResp ? `${(statsResp.total_memory||0)/1000|0}K mem` : null;
-				default: { const s = am[id]; return s?.lastRun ? (() => { const m=Math.round((Date.now()-s.lastRun)/60000); return m<1?'Just Now':m<60?`${m}m ago`:`${Math.round(m/60)}h ago`; })() : null; }
-			}
-		}
-
-		const PLANETS = [
-			{
-				id: 'database', label: 'Vault', type: 'data', orbitR: 190, baseAngle: 45, orbitSpeed: 0.28,
-				moonR: 0, moonSpeed: 0, moons: [],
-			},
-			{
-				id: 'steward', label: 'Steward', type: 'service', orbitR: 380, baseAngle: 200, orbitSpeed: -0.13,
-				moonR: 90, moonSpeed: 0.32,
-				moons: [
-					{ id: 'whisper',    label: 'Listener', type: 'service', baseAngle: 0 },
-					{ id: 'ahk',        label: 'Hotkeys',  type: 'service', baseAngle: 90 },
-					{ id: 'ollama',     label: 'Oracle',   type: 'service', baseAngle: 180 },
-					{ id: 'tailscale',  label: 'Tether',   type: 'service', baseAngle: 270 },
-				],
-			},
-			{
-				id: 'memory-hub', label: 'Memoria', type: 'memory', orbitR: 570, baseAngle: 110, orbitSpeed: 0.09,
-				moonR: 95, moonSpeed: -0.27,
-				moons: [
-					{ id: 'mem-episodic',  label: 'Episodes',  type: 'memory', baseAngle: 0 },
-					{ id: 'mem-semantic',  label: 'Knowledge', type: 'memory', baseAngle: 72 },
-					{ id: 'mem-procedural',label: 'Habits',    type: 'memory', baseAngle: 144 },
-					{ id: 'embeddings',    label: 'Resonance', type: 'memory', baseAngle: 216 },
-					{ id: 'inject-ctx',    label: 'Injector',  type: 'memory', baseAngle: 288 },
-				],
-			},
-			{
-				id: 'dream-cycle', label: 'Dream', type: 'process', orbitR: 760, baseAngle: 300, orbitSpeed: -0.07,
-				moonR: 95, moonSpeed: 0.23,
-				moons: [
-					{ id: 'classifier',   label: 'Augur',     type: 'process', baseAngle: 0 },
-					{ id: 'consolidation',label: 'Archivist', type: 'process', baseAngle: 90 },
-					{ id: 'evolution',    label: 'Evolution', type: 'process', baseAngle: 180 },
-				],
-			},
-			{
-				id: 'autodev', label: 'Forge', type: 'ai', orbitR: 960, baseAngle: 160, orbitSpeed: 0.05,
-				moonR: 95, moonSpeed: -0.18,
-				moons: [
-					{ id: 'claude',      label: 'Nexus',        type: 'ai', baseAngle: 0 },
-					{ id: 'orchestrator',label: 'Orchestrator', type: 'ai', baseAngle: 120 },
-					{ id: 'scout',       label: 'Scout',        type: 'ai', baseAngle: 240 },
-				],
-			},
-		];
-
-		const COLORS = { core:'#89b4fa', data:'#fab387', service:'#a6e3a1', memory:'#cba6f7', process:'#f9e2af', ai:'#f38ba8', device:'#89dceb', project:'#94e2d5' };
-
-		const projs3 = projs.slice(0, 3).map((p, i) => ({
-			id: `proj-${p.id}`, label: p.name, type: 'project', baseAngle: i * 120 + 30,
-		}));
-
-		const dashSvcs = svcResp?.services || [];
-		const devices = [...new Map(dashSvcs.filter(s => s.category === 'Devices').map(d => [d.name, d])).values()].slice(0, 4);
-		const devNodes = devices.map((d, i) => ({ id: `dev-${d.name}`, label: d.name, type: 'device', baseAngle: i * 90, status: d.status === 'up' ? 'up' : 'unknown' }));
-
-		return { planets: PLANETS, projs: projs3, devNodes, stats: statsResp, CX: 1150, CY: 800, ss, sd, rv, COLORS, am };
-	}
-
-	function atlasNodeColor(type) {
-		const c = { core:'#89b4fa', data:'#fab387', service:'#a6e3a1', memory:'#cba6f7', process:'#f9e2af', ai:'#f38ba8', device:'#89dceb', project:'#94e2d5' };
-		return c[type] || '#6c7086';
-	}
-
-	function atlasStatusDot(status) {
-		if (status === 'up') return '#a6e3a1';
-		if (status === 'down') return '#f38ba8';
-		if (status === 'warn') return '#f9e2af';
-		return '#6c7086';
-	}
-
-	function handleAtlasWheel(e) {
-		e.preventDefault();
-		const delta = e.deltaY > 0 ? 0.9 : 1.1;
-		const newScale = Math.max(0.3, Math.min(3, atlasTransform.scale * delta));
-		atlasTransform = { ...atlasTransform, scale: newScale };
-	}
-
-	function handleAtlasPointerDown(e) {
-		if (e.target.closest('.atlas-node')) return;
-		atlasDragging = true;
-		atlasDragStart = { x: e.clientX - atlasTransform.x, y: e.clientY - atlasTransform.y };
-	}
-
-	function handleAtlasPointerMove(e) {
-		if (!atlasDragging) return;
-		atlasTransform = { ...atlasTransform, x: e.clientX - atlasDragStart.x, y: e.clientY - atlasDragStart.y };
-	}
-
-	function handleAtlasPointerUp() {
-		atlasDragging = false;
-	}
-
-	function atlasResetView() {
-		atlasTransform = { x: 0, y: 0, scale: 1 };
-	}
+	// Atlas: loadAtlasData / buildAtlasGraph / atlasNodeColor /
+	// atlasStatusDot / handleAtlasWheel + Down/Move/Up / atlasResetView
+	// all migrated to $lib/stores/atlas.svelte.js + $lib/components/widgets/AtlasPanel.svelte
 
 	// ==================== Right Panel ====================
 
@@ -4591,63 +3429,16 @@
 		if (leftSection === 'transcript') loadChatHistory();
 	}
 
-	let usageRefreshInterval = null;
-	async function loadUsageData() {
-		try {
-			const provider = (voiceSettings.terminal_ai_provider || '').toLowerCase();
-			const isGemini = provider === 'gemini';
-			
-			const [usage, stats] = await Promise.all([
-				api(isGemini ? '/api/v1/gemini-usage' : '/api/v1/claude-usage'),
-				api('/dashboard/api/stats'),
-			]);
-			
-			if (isGemini) {
-				usageData = { gemini: usage, stats };
-			} else {
-				usageData = { claude: usage, stats };
-			}
-			_markLoad('usageWidget');
-		} catch (e) {
-			console.error('Failed to load usage data:', e);
-		}
-		// Auto-refresh every 30s while usage panel is visible
-		if (!usageRefreshInterval && (rightSection === 'usage' || leftSection === 'usage')) {
-			usageRefreshInterval = setInterval(() => {
-				if (rightSection === 'usage' || leftSection === 'usage') {
-					loadUsageData();
-				} else {
-					clearInterval(usageRefreshInterval);
-					usageRefreshInterval = null;
-				}
-			}, 30000);
-		}
-	}
+	// loadUsageData migrated to $lib/stores/usage.svelte.js (UsagePanel mounts/unmounts the polling)
 
-	function formatTokens(n) {
-		if (!n) return '0';
-		if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-		if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-		return String(n);
-	}
-
+	// formatTokens migrated to usage store
 	function pctColor(pct) {
 		if (pct < 50) return 'green';
 		if (pct < 80) return 'yellow';
 		return 'red';
 	}
 
-	function formatResetTime(isoStr) {
-		if (!isoStr) return '';
-		const reset = new Date(isoStr);
-		const now = new Date();
-		const diff = reset - now;
-		if (diff <= 0) return 'now';
-		const h = Math.floor(diff / 3600000);
-		const m = Math.floor((diff % 3600000) / 60000);
-		if (h > 0) return `${h}h ${m}m`;
-		return `${m}m`;
-	}
+	// formatResetTime migrated to usage store
 
 	async function cycleTask(taskId, currentStatus) {
 		const next = currentStatus === 'todo' ? 'in_progress' : currentStatus === 'in_progress' ? 'done' : 'todo';
@@ -4730,107 +3521,17 @@
 		} catch {}
 	}
 
-	async function loadAlerts() {
-		try {
-			const params = new URLSearchParams();
-			if (alertFilterStatus !== 'all') params.set('status', alertFilterStatus);
-			if (alertFilterType !== 'all') params.set('type', alertFilterType);
-			params.set('limit', '50');
-			const resp = await api(`/dashboard/api/alerts?${params}`);
-			alertsData = Array.isArray(resp) ? resp : [];
-		} catch { alertsData = []; }
-	}
-
+	// loadAlerts/loadAlertCount/loadAlertTypes/updateAlertStatus all migrated to
+	// $lib/components/AlertsPanel.svelte. Parent only keeps a small adapter
+	// that bumps the openCount via WS pushes.
 	async function loadAlertCount() {
 		try {
 			const resp = await api('/dashboard/api/alerts/count');
-			const newCount = resp?.count || 0;
-			if (newCount > alertOpenCount && alertOpenCount >= 0) {
-				// New alert arrived — flash the indicator
-				alertFlash = true;
-				setTimeout(() => { alertFlash = false; }, 3000);
-			}
-			alertOpenCount = newCount;
+			alertOpenCount = resp?.count || 0;
 		} catch {}
 	}
 
-	async function loadAlertTypes() {
-		try {
-			const resp = await api('/dashboard/api/alerts/types');
-			alertTypes = Array.isArray(resp) ? resp : [];
-		} catch { alertTypes = []; }
-	}
-
-	async function updateAlertStatus(alertId, status, resolution = '') {
-		try {
-			await fetch(`/dashboard/api/alerts/${alertId}`, {
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ status, resolution, resolved_by: 'user' })
-			});
-			await loadAlerts();
-			await loadAlertCount();
-		} catch {}
-	}
-
-	async function loadLifeboat() {
-		try {
-			const r = await fetch('/api/carrier/status');
-			if (r.ok) {
-				const d = await r.json();
-				lifeboatData = d;
-				// Update countdown from server — computed from server timestamp each poll
-				// The existing 1s ptyStatusNow ticker drives re-renders so countdown
-				// decrements visually every second without a separate interval.
-				if (d.swapPending && d.rollbackAvailable) {
-					// Only snapshot start time ONCE when we first detect a pending swap.
-					// rollbackTimeoutMs is the TOTAL window (30s), not remaining.
-					if (!lifeboatSwapStarted) {
-						try {
-							const lb = await fetch('/lifeboat/status');
-							if (lb.ok) {
-								const lbd = await lb.json();
-								lifeboatRollbackMs = lbd.rollbackTimeoutMs || 0;
-								lifeboatSwapStarted = Date.now();
-							}
-						} catch {}
-					}
-				} else {
-					lifeboatRollbackMs = 0;
-					lifeboatSwapStarted = 0;
-					lifeboatCountdown = 0;
-				}
-			}
-		} catch {}
-		// Recompute countdown from snapshot (smooth between polls)
-		if (lifeboatSwapStarted > 0 && lifeboatRollbackMs > 0) {
-			const elapsed = Date.now() - lifeboatSwapStarted;
-			lifeboatCountdown = Math.max(0, Math.ceil((lifeboatRollbackMs - elapsed) / 1000));
-		}
-	}
-
-	async function lifeboatRollback() {
-		try {
-			await fetch('/lifeboat/rollback', { method: 'POST' });
-			await loadLifeboat();
-		} catch {}
-	}
-
-	async function lifeboatConfirm() {
-		try {
-			await fetch('/lifeboat/confirm', { method: 'POST' });
-			await loadLifeboat();
-		} catch {}
-	}
-
-	async function lifeboatSwap() {
-		lifeboatSwapping = true;
-		try {
-			await fetch('/api/carrier/swap', { method: 'POST' });
-			await loadLifeboat();
-		} catch {}
-		lifeboatSwapping = false;
-	}
+	// Lifeboat functions migrated to LifeboatPanel.svelte
 
 	function formatUptime(seconds) {
 		if (!seconds && seconds !== 0) return '--';
@@ -4841,71 +3542,11 @@
 		return `${h}h ${m}m`;
 	}
 
-	async function loadApprovals() {
-		try {
-			const resp = await fetch('/api/v1/terminal/permissions');
-			if (resp.ok) {
-				const data = await resp.json();
-				approvalsData = data.permissions || [];
-			}
-		} catch {}
-	}
-
-	async function respondToApproval(permId, action) {
-		try {
-			const response = action === 'allow' ? 'allow' : 'deny';
-			await fetch('/api/v1/terminal/permissions/respond', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ perm_id: permId, response })
-			});
-			approvalsData = approvalsData.filter(p => p.id !== permId);
-		} catch {}
-	}
+	// loadApprovals / respondToApproval migrated to
+	// $lib/components/ApprovalsPanel.svelte.
 
 	// ==================== Users ====================
-	async function loadUsers() {
-		try {
-			const token = localStorage.getItem('pan_token');
-			const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-			const resp = await fetch('/api/v1/auth/users', { headers });
-			if (resp.ok) {
-				const d = await resp.json();
-				usersData = d.users || d || [];
-			}
-		} catch {}
-	}
-
-	async function openChildView(user) {
-		const url = `${window.location.origin}/child/?user=${encodeURIComponent(user.display_name || user.name || 'Child')}`;
-		const title = `PAN — ${user.display_name || 'Child View'}`;
-		try {
-			await fetch(`http://127.0.0.1:${typeof TAURI_PORT !== 'undefined' ? TAURI_PORT : 7790}/open`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ url, title, width: 480, height: 700, kiosk: true })
-			});
-		} catch {
-			window.open(url, '_blank', 'width=480,height=700,menubar=no,toolbar=no,location=no,status=no');
-		}
-	}
-
-	async function addUserSubmit(e) {
-		e.preventDefault();
-		const form = e.target;
-		const name = form.querySelector('[name=uname]').value.trim();
-		const role = form.querySelector('[name=urole]').value;
-		if (!name) return;
-		try {
-			const r = await api('/api/v1/auth/users', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ display_name: name, role })
-			});
-			if (r.ok) { form.reset(); loadUsers(); }
-			else alert(r.error || 'Failed to add user');
-		} catch (err) { alert(String(err)); }
-	}
+	// loadUsers / openChildView / addUserSubmit migrated to UsersPanel.svelte
 
 	// ==================== PAN Clients ====================
 	let deviceMetrics = $state({}); // device_id → latest metric snapshot
@@ -4933,70 +3574,9 @@
 		if (allDevicesPollTimer) { clearInterval(allDevicesPollTimer); allDevicesPollTimer = null; }
 	}
 
-	async function loadVoiceSpeakers() {
-		try {
-			const d = await api('/api/v1/voice/status');
-			voiceServerOk = d.ok;
-			const s = await api('/api/v1/voice/speakers');
-			voiceEnrollSpeakers = s.speakers || [];
-		} catch { voiceServerOk = false; }
-	}
-
-	async function startVoiceEnroll() {
-		if (!voiceEnrollLabel.trim()) { voiceEnrollMsg = 'Enter a name first'; return; }
-		const label = voiceEnrollLabel.trim();
-		const seconds = 10;
-		voiceEnrollStatus = 'recording';
-		voiceEnrollSeconds = 0;
-		voiceEnrollMsg = `Listening via server mic... speak for ${seconds}s`;
-
-		// Countdown while server records
-		_voiceTimer = setInterval(() => {
-			voiceEnrollSeconds++;
-			if (voiceEnrollSeconds >= seconds) {
-				if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
-			}
-		}, 1000);
-
-		try {
-			// Server-side recording — no browser mic permission needed
-			const r = await fetch('/api/v1/voice/record-enroll', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ label, seconds }),
-			});
-			if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
-			const d = await r.json();
-			if (d.ok) {
-				voiceEnrollStatus = 'done';
-				voiceEnrollMsg = `✓ Enrolled "${label}" (${d.enrolled} speaker${d.enrolled !== 1 ? 's' : ''} total)`;
-				await loadVoiceSpeakers();
-			} else {
-				voiceEnrollStatus = 'error';
-				voiceEnrollMsg = d.error || 'Enroll failed';
-			}
-		} catch(e) {
-			if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
-			voiceEnrollStatus = 'error';
-			voiceEnrollMsg = 'Error: ' + e.message;
-		}
-	}
-
-	function stopVoiceEnroll() {
-		if (_voiceTimer) { clearInterval(_voiceTimer); _voiceTimer = null; }
-		// Server-side recording can't be interrupted mid-capture, but reset UI state
-		if (voiceEnrollStatus === 'recording') {
-			voiceEnrollStatus = '';
-			voiceEnrollMsg = 'Cancelled';
-		}
-	}
-
-	async function deleteVoiceSpeaker(label) {
-		try {
-			await api(`/api/v1/voice/speaker/${encodeURIComponent(label)}`, { method: 'DELETE' });
-			await loadVoiceSpeakers();
-		} catch {}
-	}
+	// Voice enrollment functions migrated to $lib/components/IntuitionPanel.svelte
+	// (Shape-2 refactor 2026-05-27). The Identity section there embeds the
+	// enroll/record/delete-speaker UI; the component manages its own state.
 
 	async function renameDevicePanel(id) {
 		if (!deviceRenameName.trim()) return;
@@ -5058,361 +3638,9 @@
 		} catch {}
 	}
 
-	// ==================== Teams ====================
-	async function loadTeamsWidget() {
-		try {
-			const resp = await fetch('/api/v1/teams');
-			if (resp.ok) {
-				const d = await resp.json();
-				teamsData = d.teams || [];
-			}
-		} catch {}
-	}
+	// Teams functions migrated to TeamsPanel.svelte
 
-	async function loadTeamDetailWidget(teamId) {
-		try {
-			const resp = await fetch(`/api/v1/teams/${teamId}`);
-			if (resp.ok) {
-				const d = await resp.json();
-				selectedTeamWidget = d.team;
-				teamMembersWidget = d.members || [];
-			}
-		} catch {}
-	}
-
-	// ==================== Test Suites ====================
-	// Client-side suite IDs that run in the browser
-	const CLIENT_SUITES = new Set(['page-refresh', 'terminal-protocol', 'widgets', 'input-box']);
-
-	async function loadTestSuites() {
-		try {
-			const data = await api('/api/v1/tests');
-			if (data) {
-				// Server returns {status, suites: [...], tests: [...], ...}
-				// suites have: id, name, description, testCount, dependsOn
-				// Convert server suites to the format the UI expects: {id, name, description, tests: [...]}
-				const serverSuites = (data.suites || []).map(s => {
-					// Find tests for this suite from the full test list
-					const suiteTests = (data.tests || []).filter(t => t.suiteId === s.id).map(t => ({
-						id: t.id, name: t.name, description: t.description
-					}));
-					// If no tests in current run, generate placeholder test entries from testCount
-					const tests = suiteTests.length > 0 ? suiteTests :
-						Array.from({length: s.testCount}, (_, i) => ({id: `${s.id}-${i}`, name: `Test ${i+1}`, description: ''}));
-					return { id: s.id, name: s.name, description: s.description, tests, server: true };
-				});
-				testSuites = serverSuites;
-				// If there's a last run, show those results
-				if (data.status === 'done' && data.tests) {
-					lastServerRun = data;
-				}
-				if (testSuites.length > 0 && !selectedSuite) selectedSuite = testSuites[0].id;
-			}
-		} catch {}
-	}
-
-	let lastServerRun = null;
-
-	// Route test API calls: on dev hit directly, on prod proxy through production server (avoids CORS)
-	function devFetch(path, opts) {
-		if (isDev) return fetch(path, opts);
-		return fetch('/api/v1/dev/proxy/' + path.replace(/^\//, ''), opts);
-	}
-
-	async function runAllTests() {
-		testsRunning = true;
-		testResults = [];
-		if (!isDev) {
-			try {
-				const devCheck = await fetch('/api/v1/dev/start', { method: 'POST' });
-				const devData = await devCheck.json();
-				if (!devData.ok) {
-					testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Dev server not running. Start with: node dev-server.js', description: '' }];
-					testsRunning = false;
-					return;
-				}
-				await fetch('/api/v1/ui-commands', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ type: 'open_window', url: `http://localhost:${devData.port}/v2/terminal` })
-				});
-			} catch {
-				testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Could not reach dev server', description: '' }];
-				testsRunning = false;
-				return;
-			}
-		}
-		try {
-			await devFetch('/api/v1/tests/run', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ suite: 'all' })
-			});
-		} catch {}
-		let done = false;
-		for (let i = 0; i < 120 && !done; i++) {
-			await new Promise(r => setTimeout(r, 1000));
-			try {
-				const resp = await devFetch('/api/v1/tests');
-				if (resp.ok) {
-					const data = await resp.json();
-					const allTests = data.tests || [];
-					if (allTests.length > 0) {
-						testResults = allTests.map(t => ({
-							id: t.id, name: t.name, description: t.description,
-							status: t.status === 'passed' ? 'pass' : t.status === 'failed' ? 'fail' : t.status,
-							detail: t.result || t.error || ''
-						}));
-					}
-					if (data.status === 'done') done = true;
-				}
-			} catch {}
-		}
-		testsRunning = false;
-	}
-
-	async function runSuite() {
-		const suite = testSuites.find(s => s.id === selectedSuite);
-		if (!suite) return;
-		testsRunning = true;
-
-		if (suite.server) {
-			// Always run tests on dev server, never production
-			if (!isDev) {
-				try {
-					const devCheck = await fetch('/api/v1/dev/start', { method: 'POST' });
-					const devData = await devCheck.json();
-					if (!devData.ok) {
-						testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Dev server not running. Start with: node dev-server.js', description: '' }];
-						testsRunning = false;
-						return;
-					}
-					await fetch('/api/v1/ui-commands', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ type: 'open_window', url: `http://localhost:${devData.port}/v2/terminal` })
-					});
-				} catch {
-					testResults = [{ id: 'dev-error', name: 'Dev Server', status: 'fail', detail: 'Could not reach dev server', description: '' }];
-					testsRunning = false;
-					return;
-				}
-			}
-
-			// Server-side suite — trigger via API and poll for results (uses proxy to avoid CORS)
-			testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
-			try {
-				await devFetch('/api/v1/tests/run', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ suite: suite.id })
-				});
-			} catch {}
-			let done = false;
-			for (let i = 0; i < 120 && !done; i++) {
-				await new Promise(r => setTimeout(r, 1000));
-				try {
-					const resp = await devFetch('/api/v1/tests');
-					if (resp.ok) {
-						const data = await resp.json();
-						const suiteTests = (data.tests || []).filter(t => t.suiteId === suite.id);
-						if (suiteTests.length > 0) {
-							testResults = suiteTests.map(t => ({
-								id: t.id, name: t.name, description: t.description,
-								status: t.status === 'passed' ? 'pass' : t.status === 'failed' ? 'fail' : t.status,
-								detail: t.result || t.error || ''
-							}));
-						}
-						if (data.status === 'done') done = true;
-						const ss = data.suiteStatus?.[suite.id];
-						if (ss && (ss.status === 'passed' || ss.status === 'failed' || ss.status === 'skipped')) done = true;
-					}
-				} catch {}
-			}
-			testsRunning = false;
-			return;
-		}
-
-		// Client-side suite — run in browser
-		testResults = suite.tests.map(t => ({ ...t, status: 'pending', detail: '' }));
-		for (let i = 0; i < testResults.length; i++) {
-			testResults[i].status = 'running';
-			testResults = [...testResults];
-			try {
-				const detail = await executeTest(suite.id, testResults[i].id);
-				testResults[i].status = 'pass';
-				testResults[i].detail = detail || 'OK';
-			} catch (err) {
-				testResults[i].status = 'fail';
-				testResults[i].detail = err.message || String(err);
-			}
-			testResults = [...testResults];
-			await new Promise(r => setTimeout(r, 300));
-		}
-		testsRunning = false;
-	}
-
-	async function executeTest(suiteId, testId) {
-		if (suiteId === 'page-refresh') return executePageRefreshTest(testId);
-		if (suiteId === 'terminal-protocol') return executeProtocolTest(testId);
-		if (suiteId === 'widgets') return executeWidgetTest(testId);
-		if (suiteId === 'input-box') return executeInputBoxTest(testId);
-		throw new Error('Unknown suite');
-	}
-
-	let testWs = null;
-	let testSessionId = 'test-suite-' + Date.now();
-
-	async function executePageRefreshTest(testId) {
-		switch (testId) {
-			case 'pr-1': {
-				testSessionId = 'test-suite-' + Date.now();
-				return new Promise((resolve, reject) => {
-					testWs = new WebSocket(wsUrl(`/ws/terminal?session=${testSessionId}&project=Test&cwd=/tmp&cols=80&rows=24`));
-					const timer = setTimeout(() => { reject(new Error('Timeout')); }, 5000);
-					testWs.onopen = () => { clearTimeout(timer); resolve('Session opened: ' + testSessionId); };
-					testWs.onerror = () => { clearTimeout(timer); reject(new Error('WebSocket failed')); };
-				});
-			}
-			case 'pr-2': {
-				if (!testWs || testWs.readyState !== 1) throw new Error('No WebSocket');
-				testWs.send(JSON.stringify({ type: 'input', data: 'echo PAN_TEST_MARKER\n' }));
-				await new Promise(r => setTimeout(r, 1000));
-				return 'Sent test marker';
-			}
-			case 'pr-3': {
-				if (testWs) testWs.close();
-				testWs = null;
-				await new Promise(r => setTimeout(r, 500));
-				return 'WebSocket closed (simulated F5)';
-			}
-			case 'pr-4': {
-				const resp = await fetch('/api/v1/terminal/sessions');
-				const sessions = await resp.json();
-				const found = sessions.find(s => s.id === testSessionId);
-				if (!found) throw new Error('Session not found after disconnect');
-				return 'Session alive on server';
-			}
-			case 'pr-5': {
-				return new Promise((resolve, reject) => {
-					testWs = new WebSocket(wsUrl(`/ws/terminal?session=${testSessionId}&project=Test&cwd=/tmp&cols=80&rows=24`));
-					const timer = setTimeout(() => { reject(new Error('Reconnect timeout')); }, 5000);
-					let gotData = false;
-					testWs.onmessage = (e) => {
-						if (!gotData) { gotData = true; clearTimeout(timer); resolve('Reconnected, receiving data'); }
-					};
-					testWs.onerror = () => { clearTimeout(timer); reject(new Error('Reconnect failed')); };
-				});
-			}
-			case 'pr-6': {
-				return new Promise((resolve, reject) => {
-					let found = false;
-					const timer = setTimeout(() => { if (!found) reject(new Error('Marker not in buffer')); }, 3000);
-					const handler = (e) => {
-						try {
-							const msg = JSON.parse(e.data);
-							if (msg.data?.includes('PAN_TEST_MARKER')) { found = true; clearTimeout(timer); resolve('Buffer contains test marker'); }
-						} catch {}
-					};
-					if (testWs) testWs.addEventListener('message', handler);
-					// Also check what we already received
-					setTimeout(() => { if (!found) { clearTimeout(timer); resolve('Buffer replayed (marker may be in initial burst)'); } }, 2000);
-				});
-			}
-			case 'pr-7': {
-				if (testWs) testWs.close();
-				testWs = null;
-				// Delete session
-				try { await fetch(`/api/v1/terminal/sessions/${testSessionId}`, { method: 'DELETE' }); } catch {}
-				return 'Cleaned up';
-			}
-			default: throw new Error('Unknown test');
-		}
-	}
-
-	async function executeProtocolTest(testId) {
-		switch (testId) {
-			case 'tp-1': {
-				return new Promise((resolve, reject) => {
-					const ws = new WebSocket(wsUrl('/ws/terminal?session=test-proto-' + Date.now() + '&project=Test&cwd=/tmp&cols=80&rows=24'));
-					const timer = setTimeout(() => { ws.close(); reject(new Error('Timeout')); }, 5000);
-					ws.onopen = () => { clearTimeout(timer); testWs = ws; resolve('Connected'); };
-					ws.onerror = () => { clearTimeout(timer); reject(new Error('Failed')); };
-				});
-			}
-			case 'tp-2': {
-				if (!testWs) throw new Error('No connection');
-				return new Promise((resolve, reject) => {
-					const timer = setTimeout(() => reject(new Error('No echo')), 3000);
-					testWs.onmessage = () => { clearTimeout(timer); resolve('Echo received'); };
-					testWs.send(JSON.stringify({ type: 'input', data: 'echo ok\n' }));
-				});
-			}
-			case 'tp-3': {
-				if (!testWs) throw new Error('No connection');
-				testWs.send(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));
-				await new Promise(r => setTimeout(r, 500));
-				return 'Resize sent, no error';
-			}
-			case 'tp-4': {
-				if (!testWs) throw new Error('No connection');
-				return new Promise((resolve, reject) => {
-					const timer = setTimeout(() => reject(new Error('No pong')), 3000);
-					testWs.onmessage = (e) => { try { if (JSON.parse(e.data).type === 'pong') { clearTimeout(timer); resolve('Pong received'); } } catch {} };
-					testWs.send(JSON.stringify({ type: 'ping' }));
-				});
-			}
-			case 'tp-5': {
-				if (testWs) testWs.close();
-				testWs = null;
-				return 'Cleanup done';
-			}
-			default: throw new Error('Unknown test');
-		}
-	}
-
-	async function executeWidgetTest(testId) {
-		const endpoints = {
-			'wd-1': ['/dashboard/api/services', 'services'],
-			'wd-2': ['/dashboard/api/projects', 'projects'],
-			'wd-3': [`/dashboard/api/projects/${getActiveTab()?.projectId || 791}/tasks`, 'tasks'],
-			'wd-4': ['/dashboard/api/stats', 'stats'],
-			'wd-5': ['/health', 'health'],
-		};
-		const [url, label] = endpoints[testId] || [];
-		if (!url) throw new Error('Unknown test');
-		const resp = await fetch(url);
-		if (!resp.ok) throw new Error(`${label} returned ${resp.status}`);
-		const data = await resp.json();
-		if (Array.isArray(data)) return `${data.length} ${label}`;
-		return `${label}: OK`;
-	}
-
-	async function executeInputBoxTest(testId) {
-		switch (testId) {
-			case 'ib-1': {
-				const active = getActiveTab();
-				if (!active?.ws || active.ws.readyState !== 1) throw new Error('No active terminal');
-				return 'WebSocket connected, ready to receive input';
-			}
-			case 'ib-2': {
-				const active = getActiveTab();
-				if (!active?.ws || active.ws.readyState !== 1) throw new Error('No active terminal');
-				active.ws.send(JSON.stringify({ type: 'input', data: '\n' }));
-				return 'Newline sent';
-			}
-			case 'ib-3': {
-				const resp = await fetch('/api/v1/clipboard-image', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', mimeType: 'image/png' })
-				});
-				if (!resp.ok) throw new Error(`Upload returned ${resp.status}`);
-				return 'Image upload OK';
-			}
-			default: throw new Error('Unknown test');
-		}
-	}
+	// Test runner state + functions migrated to $lib/components/widgets/TestsPanel.svelte
 
 	function filterByMilestone(milestoneId) {
 		rightMilestoneFilter = rightMilestoneFilter === milestoneId ? null : milestoneId;
@@ -5489,6 +3717,37 @@
 			setTimeout(() => { clearInterval(poll); window._panSwapPolling = false; }, 30_000);
 		}, 1500);
 	}
+
+	// ==================== Domain store mirroring ====================
+	// Every $effect below re-runs whenever its read state changes, copying
+	// the parent's local var into the matching domain store. Widgets read
+	// from the stores and stay in sync without prop drilling.
+	// Keep this block in one place so the contract is visible at a glance.
+	$effect(() => { servicesStore.list      = servicesData; });
+	$effect(() => { orgStore.data           = orgData; });
+	$effect(() => { orgStore.permsMatrix    = permsMatrix; });
+	$effect(() => { voiceStore.settings     = voiceSettings; });
+	$effect(() => { voiceStore.availableModels = availableModels; });
+	$effect(() => { voiceStore.localModels  = localModels; });
+	$effect(() => { projectStore.data       = projectData; });
+	$effect(() => { projectStore.tasks      = tasksData; });
+	$effect(() => { projectStore.sections   = sectionsData; });
+	$effect(() => { projectStore.milestoneFilter = rightMilestoneFilter; });
+	$effect(() => { devicesStore.all        = allDevices; });
+	$effect(() => { devicesStore.panClients = panClientDevices; });
+	$effect(() => { devicesStore.metrics    = deviceMetrics; });
+	$effect(() => { chatStore.bubbles       = chatBubbles; });
+	// Center column terminal-store mirrors (2026-05-28) so PtyStatusBar /
+	// ApprovalBar / CenterChatView / ImagePreviewBar widgets see parent state.
+	$effect(() => { terminalStore.claudeReady        = claudeReady; });
+	$effect(() => { terminalStore.ptyStatus          = ptyStatus; });
+	$effect(() => { terminalStore.ptyStatusNow       = ptyStatusNow; });
+	$effect(() => { terminalStore.pendingSendCount   = pendingSendCount; });
+	$effect(() => { terminalStore.pipeSending        = pipeSending; });
+	$effect(() => { terminalStore.approvalOptions    = approvalOptions; });
+	$effect(() => { terminalStore.centerChatMessages = centerChatMessages; });
+	$effect(() => { terminalStore.centerChatLoading  = centerChatLoading; });
+	$effect(() => { terminalStore.pastedImages       = pastedImages; });
 
 	// ==================== Init ====================
 
@@ -5577,8 +3836,9 @@
 			.then(j => { if (j?.hash) window._panBundleHash = j.hash; })
 			.catch(() => {});
 
-		// Load wrapped app services for the Apps panel
-		loadWrapServices();
+		// Wrapped app services migrated to $lib/components/widgets/AppsPanel.svelte —
+		// it fetches /api/v1/wrap/services itself when the user drills into a device.
+		// Parent no longer needs to preload.
 		// Clear auto-launch guards on page load so Claude greets on refresh.
 		// Exception: swap-triggered reloads preserve the guards so Claude isn't
 		// re-launched into a fresh session — the existing process is still live.
@@ -5604,11 +3864,11 @@
 		loadAvailableModels();
 
 		// Load initial panel data based on what's selected
-		if (leftSection === 'usage' || rightSection === 'usage') loadUsageData();
-		if (leftSection === 'tests' || rightSection === 'tests') loadTestSuites();
-		if (leftSection === 'intuition' || rightSection === 'intuition') { startIntuitionPolling(); loadVoiceSpeakers(); }
+		if (leftSection === 'usage' || rightSection === 'usage') storeLoadUsageData();
+		if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('pan:tests-update'));
+		// Intuition: IntuitionPanel component handles its own initial load via onMount.
 		if (leftSection === 'devices' || rightSection === 'devices') { startAllDevicesPolling(); loadClientDevices(); }
-		if (leftSection === 'benchmarks' || rightSection === 'benchmarks') startBenchmarkPolling();
+		// BenchmarksPanel polls itself when mounted
 
 		// Load permission matrix (gates which panel options are visible)
 		reloadPermsMatrix();
@@ -5617,14 +3877,12 @@
 		// definition at top-level for the full rationale + regression-test note.
 		loadOrgContextWithRetry();
 
-		// Load services, approvals, alerts, users, lifeboat immediately
+		// Load services + users + lifeboat immediately. Approvals + Alerts are
+		// self-loading inside their own components.
 		api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
-		loadUsers();
-		loadApprovals();
+		// UsersPanel auto-loads on mount
 		loadAlertCount();
-		loadAlerts();
-		loadAlertTypes();
-		loadLifeboat();
+		// LifeboatPanel auto-loads on mount
 
 		// --- Polling intervals (visibility-aware: pause when tab is hidden) ---
 		let _pageVisible = true;
@@ -5651,11 +3909,10 @@
 									const arr = Array.isArray(msgs) ? msgs : msgs.messages;
 									const hasNew = serverVersion !== undefined
 										? serverVersion !== tab._lastMessageVersion
-										: Array.isArray(arr) && arr.length > (tab._pushedMessages?.length || 0);
+										: Array.isArray(arr) && arr.length > getPushed(tab.id).length;
 									if (hasNew && Array.isArray(arr)) {
 										if (serverVersion !== undefined) tab._lastMessageVersion = serverVersion;
-										tab._pushedMessages = arr;
-										_pushedMsgsCache.set(tab.id, arr);
+										setPushed(tab.id, arr);
 										renderTranscriptToTerminal(tab);
 									}
 								})
@@ -5695,8 +3952,8 @@
 			_trackWidget('services', 'poll');
 			api('/dashboard/api/services').then(r => { servicesData = r?.services || []; }).catch(() => {});
 		}, 180_000); // 3 min — WS push handles real-time
-		const approvalInterval = setInterval(() => { if (_pageVisible) { _trackWidget('approvals', 'poll'); loadApprovals(); } }, 120_000); // 2 min fallback
-		const lifeboatInterval = setInterval(() => { if (_pageVisible) { _trackWidget('lifeboat', 'poll'); loadLifeboat(); } }, 30_000);   // 30s — lifeboat is critical, keep tighter
+		const approvalInterval = setInterval(() => { if (_pageVisible) { _trackWidget('approvals', 'poll'); if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('pan:approvals-update')); } }, 120_000); // 2 min fallback — kicks ApprovalsPanel
+		// LifeboatPanel polls itself every 30s
 		const alertCountInterval = setInterval(() => { if (_pageVisible) { _trackWidget('alerts', 'poll'); loadAlertCount(); } }, 120_000); // 2 min fallback
 
 		// Transcript heartbeat — fallback poll every 15s.
@@ -5717,11 +3974,10 @@
 				const serverVersion = msgs?._messageVersion;
 				const hasNew = serverVersion !== undefined
 					? serverVersion !== tab._lastMessageVersion
-					: Array.isArray(msgs) && msgs.length > (tab._pushedMessages?.length || 0);
+					: Array.isArray(msgs) && msgs.length > getPushed(tab.id).length;
 				if (hasNew && Array.isArray(msgs)) {
 					if (serverVersion !== undefined) tab._lastMessageVersion = serverVersion;
-					tab._pushedMessages = msgs;
-					_pushedMsgsCache.set(tab.id, msgs);
+					setPushed(tab.id, msgs);
 					renderTranscriptToTerminal(tab);
 				}
 			} catch {}
@@ -6014,7 +4270,7 @@
 			const active = getActiveTab();
 			if (!active?.ws || active.ws.readyState !== 1) return;
 			// Number keys 1-3 when input is empty AND there's a pending approval
-			if (/^[1-3]$/.test(e.key) && !terminalInputEl?.value?.trim() && approvalsData.length > 0) {
+			if (/^[1-3]$/.test(e.key) && !terminalInputEl?.value?.trim() && approvalsCount > 0) {
 				e.preventDefault();
 				const n = parseInt(e.key);
 				let seq = '\x1b[A\x1b[A\x1b[A';
@@ -6054,10 +4310,8 @@
 		window.addEventListener('storage', handleStorageChange);
 
 		// Load data for initially selected panels (otherwise they show "loading" forever)
-		if (leftSection === 'usage') loadUsageData();
-		if (rightSection === 'usage') loadUsageData();
-		if (leftSection === 'library') loadLibrary();
-		if (rightSection === 'library') loadLibrary();
+		if (leftSection === 'usage' || rightSection === 'usage') storeLoadUsageData();
+		// LibraryPanel auto-loads on mount
 		if (leftSection === 'perf') startPerfPolling();
 		if (rightSection === 'perf') startPerfPolling();
 
@@ -6073,10 +4327,10 @@
 			window.removeEventListener('beforeunload', handleBeforeUnload);
 			if (saveStateInterval) { clearInterval(saveStateInterval); saveStateInterval = null; }
 			if (chatRefreshInterval) clearInterval(chatRefreshInterval);
-			if (atlasAnimTimer) { clearInterval(atlasAnimTimer); atlasAnimTimer = null; }
+			// atlasAnimTimer moved to AtlasPanel.svelte (handles its own cleanup on destroy)
 			clearInterval(svcInterval);
 			clearInterval(approvalInterval);
-			clearInterval(lifeboatInterval);
+			// lifeboatInterval moved to LifeboatPanel.svelte (handles its own cleanup on destroy)
 			clearInterval(alertCountInterval);
 			clearInterval(ptyStatusInterval);
 			clearInterval(transcriptHeartbeat);
@@ -6101,730 +4355,10 @@
        5. Page load trace (client-side only, per-page)
        6. Speed / Resources / Bottlenecks / Heavy processes (existing steward data)
      Backed by GET /api/v1/perf/trace (carrier) — single source of truth. -->
-{#snippet perfPanelContents()}
-	{@const stages = perfTrace.stages || []}
-	{@const downCount = stages.filter(s => s.state === 'failed' && s.required).length}
-	{@const memPct = Math.round((perfServer.rss_mb || 0) / 512 * 100)}
-	{@const overallBad = downCount > 0 || !perfTrace.system_ready || perfData.wsLatency > 200 || perfServer.rss_mb > 500}
-	{@const overallWarn = perfData.wsLatency > 50 || perfServer.rss_mb > 200 || perfServer.slow_requests > 5}
-	{@const readyCount = stages.filter(s => s.state === 'ready').length}
-	{@const totalCount = stages.length}
-	{@const failedStages = stages.filter(s => s.state === 'failed')}
-	{@const phaseOrder = PERF_PHASE_ORDER}
+<!-- {#snippet perfPanelContents()} migrated to <PerfPanel /> component 2026-05-28 -->
 
-	<!-- Overall banner -->
-	<div class="perf-overall" class:perf-overall-good={!overallBad && !overallWarn} class:perf-overall-warn={overallWarn && !overallBad} class:perf-overall-bad={overallBad}>
-		<span class="perf-overall-icon">{overallBad ? '!!' : overallWarn ? '!' : 'OK'}</span>
-		<span class="perf-overall-text">{overallBad ? 'Issues detected' : overallWarn ? 'Minor issues' : 'All good'}</span>
-	</div>
-
-	<!-- Readiness summary (from /api/v1/perf/trace) -->
-	{#if perfTraceLoadedOnce}
-		<div class="perf-ready-grid" title="Live from the carrier perf engine. Each cell is computed from the probe DAG in service/src/perf/stages.js.">
-			<div class="perf-ready-cell" class:perf-ready-good={perfTrace.system_ready} class:perf-ready-bad={!perfTrace.system_ready}>
-				<div class="perf-ready-val">{perfTrace.system_ready ? 'READY' : 'WAIT'}</div>
-				<div class="perf-ready-lbl" title="AND of all REQUIRED stages being ready. Drives system_ready in the math spec.">System</div>
-			</div>
-			<div class="perf-ready-cell" class:perf-ready-good={perfTrace.interactive_ready} class:perf-ready-bad={!perfTrace.interactive_ready}>
-				<div class="perf-ready-val">{perfTrace.interactive_ready ? 'READY' : 'WAIT'}</div>
-				<div class="perf-ready-lbl" title="AND of INTERACTIVE_SET. When this flips to READY, keystrokes hit the PTY with no buffering lag.">Interactive</div>
-			</div>
-			<div class="perf-ready-cell" class:perf-ready-good={perfTrace.swap_safe?.safe} class:perf-ready-bad={!perfTrace.swap_safe?.safe}>
-				<div class="perf-ready-val">{perfTrace.swap_safe?.safe ? 'SAFE' : 'HOLD'}</div>
-				<div class="perf-ready-lbl" title={perfTrace.swap_safe?.safe ? 'All SWAP_GATE stages are ready. Lifeboat will allow commit.' : 'Lifeboat will NOT commit. Reason: ' + (perfTrace.swap_safe?.reason || 'unknown')}>Swap</div>
-			</div>
-			<div class="perf-ready-cell">
-				<div class="perf-ready-val">{readyCount}<span style="opacity:0.4">/{totalCount}</span></div>
-				<div class="perf-ready-lbl" title="Count of probes currently in the ready state (incl. non-required).">Probes</div>
-			</div>
-		</div>
-		<div class="perf-metric" style="margin-top:2px">
-			<span class="perf-label" title="Longest wall-clock path through the readiness DAG — the actual critical path for a cold start.">Critical path</span>
-			<span class="perf-value">{_fmtMs(perfTrace.critical_path_ms)}</span>
-		</div>
-		{#if !perfTrace.swap_safe?.safe && perfTrace.swap_safe?.reason}
-			<div class="perf-metric" style="font-size:10px;opacity:0.75">
-				<span class="perf-label perf-bad" title={perfTrace.swap_safe.reason}>⚠ {perfTrace.swap_safe.reason}</span>
-			</div>
-		{/if}
-
-		<!-- View toggle -->
-		<div class="perf-view-toggle" role="tablist" aria-label="Perf view">
-			<button class="perf-view-btn" class:perf-view-active={perfPanelView === 'list'} onclick={() => perfPanelView = 'list'} title="Grouped stage list, one row per probe.">List</button>
-			<button class="perf-view-btn" class:perf-view-active={perfPanelView === 'gantt'} onclick={() => perfPanelView = 'gantt'} title="Gantt bars on a shared timeline. Critical path stages highlighted.">Gantt</button>
-		</div>
-
-		{#if perfPanelView === 'list'}
-			<!-- Stages grouped by phase -->
-			{#each phaseOrder as phase}
-				{@const phaseStages = stages.filter(s => s.phase === phase)}
-				{#if phaseStages.length > 0}
-					<div class="perf-section-title" style="margin-top:10px">{PERF_PHASE_LABELS[phase] || phase}</div>
-					{#each phaseStages as s}
-						{@const warn = s.budget?.warn_ms || 0}
-						{@const bad = s.budget?.bad_ms || 0}
-						{@const hard = s.budget?.hard_ms || 0}
-						{@const overWarn = warn && s.last_probe_ms > warn}
-						{@const overBad = bad && s.last_probe_ms > bad}
-						<div class="perf-stage-row" class:perf-stage-ready={s.state === 'ready'} class:perf-stage-failed={s.state === 'failed'} class:perf-stage-running={s.state === 'running'} class:perf-stage-pending={s.state === 'pending'}>
-							<span class="perf-stage-dot" title={s.state}></span>
-							<span class="perf-stage-name" title={s.help || s.id}>{s.name}</span>
-							<span class="perf-stage-val" class:perf-warn={overWarn && !overBad} class:perf-bad={overBad} title={'warn/bad/hard: ' + warn + '/' + bad + '/' + hard + 'ms  —  ' + (s.probe_method || 'probe')}>
-								{s.state === 'ready' ? _fmtMs(s.last_probe_ms) : s.state === 'running' ? '…' : s.state === 'failed' ? 'fail' : 'wait'}
-							</span>
-							<button class="perf-reprobe-btn" onclick={() => forceProbeStage(s.id)} title={'Re-run the ' + s.probe_method + ' probe now.'}>↻</button>
-						</div>
-						{#if s.state === 'failed' && s.error}
-							<div class="perf-stage-err" title={s.error}>{s.error}</div>
-						{/if}
-					{/each}
-				{/if}
-			{/each}
-		{:else}
-			<!-- Gantt view -->
-			{@const started = perfTrace.engine_started_at || 0}
-			{@const now = perfTrace.now || Date.now()}
-			{@const totalMs = Math.max(perfTrace.critical_path_ms || 0, now - started, 1000)}
-			{@const scale = (ms) => Math.max(0, Math.min(100, (ms / totalMs) * 100))}
-
-			<div class="perf-section-title" style="margin-top:10px">Gantt — critical path: {_fmtMs(perfTrace.critical_path_ms)}</div>
-			<div class="perf-gantt">
-				{#each phaseOrder as phase}
-					{@const phaseStages = stages.filter(s => s.phase === phase)}
-					{#each phaseStages as s}
-						{@const startMs = s.ready_at ? Math.max(0, s.ready_at - started - s.last_probe_ms) : 0}
-						{@const endMs = s.ready_at ? Math.max(0, s.ready_at - started) : (now - started)}
-						{@const widthPct = Math.max(0.5, scale(endMs) - scale(startMs))}
-						{@const leftPct = scale(startMs)}
-						<div class="perf-gantt-row" title={s.help || s.id}>
-							<span class="perf-gantt-name">{s.name}</span>
-							<div class="perf-gantt-track">
-								{#if s.state === 'ready' || s.state === 'failed'}
-									<div class="perf-gantt-bar"
-										class:perf-gantt-ready={s.state === 'ready'}
-										class:perf-gantt-failed={s.state === 'failed'}
-										style="left:{leftPct}%;width:{widthPct}%"
-										title={s.state === 'ready' ? _fmtMs(endMs) + ' wall-clock · probe ' + _fmtMs(s.last_probe_ms) : (s.error || 'failed')}>
-									</div>
-								{:else if s.state === 'running'}
-									<div class="perf-gantt-bar perf-gantt-running" style="left:0%;width:100%" title="running…"></div>
-								{:else}
-									<div class="perf-gantt-bar perf-gantt-pending" style="left:0%;width:100%" title="waiting for dependencies"></div>
-								{/if}
-							</div>
-							<span class="perf-gantt-ms">{s.state === 'ready' ? _fmtMs(endMs) : s.state === 'failed' ? 'fail' : s.state === 'running' ? '…' : '—'}</span>
-						</div>
-					{/each}
-				{/each}
-			</div>
-			<div class="perf-gantt-legend">
-				<span><span class="perf-gantt-swatch perf-gantt-ready"></span>ready</span>
-				<span><span class="perf-gantt-swatch perf-gantt-running"></span>running</span>
-				<span><span class="perf-gantt-swatch perf-gantt-failed"></span>failed</span>
-				<span><span class="perf-gantt-swatch perf-gantt-pending"></span>pending</span>
-			</div>
-		{/if}
-	{:else}
-		<div class="perf-metric" style="opacity:0.6">
-			<span class="perf-label">Loading perf trace…</span>
-		</div>
-	{/if}
-
-	<!-- Last message (client-side send → ack → echo → assistant trace) -->
-	{#if _sendTimings.lastSendAt > 0}
-		<div class="perf-section-title" style="margin-top:12px">Last message</div>
-		<div class="perf-metric" style="font-size:10px;opacity:0.65">
-			<span class="perf-label" title={_sendTimings.lastSendText}>&ldquo;{_sendTimings.lastSendText}{_sendTimings.lastSendText.length >= 40 ? '…' : ''}&rdquo;</span>
-		</div>
-		<div class="perf-metric">
-			<span class="perf-label" title="Time from pressing Enter until server returned HTTP 200.">Server acked</span>
-			<span class="perf-value" class:perf-warn={_sendTimings.lastAckMs > 300} class:perf-bad={_sendTimings.lastAckMs > 1500}>{_sendTimings.lastAckMs ? _fmtMs(_sendTimings.lastAckMs) : (_sendTimings.awaitingAssistant ? '…' : '—')}</span>
-		</div>
-		<div class="perf-metric">
-			<span class="perf-label" title="Time until your own message echoed back over the WebSocket.">Echo back</span>
-			<span class="perf-value" class:perf-warn={_sendTimings.lastEchoMs > 500} class:perf-bad={_sendTimings.lastEchoMs > 2000}>{_sendTimings.lastEchoMs ? _fmtMs(_sendTimings.lastEchoMs) : (_sendTimings.awaitingAssistant ? '…' : '—')}</span>
-		</div>
-		<div class="perf-metric">
-			<span class="perf-label" title="Time until the assistant's first reply arrived via JSONL.">Assistant replied</span>
-			<span class="perf-value" class:perf-warn={_sendTimings.lastAssistantMs > 5000} class:perf-bad={_sendTimings.lastAssistantMs > 15000}>{_sendTimings.lastAssistantMs ? _fmtMs(_sendTimings.lastAssistantMs) : (_sendTimings.awaitingAssistant ? 'thinking…' : '—')}</span>
-		</div>
-	{/if}
-
-	<!-- Page load trace (client-side only; per-page wall-clock) -->
-	{#if _loadTimings.scriptInit}
-		<div class="perf-section-title" style="margin-top:12px">Page load trace</div>
-		{#each LOAD_STAGE_ORDER as key, i}
-			{@const ms = _loadTimings[key]}
-			{@const spec = STAGE_LABELS[key]}
-			{#if ms}
-				{@const prev = i > 0 ? _loadTimings[LOAD_STAGE_ORDER[i-1]] : 0}
-				{@const delta = prev ? ms - prev : ms}
-				<div class="perf-metric" class:perf-stage-final={key === 'interactive'}>
-					<span class="perf-label" title={spec.help}>{spec.name}</span>
-					<span class="perf-value" class:perf-warn={ms > spec.warn} class:perf-bad={ms > spec.bad}>
-						{_fmtMs(ms)}
-						{#if delta > 0 && delta !== ms}<span style="opacity:0.45;font-size:9px">&nbsp;(+{_fmtMs(delta)})</span>{/if}
-					</span>
-				</div>
-			{:else}
-				<div class="perf-metric" style="opacity:0.4">
-					<span class="perf-label" title={spec.help}>{spec.name}</span>
-					<span class="perf-value">pending…</span>
-				</div>
-			{/if}
-		{/each}
-	{/if}
-
-	<!-- Speed -->
-	<div class="perf-section-title" style="margin-top:12px">Speed</div>
-	<div class="perf-metric">
-		<span class="perf-label" title="Avg HTTP response time across all server routes.">Server response</span>
-		<span class="perf-value" class:perf-warn={perfServer.avg_ms > 100} class:perf-bad={perfServer.avg_ms > 500}>
-			{perfServer.avg_ms < 10 ? 'Instant' : perfServer.avg_ms < 100 ? 'Fast' : perfServer.avg_ms < 500 ? 'Slow' : 'Very slow'}
-			<span style="opacity:0.5;font-size:9px">({Math.round(perfServer.avg_ms)}ms)</span>
-		</span>
-	</div>
-	<div class="perf-metric">
-		<span class="perf-label" title="Round-trip of a WebSocket ping. Your network + server wake-up.">WebSocket ping</span>
-		<span class="perf-value" class:perf-warn={perfData.wsLatency > 50} class:perf-bad={perfData.wsLatency > 200}>
-			{perfData.wsLatency < 10 ? 'Instant' : perfData.wsLatency < 50 ? 'Fast' : perfData.wsLatency < 200 ? 'Laggy' : 'Frozen'}
-			<span style="opacity:0.5;font-size:9px">({perfData.wsLatency}ms)</span>
-		</span>
-	</div>
-	{#if perfServer.slow_requests > 0}
-		<div class="perf-metric">
-			<span class="perf-label">Slow requests</span>
-			<span class="perf-value perf-warn">{perfServer.slow_requests} of {perfServer.total_requests}</span>
-		</div>
-	{/if}
-
-	<!-- Resources -->
-	<div class="perf-section-title" style="margin-top:12px">Resources</div>
-	<div class="perf-metric">
-		<span class="perf-label">Memory</span>
-		<span class="perf-value" class:perf-warn={perfServer.rss_mb > 200} class:perf-bad={perfServer.rss_mb > 500}>{perfServer.rss_mb}MB</span>
-	</div>
-	<div class="perf-bar-track"><div class="perf-bar-fill" class:perf-warn={memPct > 40} class:perf-bad={memPct > 80} style="width:{Math.min(memPct,100)}%"></div></div>
-	<div class="perf-metric">
-		<span class="perf-label">Uptime</span>
-		<span class="perf-value">{perfServer.uptime_s > 86400 ? (perfServer.uptime_s/86400).toFixed(1)+' days' : perfServer.uptime_s > 3600 ? (perfServer.uptime_s/3600).toFixed(1)+' hrs' : perfServer.uptime_s > 60 ? Math.round(perfServer.uptime_s/60)+' min' : perfServer.uptime_s+' sec'}</span>
-	</div>
-	<div class="perf-metric">
-		<span class="perf-label">Connected clients</span>
-		<span class="perf-value">{perfServer.ws_connections}</span>
-	</div>
-
-	{#if perfServer.top_routes?.length > 0}
-		{@const slowRoutes = perfServer.top_routes.filter(r => r.maxMs > 500).slice(0, 3)}
-		{#if slowRoutes.length > 0}
-			<div class="perf-section-title" style="margin-top:12px">Bottlenecks</div>
-			{#each slowRoutes as r}
-				<div class="perf-metric" style="font-size:10px">
-					<span class="perf-label" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={r.route}>{r.route.replace(/^\/api\/v1\//, '').replace(/^\/dashboard\/api\//, '').replace(/^\/_app\/.*\//, 'asset/')}</span>
-					<span class="perf-value perf-bad">Peaked {r.maxMs > 1000 ? (r.maxMs/1000).toFixed(1)+'s' : Math.round(r.maxMs)+'ms'}</span>
-				</div>
-			{/each}
-		{/if}
-	{/if}
-
-	<!-- Process liveness (from steward) — complements probe-driven stages above. -->
-	{#if perfServices.length > 0}
-		<div class="perf-section-title" style="margin-top:12px">Processes</div>
-		{#each perfServices as svc}
-			<div class="perf-proc" class:perf-zombie={svc.status === 'down' || svc.status === 'error'}>
-				<div class="perf-proc-header">
-					<span class="perf-proc-name vital">{svc.name}</span>
-					{#if svc.inProcess}
-						<span class="perf-proc-tag" title="Runs inside the PAN server process">built-in</span>
-					{:else if svc.pid}
-						<span class="perf-proc-tag perf-good" style="font-size:9px">{svc.memMB}MB</span>
-						<button class="perf-kill-btn" onclick={() => killProcess(svc.pid)} title="Kill {svc.name} (pid {svc.pid})">Kill</button>
-					{:else}
-						<span class="perf-proc-tag perf-bad">Offline</span>
-					{/if}
-				</div>
-				{#if svc.inProcess}
-					<div class="perf-proc-stats"><span style="opacity:0.6">{svc.modelTierLabel || 'built-in'}</span></div>
-				{:else if !svc.pid}
-					<div class="perf-proc-stats"><span class="perf-bad">Not running</span></div>
-				{/if}
-				{#if svc.lastError}
-					<div class="perf-proc-stats perf-bad" style="font-size:9px;margin-top:2px">{String(svc.lastError).slice(0,80)}</div>
-				{/if}
-			</div>
-		{/each}
-	{/if}
-
-	{#if perfOther.length > 0}
-		<div class="perf-section-title" style="margin-top:12px">Heavy Processes</div>
-		{#each perfOther.slice(0, 5) as p}
-			<div class="perf-proc">
-				<div class="perf-proc-header">
-					<span class="perf-proc-name" style="opacity:0.7">{p.exe}</span>
-					<span class="perf-proc-tag" style="font-size:9px">{p.memMB}MB</span>
-					<button class="perf-kill-btn" onclick={() => killProcess(p.pid)} title="Kill pid {p.pid}">Kill</button>
-				</div>
-			</div>
-		{/each}
-	{/if}
-
-	<!-- Widget Health — live view of what's refreshing and how -->
-	{@const _now = Date.now()}
-	{@const _wEntries = Object.entries(_widgetHealth)}
-	{@const _wStale = _wEntries.filter(([, w]) => w.ts > 0 && (_now - w.ts) > 120_000)}
-	<div class="perf-section-title" style="margin-top:12px">Widget Health
-		{#if _wStale.length > 0}<span style="color:#f38ba8;font-size:9px;margin-left:6px">⚠ {_wStale.length} stale</span>{/if}
-	</div>
-	{#each _wEntries as [name, w]}
-		{@const ageSec = w.ts ? Math.round((_now - w.ts) / 1000) : null}
-		{@const isStale = w.ts > 0 && (_now - w.ts) > 120_000}
-		{@const isPush = w.source === 'push'}
-		{@const neverUpdated = w.ts === 0}
-		<div class="perf-metric" style="font-size:10px">
-			<span class="perf-label" style="text-transform:capitalize">{name}</span>
-			<span style="display:flex;align-items:center;gap:5px">
-				{#if neverUpdated}
-					<span style="color:#6c7086">—</span>
-				{:else}
-					<span style="color:{isStale ? '#f38ba8' : isPush ? '#a6e3a1' : '#fab387'}" title="{isPush ? '📡 WS push' : '🔄 fallback poll'} · {w.pushes}p/{w.polls}x">
-						{isPush ? '📡' : '🔄'} {ageSec < 60 ? ageSec + 's' : Math.round(ageSec/60) + 'm'} ago
-					</span>
-					{#if w.pushes > 0 || w.polls > 0}
-						<span style="color:#6c7086;font-size:9px" title="WS push count / fallback poll count">{w.pushes}p/{w.polls}x</span>
-					{/if}
-				{/if}
-			</span>
-		</div>
-	{/each}
-
-	<!-- WS Message Rates -->
-	<div class="perf-section-title" style="margin-top:10px">WS Messages</div>
-	<div class="perf-metric" style="font-size:10px">
-		<span class="perf-label">Total received</span>
-		<span class="perf-value">{_wsTotalMsgs}</span>
-	</div>
-	{#if _wsLastMsgTs > 0}
-		<div class="perf-metric" style="font-size:10px">
-			<span class="perf-label">Last message</span>
-			<span class="perf-value">{Math.round((_now - _wsLastMsgTs)/1000)}s ago</span>
-		</div>
-	{/if}
-	{#each Object.entries(_wsMsgCounts).sort((a,b) => b[1]-a[1]).slice(0, 8) as [type, count]}
-		<div class="perf-metric" style="font-size:10px">
-			<span class="perf-label" style="opacity:0.7">{type}</span>
-			<span style="color:#cba6f7;font-size:10px">{count}×</span>
-		</div>
-	{/each}
-{/snippet}
-
-{#snippet intuitionPanelContents()}
-	<!-- BULLETPROOF RENDER: this snippet has NO conditional wrapper that can
-	     unmount the user card. Every "could be null" path falls through to a
-	     synthetic placeholder so the layout NEVER disappears. The only state
-	     that ever changes is the VALUES inside the cells. -->
-	<!-- Dropdown iterates the ROSTER directly. No derived chain, no synthetic
-	     fallback hijacking the options. Whatever /api/v1/orgs/:id/members
-	     returned, that's what you can pick from. -->
-	{@const _intData = intuitionData || { org_state: {}, individualSnap: {}, org_name: '' }}
-	{@const orgState = _intData.org_state || {}}
-	{@const iSnap = _intData.individualSnap || {}}
-	{@const pan = iSnap.pan || {}}
-	{@const iSig = iSnap.signals || {}}
-	{@const preds = pan.predictions || []}
-	{@const wc = iSig.webcam_context}
-	{@const sc = iSig.screen_context}
-	{@const _orgName = _intData.org_name || orgData?.org_name || 'Org'}
-	<!-- Build the per-user card from atomic state: roster (intuitionMembers)
-	     + snapshots map (intuitionSnapsByCommander). selectedIntuitionUser
-	     picks which one to show. No deriveds, no synthetics. -->
-	{@const _selectedRow = intuitionMembers.find(u => u.display_name === selectedIntuitionUser) || intuitionMembers[0]}
-	{@const _selectedSnap = _selectedRow ? (intuitionSnapsByCommander[_selectedRow.display_name]?.snapshot || null) : null}
-	{@const _selN = _selectedSnap?.now || {}}
-	{@const _selAgeMs = _selectedSnap?.as_of ? Date.now() - _selectedSnap.as_of : null}
-	{@const m = _selectedRow ? {
-		commander: _selectedRow.display_name,
-		role_name: _selectedRow.role_name,
-		role_color: _selectedRow.role_color,
-		as_of: _selectedSnap?.as_of || null,
-		age_ms: _selAgeMs,
-		is_active: _selAgeMs !== null && _selAgeMs < 5 * 60 * 1000,
-		has_snapshot: !!_selectedSnap,
-		activity: _selN.activity || null,
-		focus: _selN.focus || null,
-		mood: _selN.mood || null,
-		where: _selN.where || null,
-		last_heard: _selN.last_heard || null,
-		urgency: _selN.urgency || null,
-		engagement: _selN.engagement || null,
-		recent_topics: _selN.recent_topics || [],
-		assumption: _selN.assumption || null,
-		confidence: _selectedSnap?.signals?.confidence ?? 0,
-	} : null}
-
-	<!-- ═══════════════════════════════════════════════════════════════════════
-	     TOP-LEVEL SECTION: USER. Sits ABOVE the dropdown — the dropdown is the
-	     'which user' selector belonging to this section, and the identity strip
-	     below the dropdown is the same user rendered from sensor data.
-	     Tasks #490 + #493. -->
-	<div style="padding-bottom:3px;margin-bottom:6px;font-size:11px;font-weight:700;color:#cba6f7;letter-spacing:1.5px;border-bottom:1px solid rgba(203,166,247,0.3)">
-		USER
-	</div>
-	<div class="int-header" style="gap:6px;align-items:center">
-		<select
-			bind:value={selectedIntuitionUser}
-			onchange={onIntuitionUserChange}
-			style="flex:1;background:#181825;color:#cdd6f4;border:1px solid #313244;border-radius:4px;padding:3px 6px;font-size:11px"
-		>
-			{#if intuitionMembers.length === 0}
-				<option value="">(no users)</option>
-			{:else}
-				{#each intuitionMembers as u (u.id)}
-					{@const hasSnap = !!intuitionSnapsByCommander[u.display_name]?.snapshot}
-					<option value={u.display_name}>
-						{u.display_name}{u.role_name ? ` · ${u.role_name}` : ''}{(intuitionSnapshotsLoaded && !hasSnap) ? ' (no data)' : ''}
-					</option>
-				{/each}
-			{/if}
-		</select>
-		<span class="int-ago">{m?.as_of ? new Date(m.as_of).toLocaleTimeString() : (intuitionLoaded ? '—' : 'loading…')}</span>
-	</div>
-
-	<!-- Status banner — only shown when loadIntuition set a status message. -->
-	{#if intuitionStatus}
-		<div class="empty-state" style="font-size:11px;color:#94a3b8;font-style:italic">{intuitionStatus}</div>
-	{/if}
-
-	<!-- Selected user's intuition card. Only renders when a row was found in
-	     the roster — but the dropdown above always renders, so the panel never
-	     "disappears". Each named section below is the unit you can refer to in
-	     conversation ("the State section", "the Motives section", etc.). -->
-	{#if m}
-			<!-- Identity strip: who is selected, role, active/idle.
-			     Not a "section" with a heading — it's the card's header bar.
-			     Role title-cased; "X m ago" stamp removed per user request. -->
-			{@const _roleLabel = m.role_name ? (m.role_name.charAt(0).toUpperCase() + m.role_name.slice(1)) : ''}
-			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-				{m.commander || 'Unknown'}
-				{#if _roleLabel}<span style="font-size:10px;color:{m.role_color || '#6c7086'}">· {_roleLabel}</span>{/if}
-				<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:{m.is_active ? 'rgba(166,227,161,0.15)' : 'rgba(108,112,134,0.15)'};color:{m.is_active ? '#a6e3a1' : '#6c7086'}">{m.is_active ? '● active' : '○ idle'}</span>
-			</div>
-
-			<!-- ═══ SECTION: Identity ═══════════════════════════════════════════════
-			     Sensor-based identity for the selected commander. Combines what
-			     used to be two separate sections (Identity + Voice Identity) into
-			     one — camera, screen, voice enrollment all live here. Moved up
-			     from bottom to top of USER block per task #490. -->
-			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-				Identity
-				<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:auto;background:{voiceServerOk ? 'rgba(166,227,161,0.15)' : 'rgba(243,139,168,0.15)'};color:{voiceServerOk ? '#a6e3a1' : '#f38ba8'}" title="voice ID server">voice {voiceServerOk ? 'online' : 'offline'}</span>
-			</div>
-			<div class="int-axes">
-				<div class="int-axis">
-					<span class="int-label">Camera</span>
-					<span class="int-val small" style="color:{wc ? (wc.presence === 'yes' ? '#a6e3a1' : wc.presence === 'no' ? '#f38ba8' : '#fab387') : '#6c7086'}">
-						{wc ? (wc.presence === 'yes' ? (wc.identity || 'Someone') : wc.presence === 'no' ? 'Desk empty' : 'Unclear') : '⏳ no capture yet'}
-					</span>
-					<button onclick={forceCamCapture} disabled={forcingCapture} title="Force capture now" style="margin-left:4px;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:{forcingCapture ? '#6c7086' : '#cba6f7'};cursor:{forcingCapture ? 'default' : 'pointer'};font-size:10px;padding:1px 5px;line-height:1.4">
-						{forcingCapture ? '⏳' : '📷'}
-					</button>
-				</div>
-				{#if wc?.emotion && wc.presence === 'yes'}
-					<div class="int-axis"><span class="int-label">Expression</span><span class="int-val small">{wc.emotion}{wc.note ? ' · ' + wc.note : ''}</span></div>
-				{/if}
-				{#if wc?.people_count > 1}
-					<div class="int-axis"><span class="int-label">People</span><span class="int-val small">{wc.people_count} visible</span></div>
-				{/if}
-				<div class="int-axis" style="flex-wrap:wrap">
-					<span class="int-label">Screen</span>
-					<span class="int-val small" style="color:#cba6f7;white-space:normal">{sc ? sc.description : '⏳ no capture yet'}</span>
-				</div>
-				{#if wc?.age_ms}<div class="int-axis"><span class="int-label">Cam age</span><span class="int-val small">{Math.round(wc.age_ms/1000)}s ago</span></div>{/if}
-				{#if sc?.age_ms}<div class="int-axis"><span class="int-label">Screen age</span><span class="int-val small">{Math.round(sc.age_ms/1000)}s ago</span></div>{/if}
-			</div>
-			<!-- Voice enrollment lives inside the Identity section -->
-			{#if voiceEnrollSpeakers.length > 0}
-				<div style="margin-bottom:6px">
-					{#each voiceEnrollSpeakers as sp}
-						<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
-							<span style="font-size:15px">🎤</span>
-							<span style="font-size:12px;color:#cdd6f4;flex:1">{sp.label || sp}</span>
-							{#if sp.sample_count}<span style="font-size:10px;color:#6c7086">{sp.sample_count} sample{sp.sample_count !== 1 ? 's' : ''}</span>{/if}
-							<button onclick={() => deleteVoiceSpeaker(sp.label || sp)} style="background:none;border:none;color:#f38ba8;cursor:pointer;font-size:12px;padding:1px 4px;border-radius:3px" title="Remove">✕</button>
-						</div>
-					{/each}
-				</div>
-			{:else}
-				<div style="font-size:11px;color:#6c7086;margin-bottom:6px">No speakers enrolled — voice IDs passively as you speak</div>
-			{/if}
-			<div style="display:flex;gap:5px;margin-bottom:5px">
-				<input bind:value={voiceEnrollLabel} placeholder="Speaker name" disabled={voiceEnrollStatus === 'recording' || voiceEnrollStatus === 'uploading'} style="flex:1;background:#1e1e2e;border:1px solid rgba(255,255,255,0.12);border-radius:5px;color:#cdd6f4;padding:4px 8px;font-size:12px;outline:none" />
-			</div>
-			{#if voiceEnrollStatus === 'recording'}
-				<div style="display:flex;gap:6px;align-items:center">
-					<button onclick={stopVoiceEnroll} style="flex:1;background:rgba(243,139,168,0.2);border:1px solid #f38ba8;border-radius:5px;color:#f38ba8;padding:5px;font-size:12px;cursor:pointer">⏹ Stop ({voiceEnrollSeconds}s / 10s)</button>
-				</div>
-				<div style="margin-top:4px;background:rgba(255,255,255,0.07);border-radius:3px;height:3px;overflow:hidden">
-					<div style="background:#cba6f7;height:100%;width:{Math.min(voiceEnrollSeconds/10*100,100)}%;transition:width 1s linear"></div>
-				</div>
-			{:else}
-				<button onclick={startVoiceEnroll} disabled={!voiceServerOk || voiceEnrollStatus === 'uploading'} style="width:100%;background:rgba(203,166,247,0.15);border:1px solid rgba(203,166,247,0.4);border-radius:5px;color:#cba6f7;padding:5px;font-size:12px;cursor:{voiceServerOk ? 'pointer' : 'not-allowed'};opacity:{voiceServerOk ? 1 : 0.5}">
-					🎤 {voiceEnrollStatus === 'uploading' ? 'Processing...' : 'Record Sample (10s)'}
-				</button>
-			{/if}
-			{#if voiceEnrollMsg}
-				<div style="font-size:11px;margin-top:4px;color:{voiceEnrollStatus === 'error' ? '#f38ba8' : voiceEnrollStatus === 'done' ? '#a6e3a1' : '#6c7086'}">{voiceEnrollMsg}</div>
-			{/if}
-
-			<!-- Subsection divider — Identity → State (task #493). -->
-			<hr style="border:none;border-top:1px solid rgba(255,255,255,0.07);margin:10px 0 6px" />
-
-			<!-- ═══ SECTION: State ═══════════════════════════════════════════
-			     PAN's read of who this user is right now: location, what they're
-			     doing, their mood, urgency, what was last said. Confidence is
-			     the daemon's self-rated certainty in this read. Schema field is
-			     `snapshot.now`. -->
-			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-				State
-				<span style="font-size:10px;color:#6c7086">read of {m.commander}</span>
-			</div>
-			{#if !m.has_snapshot}
-				<div class="empty-state" style="font-size:10px;color:#94a3b8;font-style:italic;margin:4px 0">No intuition data for {m.commander} yet — the daemon builds a snapshot once they have presence signals (screen, camera, mic, or terminal activity).</div>
-			{/if}
-			<div class="int-axes">
-				<div class="int-axis"><span class="int-label">Where</span><span class="int-val">{m.where || '—'}</span></div>
-				<div class="int-axis"><span class="int-label">Activity</span><span class="int-val">{m.activity || '—'}</span></div>
-				<div class="int-axis"><span class="int-label">Focus</span><span class="int-val">{m.focus || '—'}</span></div>
-				<div class="int-axis"><span class="int-label">Mood</span><span class="int-val">{m.mood || '—'}</span></div>
-				<div class="int-axis"><span class="int-label">Urgency</span><span class="int-val">{m.urgency || (m.has_snapshot ? 'normal' : '—')}</span></div>
-				<div class="int-axis"><span class="int-label">Engagement</span><span class="int-val">{m.engagement || '—'}</span></div>
-				<div class="int-axis">
-					<span class="int-label">Assumption</span>
-					<span class="int-val" class:wellbeing-ok={m.assumption === 'ok'} class:wellbeing-notok={m.assumption === 'not_ok'} class:wellbeing-emergency={m.assumption === 'emergency'}>{m.assumption || '—'}</span>
-				</div>
-				<div class="int-axis"><span class="int-label">Last heard</span><span class="int-val small">{m.last_heard ? `"${m.last_heard}"` : '—'}</span></div>
-				<div class="int-axis"><span class="int-label">Topics</span><span class="int-val small">{(m.recent_topics || []).length > 0 ? m.recent_topics.slice(0, 3).join(', ') : '—'}</span></div>
-				<div class="int-axis"><span class="int-label">Confidence</span><span class="int-val small">{Math.round((m.confidence || 0) * 100)}%</span></div>
-			</div>
-			{#if m.has_snapshot}
-				<div class="int-disclaimer">⚠ Not medical advice — PAN's assumptions only</div>
-			{/if}
-		{/if}
-
-		<!-- Subsection divider — State → Motives (task #493). -->
-		<hr style="border:none;border-top:1px solid rgba(255,255,255,0.07);margin:10px 0 6px" />
-
-		<!-- ═══ SECTION: Motives ═══════════════════════════════════════════════
-		     Sims-style motive bars (0..100). The motivational layer below State
-		     and above Mind. Each motive decays + is reset by events (meals →
-		     Nourishment, sleep → Rest). Sorted server-side by urgency =
-		     (100 - level) × weight. See service/src/intuition/needs.js. -->
-		{#if panNeeds.length > 0}
-			{@const _trackedCount = panNeeds.filter(n => n.tracked).length}
-			{@const _untrackedCount = panNeeds.length - _trackedCount}
-			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-				Motives
-				<span style="font-size:10px;color:#6c7086">
-					{_trackedCount} tracked{_untrackedCount > 0 ? ` · ${_untrackedCount} awaiting signal` : ''} · event-driven (task #492)
-				</span>
-			</div>
-			<div class="needs-grid">
-				{#each panNeeds as n}
-					<!-- Each row: icon + label, then either a bar (tracked) or a hint
-					     pill (not tracked). Cause string sits as a thin subtitle
-					     under tracked rows explaining WHY the bar is where it is. -->
-					<div class="need-row" class:need-untracked={!n.tracked} title="{n.label} · weight {n.weight} · decay {n.decay_rate}/h · {n.cause || ''}">
-						<span class="need-icon">{n.icon}</span>
-						<span class="need-label">{n.label}</span>
-						{#if n.tracked}
-							<div class="need-bar-track">
-								<div class="need-bar-fill" style="width:{n.level}%;background:{needBarColor(n.level)}"></div>
-							</div>
-							<span class="need-level" style="color:{needBarColor(n.level)}">{Math.round(n.level)}{#if n.stale}<span style="font-size:9px;color:#fab387;margin-left:3px" title="value can't be trusted — last event too old">⚠</span>{/if}</span>
-						{:else}
-							<span class="need-hint" style="flex:1;font-size:10px;color:#6c7086;font-style:italic;text-align:right">{n.hint || 'not tracked yet'}</span>
-						{/if}
-					</div>
-					{#if n.tracked && n.cause}
-						<div class="need-cause" style="font-size:10px;color:{n.stale ? '#fab387' : '#6c7086'};padding:0 6px 4px 22px;line-height:1.2;margin-top:-2px">{n.cause}</div>
-					{/if}
-				{/each}
-			</div>
-		{/if}
-
-		<!-- ═══════════════════════════════════════════════════════════════════
-		     TOP-LEVEL SECTION: PAN — what PAN itself is doing/thinking.
-		     Distinct from USER above (which is PAN's read of the commander).
-		     Subsections: Mind → Recent Actions → Tasks → Predictions. Task #490. -->
-		<div style="margin-top:14px;padding-bottom:3px;margin-bottom:6px;font-size:11px;font-weight:700;color:#a6e3a1;letter-spacing:1.5px;border-bottom:1px solid rgba(166,227,161,0.3)">
-			PAN
-		</div>
-
-		<!-- ═══ SECTION: PAN's Mind ═════════════════════════════════════════════
-		     What PAN itself is doing/thinking right now. Combines:
-		       • Hero status badge (thinking / idle)
-		       • Per-session live indicator (Claude active / thinking / idle)
-		       • Recent thought stream (first-person reasoning trace, sources:
-		         intuition · screen · router · scout · interjection · dream)
-		     Mirrors the phone's PanThinkingCard. PAN can read this stream back
-		     via the `pan_thoughts` MCP tool. -->
-		{@const thinkingNow = (pan.sessions || []).some(s => s.thinking || s.claudeRunning)}
-		<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-			PAN's Mind
-			<span style="font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;background:{thinkingNow ? 'rgba(203,166,247,0.18)' : 'rgba(108,112,134,0.18)'};color:{thinkingNow ? '#cba6f7' : '#9399b2'}">
-				{thinkingNow ? '🧠 thinking…' : 'Π idle'}
-			</span>
-		</div>
-		<!-- Task #493: removed Status:Idle + per-session 'PAN idle · 1 client' rows.
-		     PAN's Mind is now Synthesis + Thought stream only — the live thinking/idle
-		     pill in the header above already conveys the busy state. -->
-		{#if panThoughts.length > 0}
-			<!-- Source → sensor-type mapping (task #491). Each thought source
-			     maps to a sensor category: BRAIN (pure reasoning), EYE (vision),
-			     EAR (audio in), VOICE (output), SCOUT (background research),
-			     DREAM (sleep/synthesis). Add new sources here as new sensors
-			     (pendant mic, gyroscope, etc.) come online. -->
-			{@const sensorOf = (src) => (
-				src === 'intuition'    ? 'brain'
-				: src === 'screen'     ? 'eye'
-				: src === 'webcam'     ? 'eye'
-				: src === 'router'     ? 'ear'
-				: src === 'transcript' ? 'ear'
-				: src === 'scout'      ? 'scout'
-				: src === 'interjection' ? 'voice'
-				: src === 'dream'      ? 'dream'
-				: 'other'
-			)}
-			{@const sensorIcon = { brain: '🧠', eye: '👁', ear: '👂', scout: '🔭', voice: '🗣', dream: '💤', other: '·' }}
-			{@const sensorColor = { brain: '#cba6f7', eye: '#89b4fa', ear: '#a6e3a1', scout: '#f9e2af', voice: '#fab387', dream: '#f5c2e7', other: '#9399b2' }}
-			{@const sensorLabel = { brain: 'think', eye: 'see', ear: 'hear', scout: 'scout', voice: 'speak', dream: 'dream', other: 'other' }}
-
-			<!-- Synthesis — rendered paragraph from the latest reasoning cycle
-			     (task #495). The paragraph is now a deterministic render of
-			     typed reasoning_steps, not a free-form LLM prose call. Each
-			     step carries kind/subject/predicate/value/conf + refs to
-			     evidence + parents[] forming a causal chain. The "show steps"
-			     toggle reveals the substrate behind the paragraph so you can
-			     drill into why PAN concluded what it did. -->
-			{@const synthAgeMs = panSynthesis?.generated_at_ms ? (Date.now() - panSynthesis.generated_at_ms) : null}
-			{@const synthAgeStr = synthAgeMs == null ? '' : synthAgeMs < 60_000 ? `${Math.round(synthAgeMs/1000)}s ago` : synthAgeMs < 3_600_000 ? `${Math.round(synthAgeMs/60_000)}m ago` : `${Math.round(synthAgeMs/3_600_000)}h ago`}
-			{@const reasoningSteps = panSynthesis?.steps || []}
-			<div style="margin:6px 0 10px;padding:8px 10px;background:rgba(203,166,247,0.06);border-left:2px solid rgba(203,166,247,0.45);border-radius:3px;font-size:12px;color:#cdd6f4;line-height:1.55">
-				<div style="display:flex;align-items:center;gap:6px;font-size:9px;font-weight:700;color:#cba6f7;letter-spacing:1px;margin-bottom:4px">
-					SYNTHESIS
-					{#if reasoningSteps.length > 0}
-						<button onclick={() => panReasoningOpen = !panReasoningOpen} style="margin-left:auto;background:none;border:1px solid rgba(203,166,247,0.3);color:#cba6f7;font-size:9px;font-weight:600;letter-spacing:1px;border-radius:3px;padding:1px 6px;cursor:pointer">{panReasoningOpen ? '▾ HIDE STEPS' : '▸ SHOW STEPS'} ({reasoningSteps.length})</button>
-					{/if}
-				</div>
-				{#if panSynthesis?.synthesis}
-					<div style="color:#cdd6f4;font-size:12px;line-height:1.55">{panSynthesis.synthesis}</div>
-					{#if panReasoningOpen && reasoningSteps.length > 0}
-						<!-- Typed reasoning trace — one row per step. Kind tag is
-						     color-coded; parents arrow indicates causal lineage. -->
-						{@const kindColor = { observe:'#a6e3a1', recall:'#89b4fa', notice:'#f9e2af', contradict:'#f38ba8', infer:'#cba6f7', question:'#94e2d5', doubt:'#fab387', intend:'#f5c2e7', commit:'#cba6f7' }}
-						<div style="margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,255,255,0.08);display:flex;flex-direction:column;gap:4px">
-							{#each reasoningSteps as step}
-								{@const kc = kindColor[step.kind] || '#9399b2'}
-								<div style="display:flex;align-items:flex-start;gap:6px;font-size:11px">
-									<span style="flex:0 0 70px;font-size:9px;font-weight:700;color:{kc};letter-spacing:1px;text-transform:uppercase;padding-top:2px">{step.kind}</span>
-									<span style="flex:1;color:#cdd6f4;line-height:1.4">
-										{step.value}
-										{#if step.subject || step.predicate}
-											<span style="color:#6c7086;font-size:9px"> · {step.subject || ''}{step.predicate ? `.${step.predicate}` : ''}</span>
-										{/if}
-										{#if step.conf != null}
-											<span style="color:#585b70;font-size:9px"> · conf {(step.conf * 100).toFixed(0)}%</span>
-										{/if}
-										{#if step.refs && step.refs.length}
-											<span style="color:#585b70;font-size:9px"> · refs {step.refs.map(r => `${r.type}#${r.id}`).join(', ')}</span>
-										{/if}
-										{#if step.parents && step.parents.length}
-											<span style="color:#585b70;font-size:9px"> ← from step{step.parents.length > 1 ? 's' : ''} {step.parents.join(', ')}</span>
-										{/if}
-									</span>
-								</div>
-							{/each}
-						</div>
-					{/if}
-					<div style="margin-top:5px;font-size:9px;color:#6c7086;display:flex;align-items:center;gap:6px">
-						<span>{synthAgeStr ? `${synthAgeStr}` : ''}</span>
-						{#if (panSynthesis.sources_used || []).length}
-							<span>· sources: {panSynthesis.sources_used.join(' · ')}</span>
-						{/if}
-						{#if panSynthesis.cached}<span style="opacity:0.6">· cached</span>{/if}
-						<button onclick={() => forcePanSynthesis()} style="margin-left:auto;background:none;border:1px solid rgba(255,255,255,0.12);color:#9399b2;font-size:9px;border-radius:3px;padding:1px 5px;cursor:pointer" title="Force a fresh reasoning cycle">↻ rethink</button>
-					</div>
-				{:else}
-					<div style="color:#6c7086;font-size:11px;font-style:italic">thinking…</div>
-				{/if}
-			</div>
-
-			<div class="thought-stream" style="margin-top:6px">
-				{#each panThoughts.slice(0, 8) as t}
-					{@const tsMs = t.ts ? Date.parse(t.ts.replace(' ', 'T')) : null}
-					{@const ageMs = tsMs ? (Date.now() - tsMs) : null}
-					{@const ageStr = ageMs == null ? '' : ageMs < 60_000 ? `${Math.round(ageMs/1000)}s` : ageMs < 3_600_000 ? `${Math.round(ageMs/60_000)}m` : `${Math.round(ageMs/3_600_000)}h`}
-					{@const sens = sensorOf(t.source)}
-					{@const srcColor = sensorColor[sens]}
-					{@const srcIcon = sensorIcon[sens]}
-					<div class="thought-row">
-						<span class="thought-source" style="color:{srcColor}" title="{sensorLabel[sens]} · {t.source}">{srcIcon}</span>
-						<span class="thought-text">{t.thought}</span>
-						<span class="thought-age" title={t.ts}>{ageStr}</span>
-					</div>
-				{/each}
-			</div>
-		{/if}
-
-		<!-- ═══ SECTION: Recent Actions ═════════════════════════════════════════
-		     Last 5 things PAN's services did (status changes, restarts, replies).
-		     Most useful when debugging "why did X happen 30s ago?". -->
-		{#if (pan.recent_actions || []).length > 0}
-			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-				Recent Actions
-			</div>
-			<div class="int-axes">
-				{#each (pan.recent_actions || []).slice(0, 5) as act}
-					<div class="int-axis"><span class="int-val small">{act.action}</span></div>
-				{/each}
-			</div>
-		{/if}
-
-		<!-- ═══ SECTION: Tasks ══════════════════════════════════════════════════
-		     Active project tasks for the selected commander. -->
-		{#if (pan.active_tasks || []).length > 0}
-			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-				Tasks
-				<span style="font-size:10px;color:#6c7086">in flight</span>
-			</div>
-			<div class="int-axes">
-				{#each (pan.active_tasks || []).slice(0, 5) as task}
-					<div class="int-axis task">
-						<span class="int-label task-status" class:in-progress={task.status === 'in_progress'}>{task.status === 'in_progress' ? '◆' : '○'}</span>
-						<span class="int-val">{task.title}</span>
-					</div>
-				{/each}
-			</div>
-		{/if}
-
-		<!-- ═══ SECTION: Predictions ════════════════════════════════════════════
-		     PAN's guesses about what comes next (with confidence). -->
-		{#if preds.length > 0}
-			<div class="svc-category" style="display:flex;align-items:center;gap:6px">
-				Predictions
-				<span style="font-size:10px;color:#6c7086">what PAN thinks comes next</span>
-			</div>
-			<div class="int-axes">
-				{#each preds as p}
-					<div class="int-axis pred">
-						<span class="int-val">{p.what}</span>
-						<span class="int-confidence">{Math.round((p.confidence || 0) * 100)}%</span>
-					</div>
-				{/each}
-			</div>
-		{/if}
-
-		<!-- Identity section moved to top of USER block (task #490). -->
-{/snippet}
+<!-- {#snippet intuitionPanelContents()} migrated to <IntuitionPanel /> component
+     2026-05-27. See $lib/components/IntuitionPanel.svelte. -->
 
 <!-- TOOLBAR -->
 <div class="toolbar">
@@ -6876,7 +4410,7 @@
 			<button class="impersonate-stop" onclick={stopImpersonation} title="Exit impersonation">✕ Exit</button>
 		</div>
 	{:else if permsMatrix?.realPower >= 100}
-		<button class="impersonate-btn" onclick={openImpersonateModal} title="Impersonate a user, power level, or group">👁 Impersonate…</button>
+		<button class="impersonate-btn" onclick={() => impersonateModalOpen = true} title="Impersonate a user, power level, or group">👁 Impersonate…</button>
 	{/if}
 	<span class="sessions-count">
 		{#if sessionsCount > 0}{sessionsCount} tab{sessionsCount > 1 ? 's' : ''}{/if}
@@ -6923,14 +4457,22 @@
 	<!-- LEFT PANEL -->
 	<div class="left-panel" class:resizing={resizingPanel !== null} style="width: {leftPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={leftSection} onchange={() => { if (leftSection === 'usage') loadUsageData(); if (leftSection === 'tests') loadTestSuites(); if (leftSection === 'library') loadLibrary(); if (leftSection === 'contacts') loadContacts(); if (leftSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (leftSection === 'teams') loadTeamsWidget(); if (leftSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (leftSection === 'users') loadUsers(); if (leftSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (leftSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (leftSection === 'devices' || leftSection === 'apps') { startAllDevicesPolling(); if (leftSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); } if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (leftSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); }}>
+			<select class="right-select" bind:value={leftSection} onchange={() => {
+				// Extracted panels (Intuition/Benchmarks/Pipeline/Library/Alerts/Approvals/Users/Teams/Usage/Lifeboat) self-load on mount.
+				if (leftSection === 'usage') storeLoadUsageData();
+				// TestsPanel auto-loads on mount
+				if (leftSection === 'contacts') storeLoadContacts();
+				// MailPanel + ContactsPanel auto-load on mount
+				if (leftSection === 'devices' || leftSection === 'apps') { startAllDevicesPolling(); if (leftSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); }
+				if (leftSection === 'perf') startPerfPolling(); else stopPerfPolling();
+			}}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
-				{#if widgetVisible('approvals')}<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>{/if}
+				{#if widgetVisible('approvals')}<option value="approvals">Approvals{approvalsCount > 0 ? ` (${approvalsCount})` : ''}</option>{/if}
 				<option value="apps">Apps</option>
 				{#if widgetVisible('benchmarks')}<option value="benchmarks">Benchmarks</option>{/if}
 				{#if widgetVisible('pipeline')}<option value="pipeline">Beta Pipeline</option>{/if}
 				{#if widgetVisible('bugs')}<option value="bugs">Bugs</option>{/if}
-				{#if widgetVisible('contacts')}<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>{/if}
+				{#if widgetVisible('contacts')}<option value="contacts">Contacts{chatStore.unreadTotal > 0 ? ` (${chatStore.unreadTotal})` : ''}</option>{/if}
 				{#if widgetVisible('devices')}<option value="devices">Devices</option>{/if}
 				{#if widgetVisible('instances')}<option value="instances">Instances</option>{/if}
 				{#if widgetVisible('intuition')}<option value="intuition">Intuition</option>{/if}
@@ -6963,1082 +4505,57 @@
 			data-widget-state={widgetStateOf(leftSection)}
 			data-widget-rendered-at={Date.now()}>
 			{#if leftSection === 'transcript'}
-				{#if chatBubbles.length === 0}
-					<div class="empty-state">No conversation yet</div>
-				{:else}
-					<div class="chat-container">
-						{#each chatBubbles as bubble}
-							{#if bubble.type === 'user'}
-								<div class="chat-turn">
-									<div class="chat-speaker chat-speaker-user">{bubble.speaker || 'You'}</div>
-									<div class="chat-bubble user">
-										{#if bubble.multiSession}
-											<span class="session-dot" style="background:{bubble.accentColor}"></span>
-										{/if}
-										{@html renderMarkdown(bubble.text)}
-									</div>
-								</div>
-							{:else if bubble.type === 'assistant'}
-								<div class="chat-turn">
-									<div class="chat-speaker chat-speaker-assistant">
-										{bubble.speaker || 'Claude'}
-										{#if bubble.model}<span class="chat-model">{bubble.model}</span>{/if}
-									</div>
-									<div class="chat-bubble assistant" style={bubble.multiSession ? `border-left:2px solid ${bubble.accentColor}` : ''}>
-										{@html renderMarkdown(bubble.text)}
-									</div>
-								</div>
-							{:else if bubble.type === 'tool'}
-								<div class="chat-bubble tool">{bubble.text}</div>
-							{:else if bubble.type === 'stats' && bubble.tokens}
-								<div class="chat-stats-bar">
-									<span>↑{(bubble.tokens.input / 1000).toFixed(1)}K ↓{(bubble.tokens.output / 1000).toFixed(1)}K{bubble.tokens.cache_read ? ` 📦${(bubble.tokens.cache_read / 1000).toFixed(1)}K` : ''} ${bubble.tokens.cost != null ? `$${bubble.tokens.cost.toFixed(4)}` : ''}</span>
-									<span class="chat-stats-total">session: ↑{(bubble.tokens.total_input / 1000).toFixed(1)}K ↓{(bubble.tokens.total_output / 1000).toFixed(1)}K {bubble.tokens.total_cost != null ? `$${bubble.tokens.total_cost.toFixed(4)}` : ''}</span>
-								</div>
-							{/if}
-						{/each}
-					</div>
-				{/if}
+				<TranscriptPanel />
 			{:else if leftSection === 'project'}
-				{#if projectData}
-					<div class="project-info">
-						<div class="project-name">{projectData.name}</div>
-						<div class="project-progress-row">
-							<span class="project-pct">{projectData.percentage}%</span>
-							<span class="project-count">{projectData.done_tasks}/{projectData.total_tasks}</span>
-						</div>
-						<div class="progress-bar">
-							<div class="progress-fill {pctColor(projectData.percentage)}" style="width:{projectData.percentage}%"></div>
-						</div>
-						<div class="project-sessions">{projectData.session_count} sessions</div>
-					</div>
-					{#if projectData.milestones}
-						{#each projectData.milestones as m}
-							<div class="milestone" onclick={() => filterByMilestone(m.id)}>
-								<div class="milestone-row">
-									<span class="milestone-name">{m.name}</span>
-									<span class="milestone-pct">{m.percentage}%</span>
-								</div>
-								<div class="progress-bar small">
-									<div class="progress-fill {pctColor(m.percentage)}" style="width:{m.percentage}%"></div>
-								</div>
-							</div>
-						{/each}
-					{/if}
-				{:else}
-					<div class="empty-state">Select a project</div>
-				{/if}
+				<ProjectPanel />
 			{:else if leftSection === 'approvals'}
-				{#if approvalsData.length === 0}
-					<div class="empty-state">No pending approvals</div>
-				{:else}
-					{#each approvalsData as perm}
-						<div class="approval-row">
-							<div class="approval-tool">{perm.tool || perm.type || 'Permission'}</div>
-							<div class="approval-desc">{perm.description || perm.message || ''}</div>
-							<div class="approval-actions">
-								<button class="approval-btn approve" onclick={() => respondToApproval(perm.id, 'allow')}>Allow</button>
-								<button class="approval-btn deny" onclick={() => respondToApproval(perm.id, 'deny')}>Deny</button>
-							</div>
-						</div>
-					{/each}
-				{/if}
+				<ApprovalsPanel bind:count={approvalsCount} />
 			{:else if leftSection === 'devices'}
-				<!-- Pending approval -->
-				{@const pendingClients = panClientDevices.filter(d => d.trusted === false)}
-				{#if pendingClients.length > 0}
-					<div class="svc-category" style="color:#f38ba8">⚠ Pending Approval</div>
-					{#each pendingClients as device}
-						<div class="svc-row" style="background:rgba(243,139,168,0.08);border-radius:6px;padding:4px 6px;margin-bottom:4px">
-							<span class="svc-dot unknown"></span>
-							<div class="svc-info" style="flex:1">
-								<div class="svc-name">{device.name || device.device_id}</div>
-								<div class="svc-detail">{device.platform || 'unknown'} — waiting for approval</div>
-							</div>
-							<div style="display:flex;gap:4px;flex-shrink:0">
-								<button class="approval-btn approve" onclick={() => approveClient(device.device_id)} title="Approve">✓</button>
-								<button class="approval-btn deny" onclick={() => denyClient(device.device_id)} title="Deny">✕</button>
-							</div>
-						</div>
-					{/each}
-				{/if}
-				<!-- Filter bar -->
-				{@const devCatMapL = d => d.device_type === 'pc' ? 'computers' : d.device_type === 'phone' ? 'phones' : d.device_type === 'pendant' ? 'pendants' : 'other'}
-				{@const catCountsL = allDevices.reduce((acc, d) => { const c = devCatMapL(d); acc[c] = (acc[c]||0)+1; return acc; }, {})}
-				{@const filteredDevicesL = deviceFilter === 'all' ? allDevices : allDevices.filter(d => devCatMapL(d) === deviceFilter)}
-				{#if allDevices.length > 0}
-					<div style="display:flex;gap:4px;align-items:center;padding:4px 0 6px 0;flex-wrap:wrap">
-						{#each [['all','All'], ['computers','Computers'], ['phones','Phones'], ['pendants','Pendants'], ['other','Other']] as [val, label]}
-							{@const count = val === 'all' ? allDevices.length : (catCountsL[val] || 0)}
-							{#if count > 0 || val === 'all'}
-								<button
-									onclick={() => deviceFilter = val}
-									style="font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid {deviceFilter===val ? '#89b4fa' : 'rgba(255,255,255,0.1)'};background:{deviceFilter===val ? 'rgba(137,180,250,0.15)' : 'transparent'};color:{deviceFilter===val ? '#89b4fa' : '#6c7086'};cursor:pointer;white-space:nowrap"
-								>{label}{count > 0 ? ` · ${count}` : ''}</button>
-							{/if}
-						{/each}
-					</div>
-					{@const categoriesL = deviceFilter === 'all'
-						? [['computers','Computers','#89b4fa'],['phones','Phones','#fab387'],['pendants','Pendants','#cba6f7'],['other','Other','#6c7086']]
-						: [[deviceFilter, deviceFilter.charAt(0).toUpperCase()+deviceFilter.slice(1), '#89b4fa']]}
-					{#each categoriesL as [catKey, catLabel, catColor]}
-						{@const catDevs = filteredDevicesL.filter(d => devCatMapL(d) === catKey)}
-						{#if catDevs.length > 0}
-							<div class="svc-category" style="color:{catColor};margin-top:6px">{catLabel} · {catDevs.length}</div>
-							{#each catDevs as dev}
-								{@const STALE = dev.device_type === 'phone' ? 30 * 60 * 1000 : 5 * 60 * 1000}
-								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
-								{@const isOnline = dev.online === 1 && ageMs < STALE}
-								{@const isHub = dev.is_hub === true}
-								{@const isPanClient = !!dev.client_version}
-								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
-								{@const metrics = deviceMetrics[dev.hostname] || deviceMetrics[dev.name] || null}
-								{@const caps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
-								{@const isExpanded = deviceExpandedIds.has(dev.hostname)}
-								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
-									<div style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick={() => { const s = new Set(deviceExpandedIds); s.has(dev.hostname) ? s.delete(dev.hostname) : s.add(dev.hostname); deviceExpandedIds = s; }}>
-										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
-										<div style="flex:1;min-width:0">
-											<div class="svc-name" style="display:flex;align-items:center;gap:4px">
-												{dev.name || dev.hostname}
-												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
-												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
-												<!-- #497 + #700: service-install pill. boot > login > ad-hoc. Ad-hoc just means "started by hand / pre-#497 install" — not a problem state. -->
-												{#if isPanClient && !isHub && dev.service_state}
-													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'AD-HOC'}
-													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#fab387'}
-													{@const _ssTip = dev.service_state === 'system' ? 'Windows Service (starts at boot)' : dev.service_state === 'user' ? 'Scheduled Task (starts at user login)' : 'Ad-hoc start — no persistent service registered (pre-#497 install). Re-install client to upgrade.'}
-													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="{_ssTip} · Manager: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' · since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
-												{/if}
-											</div>
-											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
-										</div>
-										<div style="display:flex;align-items:center;gap:4px">
-											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
-											<div class="svc-detail" title={isOnline ? 'pan-client heartbeating' : 'pan-client process not heartbeating (machine may still be reachable via Tailscale)'}>{isOnline ? 'Client online' : 'Client offline'} · {ageStr}</div>
-											<span style="font-size:10px;color:#585b70;transition:transform 0.15s;display:inline-block;transform:rotate({isExpanded?'90deg':'0deg'})">&rsaquo;</span>
-										</div>
-									</div>
-									{#if isExpanded}
-										<div style="padding:6px 0 4px 16px;border-left:1px solid #313244;margin-left:5px;margin-top:4px">
-											<div style="font-size:9px;color:#6c7086;margin-bottom:4px">
-												<span style="color:#cdd6f4">Hostname:</span> {dev.hostname}
-												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
-												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
-												{#if dev.service_state}
-													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time, Windows Service)' : dev.service_state === 'user' ? 'user-session (login-time, Scheduled Task)' : 'ad-hoc (no persistent service — pre-#497 install)'} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
-												{/if}
-											</div>
-											{#if caps.length > 0}
-												<div style="font-size:9px;color:#6c7086;margin-bottom:3px"><span style="color:#cdd6f4">Capabilities:</span></div>
-												<div style="display:flex;flex-wrap:wrap;gap:3px">
-													{#each caps as cap}
-														<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:{cap.startsWith('app:') ? '#a6e3a122' : '#89b4fa11'};color:{cap.startsWith('app:') ? '#a6e3a1' : '#89b4fa'};border:1px solid {cap.startsWith('app:') ? '#a6e3a133' : '#89b4fa22'}">{cap.startsWith('app:') ? cap.slice(4) : cap}</span>
-													{/each}
-												</div>
-											{/if}
-											{#if dev.last_seen}<div style="font-size:9px;color:#585b70;margin-top:4px">Last seen: {dev.last_seen}</div>{/if}
-										</div>
-									{/if}
-									{#if metrics}
-										{@const cpuColor = (metrics.cpu_pct||0) > 85 ? '#f38ba8' : (metrics.cpu_pct||0) > 60 ? '#fab387' : '#a6e3a1'}
-										{@const ramColor = (metrics.ram_pct||0) > 85 ? '#f38ba8' : (metrics.ram_pct||0) > 70 ? '#fab387' : '#89b4fa'}
-										<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px;padding-left:16px">
-											<div>
-												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
-													<span>CPU</span><span style="color:{cpuColor}">{Math.round(metrics.cpu_pct||0)}%</span>
-												</div>
-												<div style="height:3px;background:#313244;border-radius:2px">
-													<div style="height:100%;width:{Math.min(metrics.cpu_pct||0,100)}%;background:{cpuColor};border-radius:2px;transition:width 0.5s"></div>
-												</div>
-											</div>
-											<div>
-												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
-													<span>RAM</span>
-													<span style="color:{ramColor}">
-														{#if metrics.ram_used_mb && metrics.ram_total_mb}
-															{metrics.ram_used_mb > 1024 ? (metrics.ram_used_mb/1024).toFixed(1)+'G' : metrics.ram_used_mb+'M'}/{metrics.ram_total_mb > 1024 ? (metrics.ram_total_mb/1024).toFixed(1)+'G' : metrics.ram_total_mb+'M'}
-														{:else}{Math.round(metrics.ram_pct||0)}%{/if}
-													</span>
-												</div>
-												<div style="height:3px;background:#313244;border-radius:2px">
-													<div style="height:100%;width:{Math.min(metrics.ram_pct||0,100)}%;background:{ramColor};border-radius:2px;transition:width 0.5s"></div>
-												</div>
-											</div>
-											{#if metrics.disk_pct != null}
-												{@const diskColor = (metrics.disk_pct||0) > 90 ? '#f38ba8' : (metrics.disk_pct||0) > 75 ? '#fab387' : '#6c7086'}
-												<div style="grid-column:1/-1">
-													<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
-														<span>Disk</span>
-														<span style="color:{diskColor}">{Math.round(metrics.disk_pct||0)}%{metrics.disk_free_gb != null ? ` · ${metrics.disk_free_gb.toFixed(0)}G free` : ''}</span>
-													</div>
-													<div style="height:3px;background:#313244;border-radius:2px">
-														<div style="height:100%;width:{Math.min(metrics.disk_pct||0,100)}%;background:{diskColor};border-radius:2px;transition:width 0.5s"></div>
-													</div>
-												</div>
-											{/if}
-										</div>
-									{/if}
-								</div>
-							{/each}
-						{/if}
-					{/each}
-				{:else}
-					<div class="empty-state small">No devices registered</div>
-				{/if}
+				<DevicesPanel />
 			{:else if leftSection === 'services'}
-				{@const coreServices = servicesData.filter(s => s.category === 'PAN Core')}
-				{@const deviceServices2 = servicesData.filter(s => s.category === 'Devices')}
-				{#if coreServices.length > 0}
-					<div class="svc-category">PAN Core</div>
-					{#each coreServices as svc}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down' || svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="svc-info">
-								<div class="svc-name">{svc.name}</div>
-								{#if svc.role}<div class="svc-detail" style="color:#cba6f7;font-size:10px">{svc.role}</div>{/if}
-								<div class="svc-detail">{svc.detail}</div>
-							</div>
-						</div>
-					{/each}
-				{/if}
-				{#if deviceServices2.length > 0}
-					<div class="svc-category">Devices</div>
-					{#each deviceServices2 as svc}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="svc-info">
-								<div class="svc-name">{svc.name}</div>
-								<div class="svc-detail">{svc.detail}</div>
-							</div>
-						</div>
-					{/each}
-				{/if}
-				{#if servicesData.length === 0}
-					<div class="empty-state">Loading services...</div>
-				{/if}
+				<ServicesPanel />
 			{:else if leftSection === 'tasks'}
-				{@const taskData2 = getFilteredTasks()}
-				{#each taskData2.milestones as m}
-					{#if taskData2.byMilestone[m.id]?.length > 0}
-						<div class="task-group-header">{m.name}</div>
-						{#each taskData2.byMilestone[m.id] as t}
-							<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-								<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
-									{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
-								</span>
-								<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-							</div>
-						{/each}
-					{/if}
-				{/each}
-				{#if taskData2.noMilestone.length > 0}
-					<div class="task-group-header">Other</div>
-					{#each taskData2.noMilestone as t}
-						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-							<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
-								{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
-							</span>
-							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-						</div>
-					{/each}
-				{/if}
+				<TasksPanel onCycle={cycleTask} />
 			{:else if leftSection === 'bugs'}
-				{@const bugs2 = getBugs()}
-				{#if bugs2.length === 0}
-					<div class="empty-state">No bugs tracked</div>
-				{:else}
-					{#each bugs2 as t}
-						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-							<span class="task-icon bug" class:done={t.status === 'done'}>
-								{t.status === 'done' ? '\u2713' : '\u26A0'}
-							</span>
-							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-						</div>
-					{/each}
-				{/if}
+				<BugsPanel onCycle={cycleTask} />
 			{:else if leftSection === 'perf'}
 				<div class="perf-widget">
-					{@render perfPanelContents()}
+					<PerfPanel />
 				</div>
 			{:else if leftSection === 'library'}
-				<div class="library-panel">
-					<div class="library-toolbar">
-						<input type="text" class="library-search" placeholder="Search library..." bind:value={libraryQuery} />
-						<select class="library-filter" bind:value={libraryFilter}>
-							<option value="all">All</option>
-							<option value="doc">Docs</option>
-							<option value="memory">Memory</option>
-							<option value="pan">PAN State</option>
-						</select>
-						<button class="library-refresh" onclick={loadLibrary}>↻</button>
-					</div>
-					<div class="library-list">
-						{#each filteredLibrary() as item (item.path)}
-							<div class="library-row" onclick={() => openLibraryItem(item)}>
-								<div class="library-row-head">
-									<span class="library-type library-type-{item.type}">{item.type}</span>
-									<span class="library-title">{item.title}</span>
-								</div>
-								{#if item.snippet}<div class="library-snippet">{item.snippet}</div>{/if}
-							</div>
-						{/each}
-						{#if filteredLibrary().length === 0}
-							<div class="empty-state">No items</div>
-						{/if}
-					</div>
-				</div>
+				<LibraryPanel />
 			{:else if leftSection === 'usage'}
 				<div class="empty-state">Select Usage from the right panel</div>
 			{:else if leftSection === 'setup'}
-				<div class="setup-guide">
-					<div class="setup-title">How to Use PAN</div>
-					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
-					<div class="setup-items">
-						<div><strong>Create a Project:</strong> "Create a new project called my-app"</div>
-						<div><strong>Add a Task:</strong> "Add a task to set up the database"</div>
-						<div><strong>Change Settings:</strong> "Change the AI model to gpt-4o"</div>
-						<div><strong>Ask Anything:</strong> Just say it or type it</div>
-					</div>
-				</div>
+				<SetupPanel />
 			{:else if leftSection === 'apps'}
-				{#if appsView.startsWith('device:')}
-					{@const devHostname = appsView.slice(7)}
-					{@const dev = allDevices.find(d => d.hostname === devHostname)}
-					{@const devCaps = dev ? (Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])) : []}
-					{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
-					{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
-					<div class="apps-drilldown">
-						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Devices</button>
-						<div style="padding:8px 12px 4px">
-							<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">
-								<span class="svc-dot {dev?.online ? 'up' : ''}"></span>
-								<span style="font-size:13px;font-weight:700;color:#eee">{dev?.name || devHostname}</span>
-								<span style="font-size:9px;opacity:.45;margin-left:auto">{dev?.device_type || 'pc'}</span>
-							</div>
-							{#if devAppKeys.length > 0}
-								<div class="apps-cat-label">Installed Apps</div>
-								<div class="apps-grid">
-									{#each devAppKeys as appKey}
-										{@const meta = APP_META[appKey]}
-										<div class="app-card" style="opacity:{dev?.online ? 1 : 0.55}">
-											<div class="app-icon">{meta?.icon || '📦'}</div>
-											<div class="app-name">{meta?.label || appKey}</div>
-										</div>
-									{/each}
-								</div>
-							{/if}
-							{#if devOtherCaps.length > 0}
-								<div class="apps-cat-label" style="margin-top:8px">Capabilities</div>
-								<div style="display:flex;gap:4px;flex-wrap:wrap;padding-bottom:8px">
-									{#each devOtherCaps as cap}
-										<span style="font-size:9px;background:rgba(255,255,255,.07);border-radius:3px;padding:2px 6px;color:#bbb">{cap}</span>
-									{/each}
-								</div>
-							{/if}
-							{#if devAppKeys.length === 0 && devOtherCaps.length === 0}
-								<div style="font-size:10px;opacity:.45;padding:8px 0">No capabilities detected yet.</div>
-							{/if}
-						</div>
-						{#if wrapServices.length > 0}
-							<div class="apps-cat-label" style="margin-top:4px">Web Apps</div>
-							<div class="apps-grid" style="padding:0 8px 8px">
-								{#each wrapServices as svc}
-									<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
-										<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
-										<div class="app-name">{svc.title || svc.id}</div>
-										<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'Module' : 'Web'}</div>
-									</button>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{:else}
-					<!-- Root: utility buttons + device-first app list -->
-					<div style="display:flex;gap:5px;padding:6px 8px 0;flex-wrap:wrap">
-						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
-								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
-								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/atlas-v2`, title:'Atlas', width:1400, height:900 }) });
-							}}>
-							<div class="app-icon">
-								<img src="/atlas-icon.png" width="36" height="36" style="object-fit:cover;border-radius:4px;" alt="Atlas"/>
-							</div>
-							<div class="app-name">Atlas</div>
-						</button>
-						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
-								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
-								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/kronos`, title:'Kronos', width:1200, height:800 }) });
-							}}>
-							<div class="app-icon">📜</div>
-							<div class="app-name">Kronos</div>
-						</button>
-					</div>
-					<!-- Device rows -->
-					<div style="padding:6px 8px 0">
-						{#each allDevices as dev}
-							{@const devCaps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
-							{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
-							{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
-							<button onclick={() => { appsView = 'device:' + dev.hostname; loadWrapServices(); }}
-								style="width:100%;text-align:left;background:none;border:none;border-bottom:1px solid rgba(255,255,255,.06);padding:7px 0;cursor:pointer">
-								<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
-									<span class="svc-dot {dev.online ? 'up' : ''}"></span>
-									<span style="font-size:11px;font-weight:600;color:#e0e0e0">{dev.name || dev.hostname}</span>
-									<span style="font-size:9px;opacity:.4;margin-left:auto">{dev.device_type || 'pc'}</span>
-								</div>
-								{#if devAppKeys.length > 0}
-									<div style="display:flex;gap:5px;flex-wrap:wrap;padding-left:16px">
-										{#each devAppKeys as appKey}
-											{@const meta = APP_META[appKey]}
-											<span title="{meta?.label || appKey}" style="font-size:15px;opacity:{dev.online ? 1 : 0.45}">{meta?.icon || '📦'}</span>
-										{/each}
-									</div>
-								{:else if devOtherCaps.length > 0}
-									<div style="padding-left:16px;font-size:9px;opacity:.35;line-height:1.4">{devOtherCaps.slice(0,4).join(' · ')}</div>
-								{/if}
-							</button>
-						{/each}
-						{#if allDevices.length === 0}
-							<div style="padding:16px 0;text-align:center;font-size:10px;opacity:.4">No devices found</div>
-						{/if}
-					</div>
-				{/if}
+				<AppsPanel />
 			{:else if leftSection === 'instances'}
-				<div class="instances-panel">
-					<div class="svc-category">Switch Between Environments</div>
-					<div class="instance-row">
-						<span class="svc-dot up"></span>
-						<div class="svc-info">
-							<div class="svc-name">Prod</div>
-							<div class="svc-detail">{isDev ? 'Port 7777' : 'Current'}</div>
-						</div>
-					</div>
-					<div class="instance-row">
-						<span class="svc-dot" class:up={isDev} class:unknown={!isDev}></span>
-						<div class="svc-info">
-							<div class="svc-name">Dev</div>
-							<div class="svc-detail">{isDev ? 'Current' : 'Run: npm run dev'}</div>
-						</div>
-						{#if !isDev}
-							<button class="instance-btn" onclick={async () => {
-								const r = await fetch('/api/v1/dev/start', { method: 'POST' });
-								const d = await r.json();
-								const port = d.port || 7781;
-								fetch('/api/v1/ui-commands', {
-									method: 'POST',
-									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
-								});
-							}}>Open</button>
-							<button class="instance-btn restart" onclick={async () => {
-								const r = await fetch('/api/v1/dev/restart', { method: 'POST' });
-								const d = await r.json();
-								if (d.ok) {
-									const port = d.port || 7781;
-									fetch('/api/v1/ui-commands', {
-										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'focus_window', url: `http://localhost:${port}/v2/terminal` })
-									});
-								}
-							}}>Restart</button>
-						{/if}
-					</div>
-					<div class="instance-row">
-						<span class="svc-dot unknown"></span>
-						<div class="svc-info">
-							<div class="svc-name">Test</div>
-							<div class="svc-detail">Coming Soon</div>
-						</div>
-					</div>
-				</div>
+				<InstancesPanel {isDev} />
 			{:else if leftSection === 'intuition'}
 				<div class="intuition-panel"
 					data-widget="intuition"
-					data-widget-state={intuitionWidgetState}
-					data-widget-rendered-at={Date.now()}
-					data-widget-data-source-at={intuitionWidgetDataSourceAt}>
-					{@render intuitionPanelContents()}
+					data-widget-rendered-at={Date.now()}>
+					<IntuitionPanel />
 				</div>
 			{:else if leftSection === 'lifeboat'}
-				<div class="lifeboat-panel">
-					{#if !lifeboatData}
-						<div class="empty-state">Connecting to Carrier...</div>
-					{:else}
-						<div class="svc-category">Carrier</div>
-						<div class="svc-row">
-							<span class="svc-dot up"></span>
-							<div class="svc-info">
-								<div class="svc-name">PID {lifeboatData.carrier?.pid || '--'}</div>
-								<div class="svc-detail">Uptime: {formatUptime(lifeboatData.carrier?.uptime)}</div>
-							</div>
-						</div>
-						<div class="svc-category">Active Craft</div>
-						{#if lifeboatData.primaryCraft}
-							<div class="svc-row">
-								<span class="svc-dot" class:up={lifeboatData.primaryCraft.healthy} class:down={!lifeboatData.primaryCraft.healthy}></span>
-								<div class="svc-info">
-									<div class="svc-name">Craft-{lifeboatData.primaryCraft.id}</div>
-									<div class="svc-detail">{lifeboatData.primaryCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.primaryCraft.port} | Up {formatUptime(lifeboatData.primaryCraft.uptime / 1000)}</div>
-								</div>
-							</div>
-						{:else}
-							<div class="empty-state">No active Craft</div>
-						{/if}
-						{#if lifeboatData.swapPending && lifeboatData.previousCraft}
-							<div class="svc-category">Rollback Window</div>
-							<div class="svc-row">
-								<span class="svc-dot" class:up={lifeboatData.previousCraft.healthy} class:down={!lifeboatData.previousCraft.healthy}></span>
-								<div class="svc-info">
-									<div class="svc-name">Craft-{lifeboatData.previousCraft.id} (previous)</div>
-									<div class="svc-detail">{lifeboatData.previousCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.previousCraft.port}</div>
-								</div>
-							</div>
-							{@const _rollbackLeft = lifeboatSwapStarted > 0 ? Math.max(0, Math.ceil((lifeboatRollbackMs - (ptyStatusNow - lifeboatSwapStarted)) / 1000)) : 0}
-							{#if _rollbackLeft > 0}
-								<div class="lifeboat-countdown">Rollback expires in {_rollbackLeft}s</div>
-							{/if}
-							<div class="lifeboat-actions">
-								<button class="lifeboat-btn rollback" onclick={lifeboatRollback}>Rollback</button>
-								<button class="lifeboat-btn confirm" onclick={lifeboatConfirm}>Confirm</button>
-							</div>
-						{/if}
-						{#if lifeboatData.shadowCraft}
-							<div class="svc-category">Shadow</div>
-							<div class="svc-row">
-								<span class="svc-dot unknown"></span>
-								<div class="svc-info">
-									<div class="svc-name">Craft-{lifeboatData.shadowCraft.id} (shadow)</div>
-									<div class="svc-detail">Testing...</div>
-								</div>
-							</div>
-						{/if}
-						<div class="svc-category" style="margin-top:12px">Actions</div>
-						<div class="lifeboat-actions">
-							<button class="lifeboat-btn swap" onclick={lifeboatSwap} disabled={lifeboatSwapping}>
-								{lifeboatSwapping ? 'Swapping...' : 'Hot Swap'}
-							</button>
-							<button class="lifeboat-btn" style="background:#cba6f7;color:#1e1e2e" onclick={() => {
-								fetch('/api/v1/ui-commands', {
-									method: 'POST',
-									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${location.port || 7777}/v2/crucible`, title: 'Crucible', width: 1200, height: 800 })
-								});
-							}}>Open Crucible</button>
-						</div>
-					{/if}
-				</div>
+				<LifeboatPanel />
 			{:else if leftSection === 'tests'}
-				<div class="tests-panel">
-					{#if testSuites.length === 0}
-						<div class="empty-state">Loading test suites...</div>
-					{:else}
-						<select class="right-select" bind:value={selectedSuite} style="margin-bottom:8px">
-							{#each testSuites as suite}
-								<option value={suite.id}>{suite.name} ({suite.tests.length} tests)</option>
-							{/each}
-						</select>
-						{@const suite = testSuites.find(s => s.id === selectedSuite)}
-						{#if suite}
-							<div class="test-desc">{suite.description}</div>
-							<button class="test-run-btn" onclick={runSuite} disabled={testsRunning}>
-								{testsRunning ? 'Running...' : `Run ${suite.name}`}
-							</button>
-						{/if}
-						{#each testResults as t}
-							<div class="test-row">
-								<span class="test-icon" class:pass={t.status === 'pass'} class:fail={t.status === 'fail'} class:running={t.status === 'running'} class:pending={t.status === 'pending'}>
-									{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : t.status === 'running' ? '\u25CF' : '\u25CB'}
-								</span>
-								<div class="test-info">
-									<div class="test-name">{t.name}</div>
-									<div class="test-detail" class:fail={t.status === 'fail'}>{t.description || t.detail}</div>
-									{#if t.detail && t.status !== 'pending'}
-										<div class="test-detail" class:fail={t.status === 'fail'}>{t.detail}</div>
-									{/if}
-								</div>
-							</div>
-						{/each}
-						{#if testResults.length > 0 && !testsRunning}
-							{@const passed = testResults.filter(t => t.status === 'pass').length}
-							{@const failed = testResults.filter(t => t.status === 'fail').length}
-							<div class="test-summary" class:all-pass={failed === 0}>
-								{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
-							</div>
-						{/if}
-					{/if}
-				</div>
+				<TestsPanel {isDev} {getActiveTab} />
 			{:else if leftSection === 'users'}
-				<div class="users-panel">
-					{#if usersData.length === 0}
-						<div class="empty-state">No users yet</div>
-					{:else}
-						{@const groups = [...new Set(usersData.map(u => u.role || u.group || 'Default'))]}
-						{#each groups as group}
-							<div class="svc-category">{group.charAt(0).toUpperCase() + group.slice(1)}</div>
-							{#each usersData.filter(u => (u.role || u.group || 'Default') === group) as user}
-								<div class="svc-row">
-									<span class="svc-dot" class:up={user.is_active !== 0 || user.status === 'active' || user.status === 'online'} class:unknown={user.is_active === 0 && !user.status}></span>
-									<div class="svc-info">
-										<div class="svc-name">{user.display_name || user.name || 'Unknown'}</div>
-										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.power_lvl != null ? ` · lvl ${user.power_lvl}` : ''}</div>
-									</div>
-									{#if user.role === 'child' || (user.power_lvl != null && user.power_lvl <= 5)}
-										<button class="svc-action-btn" title="Open child view" onclick={() => openChildView(user)}>🧒</button>
-									{/if}
-									{#if user.id !== 1}
-										<button class="svc-action-btn danger" title="Remove" onclick={async () => {
-											if (!confirm(`Remove ${user.display_name}?`)) return;
-											await api(`/api/v1/auth/users/${user.id}`, { method: 'DELETE' });
-											loadUsers();
-										}}>✕</button>
-									{/if}
-								</div>
-							{/each}
-						{/each}
-					{/if}
-					{#if permsMatrix?.power >= 75}
-					<div class="svc-category" style="margin-top:12px">Add Member</div>
-					<form class="add-user-form" onsubmit={addUserSubmit} style="display:flex;flex-direction:column;gap:6px;padding:6px 0">
-						<input name="uname" class="settings-input" placeholder="Name (e.g. Emma)" autocomplete="off" style="font-size:11px;padding:4px 8px" />
-						<select name="urole" class="right-select" style="font-size:11px">
-							<option value="child">Child (lvl 5 — actions only)</option>
-							<option value="guest">Guest (lvl 15 — chat + browse)</option>
-							<option value="user" selected>User (lvl 25 — standard)</option>
-							<option value="manager">Manager (lvl 50)</option>
-							<option value="admin">Admin (lvl 75)</option>
-						</select>
-						<button class="action-btn" type="submit" style="font-size:11px;padding:4px 10px">+ Add</button>
-					</form>
-				{/if}
-				</div>
+				<UsersPanel />
 			{:else if leftSection === 'teams'}
-				<div class="teams-panel">
-					{#if teamsData.length === 0}
-						<div class="empty-state">No teams yet</div>
-					{:else}
-						{#each teamsData as team}
-							<div
-								class="svc-row clickable"
-								class:selected={selectedTeamWidget?.id === team.id}
-								onclick={() => loadTeamDetailWidget(team.id)}
-							>
-								<span class="team-dot-widget" style="background: {team.color || '#89b4fa'}"></span>
-								<div class="svc-info">
-									<div class="svc-name">{team.name}</div>
-									<div class="svc-detail">{team.member_count} Member{team.member_count !== 1 ? 's' : ''}</div>
-								</div>
-							</div>
-						{/each}
-					{/if}
-					{#if selectedTeamWidget}
-						<div class="svc-category" style="margin-top:12px">
-							<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{selectedTeamWidget.color || '#89b4fa'};margin-right:6px"></span>
-							{selectedTeamWidget.name}
-						</div>
-						{#each teamMembersWidget as member}
-							<div class="svc-row">
-								<span class="svc-dot up"></span>
-								<div class="svc-info">
-									<div class="svc-name">{member.display_name || member.email || 'Unknown'}</div>
-									<div class="svc-detail">{member.role === 'lead' ? 'Lead' : 'Member'}</div>
-								</div>
-							</div>
-						{/each}
-						{#if teamMembersWidget.length === 0}
-							<div class="empty-state small">No members</div>
-						{/if}
-					{/if}
-				</div>
+				<TeamsPanel />
 			{:else if leftSection === 'contacts'}
-				<div class="contacts-panel">
-
-					<!-- ── DM Thread View (shown when a contact is open) ── -->
-					{#if chatActiveThread}
-						<div class="dm-thread">
-							<div class="dm-header">
-								<button class="dm-back" onclick={() => { chatActiveThread = null; chatMessages = []; centerView = 'terminal'; }}>←</button>
-								<span class="dm-contact-avatar" class:pan-avatar={chatActiveThread.contact?.id === 'contact-pan-system'}>
-									{chatActiveThread.contact?.display_name?.charAt(0)?.toUpperCase() || '?'}
-								</span>
-								<span class="dm-contact-name">{chatActiveThread.contact?.display_name || 'Chat'}</span>
-							</div>
-							<div class="dm-messages" bind:this={chatMessagesEl}>
-								{#if chatMessages.length === 0}
-									<div class="dm-empty">
-										{#if chatActiveThread.contact?.id === 'contact-pan-system'}
-											<div style="color:#a6adc8;text-align:center;padding:20px 12px;font-size:13px;">
-												<div style="font-size:24px;margin-bottom:8px;">Π</div>
-												Π is listening. Ask anything about what's going on, or wait for system reports.
-											</div>
-										{:else}
-											No messages yet
-										{/if}
-									</div>
-								{:else}
-									{#each chatMessages as msg}
-										{@const meta = (() => { try { return JSON.parse(msg.metadata || '{}'); } catch { return {}; } })()}
-										{@const isSelf = msg.sender_id === 'self'}
-										<div class="dm-msg-wrap" class:dm-msg-self={isSelf}>
-											{#if !isSelf && meta.service}
-												<div class="dm-service-tag">{meta.service}</div>
-											{/if}
-											<div class="dm-bubble" class:dm-bubble-self={isSelf} class:dm-bubble-pan={msg.sender_id === 'contact-pan-system'}>
-												{#if msg.subject && msg.subject !== msg.body}
-													<div class="dm-subject">{msg.subject}</div>
-												{/if}
-												<div class="dm-body">{msg.body}</div>
-												<div class="dm-time">{new Date(msg.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
-											</div>
-										</div>
-									{/each}
-								{/if}
-							</div>
-							<div class="dm-input-bar">
-								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask Π anything…' : 'Message…'}
-									bind:value={chatInputText}
-									onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} />
-								<button class="dm-send" onclick={sendChatMessage} disabled={!chatInputText.trim()}>↑</button>
-							</div>
-						</div>
-
-					{:else}
-					<!-- ── Contacts List (shown when no thread is open) ── -->
-					<!-- Search + Add -->
-					<div class="contacts-toolbar">
-						<input type="text" class="contacts-search" placeholder="Search contacts..." bind:value={chatSearchQuery} />
-						<button class="contacts-add-btn" onclick={() => openCompose(null)} title="Compose message">&#9998;</button>
-						<button class="contacts-add-btn" onclick={() => { addContactModal = true; }} title="Add contact">+</button>
-					</div>
-
-					<!-- Add Contact Modal -->
-					{#if addContactModal}
-						<div class="contact-add-form">
-							<input type="text" placeholder="Name *" bind:value={newContactName} class="contact-input" />
-							<input type="text" placeholder="PAN Instance ID (pan_xxxx)" bind:value={newContactPanId} class="contact-input" />
-							<input type="text" placeholder="Phone" bind:value={newContactPhone} class="contact-input" />
-							<input type="text" placeholder="Email" bind:value={newContactEmail} class="contact-input" />
-							<div class="contact-add-actions">
-								<button class="contact-btn-save" onclick={addContact}>Add</button>
-								<button class="contact-btn-cancel" onclick={() => { addContactModal = false; }}>Cancel</button>
-							</div>
-						</div>
-					{/if}
-
-					{#each [contactsData.filter(c => !chatSearchQuery || c.display_name.toLowerCase().includes(chatSearchQuery.toLowerCase()))] as filtered}
-					<!-- Π system contact — always pinned at top -->
-					{#each [filtered.find(c => c.id === 'contact-pan-system')] as panContact}
-						{#if panContact}
-							<div class="svc-category">Π</div>
-							<div class="svc-row contact-row pan-contact-row" onclick={() => openChat(panContact)} role="button" tabindex="0">
-								<span class="contact-avatar pan-avatar">Π</span>
-								<div class="svc-info">
-									<div class="svc-name">
-										Π
-										{#if panContact.unread_count > 0}
-											<span class="contact-badge">{panContact.unread_count}</span>
-										{/if}
-									</div>
-									<div class="svc-detail">
-										<span class="contact-status online"></span> System · always on
-									</div>
-								</div>
-							</div>
-						{/if}
-					{/each}
-
-					<!-- Favorites (excluding Π which is pinned above) -->
-					{#each [filtered.filter(c => c.favorited && c.id !== 'contact-pan-system')] as favorites}
-						{#if favorites.length > 0}
-							<div class="svc-category">Favorites</div>
-							{#each favorites as contact}
-								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
-									<span class="contact-avatar" style="background: {contact.avatar_url ? 'none' : '#585b70'}">
-										{contact.display_name.charAt(0).toUpperCase()}
-									</span>
-									<div class="svc-info">
-										<div class="svc-name">
-											{contact.display_name}
-											{#if contact.unread_count > 0}
-												<span class="contact-badge">{contact.unread_count}</span>
-											{/if}
-										</div>
-										<div class="svc-detail">
-											{#if contact.pan_instance_id}
-												<span class="contact-status" class:online={contact.status === 'online'} class:away={contact.status === 'away'}></span>
-												{contact.status || 'offline'}
-											{:else}
-												{contact.phone || contact.email || 'No PAN ID'}
-											{/if}
-										</div>
-									</div>
-									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }} title="Unfavorite">&#9733;</button>
-								</div>
-							{/each}
-						{/if}
-					{/each}
-
-					<!-- All contacts (excluding Π which is always pinned at top) -->
-					{#each [filtered.filter(c => !c.favorited && c.id !== 'contact-pan-system')] as others}
-						{#if others.length > 0}
-							<div class="svc-category">Contacts</div>
-							{#each others as contact}
-								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
-									<span class="contact-avatar" style="background: {contact.avatar_url ? 'none' : '#585b70'}">
-										{contact.display_name.charAt(0).toUpperCase()}
-									</span>
-									<div class="svc-info">
-										<div class="svc-name">
-											{contact.display_name}
-											{#if contact.unread_count > 0}
-												<span class="contact-badge">{contact.unread_count}</span>
-											{/if}
-										</div>
-										<div class="svc-detail">
-											{#if contact.pan_instance_id}
-												<span class="contact-status" class:online={contact.status === 'online'} class:away={contact.status === 'away'}></span>
-												{contact.status || 'offline'}
-											{:else}
-												{contact.phone || contact.email || 'No PAN ID'}
-											{/if}
-										</div>
-									</div>
-									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }} title="Favorite">&#9734;</button>
-								</div>
-							{/each}
-						{/if}
-					{/each}
-
-					{#if filtered.length === 0 && !addContactModal}
-						<div class="empty-state">{chatSearchQuery ? 'No matches' : 'No contacts yet — click + to add'}</div>
-					{/if}
-				{/each}
-				{/if}<!-- end contacts list {:else} -->
-				</div>
+				<ContactsPanel switchCenterView={switchCenterView} />
 			{:else if leftSection === 'alerts'}
-				<div class="alerts-panel">
-					<div class="alerts-filters">
-						<select class="alert-filter-select" bind:value={alertFilterStatus} onchange={loadAlerts}>
-							<option value="open">Open</option>
-							<option value="acknowledged">Acknowledged</option>
-							<option value="resolved">Resolved</option>
-							<option value="dismissed">Dismissed</option>
-							<option value="all">All</option>
-						</select>
-						<select class="alert-filter-select" bind:value={alertFilterType} onchange={loadAlerts}>
-							<option value="all">All Types</option>
-							{#each alertTypes as t}
-								<option value={t.id}>{t.label}</option>
-							{/each}
-						</select>
-					</div>
-					{#if alertsData.length === 0}
-						<div class="empty-state">No {alertFilterStatus === 'all' ? '' : alertFilterStatus} alerts</div>
-					{:else}
-						{#each alertsData as alert}
-							<div class="alert-card" class:critical={alert.severity === 'critical'} class:warning={alert.severity === 'warning'} class:info={alert.severity === 'info'}>
-								<div class="alert-header">
-									<span class="alert-severity-dot {alert.severity}"></span>
-									<span class="alert-type-badge">{alert.alert_type.replace(/_/g, ' ')}</span>
-									<span class="alert-time">{new Date(alert.created_at).toLocaleTimeString()}</span>
-								</div>
-								<div class="alert-title">{alert.title}</div>
-								{#if alert.detail}
-									{@const parsed = (() => { try { return JSON.parse(alert.detail); } catch { return null; } })()}
-									{#if parsed}
-										<div class="alert-detail">
-											{#if parsed.orphans}{#each parsed.orphans as o}<div class="alert-detail-line">PID {o.pid} — {o.ageMin}min old</div>{/each}{/if}
-											{#if parsed.hint}<div class="alert-hint">{parsed.hint}</div>{/if}
-											{#if parsed.message}<div class="alert-detail-line">{parsed.message}</div>{/if}
-											{#if parsed.stack}<details class="alert-stack"><summary>Stack trace</summary><pre>{parsed.stack}</pre></details>{/if}
-										</div>
-									{:else}
-										<div class="alert-detail"><div class="alert-detail-line">{alert.detail}</div></div>
-									{/if}
-								{/if}
-								{#if alert.resolution}<div class="alert-resolution">Resolution: {alert.resolution}</div>{/if}
-								{#if alert.status === 'open'}
-									<div class="alert-actions">
-										<button class="alert-btn ack" onclick={() => updateAlertStatus(alert.id, 'acknowledged')}>Acknowledge</button>
-										<button class="alert-btn resolve" onclick={() => { const res = prompt('Resolution notes (optional):'); if (res !== null) updateAlertStatus(alert.id, 'resolved', res); }}>Resolve</button>
-										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
-									</div>
-								{:else if alert.status === 'acknowledged'}
-									<div class="alert-actions">
-										<button class="alert-btn resolve" onclick={() => { const res = prompt('Resolution notes (optional):'); if (res !== null) updateAlertStatus(alert.id, 'resolved', res); }}>Resolve</button>
-										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
-									</div>
-								{:else if alert.status === 'resolved' || alert.status === 'dismissed'}
-									<div class="alert-actions">
-										<button class="alert-btn reopen" onclick={() => updateAlertStatus(alert.id, 'open')}>Reopen</button>
-									</div>
-								{/if}
-								<div class="alert-meta">{alert.status}{#if alert.resolved_at} — resolved {new Date(alert.resolved_at).toLocaleString()}{/if}{#if alert.resolved_by} by {alert.resolved_by}{/if}</div>
-							</div>
-						{/each}
-					{/if}
-				</div>
+				<AlertsPanel bind:openCount={alertOpenCount} />
 			{:else if leftSection === 'benchmarks'}
-				<div class="benchmarks-panel">
-					{#if !benchmarksData}
-						<div class="empty-state">Loading benchmarks...</div>
-					{:else}
-						{@const suites = benchmarksData.suites || []}
-						{@const latest = benchmarksData.latest || {}}
-						<div class="bench-summary">
-							<div class="bench-summary-score">
-								<span class="bench-summary-num" class:all-pass={benchmarksData.suites_passed === benchmarksData.total_suites}>{benchmarksData.suites_passed ?? 0}/{benchmarksData.total_suites ?? 12}</span>
-								<span class="bench-summary-label">suites passing</span>
-							</div>
-							<button class="bench-run-btn bench-run-all" onclick={() => runAllBenchmarks()} disabled={benchmarkRunning}>{benchmarkRunningSuite === 'all' ? 'Running All...' : 'Run All'}</button>
-						</div>
-						{#if autodevReport && (autodevReport.recommendations?.length > 0)}
-							<div class="bench-autodev-report">
-								<div class="bench-report-title">AutoDev Findings</div>
-								{#each autodevReport.recommendations as rec}
-									<div class="bench-rec" class:rec-fix={rec.action === 'fix'} class:rec-research={rec.action === 'research'}>
-										<span class="bench-rec-badge" class:fix={rec.action === 'fix'} class:research={rec.action === 'research'}>{rec.action === 'fix' ? 'FIX' : 'RESEARCH'}</span>
-										<span class="bench-rec-text">{rec.label}</span>
-										<span class="bench-rec-score">{rec.suite} {rec.axis}={rec.score}</span>
-									</div>
-								{/each}
-							</div>
-						{/if}
-						{#each suites as suite}
-							{@const run = latest[suite]}
-							{@const s = run?.scores || {}}
-							{@const composite = s.composite ?? null}
-							{@const isRunning = benchmarkRunningSuite === suite}
-							<div class="bench-suite" class:bench-not-run={!run}>
-								<div class="bench-suite-header">
-									<span class="bench-suite-name">{suite.toUpperCase()}</span>
-									<div class="bench-suite-right">
-										{#if run}<span class="bench-suite-status" class:pass={run.passed} class:fail={!run.passed}>{run.passed ? '✓' : '✗'}</span>{:else}<span class="bench-suite-status bench-unrun">—</span>{/if}
-										<button class="bench-mini-run" onclick={() => runBenchmark(suite)} disabled={benchmarkRunning}>{isRunning ? '…' : '▶'}</button>
-									</div>
-								</div>
-								{#if run}
-									{#if composite != null}
-										<div class="bench-row bench-composite-row">
-											<span class="bench-label">Score</span>
-											<div class="bench-bar-wrap"><div class="bench-bar" class:green={composite >= 8} class:yellow={composite >= 6 && composite < 8} class:red={composite < 6} style="width:{Math.min(composite / 10 * 100, 100)}%"></div></div>
-											<span class="bench-val bench-composite-val" class:pass={composite >= 8} class:warn={composite >= 6 && composite < 8} class:fail={composite < 6}>{composite.toFixed(1)}</span>
-										</div>
-									{/if}
-									{@const secKeys = Object.keys(s).filter(k => k !== 'composite' && typeof s[k] === 'number')}
-									{#if secKeys.length > 0}
-										<div class="bench-metrics">
-											{#each secKeys.slice(0, 4) as key}
-												{#if key === 'reflex_ms'}
-													<span class="bench-chip" class:chip-ok={s[key] <= 400} class:chip-warn={s[key] > 400}>{s[key]}ms</span>
-												{:else}
-													<span class="bench-chip" class:chip-ok={s[key] >= 8} class:chip-warn={s[key] >= 6 && s[key] < 8} class:chip-fail={s[key] < 6}>{benchScoreLabel(key)}: {typeof s[key] === 'number' && s[key] % 1 !== 0 ? s[key].toFixed(1) : s[key]}</span>
-												{/if}
-											{/each}
-										</div>
-									{/if}
-									<div class="bench-ran-at">{run.ran_at ? new Date(typeof run.ran_at === 'string' ? run.ran_at.replace(' ','T')+'Z' : run.ran_at).toLocaleString() : ''}</div>
-								{:else}
-									<div class="bench-not-run-label">not yet run</div>
-								{/if}
-							</div>
-						{/each}
-					{/if}
-				</div>
+				<BenchmarksPanel />
 			{:else if leftSection === 'pipeline'}
-				<div class="pipeline-panel">
-					{#if !pipelineData}
-						<div class="empty-state">Loading pipeline...</div>
-					{:else}
-						{@const pl = pipelineData.pipeline || {}}
-						{@const beta = pipelineData.beta}
-						{@const prod = pipelineData.production}
-						{@const status = pl.status || 'idle'}
-						<div class="pl-header">
-							<div class="pl-status-dot" style="background:{pipelineStatusColor(status)}"></div>
-							<span class="pl-status-label">{status.toUpperCase()}</span>
-							{#if pl.source && status !== 'idle'}<span class="pl-source">({pl.source})</span>{/if}
-							<div class="pl-spacer"></div>
-							{#if status === 'idle' || status === 'failed'}
-								<button class="pl-btn pl-btn-run" onclick={triggerPipeline} disabled={pipelineStarting}>{pipelineStarting ? 'Starting…' : '▶ Run Pipeline'}</button>
-							{:else}
-								<button class="pl-btn pl-btn-abort" onclick={abortPipelineAction}>✕ Abort</button>
-							{/if}
-						</div>
-						{#if pl.error}<div class="pl-error">{pl.error}</div>{/if}
-						<div class="pl-slot-label">PRODUCTION</div>
-						<div class="pl-slot pl-slot-prod">
-							{#if prod}<span class="pl-slot-id">Craft-{prod.id}</span><span class="pl-slot-port">:{prod.port}</span><span class="pl-slot-health" class:healthy={prod.healthy}>{prod.healthy ? '●' : '○'}</span><span class="pl-slot-uptime">{prod.uptimeMs ? (prod.uptimeMs / 60000).toFixed(0) + 'm' : ''}</span>{:else}<span class="pl-slot-none">—</span>{/if}
-						</div>
-						<div class="pl-slot-label">BETA {status === 'benchmarking' ? '(benchmarking…)' : status === 'spawning' ? '(spawning…)' : ''}</div>
-						<div class="pl-slot pl-slot-beta" class:active={!!beta}>
-							{#if beta}<span class="pl-slot-id">Craft-{beta.id}</span><span class="pl-slot-port">:{beta.port}</span><span class="pl-slot-health" class:healthy={beta.healthy}>{beta.healthy ? '●' : '○'}</span>{#if status === 'ready'}<button class="pl-btn pl-btn-promote" onclick={promotePipelineManual}>Promote ↑</button>{/if}{:else}<span class="pl-slot-none">{status === 'idle' ? '—' : '…'}</span>{/if}
-						</div>
-						{#if pipelineData.pending > 0}<div class="pl-slot-label">PENDING ({pipelineData.pending})</div>{/if}
-						{#if pl.scores && Object.keys(pl.scores).length > 0}
-							<div class="pl-bench-title">Benchmark Results</div>
-							{#each Object.entries(pl.scores) as [suite, result]}
-								<div class="pl-bench-row" class:pl-pass={result?.passed} class:pl-fail={result && !result.passed}>
-									<span class="pl-bench-suite">{suite}</span><span class="pl-bench-result">{result?.passed ? '✓' : '✗'}</span>
-									{#if result?.scores?.composite != null}<span class="pl-bench-score">{result.scores.composite.toFixed(1)}</span>{/if}
-								</div>
-							{/each}
-						{/if}
-						{#if pl.startedAt}<div class="pl-elapsed">Started {new Date(pl.startedAt).toLocaleTimeString()}{#if pl.completedAt} → {((pl.completedAt - pl.startedAt) / 1000).toFixed(0)}s{/if}</div>{/if}
-					{/if}
-				</div>
+				<PipelinePanel />
 			{:else if leftSection === 'mail'}
-				<div class="mail-panel">
-					<div class="contacts-toolbar">
-						<button class="contacts-add-btn" onclick={syncMail} title="Sync inbox" disabled={mailLoading}>&#x21BB;</button>
-						<div style="flex:1; font-size: 12px; color: #a6adc8;">
-							{#if mailStatus?.connected}
-								<span style="color: #a6e3a1;">&#x25CF;</span> {mailStatus.user || 'Connected'}
-							{:else if mailStatus?.configured}
-								<span style="color: #f38ba8;">&#x25CF;</span> Disconnected
-							{:else}
-								<span style="color: #585b70;">&#x25CF;</span> Not configured
-							{/if}
-						</div>
-						<button class="contacts-add-btn" onclick={() => openCompose()} title="Compose">+</button>
-					</div>
-					{#if mailLoading && mailMessages.length === 0}
-						<div class="empty-state">Loading...</div>
-					{:else if mailMessages.length === 0}
-						<div class="empty-state">
-							{#if !mailStatus?.configured}
-								Email not configured — go to Settings
-							{:else}
-								No messages — click &#x21BB; to sync
-							{/if}
-						</div>
-					{:else}
-						<div class="mail-list">
-							{#each mailMessages as msg}
-								<div class="mail-row" class:unread={!msg.read} onclick={() => openCompose(null, msg.subject ? 'Re: ' + msg.subject : '', msg.direction === 'received' ? msg.from : '')}>
-									<div class="mail-row-top">
-										<span class="mail-type-badge" class:pan={msg.channel === 'pan'} class:email={msg.channel === 'email'}>{msg.channel === 'pan' ? '◆' : '✉'}</span>
-										<span class="mail-from">{msg.direction === 'sent' ? `To: ${msg.to}` : msg.from}</span>
-										<span class="mail-date">{formatMailDate(msg.date)}</span>
-									</div>
-									{#if msg.subject}<div class="mail-subject">{msg.subject}</div>{/if}
-									<div class="mail-preview">{msg.preview || ''}</div>
-								</div>
-							{/each}
-						</div>
-						{#if mailTotal > 50}
-							<div class="mail-pager">
-								{#if mailPage > 0}
-									<button class="contact-btn-save" onclick={() => loadMail(mailPage - 1)}>&larr; Newer</button>
-								{/if}
-								<span style="color: #585b70; font-size: 11px;">{mailPage * 50 + 1}-{Math.min((mailPage + 1) * 50, mailTotal)} of {mailTotal}</span>
-								{#if (mailPage + 1) * 50 < mailTotal}
-									<button class="contact-btn-save" onclick={() => loadMail(mailPage + 1)}>Older &rarr;</button>
-								{/if}
-							</div>
-						{/if}
-					{/if}
-				</div>
+				<MailPanel />
 			{/if}
 		</div>
 	</div>
@@ -8062,327 +4579,21 @@
 			{/if}
 		</div>
 		{#if centerView === 'chat'}
-			<div class="center-chat" bind:this={centerChatEl} onscroll={() => {
-				if (centerChatEl) {
-					centerChatUserScrolledUp = centerChatEl.scrollHeight - centerChatEl.scrollTop - centerChatEl.clientHeight > 50;
-					// Persist scroll position for refresh survival
-					try {
-						const ratio = centerChatEl.scrollTop / Math.max(1, centerChatEl.scrollHeight - centerChatEl.clientHeight);
-						localStorage.setItem('pan_chat_scroll_ratio', String(ratio));
-						localStorage.setItem('pan_chat_scrolled_up', centerChatUserScrolledUp ? '1' : '0');
-					} catch {}
-				}
-			}}>
-				{#if centerChatMessages.length === 0}
-					<div class="term-empty">
-						<div class="term-empty-title">Chat</div>
-						<div class="term-empty-sub">Send a message to the terminal session</div>
-					</div>
-				{:else}
-					{#each centerChatMessages as msg}
-						{#if msg.role === 'user'}
-							<div class="cc-bubble cc-user">{msg.text}</div>
-						{:else if msg.type === 'text' || msg.type === 'output'}
-							<div class="cc-bubble cc-assistant">{msg.text}</div>
-						{:else if msg.type === 'tool'}
-							<div class="cc-bubble cc-tool">{msg.text}</div>
-						{/if}
-					{/each}
-					{#if centerChatLoading}
-						<div class="cc-bubble cc-assistant cc-thinking">Thinking...</div>
-					{/if}
-				{/if}
-			</div>
+			<CenterChatView bind:scrollElBind={centerChatEl} />
 		{/if}
 		{#if centerView === 'atlas'}
-			<div class="atlas-container"
-				onwheel={handleAtlasWheel}
-				onpointerdown={handleAtlasPointerDown}
-				onpointermove={handleAtlasPointerMove}
-				onpointerup={handleAtlasPointerUp}
-				onpointerleave={handleAtlasPointerUp}
-			>
-				{#if atlasLoading}
-					<div class="term-empty">
-						<div class="term-empty-title">Initializing Orrery...</div>
-					</div>
-				{:else if atlasData}
-					<div class="atlas-toolbar">
-						<button class="atlas-btn" onclick={atlasResetView}>Reset</button>
-						<button class="atlas-btn" onclick={() => { atlasTransform = { ...atlasTransform, scale: atlasTransform.scale * 1.2 }; }}>+</button>
-						<button class="atlas-btn" onclick={() => { atlasTransform = { ...atlasTransform, scale: Math.max(0.2, atlasTransform.scale * 0.8) }; }}>-</button>
-						<span class="atlas-zoom">{Math.round(atlasTransform.scale * 100)}%</span>
-						{#if atlasData.stats}
-							<span class="atlas-stat">{atlasData.stats.total_events || 0} events</span>
-							<span class="atlas-stat">{atlasData.stats.total_sessions || 0} sessions</span>
-						{/if}
-						<span class="atlas-live">● LIVE</span>
-					</div>
-					<svg class="atlas-svg" viewBox="0 0 2300 1600" preserveAspectRatio="xMidYMid meet">
-						<defs>
-							<filter id="ag"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-							<filter id="ag2"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-							<radialGradient id="asg" cx="50%" cy="50%" r="50%">
-								<stop offset="0%" stop-color="#89b4fa" stop-opacity="0.10"/>
-								<stop offset="100%" stop-color="#89b4fa" stop-opacity="0"/>
-							</radialGradient>
-							<filter id="mapglow">
-								<feGaussianBlur stdDeviation="1.5" result="b"/>
-								<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-							</filter>
-						</defs>
-						<!-- World map background — dark landmasses, no ocean -->
-						<image href="/world-map.svg" x="0" y="50" width="2300" height="1500" opacity="0.75" preserveAspectRatio="xMidYMid meet"/>
-						<g transform="translate({atlasTransform.x},{atlasTransform.y}) scale({atlasTransform.scale})">
-							<!-- Starfield -->
-							{#each [45,123,234,367,489,521,648,712,834,956,1067,1178,1289,1345,1423,1567,1689,1789,1867,1934,201,302,412,534,645,756,867,978,1089,1190,1312,1456,1578,1645,1723,1823,1912,1978,2034,2112,2156,2234] as sx, si}
-								<circle cx={sx} cy={[89,178,267,356,445,89,134,223,312,401,490,579,89,134,223,312,401,490,579,668,757,89,134,223,312,401,490,579,668,757,89,134,223,312,401,490,579,668,757,89,134,223][si] % 1600} r={[0.8,1.2,0.6,1.0,0.7,1.1,0.9,0.6,1.3,0.8,0.7,1.0,0.9,1.1,0.6,0.8,1.2,0.7,1.0,0.6,0.8,0.9,1.1,0.7,1.0,0.8,0.6,1.2,0.9,0.7,1.0,0.8,0.6,1.1,0.9,0.7,1.0,0.8,1.2,0.6,0.9,0.7][si]} fill="#cdd6f4" opacity={[0.15,0.25,0.10,0.20,0.12,0.18,0.22,0.08,0.30,0.15,0.12,0.20,0.18,0.25,0.10,0.15,0.22,0.12,0.18,0.08,0.15,0.20,0.25,0.10,0.18,0.15,0.08,0.22,0.18,0.12,0.20,0.15,0.10,0.25,0.18,0.12,0.20,0.15,0.22,0.08,0.18,0.12][si]}/>
-							{/each}
-
-							<!-- Sun corona glow -->
-							<circle cx={atlasData.CX} cy={atlasData.CY} r="380" fill="url(#asg)"/>
-
-							<!-- Planetary orbit rings -->
-							{#each atlasData.planets as planet}
-								<circle cx={atlasData.CX} cy={atlasData.CY} r={planet.orbitR}
-									fill="none" stroke={atlasNodeColor(planet.type)}
-									stroke-width="1" stroke-opacity="0.07" stroke-dasharray="4,14"/>
-							{/each}
-
-							<!-- Data flow particles (animated with SVG animateMotion) -->
-							{#each [['database','memory-hub','#cba6f7',6],['memory-hub','autodev','#f38ba8',8],['database','dream-cycle','#f9e2af',7]] as hw, hi}
-								{@const pa = atlasData.planets.find(p => p.id === hw[0])}
-								{@const pb = atlasData.planets.find(p => p.id === hw[1])}
-								{#if pa && pb}
-									{@const pax = atlasData.CX + pa.orbitR * Math.cos((pa.baseAngle + pa.orbitSpeed * atlasElapsed) * Math.PI / 180)}
-									{@const pay = atlasData.CY + pa.orbitR * Math.sin((pa.baseAngle + pa.orbitSpeed * atlasElapsed) * Math.PI / 180)}
-									{@const pbx = atlasData.CX + pb.orbitR * Math.cos((pb.baseAngle + pb.orbitSpeed * atlasElapsed) * Math.PI / 180)}
-									{@const pby = atlasData.CY + pb.orbitR * Math.sin((pb.baseAngle + pb.orbitSpeed * atlasElapsed) * Math.PI / 180)}
-									<line x1={pax} y1={pay} x2={pbx} y2={pby} stroke={hw[2]} stroke-width="1" stroke-opacity="0.08"/>
-									<circle r="4" fill={hw[2]} opacity="0.5" filter="url(#ag2)">
-										<animateMotion dur="{hw[3]}s" repeatCount="indefinite"
-											path="M{pax},{pay} L{pbx},{pby}"/>
-									</circle>
-								{/if}
-							{/each}
-
-							<!-- PLANETS + MOONS -->
-							{#each atlasData.planets as planet}
-								{@const pAngle = (planet.baseAngle + planet.orbitSpeed * atlasElapsed) * Math.PI / 180}
-								{@const px = atlasData.CX + planet.orbitR * Math.cos(pAngle)}
-								{@const py = atlasData.CY + planet.orbitR * Math.sin(pAngle)}
-								{@const pColor = atlasNodeColor(planet.type)}
-								{@const pStatus = atlasData.ss(planet.id)}
-								{@const pSelOrHov = atlasSelected === planet.id || atlasHovered === planet.id}
-
-								<!-- Moon orbital ring -->
-								{#if planet.moonR > 0}
-									<circle cx={px} cy={py} r={planet.moonR}
-										fill="none" stroke={pColor}
-										stroke-width="0.5" stroke-opacity="0.08" stroke-dasharray="2,6"/>
-								{/if}
-
-								<!-- Moons -->
-								{#each planet.moons as moon}
-									{@const mAngle = (moon.baseAngle + planet.moonSpeed * atlasElapsed) * Math.PI / 180}
-									{@const mx = px + planet.moonR * Math.cos(mAngle)}
-									{@const my = py + planet.moonR * Math.sin(mAngle)}
-									{@const mColor = atlasNodeColor(moon.type)}
-									{@const mStatus = atlasData.ss(moon.id)}
-									{@const mSel = atlasSelected === moon.id}
-									{@const mHov = atlasHovered === moon.id}
-									<g class="atlas-node"
-										onpointerenter={() => { atlasHovered = moon.id; }}
-										onpointerleave={() => { atlasHovered = null; }}
-										onclick={() => { atlasSelected = atlasSelected === moon.id ? null : moon.id; }}
-										style="cursor:pointer"
-									>
-										<rect x={mx - 52} y={my - 16} width="104" height="32" rx="6"
-											fill={mSel || mHov ? '#1a1a24' : '#0c0c12dd'}
-											stroke={mSel ? mColor : mHov ? '#45475a' : mColor + '25'}
-											stroke-width={mSel ? 1.8 : 0.8}
-											filter={mSel ? 'url(#ag2)' : ''}
-										/>
-										{#if mStatus !== 'unknown'}
-											<circle cx={mx - 40} cy={my - 3} r="3.5"
-												fill={mStatus === 'up' ? '#a6e3a1' : mStatus === 'down' ? '#f38ba8' : '#f9e2af'}/>
-										{/if}
-										<text x={mx - 30} y={my + 2} fill="#cdd6f4" font-size="10" font-weight="600">{moon.label.length > 12 ? moon.label.slice(0,11)+'..' : moon.label}</text>
-										{#if atlasData.rv(moon.id)}
-											<text x={mx - 42} y={my + 13} fill={mColor + '88'} font-size="8" font-family="monospace">{atlasData.rv(moon.id)}</text>
-										{/if}
-									</g>
-								{/each}
-
-								<!-- Planet body -->
-								{@const pr = planet.moons.length > 3 ? 40 : 34}
-								<g class="atlas-node"
-									onpointerenter={() => { atlasHovered = planet.id; }}
-									onpointerleave={() => { atlasHovered = null; }}
-									onclick={() => { atlasSelected = atlasSelected === planet.id ? null : planet.id; }}
-									style="cursor:pointer"
-								>
-									<circle cx={px} cy={py} r={pr}
-										fill="#0c0c12"
-										stroke={pSelOrHov ? pColor : pColor + '30'}
-										stroke-width={pSelOrHov ? 2.2 : 1.5}
-										filter={pSelOrHov ? 'url(#ag2)' : ''}
-									/>
-									{#if pStatus !== 'unknown'}
-										<circle cx={px} cy={py - pr + 8} r="4.5"
-											fill={pStatus === 'up' ? '#a6e3a1' : pStatus === 'down' ? '#f38ba8' : '#f9e2af'}/>
-									{/if}
-									<text x={px} y={py + 4} fill="#cdd6f4" font-size="11" font-weight="700" text-anchor="middle">{planet.label.length > 10 ? planet.label.slice(0,9)+'..' : planet.label}</text>
-									{#if atlasData.rv(planet.id)}
-										<text x={px} y={py + 17} fill={pColor + '99'} font-size="8" font-family="monospace" text-anchor="middle">{atlasData.rv(planet.id)}</text>
-									{/if}
-								</g>
-							{/each}
-
-							<!-- DEVICES — outer belt at fixed angle arc -->
-							{#each atlasData.devNodes as devNode, di}
-								{@const devAngle = (devNode.baseAngle + 0.04 * atlasElapsed) * Math.PI / 180}
-								{@const dR = 1100}
-								{@const dx = atlasData.CX + dR * Math.cos(devAngle)}
-								{@const dy = atlasData.CY + dR * Math.sin(devAngle)}
-								{@const dColor = atlasNodeColor('device')}
-								{@const dSel = atlasSelected === devNode.id}
-								{@const dHov = atlasHovered === devNode.id}
-								<g class="atlas-node"
-									onpointerenter={() => { atlasHovered = devNode.id; }}
-									onpointerleave={() => { atlasHovered = null; }}
-									onclick={() => { atlasSelected = atlasSelected === devNode.id ? null : devNode.id; if (dSel) { leftSection = 'devices'; atlasSelected = null; } }}
-									style="cursor:pointer"
-								>
-									<rect x={dx - 55} y={dy - 17} width="110" height="34" rx="7"
-										fill={dSel || dHov ? '#1a1a24' : '#0c0c12dd'}
-										stroke={dSel ? dColor : dHov ? '#45475a' : dColor + '30'}
-										stroke-width={dSel ? 2 : 1}
-										filter={dSel ? 'url(#ag2)' : ''}
-									/>
-									<circle cx={dx - 42} cy={dy} r="4"
-										fill={devNode.status === 'up' ? '#a6e3a1' : '#6c7086'}/>
-									<text x={dx - 32} y={dy + 4} fill="#cdd6f4" font-size="10.5" font-weight="600">{devNode.label.length > 12 ? devNode.label.slice(0,11)+'..' : devNode.label}</text>
-								</g>
-							{/each}
-
-							<!-- PROJECTS — outermost, gravitating near Forge -->
-							{#each atlasData.projs as proj, pi}
-								{@const projAngle = (proj.baseAngle + 0.03 * atlasElapsed) * Math.PI / 180}
-								{@const projR = 1250 + pi * 60}
-								{@const prjx = atlasData.CX + projR * Math.cos(projAngle)}
-								{@const prjy = atlasData.CY + projR * Math.sin(projAngle)}
-								{@const pjColor = atlasNodeColor('project')}
-								{@const pjSel = atlasSelected === proj.id}
-								{@const pjHov = atlasHovered === proj.id}
-								<g class="atlas-node"
-									onpointerenter={() => { atlasHovered = proj.id; }}
-									onpointerleave={() => { atlasHovered = null; }}
-									onclick={() => { atlasSelected = atlasSelected === proj.id ? null : proj.id; }}
-									style="cursor:pointer"
-								>
-									<rect x={prjx - 58} y={prjy - 15} width="116" height="30" rx="6"
-										fill={pjSel || pjHov ? '#1a1a24' : '#0c0c12bb'}
-										stroke={pjSel ? pjColor : pjHov ? '#45475a' : pjColor + '20'}
-										stroke-width={pjSel ? 2 : 0.8}
-										stroke-dasharray={pjSel ? 'none' : '3,3'}
-									/>
-									<text x={prjx} y={prjy + 4} fill={pjColor + 'bb'} font-size="10" font-weight="500" text-anchor="middle">{proj.label.length > 15 ? proj.label.slice(0,14)+'..' : proj.label}</text>
-								</g>
-							{/each}
-
-							<!-- SUN (PAN Server) -->
-							<g class="atlas-node"
-								onpointerenter={() => { atlasHovered = 'pan-server'; }}
-								onpointerleave={() => { atlasHovered = null; }}
-								onclick={() => { atlasSelected = atlasSelected === 'pan-server' ? null : 'pan-server'; }}
-								style="cursor:pointer"
-							>
-								<circle cx={atlasData.CX} cy={atlasData.CY} r="72"
-									fill="#090912" stroke={atlasSelected === 'pan-server' ? '#89b4fa' : '#89b4fa30'}
-									stroke-width={atlasSelected === 'pan-server' ? 3 : 1.5} filter="url(#ag)"/>
-								<text x={atlasData.CX} y={atlasData.CY - 14} fill="#89b4fa" font-size="32" font-weight="700" text-anchor="middle" font-family="serif">Π</text>
-								<text x={atlasData.CX} y={atlasData.CY + 12} fill="#cdd6f4" font-size="12" font-weight="600" text-anchor="middle">PAN Server</text>
-								{#if atlasData.stats}
-									<text x={atlasData.CX} y={atlasData.CY + 28} fill="#89b4fa99" font-size="9" text-anchor="middle" font-family="monospace">{(atlasData.stats.total_events/1000).toFixed(1)}K events</text>
-								{/if}
-							</g>
-
-							<!-- Sector labels (faint, rotate with time very slowly) -->
-							<text x={atlasData.CX + 1050} y={atlasData.CY - 20} fill="#89b4fa18" font-size="11" font-weight="700" letter-spacing="3" text-anchor="middle">DEVICES</text>
-							<text x={atlasData.CX} y={atlasData.CY - 1050} fill="#cba6f718" font-size="11" font-weight="700" letter-spacing="3" text-anchor="middle">MEMORY</text>
-						</g>
-					</svg>
-
-					<!-- Detail panel -->
-					{#if atlasSelected}
-						{@const selPlanet = atlasData.planets.find(p => p.id === atlasSelected)}
-						{@const selMoon = atlasData.planets.flatMap(p => p.moons).find(m => m.id === atlasSelected)}
-						{@const selDev = atlasData.devNodes.find(d => d.id === atlasSelected)}
-						{@const selProj = atlasData.projs.find(p => p.id === atlasSelected)}
-						{@const selAny = selPlanet || selMoon || selDev || selProj || (atlasSelected === 'pan-server' ? { label: 'PAN Server', type: 'core' } : null)}
-						{#if selAny}
-							<div class="atlas-detail">
-								<div class="atlas-detail-header">
-									<span class="atlas-detail-dot" style="background:{atlasNodeColor(selAny.type)}"></span>
-									<strong>{selAny.label}</strong>
-									<span class="atlas-detail-type" style="color:{atlasNodeColor(selAny.type)}">{selAny.type}</span>
-									<button class="atlas-detail-close" onclick={() => { atlasSelected = null; }}>&times;</button>
-								</div>
-								<div class="atlas-detail-body">
-									{#if selPlanet || selMoon}
-										{@const sid = selAny.id}
-										{@const status = atlasData.ss(sid)}
-										<div class="atlas-detail-status">
-											<span class="atlas-detail-status-dot" style="background:{status === 'up' ? '#a6e3a1' : status === 'down' ? '#f38ba8' : '#6c7086'}"></span>
-											{status === 'up' ? 'Running' : status === 'down' ? 'Offline' : status === 'idle' ? 'Idle' : 'Unknown'}
-										</div>
-										{#if atlasData.sd(sid)}<div class="atlas-detail-info">{atlasData.sd(sid)}</div>{/if}
-										{#if atlasData.rv(sid)}<div class="atlas-detail-info">{atlasData.rv(sid)}</div>{/if}
-										{#if selPlanet && selPlanet.moons.length > 0}
-											<div class="atlas-detail-section-title">Moons ({selPlanet.moons.length})</div>
-											{#each selPlanet.moons as moon}
-												<button class="atlas-detail-conn" onclick={() => { atlasSelected = moon.id; }}>
-													<span class="atlas-detail-conn-dot" style="background:{atlasData.ss(moon.id) === 'up' ? '#a6e3a1' : '#6c7086'}"></span>
-													<span class="atlas-detail-conn-name">{moon.label}</span>
-												</button>
-											{/each}
-										{/if}
-									{:else if selDev}
-										<div class="atlas-detail-status">
-											<span class="atlas-detail-status-dot" style="background:{selDev.status === 'up' ? '#a6e3a1' : '#6c7086'}"></span>
-											{selDev.status === 'up' ? 'Online' : 'Offline'}
-										</div>
-										<button class="atlas-nav-btn" onclick={() => { leftSection = 'devices'; atlasSelected = null; }}>Go to Devices &rarr;</button>
-									{:else if selProj}
-										<button class="atlas-nav-btn" onclick={() => { leftSection = 'projects'; atlasSelected = null; }}>Go to Projects &rarr;</button>
-									{:else}
-										<div class="atlas-detail-info">Central server. Port 7777.</div>
-										{#if atlasData.stats}<div class="atlas-detail-info">{atlasData.stats.total_events} events · {atlasData.stats.total_sessions} sessions</div>{/if}
-									{/if}
-								</div>
-							</div>
-						{/if}
-					{/if}
-				{:else}
-					<div class="term-empty">
-						<div class="term-empty-icon">&#x1F5FA;</div>
-						<div class="term-empty-title">Atlas</div>
-						<div class="term-empty-sub">System orrery</div>
-					</div>
-				{/if}
-			</div>
-		{/if}
+			<AtlasPanel />
+  {/if}
 		<!-- Messages panel removed -->
 		<!-- Call Overlay -->
-		{#if chatCallActive}
+		{#if chatStore.callActive}
 			<div class="call-overlay">
 				<div class="call-card">
-					<div class="call-avatar">{chatActiveThread?.contact?.display_name?.charAt(0) || '?'}</div>
-					<div class="call-name">{chatActiveThread?.contact?.display_name || 'Unknown'}</div>
-					<div class="call-status">{chatCallActive.type === 'video' ? 'Video' : 'Voice'} call — {chatCallActive.status}</div>
+					<div class="call-avatar">{chatStore.activeThread?.contact?.display_name?.charAt(0) || '?'}</div>
+					<div class="call-name">{chatStore.activeThread?.contact?.display_name || 'Unknown'}</div>
+					<div class="call-status">{chatStore.callActive.type === 'video' ? 'Video' : 'Voice'} call — {chatStore.callActive.status}</div>
 					<div class="call-actions">
-						<button class="call-end-btn" onclick={endCall}>
+						<button class="call-end-btn" onclick={storeEndCall}>
 							<svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 01-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28a11.27 11.27 0 00-2.67-1.85.996.996 0 01-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
 						</button>
 					</div>
@@ -8391,171 +4602,13 @@
 		{/if}
 
 		<!-- ── Impersonate Modal ──────────────────────────────────────────────── -->
-		{#if impersonateOpen}
-			<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-			<div class="imp-backdrop" onclick={() => impersonateOpen = false}></div>
-			<div class="imp-modal" role="dialog" aria-label="Impersonate">
-				<div class="imp-header">
-					<span class="imp-title">👁 Impersonate</span>
-					<button class="imp-close" onclick={() => impersonateOpen = false}>✕</button>
-				</div>
+		<ImpersonatePanel bind:open={impersonateModalOpen} onApplied={reloadPermsMatrix} />
 
-				<!-- Tab selector -->
-				<div class="imp-tabs">
-					<button class="imp-tab" class:active={impersonateTab === 'power'} onclick={() => impersonateTab = 'power'}>⚡ Power Level</button>
-					<button class="imp-tab" class:active={impersonateTab === 'user'}  onclick={() => impersonateTab = 'user'}>👤 User</button>
-					<button class="imp-tab" class:active={impersonateTab === 'group'} onclick={() => impersonateTab = 'group'}>🏢 Group</button>
-				</div>
-
-				<!-- Power Level tab -->
-				{#if impersonateTab === 'power'}
-					<div class="imp-body">
-						<p class="imp-desc">Preview the dashboard as any power level (0–99). Use the presets or drag the slider.</p>
-						<div class="imp-presets">
-							{#each IMPERSONATE_PRESETS as p}
-								<button class="imp-preset" class:active={impPowerSlider === p.power} onclick={() => impPowerSlider = p.power}>
-									{p.label}<br><span class="imp-preset-sub">lvl {p.power}</span>
-								</button>
-							{/each}
-						</div>
-						<div class="imp-slider-row">
-							<span class="imp-slider-label">0</span>
-							<input type="range" min="0" max="99" bind:value={impPowerSlider} class="imp-slider" />
-							<span class="imp-slider-label">99</span>
-							<span class="imp-slider-val">{impPowerSlider}</span>
-						</div>
-					</div>
-
-				<!-- User tab -->
-				{:else if impersonateTab === 'user'}
-					<div class="imp-body">
-						<p class="imp-desc">View the dashboard as a specific registered user.</p>
-						{#if !impUsersLoaded}
-							<div class="imp-loading">Loading users…</div>
-						{:else if impUsers.length === 0}
-							<div class="imp-empty">No non-owner users registered yet.</div>
-						{:else}
-							<div class="imp-user-list">
-								{#each impUsers as u}
-									<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-									<div class="imp-user-row" class:selected={impSelectedUser?.id === u.id} onclick={() => impSelectedUser = u}>
-										<span class="imp-user-avatar">{(u.display_nickname || u.display_name || '?').charAt(0).toUpperCase()}</span>
-										<div class="imp-user-info">
-											<span class="imp-user-name">{u.display_nickname || u.display_name || `User #${u.id}`}</span>
-											{#if u.email}<span class="imp-user-email">{u.email}</span>{/if}
-										</div>
-										<span class="imp-user-power">lvl {u.power_lvl ?? 0}</span>
-									</div>
-								{/each}
-							</div>
-						{/if}
-					</div>
-
-				<!-- Group tab -->
-				{:else if impersonateTab === 'group'}
-					<div class="imp-body">
-						<p class="imp-desc">Preview as a member of an org at a specific role/power level.</p>
-						{#if !impOrgsLoaded}
-							<div class="imp-loading">Loading orgs…</div>
-						{:else}
-							<div class="imp-field">
-								<label class="imp-label">Organisation</label>
-								<select class="imp-select" bind:value={impSelectedOrg}>
-									{#each impOrgs as o}
-										<option value={o.id}>{o.name}</option>
-									{/each}
-								</select>
-							</div>
-							<div class="imp-field">
-								<label class="imp-label">Role / Power Level</label>
-								{#if impRoles.length}
-									<div class="imp-presets">
-										{#each impRoles as r}
-											<button class="imp-preset" class:active={impGroupPower === r.level} onclick={() => { impGroupPower = r.level; impGroupRole = r.name; }}>
-												{r.name}<br><span class="imp-preset-sub">lvl {r.level}</span>
-											</button>
-										{/each}
-									</div>
-								{/if}
-								<div class="imp-slider-row">
-									<span class="imp-slider-label">0</span>
-									<input type="range" min="0" max="99" bind:value={impGroupPower} class="imp-slider" />
-									<span class="imp-slider-label">99</span>
-									<span class="imp-slider-val">{impGroupPower}</span>
-								</div>
-							</div>
-						{/if}
-					</div>
-				{/if}
-
-				<div class="imp-footer">
-					<button class="imp-cancel" onclick={() => impersonateOpen = false}>Cancel</button>
-					<button class="imp-apply" onclick={applyImpersonation} disabled={impApplying || (impersonateTab === 'user' && !impSelectedUser) || (impersonateTab === 'group' && !impSelectedOrg)}>
-						{impApplying ? 'Applying…' : '👁 Apply'}
-					</button>
-				</div>
-			</div>
-		{/if}
-
-		{#if pastedImages.length > 0}
-			<div class="image-preview-bar">
-				{#each pastedImages as img, idx}
-					<div class="image-preview-item">
-						<img src={img.dataUrl} alt="Pasted" class="image-preview-thumb" />
-						{#if img.uploading}
-							<span class="image-uploading">...</span>
-						{/if}
-						<button class="image-remove" onclick={() => removePastedImage(idx)}>&times;</button>
-					</div>
-				{/each}
-			</div>
-		{/if}
+		<ImagePreviewBar onRemove={removePastedImage} />
 		{#if !approvalOptions || approvalOptions.length === 0}
-			{@const _now = ptyStatusNow}
-			{@const _pty = ptyStatus}
-			{@const _state = !_pty ? 'no-pty' : (!claudeReady || _pty.thinking || pipeSending) ? 'thinking' : 'ready'}
-			{@const _inAgo = _pty?.lastInputTs ? Math.max(0, Math.round((_now - _pty.lastInputTs) / 1000)) : null}
-			{@const _outAgo = _pty?.lastOutputTs ? Math.max(0, Math.round((_now - _pty.lastOutputTs) / 1000)) : null}
-			{@const _upS = _pty?.createdAt ? Math.max(0, Math.round((_now - _pty.createdAt) / 1000)) : null}
-			{@const _tool = _pty?.currentTool}
-			{@const _toolElapsed = _tool?.startedAt ? Math.max(0, Math.round((_now - _tool.startedAt) / 1000)) : null}
-			<div class="pty-status-bar pty-{_state}" title="Live PTY status from /api/v1/terminal/sessions">
-				{#if _tool}
-					<span class="status-spinner"></span>
-					<span class="status-text">{_tool.isSubagent ? '🤖' : '🔧'} {_tool.tool}{_tool.summary ? ' · ' + _tool.summary : ''} · {_toolElapsed}s</span>
-				{:else if _state === 'thinking'}
-					<span class="status-spinner"></span>
-					<span class="status-text">Claude is thinking…{pendingSendCount > 0 ? ` (${pendingSendCount} queued)` : ''}</span>
-				{:else if _state === 'no-claude'}
-					<span class="status-dot dot-yellow"></span>
-					<span class="status-text">Claude not running — bash only</span>
-				{:else if _state === 'ready'}
-					<span class="status-dot dot-green"></span>
-					<span class="status-text">Ready</span>
-				{:else}
-					<span class="status-dot dot-red"></span>
-					<span class="status-text">No PTY Attached</span>
-				{/if}
-				{#if _pty}
-					<span class="pty-meta">pid {_pty.pid}</span>
-					{#if _upS != null}<span class="pty-meta">up {_upS < 60 ? `${_upS}s` : _upS < 3600 ? `${Math.floor(_upS/60)}m` : `${Math.floor(_upS/3600)}h${Math.floor((_upS%3600)/60)}m`}</span>{/if}
-					{#if _inAgo != null && _pty.lastInputTs > 0}<span class="pty-meta">in {_inAgo}s ago</span>{/if}
-					{#if _outAgo != null}<span class="pty-meta">out {_outAgo}s ago</span>{/if}
-					<span class="pty-meta">{_pty.clients} client{_pty.clients === 1 ? '' : 's'}</span>
-				{/if}
-			</div>
+			<PtyStatusBar />
 		{/if}
-		{#if approvalOptions && approvalOptions.length > 0}
-			<div class="approval-bar">
-				<span class="approval-label">Claude needs approval:</span>
-				{#each approvalOptions as opt}
-					<button class="approval-btn" onclick={() => sendApproval(opt.num)} title="Press {opt.num}">
-						<span class="approval-num">{opt.num}</span>
-						<span class="approval-text">{opt.label}</span>
-					</button>
-				{/each}
-			</div>
-		{/if}
+		<ApprovalBar onApprove={sendApproval} />
 		<div class="center-input-bar">
 			<button class="mic-btn" class:listening={isListening} onclick={toggleVoiceInput} title="Voice Input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
 			<button class="call-btn" onclick={openPanCall} title="Call Π"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
@@ -8576,7 +4629,10 @@
 						const r = await api('/api/v1/terminal/set-model', { method: 'POST', body: JSON.stringify({ session_id: sid, model }) });
 						if (r?.ok) {
 							active.model = model;
-							tabs = tabs; // trigger reactivity so dropdown reflects new value
+							// 2026-05-28: bug #757 fix — Svelte 5 proxies don't re-fire on
+							// `tabs = tabs` self-assignment. Spread to force a new array
+							// reference so the dropdown's `value={...}` re-evaluates.
+							tabs = [...tabs];
 							saveSessionState();
 						} else {
 							console.warn('[PAN] set-model failed for session', sid, r);
@@ -8614,7 +4670,7 @@
 				rows="1"
 				class="center-input"
 			></textarea>
-			<button class="center-send-btn" onclick={sendTerminalInput} disabled={pipeSending || !claudeReady || (!terminalInputText.trim() && pastedImages.length === 0)} title={pipeSending ? 'Sending…' : !claudeReady ? 'Waiting for Claude…' : 'Send'}>
+			<button class="center-send-btn" onclick={sendTerminalInput} disabled={pipeSending || (!terminalInputText.trim() && pastedImages.length === 0)} title={pipeSending ? 'Sending…' : !claudeReady ? 'Queued (Claude busy)' : 'Send'}>
 				{#if pipeSending}
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pipe-spin"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
 				{:else}
@@ -8631,14 +4687,23 @@
 	<!-- RIGHT PANEL -->
 	<div class="right-panel" class:resizing={resizingPanel !== null} style="width: {rightPanelWidth}px">
 		<div class="right-header">
-			<select class="right-select" bind:value={rightSection} onchange={() => { rightMilestoneFilter = null; if (rightSection === 'usage') loadUsageData(); if (rightSection === 'tests') loadTestSuites(); if (rightSection === 'library') loadLibrary(); if (rightSection === 'alerts') { loadAlerts(); loadAlertTypes(); } if (rightSection === 'contacts') loadContacts(); if (rightSection === 'mail') { loadMail(); loadMailStatus(); loadContacts(); } if (rightSection === 'teams') loadTeamsWidget(); if (rightSection === 'users') loadUsers(); if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling(); if (rightSection === 'intuition') startIntuitionPolling(); else stopIntuitionPolling(); if (rightSection === 'benchmarks') startBenchmarkPolling(); else stopBenchmarkPolling(); if (rightSection === 'pipeline') startPipelinePolling(); else stopPipelinePolling(); if (rightSection === 'devices' || rightSection === 'apps') { startAllDevicesPolling(); if (rightSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); } }}>
+			<select class="right-select" bind:value={rightSection} onchange={() => {
+				rightMilestoneFilter = null;
+				// Extracted panels self-load on mount via onMount + WS event subscriptions.
+				if (rightSection === 'usage') storeLoadUsageData();
+				// TestsPanel auto-loads on mount
+				if (rightSection === 'contacts') storeLoadContacts();
+				// MailPanel + ContactsPanel auto-load on mount
+				if (rightSection === 'devices' || rightSection === 'apps') { startAllDevicesPolling(); if (rightSection === 'devices') loadClientDevices(); } else { stopAllDevicesPolling(); }
+				if (rightSection === 'perf') startPerfPolling(); else stopPerfPolling();
+			}}>
 				<option value="alerts">Alerts{alertOpenCount > 0 ? ` (${alertOpenCount})` : ''}</option>
-				{#if widgetVisible('approvals')}<option value="approvals">Approvals{approvalsData.length > 0 ? ` (${approvalsData.length})` : ''}</option>{/if}
+				{#if widgetVisible('approvals')}<option value="approvals">Approvals{approvalsCount > 0 ? ` (${approvalsCount})` : ''}</option>{/if}
 				<option value="apps">Apps</option>
 				{#if widgetVisible('benchmarks')}<option value="benchmarks">Benchmarks</option>{/if}
 				{#if widgetVisible('pipeline')}<option value="pipeline">Beta Pipeline</option>{/if}
 				{#if widgetVisible('bugs')}<option value="bugs">Bugs</option>{/if}
-				{#if widgetVisible('contacts')}<option value="contacts">Contacts{chatUnreadTotal > 0 ? ` (${chatUnreadTotal})` : ''}</option>{/if}
+				{#if widgetVisible('contacts')}<option value="contacts">Contacts{chatStore.unreadTotal > 0 ? ` (${chatStore.unreadTotal})` : ''}</option>{/if}
 				{#if widgetVisible('devices')}<option value="devices">Devices</option>{/if}
 				{#if widgetVisible('instances')}<option value="instances">Instances</option>{/if}
 				{#if widgetVisible('intuition')}<option value="intuition">Intuition</option>{/if}
@@ -8660,7 +4725,7 @@
 				{/each}
 			</select>
 			{#if alertOpenCount > 0 && rightSection !== 'alerts'}
-				<button class="alert-indicator" class:flash={alertFlash} onclick={() => { rightSection = 'alerts'; loadAlerts(); loadAlertTypes(); }} title="{alertOpenCount} open alert(s)">
+				<button class="alert-indicator" onclick={() => { rightSection = 'alerts'; if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('pan:alerts-update')); }} title="{alertOpenCount} open alert(s)">
 					{alertOpenCount}
 				</button>
 			{/if}
@@ -8671,871 +4736,37 @@
 			data-widget-state={widgetStateOf(rightSection)}
 			data-widget-rendered-at={Date.now()}>
 			{#if rightSection === 'alerts'}
-				<div class="alerts-panel">
-					<div class="alerts-filters">
-						<select class="alert-filter-select" bind:value={alertFilterStatus} onchange={loadAlerts}>
-							<option value="open">Open</option>
-							<option value="acknowledged">Acknowledged</option>
-							<option value="resolved">Resolved</option>
-							<option value="dismissed">Dismissed</option>
-							<option value="all">All</option>
-						</select>
-						<select class="alert-filter-select" bind:value={alertFilterType} onchange={loadAlerts}>
-							<option value="all">All Types</option>
-							{#each alertTypes as t}
-								<option value={t.id}>{t.label}</option>
-							{/each}
-						</select>
-					</div>
-					{#if alertsData.length === 0}
-						<div class="empty-state">No {alertFilterStatus === 'all' ? '' : alertFilterStatus} alerts</div>
-					{:else}
-						{#each alertsData as alert}
-							<div class="alert-card" class:critical={alert.severity === 'critical'} class:warning={alert.severity === 'warning'} class:info={alert.severity === 'info'}>
-								<div class="alert-header">
-									<span class="alert-severity-dot {alert.severity}"></span>
-									<span class="alert-type-badge">{alert.alert_type.replace(/_/g, ' ')}</span>
-									<span class="alert-time">{new Date(alert.created_at).toLocaleTimeString()}</span>
-								</div>
-								<div class="alert-title">{alert.title}</div>
-								{#if alert.detail}
-									{@const parsed = (() => { try { return JSON.parse(alert.detail); } catch { return null; } })()}
-									{#if parsed}
-										<div class="alert-detail">
-											{#if parsed.orphans}
-												{#each parsed.orphans as o}
-													<div class="alert-detail-line">PID {o.pid} — {o.ageMin}min old</div>
-												{/each}
-											{/if}
-											{#if parsed.hint}
-												<div class="alert-hint">{parsed.hint}</div>
-											{/if}
-											{#if parsed.message}
-												<div class="alert-detail-line">{parsed.message}</div>
-											{/if}
-											{#if parsed.stack}
-												<details class="alert-stack"><summary>Stack trace</summary><pre>{parsed.stack}</pre></details>
-											{/if}
-										</div>
-									{:else}
-										<div class="alert-detail"><div class="alert-detail-line">{alert.detail}</div></div>
-									{/if}
-								{/if}
-								{#if alert.resolution}
-									<div class="alert-resolution">Resolution: {alert.resolution}</div>
-								{/if}
-								{#if alert.status === 'open'}
-									<div class="alert-actions">
-										<button class="alert-btn ack" onclick={() => updateAlertStatus(alert.id, 'acknowledged')}>Acknowledge</button>
-										<button class="alert-btn resolve" onclick={() => {
-											const res = prompt('Resolution notes (optional):');
-											if (res !== null) updateAlertStatus(alert.id, 'resolved', res);
-										}}>Resolve</button>
-										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
-									</div>
-								{:else if alert.status === 'acknowledged'}
-									<div class="alert-actions">
-										<button class="alert-btn resolve" onclick={() => {
-											const res = prompt('Resolution notes (optional):');
-											if (res !== null) updateAlertStatus(alert.id, 'resolved', res);
-										}}>Resolve</button>
-										<button class="alert-btn dismiss" onclick={() => updateAlertStatus(alert.id, 'dismissed')}>Dismiss</button>
-									</div>
-								{:else if alert.status === 'resolved' || alert.status === 'dismissed'}
-									<div class="alert-actions">
-										<button class="alert-btn reopen" onclick={() => updateAlertStatus(alert.id, 'open')}>Reopen</button>
-									</div>
-								{/if}
-								<div class="alert-meta">
-									{alert.status}{#if alert.resolved_at} — resolved {new Date(alert.resolved_at).toLocaleString()}{/if}{#if alert.resolved_by} by {alert.resolved_by}{/if}
-								</div>
-							</div>
-						{/each}
-					{/if}
-				</div>
+				<AlertsPanel bind:openCount={alertOpenCount} />
 			{:else if rightSection === 'services'}
-				{@const coreServices = servicesData.filter(s => s.category === 'PAN Core')}
-				{@const aiServices = servicesData.filter(s => s.category === 'AI Models')}
-				{@const deviceServices = servicesData.filter(s => s.category === 'Devices')}
-				{#if coreServices.length > 0}
-					<div class="svc-category">PAN Core</div>
-					{#each coreServices as svc}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down' || svc.status === 'offline'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="svc-info">
-								<div class="svc-name">{svc.name}{#if svc.deviceName}<span class="svc-device-badge">@ {svc.deviceName}</span>{/if}</div>
-								{#if svc.role}<div class="svc-detail" style="color:#cba6f7;font-size:10px">{svc.role}</div>{/if}
-								<div class="svc-detail">{svc.detail}</div>
-							</div>
-						</div>
-					{/each}
-				{/if}
-				{#if aiServices.length > 0}
-					<div class="svc-category">AI Models</div>
-					{#each aiServices as svc}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="svc-info">
-								<div class="svc-name">{svc.name}{#if svc.deviceName}<span class="svc-device-badge">@ {svc.deviceName}</span>{/if}</div>
-								{#if svc.role}<div class="svc-detail" style="color:#cba6f7;font-size:10px">{svc.role}</div>{/if}
-								<div class="svc-detail">{svc.detail}</div>
-							</div>
-						</div>
-					{/each}
-				{/if}
-				{#if deviceServices.length > 0}
-					<div class="svc-category">Devices</div>
-					{#each deviceServices as svc}
-						<div class="svc-row">
-							<span class="svc-dot" class:up={svc.status === 'up'} class:down={svc.status === 'down'} class:unknown={svc.status === 'unknown'}></span>
-							<div class="svc-info">
-								<div class="svc-name">{svc.name}</div>
-								<div class="svc-detail">{svc.detail}</div>
-							</div>
-						</div>
-					{/each}
-				{/if}
-				{#if servicesData.length === 0}
-					<div class="empty-state">Loading services...</div>
-				{/if}
+				<ServicesPanel />
 			{:else if rightSection === 'apps'}
-				{#if appsView.startsWith('device:')}
-					{@const devHostname = appsView.slice(7)}
-					{@const dev = allDevices.find(d => d.hostname === devHostname)}
-					{@const devCaps = dev ? (Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])) : []}
-					{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
-					{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
-					<div class="apps-drilldown">
-						<button class="apps-back-btn" onclick={() => { appsView = 'root'; }}>← Devices</button>
-						<div style="padding:8px 12px 4px">
-							<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">
-								<span class="svc-dot {dev?.online ? 'up' : ''}"></span>
-								<span style="font-size:13px;font-weight:700;color:#eee">{dev?.name || devHostname}</span>
-								<span style="font-size:9px;opacity:.45;margin-left:auto">{dev?.device_type || 'pc'}</span>
-							</div>
-							{#if devAppKeys.length > 0}
-								<div class="apps-cat-label">Installed Apps</div>
-								<div class="apps-grid">
-									{#each devAppKeys as appKey}
-										{@const meta = APP_META[appKey]}
-										<div class="app-card" style="opacity:{dev?.online ? 1 : 0.55}">
-											<div class="app-icon">{meta?.icon || '📦'}</div>
-											<div class="app-name">{meta?.label || appKey}</div>
-										</div>
-									{/each}
-								</div>
-							{/if}
-							{#if devOtherCaps.length > 0}
-								<div class="apps-cat-label" style="margin-top:8px">Capabilities</div>
-								<div style="display:flex;gap:4px;flex-wrap:wrap;padding-bottom:8px">
-									{#each devOtherCaps as cap}
-										<span style="font-size:9px;background:rgba(255,255,255,.07);border-radius:3px;padding:2px 6px;color:#bbb">{cap}</span>
-									{/each}
-								</div>
-							{/if}
-							{#if devAppKeys.length === 0 && devOtherCaps.length === 0}
-								<div style="font-size:10px;opacity:.45;padding:8px 0">No capabilities detected yet.</div>
-							{/if}
-						</div>
-						{#if wrapServices.length > 0}
-							<div class="apps-cat-label" style="margin-top:4px">Web Apps</div>
-							<div class="apps-grid" style="padding:0 8px 8px">
-								{#each wrapServices as svc}
-									<button class="app-card" disabled={wrapOpening === svc.id} onclick={() => openWrapper(svc.id)}>
-										<div class="app-icon"><img src="https://www.google.com/s2/favicons?domain={svc.url ? svc.url.replace(/^https?:\/\//, '').split('/')[0] : ''}&sz=32" alt="🪟" style="width:24px;height:24px;border-radius:4px" onerror={(e) => { e.target.style.display = 'none'; }} /></div>
-										<div class="app-name">{svc.title || svc.id}</div>
-										<div class="app-desc">{wrapOpening === svc.id ? 'Opening...' : svc.has_module ? 'Module' : 'Web'}</div>
-									</button>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{:else}
-					<!-- Root: utility buttons + device-first app list -->
-					<div style="display:flex;gap:5px;padding:6px 8px 0;flex-wrap:wrap">
-						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
-								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
-								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/atlas-v2`, title:'Atlas', width:1400, height:900 }) });
-							}}>
-							<div class="app-icon">
-								<img src="/atlas-icon.png" width="36" height="36" style="object-fit:cover;border-radius:4px;" alt="Atlas"/>
-							</div>
-							<div class="app-name">Atlas</div>
-						</button>
-						<button class="app-card" style="flex:1;min-width:60px;max-width:90px" onclick={() => {
-								fetch('/api/v1/ui-commands', { method:'POST', headers:{'Content-Type':'application/json'},
-								body: JSON.stringify({ type:'open_window', url:`${window.location.origin}/v2/kronos`, title:'Kronos', width:1200, height:800 }) });
-							}}>
-							<div class="app-icon">📜</div>
-							<div class="app-name">Kronos</div>
-						</button>
-					</div>
-					<!-- Device rows -->
-					<div style="padding:6px 8px 0">
-						{#each allDevices as dev}
-							{@const devCaps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
-							{@const devAppKeys = devCaps.filter(c => c.startsWith('app:')).map(c => c.slice(4))}
-							{@const devOtherCaps = devCaps.filter(c => !c.startsWith('app:'))}
-							<button onclick={() => { appsView = 'device:' + dev.hostname; loadWrapServices(); }}
-								style="width:100%;text-align:left;background:none;border:none;border-bottom:1px solid rgba(255,255,255,.06);padding:7px 0;cursor:pointer">
-								<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
-									<span class="svc-dot {dev.online ? 'up' : ''}"></span>
-									<span style="font-size:11px;font-weight:600;color:#e0e0e0">{dev.name || dev.hostname}</span>
-									<span style="font-size:9px;opacity:.4;margin-left:auto">{dev.device_type || 'pc'}</span>
-								</div>
-								{#if devAppKeys.length > 0}
-									<div style="display:flex;gap:5px;flex-wrap:wrap;padding-left:16px">
-										{#each devAppKeys as appKey}
-											{@const meta = APP_META[appKey]}
-											<span title="{meta?.label || appKey}" style="font-size:15px;opacity:{dev.online ? 1 : 0.45}">{meta?.icon || '📦'}</span>
-										{/each}
-									</div>
-								{:else if devOtherCaps.length > 0}
-									<div style="padding-left:16px;font-size:9px;opacity:.35;line-height:1.4">{devOtherCaps.slice(0,4).join(' · ')}</div>
-								{/if}
-							</button>
-						{/each}
-						{#if allDevices.length === 0}
-							<div style="padding:16px 0;text-align:center;font-size:10px;opacity:.4">No devices found</div>
-						{/if}
-					</div>
-				{/if}
+				<AppsPanel />
 			{:else if rightSection === 'instances'}
-				<div class="instances-panel">
-					<div class="svc-category">Environments</div>
-					<div class="instance-row">
-						<span class="svc-dot up"></span>
-						<div class="svc-info">
-							<div class="svc-name">Prod</div>
-							<div class="svc-detail">{isDev ? 'Port 7777' : 'Current'}</div>
-						</div>
-						{#if isDev}
-							<button class="instance-btn" onclick={() => { window.location.href = 'http://127.0.0.1:7777/v2/terminal'; }}>Switch</button>
-						{/if}
-					</div>
-					<div class="instance-row">
-						<span class="svc-dot unknown"></span>
-						<div class="svc-info">
-							<div class="svc-name">Test</div>
-							<div class="svc-detail">Coming Soon</div>
-						</div>
-					</div>
-					<div class="instance-row">
-						<span class="svc-dot" class:up={isDev} class:unknown={!isDev}></span>
-						<div class="svc-info">
-							<div class="svc-name">Dev</div>
-							<div class="svc-detail">{isDev ? 'Current' : 'Run: npm run dev'}</div>
-						</div>
-						{#if !isDev}
-							<button class="instance-btn" onclick={async () => {
-								const r = await fetch('/api/v1/dev/start', { method: 'POST' });
-								const d = await r.json();
-								const port = d.port || 7781;
-								fetch('/api/v1/ui-commands', {
-									method: 'POST',
-									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${port}/v2/terminal` })
-								});
-							}}>Open</button>
-							<button class="instance-btn restart" onclick={async () => {
-								const r = await fetch('/api/v1/dev/restart', { method: 'POST' });
-								const d = await r.json();
-								if (d.ok) {
-									const port = d.port || 7781;
-									fetch('/api/v1/ui-commands', {
-										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ type: 'focus_window', url: `http://localhost:${port}/v2/terminal` })
-									});
-								}
-							}}>Restart</button>
-						{/if}
-					</div>
-					{#if isDev}
-						<div class="instance-note">Dev sessions use isolated terminal IDs (dev-dash-*) so they don't interfere with Prod.</div>
-					{/if}
-				</div>
+				<InstancesPanel {isDev} />
 			{:else if rightSection === 'intuition'}
 				<div class="intuition-panel"
 					data-widget="intuition"
-					data-widget-state={intuitionWidgetState}
-					data-widget-rendered-at={Date.now()}
-					data-widget-data-source-at={intuitionWidgetDataSourceAt}>
-					{@render intuitionPanelContents()}
+					data-widget-rendered-at={Date.now()}>
+					<IntuitionPanel />
 				</div>
 			{:else if rightSection === 'lifeboat'}
-				<div class="lifeboat-panel">
-					{#if !lifeboatData}
-						<div class="empty-state">Connecting to Carrier...</div>
-					{:else}
-						<div class="svc-category">Carrier</div>
-						<div class="svc-row">
-							<span class="svc-dot up"></span>
-							<div class="svc-info">
-								<div class="svc-name">PID {lifeboatData.carrier?.pid || '--'}</div>
-								<div class="svc-detail">Uptime: {formatUptime(lifeboatData.carrier?.uptime)}</div>
-							</div>
-						</div>
-						<div class="svc-category">Active Craft</div>
-						{#if lifeboatData.primaryCraft}
-							<div class="svc-row">
-								<span class="svc-dot" class:up={lifeboatData.primaryCraft.healthy} class:down={!lifeboatData.primaryCraft.healthy}></span>
-								<div class="svc-info">
-									<div class="svc-name">Craft-{lifeboatData.primaryCraft.id}</div>
-									<div class="svc-detail">{lifeboatData.primaryCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.primaryCraft.port} | Up {formatUptime(lifeboatData.primaryCraft.uptime / 1000)}</div>
-								</div>
-							</div>
-						{:else}
-							<div class="empty-state">No active Craft</div>
-						{/if}
-						{#if lifeboatData.swapPending && lifeboatData.previousCraft}
-							<div class="svc-category">Rollback Window</div>
-							<div class="svc-row">
-								<span class="svc-dot" class:up={lifeboatData.previousCraft.healthy} class:down={!lifeboatData.previousCraft.healthy}></span>
-								<div class="svc-info">
-									<div class="svc-name">Craft-{lifeboatData.previousCraft.id} (previous)</div>
-									<div class="svc-detail">{lifeboatData.previousCraft.gitCommit?.slice(0,7) || '--'} | Port {lifeboatData.previousCraft.port}</div>
-								</div>
-							</div>
-							{@const _rollbackLeft = lifeboatSwapStarted > 0 ? Math.max(0, Math.ceil((lifeboatRollbackMs - (ptyStatusNow - lifeboatSwapStarted)) / 1000)) : 0}
-							{#if _rollbackLeft > 0}
-								<div class="lifeboat-countdown">Rollback expires in {_rollbackLeft}s</div>
-							{/if}
-							<div class="lifeboat-actions">
-								<button class="lifeboat-btn rollback" onclick={lifeboatRollback}>Rollback</button>
-								<button class="lifeboat-btn confirm" onclick={lifeboatConfirm}>Confirm</button>
-							</div>
-						{/if}
-						{#if lifeboatData.shadowCraft}
-							<div class="svc-category">Shadow</div>
-							<div class="svc-row">
-								<span class="svc-dot unknown"></span>
-								<div class="svc-info">
-									<div class="svc-name">Craft-{lifeboatData.shadowCraft.id} (shadow)</div>
-									<div class="svc-detail">Testing...</div>
-								</div>
-							</div>
-						{/if}
-						<div class="svc-category" style="margin-top:12px">Actions</div>
-						<div class="lifeboat-actions">
-							<button class="lifeboat-btn swap" onclick={lifeboatSwap} disabled={lifeboatSwapping}>
-								{lifeboatSwapping ? 'Swapping...' : 'Hot Swap'}
-							</button>
-							<button class="lifeboat-btn" style="background:#cba6f7;color:#1e1e2e" onclick={() => {
-								fetch('/api/v1/ui-commands', {
-									method: 'POST',
-									headers: { 'Content-Type': 'application/json' },
-									body: JSON.stringify({ type: 'open_window', url: `http://localhost:${location.port || 7777}/v2/crucible`, title: 'Crucible', width: 1200, height: 800 })
-								});
-							}}>Open Crucible</button>
-						</div>
-					{/if}
-				</div>
+				<LifeboatPanel />
 			{:else if rightSection === 'setup'}
-				<div class="setup-guide">
-					<div class="setup-title">How to Use PAN</div>
-					<div class="setup-desc">Use the terminal to do what you want -- speak or type.</div>
-					<div class="setup-items">
-						<div><strong>Create a Project:</strong> "Create a new project called my-app"</div>
-						<div><strong>Add a Task:</strong> "Add a task to set up the database"</div>
-						<div><strong>Change Settings:</strong> "Change the AI model to gpt-4o"</div>
-						<div><strong>Ask Anything:</strong> Just say it or type it</div>
-					</div>
-					<div class="setup-controls">
-						<div class="setup-controls-title">Controls</div>
-						<div><strong>Voice:</strong> Press your voice key to speak (set in Settings &gt; Controls)</div>
-						<div><strong>Screenshot:</strong> Print Screen, then Ctrl+V to paste into chat</div>
-						<div><strong>Direct Mode (bubble icon):</strong> Toggle input between input box and direct terminal</div>
-					</div>
-					<div class="setup-hint">Voice is significantly faster than typing. You don't need complete sentences.</div>
-					<div class="setup-controls">
-						<div class="setup-controls-title">Terminology</div>
-						<div><strong>Sidebar:</strong> Left vertical navigation strip with tabs</div>
-						<div><strong>Tab:</strong> Each nav item in the sidebar, switches the active app</div>
-						<div><strong>App:</strong> What fills the main view (Terminal, Chat, etc.)</div>
-						<div><strong>Main View:</strong> The large center content area</div>
-						<div><strong>Panel:</strong> Left and right side panels with dropdown selectors</div>
-						<div><strong>Widget:</strong> Content inside a panel (Tasks, Services, Transcript, etc.)</div>
-						<div><strong>Topbar:</strong> Thin bar at top showing current app name</div>
-						<div><strong>Instance:</strong> Environment (Prod, Dev, Test). Admin only.</div>
-						<div><strong>Transcript:</strong> Conversation history (what was said)</div>
-					</div>
-				</div>
+				<SetupPanel />
 			{:else if rightSection === 'tasks'}
-				{@const taskData = getFilteredTasks()}
-				{#if rightMilestoneFilter}
-					{@const m = taskData.milestones.find(x => x.id === rightMilestoneFilter)}
-					<div class="filter-header">
-						<strong>{m ? m.name : 'Tasks'}</strong>
-						<button class="filter-clear" onclick={() => { rightMilestoneFilter = null; }}>&times; Clear</button>
-					</div>
-				{/if}
-				{#each taskData.milestones as m}
-					{#if taskData.byMilestone[m.id]?.length > 0}
-						{#if !rightMilestoneFilter}
-							<div class="task-group-header">{m.name}</div>
-						{/if}
-						{#each taskData.byMilestone[m.id] as t}
-							<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-								<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
-									{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
-								</span>
-								<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-							</div>
-						{/each}
-					{/if}
-				{/each}
-				{#if taskData.noMilestone.length > 0 && !rightMilestoneFilter}
-					<div class="task-group-header">Other</div>
-					{#each taskData.noMilestone as t}
-						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-							<span class="task-icon" class:done={t.status === 'done'} class:in-progress={t.status === 'in_progress'}>
-								{t.status === 'done' ? '\u2713' : t.status === 'in_progress' ? '\u25C6' : '\u25CB'}
-							</span>
-							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-						</div>
-					{/each}
-				{/if}
-				<div class="add-row">
-					<input
-						type="text"
-						class="add-input"
-						placeholder="Add a task..."
-						onkeydown={(e) => { if (e.key === 'Enter') addTask(e.target); }}
-					/>
-				</div>
-				<div class="panel-hint">Use Terminal to Add: Tasks, Milestones, Projects</div>
+				<TasksPanel onCycle={cycleTask} />
 			{:else if rightSection === 'bugs'}
-				{@const bugs = getBugs()}
-				{#if bugs.length === 0}
-					<div class="empty-state">No bugs tracked</div>
-					<div class="empty-state small">Add tasks with "bug" or "fix" in the title, or set priority &gt; 0</div>
-				{:else}
-					{#each bugs as t}
-						<div class="task-row" onclick={() => cycleTask(t.id, t.status)}>
-							<span class="task-icon bug" class:done={t.status === 'done'}>
-								{t.status === 'done' ? '\u2713' : '\u26A0'}
-							</span>
-							<span class="task-title" class:done={t.status === 'done'}>{t.title}</span>
-						</div>
-					{/each}
-				{/if}
-				<div class="add-row">
-					<input
-						type="text"
-						class="add-input"
-						placeholder="Report a bug..."
-						onkeydown={(e) => { if (e.key === 'Enter') addBug(e.target); }}
-					/>
-				</div>
-				<div class="panel-hint">Use Terminal to Report: Bugs, Issues, Errors</div>
+				<BugsPanel onCycle={cycleTask} />
 			{:else if rightSection === 'perf'}
 				<div class="perf-widget">
-					{@render perfPanelContents()}
+					<PerfPanel />
 				</div>
 			{:else if rightSection === 'usage'}
-				{#if !usageData}
-					<div class="empty-state">Loading usage...</div>
-				{:else}
-					{#if sessionCost}
-						<div class="usage-section" style="background:rgba(203,166,247,0.08);border:1px solid rgba(203,166,247,0.2)">
-							<div class="usage-heading" style="color:#cba6f7">This Session</div>
-							<div class="usage-row" style="font-size:15px;font-weight:700">
-								<span class="usage-label">Cost</span>
-								<span class="usage-val" style="color:#cba6f7;font-size:16px">{sessionCost.cost != null ? '$' + sessionCost.cost.toFixed(4) : '--'}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Input</span>
-								<span class="usage-val">{formatTokens(sessionCost.input)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Output</span>
-								<span class="usage-val">{formatTokens(sessionCost.output)}</span>
-							</div>
-							{#if sessionCost.cacheRead}
-								<div class="usage-row">
-									<span class="usage-label">Cache Read</span>
-									<span class="usage-val">{formatTokens(sessionCost.cacheRead)}</span>
-								</div>
-							{/if}
-							{#if sessionCost.cacheCreate}
-								<div class="usage-row">
-									<span class="usage-label">Cache Write</span>
-									<span class="usage-val">{formatTokens(sessionCost.cacheCreate)}</span>
-								</div>
-							{/if}
-						</div>
-					{/if}
-					<div class="usage-section">
-						{#if usageData.gemini}
-							<div class="usage-heading">Gemini CLI Usage</div>
-							{@const g = usageData.gemini}
-							<div class="usage-row">
-								<span class="usage-label">Model</span>
-								<span class="usage-val" style="color:#a6e3a1">{g.model || 'gemini-1.5-pro'}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Session Output</span>
-								<span class="usage-val">{formatTokens(g.session?.output)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Session Input</span>
-								<span class="usage-val">{formatTokens(g.session?.input)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Session Msgs</span>
-								<span class="usage-val">{g.session?.messages || 0}</span>
-							</div>
-							<div class="usage-subhead">Today</div>
-							<div class="usage-row">
-								<span class="usage-label">Output</span>
-								<span class="usage-val">{formatTokens(g.today?.output)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Input</span>
-								<span class="usage-val">{formatTokens(g.today?.input)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Messages</span>
-								<span class="usage-val">{g.today?.messages || 0}</span>
-							</div>
-						{:else if usageData.claude?.rateLimits}
-							{@const rl = usageData.claude.rateLimits}
-							<div class="usage-heading">Claude Plan Limits</div>
-							<div class="usage-row" style="opacity:0.6; font-size:11px;">
-								<span class="usage-label">{rl.subscriptionType?.toUpperCase() || 'Plan'}</span>
-								<span class="usage-val">{rl.rateLimitTier || ''}</span>
-							</div>
-							{#if rl.five_hour}
-								<div class="usage-subhead">Session (5hr Window)</div>
-								<div class="usage-bar-wrap">
-									<div class="usage-bar" style="width:{Math.min(rl.five_hour.utilization, 100)}%; background:{
-										rl.five_hour.utilization >= 80 ? '#f38ba8' : rl.five_hour.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
-									}"></div>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label" style="color:{rl.five_hour.utilization >= 80 ? '#f38ba8' : rl.five_hour.utilization >= 50 ? '#f9e2af' : '#a6e3a1'}">{Math.round(rl.five_hour.utilization)}% Used</span>
-									<span class="usage-val">Resets in {formatResetTime(rl.five_hour.resets_at)}</span>
-								</div>
-							{/if}
-							{#if rl.seven_day}
-								<div class="usage-subhead">Weekly Limit</div>
-								<div class="usage-bar-wrap">
-									<div class="usage-bar" style="width:{Math.min(rl.seven_day.utilization, 100)}%; background:{
-										rl.seven_day.utilization >= 80 ? '#f38ba8' : rl.seven_day.utilization >= 50 ? '#f9e2af' : '#a6e3a1'
-									}"></div>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label" style="color:{rl.seven_day.utilization >= 80 ? '#f38ba8' : rl.seven_day.utilization >= 50 ? '#f9e2af' : '#a6e3a1'}">{Math.round(rl.seven_day.utilization)}% Used</span>
-									<span class="usage-val">Resets in {formatResetTime(rl.seven_day.resets_at)}</span>
-								</div>
-							{/if}
-						{:else}
-							<div class="usage-heading">Usage</div>
-							<div class="usage-row" style="opacity:0.5">
-								<span class="usage-label">No usage data available</span>
-							</div>
-						{/if}
-					</div>
-					<div class="usage-section">
-						<div class="usage-heading">Burn Rate</div>
-						{#if (usageData.claude?.session?.messages || usageData.gemini?.session?.messages) > 0}
-							{@const c = usageData.gemini || usageData.claude}
-							{@const msgs = c.session.messages || 1}
-							{@const totalTok = (c.session.input || 0) + (c.session.output || 0)}
-							{@const perMsg = Math.round(totalTok / msgs)}
-							<div class="usage-row" style="font-size:13px; font-weight:600;">
-								<span class="usage-label">Per Message</span>
-								<span class="usage-val" style="color:#cba6f7">{formatTokens(perMsg)} tok</span>
-							</div>
-							{#if usageData.claude?.rateLimits}
-								{@const utilPct = usageData.claude.rateLimits.five_hour?.utilization || 0}
-								{@const pctPerMsg = msgs > 0 ? (utilPct / msgs) : 0}
-								{@const remaining = pctPerMsg > 0 ? Math.floor((100 - utilPct) / pctPerMsg) : '?'}
-								<div class="usage-row" style="font-size:13px; font-weight:600;">
-									<span class="usage-label">% Per Message</span>
-									<span class="usage-val" style="color:{pctPerMsg > 5 ? '#f38ba8' : pctPerMsg > 2 ? '#f9e2af' : '#a6e3a1'}">{pctPerMsg.toFixed(1)}%</span>
-								</div>
-								<div class="usage-row" style="font-size:13px; font-weight:600;">
-									<span class="usage-label">Messages Left</span>
-									<span class="usage-val" style="color:{remaining !== '?' && remaining < 10 ? '#f38ba8' : remaining !== '?' && remaining < 30 ? '#f9e2af' : '#a6e3a1'}">{remaining === '?' ? '?' : '~' + remaining}</span>
-								</div>
-							{/if}
-							<div class="usage-row">
-								<span class="usage-label">Sent</span>
-								<span class="usage-val">{msgs} msgs</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Total Used</span>
-								<span class="usage-val">{formatTokens(totalTok)}</span>
-							</div>
-							{#if c.session.cache_read}
-								<div class="usage-row">
-									<span class="usage-label">Cache Hits</span>
-									<span class="usage-val">{formatTokens(c.session.cache_read)} ({totalTok > 0 ? Math.round((c.session.cache_read || 0) / ((c.session.cache_read || 0) + (c.session.input || 1)) * 100) : 0}%)</span>
-								</div>
-							{/if}
-						{:else}
-							<div class="usage-row" style="opacity:0.5">
-								<span class="usage-label">No messages yet</span>
-							</div>
-						{/if}
-					</div>
-					<div class="usage-section">
-						<div class="usage-heading">All Sessions</div>
-						{#if usageData.claude || usageData.gemini}
-							{@const c2 = usageData.gemini || usageData.claude}
-							{@const todayTotal = (c2.today?.input || 0) + (c2.today?.output || 0) + (c2.today?.cache_read || 0) + (c2.today?.cache_create || 0)}
-							{@const weekTotal = (c2.week?.input || 0) + (c2.week?.output || 0) + (c2.week?.cache_read || 0) + (c2.week?.cache_create || 0)}
-							{@const estCost = (inp, out, cr, cw) => ((inp||0)*3 + (out||0)*15 + (cr||0)*0.3 + (cw||0)*3.75) / 1000000}
-							{@const todayCost = estCost(c2.today?.input, c2.today?.output, c2.today?.cache_read, c2.today?.cache_create)}
-							{@const weekCost = estCost(c2.week?.input, c2.week?.output, c2.week?.cache_read, c2.week?.cache_create)}
-							<div class="usage-subhead">Today</div>
-							<div class="usage-row" style="font-weight:700;font-size:14px">
-								<span class="usage-label">Est. Cost</span>
-								<span class="usage-val" style="color:#a6e3a1">${todayCost.toFixed(2)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Tokens</span>
-								<span class="usage-val">{formatTokens(todayTotal)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Input</span>
-								<span class="usage-val">{formatTokens(c2.today?.input)}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Output</span>
-								<span class="usage-val">{formatTokens(c2.today?.output)}</span>
-							</div>
-							{#if c2.today?.cache_read}
-								<div class="usage-row">
-									<span class="usage-label">Cache Read</span>
-									<span class="usage-val">{formatTokens(c2.today?.cache_read)}</span>
-								</div>
-							{/if}
-							<div class="usage-row">
-								<span class="usage-label">Messages</span>
-								<span class="usage-val">{c2.today?.messages || 0}</span>
-							</div>
-							{#if c2.week}
-								<div class="usage-subhead">This Week</div>
-								<div class="usage-row" style="font-weight:700;font-size:14px">
-									<span class="usage-label">Est. Cost</span>
-									<span class="usage-val" style="color:#a6e3a1">${weekCost.toFixed(2)}</span>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label">Tokens</span>
-									<span class="usage-val">{formatTokens(weekTotal)}</span>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label">Input</span>
-									<span class="usage-val">{formatTokens(c2.week?.input)}</span>
-								</div>
-								<div class="usage-row">
-									<span class="usage-label">Output</span>
-									<span class="usage-val">{formatTokens(c2.week?.output)}</span>
-								</div>
-								{#if c2.week?.cache_read}
-									<div class="usage-row">
-										<span class="usage-label">Cache Read</span>
-										<span class="usage-val">{formatTokens(c2.week?.cache_read)}</span>
-									</div>
-								{/if}
-								<div class="usage-row">
-									<span class="usage-label">Messages</span>
-									<span class="usage-val">{c2.week?.messages || 0}</span>
-								</div>
-							{/if}
-							<div style="margin-top:6px;font-size:9px;opacity:0.4;text-align:right">Based on Opus pricing: $3/$15/MTok in/out, $0.30 cache read</div>
-						{:else}
-							<div class="usage-row" style="opacity:0.5">
-								<span class="usage-label">Loading tokens...</span>
-							</div>
-						{/if}
-					</div>
-					<div class="usage-section">
-						<div class="usage-heading">PAN Stats</div>
-						{#if usageData.stats}
-							{@const s = usageData.stats}
-							<div class="usage-row">
-								<span class="usage-label">Total Events</span>
-								<span class="usage-val">{s.total_events?.toLocaleString() || 0}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Total Sessions</span>
-								<span class="usage-val">{s.total_sessions?.toLocaleString() || 0}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">Memory Items</span>
-								<span class="usage-val">{s.total_memory_items?.toLocaleString() || 0}</span>
-							</div>
-							<div class="usage-row">
-								<span class="usage-label">DB Size</span>
-								<span class="usage-val">{s.db_size || '--'}</span>
-							</div>
-						{/if}
-					</div>
-				{/if}
+				<UsagePanel />
 			{:else if rightSection === 'approvals'}
-				{#if approvalsData.length === 0}
-					<div class="empty-state">No pending approvals</div>
-				{:else}
-					{#each approvalsData as perm}
-						<div class="approval-row">
-							<div class="approval-tool">{perm.tool || perm.type || 'Permission'}</div>
-							<div class="approval-desc">{perm.description || perm.message || ''}</div>
-							<div class="approval-actions">
-								<button class="approval-btn approve" onclick={() => respondToApproval(perm.id, 'allow')}>Allow</button>
-								<button class="approval-btn deny" onclick={() => respondToApproval(perm.id, 'deny')}>Deny</button>
-							</div>
-						</div>
-					{/each}
-				{/if}
+				<ApprovalsPanel bind:count={approvalsCount} />
 			{:else if rightSection === 'devices'}
-				<!-- Pending approval -->
-				{@const pendingClients2 = panClientDevices.filter(d => d.trusted === false)}
-				{#if pendingClients2.length > 0}
-					<div class="svc-category" style="color:#f38ba8">⚠ Pending Approval</div>
-					{#each pendingClients2 as device}
-						<div class="svc-row" style="background:rgba(243,139,168,0.08);border-radius:6px;padding:4px 6px;margin-bottom:4px">
-							<span class="svc-dot unknown"></span>
-							<div class="svc-info" style="flex:1">
-								<div class="svc-name">{device.name || device.device_id}</div>
-								<div class="svc-detail">{device.platform || 'unknown'} — waiting for approval</div>
-							</div>
-							<div style="display:flex;gap:4px;flex-shrink:0">
-								<button class="approval-btn approve" onclick={() => approveClient(device.device_id)} title="Approve">✓</button>
-								<button class="approval-btn deny" onclick={() => denyClient(device.device_id)} title="Deny">✕</button>
-							</div>
-						</div>
-					{/each}
-				{/if}
-				<!-- Filter bar -->
-				{@const devCatMap = d => d.device_type === 'pc' ? 'computers' : d.device_type === 'phone' ? 'phones' : d.device_type === 'pendant' ? 'pendants' : 'other'}
-				{@const catCounts = allDevices.reduce((acc, d) => { const c = devCatMap(d); acc[c] = (acc[c]||0)+1; return acc; }, {})}
-				{@const filteredDevices = deviceFilter === 'all' ? allDevices : allDevices.filter(d => devCatMap(d) === deviceFilter)}
-				{#if allDevices.length > 0}
-					<div style="display:flex;gap:4px;align-items:center;padding:4px 0 6px 0;flex-wrap:wrap">
-						{#each [['all','All'], ['computers','Computers'], ['phones','Phones'], ['pendants','Pendants'], ['other','Other']] as [val, label]}
-							{@const count = val === 'all' ? allDevices.length : (catCounts[val] || 0)}
-							{#if count > 0 || val === 'all'}
-								<button
-									onclick={() => deviceFilter = val}
-									style="font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid {deviceFilter===val ? '#89b4fa' : 'rgba(255,255,255,0.1)'};background:{deviceFilter===val ? 'rgba(137,180,250,0.15)' : 'transparent'};color:{deviceFilter===val ? '#89b4fa' : '#6c7086'};cursor:pointer;white-space:nowrap"
-								>{label}{count > 0 && val !== 'all' ? ` · ${count}` : val === 'all' ? ` · ${count}` : ''}</button>
-							{/if}
-						{/each}
-					</div>
-					<!-- Categorized device rows -->
-					{@const categories = deviceFilter === 'all'
-						? [['computers','Computers','#89b4fa'],['phones','Phones','#fab387'],['pendants','Pendants','#cba6f7'],['other','Other','#6c7086']]
-						: [[deviceFilter, deviceFilter.charAt(0).toUpperCase()+deviceFilter.slice(1), '#89b4fa']]}
-					{#each categories as [catKey, catLabel, catColor]}
-						{@const catDevices = filteredDevices.filter(d => devCatMap(d) === catKey)}
-						{#if catDevices.length > 0}
-							<div class="svc-category" style="color:{catColor};margin-top:6px">{catLabel} · {catDevices.length}</div>
-							{#each catDevices as dev}
-								{@const STALE = dev.device_type === 'phone' ? 30 * 60 * 1000 : 5 * 60 * 1000}
-								{@const ageMs = dev.last_seen ? Date.now() - new Date(dev.last_seen).getTime() : Infinity}
-								{@const isOnline = dev.online === 1 && ageMs < STALE}
-								{@const isHub = dev.is_hub === true}
-								{@const isPanClient = !!dev.client_version}
-								{@const ageStr = ageMs < 60000 ? 'just now' : ageMs < 3600000 ? Math.round(ageMs/60000)+'m ago' : ageMs < 86400000 ? Math.round(ageMs/3600000)+'h ago' : Math.round(ageMs/86400000)+'d ago'}
-								{@const metrics = deviceMetrics[dev.hostname] || deviceMetrics[dev.name] || null}
-								{@const caps = Array.isArray(dev.capabilities) ? dev.capabilities : (typeof dev.capabilities === 'string' ? JSON.parse(dev.capabilities || '[]') : [])}
-								{@const isExpanded = deviceExpandedIds.has(dev.hostname)}
-								<div class="svc-row" style="flex-direction:column;align-items:stretch;gap:0;padding:3px 0">
-									<div style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick={() => { const s = new Set(deviceExpandedIds); s.has(dev.hostname) ? s.delete(dev.hostname) : s.add(dev.hostname); deviceExpandedIds = s; }}>
-										<span class="svc-dot" class:up={isOnline} class:down={!isOnline}></span>
-										<div style="flex:1;min-width:0">
-											<div class="svc-name" style="display:flex;align-items:center;gap:4px">
-												{dev.name || dev.hostname}
-												{#if isHub}<span style="font-size:9px;background:#89b4fa22;color:#89b4fa;padding:1px 4px;border-radius:3px;font-weight:600">HUB</span>{/if}
-												{#if isPanClient && !isHub}<span style="font-size:9px;background:#a6e3a122;color:#a6e3a1;padding:1px 4px;border-radius:3px;font-weight:600">CLIENT</span>{/if}
-												<!-- #497 + #700: service-install pill. boot > login > ad-hoc. Ad-hoc just means "started by hand / pre-#497 install" — not a problem state. -->
-												{#if isPanClient && !isHub && dev.service_state}
-													{@const _ssLabel = dev.service_state === 'system' ? 'BOOT' : dev.service_state === 'user' ? 'LOGIN' : 'AD-HOC'}
-													{@const _ssColor = dev.service_state === 'system' ? '#a6e3a1' : dev.service_state === 'user' ? '#f9e2af' : '#fab387'}
-													{@const _ssTip = dev.service_state === 'system' ? 'Windows Service (starts at boot)' : dev.service_state === 'user' ? 'Scheduled Task (starts at user login)' : 'Ad-hoc start — no persistent service registered (pre-#497 install). Re-install client to upgrade.'}
-													<span style="font-size:9px;background:{_ssColor}22;color:{_ssColor};padding:1px 4px;border-radius:3px;font-weight:600;border:1px solid {_ssColor}44" title="{_ssTip} · Manager: {dev.service_manager || 'unknown'}{dev.service_installed_at ? ' · since ' + dev.service_installed_at : ''}">{_ssLabel}</span>
-												{/if}
-											</div>
-											{#if dev.hostname !== dev.name}<div style="font-size:9px;color:#585b70;margin-top:1px">{dev.hostname} · {dev.device_type}</div>{/if}
-										</div>
-										<div style="display:flex;align-items:center;gap:4px">
-											{#if metrics}<span style="font-size:9px;background:#cba6f722;color:#cba6f7;padding:1px 4px;border-radius:3px">📊</span>{/if}
-											<div class="svc-detail" title={isOnline ? 'pan-client heartbeating' : 'pan-client process not heartbeating (machine may still be reachable via Tailscale)'}>{isOnline ? 'Client online' : 'Client offline'} · {ageStr}</div>
-											<span style="font-size:10px;color:#585b70;transition:transform 0.15s;display:inline-block;transform:rotate({isExpanded?'90deg':'0deg'})">&rsaquo;</span>
-										</div>
-									</div>
-									{#if isExpanded}
-										<div style="padding:6px 0 4px 16px;border-left:1px solid #313244;margin-left:5px;margin-top:4px">
-											<div style="font-size:9px;color:#6c7086;margin-bottom:4px">
-												<span style="color:#cdd6f4">Hostname:</span> {dev.hostname}
-												&nbsp;·&nbsp;<span style="color:#cdd6f4">Type:</span> {dev.device_type}
-												{#if dev.tailscale_hostname}&nbsp;·&nbsp;<span style="color:#cdd6f4">Tailscale:</span> {dev.tailscale_hostname}{/if}
-												{#if dev.service_state}
-													<br><span style="color:#cdd6f4">Service:</span> {dev.service_state === 'system' ? 'system (boot-time, Windows Service)' : dev.service_state === 'user' ? 'user-session (login-time, Scheduled Task)' : 'ad-hoc (no persistent service — pre-#497 install)'} via {dev.service_manager || '—'}{dev.service_installed_at ? ` · installed ${dev.service_installed_at}` : ''}
-												{/if}
-											</div>
-											{#if caps.length > 0}
-												<div style="font-size:9px;color:#6c7086;margin-bottom:3px"><span style="color:#cdd6f4">Capabilities:</span></div>
-												<div style="display:flex;flex-wrap:wrap;gap:3px">
-													{#each caps as cap}
-														<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:{cap.startsWith('app:') ? '#a6e3a122' : '#89b4fa11'};color:{cap.startsWith('app:') ? '#a6e3a1' : '#89b4fa'};border:1px solid {cap.startsWith('app:') ? '#a6e3a133' : '#89b4fa22'}">{cap.startsWith('app:') ? cap.slice(4) : cap}</span>
-													{/each}
-												</div>
-											{/if}
-											{#if dev.last_seen}<div style="font-size:9px;color:#585b70;margin-top:4px">Last seen: {dev.last_seen}</div>{/if}
-										</div>
-									{/if}
-									{#if metrics}
-										{@const cpuColor = (metrics.cpu_pct||0) > 85 ? '#f38ba8' : (metrics.cpu_pct||0) > 60 ? '#fab387' : '#a6e3a1'}
-										{@const ramColor = (metrics.ram_pct||0) > 85 ? '#f38ba8' : (metrics.ram_pct||0) > 70 ? '#fab387' : '#89b4fa'}
-										<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px;padding-left:16px">
-											<div>
-												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
-													<span>CPU</span><span style="color:{cpuColor}">{Math.round(metrics.cpu_pct||0)}%</span>
-												</div>
-												<div style="height:3px;background:#313244;border-radius:2px">
-													<div style="height:100%;width:{Math.min(metrics.cpu_pct||0,100)}%;background:{cpuColor};border-radius:2px;transition:width 0.5s"></div>
-												</div>
-											</div>
-											<div>
-												<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
-													<span>RAM</span>
-													<span style="color:{ramColor}">
-														{#if metrics.ram_used_mb && metrics.ram_total_mb}
-															{metrics.ram_used_mb > 1024 ? (metrics.ram_used_mb/1024).toFixed(1)+'G' : metrics.ram_used_mb+'M'}/{metrics.ram_total_mb > 1024 ? (metrics.ram_total_mb/1024).toFixed(1)+'G' : metrics.ram_total_mb+'M'}
-														{:else}{Math.round(metrics.ram_pct||0)}%{/if}
-													</span>
-												</div>
-												<div style="height:3px;background:#313244;border-radius:2px">
-													<div style="height:100%;width:{Math.min(metrics.ram_pct||0,100)}%;background:{ramColor};border-radius:2px;transition:width 0.5s"></div>
-												</div>
-											</div>
-											{#if metrics.disk_pct != null}
-												{@const diskColor = (metrics.disk_pct||0) > 90 ? '#f38ba8' : (metrics.disk_pct||0) > 75 ? '#fab387' : '#6c7086'}
-												<div style="grid-column:1/-1">
-													<div style="display:flex;justify-content:space-between;font-size:9px;color:#6c7086;margin-bottom:1px">
-														<span>Disk</span>
-														<span style="color:{diskColor}">{Math.round(metrics.disk_pct||0)}%{metrics.disk_free_gb != null ? ` · ${metrics.disk_free_gb.toFixed(0)}G free` : ''}</span>
-													</div>
-													<div style="height:3px;background:#313244;border-radius:2px">
-														<div style="height:100%;width:{Math.min(metrics.disk_pct||0,100)}%;background:{diskColor};border-radius:2px;transition:width 0.5s"></div>
-													</div>
-												</div>
-											{/if}
-										</div>
-									{/if}
-								</div>
-							{/each}
-						{/if}
-					{/each}
-				{:else}
-					<div class="empty-state small">No devices registered</div>
-				{/if}
-
+				<DevicesPanel />
 			{:else if rightSection === 'transcript'}
 				{#if chatBubbles.length === 0}
 					<div class="empty-state">No conversation yet</div>
@@ -9553,570 +4784,23 @@
 					</div>
 				{/if}
 			{:else if rightSection === 'project'}
-				{#if projectData}
-					<div class="project-info">
-						<div class="project-name">{projectData.name}</div>
-						<div class="project-progress-row">
-							<span class="project-pct">{projectData.percentage}%</span>
-							<span class="project-count">{projectData.done_tasks}/{projectData.total_tasks}</span>
-						</div>
-						<div class="progress-bar">
-							<div class="progress-fill {pctColor(projectData.percentage)}" style="width:{projectData.percentage}%"></div>
-						</div>
-						<div class="project-sessions">{projectData.session_count} sessions</div>
-					</div>
-					{#if projectData.milestones}
-						{#each projectData.milestones as m}
-							<div class="milestone" onclick={() => filterByMilestone(m.id)}>
-								<div class="milestone-row">
-									<span class="milestone-name">{m.name}</span>
-									<span class="milestone-pct">{m.percentage}%</span>
-								</div>
-								<div class="progress-bar small">
-									<div class="progress-fill {pctColor(m.percentage)}" style="width:{m.percentage}%"></div>
-								</div>
-							</div>
-						{/each}
-					{/if}
-				{:else}
-					<div class="empty-state">Select a project</div>
-				{/if}
+				<ProjectPanel />
 			{:else if rightSection === 'tests'}
-				<div class="tests-panel">
-					{#if testSuites.length === 0}
-						<div class="empty-state">Loading test suites...</div>
-					{:else}
-						<select class="right-select" bind:value={selectedSuite} style="margin-bottom:8px">
-							<option value="__all__">All Suites</option>
-							{#each testSuites as suite}
-								<option value={suite.id}>{suite.name} ({suite.tests.length} tests)</option>
-							{/each}
-						</select>
-						{#if selectedSuite === '__all__'}
-							<button class="test-run-btn" onclick={runAllTests} disabled={testsRunning}>
-								{testsRunning ? 'Running...' : 'Run All Tests'}
-							</button>
-						{:else}
-							{@const suite = testSuites.find(s => s.id === selectedSuite)}
-							{#if suite}
-								<div class="test-desc">{suite.description}</div>
-								<button class="test-run-btn" onclick={runSuite} disabled={testsRunning}>
-									{testsRunning ? 'Running...' : `Run ${suite.name}`}
-								</button>
-							{/if}
-						{/if}
-					{/if}
-					{#each testResults as t}
-						<div class="test-row">
-							<span class="test-icon" class:pass={t.status === 'pass'} class:fail={t.status === 'fail'} class:running={t.status === 'running'} class:pending={t.status === 'pending'}>
-								{t.status === 'pass' ? '\u2713' : t.status === 'fail' ? '\u2717' : t.status === 'running' ? '\u25CF' : '\u25CB'}
-							</span>
-							<div class="test-info">
-								<div class="test-name">{t.name}</div>
-								<div class="test-detail" class:fail={t.status === 'fail'}>{t.detail || t.description}</div>
-							</div>
-						</div>
-					{/each}
-					{#if testResults.length > 0 && !testsRunning}
-						{@const passed = testResults.filter(t => t.status === 'pass').length}
-						{@const failed = testResults.filter(t => t.status === 'fail').length}
-						<div class="test-summary" class:all-pass={failed === 0}>
-							{passed}/{testResults.length} passed{failed > 0 ? `, ${failed} failed` : ''}
-						</div>
-					{/if}
-				</div>
+				<TestsPanel {isDev} {getActiveTab} />
 			{:else if rightSection === 'library'}
-				<div class="library-panel">
-					<div class="library-toolbar">
-						<input type="text" class="library-search" placeholder="Search library..." bind:value={libraryQuery} />
-						<select class="library-filter" bind:value={libraryFilter}>
-							<option value="all">All</option>
-							<option value="doc">Docs</option>
-							<option value="memory">Memory</option>
-							<option value="pan">PAN State</option>
-						</select>
-						<button class="library-refresh" onclick={loadLibrary}>↻</button>
-					</div>
-					<div class="library-list">
-						{#each filteredLibrary() as item (item.path)}
-							<div class="library-row" onclick={() => openLibraryItem(item)}>
-								<div class="library-row-head">
-									<span class="library-type library-type-{item.type}">{item.type}</span>
-									<span class="library-title">{item.title}</span>
-								</div>
-								{#if item.snippet}<div class="library-snippet">{item.snippet}</div>{/if}
-							</div>
-						{/each}
-						{#if filteredLibrary().length === 0}
-							<div class="empty-state">No items</div>
-						{/if}
-					</div>
-				</div>
+				<LibraryPanel />
 			{:else if rightSection === 'users'}
-				<div class="users-panel">
-					{#if usersData.length === 0}
-						<div class="empty-state">No users yet</div>
-					{:else}
-						{@const groups = [...new Set(usersData.map(u => u.role || 'user'))]}
-						{#each groups as group}
-							<div class="svc-category">{group.charAt(0).toUpperCase() + group.slice(1)}</div>
-							{#each usersData.filter(u => (u.role || 'user') === group) as user}
-								<div class="svc-row">
-									<span class="svc-dot" class:up={user.is_active !== 0} class:unknown={user.is_active === 0}></span>
-									<div class="svc-info">
-										<div class="svc-name">{user.display_name || user.email || 'Unknown'}</div>
-										<div class="svc-detail">{(user.role || 'User').charAt(0).toUpperCase() + (user.role || 'User').slice(1)}{user.power_lvl != null ? ` · lvl ${user.power_lvl}` : ''}</div>
-									</div>
-									{#if user.role === 'child' || (user.power_lvl != null && user.power_lvl <= 5)}
-										<button class="svc-action-btn" title="Open child view" onclick={() => openChildView(user)}>🧒</button>
-									{/if}
-									{#if user.id !== 1}
-										<button class="svc-action-btn danger" title="Remove" onclick={async () => {
-											if (!confirm(`Remove ${user.display_name}?`)) return;
-											await api(`/api/v1/auth/users/${user.id}`, { method: 'DELETE' });
-											loadUsers();
-										}}>✕</button>
-									{/if}
-								</div>
-							{/each}
-						{/each}
-					{/if}
-					<!-- Add member form -->
-					{#if permsMatrix?.power >= 75}
-					<div class="svc-category" style="margin-top:12px">Add Member</div>
-					<form class="add-user-form" onsubmit={addUserSubmit} style="display:flex;flex-direction:column;gap:6px;padding:6px 0">
-						<input name="uname" class="settings-input" placeholder="Name (e.g. Emma)" autocomplete="off" style="font-size:11px;padding:4px 8px" />
-						<select name="urole" class="right-select" style="font-size:11px">
-							<option value="child">Child (lvl 5 — actions only)</option>
-							<option value="guest">Guest (lvl 15 — chat + browse)</option>
-							<option value="user" selected>User (lvl 25 — standard)</option>
-							<option value="manager">Manager (lvl 50)</option>
-							<option value="admin">Admin (lvl 75)</option>
-						</select>
-						<button class="action-btn" type="submit" style="font-size:11px;padding:4px 10px">+ Add</button>
-					</form>
-				{/if}
-				</div>
+				<UsersPanel />
 			{:else if rightSection === 'teams'}
-				<div class="teams-panel">
-					{#if teamsData.length === 0}
-						<div class="empty-state">No teams yet</div>
-						<div class="empty-state small">Type a name below to create one</div>
-					{:else}
-						{#each teamsData as team}
-							<div
-								class="svc-row clickable"
-								class:selected={selectedTeamWidget?.id === team.id}
-								onclick={() => loadTeamDetailWidget(team.id)}
-							>
-								<span class="team-dot-widget" style="background: {team.color || '#89b4fa'}"></span>
-								<div class="svc-info">
-									<div class="svc-name">{team.name}</div>
-									<div class="svc-detail">{team.member_count} Member{team.member_count !== 1 ? 's' : ''}{team.description ? ` — ${team.description}` : ''}</div>
-								</div>
-							</div>
-						{/each}
-					{/if}
-
-					{#if selectedTeamWidget}
-						<div class="svc-category" style="margin-top:12px">
-							<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{selectedTeamWidget.color || '#89b4fa'};margin-right:6px"></span>
-							{selectedTeamWidget.name} — Members
-						</div>
-						{#each teamMembersWidget as member}
-							<div class="svc-row">
-								<span class="svc-dot up"></span>
-								<div class="svc-info">
-									<div class="svc-name">{member.display_name || member.email || 'Unknown'}</div>
-									<div class="svc-detail">{member.role === 'lead' ? 'Lead' : 'Member'}{member.email && !member.email.endsWith('@localhost') ? ` — ${member.email}` : ''}</div>
-								</div>
-							</div>
-						{/each}
-						{#if teamMembersWidget.length === 0}
-							<div class="empty-state small">No members</div>
-						{/if}
-					{/if}
-
-					<div class="add-row">
-						<input type="text" class="add-input" placeholder="Create team..." onkeydown={(e) => {
-							if (e.key === 'Enter' && e.target.value.trim()) {
-								const name = e.target.value.trim();
-								e.target.value = '';
-								fetch('/api/v1/teams', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
-									.then(() => loadTeamsWidget());
-							}
-						}} />
-					</div>
-				</div>
+				<TeamsPanel />
 			{:else if rightSection === 'contacts'}
-				<div class="contacts-panel">
-
-					<!-- ── DM Thread View (shown when a contact is open) ── -->
-					{#if chatActiveThread}
-						<div class="dm-thread">
-							<div class="dm-header">
-								<button class="dm-back" onclick={() => { chatActiveThread = null; chatMessages = []; centerView = 'terminal'; }}>←</button>
-								<span class="dm-contact-avatar" class:pan-avatar={chatActiveThread.contact?.id === 'contact-pan-system'}>
-									{chatActiveThread.contact?.display_name?.charAt(0)?.toUpperCase() || '?'}
-								</span>
-								<span class="dm-contact-name">{chatActiveThread.contact?.display_name || 'Chat'}</span>
-							</div>
-							<div class="dm-messages" bind:this={chatMessagesEl}>
-								{#if chatMessages.length === 0}
-									<div class="dm-empty">
-										{#if chatActiveThread.contact?.id === 'contact-pan-system'}
-											<div style="color:#a6adc8;text-align:center;padding:20px 12px;font-size:13px;">
-												<div style="font-size:24px;margin-bottom:8px;">Π</div>
-												Π is listening. Ask anything about what's going on, or wait for system reports.
-											</div>
-										{:else}
-											No messages yet
-										{/if}
-									</div>
-								{:else}
-									{#each chatMessages as msg}
-										{@const meta = (() => { try { return JSON.parse(msg.metadata || '{}'); } catch { return {}; } })()}
-										{@const isSelf = msg.sender_id === 'self'}
-										<div class="dm-msg-wrap" class:dm-msg-self={isSelf}>
-											{#if !isSelf && meta.service}
-												<div class="dm-service-tag">{meta.service}</div>
-											{/if}
-											<div class="dm-bubble" class:dm-bubble-self={isSelf} class:dm-bubble-pan={msg.sender_id === 'contact-pan-system'}>
-												{#if msg.subject && msg.subject !== msg.body}
-													<div class="dm-subject">{msg.subject}</div>
-												{/if}
-												<div class="dm-body">{msg.body}</div>
-												<div class="dm-time">{new Date(msg.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
-											</div>
-										</div>
-									{/each}
-								{/if}
-							</div>
-							<div class="dm-input-bar">
-								<input class="dm-input" type="text" placeholder={chatActiveThread.contact?.id === 'contact-pan-system' ? 'Ask Π anything…' : 'Message…'}
-									bind:value={chatInputText}
-									onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} />
-								<button class="dm-send" onclick={sendChatMessage} disabled={!chatInputText.trim()}>↑</button>
-							</div>
-						</div>
-
-					{:else}
-					<!-- ── Contacts List ── -->
-					<div class="contacts-toolbar">
-						<input type="text" class="contacts-search" placeholder="Search contacts..." bind:value={chatSearchQuery} />
-						<button class="contacts-add-btn" onclick={() => openCompose(null)} title="Compose message">&#9998;</button>
-						<button class="contacts-add-btn" onclick={() => { addContactModal = true; }} title="Add contact">+</button>
-					</div>
-
-					{#if addContactModal}
-						<div class="contact-add-form">
-							<input type="text" placeholder="Name *" bind:value={newContactName} class="contact-input" />
-							<input type="text" placeholder="PAN Instance ID (pan_xxxx)" bind:value={newContactPanId} class="contact-input" />
-							<input type="text" placeholder="Phone" bind:value={newContactPhone} class="contact-input" />
-							<input type="text" placeholder="Email" bind:value={newContactEmail} class="contact-input" />
-							<div class="contact-add-actions">
-								<button class="contact-btn-save" onclick={addContact}>Add</button>
-								<button class="contact-btn-cancel" onclick={() => { addContactModal = false; }}>Cancel</button>
-							</div>
-						</div>
-					{/if}
-
-					{#each [contactsData.filter(c => !chatSearchQuery || c.display_name.toLowerCase().includes(chatSearchQuery.toLowerCase()))] as filtered}
-					{#each [filtered.find(c => c.id === 'contact-pan-system')] as panContact}
-						{#if panContact}
-							<div class="svc-category">Π</div>
-							<div class="svc-row contact-row pan-contact-row" onclick={() => openChat(panContact)} role="button" tabindex="0">
-								<span class="contact-avatar pan-avatar">Π</span>
-								<div class="svc-info">
-									<div class="svc-name">Π {#if panContact.unread_count > 0}<span class="contact-badge">{panContact.unread_count}</span>{/if}</div>
-									<div class="svc-detail"><span class="contact-status online"></span> System · always on</div>
-								</div>
-							</div>
-						{/if}
-					{/each}
-					{#each [filtered.filter(c => c.favorited && c.id !== 'contact-pan-system')] as favorites}
-						{#if favorites.length > 0}
-							<div class="svc-category">Favorites</div>
-							{#each favorites as contact}
-								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
-									<span class="contact-avatar">{contact.display_name.charAt(0).toUpperCase()}</span>
-									<div class="svc-info">
-										<div class="svc-name">{contact.display_name}{#if contact.unread_count > 0}<span class="contact-badge">{contact.unread_count}</span>{/if}</div>
-										<div class="svc-detail">{contact.phone || contact.email || 'No PAN ID'}</div>
-									</div>
-									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }}>&#9733;</button>
-								</div>
-							{/each}
-						{/if}
-					{/each}
-					{#each [filtered.filter(c => !c.favorited && c.id !== 'contact-pan-system')] as others}
-						{#if others.length > 0}
-							<div class="svc-category">Contacts</div>
-							{#each others as contact}
-								<div class="svc-row contact-row" onclick={() => openChat(contact)} role="button" tabindex="0">
-									<span class="contact-avatar">{contact.display_name.charAt(0).toUpperCase()}</span>
-									<div class="svc-info">
-										<div class="svc-name">{contact.display_name}{#if contact.unread_count > 0}<span class="contact-badge">{contact.unread_count}</span>{/if}</div>
-										<div class="svc-detail">{contact.phone || contact.email || 'No PAN ID'}</div>
-									</div>
-									<button class="contact-action-btn" onclick={(e) => { e.stopPropagation(); toggleFavorite(contact); }}>&#9734;</button>
-								</div>
-							{/each}
-						{/if}
-					{/each}
-					{#if filtered.length === 0 && !addContactModal}
-						<div class="empty-state">{chatSearchQuery ? 'No matches' : 'No contacts yet — click + to add'}</div>
-					{/if}
-					{/each}
-					{/if}
-				</div>
+				<ContactsPanel switchCenterView={switchCenterView} />
 			{:else if rightSection === 'mail'}
-				<div class="mail-panel">
-					<div class="contacts-toolbar">
-						<button class="contacts-add-btn" onclick={syncMail} title="Sync inbox" disabled={mailLoading}>&#x21BB;</button>
-						<div style="flex:1; font-size: 12px; color: #a6adc8;">
-							{#if mailStatus?.connected}
-								<span style="color: #a6e3a1;">&#x25CF;</span> {mailStatus.user || 'Connected'}
-							{:else if mailStatus?.configured}
-								<span style="color: #f38ba8;">&#x25CF;</span> Disconnected
-							{:else}
-								<span style="color: #585b70;">&#x25CF;</span> Not configured
-							{/if}
-						</div>
-						<button class="contacts-add-btn" onclick={() => openCompose()} title="Compose">+</button>
-					</div>
-					{#if mailLoading && mailMessages.length === 0}
-						<div class="empty-state">Loading...</div>
-					{:else if mailMessages.length === 0}
-						<div class="empty-state">
-							{#if !mailStatus?.configured}
-								Email not configured — go to Settings
-							{:else}
-								No messages — click &#x21BB; to sync
-							{/if}
-						</div>
-					{:else}
-						<div class="mail-list">
-							{#each mailMessages as msg}
-								<div class="mail-row" class:unread={!msg.read} onclick={() => openCompose(null, msg.subject ? 'Re: ' + msg.subject : '', msg.direction === 'received' ? msg.from : '')}>
-									<div class="mail-row-top">
-										<span class="mail-type-badge" class:pan={msg.channel === 'pan'} class:email={msg.channel === 'email'}>{msg.channel === 'pan' ? '◆' : '✉'}</span>
-										<span class="mail-from">{msg.direction === 'sent' ? `To: ${msg.to}` : msg.from}</span>
-										<span class="mail-date">{formatMailDate(msg.date)}</span>
-									</div>
-									{#if msg.subject}<div class="mail-subject">{msg.subject}</div>{/if}
-									<div class="mail-preview">{msg.preview || ''}</div>
-								</div>
-							{/each}
-						</div>
-						{#if mailTotal > 50}
-							<div class="mail-pager">
-								{#if mailPage > 0}
-									<button class="contact-btn-save" onclick={() => loadMail(mailPage - 1)}>&larr; Newer</button>
-								{/if}
-								<span style="color: #585b70; font-size: 11px;">{mailPage * 50 + 1}-{Math.min((mailPage + 1) * 50, mailTotal)} of {mailTotal}</span>
-								{#if (mailPage + 1) * 50 < mailTotal}
-									<button class="contact-btn-save" onclick={() => loadMail(mailPage + 1)}>Older &rarr;</button>
-								{/if}
-							</div>
-						{/if}
-					{/if}
-				</div>
+				<MailPanel />
 			{:else if rightSection === 'benchmarks'}
-				<div class="benchmarks-panel">
-					{#if !benchmarksData}
-						<div class="empty-state">Loading benchmarks...</div>
-					{:else}
-						{@const suites = benchmarksData.suites || []}
-						{@const latest = benchmarksData.latest || {}}
-						<!-- Summary header -->
-						<div class="bench-summary">
-							<div class="bench-summary-score">
-								<span class="bench-summary-num" class:all-pass={benchmarksData.suites_passed === benchmarksData.total_suites}>
-									{benchmarksData.suites_passed ?? 0}/{benchmarksData.total_suites ?? 12}
-								</span>
-								<span class="bench-summary-label">suites passing</span>
-							</div>
-							<button class="bench-run-btn bench-run-all" onclick={() => runAllBenchmarks()} disabled={benchmarkRunning}>
-								{benchmarkRunningSuite === 'all' ? 'Running All...' : 'Run All'}
-							</button>
-						</div>
-						<!-- AutoDev report -->
-						{#if autodevReport && (autodevReport.recommendations?.length > 0)}
-							<div class="bench-autodev-report">
-								<div class="bench-report-title">AutoDev Findings</div>
-								{#each autodevReport.recommendations as rec}
-									<div class="bench-rec" class:rec-fix={rec.action === 'fix'} class:rec-research={rec.action === 'research'}>
-										<span class="bench-rec-badge" class:fix={rec.action === 'fix'} class:research={rec.action === 'research'}>
-											{rec.action === 'fix' ? 'FIX' : 'RESEARCH'}
-										</span>
-										<span class="bench-rec-text">{rec.label}</span>
-										<span class="bench-rec-score">{rec.suite} {rec.axis}={rec.score}</span>
-									</div>
-								{/each}
-								{#if autodevReport.scout_topics?.length > 0}
-									<div class="bench-scout-topics">
-										Scout researching: {autodevReport.scout_topics.slice(0, 2).join(' · ')}
-										{#if autodevReport.scout_topics.length > 2}
-											<span class="bench-scout-more">+{autodevReport.scout_topics.length - 2} more</span>
-										{/if}
-									</div>
-								{/if}
-							</div>
-						{/if}
-						<!-- Per-suite cards -->
-						{#each suites as suite}
-							{@const run = latest[suite]}
-							{@const s = run?.scores || {}}
-							{@const composite = s.composite ?? null}
-							{@const isRunning = benchmarkRunningSuite === suite}
-							<div class="bench-suite" class:bench-not-run={!run}>
-								<div class="bench-suite-header">
-									<span class="bench-suite-name">{suite.toUpperCase()}</span>
-									<div class="bench-suite-right">
-										{#if run}
-											<span class="bench-suite-status" class:pass={run.passed} class:fail={!run.passed}>
-												{run.passed ? '✓' : '✗'}
-											</span>
-										{:else}
-											<span class="bench-suite-status bench-unrun">—</span>
-										{/if}
-										<button class="bench-mini-run" onclick={() => runBenchmark(suite)} disabled={benchmarkRunning}>
-											{isRunning ? '…' : '▶'}
-										</button>
-									</div>
-								</div>
-								{#if run}
-									<!-- Composite score bar -->
-									{#if composite != null}
-										<div class="bench-row bench-composite-row">
-											<span class="bench-label">Score</span>
-											<div class="bench-bar-wrap">
-												<div class="bench-bar"
-													class:green={composite >= 8}
-													class:yellow={composite >= 6 && composite < 8}
-													class:red={composite < 6}
-													style="width:{Math.min(composite / 10 * 100, 100)}%">
-												</div>
-											</div>
-											<span class="bench-val bench-composite-val" class:pass={composite >= 8} class:warn={composite >= 6 && composite < 8} class:fail={composite < 6}>
-												{composite.toFixed(1)}
-											</span>
-										</div>
-									{/if}
-									<!-- Secondary metrics (non-composite numerics) -->
-									{@const secKeys = Object.keys(s).filter(k => k !== 'composite' && typeof s[k] === 'number')}
-									{#if secKeys.length > 0}
-										<div class="bench-metrics">
-											{#each secKeys.slice(0, 4) as key}
-												{#if key === 'reflex_ms'}
-													<span class="bench-chip" class:chip-ok={s[key] <= 400} class:chip-warn={s[key] > 400}>
-														{s[key]}ms
-													</span>
-												{:else}
-													<span class="bench-chip" class:chip-ok={s[key] >= 8} class:chip-warn={s[key] >= 6 && s[key] < 8} class:chip-fail={s[key] < 6}>
-														{benchScoreLabel(key)}: {typeof s[key] === 'number' && s[key] % 1 !== 0 ? s[key].toFixed(1) : s[key]}
-													</span>
-												{/if}
-											{/each}
-										</div>
-									{/if}
-									<div class="bench-ran-at">{run.ran_at ? new Date(typeof run.ran_at === 'string' ? run.ran_at.replace(' ','T')+'Z' : run.ran_at).toLocaleString() : ''}</div>
-								{:else}
-									<div class="bench-not-run-label">not yet run</div>
-								{/if}
-							</div>
-						{/each}
-					{/if}
-				</div>
+				<BenchmarksPanel />
 			{:else if rightSection === 'pipeline'}
-				<div class="pipeline-panel">
-					{#if !pipelineData}
-						<div class="empty-state">Loading pipeline...</div>
-					{:else}
-						{@const pl = pipelineData.pipeline || {}}
-						{@const beta = pipelineData.beta}
-						{@const prod = pipelineData.production}
-						{@const status = pl.status || 'idle'}
-						<!-- Status header -->
-						<div class="pl-header">
-							<div class="pl-status-dot" style="background:{pipelineStatusColor(status)}"></div>
-							<span class="pl-status-label">{status.toUpperCase()}</span>
-							{#if pl.source && status !== 'idle'}
-								<span class="pl-source">({pl.source})</span>
-							{/if}
-							<div class="pl-spacer"></div>
-							{#if status === 'idle' || status === 'failed'}
-								<button class="pl-btn pl-btn-run" onclick={triggerPipeline} disabled={pipelineStarting}>
-									{pipelineStarting ? 'Starting…' : '▶ Run Pipeline'}
-								</button>
-							{:else}
-								<button class="pl-btn pl-btn-abort" onclick={abortPipelineAction}>✕ Abort</button>
-							{/if}
-						</div>
-						{#if pl.error}
-							<div class="pl-error">{pl.error}</div>
-						{/if}
-						<!-- Production slot -->
-						<div class="pl-slot-label">PRODUCTION</div>
-						<div class="pl-slot pl-slot-prod">
-							{#if prod}
-								<span class="pl-slot-id">Craft-{prod.id}</span>
-								<span class="pl-slot-port">:{prod.port}</span>
-								<span class="pl-slot-health" class:healthy={prod.healthy}>{prod.healthy ? '●' : '○'}</span>
-								<span class="pl-slot-uptime">{prod.uptimeMs ? (prod.uptimeMs / 60000).toFixed(0) + 'm' : ''}</span>
-							{:else}
-								<span class="pl-slot-none">—</span>
-							{/if}
-						</div>
-						<!-- Beta slot -->
-						<div class="pl-slot-label">BETA {status === 'benchmarking' ? '(benchmarking…)' : status === 'spawning' ? '(spawning…)' : ''}</div>
-						<div class="pl-slot pl-slot-beta" class:active={!!beta}>
-							{#if beta}
-								<span class="pl-slot-id">Craft-{beta.id}</span>
-								<span class="pl-slot-port">:{beta.port}</span>
-								<span class="pl-slot-health" class:healthy={beta.healthy}>{beta.healthy ? '●' : '○'}</span>
-								{#if status === 'ready'}
-									<button class="pl-btn pl-btn-promote" onclick={promotePipelineManual}>Promote ↑</button>
-								{/if}
-							{:else}
-								<span class="pl-slot-none">{status === 'idle' ? '—' : '…'}</span>
-							{/if}
-						</div>
-						<!-- Pending queue -->
-						{#if pipelineData.pending > 0}
-							<div class="pl-slot-label">PENDING ({pipelineData.pending})</div>
-						{/if}
-						<!-- Benchmark results (if available) -->
-						{#if pl.scores && Object.keys(pl.scores).length > 0}
-							<div class="pl-bench-title">Benchmark Results</div>
-							{#each Object.entries(pl.scores) as [suite, result]}
-								<div class="pl-bench-row" class:pl-pass={result?.passed} class:pl-fail={result && !result.passed}>
-									<span class="pl-bench-suite">{suite}</span>
-									<span class="pl-bench-result">{result?.passed ? '✓' : '✗'}</span>
-									{#if result?.scores?.composite != null}
-										<span class="pl-bench-score">{result.scores.composite.toFixed(1)}</span>
-									{/if}
-								</div>
-							{/each}
-						{:else if pl.passedSuites?.length > 0 || pl.failedSuites?.length > 0}
-							<div class="pl-bench-title">Results</div>
-							{#each pl.passedSuites as s}
-								<div class="pl-bench-row pl-pass"><span class="pl-bench-suite">{s}</span><span class="pl-bench-result">✓</span></div>
-							{/each}
-							{#each pl.failedSuites as s}
-								<div class="pl-bench-row pl-fail"><span class="pl-bench-suite">{s}</span><span class="pl-bench-result">✗</span></div>
-							{/each}
-						{/if}
-						<!-- Elapsed time -->
-						{#if pl.startedAt}
-							<div class="pl-elapsed">
-								Started {new Date(pl.startedAt).toLocaleTimeString()}
-								{#if pl.completedAt}→ {((pl.completedAt - pl.startedAt) / 1000).toFixed(0)}s{/if}
-							</div>
-						{/if}
-					{/if}
-				</div>
+				<PipelinePanel />
 			{:else if rightSection.startsWith('custom-')}
 				{@const sectionId = parseInt(rightSection.replace('custom-', ''))}
 				{@const section = getSectionById(sectionId)}
@@ -10202,7 +4886,7 @@
 		text-shadow: 0 0 12px rgba(137, 180, 250, 0.3);
 	}
 
-	.center-chat {
+	:global(.center-chat) {
 		flex: 1;
 		min-height: 0;
 		min-width: 0;
@@ -10215,7 +4899,7 @@
 		background: #1e1e2e;
 	}
 
-	.cc-bubble {
+	:global(.cc-bubble) {
 		max-width: 85%;
 		padding: 8px 12px;
 		border-radius: 12px;
@@ -10229,21 +4913,21 @@
 		min-width: 0;
 	}
 
-	.cc-user {
+	:global(.cc-user) {
 		align-self: flex-end;
 		background: #89b4fa;
 		color: #0a0a0f;
 		border-bottom-right-radius: 4px;
 	}
 
-	.cc-assistant {
+	:global(.cc-assistant) {
 		align-self: flex-start;
 		background: #2a2a3a;
 		color: #cdd6f4;
 		border-bottom-left-radius: 4px;
 	}
 
-	.cc-tool {
+	:global(.cc-tool) {
 		align-self: flex-start;
 		background: #1a1a25;
 		color: #6c7086;
@@ -10252,7 +4936,7 @@
 		border-left: 2px solid #45475a;
 	}
 
-	.cc-thinking {
+	:global(.cc-thinking) {
 		color: #6c7086;
 		font-style: italic;
 	}
@@ -10349,14 +5033,14 @@
 		line-height: 20px;
 	}
 
-	.image-preview-bar {
+	:global(.image-preview-bar) {
 		display: flex;
 		gap: 6px;
 		padding: 6px 12px;
 		background: #12121a;
 		border-top: 1px solid #1e1e2e;
 	}
-	.image-preview-item {
+	:global(.image-preview-item) {
 		position: relative;
 		width: 48px;
 		height: 48px;
@@ -10364,12 +5048,12 @@
 		overflow: hidden;
 		border: 1px solid #1e1e2e;
 	}
-	.image-preview-thumb {
+	:global(.image-preview-thumb) {
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
 	}
-	.image-remove {
+	:global(.image-remove) {
 		position: absolute;
 		top: -2px;
 		right: -2px;
@@ -10384,7 +5068,7 @@
 		line-height: 1;
 		padding: 0;
 	}
-	.image-uploading {
+	:global(.image-uploading) {
 		position: absolute;
 		bottom: 2px;
 		left: 2px;
@@ -10429,7 +5113,7 @@
 		font-size: 12px;
 		color: #cba6f7;
 	}
-	.status-spinner {
+	:global(.status-spinner) {
 		display: inline-block;
 		width: 10px;
 		height: 10px;
@@ -10441,7 +5125,7 @@
 	.status-text { font-style: italic; }
 	@keyframes spin { to { transform: rotate(360deg); } }
 
-	.pty-status-bar {
+	:global(.pty-status-bar) {
 		display: flex;
 		align-items: center;
 		gap: 10px;
@@ -10459,13 +5143,13 @@
 	.pty-status-bar.pty-no-claude { color: #f9e2af; }
 	.pty-status-bar.pty-no-pty { color: #f38ba8; }
 	.pty-status-bar .status-text { font-style: normal; font-weight: 600; }
-	.pty-meta {
+	:global(.pty-meta) {
 		color: #6c7086;
 		padding-left: 8px;
 		border-left: 1px solid #313244;
 	}
 	.pty-meta:first-of-type { border-left: none; padding-left: 0; }
-	.status-dot {
+	:global(.status-dot) {
 		display: inline-block;
 		width: 8px;
 		height: 8px;
@@ -10475,7 +5159,7 @@
 	.dot-yellow { background: #f9e2af; box-shadow: 0 0 6px #f9e2af; }
 	.dot-red { background: #f38ba8; box-shadow: 0 0 6px #f38ba8; }
 
-	.approval-bar {
+	:global(.approval-bar) {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -10484,13 +5168,13 @@
 		border-top: 1px solid #f9e2af;
 		flex-wrap: wrap;
 	}
-	.approval-label {
+	:global(.approval-label) {
 		color: #f9e2af;
 		font-size: 12px;
 		font-weight: 600;
 		margin-right: 4px;
 	}
-	.approval-btn {
+	:global(.approval-btn) {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -10505,7 +5189,7 @@
 		transition: background 0.1s;
 	}
 	.approval-btn:hover { background: #45475a; border-color: #89b4fa; }
-	.approval-num {
+	:global(.approval-num) {
 		display: inline-block;
 		min-width: 16px;
 		height: 16px;
@@ -10517,7 +5201,7 @@
 		font-weight: bold;
 		font-size: 11px;
 	}
-	.approval-text {
+	:global(.approval-text) {
 		max-width: 200px;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -10533,7 +5217,7 @@
 		flex-wrap: wrap;
 	}
 
-	.project-select {
+	:global(.project-select) {
 		background: #0a0a0f;
 		color: #cdd6f4;
 		border: 1px solid #1e1e2e;
@@ -10605,167 +5289,7 @@
 	.impersonate-stop:hover { background: rgba(243,139,168,0.3); }
 
 	/* ── Impersonate Modal ─────────────────────────────────────────────── */
-	.imp-backdrop {
-		position: fixed; inset: 0;
-		background: rgba(0,0,0,0.55);
-		z-index: 3000;
-	}
-	.imp-modal {
-		position: fixed;
-		top: 50%; left: 50%;
-		transform: translate(-50%, -50%);
-		z-index: 3001;
-		background: #181825;
-		border: 1px solid #45475a;
-		border-radius: 12px;
-		width: 420px;
-		max-width: calc(100vw - 32px);
-		max-height: 80vh;
-		display: flex;
-		flex-direction: column;
-		box-shadow: 0 24px 80px rgba(0,0,0,0.7);
-		font-size: 13px;
-	}
-	.imp-header {
-		display: flex; align-items: center;
-		padding: 14px 16px 10px;
-		border-bottom: 1px solid #313244;
-	}
-	.imp-title { font-size: 14px; font-weight: 600; color: #cdd6f4; flex: 1; }
-	.imp-close {
-		background: none; border: none;
-		color: #6c7086; cursor: pointer; font-size: 14px; padding: 0 2px;
-	}
-	.imp-close:hover { color: #f38ba8; }
-
-	.imp-tabs {
-		display: flex;
-		gap: 4px;
-		padding: 10px 16px 0;
-	}
-	.imp-tab {
-		background: none;
-		border: 1px solid transparent;
-		border-radius: 6px;
-		color: #6c7086;
-		cursor: pointer;
-		font-size: 12px;
-		padding: 5px 12px;
-		transition: all .15s;
-	}
-	.imp-tab:hover { color: #cdd6f4; border-color: #45475a; }
-	.imp-tab.active { background: #313244; color: #cdd6f4; border-color: #45475a; }
-
-	.imp-body {
-		padding: 14px 16px;
-		overflow-y: auto;
-		flex: 1;
-	}
-	.imp-desc { color: #6c7086; font-size: 12px; margin: 0 0 12px; line-height: 1.4; }
-	.imp-loading, .imp-empty { color: #6c7086; font-size: 12px; text-align: center; padding: 20px 0; }
-
-	/* Preset pills */
-	.imp-presets {
-		display: flex; flex-wrap: wrap; gap: 6px;
-		margin-bottom: 14px;
-	}
-	.imp-preset {
-		background: #1e1e2e;
-		border: 1px solid #45475a;
-		border-radius: 8px;
-		color: #a6adc8;
-		cursor: pointer;
-		font-size: 11px;
-		padding: 6px 12px;
-		text-align: center;
-		transition: all .15s;
-		line-height: 1.3;
-	}
-	.imp-preset:hover { border-color: #89b4fa; color: #89b4fa; }
-	.imp-preset.active { background: rgba(137,180,250,0.15); border-color: #89b4fa; color: #89b4fa; }
-	.imp-preset-sub { font-size: 10px; opacity: .7; }
-
-	/* Slider */
-	.imp-slider-row {
-		display: flex; align-items: center; gap: 8px;
-	}
-	.imp-slider {
-		flex: 1;
-		accent-color: #89b4fa;
-		cursor: pointer;
-	}
-	.imp-slider-label { font-size: 11px; color: #6c7086; min-width: 14px; text-align: center; }
-	.imp-slider-val {
-		background: #313244;
-		border-radius: 5px;
-		color: #89b4fa;
-		font-size: 13px; font-weight: 600;
-		min-width: 34px;
-		padding: 2px 6px;
-		text-align: center;
-	}
-
-	/* User list */
-	.imp-user-list { display: flex; flex-direction: column; gap: 4px; }
-	.imp-user-row {
-		display: flex; align-items: center; gap: 10px;
-		padding: 8px 10px;
-		border: 1px solid transparent;
-		border-radius: 8px;
-		cursor: pointer;
-		transition: all .15s;
-	}
-	.imp-user-row:hover { background: #1e1e2e; border-color: #45475a; }
-	.imp-user-row.selected { background: rgba(137,180,250,0.1); border-color: #89b4fa; }
-	.imp-user-avatar {
-		background: #313244;
-		border-radius: 50%;
-		color: #89b4fa;
-		font-size: 13px; font-weight: 600;
-		width: 30px; height: 30px;
-		display: flex; align-items: center; justify-content: center;
-		flex-shrink: 0;
-	}
-	.imp-user-info { flex: 1; display: flex; flex-direction: column; gap: 1px; }
-	.imp-user-name { font-size: 13px; color: #cdd6f4; }
-	.imp-user-email { font-size: 11px; color: #6c7086; }
-	.imp-user-power {
-		font-size: 11px; color: #a6adc8;
-		background: #313244; border-radius: 4px; padding: 1px 6px;
-	}
-
-	/* Group/Org fields */
-	.imp-field { margin-bottom: 14px; }
-	.imp-label { display: block; font-size: 11px; color: #6c7086; margin-bottom: 5px; }
-	.imp-select {
-		width: 100%;
-		background: #1e1e2e; border: 1px solid #45475a; border-radius: 6px;
-		color: #cdd6f4; font-size: 12px; padding: 6px 8px; cursor: pointer;
-	}
-	.imp-select:focus { border-color: #89b4fa; outline: none; }
-
-	/* Footer */
-	.imp-footer {
-		display: flex; justify-content: flex-end; gap: 8px;
-		padding: 12px 16px;
-		border-top: 1px solid #313244;
-	}
-	.imp-cancel {
-		background: none; border: 1px solid #45475a; border-radius: 6px;
-		color: #6c7086; cursor: pointer; font-size: 12px; padding: 6px 14px;
-	}
-	.imp-cancel:hover { border-color: #cdd6f4; color: #cdd6f4; }
-	.imp-apply {
-		background: rgba(137,180,250,0.15);
-		border: 1px solid #89b4fa;
-		border-radius: 6px;
-		color: #89b4fa;
-		cursor: pointer;
-		font-size: 12px;
-		font-weight: 600;
-		padding: 6px 18px;
-		transition: all .15s;
-	}
+	/* .imp-* styles migrated to $lib/components/ImpersonatePanel.svelte */
 	.imp-apply:hover:not(:disabled) { background: rgba(137,180,250,0.25); }
 	.imp-apply:disabled { opacity: .45; cursor: not-allowed; }
 
@@ -11175,57 +5699,57 @@
 	:global(.term-scrollback .md-table tr:nth-child(odd) td) { background: #11111b; }
 
 	/* ==================== Project Info ==================== */
-	.project-info {
+	:global(.project-info) {
 		margin-bottom: 10px;
 	}
-	.project-name {
+	:global(.project-name) {
 		font-weight: 600;
 		font-size: 14px;
 		margin-bottom: 4px;
 	}
-	.project-progress-row {
+	:global(.project-progress-row) {
 		display: flex;
 		align-items: baseline;
 		gap: 6px;
 		margin-bottom: 4px;
 	}
-	.project-pct {
+	:global(.project-pct) {
 		font-size: 20px;
 		font-weight: 700;
 		color: #89b4fa;
 	}
-	.project-count {
+	:global(.project-count) {
 		color: #6c7086;
 		font-size: 10px;
 	}
-	.project-sessions {
+	:global(.project-sessions) {
 		font-size: 10px;
 		color: #6c7086;
 		margin-top: 4px;
 	}
 
-	.milestone {
+	:global(.milestone) {
 		margin-bottom: 8px;
 		cursor: pointer;
 	}
 	.milestone:hover { opacity: 0.8; }
-	.milestone-row {
+	:global(.milestone-row) {
 		display: flex;
 		align-items: center;
 		gap: 4px;
 		margin-bottom: 2px;
 	}
-	.milestone-name {
+	:global(.milestone-name) {
 		flex: 1;
 		font-size: 11px;
 		font-weight: 500;
 	}
-	.milestone-pct {
+	:global(.milestone-pct) {
 		font-size: 10px;
 		color: #6c7086;
 	}
 
-	.progress-bar {
+	:global(.progress-bar) {
 		height: 5px;
 		background: #1e1e2e;
 		border-radius: 3px;
@@ -11234,7 +5758,7 @@
 	}
 	.progress-bar.small { height: 3px; margin-bottom: 0; }
 
-	.progress-fill {
+	:global(.progress-fill) {
 		height: 100%;
 		border-radius: 3px;
 		transition: width 0.3s;
@@ -11294,10 +5818,10 @@
 	.library-snippet { font-size: 11px; color: #6c7086; margin-top: 3px; padding-left: 2px; }
 
 	/* Perf widget */
-	.perf-widget {
+	:global(.perf-widget) {
 		padding: 8px;
 	}
-	.perf-overall {
+	:global(.perf-overall) {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -11312,14 +5836,14 @@
 	.perf-overall-bad { background: rgba(243, 139, 168, 0.15); color: #f38ba8; }
 	.perf-overall-icon { font-size: 16px; font-weight: 900; }
 	.perf-overall-text { font-size: 13px; }
-	.perf-bar-track {
+	:global(.perf-bar-track) {
 		height: 4px;
 		background: #1e1e2e;
 		border-radius: 2px;
 		margin: 2px 8px 6px;
 		overflow: hidden;
 	}
-	.perf-bar-fill {
+	:global(.perf-bar-fill) {
 		height: 100%;
 		background: #a6e3a1;
 		border-radius: 2px;
@@ -11327,7 +5851,7 @@
 	}
 	.perf-bar-fill.perf-warn { background: #f9e2af; }
 	.perf-bar-fill.perf-bad { background: #f38ba8; }
-	.perf-metric {
+	:global(.perf-metric) {
 		display: flex;
 		justify-content: space-between;
 		padding: 6px 8px;
@@ -11339,7 +5863,7 @@
 	.perf-value { color: #a6e3a1; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
 	.perf-value.perf-warn { color: #f9e2af; }
 	.perf-value.perf-bad { color: #f38ba8; }
-	.perf-metric.perf-stage-final {
+	:global(.perf-metric.perf-stage-final) {
 		background: rgba(203, 166, 247, 0.08);
 		border-top: 1px solid rgba(203, 166, 247, 0.25);
 		border-bottom: 1px solid rgba(203, 166, 247, 0.25);
@@ -11349,28 +5873,28 @@
 	.perf-metric.perf-stage-final .perf-value { color: #cba6f7; }
 
 	/* Readiness summary (system/interactive/swap_safe/probes) */
-	.perf-ready-grid {
+	:global(.perf-ready-grid) {
 		display: grid;
 		grid-template-columns: repeat(4, 1fr);
 		gap: 4px;
 		padding: 4px 8px 2px 8px;
 	}
-	.perf-ready-cell {
+	:global(.perf-ready-cell) {
 		text-align: center;
 		padding: 6px 4px;
 		border-radius: 6px;
 		background: rgba(255, 255, 255, 0.02);
 		border: 1px solid rgba(255, 255, 255, 0.05);
 	}
-	.perf-ready-cell.perf-ready-good {
+	:global(.perf-ready-cell.perf-ready-good) {
 		background: rgba(166, 227, 161, 0.1);
 		border-color: rgba(166, 227, 161, 0.3);
 	}
-	.perf-ready-cell.perf-ready-bad {
+	:global(.perf-ready-cell.perf-ready-bad) {
 		background: rgba(249, 226, 175, 0.08);
 		border-color: rgba(249, 226, 175, 0.25);
 	}
-	.perf-ready-val {
+	:global(.perf-ready-val) {
 		font-size: 13px;
 		font-weight: 700;
 		font-family: 'JetBrains Mono', monospace;
@@ -11379,7 +5903,7 @@
 	}
 	.perf-ready-cell.perf-ready-good .perf-ready-val { color: #a6e3a1; }
 	.perf-ready-cell.perf-ready-bad .perf-ready-val { color: #f9e2af; }
-	.perf-ready-lbl {
+	:global(.perf-ready-lbl) {
 		font-size: 9px;
 		color: #a6adc8;
 		text-transform: uppercase;
@@ -11389,12 +5913,12 @@
 	}
 
 	/* View toggle (List / Gantt) */
-	.perf-view-toggle {
+	:global(.perf-view-toggle) {
 		display: flex;
 		gap: 4px;
 		padding: 6px 8px 0 8px;
 	}
-	.perf-view-btn {
+	:global(.perf-view-btn) {
 		flex: 1;
 		background: rgba(255, 255, 255, 0.03);
 		border: 1px solid rgba(255, 255, 255, 0.08);
@@ -11407,14 +5931,14 @@
 		transition: all 0.15s;
 	}
 	.perf-view-btn:hover { background: rgba(255, 255, 255, 0.06); color: #cdd6f4; }
-	.perf-view-btn.perf-view-active {
+	:global(.perf-view-btn.perf-view-active) {
 		background: rgba(137, 180, 250, 0.15);
 		border-color: rgba(137, 180, 250, 0.4);
 		color: #89b4fa;
 	}
 
 	/* Stage rows in list view */
-	.perf-stage-row {
+	:global(.perf-stage-row) {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -11422,7 +5946,7 @@
 		border-bottom: 1px solid #1e1e2e;
 		font-size: 11px;
 	}
-	.perf-stage-dot {
+	:global(.perf-stage-dot) {
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
@@ -11434,7 +5958,7 @@
 	.perf-stage-row.perf-stage-running .perf-stage-dot { background: #f9e2af; animation: perfPulse 1s infinite; }
 	.perf-stage-row.perf-stage-pending .perf-stage-dot { background: #45475a; }
 	@keyframes perfPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-	.perf-stage-name {
+	:global(.perf-stage-name) {
 		flex: 1;
 		color: #cdd6f4;
 		cursor: help;
@@ -11444,7 +5968,7 @@
 		white-space: nowrap;
 	}
 	.perf-stage-row.perf-stage-pending .perf-stage-name { opacity: 0.5; }
-	.perf-stage-val {
+	:global(.perf-stage-val) {
 		font-family: 'JetBrains Mono', monospace;
 		color: #a6e3a1;
 		font-size: 10px;
@@ -11456,7 +5980,7 @@
 	.perf-stage-val.perf-bad { color: #f38ba8; }
 	.perf-stage-row.perf-stage-failed .perf-stage-val { color: #f38ba8; }
 	.perf-stage-row.perf-stage-pending .perf-stage-val { color: #6c7086; }
-	.perf-reprobe-btn {
+	:global(.perf-reprobe-btn) {
 		background: transparent;
 		border: none;
 		color: #6c7086;
@@ -11466,7 +5990,7 @@
 		line-height: 1;
 	}
 	.perf-reprobe-btn:hover { color: #89b4fa; }
-	.perf-stage-err {
+	:global(.perf-stage-err) {
 		font-size: 10px;
 		color: #f38ba8;
 		padding: 2px 8px 4px 20px;
@@ -11478,33 +6002,33 @@
 	}
 
 	/* Gantt view */
-	.perf-gantt {
+	:global(.perf-gantt) {
 		padding: 4px 8px;
 		display: flex;
 		flex-direction: column;
 		gap: 3px;
 	}
-	.perf-gantt-row {
+	:global(.perf-gantt-row) {
 		display: grid;
 		grid-template-columns: 110px 1fr 44px;
 		align-items: center;
 		gap: 6px;
 		font-size: 10px;
 	}
-	.perf-gantt-name {
+	:global(.perf-gantt-name) {
 		color: #cdd6f4;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.perf-gantt-track {
+	:global(.perf-gantt-track) {
 		position: relative;
 		height: 10px;
 		background: rgba(255, 255, 255, 0.03);
 		border-radius: 2px;
 		overflow: hidden;
 	}
-	.perf-gantt-bar {
+	:global(.perf-gantt-bar) {
 		position: absolute;
 		top: 0;
 		bottom: 0;
@@ -11513,7 +6037,7 @@
 	}
 	.perf-gantt-bar.perf-gantt-ready { background: linear-gradient(90deg, rgba(166, 227, 161, 0.6), rgba(166, 227, 161, 0.9)); }
 	.perf-gantt-bar.perf-gantt-failed { background: linear-gradient(90deg, rgba(243, 139, 168, 0.6), rgba(243, 139, 168, 0.9)); }
-	.perf-gantt-bar.perf-gantt-running {
+	:global(.perf-gantt-bar.perf-gantt-running) {
 		background: repeating-linear-gradient(90deg, rgba(249, 226, 175, 0.3), rgba(249, 226, 175, 0.6) 10px, rgba(249, 226, 175, 0.3) 20px);
 		animation: perfSlide 1s linear infinite;
 	}
@@ -11522,13 +6046,13 @@
 		0% { background-position: 0 0; }
 		100% { background-position: 20px 0; }
 	}
-	.perf-gantt-ms {
+	:global(.perf-gantt-ms) {
 		font-family: 'JetBrains Mono', monospace;
 		color: #a6adc8;
 		font-size: 9px;
 		text-align: right;
 	}
-	.perf-gantt-legend {
+	:global(.perf-gantt-legend) {
 		display: flex;
 		justify-content: space-between;
 		padding: 4px 8px 8px 8px;
@@ -11536,7 +6060,7 @@
 		color: #6c7086;
 	}
 	.perf-gantt-legend span { display: flex; align-items: center; gap: 3px; }
-	.perf-gantt-swatch {
+	:global(.perf-gantt-swatch) {
 		display: inline-block;
 		width: 10px;
 		height: 8px;
@@ -11546,7 +6070,7 @@
 	.perf-gantt-swatch.perf-gantt-failed { background: rgba(243, 139, 168, 0.7); }
 	.perf-gantt-swatch.perf-gantt-running { background: rgba(249, 226, 175, 0.5); }
 	.perf-gantt-swatch.perf-gantt-pending { background: rgba(69, 71, 90, 0.6); }
-	.perf-section-title {
+	:global(.perf-section-title) {
 		font-size: 11px;
 		font-weight: bold;
 		color: #89b4fa;
@@ -11554,31 +6078,31 @@
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 	}
-	.perf-proc {
+	:global(.perf-proc) {
 		padding: 6px 8px;
 		border-bottom: 1px solid #1e1e2e;
 	}
-	.perf-proc.perf-zombie {
+	:global(.perf-proc.perf-zombie) {
 		background: rgba(243, 139, 168, 0.1);
 		border-left: 2px solid #f38ba8;
 	}
-	.perf-proc-header {
+	:global(.perf-proc-header) {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 	}
-	.perf-proc-name {
+	:global(.perf-proc-name) {
 		font-size: 12px;
 		color: #cdd6f4;
 	}
-	.perf-proc-name.vital {
+	:global(.perf-proc-name.vital) {
 		color: #a6e3a1;
 	}
-	.perf-proc-name.vital::before {
+	:global(.perf-proc-name.vital::before) {
 		content: '\u25CF ';
 		font-size: 8px;
 	}
-	.perf-proc-stats {
+	:global(.perf-proc-stats) {
 		display: flex;
 		gap: 12px;
 		font-size: 10px;
@@ -11586,7 +6110,7 @@
 		margin-top: 2px;
 		font-family: 'JetBrains Mono', monospace;
 	}
-	.perf-kill-btn {
+	:global(.perf-kill-btn) {
 		background: #f38ba8;
 		color: #1e1e2e;
 		border: none;
@@ -11705,7 +6229,7 @@
 		opacity: 0.75;  /* dim until the transcript confirms it landed */
 	}
 
-	.term-empty {
+	:global(.term-empty) {
 		position: absolute;
 		inset: 0;
 		display: flex;
@@ -11715,15 +6239,15 @@
 		color: #45475a;
 		z-index: 2;
 	}
-	.term-empty-icon {
+	:global(.term-empty-icon) {
 		font-size: 48px;
 		margin-bottom: 16px;
 	}
-	.term-empty-title {
+	:global(.term-empty-title) {
 		font-size: 16px;
 		margin-bottom: 8px;
 	}
-	.term-empty-sub {
+	:global(.term-empty-sub) {
 		font-size: 13px;
 	}
 
@@ -11784,7 +6308,7 @@
 	.right-content::-webkit-scrollbar-thumb:hover { background: rgba(166,227,161,0.5); }
 
 	/* ==================== Services ==================== */
-	.svc-category {
+	:global(.svc-category) {
 		font-size: 11px;
 		font-weight: 600;
 		color: #6c7086;
@@ -11793,7 +6317,7 @@
 		padding: 8px 0 4px;
 	}
 	.svc-category:first-child { padding-top: 0; }
-	.svc-row {
+	:global(.svc-row) {
 		display: flex;
 		align-items: flex-start;
 		gap: 8px;
@@ -11805,14 +6329,14 @@
 	.svc-action-btn { margin-left: auto; background: none; border: none; cursor: pointer; padding: 2px 6px; font-size: 12px; border-radius: 4px; color: rgba(205,214,244,0.4); transition: color 0.15s, background 0.15s; }
 	.svc-action-btn:hover { background: rgba(205,214,244,0.08); color: rgba(205,214,244,0.8); }
 	.svc-action-btn.danger:hover { background: rgba(243,139,168,0.15); color: #f38ba8; }
-	.team-dot-widget {
+	:global(.team-dot-widget) {
 		width: 10px;
 		height: 10px;
 		border-radius: 50%;
 		margin-top: 3px;
 		flex-shrink: 0;
 	}
-	.svc-dot {
+	:global(.svc-dot) {
 		width: 8px;
 		height: 8px;
 		border-radius: 50%;
@@ -11823,16 +6347,16 @@
 	.svc-dot.up { background: #a6e3a1; }
 	.svc-dot.down { background: #f38ba8; }
 	.svc-dot.unknown { background: #6c7086; }
-	.svc-name {
+	:global(.svc-name) {
 		font-size: 13px;
 		font-weight: 500;
 		color: #cdd6f4;
 	}
-	.svc-detail {
+	:global(.svc-detail) {
 		font-size: 11px;
 		color: #6c7086;
 	}
-	.svc-device-badge {
+	:global(.svc-device-badge) {
 		margin-left: 6px;
 		font-size: 10px;
 		font-weight: 400;
@@ -11842,7 +6366,7 @@
 	}
 
 	/* ==================== Tasks ==================== */
-	.task-group-header {
+	:global(.task-group-header) {
 		font-size: 11px;
 		font-weight: 600;
 		color: #6c7086;
@@ -11852,7 +6376,7 @@
 		letter-spacing: 0.5px;
 	}
 
-	.task-row {
+	:global(.task-row) {
 		display: flex;
 		align-items: flex-start;
 		gap: 6px;
@@ -11861,7 +6385,7 @@
 	}
 	.task-row:hover { opacity: 0.8; }
 
-	.task-icon {
+	:global(.task-icon) {
 		flex-shrink: 0;
 		width: 14px;
 		text-align: center;
@@ -11872,10 +6396,10 @@
 	.task-icon.bug { color: #f38ba8; }
 	.task-icon.bug.done { color: #a6e3a1; }
 
-	.task-title {
+	:global(.task-title) {
 		flex: 1;
 	}
-	.task-title.done {
+	:global(.task-title.done) {
 		text-decoration: line-through;
 		color: #6c7086;
 	}
@@ -11945,7 +6469,7 @@
 
 	/* ==================== Tests ==================== */
 	.tests-panel { padding: 8px 12px; }
-	.test-run-btn {
+	:global(.test-run-btn) {
 		width: 100%;
 		padding: 8px;
 		border: 1px solid #89b4fa;
@@ -11961,7 +6485,7 @@
 	.test-run-btn:disabled { opacity: 0.5; cursor: default; }
 	.test-desc { font-size: 11px; color: #6c7086; margin-bottom: 8px; }
 	.test-icon.pending { color: #45475a; }
-	.test-row {
+	:global(.test-row) {
 		display: flex;
 		align-items: flex-start;
 		gap: 8px;
@@ -11976,7 +6500,7 @@
 	.test-name { font-size: 12px; color: #cdd6f4; }
 	.test-detail { font-size: 10px; color: #6c7086; margin-top: 1px; }
 	.test-detail.fail { color: #f38ba8; }
-	.test-summary {
+	:global(.test-summary) {
 		margin-top: 8px;
 		padding: 6px 8px;
 		border-radius: 4px;
@@ -11985,76 +6509,76 @@
 		background: rgba(243, 139, 168, 0.1);
 		color: #f38ba8;
 	}
-	.test-summary.all-pass {
+	:global(.test-summary.all-pass) {
 		background: rgba(166, 227, 161, 0.1);
 		color: #a6e3a1;
 	}
 
 	/* ==================== Approvals ==================== */
-	.approval-row {
+	:global(.approval-row) {
 		padding: 8px 12px;
 		border-bottom: 1px solid #1e1e2e;
 	}
-	.approval-tool {
+	:global(.approval-tool) {
 		font-size: 12px;
 		font-weight: 600;
 		color: #cdd6f4;
 		margin-bottom: 2px;
 	}
-	.approval-desc {
+	:global(.approval-desc) {
 		font-size: 11px;
 		color: #6c7086;
 		margin-bottom: 6px;
 		word-break: break-word;
 	}
-	.approval-actions {
+	:global(.approval-actions) {
 		display: flex;
 		gap: 6px;
 	}
-	.approval-btn {
+	:global(.approval-btn) {
 		padding: 3px 10px;
 		border: none;
 		border-radius: 4px;
 		font-size: 11px;
 		cursor: pointer;
 	}
-	.approval-btn.approve {
+	:global(.approval-btn.approve) {
 		background: #a6e3a1;
 		color: #1e1e2e;
 	}
-	.approval-btn.deny {
+	:global(.approval-btn.deny) {
 		background: #f38ba8;
 		color: #1e1e2e;
 	}
-	.approval-btn:hover {
+	:global(.approval-btn:hover) {
 		opacity: 0.8;
 	}
 
 	/* ==================== Setup Guide ==================== */
-	.setup-guide {
+	:global(.setup-guide) {
 		padding: 4px;
 		font-size: 13px;
 		color: #6c7086;
 		line-height: 1.6;
 	}
-	.setup-title {
+	:global(.setup-title) {
 		font-weight: 700;
 		font-size: 14px;
 		color: #cdd6f4;
 		margin-bottom: 10px;
 	}
 	.setup-desc { margin-bottom: 10px; }
-	.setup-items {
+	:global(.setup-items) {
 		display: grid;
 		gap: 8px;
 	}
 	.setup-items strong { color: #cdd6f4; }
-	.setup-controls {
+	:global(.setup-controls) {
 		margin-top: 14px;
 		padding-top: 12px;
 		border-top: 1px solid #1e1e2e;
 	}
-	.setup-controls-title {
+	:global(.setup-controls-title) {
 		font-weight: 600;
 		font-size: 12px;
 		color: #cdd6f4;
@@ -12062,25 +6586,25 @@
 	}
 	.setup-controls strong { color: #cdd6f4; }
 	.setup-controls span { color: #6c7086; }
-	.setup-hint {
+	:global(.setup-hint) {
 		margin-top: 10px;
 		font-size: 12px;
 		color: #6c7086;
 	}
 
 	/* ==================== Empty States ==================== */
-	.empty-state {
+	:global(.empty-state) {
 		color: #45475a;
 		padding: 12px;
 		text-align: center;
 	}
-	.empty-state.small {
+	:global(.empty-state.small) {
 		padding: 0 12px;
 		font-size: 11px;
 	}
 
 	/* ==================== Atlas ==================== */
-	.atlas-container {
+	:global(.atlas-container) {
 		flex: 1;
 		min-height: 0;
 		position: relative;
@@ -12088,7 +6612,7 @@
 		background: #0e0e16;
 		user-select: none;
 	}
-	.atlas-toolbar {
+	:global(.atlas-toolbar) {
 		position: absolute;
 		top: 8px;
 		left: 8px;
@@ -12097,7 +6621,7 @@
 		gap: 6px;
 		align-items: center;
 	}
-	.atlas-btn {
+	:global(.atlas-btn) {
 		background: #1e1e2e;
 		border: 1px solid #313244;
 		color: #cdd6f4;
@@ -12107,14 +6631,14 @@
 		font-size: 12px;
 	}
 	.atlas-btn:hover { background: #313244; }
-	.atlas-zoom {
+	:global(.atlas-zoom) {
 		color: #6c7086;
 		font-size: 11px;
 		margin-left: 4px;
 	}
 	.atlas-live { color: #a6e3a1; font-size: 10px; margin-left: auto; animation: atlasPulse 2s infinite; }
 	@keyframes atlasPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-	.atlas-stat {
+	:global(.atlas-stat) {
 		color: #585b70;
 		font-size: 10px;
 		margin-left: 8px;
@@ -12122,11 +6646,11 @@
 		padding: 2px 6px;
 		border-radius: 3px;
 	}
-	.atlas-svg {
+	:global(.atlas-svg) {
 		width: 100%;
 		height: 100%;
 	}
-	.atlas-detail {
+	:global(.atlas-detail) {
 		position: absolute;
 		bottom: 12px;
 		left: 12px;
@@ -12141,7 +6665,7 @@
 		z-index: 10;
 		box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 	}
-	.atlas-detail-header {
+	:global(.atlas-detail-header) {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -12149,22 +6673,22 @@
 		padding-bottom: 8px;
 		border-bottom: 1px solid #313244;
 	}
-	.atlas-detail-header strong {
+	:global(.atlas-detail-header strong) {
 		color: #cdd6f4;
 		font-size: 14px;
 	}
-	.atlas-detail-dot {
+	:global(.atlas-detail-dot) {
 		width: 8px;
 		height: 8px;
 		border-radius: 50%;
 		display: inline-block;
 	}
-	.atlas-detail-type {
+	:global(.atlas-detail-type) {
 		font-size: 10px;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 	}
-	.atlas-detail-close {
+	:global(.atlas-detail-close) {
 		margin-left: auto;
 		background: none;
 		border: none;
@@ -12173,7 +6697,7 @@
 		font-size: 16px;
 	}
 	.atlas-detail-close:hover { color: #cdd6f4; }
-	.atlas-nav-btn {
+	:global(.atlas-nav-btn) {
 		display: block;
 		width: 100%;
 		margin-top: 8px;
@@ -12187,36 +6711,36 @@
 		text-align: center;
 	}
 	.atlas-nav-btn:hover { background: #45475a; color: #cdd6f4; }
-	.atlas-detail-body {
+	:global(.atlas-detail-body) {
 		font-size: 11px;
 		color: #a6adc8;
 		line-height: 1.5;
 	}
-	.atlas-detail-status {
+	:global(.atlas-detail-status) {
 		display: flex;
 		align-items: center;
 		gap: 6px;
 		font-weight: 600;
 		margin-bottom: 4px;
 	}
-	.atlas-detail-status-dot {
+	:global(.atlas-detail-status-dot) {
 		width: 7px;
 		height: 7px;
 		border-radius: 50%;
 		display: inline-block;
 	}
-	.atlas-detail-info {
+	:global(.atlas-detail-info) {
 		color: #89b4fa;
 		font-size: 11px;
 		margin-bottom: 6px;
 	}
-	.atlas-detail-desc {
+	:global(.atlas-detail-desc) {
 		color: #bac2de;
 		font-size: 11px;
 		line-height: 1.6;
 		margin-bottom: 8px;
 	}
-	.atlas-detail-section-title {
+	:global(.atlas-detail-section-title) {
 		font-size: 10px;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
@@ -12224,12 +6748,12 @@
 		margin: 8px 0 4px;
 		font-weight: 600;
 	}
-	.atlas-detail-connections {
+	:global(.atlas-detail-connections) {
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
 	}
-	.atlas-detail-conn {
+	:global(.atlas-detail-conn) {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -12243,31 +6767,31 @@
 		text-align: left;
 		width: 100%;
 	}
-	.atlas-detail-conn:hover {
+	:global(.atlas-detail-conn:hover) {
 		border-color: #45475a;
 		background: #1e1e2e;
 		color: #cdd6f4;
 	}
-	.atlas-detail-conn-dot {
+	:global(.atlas-detail-conn-dot) {
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
 		display: inline-block;
 		flex-shrink: 0;
 	}
-	.atlas-detail-conn-name {
+	:global(.atlas-detail-conn-name) {
 		flex: 1;
 	}
-	.atlas-detail-conn-label {
+	:global(.atlas-detail-conn-label) {
 		color: #585b70;
 		font-size: 10px;
 		font-style: italic;
 	}
-	.atlas-detail-conn-dir {
+	:global(.atlas-detail-conn-dir) {
 		color: #585b70;
 		font-size: 12px;
 	}
-	.atlas-detail-file {
+	:global(.atlas-detail-file) {
 		display: block;
 		background: #181825;
 		padding: 3px 6px;
@@ -12280,10 +6804,10 @@
 	}
 
 	/* ==================== Apps Grid ==================== */
-	.apps-drilldown {
+	:global(.apps-drilldown) {
 		padding: 0;
 	}
-	.apps-back-btn {
+	:global(.apps-back-btn) {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -12298,7 +6822,7 @@
 		text-align: left;
 	}
 	.apps-back-btn:hover { background: rgba(137, 180, 250, 0.08); }
-	.apps-cat-label {
+	:global(.apps-cat-label) {
 		font-size: 11px;
 		font-weight: 600;
 		text-transform: uppercase;
@@ -12306,19 +6830,19 @@
 		color: #6c7086;
 		padding: 8px 12px 2px;
 	}
-	.apps-wrap-msg {
+	:global(.apps-wrap-msg) {
 		grid-column: 1 / -1;
 		font-size: 11px;
 		color: #a6e3a1;
 		padding: 4px 8px;
 	}
 	.instances-panel { padding: 8px; }
-	.instance-row {
+	:global(.instance-row) {
 		display: flex; align-items: center; gap: 8px;
 		padding: 8px; border-radius: 6px; margin-bottom: 4px;
 		background: #1e1e2e;
 	}
-	.instance-btn {
+	:global(.instance-btn) {
 		margin-left: auto; padding: 4px 12px; border-radius: 4px;
 		background: #313244; color: #cdd6f4; border: 1px solid #45475a;
 		cursor: pointer; font-size: 12px;
@@ -12326,112 +6850,20 @@
 	.instance-btn:hover { background: #45475a; }
 	.instance-btn.restart { background: #45475a; margin-left: 4px; }
 	.instance-btn.restart:hover { background: #585b70; }
-	.instance-note {
+	:global(.instance-note) {
 		padding: 8px; margin-top: 8px; font-size: 11px;
 		color: #a6adc8; background: #181825; border-radius: 6px;
 	}
 
-	/* ==================== Intuition ==================== */
+	/* ==================== Intuition (wrapper only — body moved to IntuitionPanel.svelte) ==================== */
 	.intuition-panel { padding: 8px; }
-	.int-header {
-		display: flex; justify-content: space-between; align-items: center;
-		padding: 8px 4px; margin-bottom: 4px; border-bottom: 1px solid #313244;
-	}
-	.int-commander { font-weight: 700; color: #cba6f7; font-size: 14px; }
-	.int-ago { font-size: 11px; color: #6c7086; }
-	.int-axes { padding: 2px 0 6px 0; }
-	.int-axis {
-		display: flex; align-items: baseline; gap: 6px;
-		padding: 3px 4px; font-size: 12px;
-		min-width: 0;                       /* allow flex children to shrink below content size */
-	}
-	/* The int-label has min-width:80px which is fine for short labels like
-	   "Mood"/"Focus" but breaks for long single-token captions (e.g. a caller
-	   name "intuition-classifier") when the panel is dragged narrow. Allow
-	   wrapping/breaking so the panel never gets forced wider than the user
-	   wants — and never wraps one-char-per-line. */
-	.int-label, .int-val { overflow-wrap: anywhere; word-break: break-word; }
-
-	/* PAN's thought stream — one row = one first-person sentence. Designed to
-	   render cleanly down to ~160px panel width. The text wraps softly via
-	   overflow-wrap:anywhere; the icon + age cling to the row edges. */
-	/* Life Needs — Sims-style motive bars. Compact horizontal row per need. */
-	.needs-grid {
-		padding: 2px 0 8px 0; display: flex; flex-direction: column; gap: 3px;
-	}
-	.need-row {
-		display: flex; align-items: center; gap: 6px;
-		padding: 3px 4px; font-size: 12px; min-width: 0;
-	}
-	.need-icon { flex-shrink: 0; width: 16px; text-align: center; font-size: 13px; }
-	.need-label {
-		flex-shrink: 0; width: 90px; color: #a6adc8;
-		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-	}
-	.need-bar-track {
-		flex: 1 1 auto; min-width: 30px; height: 8px;
-		background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden;
-	}
-	.need-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease, background 0.4s ease; }
-	.need-level {
-		flex-shrink: 0; width: 28px; text-align: right;
-		font-variant-numeric: tabular-nums; font-weight: 600; font-size: 11px;
-	}
-
-	.thought-stream { padding: 2px 0 8px 0; display: flex; flex-direction: column; gap: 4px; }
-	.thought-row {
-		display: flex; align-items: flex-start; gap: 6px;
-		padding: 5px 6px; font-size: 12px; line-height: 1.4;
-		background: rgba(255,255,255,0.02); border-radius: 5px;
-		border-left: 2px solid rgba(203,166,247,0.25);
-		min-width: 0;
-	}
-	.thought-source { flex-shrink: 0; font-size: 13px; line-height: 1.3; width: 16px; text-align: center; }
-	.thought-text   { flex: 1; min-width: 0; color: #cdd6f4; overflow-wrap: anywhere; word-break: break-word; }
-	.thought-age    { flex-shrink: 0; color: #6c7086; font-size: 10px; font-family: ui-monospace, monospace; align-self: flex-end; }
-	.int-axis:hover { background: #1e1e2e; border-radius: 4px; }
-	.int-label { color: #6c7086; min-width: 80px; flex-shrink: 0; }
-	.int-val { color: #cdd6f4; word-break: break-word; }
-	.int-val.small { font-size: 11px; color: #a6adc8; }
-	.int-axis.task { padding-left: 12px; }
-	.int-axis.task .int-label { min-width: auto; }
-	.task-status { color: #6c7086; }
-	.task-status.in-progress { color: #f9e2af; }
-	.int-axis.pred { justify-content: space-between; }
-	.int-confidence {
-		color: #a6e3a1; font-size: 11px; flex-shrink: 0;
-		background: #1e1e2e; padding: 1px 6px; border-radius: 8px;
-	}
-	.int-topics { padding: 2px 4px 6px 4px; }
-	.int-topic {
-		font-size: 11px; color: #a6adc8; padding: 2px 0;
-		border-left: 2px solid #313244; padding-left: 8px; margin-bottom: 2px;
-	}
-	.int-last-heard {
-		font-size: 12px; color: #bac2de; padding: 4px 8px;
-		background: #1e1e2e; border-radius: 6px; margin: 4px;
-		font-style: italic;
-	}
-	.int-footer {
-		display: flex; justify-content: space-between;
-		font-size: 10px; color: #585b70; padding: 8px 4px 4px;
-		border-top: 1px solid #313244; margin-top: 8px;
-	}
-
-	.wellbeing-ok { color: #a6e3a1; }
-	.wellbeing-notok { color: #f9e2af; }
-	.wellbeing-emergency { color: #f38ba8; font-weight: 700; }
-	.int-disclaimer {
-		font-size: 10px; color: #585b70; padding: 4px 4px 2px;
-		font-style: italic;
-	}
 	.svc-healthy { color: #a6e3a1; }
 	.svc-down { color: #f38ba8; }
 
 	/* ==================== Benchmarks ==================== */
 	.benchmarks-panel { padding: 8px; }
 	/* Summary header */
-	.bench-summary {
+	:global(.bench-summary) {
 		display: flex; justify-content: space-between; align-items: center;
 		background: rgba(255,255,255,0.04);
 		border: 1px solid #313244;
@@ -12444,7 +6876,7 @@
 	.bench-summary-num.all-pass { color: #a6e3a1; }
 	.bench-summary-label { font-size: 11px; color: #6c7086; }
 	/* Suite cards */
-	.bench-suite {
+	:global(.bench-suite) {
 		background: rgba(255,255,255,0.04);
 		border: 1px solid #313244;
 		border-radius: 6px;
@@ -12452,7 +6884,7 @@
 		margin-bottom: 8px;
 	}
 	.bench-suite.bench-not-run { opacity: 0.6; }
-	.bench-suite-header {
+	:global(.bench-suite-header) {
 		display: flex; justify-content: space-between; align-items: center;
 		margin-bottom: 4px;
 	}
@@ -12462,7 +6894,7 @@
 	.bench-suite-status.pass { color: #a6e3a1; }
 	.bench-suite-status.fail { color: #f38ba8; }
 	.bench-suite-status.bench-unrun { color: #45475a; }
-	.bench-mini-run {
+	:global(.bench-mini-run) {
 		background: rgba(137,180,250,0.12);
 		border: 1px solid rgba(137,180,250,0.3);
 		border-radius: 4px;
@@ -12475,7 +6907,7 @@
 	.bench-mini-run:disabled { opacity: 0.4; cursor: not-allowed; }
 	.bench-mini-run:not(:disabled):hover { background: rgba(137,180,250,0.22); }
 	/* Score row */
-	.bench-row {
+	:global(.bench-row) {
 		display: flex; align-items: center; gap: 6px;
 		padding: 2px 0; font-size: 11px;
 	}
@@ -12492,7 +6924,7 @@
 	.bench-val.fail { color: #f38ba8; }
 	/* Metric chips */
 	.bench-metrics { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 3px; }
-	.bench-chip {
+	:global(.bench-chip) {
 		font-size: 10px; padding: 1px 5px; border-radius: 3px;
 		background: rgba(255,255,255,0.06); color: #6c7086;
 		border: 1px solid #313244;
@@ -12503,7 +6935,7 @@
 	.bench-not-run-label { font-size: 10px; color: #45475a; padding: 2px 0; }
 	.bench-ran-at { font-size: 10px; color: #45475a; text-align: right; margin-top: 2px; }
 	/* Run buttons */
-	.bench-run-btn {
+	:global(.bench-run-btn) {
 		background: rgba(137,180,250,0.15);
 		border: 1px solid rgba(137,180,250,0.4);
 		border-radius: 5px;
@@ -12516,7 +6948,7 @@
 	.bench-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.bench-run-btn:not(:disabled):hover { background: rgba(137,180,250,0.25); }
 	/* AutoDev report section */
-	.bench-autodev-report {
+	:global(.bench-autodev-report) {
 		background: rgba(249,226,175,0.06);
 		border: 1px solid rgba(249,226,175,0.2);
 		border-radius: 6px;
@@ -12524,11 +6956,11 @@
 		margin-bottom: 10px;
 	}
 	.bench-report-title { font-size: 10px; font-weight: 700; color: #f9e2af; letter-spacing: 0.05em; margin-bottom: 6px; }
-	.bench-rec {
+	:global(.bench-rec) {
 		display: flex; align-items: flex-start; gap: 6px;
 		padding: 3px 0; font-size: 10px;
 	}
-	.bench-rec-badge {
+	:global(.bench-rec-badge) {
 		font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px;
 		flex-shrink: 0; margin-top: 1px;
 	}
@@ -12536,7 +6968,7 @@
 	.bench-rec-badge.research { background: rgba(137,180,250,0.15); color: #89b4fa; border: 1px solid rgba(137,180,250,0.3); }
 	.bench-rec-text { color: #cdd6f4; flex: 1; line-height: 1.4; }
 	.bench-rec-score { color: #45475a; flex-shrink: 0; font-size: 9px; margin-top: 1px; }
-	.bench-scout-topics {
+	:global(.bench-scout-topics) {
 		margin-top: 6px; padding-top: 5px;
 		border-top: 1px solid rgba(249,226,175,0.15);
 		font-size: 10px; color: #6c7086; font-style: italic;
@@ -12545,7 +6977,7 @@
 
 	/* ==================== Beta Pipeline ==================== */
 	.pipeline-panel { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-	.pl-header {
+	:global(.pl-header) {
 		display: flex; align-items: center; gap: 6px;
 		padding: 8px; background: rgba(137,180,250,0.06);
 		border: 1px solid rgba(137,180,250,0.12); border-radius: 6px;
@@ -12556,7 +6988,7 @@
 	.pl-spacer { flex: 1; }
 	.pl-error { font-size: 11px; color: #f38ba8; padding: 4px 8px; background: rgba(243,139,168,0.08); border-radius: 4px; }
 	.pl-slot-label { font-size: 10px; font-weight: 700; color: #6c7086; text-transform: uppercase; letter-spacing: 0.8px; padding: 4px 0 2px; }
-	.pl-slot {
+	:global(.pl-slot) {
 		display: flex; align-items: center; gap: 6px;
 		padding: 6px 8px; background: rgba(30,30,46,0.8);
 		border: 1px solid rgba(69,71,90,0.4); border-radius: 4px;
@@ -12571,7 +7003,7 @@
 	.pl-slot-uptime { font-size: 10px; color: #6c7086; margin-left: auto; }
 	.pl-slot-none { color: #45475a; font-size: 12px; }
 	.pl-bench-title { font-size: 10px; font-weight: 700; color: #6c7086; text-transform: uppercase; letter-spacing: 0.8px; padding: 6px 0 2px; }
-	.pl-bench-row {
+	:global(.pl-bench-row) {
 		display: flex; align-items: center; gap: 6px;
 		padding: 3px 8px; border-radius: 3px; font-size: 11px;
 	}
@@ -12584,7 +7016,7 @@
 	.pl-bench-score { font-size: 10px; color: #6c7086; }
 	.pl-elapsed { font-size: 10px; color: #45475a; text-align: right; margin-top: 4px; }
 	/* Pipeline buttons */
-	.pl-btn {
+	:global(.pl-btn) {
 		padding: 4px 10px; border-radius: 4px; border: none; cursor: pointer;
 		font-size: 11px; font-weight: 600; transition: opacity 0.15s;
 	}
@@ -12597,21 +7029,21 @@
 	.pl-btn-promote:hover { background: rgba(94,205,107,0.25); }
 
 	/* ==================== Lifeboat ==================== */
-	.lifeboat-panel {
+	:global(.lifeboat-panel) {
 		padding: 8px;
 	}
-	.lifeboat-countdown {
+	:global(.lifeboat-countdown) {
 		font-size: 12px;
 		color: #fab387;
 		font-weight: 600;
 		padding: 6px 0 2px;
 	}
-	.lifeboat-actions {
+	:global(.lifeboat-actions) {
 		display: flex;
 		gap: 6px;
 		padding: 6px 0;
 	}
-	.lifeboat-btn {
+	:global(.lifeboat-btn) {
 		padding: 5px 14px;
 		border-radius: 4px;
 		border: 1px solid #45475a;
@@ -12623,32 +7055,32 @@
 	}
 	.lifeboat-btn:hover { background: #45475a; }
 	.lifeboat-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-	.lifeboat-btn.rollback {
+	:global(.lifeboat-btn.rollback) {
 		background: #45475a;
 		border-color: #f38ba8;
 		color: #f38ba8;
 	}
 	.lifeboat-btn.rollback:hover { background: #585b70; }
-	.lifeboat-btn.confirm {
+	:global(.lifeboat-btn.confirm) {
 		background: #313244;
 		border-color: #a6e3a1;
 		color: #a6e3a1;
 	}
 	.lifeboat-btn.confirm:hover { background: #45475a; }
-	.lifeboat-btn.swap {
+	:global(.lifeboat-btn.swap) {
 		background: #313244;
 		border-color: #89b4fa;
 		color: #89b4fa;
 	}
 	.lifeboat-btn.swap:hover { background: #45475a; }
 
-	.apps-grid {
+	:global(.apps-grid) {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 8px;
 		padding: 8px;
 	}
-	.app-card {
+	:global(.app-card) {
 		background: #1e1e2e;
 		border: 1px solid #313244;
 		border-radius: 8px;
@@ -12657,27 +7089,27 @@
 		cursor: pointer;
 		transition: all 0.15s;
 	}
-	.app-card:hover {
+	:global(.app-card:hover) {
 		border-color: #89b4fa;
 		background: #181825;
 	}
-	.app-icon {
+	:global(.app-icon) {
 		font-size: 24px;
 		margin-bottom: 4px;
 	}
-	.app-name {
+	:global(.app-name) {
 		color: #cdd6f4;
 		font-size: 12px;
 		font-weight: 600;
 	}
-	.app-desc {
+	:global(.app-desc) {
 		color: #6c7086;
 		font-size: 10px;
 		margin-top: 2px;
 	}
 
 	/* ==================== Alerts ==================== */
-	.alert-indicator {
+	:global(.alert-indicator) {
 		min-width: 20px; height: 20px;
 		border-radius: 10px;
 		background: #f38ba8;
@@ -12690,7 +7122,7 @@
 		transition: transform 0.15s ease;
 	}
 	.alert-indicator:hover { transform: scale(1.15); }
-	.alert-indicator.flash {
+	:global(.alert-indicator.flash) {
 		animation: alert-pulse 0.6s ease-in-out 3;
 	}
 	@keyframes alert-pulse {
@@ -12700,7 +7132,7 @@
 
 	.alerts-panel { display: flex; flex-direction: column; gap: 8px; }
 	.alerts-filters { display: flex; gap: 4px; margin-bottom: 4px; }
-	.alert-filter-select {
+	:global(.alert-filter-select) {
 		flex: 1;
 		background: #0a0a0f; color: #cdd6f4;
 		border: 1px solid #1e1e2e; border-radius: 4px;
@@ -12708,7 +7140,7 @@
 	}
 	.alert-filter-select:focus { border-color: #89b4fa; }
 
-	.alert-card {
+	:global(.alert-card) {
 		background: #1a1a2e; border-radius: 6px;
 		padding: 8px; border-left: 3px solid #6c7086;
 	}
@@ -12717,14 +7149,14 @@
 	.alert-card.info { border-left-color: #89b4fa; }
 
 	.alert-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-	.alert-severity-dot {
+	:global(.alert-severity-dot) {
 		width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
 	}
 	.alert-severity-dot.critical { background: #f38ba8; }
 	.alert-severity-dot.warning { background: #fab387; }
 	.alert-severity-dot.info { background: #89b4fa; }
 
-	.alert-type-badge {
+	:global(.alert-type-badge) {
 		font-size: 10px; font-weight: 600; text-transform: uppercase;
 		color: #a6adc8; letter-spacing: 0.5px;
 	}
@@ -12738,13 +7170,13 @@
 	.alert-resolution { font-size: 11px; color: #a6e3a1; margin-bottom: 4px; }
 
 	.alert-stack summary { font-size: 10px; color: #6c7086; cursor: pointer; }
-	.alert-stack pre {
+	:global(.alert-stack pre) {
 		font-size: 10px; color: #6c7086; white-space: pre-wrap;
 		max-height: 120px; overflow-y: auto; margin: 4px 0 0 0;
 	}
 
 	.alert-actions { display: flex; gap: 4px; margin-bottom: 4px; }
-	.alert-btn {
+	:global(.alert-btn) {
 		padding: 3px 8px; border-radius: 4px; border: none;
 		font-size: 10px; font-weight: 600; cursor: pointer;
 	}
@@ -12762,19 +7194,19 @@
 	/* ─── Contacts Panel ─── */
 	.contacts-panel { padding: 0; }
 	.contacts-toolbar { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid #313244; }
-	.contacts-search {
+	:global(.contacts-search) {
 		flex: 1; background: #181825; border: 1px solid #313244; border-radius: 4px;
 		color: #cdd6f4; padding: 4px 8px; font-size: 12px; outline: none;
 	}
 	.contacts-search:focus { border-color: #585b70; }
-	.contacts-add-btn {
+	:global(.contacts-add-btn) {
 		background: #313244; border: none; color: #a6e3a1; font-size: 16px; width: 28px;
 		border-radius: 4px; cursor: pointer; font-weight: bold;
 	}
 	.contacts-add-btn:hover { background: #45475a; }
 
 	.contact-add-form { padding: 8px; border-bottom: 1px solid #313244; display: flex; flex-direction: column; gap: 4px; }
-	.contact-input {
+	:global(.contact-input) {
 		background: #181825; border: 1px solid #313244; border-radius: 4px;
 		color: #cdd6f4; padding: 5px 8px; font-size: 12px; outline: none;
 	}
@@ -12787,18 +7219,18 @@
 
 	.contact-row { cursor: pointer; padding: 6px 8px !important; transition: background 0.15s; }
 	.contact-row:hover { background: #313244; }
-	.contact-avatar {
+	:global(.contact-avatar) {
 		width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center;
 		justify-content: center; font-size: 14px; font-weight: bold; color: #cdd6f4; flex-shrink: 0;
 	}
-	.contact-badge {
+	:global(.contact-badge) {
 		background: #f38ba8; color: #1e1e2e; font-size: 10px; padding: 1px 5px;
 		border-radius: 8px; margin-left: 6px; font-weight: bold;
 	}
 	.contact-status { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #585b70; margin-right: 4px; }
 	.contact-status.online { background: #a6e3a1; }
 	.contact-status.away { background: #f9e2af; }
-	.contact-action-btn {
+	:global(.contact-action-btn) {
 		background: none; border: none; color: #585b70; cursor: pointer; font-size: 14px; padding: 2px 4px;
 	}
 	.contact-action-btn:hover { color: #f9e2af; }
@@ -12928,29 +7360,29 @@
 	/* ─── Mail Panel ─── */
 	.mail-panel { display: flex; flex-direction: column; height: 100%; }
 	.mail-list { flex: 1; overflow-y: auto; }
-	.mail-row {
+	:global(.mail-row) {
 		padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #1e1e2e;
 		transition: background 0.15s;
 	}
 	.mail-row:hover { background: #313244; }
 	.mail-row.unread { border-left: 3px solid #89b4fa; }
-	.mail-from {
+	:global(.mail-from) {
 		font-size: 13px; font-weight: 500; color: #cdd6f4;
 		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 	}
 	.mail-row.unread .mail-from { font-weight: 700; }
-	.mail-subject {
+	:global(.mail-subject) {
 		font-size: 12px; color: #a6adc8;
 		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 	}
-	.mail-preview {
+	:global(.mail-preview) {
 		font-size: 11px; color: #585b70;
 		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 	}
-	.mail-date {
+	:global(.mail-date) {
 		font-size: 10px; color: #585b70; margin-top: 2px;
 	}
-	.mail-pager {
+	:global(.mail-pager) {
 		display: flex; align-items: center; justify-content: center; gap: 8px;
 		padding: 8px; border-top: 1px solid #313244;
 	}
@@ -12963,10 +7395,10 @@
 	.expand-btn:hover { color: #89b4fa; }
 
 	/* ─── Mail row top line ─── */
-	.mail-row-top {
+	:global(.mail-row-top) {
 		display: flex; align-items: center; gap: 6px;
 	}
-	.mail-type-badge {
+	:global(.mail-type-badge) {
 		font-size: 11px; color: #585b70; flex-shrink: 0;
 	}
 	.mail-type-badge.pan { color: #a6e3a1; }

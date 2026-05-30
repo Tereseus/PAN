@@ -731,6 +731,12 @@ async function processUnifiedResult(action, text, context) {
       // Phone → headless Claude session delegate (task #453).
       // Cerebras decided this needs full capability (code, files, multi-step).
       // Fire-and-forget into a live PTY adapter; return immediate TTS ack.
+      //
+      // Benchmark/test sources must NEVER touch a real user session — they would
+      // inject messages into the active terminal, cost money, and corrupt history.
+      if (context?.source && /benchmark|regression/.test(context.source)) {
+        return { intent: 'task', speech_act, response: '[benchmark: task routing verified — no session touched]' };
+      }
       try {
         const { delegateToPhoneToolsSession } = await import('./terminal.js');
         const delegateText = action.text || text;
@@ -761,7 +767,21 @@ async function processUnifiedResult(action, text, context) {
       // hint is given. Returns a transparent ack including the resolved
       // session so the user can correct PAN if it picked wrong.
       if (action.action === 'pipe') {
+        // DISABLED by user request (2026-05-26) — voice router was auto-piping
+        // classifier-generated text (e.g. "pong") into the active PTY tagged
+        // source=voice_pipeline. Those ghost messages were appearing in the
+        // user's transcript as if they had typed them, and burning model
+        // tokens because Claude responded to them. Re-enable only behind an
+        // explicit user-toggled setting + confirmation prompt.
         const sendText = (action.text || '').toString();
+        console.warn(`[PAN Router] terminal.pipe DISABLED — refused to inject ${JSON.stringify(sendText.slice(0,80))} into PTY (would have tagged source=voice_pipeline)`);
+        return {
+          intent: 'terminal',
+          speech_act,
+          response: `Terminal pipe is disabled. Type into the terminal directly.`,
+          disabled: { reason: 'voice_pipeline_pty_injection_disabled', would_have_sent: sendText.slice(0, 200) },
+        };
+        // ↓↓↓ unreachable; preserved for future re-enable ↓↓↓
         if (!sendText.trim()) {
           return { intent: 'terminal', speech_act, response: `I need to know what to send. What text should I type?` };
         }

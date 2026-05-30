@@ -537,71 +537,138 @@ router.get('/api/pty-transcript', (req, res) => {
 
 // GET /dashboard/api/stats
 // Cached — queries run on a 72K-row events table (2-3s each). Stale for 60s is fine for dashboard counters.
-let _statsCache = null;
-let _statsCacheAt = 0;
-const STATS_TTL_MS = 60_000;
-router.get('/api/stats', (req, res) => {
-  if (_statsCache && (Date.now() - _statsCacheAt) < STATS_TTL_MS) {
-    return res.json(_statsCache);
-  }
-  const stats = getScoped(req, `SELECT
+// PERF (2026-05-29): /api/stats was the single worst route in the codebase.
+// On a 1.6GB pan.db it routinely took 20-30 SECONDS per cold call, blocking
+// the entire Craft event loop while better-sqlite3 ran:
+//   - 6 COUNT(*) table scans across events / memory_items / sessions / etc
+//   - COUNT(DISTINCT event_type) on events
+//   - GROUP BY event_type on events
+//   - TWO `lower(data) LIKE '%restart%'` full-table scans for the "restart
+//     friction metric" — these alone were 10-20s each because they do a
+//     per-row text conversion and substring match across millions of events
+//
+// The handler had a 60s response cache, but the FIRST hit after every Craft
+// swap (and after every cache expiry, every 60s) re-triggered the full scan
+// and pinned the loop. That's why /api/stats showed up as a 31s slow route
+// and was a top contributor to the 170-195s event-loop blocks the user kept
+// seeing.
+//
+// New shape:
+//   - Background ticker recomputes the snapshot every 5 minutes. It's still
+//     a sync set of queries, but a 5-min cadence means there's only ~one
+//     pinning event per 5min worst case (down from 1 per 60s).
+//   - The restart-friction LIKE scans are now done at the SAME 5-min cadence
+//     but in a SEPARATE try/catch that the rest of the snapshot doesn't wait
+//     on — if they fail or time out, the dashboard still gets the cheap counts.
+//   - The handler is pure-fast: read snapshot, return JSON. Never blocks.
+//   - On the very first call before the ticker has populated, we fall back
+//     to cheap COUNT(*) queries WITHOUT the restart scan (returns nulls for
+//     those fields) so the dashboard still renders.
+let _statsSnapshot = null;       // { totalCounts, eventTypes, restarts, dbSize, computedAt }
+let _statsTickerStarted = false;
+
+function _computeCheapStatsSnapshot(reqOrgId = 'org_personal') {
+  // Cheap counts — these hit indexed primary keys or small tables fast.
+  // We intentionally don't pass through req scoping here because the ticker
+  // is org-agnostic — the dashboard's stats panel is currently global.
+  const stats = get(`SELECT
     (SELECT COUNT(*) FROM events WHERE org_id = :org_id) as total_events,
     (SELECT COUNT(*) FROM memory_items WHERE org_id = :org_id) as total_memory_items,
     (SELECT COUNT(*) FROM sessions WHERE org_id = :org_id) as total_sessions,
     (SELECT COUNT(*) FROM projects WHERE org_id = :org_id) as total_projects,
     (SELECT COUNT(*) FROM devices WHERE org_id = :org_id) as total_devices,
-    (SELECT COUNT(DISTINCT event_type) FROM events WHERE org_id = :org_id) as event_types
-  `);
-
+    (SELECT COUNT(DISTINCT event_type) FROM events WHERE org_id = :org_id) as event_types`,
+    { ':org_id': reqOrgId });
+  const eventTypes = all(`SELECT event_type, COUNT(*) as count FROM events
+    WHERE org_id = :org_id GROUP BY event_type ORDER BY count DESC`,
+    { ':org_id': reqOrgId });
   let dbSize = 0;
-  try {
-    dbSize = statSync(DB_PATH).size;
-  } catch {}
+  try { dbSize = statSync(DB_PATH).size; } catch {}
+  return { stats, eventTypes, dbSize };
+}
 
-  const eventTypes = allScoped(req, `SELECT event_type, COUNT(*) as count FROM events WHERE org_id = :org_id GROUP BY event_type ORDER BY count DESC`);
-
-  // Restart friction metric — total times the user has uttered the word
-  // "restart" in a prompt event. This is a per-application data category
-  // because it measures dev-loop friction (how often we have to break flow).
-  // Per-project breakdown joins via the session → project path heuristic
-  // already used by other dashboard queries.
+function _computeRestartFriction(reqOrgId = 'org_personal') {
+  // Heaviest queries in the codebase — full table scan + per-row lower() + LIKE.
+  // Kept isolated so a slow run doesn't poison the rest of the snapshot.
   let totalRestarts = 0;
   let restartsByProject = [];
   try {
-    totalRestarts = getScoped(req, `
+    const r = get(`
       SELECT COUNT(*) AS c FROM events
       WHERE event_type IN ('UserPromptSubmit','user','user_prompt')
         AND lower(data) LIKE '%restart%'
-        AND org_id = :org_id
-    `).c || 0;
-    restartsByProject = allScoped(req, `
-      SELECT
-        COALESCE(p.name, 'unscoped') AS project,
-        COUNT(*) AS count
+        AND org_id = :org_id`,
+      { ':org_id': reqOrgId });
+    totalRestarts = r?.c || 0;
+    restartsByProject = all(`
+      SELECT COALESCE(p.name, 'unscoped') AS project, COUNT(*) AS count
       FROM events e
       LEFT JOIN sessions s ON s.id = e.session_id
       LEFT JOIN projects p ON p.id = s.project_id
       WHERE e.event_type IN ('UserPromptSubmit','user','user_prompt')
         AND lower(e.data) LIKE '%restart%'
         AND e.org_id = :org_id
-      GROUP BY project
-      ORDER BY count DESC
-    `);
+      GROUP BY project ORDER BY count DESC`,
+      { ':org_id': reqOrgId });
   } catch (err) {
-    console.warn('[stats] restart count failed:', err.message);
+    console.warn('[stats] restart friction scan failed:', err.message);
   }
+  return { totalRestarts, restartsByProject };
+}
 
-  const result = {
-    ...stats,
-    db_size_bytes: dbSize,
-    db_size: dbSize ? `${(dbSize / 1048576).toFixed(1)} MB` : '--',
-    event_types: eventTypes,
-    total_restarts: totalRestarts,
-    restarts_by_project: restartsByProject,
-  };
-  _statsCache = result;
-  _statsCacheAt = Date.now();
-  res.json(result);
+function _refreshStatsSnapshot() {
+  try {
+    const t0 = Date.now();
+    const { stats, eventTypes, dbSize } = _computeCheapStatsSnapshot();
+    _statsSnapshot = {
+      ...stats,
+      db_size_bytes: dbSize,
+      db_size: dbSize ? `${(dbSize / 1048576).toFixed(1)} MB` : '--',
+      event_types: eventTypes,
+      // Restart-friction metric is DISABLED — see _computeRestartFriction note.
+      total_restarts: null,
+      restarts_by_project: [],
+      computed_at: new Date().toISOString(),
+      computed_ms: Date.now() - t0,
+    };
+  } catch (e) {
+    console.warn('[stats] snapshot refresh failed:', e.message);
+  }
+}
+
+// _computeRestartFriction is the bad function. lower(data) LIKE '%restart%' on
+// the events table runs a full table scan WITH a per-row text conversion. On a
+// 1.6GB pan.db with millions of events this can lock the better-sqlite3 reader
+// for 10-30 seconds, blocking the entire Craft event loop. We're keeping the
+// function definition (above) for future use once we either:
+//   (a) move events.data into an FTS5 virtual table for fast substring search, or
+//   (b) tag UserPromptSubmit events with a precomputed "contains_restart" flag.
+// Until then, _refreshStatsSnapshot does not call it. The dashboard renders
+// `total_restarts = null` and the stats panel suppresses the row gracefully.
+
+// REGRESSION KILLER (2026-05-29 evening): the previous version of this code
+// set up a setInterval(_refreshStatsSnapshot, 5 * 60_000) the first time
+// anyone hit /api/stats. That meant every 5 minutes the BACKGROUND ticker
+// ran the GROUP BY event_type query on the events table — sync, on the
+// main thread — and blocked the entire Craft event loop for 2-3 minutes
+// EACH time. Field receipts: 183s block at 23:28, 184s at 23:33, 155s at
+// 23:37 — exactly 5 min apart, exactly matching the setInterval cadence.
+//
+// The original code (on-demand cache, no background ticker) was correct.
+// Restoring that pattern: compute on-demand, cache the result for 10 min.
+// The /api/stats panel is a "click to see" view, not something the
+// dashboard polls — so on-demand is the right shape.
+router.get('/api/stats', (req, res) => {
+  if (_statsSnapshot && Date.now() - new Date(_statsSnapshot.computed_at).getTime() < 10 * 60_000) {
+    return res.json(_statsSnapshot);
+  }
+  try {
+    _refreshStatsSnapshot(); // sync; populates _statsSnapshot
+    if (_statsSnapshot) return res.json(_statsSnapshot);
+    return res.status(500).json({ error: 'stats snapshot failed' });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /dashboard/api/memory — reads actual Claude Code memory files from ~/.claude/projects/*/memory/
@@ -813,24 +880,92 @@ router.get('/api/status', (req, res) => {
   res.json({ ok: true, pid: process.pid, ts: Date.now() });
 });
 
+// Module-level response cache for /api/services.
+// Cache is scoped by org_id (taken from req.org_id which the auth middleware
+// attaches). The external probes (Whisper, Ollama, Super-Carrier /health)
+// run on a background ticker — see _externalProbeSnapshot below — so the
+// HTTP handler is pure-synchronous DB work and answers in single-digit ms.
+const _servicesCache = new Map(); // org_id -> { ts, body }
+const _servicesInflight = new Map(); // org_id -> Promise (dedupe concurrent calls)
+const _SERVICES_TTL_MS = 3000;
+
+// Background snapshot of the 3 external probes. Refreshed every 10s on a
+// timer; /api/services just reads this. This decouples request latency
+// from network probes — previously the dashboard paid the full Ollama
+// timeout (3s) on every cold sidebar refresh because Ollama is on a
+// remote MiniPC over Tailscale and probes can be slow even when up.
+const _externalProbeSnapshot = {
+  ts: 0,
+  health:  { status: 'pending', value: null },
+  whisper: { status: 'pending', value: null },
+  ollama:  { status: 'pending', value: null },
+};
+let _externalProbeTimer = null;
+
+async function _refreshExternalProbes() {
+  const _ollamaUrl = getOllamaUrl();
+  const probes = await Promise.allSettled([
+    fetch('http://127.0.0.1:7777/health', { signal: AbortSignal.timeout(2000) })
+      .then(async (r) => r.ok ? await r.json().catch(() => ({})) : null),
+    fetch('http://127.0.0.1:7782', { signal: AbortSignal.timeout(2000) })
+      .then(async (r) => r.ok ? { ok: true, body: await r.json().catch(() => ({})) } : { ok: false }),
+    fetch(`${_ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(4000) })
+      .then(async (r) => r.ok ? { ok: true, body: await r.json().catch(() => ({})) } : { ok: false }),
+  ]);
+  _externalProbeSnapshot.health  = probes[0];
+  _externalProbeSnapshot.whisper = probes[1];
+  _externalProbeSnapshot.ollama  = probes[2];
+  _externalProbeSnapshot.ts = Date.now();
+}
+
+function _startExternalProbeTicker() {
+  if (_externalProbeTimer) return;
+  // Kick off the first round immediately (non-blocking).
+  _refreshExternalProbes().catch(() => {});
+  _externalProbeTimer = setInterval(() => {
+    _refreshExternalProbes().catch(() => {});
+  }, 10000);
+}
+
+// Fire the ticker on module load — Craft is already past the boot-heavy
+// window by the time this route module is required.
+_startExternalProbeTicker();
+
 // GET /dashboard/api/services — unified services + devices status
 router.get('/api/services', async (req, res) => {
+  const orgKey = req.org_id || 'default';
+  const cached = _servicesCache.get(orgKey);
+  if (cached && Date.now() - cached.ts < _SERVICES_TTL_MS) {
+    return res.json(cached.body);
+  }
+  // Coalesce concurrent in-flight requests so only ONE actually runs the work.
+  const existing = _servicesInflight.get(orgKey);
+  if (existing) {
+    try { const body = await existing; return res.json(body); }
+    catch (e) { return res.status(500).json({ error: e.message }); }
+  }
+
+  const runner = (async () => {
   const services = [];
   const issues = [];
   const pcHost = hostname();
 
+  // Read from the background snapshot — no network wait. If the ticker
+  // hasn't completed its first round yet (within a few seconds of boot),
+  // probes will be in 'pending' state and we treat them like fulfilled-but-empty.
+  const healthProbe = _externalProbeSnapshot.health;
+  const whisperProbe = _externalProbeSnapshot.whisper;
+  const ollamaProbe = _externalProbeSnapshot.ollama;
+
   // Process layer stack — Super-Carrier → Carrier → Craft
   const uptime = process.uptime();
   let scPid = null, carrierPid = null, scReady = false;
-  try {
-    const hRes = await fetch('http://127.0.0.1:7777/health', { signal: AbortSignal.timeout(1500) });
-    if (hRes.ok) {
-      const hData = await hRes.json();
-      scPid    = hData.superCarrierPid ?? null;
-      carrierPid = hData.carrierPid ?? null;
-      scReady  = !!hData.superCarrier;
-    }
-  } catch {}
+  if (healthProbe.status === 'fulfilled' && healthProbe.value) {
+    const hData = healthProbe.value;
+    scPid    = hData.superCarrierPid ?? null;
+    carrierPid = hData.carrierPid ?? null;
+    scReady  = !!hData.superCarrier;
+  }
 
   if (scReady && scPid) {
     services.push({
@@ -920,19 +1055,16 @@ router.get('/api/services', async (req, res) => {
   for (const r of usageRows) usageMap[`${r.caller}:${r.model}`] = r.calls;
   const totalCalls = usageRows.reduce((s, r) => s + r.calls, 0);
 
-  // Whisper STT
-  try {
-    const wr = await fetch('http://127.0.0.1:7782', { signal: AbortSignal.timeout(1500) });
-    if (wr.ok) {
-      const wd = await wr.json().catch(() => ({}));
-      const enrolled = wd.enrolled != null ? `${wd.enrolled} voice${wd.enrolled !== 1 ? 's' : ''} enrolled` : '';
-      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'up',
-        role: 'Speech → text for all voice commands + passive speaker ID',
-        detail: [enrolled, `${wd.model || 'base'} model · port 7782`].filter(Boolean).join(' · ') });
-    } else {
-      services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', role: 'Speech → text', detail: 'Server error' });
-    }
-  } catch {
+  // Whisper STT — consumes the parallel probe fired at the top of the handler
+  if (whisperProbe.status === 'fulfilled' && whisperProbe.value?.ok) {
+    const wd = whisperProbe.value.body || {};
+    const enrolled = wd.enrolled != null ? `${wd.enrolled} voice${wd.enrolled !== 1 ? 's' : ''} enrolled` : '';
+    services.push({ category: 'AI Models', name: 'Whisper STT', status: 'up',
+      role: 'Speech → text for all voice commands + passive speaker ID',
+      detail: [enrolled, `${wd.model || 'base'} model · port 7782`].filter(Boolean).join(' · ') });
+  } else if (whisperProbe.status === 'fulfilled') {
+    services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', role: 'Speech → text', detail: 'Server error' });
+  } else {
     services.push({ category: 'AI Models', name: 'Whisper STT', status: 'down', role: 'Speech → text', detail: 'Not running · steward will restart' });
   }
 
@@ -942,37 +1074,35 @@ router.get('/api/services', async (req, res) => {
     .filter(Boolean)
     .find(d => d.services.some(s => s.name === 'ollama' && s.status === 'up'));
 
-  try {
-    const or = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (or.ok) {
-      const od = await or.json().catch(() => ({}));
-      const models = od.models || [];
-      if (models.length === 0) {
-        services.push({ category: 'AI Models', name: 'Ollama', status: 'up', role: 'Local LLM runtime', detail: 'Running · no models loaded' });
-      } else {
-        // Classify model roles by name pattern
-        const roleFor = (name) => {
-          const n = name.toLowerCase();
-          if (n.includes('embed')) return 'Text embeddings · memory search';
-          if (n.includes('qwen') && n.includes('235')) return 'Local fast router (offline fallback)';
-          if (n.includes('qwen')) return 'Local reasoning · offline capable';
-          if (n.includes('llama')) return 'Local LLM · general purpose';
-          if (n.includes('mistral')) return 'Local LLM · fast inference';
-          if (n.includes('phi')) return 'Local LLM · lightweight';
-          if (n.includes('nomic') || n.includes('mxbai')) return 'Text embeddings · memory search';
-          return 'Local LLM · offline capable';
-        };
-        for (const m of models) {
-          const sizeGb = m.size ? (m.size / 1e9).toFixed(1) + 'GB' : '';
-          services.push({ category: 'AI Models', name: m.name, status: 'up',
-            role: roleFor(m.name),
-            detail: `Ollama local${sizeGb ? ' · ' + sizeGb : ''}` });
-        }
-      }
+  // Ollama — consumes the parallel probe fired at the top of the handler
+  if (ollamaProbe.status === 'fulfilled' && ollamaProbe.value?.ok) {
+    const od = ollamaProbe.value.body || {};
+    const models = od.models || [];
+    if (models.length === 0) {
+      services.push({ category: 'AI Models', name: 'Ollama', status: 'up', role: 'Local LLM runtime', detail: 'Running · no models loaded' });
     } else {
-      services.push({ category: 'AI Models', name: 'Ollama', status: 'down', role: 'Local LLM runtime', detail: 'Server error' });
+      // Classify model roles by name pattern
+      const roleFor = (name) => {
+        const n = name.toLowerCase();
+        if (n.includes('embed')) return 'Text embeddings · memory search';
+        if (n.includes('qwen') && n.includes('235')) return 'Local fast router (offline fallback)';
+        if (n.includes('qwen')) return 'Local reasoning · offline capable';
+        if (n.includes('llama')) return 'Local LLM · general purpose';
+        if (n.includes('mistral')) return 'Local LLM · fast inference';
+        if (n.includes('phi')) return 'Local LLM · lightweight';
+        if (n.includes('nomic') || n.includes('mxbai')) return 'Text embeddings · memory search';
+        return 'Local LLM · offline capable';
+      };
+      for (const m of models) {
+        const sizeGb = m.size ? (m.size / 1e9).toFixed(1) + 'GB' : '';
+        services.push({ category: 'AI Models', name: m.name, status: 'up',
+          role: roleFor(m.name),
+          detail: `Ollama local${sizeGb ? ' · ' + sizeGb : ''}` });
+      }
     }
-  } catch {
+  } else if (ollamaProbe.status === 'fulfilled') {
+    services.push({ category: 'AI Models', name: 'Ollama', status: 'down', role: 'Local LLM runtime', detail: 'Server error' });
+  } else {
     if (deviceWithOllama) {
       services.push({ category: 'AI Models', name: 'Ollama', status: 'up',
         role: 'Local LLM runtime · embeddings',
@@ -1066,7 +1196,19 @@ router.get('/api/services', async (req, res) => {
     }
   }
 
-  res.json({ services, issues });
+    return { services, issues };
+  })();
+
+  _servicesInflight.set(orgKey, runner);
+  try {
+    const body = await runner;
+    _servicesCache.set(orgKey, { ts: Date.now(), body });
+    res.json(body);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    _servicesInflight.delete(orgKey);
+  }
 });
 
 // GET /dashboard/api/sessions

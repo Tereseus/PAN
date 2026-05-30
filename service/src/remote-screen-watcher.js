@@ -5,31 +5,51 @@
 import { getConnectedClients, sendToClient } from './client-manager.js';
 import { analyzeImage } from './llm.js';
 import { upsertDevicePresence } from './intuition.js';
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 
 const INTERVAL_MS   = 60_000;
 const TIMEOUT_MS    = 25_000;  // screenshot + vision must complete within this
+const FFMPEG_TIMEOUT_MS = 8000;
 let   timer         = null;
 const inFlight      = new Set(); // device_ids currently being captured
 
 // Resize base64 image to 640px wide JPEG (same as screen-watcher.js)
+// async — see screen-watcher.js for the loop-blocking explanation.
 function resizeForVision(base64Input) {
-  try {
-    const inputBuf = Buffer.from(base64Input, 'base64');
-    const result = spawnSync('ffmpeg', [
-      '-i', 'pipe:0',
-      '-vf', 'scale=640:-2',
-      '-q:v', '5',
-      '-vframes', '1',
-      '-f', 'image2',
-      '-vcodec', 'mjpeg',
-      'pipe:1',
-    ], { input: inputBuf, windowsHide: true, timeout: 8000, maxBuffer: 10 * 1024 * 1024 });
-    if (result.status === 0 && result.stdout?.length > 0) {
-      return result.stdout.toString('base64');
+  return new Promise((resolve) => {
+    let done = false;
+    let proc;
+    const finish = (b64) => { if (done) return; done = true; try { proc?.kill('SIGKILL'); } catch {} resolve(b64); };
+    try {
+      const inputBuf = Buffer.from(base64Input, 'base64');
+      proc = spawn('ffmpeg', [
+        '-i', 'pipe:0',
+        '-vf', 'scale=640:-2',
+        '-q:v', '5',
+        '-vframes', '1',
+        '-f', 'image2',
+        '-vcodec', 'mjpeg',
+        'pipe:1',
+      ], { windowsHide: true, shell: false });
+      const chunks = [];
+      let bytes = 0;
+      const MAX = 10 * 1024 * 1024;
+      proc.stdout.on('data', (c) => {
+        bytes += c.length;
+        if (bytes > MAX) { finish(base64Input); return; }
+        chunks.push(c);
+      });
+      proc.on('error', () => finish(base64Input));
+      proc.on('close', (code) => {
+        finish(code === 0 && chunks.length ? Buffer.concat(chunks).toString('base64') : base64Input);
+      });
+      proc.stdin.on('error', () => {});
+      proc.stdin.end(inputBuf);
+      setTimeout(() => finish(base64Input), FFMPEG_TIMEOUT_MS);
+    } catch {
+      finish(base64Input);
     }
-  } catch {}
-  return base64Input;
+  });
 }
 
 async function captureDevice(client) {
@@ -40,7 +60,7 @@ async function captureDevice(client) {
     const result = await sendToClient(device_id, 'screenshot', {}, TIMEOUT_MS);
     if (!result?.data) return;
 
-    const resized = resizeForVision(result.data);
+    const resized = await resizeForVision(result.data);
     const description = await analyzeImage(
       'Describe what is on this computer screen in one short sentence.',
       resized,

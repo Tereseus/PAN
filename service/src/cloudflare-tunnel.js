@@ -7,7 +7,7 @@
 // The URL changes each restart (by design — old invite links expire naturally).
 // Any device anywhere can reach PAN via this URL without Tailscale.
 
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, createWriteStream, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -69,6 +69,7 @@ function downloadCloudflared() {
  * Safe to call multiple times — stops any existing tunnel first.
  */
 export async function startCloudflareTunnel(port) {
+  // Kills in-memory proc AND any orphaned cloudflared from prior restarts
   stopCloudflareTunnel();
 
   try {
@@ -129,11 +130,28 @@ export async function startCloudflareTunnel(port) {
   });
 }
 
+/** Kill all cloudflared processes by name — handles orphans from prior restarts. */
+function killAllCloudflared() {
+  if (process.platform === 'win32') {
+    // /T kills the whole process tree (cmd.exe shell + cloudflared child + conhost)
+    spawnSync('taskkill', ['/F', '/T', '/IM', 'cloudflared.exe'], { windowsHide: true });
+  } else {
+    spawnSync('pkill', ['-f', 'cloudflared'], {});
+  }
+}
+
 /** Stop the running tunnel (called on server shutdown or restart). */
 export function stopCloudflareTunnel() {
+  _url  = null;
   if (_proc) {
-    _proc.kill();
+    // Kill the whole tree so cmd.exe shell + conhost don't linger on Windows
+    if (process.platform === 'win32' && _proc.pid) {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(_proc.pid)], { windowsHide: true });
+    } else {
+      _proc.kill();
+    }
     _proc = null;
-    _url  = null;
   }
+  // Always nuke any orphaned cloudflared from prior runs
+  killAllCloudflared();
 }

@@ -17,7 +17,8 @@
         "width": 1280,
         "height": 800,
         "maximized": true,
-        "backgroundColor": "#0A0A0F"
+        "backgroundColor": "#0A0A0F",
+        "devtools": true
       }
     ],
     "security": {

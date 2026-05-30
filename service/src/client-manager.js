@@ -9,7 +9,7 @@
 //   startClientServer(httpServer);  // Call before startTerminalServer
 
 import { WebSocketServer, WebSocket } from 'ws';
-import { get, all, run, insert } from './db.js';
+import { get, all, run, insert, invalidateOllamaUrlCache } from './db.js';
 import crypto from 'crypto';
 import { hostname } from 'os';
 import { broadcastNotification } from './terminal-bridge.js';
@@ -418,6 +418,27 @@ function handleHeartbeat(deviceId, msg) {
   if (msg.services) {
     run("UPDATE devices SET reported_services = :s WHERE hostname = :h",
       { ':s': JSON.stringify(msg.services), ':h': deviceId });
+
+    // Invalidate the dynamic-Ollama URL cache whenever a client reports a
+    // change in its service list. Otherwise a 30-second-stale URL keeps
+    // pointing at the old host after the MiniPC reboots / Ollama restarts
+    // / Tailscale reassigns / etc. — every probe in that window times out
+    // and the dashboard appears frozen for the user.
+    try {
+      const hasOllamaSignal = msg.services.some(s => s.name === 'ollama');
+      if (hasOllamaSignal) {
+        invalidateOllamaUrlCache();
+        // Kick a fresh device_models scan in the background — the device
+        // may have just `ollama pull`ed a new model or removed an old one.
+        // Lazy-import scout.js so we don't pull it in at module-eval time
+        // (scout.js → llm.js → router.js → ... → client-manager cycle risk).
+        import('./scout.js').then(m => {
+          m.scanDeviceModels?.().catch(err =>
+            console.warn(`[ClientManager] device_models rescan failed: ${err.message}`)
+          );
+        }).catch(() => {});
+      }
+    } catch {}
   }
   // #497: refresh service_state on every WS heartbeat. The CASE in the
   // service_installed_at clause stamps first-observation only.

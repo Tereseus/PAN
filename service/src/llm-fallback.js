@@ -10,9 +10,15 @@
 // This wrapper iterates a chain of backends and retries on transient errors,
 // emitting telemetry so the dashboard can show "running on backup".
 //
-// Default chains:
-//   voice       → cerebras:qwen-3-235b → claude-haiku-4-5 → ollama:qwen2.5:14b
-//   background  → ollama:qwen2.5:14b only        (no Claude budget for Augur/Scout)
+// Default chains are now BUILT FROM model_selections at runtime (see
+// _buildDefaultChain below) instead of hardcoded. The user sets
+// reasoning_cloud / chat_cloud_fallback / chat_local in the dashboard
+// and both chains pick up the new choices on next call.
+//
+// Why this matters: the old hardcoded `ollama:qwen2.5:14b` was wrong for
+// this user's hardware (CPU-only mini PC) — 14B params is ~3 min/query.
+// The registry now picks `chat_local` which seeds to `qwen3:4b`, the
+// model actually pulled on the MiniPC and realistic for CPU inference.
 //
 // Retriable errors (will trigger fallback):
 //   • HTTP 429 (rate limit)
@@ -32,11 +38,42 @@
 //   • Mid-stream failure after >=1 chunk → propagate as truncated (don't switch
 //     mid-stream — corrupts the chunk sequence). Caller can decide.
 
-import { insert, get } from './db.js';
+import { insert, get, getModelForPurpose } from './db.js';
 import { askAI, askAIStream, getModelForCaller } from './llm.js';
 
-const DEFAULT_VOICE_CHAIN      = ['cerebras:qwen-3-235b', 'claude-haiku-4-5-20251001', 'ollama:qwen2.5:14b'];
-const DEFAULT_BACKGROUND_CHAIN = ['ollama:qwen2.5:14b'];
+// Build a default chain by reading model_selections. Strict order:
+//   voice       → reasoning_cloud → chat_cloud_fallback → chat_local
+//   background  → chat_local first (free), then reasoning_cloud as backup
+//                 (no chat_cloud_fallback: Augur/Scout would burn Claude budget)
+// Each entry is collapsed back into the provider-prefixed name format
+// the rest of the LLM dispatch path expects (e.g. "cerebras:qwen-3-235b",
+// "ollama:qwen3:4b", "claude-haiku-4-5-20251001").
+function _formatModelRef(sel) {
+  if (!sel) return null;
+  const p = String(sel.provider || '').toLowerCase();
+  // Local Ollama on any device → prefix "ollama:" (the dispatcher in
+  // llm.js routes via getOllamaUrl() which picks the right device URL).
+  if (p === 'ollama' || p.startsWith('ollama@')) return `ollama:${sel.model}`;
+  // Cloud providers — prefix is the provider name except for Anthropic
+  // (claude-*) which the dispatcher recognises by model-id prefix.
+  if (p === 'cerebras') return `cerebras:${sel.model}`;
+  if (p === 'groq')     return `groq:${sel.model}`;
+  if (p === 'openai')   return `openai:${sel.model}`;
+  if (p === 'gemini')   return `gemini:${sel.model}`;
+  // anthropic (and anything else): model id alone — llm.js detects via prefix
+  return sel.model;
+}
+
+function _buildDefaultChain(kind) {
+  const reasoning = _formatModelRef(getModelForPurpose('reasoning_cloud'));
+  const fallback  = _formatModelRef(getModelForPurpose('chat_cloud_fallback'));
+  const local     = _formatModelRef(getModelForPurpose('chat_local'));
+  const dedupe = (arr) => [...new Set(arr.filter(Boolean))];
+  if (kind === 'background') {
+    return dedupe([local, reasoning]);
+  }
+  return dedupe([reasoning, fallback, local]);
+}
 
 // Max attempts even if chain is longer — guard against infinite loops if a user
 // configures an absurd 10-entry chain.
@@ -70,7 +107,7 @@ function readChain(callerClass) {
       }
     }
   } catch {}
-  return (callerClass === 'background' ? DEFAULT_BACKGROUND_CHAIN : DEFAULT_VOICE_CHAIN).slice(0, MAX_ATTEMPTS);
+  return _buildDefaultChain(callerClass).slice(0, MAX_ATTEMPTS);
 }
 
 /**

@@ -1,8 +1,12 @@
 {
   "project_name": "dashboard",
-  "last_session_id": "e6e10453-b0a3-4f55-a6c0-7f11bc035649",
-  "last_session_time": "2026-05-22T23:36:41.898Z",
+  "last_session_id": "d7519618-8510-43ea-b15d-18e1bfe336dd",
+  "last_session_time": "2026-05-26T15:45:04.989Z",
   "session_history": [
+    {
+      "id": "d7519618-8510-43ea-b15d-18e1bfe336dd",
+      "time": "2026-05-26T15:45:04.990Z"
+    },
     {
       "id": "e6e10453-b0a3-4f55-a6c0-7f11bc035649",
       "time": "2026-05-22T23:36:41.899Z"
@@ -38,10 +42,6 @@
     {
       "id": "2347e6dd-aca0-4bd4-a77b-93086ac0c480",
       "time": "2026-04-11T02:21:39.491Z"
-    },
-    {
-      "id": "7b5f49b5-56c2-41b3-a396-7071362d9e28",
-      "time": "2026-04-11T01:00:13.488Z"
     }
   ],
   "claude_project_dir": "%USERPROFILE%\\.claude\\projects\\C--Users-owner-Desktop-PAN-service-dashboard",

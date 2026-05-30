@@ -18,7 +18,7 @@
 	<argument>--abortonerror</argument>
 	<argument>n</argument>
 	<argument>--stopparentfirst</argument>
-	<argument>undefined</argument>
+	<argument>yes</argument>
 	<logmode>rotate</logmode>
 	<stoptimeout>30sec</stoptimeout>
 	<env name="ANTHROPIC_API_KEY" value=""/>

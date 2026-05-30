@@ -4,6 +4,8 @@
 	import { onMount } from 'svelte';
 	import { isSidebarCollapsed, toggleSidebar, setPanMode, getPanMode } from '$lib/stores.svelte.js';
 	import { loadTheme, applyTheme } from '$lib/theme.js';
+	import { prefetch, startPanelStream } from '$lib/api.js';
+	import TopbarStatus from '$lib/components/TopbarStatus.svelte';
 
 	let { children } = $props();
 
@@ -696,6 +698,22 @@
 		loadOrgs();
 		loadUnread();
 		checkVersion();
+		// Phase 2: warm the SWR cache with the panels the user is most
+		// likely to navigate to. Fire-and-forget — failures fall through
+		// to a normal fetch when the user actually clicks the tab.
+		// Within the next 30s, any tab cycle renders from cache instantly.
+		prefetch([
+			'/dashboard/api/services',
+			'/dashboard/api/progress',
+			'/api/v1/stacks',
+			'/api/automation/status',
+			'/api/v1/devices/list',
+			'/api/v1/settings',
+		]);
+		// Phase 3: open the /ws/panels stream. Pushes from the server
+		// land directly in the SWR cache so panels render from cache
+		// FOREVER instead of just the 30s SWR window.
+		startPanelStream();
 		const iv = setInterval(checkHealth, 10000);
 		const uiv = setInterval(loadUnread, 15000);
 		const viv = setInterval(checkVersion, 5000);
@@ -1065,6 +1083,7 @@
 			{#if isDev}<span class="dev-badge">DEV</span>{/if}
 			<span class="topbar-title">{tabs.find(t => isActive(t))?.label || 'PAN'}</span>
 			<div class="topbar-spacer"></div>
+			<TopbarStatus />
 		</div>
 		<div class="content-body">
 			{@render children()}
