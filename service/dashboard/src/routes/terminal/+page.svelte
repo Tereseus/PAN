@@ -2542,25 +2542,27 @@
 					sessionIds = [...active.claudeSessionIds];
 				} else if (realSessionId) {
 					sessionIds = [realSessionId];
-				} else {
-					const projectKey = active.cwd || '';
-					if (projectKey) {
-						try {
-							const probe = await api('/dashboard/api/events?limit=50&project_path=' + encodeURIComponent(projectKey));
-							if (probe && probe.events) {
-								const seen = new Set();
-								for (const evt of probe.events) {
-									const sid = evt.session_id || '';
-									if (sid && !seen.has(sid) && !sid.startsWith('system-') && !sid.startsWith('phone-') && !sid.startsWith('router-') && !sid.startsWith('dash-') && !sid.startsWith('mob-')) {
-										seen.add(sid);
-										sessionIds.push(sid);
-										if (sessionIds.length >= 5) break;
-									}
-								}
-							}
-						} catch {}
-					}
 				}
+				// REMOVED 2026-05-30 — events-table fallback (auto-discover Claude sessions
+				// by substring-matching project_path on data column). Two bugs lived here:
+				//
+				//   1. data LIKE '%<path>%' is a leading-wildcard scan over the entire
+				//      1.6 GB events table — sync better-sqlite3, ~8 s every fire. The
+				//      chat-refresh interval polls loadChatHistory every 5 s, so the
+				//      dashboard pinned Craft's loop ~50 % of the time and produced the
+				//      "8-second loop-block every 15 s" pattern observed in carrier logs.
+				//
+				//   2. The substring filter matches ANY event whose data field happens to
+				//      contain the project name (paths in tool output, mentions in chat,
+				//      cwd of sibling projects). That's how WoE Game Design transcripts
+				//      ended up showing in the PAN tab — a session_id picked up here
+				//      gets fanned out to /api/transcript and the JSONL it points at is
+				//      from a different project entirely. See TRANSCRIPT_SYSTEM.md.
+				//
+				// Correct behavior is to show empty when there's no live Claude session
+				// for the tab — the next chat_update WS event populates claudeSessionIds
+				// and a real transcript loads. Old/closed sessions need explicit
+				// reattach, not lossy auto-discovery.
 
 				if (sessionIds.length === 0) {
 					// Don't clear existing chatBubbles — keep showing last known state.
@@ -4032,6 +4034,44 @@
 
 			let reconnected = false;
 
+			// SWR-style fast restore (2026-05-30): paint cached tabs from
+			// localStorage IMMEDIATELY so the UI is never blank while the
+			// DB + sessions network calls below are in flight. The original
+			// flow awaited Promise.all before painting anything, which meant
+			// every navigation away from /terminal and back showed an empty
+			// "Select Project..." screen for as long as Craft took to answer
+			// /dashboard/api/open-tabs. With Craft sometimes briefly
+			// unresponsive (residual sporadic blocks), that "as long as"
+			// could be 4-10 seconds — long enough to feel broken.
+			//
+			// We pre-create tabs from localStorage with isReconnect=false (no
+			// WS reconnect yet — that happens after the DB confirms the live
+			// PTY state). The DB-driven loop below skips any sessionId that
+			// was already created from cache, then upgrades cache-only tabs to
+			// live ones by reconnecting their WS once we know a live session
+			// exists for them.
+			// Gate SWR on DOM-ready: createTab does termContainerEl.appendChild(),
+			// which throws "Cannot read properties of null" if Svelte's bind:this
+			// hasn't wired termContainerEl yet (race on fast re-mount from panel nav).
+			// Wait up to 2s for it to bind, otherwise skip SWR and let the DB loop
+			// drive the restore once termContainerEl is ready.
+			try {
+				const swrStart = Date.now();
+				while (!termContainerEl && Date.now() - swrStart < 2000) {
+					await new Promise(r => setTimeout(r, 50));
+				}
+				if (termContainerEl) {
+					const cachedSessions = getSavedSessionState();
+					for (const s of cachedSessions) {
+						if (!s.sessionId) continue;
+						if (tabs.some(t => t.sessionId === s.sessionId)) continue;
+						await createTab(s.sessionId, s.project || 'Shell', s.cwd || '%USERPROFILE%\\Desktop', s.projectId, false, s.tabName || null, s.claudeSessionIds);
+					}
+				}
+			} catch (e) {
+				console.warn('[Terminal] localStorage fast-restore failed:', e?.message);
+			}
+
 			// Strategy 1: Check server for live PTY sessions — match with DB-saved tab names
 			try {
 				const [sessData, dbTabs] = await Promise.all([
@@ -4075,6 +4115,24 @@
 						const cwd = live?.cwd || dt.cwd || '%USERPROFILE%\\Desktop';
 						const matchedProject = projects.find(p => p.name === project);
 						const pid = matchedProject ? matchedProject.id : dt.projectId;
+						// If the SWR pre-paint above already materialized this tab from
+						// localStorage, reconcile DB-authoritative fields onto the
+						// existing object (project name / cwd / claudeSessionIds may
+						// have been updated server-side since the last save). Don't
+						// blow away the existing tab — it already has a live WS, the
+						// scrollback DOM is mounted, etc.
+						const existing = tabs.find(t => t.sessionId === dt.sessionId);
+						if (existing) {
+							existing.project = project;
+							existing.cwd = cwd;
+							existing.projectId = pid;
+							if (dt.tabName) existing.tabName = dt.tabName;
+							if (Array.isArray(dt.claudeSessionIds) && dt.claudeSessionIds.length) {
+								existing.claudeSessionIds = [...new Set([...(existing.claudeSessionIds || []), ...dt.claudeSessionIds])];
+							}
+							reconnected = true;
+							continue;
+						}
 						await createTab(dt.sessionId, project, cwd, pid, !!live, dt.tabName || null, dt.claudeSessionIds);
 						reconnected = true;
 					}
@@ -4084,7 +4142,16 @@
 				// when the DB save raced a hard refresh, or sessions were created
 				// out-of-band (mobile, API). Without this, those tabs would be
 				// either killed as orphans below OR linger forever invisible.
-				const adoptedIds = new Set(dbTabs.map(t => t.sessionId));
+				//
+				// Seed adoptedIds with BOTH dbTabs AND any sessions we already
+				// materialized from the SWR cache above — otherwise we'd
+				// re-createTab() a session that's already a tab, which is what
+				// produced the "Cannot read properties of null (reading
+				// 'appendChild')" error from the duplicate createTab call.
+				const adoptedIds = new Set([
+					...dbTabs.map(t => t.sessionId),
+					...tabs.map(t => t.sessionId),
+				]);
 				for (const s of dashSessions) {
 					if (adoptedIds.has(s.id)) continue;
 					const matchedProject = projects.find(p => p.name === s.project);

@@ -11,7 +11,7 @@ import { readTranscript as readPtyTranscript, renameTranscript, setSessionName }
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
-import { execSync as _execSync } from 'child_process';
+import { execSync as _execSync, execFile } from 'child_process';
 
 const __dirname2 = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = join(__dirname2, '..', 'data', 'photos');
@@ -53,35 +53,90 @@ router.post('/api/change-password', (req, res) => {
 });
 
 // GET /dashboard/api/photos — list all captured photos
+// PERF (2026-05-30): the previous /api/photos did `SELECT ... WHERE data LIKE
+// '%<filename>%'` once per photo file — full-table scan of the events table
+// (220K+ rows) per photo. With many photos, this routinely chewed 60-70 sec
+// of sync better-sqlite3 time, blocking the Craft event loop and causing
+// every concurrent API call to 502. Field receipt: a 69,602ms /api/photos
+// call coincided with a 70,076ms loop block, and 5+ other endpoints
+// (/api/v1/voice/status, /api/v1/org/current, /dashboard/api/services) 502'd
+// in the same window because they were queued behind it.
+//
+// Fix:
+//   - 30s response cache so repeat visits to the Data panel are instant.
+//   - On cache miss, do ONE batched query against events.event_type =
+//     'VisionAnalysis' (uses idx_events_type, indexed) and build a JS Map
+//     keyed by filename. Per-photo lookup becomes O(1) instead of a scan.
+//   - All file system work stays sync but is bounded by the photos dir size.
+let _photosCache = { ts: 0, body: null };
+const PHOTOS_CACHE_TTL_MS = 30_000;
 router.get('/api/photos', (req, res) => {
-  if (!existsSync(PHOTOS_DIR)) return res.json([]);
+  if (_photosCache.body && Date.now() - _photosCache.ts < PHOTOS_CACHE_TTL_MS) {
+    return res.json(_photosCache.body);
+  }
+  if (!existsSync(PHOTOS_DIR)) {
+    _photosCache = { ts: Date.now(), body: [] };
+    return res.json([]);
+  }
   try {
-    const files = readdirSync(PHOTOS_DIR)
-      .filter(f => f.endsWith('.jpg') || f.endsWith('.png'))
-      .map(f => {
-        const stat = statSync(join(PHOTOS_DIR, f));
-        // Find matching vision event
-        const event = getScoped(req, "SELECT * FROM events WHERE event_type = 'VisionAnalysis' AND data LIKE :f AND org_id = :org_id ORDER BY created_at DESC LIMIT 1",
-          { ':f': `%${f}%` });
-        let description = '';
-        let question = '';
-        if (event) {
-          try {
-            const d = JSON.parse(event.data);
-            description = d.description || '';
-            question = d.question || '';
-          } catch {}
+    const photoNames = readdirSync(PHOTOS_DIR).filter(f => f.endsWith('.jpg') || f.endsWith('.png'));
+
+    // ONE query — scoped by event_type (indexed) — instead of N LIKE scans.
+    // Limit by recency: the photos dir holds at most the last few weeks, so
+    // bounding to the most-recent VisionAnalysis events is a safe + fast cap.
+    let visionEvents = [];
+    try {
+      visionEvents = allScoped(req,
+        "SELECT data FROM events WHERE event_type = 'VisionAnalysis' AND org_id = :org_id ORDER BY created_at DESC LIMIT 5000"
+      );
+    } catch {}
+
+    // Build filename → { description, question } in one JSON.parse pass.
+    // VisionAnalysis events typically store the filename in data.image_path
+    // or data.path; fall back to searching the raw JSON string only when
+    // those keys are absent.
+    const byFilename = new Map();
+    for (const e of visionEvents) {
+      let d;
+      try { d = JSON.parse(e.data); } catch { continue; }
+      const path = d.image_path || d.path || d.file || d.filename || '';
+      let key = null;
+      if (path) {
+        const m = String(path).match(/[/\\]([^/\\]+\.(?:jpg|png))$/i);
+        if (m) key = m[1];
+      }
+      // Fallback: scan the raw data string for any of the photo filenames.
+      // Only do this when the structured key was absent.
+      if (!key) {
+        for (const f of photoNames) {
+          if (!byFilename.has(f) && e.data.includes(f)) { key = f; break; }
         }
+      }
+      if (!key || byFilename.has(key)) continue;
+      byFilename.set(key, {
+        description: d.description || '',
+        question: d.question || '',
+      });
+    }
+
+    const files = photoNames
+      .map(f => {
+        let stat;
+        try { stat = statSync(join(PHOTOS_DIR, f)); } catch { return null; }
+        const meta = byFilename.get(f) || { description: '', question: '' };
         return {
           filename: f,
           url: `/photos/${f}`,
           size: stat.size,
           created: stat.mtime.toISOString(),
-          description,
-          question
+          description: meta.description,
+          question: meta.question,
         };
       })
+      .filter(Boolean)
       .sort((a, b) => new Date(b.created) - new Date(a.created));
+
+    _photosCache = { ts: Date.now(), body: files };
     res.json(files);
   } catch (e) {
     res.json([]);
@@ -100,32 +155,92 @@ router.delete('/api/photos/:filename', (req, res) => {
   }
 });
 
-// GET /dashboard/api/jobs — list scheduled jobs and running processes
+// GET /dashboard/api/jobs — list scheduled jobs and running processes.
+//
+// PERF (2026-05-30): this handler used to fire 3 sync execSync calls
+// (schtasks + 2× tasklist), each with a 5-second timeout. Under Windows
+// load each one would routinely take 1-2 seconds; in a bad case the whole
+// handler pinned the Craft event loop for 5-15 seconds. Since the Data
+// Overview panel hits /api/jobs on EVERY visit, navigating to Data Overview
+// would freeze the dashboard for several seconds AND cause downstream 502s
+// on whatever other API calls landed during the freeze.
+//
+// Fix: cache the subprocess-derived parts for 30 seconds, and refresh the
+// cache async (no awaiter) — never block the handler on the subprocess. The
+// handler returns whatever's cached even if stale-by-some-seconds. Pure
+// "what's running on the machine" doesn't change second-to-second; 30s is
+// plenty fresh.
+let _jobsProcCache = {
+  ts: 0,
+  schtasks: null,
+  pythonRunning: null,
+  electronRunning: null,
+  voiceStats: null,
+  dockerVersion: null,
+  dockerContainers: null,
+};
+const JOBS_CACHE_TTL_MS = 30_000;
+let _jobsRefreshing = false;
+function _refreshJobsCacheAsync() {
+  if (_jobsRefreshing) return;
+  if (process.platform !== 'win32') return;
+  _jobsRefreshing = true;
+  const next = {
+    ts: Date.now(),
+    schtasks: null, pythonRunning: false, electronRunning: false,
+    voiceStats: null, dockerVersion: null, dockerContainers: null,
+  };
+  let pending = 6;
+  const done = () => {
+    pending--;
+    if (pending === 0) { _jobsProcCache = next; _jobsRefreshing = false; }
+  };
+  const fire = (cmd, args, opts, onDone) => {
+    try {
+      const proc = execFile(cmd, args, { windowsHide: true, timeout: 5000, killSignal: 'SIGKILL', ...opts },
+        (err, stdout) => { try { onDone(err, stdout); } catch {}; done(); });
+      // Hard kill backstop — execFile's `timeout` only sends SIGTERM, which
+      // some Windows tools (PowerShell COM init, schtasks under WMI load)
+      // ignore. SIGKILL on a timer guarantees cleanup so we don't leak
+      // children or the `done` callback never fires.
+      setTimeout(() => { try { proc?.kill('SIGKILL'); } catch {} }, 6000);
+    } catch { done(); }
+  };
+  fire('schtasks', ['/query', '/tn', 'PAN-VoiceTraining', '/fo', 'CSV', '/nh'], {},
+    (err, stdout) => { next.schtasks = err ? null : (stdout || '').trim(); });
+  fire('tasklist', ['/fi', 'IMAGENAME eq python.exe', '/fo', 'CSV', '/nh'], {},
+    (err, stdout) => { next.pythonRunning = !err && (stdout || '').includes('python.exe'); });
+  fire('tasklist', ['/fi', 'IMAGENAME eq electron.exe', '/fo', 'CSV', '/nh'], {},
+    (err, stdout) => { next.electronRunning = !err && (stdout || '').includes('electron.exe'); });
+  fire('docker', ['--version'], {},
+    (err, stdout) => { next.dockerVersion = err ? null : (stdout || '').trim(); });
+  fire('docker', ['info', '--format', '{{.ContainersRunning}}'], {},
+    (err, stdout) => { next.dockerContainers = err ? null : (stdout || '').trim(); });
+  fire('python', ['src/voice-recorder.py', '--stats'], { cwd: join(__dirname2, '..', '..') },
+    (err, stdout) => {
+      if (err || !stdout) { next.voiceStats = null; return; }
+      try { next.voiceStats = JSON.parse(stdout); } catch { next.voiceStats = null; }
+    });
+}
+
 router.get('/api/jobs', async (req, res) => {
+  // Always fire-and-forget a refresh so the cache stays warm; never await.
+  if (Date.now() - _jobsProcCache.ts > JOBS_CACHE_TTL_MS) _refreshJobsCacheAsync();
   const jobs = [];
 
-  // Check Windows scheduled tasks for PAN
-  try {
-    const { execSync } = await import('child_process');
-
-    // Get PAN scheduled tasks
-    const taskOutput = execSync(
-      'schtasks /query /tn "PAN-VoiceTraining" /fo CSV /nh 2>nul || echo "not found"',
-      { encoding: 'utf-8', timeout: 5000, windowsHide: true }
-    ).trim();
-
-    if (!taskOutput.includes('not found')) {
-      const parts = taskOutput.split(',').map(s => s.replace(/"/g, ''));
-      jobs.push({
-        name: 'Voice Training',
-        description: 'Piper voice model training — transcribe + train overnight',
-        type: 'scheduled_task',
-        status: parts[2]?.trim()?.toLowerCase() || 'unknown',
-        schedule: 'Daily at 12:00 AM EST',
-        next_run: parts[1]?.trim() || null,
-      });
-    }
-  } catch {}
+  // Scheduled task from cache
+  const taskOutput = _jobsProcCache.schtasks;
+  if (taskOutput && !taskOutput.includes('not found')) {
+    const parts = taskOutput.split(',').map(s => s.replace(/"/g, ''));
+    jobs.push({
+      name: 'Voice Training',
+      description: 'Piper voice model training — transcribe + train overnight',
+      type: 'scheduled_task',
+      status: parts[2]?.trim()?.toLowerCase() || 'unknown',
+      schedule: 'Daily at 12:00 AM EST',
+      next_run: parts[1]?.trim() || null,
+    });
+  }
 
   // PAN Service status
   jobs.push({
@@ -136,43 +251,23 @@ router.get('/api/jobs', async (req, res) => {
     schedule: 'Auto-start on boot (Windows Service)',
   });
 
-  // Voice Recorder
-  try {
-    const { execSync } = await import('child_process');
-    const procs = execSync('tasklist /fi "IMAGENAME eq python.exe" /fo CSV /nh 2>nul', {
-      encoding: 'utf-8', timeout: 5000, windowsHide: true
-    });
-    const recorderRunning = procs.includes('python.exe');
-    jobs.push({
-      name: 'Voice Recorder',
-      description: 'Hotkey-triggered mic recording for voice training data',
-      type: 'process',
-      status: recorderRunning ? 'running' : 'stopped',
-      schedule: 'Triggered by mouse side button (XButton1/XButton2)',
-    });
-  } catch {
-    jobs.push({
-      name: 'Voice Recorder',
-      description: 'Hotkey-triggered mic recording',
-      type: 'process',
-      status: 'unknown',
-    });
-  }
+  // Voice Recorder (cached)
+  jobs.push({
+    name: 'Voice Recorder',
+    description: 'Hotkey-triggered mic recording for voice training data',
+    type: 'process',
+    status: _jobsProcCache.pythonRunning === null ? 'unknown' : (_jobsProcCache.pythonRunning ? 'running' : 'stopped'),
+    schedule: 'Triggered by mouse side button (XButton1/XButton2)',
+  });
 
-  // Electron Tray
-  try {
-    const { execSync } = await import('child_process');
-    const procs = execSync('tasklist /fi "IMAGENAME eq electron.exe" /fo CSV /nh 2>nul', {
-      encoding: 'utf-8', timeout: 5000, windowsHide: true
-    });
-    jobs.push({
-      name: 'Desktop Agent (Electron)',
-      description: 'Tray app — executes UI automation, terminal opens, system commands',
-      type: 'process',
-      status: procs.includes('electron.exe') ? 'running' : 'stopped',
-      schedule: 'Manual start or via PAN shortcut',
-    });
-  } catch {}
+  // Electron Tray (cached)
+  jobs.push({
+    name: 'Desktop Agent (Electron)',
+    description: 'Tray app — executes UI automation, terminal opens, system commands',
+    type: 'process',
+    status: _jobsProcCache.electronRunning === null ? 'unknown' : (_jobsProcCache.electronRunning ? 'running' : 'stopped'),
+    schedule: 'Manual start or via PAN shortcut',
+  });
 
   // Classifier
   jobs.push({
@@ -222,14 +317,9 @@ router.get('/api/jobs', async (req, res) => {
     });
   }
 
-  // Voice training data stats
-  try {
-    const { execSync } = await import('child_process');
-    const stats = execSync('python src/voice-recorder.py --stats 2>nul', {
-      encoding: 'utf-8', timeout: 5000, windowsHide: true,
-      cwd: join(__dirname2, '..', '..')
-    });
-    const parsed = JSON.parse(stats);
+  // Voice training data stats (from cache; refreshed async every 30s)
+  if (_jobsProcCache.voiceStats) {
+    const parsed = _jobsProcCache.voiceStats;
     jobs.push({
       name: 'Voice Training Data',
       description: `${parsed.segments} segments, ${parsed.total_minutes} min, ${parsed.storage_mb}MB`,
@@ -237,26 +327,23 @@ router.get('/api/jobs', async (req, res) => {
       status: parsed.total_minutes >= 30 ? 'ready' : 'collecting',
       schedule: 'Accumulates via hotkey recording',
     });
-  } catch {}
+  }
 
-  // Docker status
-  try {
-    const { execSync } = await import('child_process');
-    const dockerVersion = execSync('docker --version 2>nul', { encoding: 'utf-8', timeout: 5000, windowsHide: true }).trim();
-    const dockerRunning = execSync('docker info --format "{{.ContainersRunning}}" 2>nul', { encoding: 'utf-8', timeout: 5000, windowsHide: true }).trim();
+  // Docker status (from cache)
+  if (_jobsProcCache.dockerVersion) {
     jobs.push({
       name: 'Docker',
-      description: dockerVersion,
+      description: _jobsProcCache.dockerVersion,
       type: 'service',
       status: 'running',
-      detail: `${dockerRunning} container(s) running`,
+      detail: `${_jobsProcCache.dockerContainers || '?'} container(s) running`,
     });
-  } catch {
+  } else {
     jobs.push({
       name: 'Docker',
       description: 'Container runtime for voice training and native builds',
       type: 'service',
-      status: 'stopped',
+      status: _jobsProcCache.ts === 0 ? 'unknown' : 'stopped',
     });
   }
 
