@@ -64,7 +64,9 @@ async function captureDevice(client) {
     const description = await analyzeImage(
       'Describe what is on this computer screen in one short sentence.',
       resized,
-      { caller: `remote-screen-watcher:${device_id}`, timeout: 60_000 },
+      // 180s timeout → 60s vision budget. Same reasoning as screen-watcher.js:
+      // minicpm-v needs more CPU inference time than the old moondream default.
+      { caller: `remote-screen-watcher:${device_id}`, timeout: 180_000 },
     );
 
     if (description) {

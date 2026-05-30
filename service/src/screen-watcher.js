@@ -18,8 +18,8 @@ import { writeThought, recentThoughtMatches } from './thoughts.js';
 import { noteFoodInScreenDescription } from './intuition/nourishment.js';
 import { noteSignalsInScreenDescription } from './intuition/signals.js';
 
-const INTERVAL_MS  = 60_000;   // screenshot every 60s when active (was 30s)
-const STALE_MS     = 120_000;  // context older than 120s ignored by intuition
+const INTERVAL_MS  = 120_000;  // screenshot every 120s (was 60s — minicpm-v needs more headroom + Ollama keep-alive can't keep the 5.5GB model loaded perfectly between every-60s polls).
+const STALE_MS     = 240_000;  // context older than 240s ignored by intuition
 // Idle check is disabled (IDLE_THRESH = Infinity) because voice-first users may not touch keyboard for hours
 // but are still actively using PAN. The vision backoff mechanism handles the "truly away" case:
 // if Ollama is unreachable (mini PC off when user is asleep), captures back off 2→5→10→20 minutes automatically.
@@ -268,7 +268,14 @@ async function runCapture() {
     const description = await analyzeImage(
       'Describe what is on this computer screen in one short sentence.',
       base64,
-      { caller: 'screen-watcher', timeout: 90_000 },  // 90s — CPU inference on mini PC can be slow
+      // 360_000ms → 120s overall vision budget (timeout / 3). Measured wall
+      // times for minicpm-v:latest on the Mini-PC (5.5GB model, CPU
+      // inference): 100-110s cold (~80s of which is model load), 25-30s
+      // warm. Ollama's keep_alive=-1 is set in analyzeImage but in practice
+      // Ollama still evicts when other models are queried, so we have to
+      // budget for occasional cold-starts. Trading 60s extra wall budget
+      // for accurate descriptions vs. the moondream hallucinations.
+      { caller: 'screen-watcher', timeout: 360_000 },
     );
 
     // Moondream cold-start failure modes:

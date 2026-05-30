@@ -902,7 +902,16 @@ try {
   const seeds = [
     ['embedding',            'ollama@minipc', 'qwen3-embedding:0.6b', 1024, null,  'Vector embeddings — must match event_embeddings dim'],
     ['chat_local',           'ollama@minipc', 'qwen3:4b',             null, 32768, 'Local chat / intuition / classifier fallback'],
-    ['vision',               'ollama@minipc', 'moondream',            null, null,  'Screen + webcam understanding'],
+    // Vision: minicpm-v (5.5GB) replaces the original moondream (1.7GB) seed.
+    // Field receipts (2026-05-30): moondream hallucinated literally every
+    // screenshot — returned "circles" on a Godot editor capture and "blue
+    // background with white text 'For more information, click here'" on every
+    // image in 100+ consecutive screen_context events. minicpm-v on the same
+    // Godot capture correctly returned "A Godot Editor with a project open
+    // that appears to be making video games or animations and an overlayed
+    // tabbed window for editing the code." On a 5.5GB local model the
+    // accuracy delta is worth the extra ~5-8s of CPU inference.
+    ['vision',               'ollama@minipc', 'minicpm-v:latest',     null, null,  'Screen + webcam understanding'],
     ['reasoning_cloud',      'cerebras',          'qwen-3-235b',          null, null,  'Smart cloud reasoning (substituted by Scout if retired)'],
     ['chat_cloud_fallback',  'anthropic',         'claude-haiku-4-5-20251001', null, null, 'Universal fallback when local + reasoning_cloud both fail'],
   ];
@@ -911,6 +920,23 @@ try {
          VALUES (:p, :pr, :m, :d, :c, :n)`,
       { ':p': purpose, ':pr': provider, ':m': model, ':d': dim, ':c': ctx, ':n': notes });
   }
+  // ── Migration: upgrade moondream → minicpm-v ──
+  // INSERT OR IGNORE above skips updating already-inserted rows, so existing
+  // installs are stuck on whatever seed shipped originally. The first seed was
+  // moondream (small, fast, broken). Force-upgrade any row that still points
+  // at moondream and a non-customized provider — but leave anything else the
+  // user might have manually selected alone.
+  try {
+    const cur = get(`SELECT model FROM model_selections WHERE purpose = 'vision'`);
+    if (cur && /^moondream/i.test(cur.model || '')) {
+      run(`UPDATE model_selections
+           SET model = 'minicpm-v:latest',
+               notes = 'Auto-upgraded from moondream — moondream produced garbage descriptions on every screenshot',
+               updated_at = datetime('now','localtime')
+           WHERE purpose = 'vision'`);
+      console.log('[DB] vision model auto-upgraded: moondream → minicpm-v:latest');
+    }
+  } catch {}
 } catch {}
 
 export function getModelForPurpose(purpose) {

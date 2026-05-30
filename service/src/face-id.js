@@ -25,7 +25,23 @@ import { get } from './db.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const REFERENCE_DIR = '%USERPROFILE%/Desktop/Me_pics';
+// Hardcoded names kept for backwards compatibility; the worker now also enrolls
+// any *.png / *.jpg / *.jpeg file the dir contains (see _discoverReferenceFiles).
+// New enrollments via POST /api/v1/identity/enroll drop a file here too, so the
+// next Craft restart picks them up automatically.
 const REFERENCE_FILES = ['portait.png', 'me_London.png', 'me_club.png', 'me_island.png'];
+
+import { readdirSync, writeFileSync, mkdirSync } from 'fs';
+function _discoverReferenceFiles() {
+  const set = new Set(REFERENCE_FILES);
+  try {
+    if (!existsSync(REFERENCE_DIR)) return [...set];
+    for (const f of readdirSync(REFERENCE_DIR)) {
+      if (/\.(png|jpe?g)$/i.test(f)) set.add(f);
+    }
+  } catch {}
+  return [...set];
+}
 
 const MATCH_THRESHOLD = 0.60;
 const AUTOENROLL_THRESHOLD = 35;
@@ -131,7 +147,7 @@ export async function initFaceId() {
     type: 'init',
     enrolledLabel: _status.enrolledLabel,
     referenceDir: REFERENCE_DIR,
-    referenceFiles: REFERENCE_FILES.filter((f) => existsSync(`${REFERENCE_DIR}/${f}`)),
+    referenceFiles: _discoverReferenceFiles().filter((f) => existsSync(`${REFERENCE_DIR}/${f}`)),
     matchThreshold: MATCH_THRESHOLD,
     autoenrollThreshold: AUTOENROLL_THRESHOLD,
     autoenrollMax: AUTOENROLL_MAX,
@@ -194,4 +210,77 @@ export async function identifyFromFrame(base64) {
 
 export function getFaceIdStatus() {
   return { ..._status };
+}
+
+/**
+ * Enroll a new face from a base64 image. The image is:
+ *   1. Sent to the worker for descriptor extraction → immediate match power
+ *      on the very next webcam capture (no model reload, no Craft restart).
+ *   2. Saved to disk under REFERENCE_DIR with a timestamped filename so a
+ *      future Craft restart re-enrolls it from the discovered file set.
+ *
+ * @param {string} base64    JPEG/PNG image, no data: prefix
+ * @param {string} [label]   Optional name to assign on first enrollment.
+ *                           If omitted, keeps whatever label initFaceId picked.
+ * @returns {{ ok: boolean, enrolledCount?: number, label?: string, error?: string, savedAs?: string }}
+ */
+export async function enrollFace(base64, label) {
+  if (!_workerReadyPromise) initFaceId().catch(() => {});
+  await _workerReadyPromise;
+  if (!_worker) return { ok: false, error: 'face-id worker not running' };
+  // Strip any data:image/<type>;base64, prefix so the worker gets clean bytes.
+  const clean = String(base64).replace(/^data:image\/[a-z]+;base64,/i, '');
+
+  const id = _nextReqId++;
+  const result = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!_pending.has(id)) return;
+      _pending.delete(id);
+      resolve({ ok: false, error: `enroll timed out > ${IDENTIFY_TIMEOUT_MS}ms` });
+    }, IDENTIFY_TIMEOUT_MS);
+    _pending.set(id, { resolve: (r) => resolve(r), timer });
+    // Worker emits 'enroll_result' instead of 'result'; the parent's onmessage
+    // handler routes by msg.type. We add a one-shot listener here so we can
+    // resolve with the worker's actual enroll_result fields rather than the
+    // default identify result shape.
+    const onMsg = (msg) => {
+      if (msg?.type !== 'enroll_result' || msg.id !== id) return;
+      _worker.off('message', onMsg);
+      const slot = _pending.get(id);
+      if (slot) { clearTimeout(slot.timer); _pending.delete(id); }
+      resolve({
+        ok: !!msg.ok,
+        enrolledCount: msg.enrolledCount,
+        label: msg.label,
+        error: msg.error,
+      });
+    };
+    _worker.on('message', onMsg);
+    try {
+      _worker.postMessage({ type: 'enroll', id, base64: clean, label: label || null });
+    } catch (err) {
+      _worker.off('message', onMsg);
+      const slot = _pending.get(id);
+      if (slot) { clearTimeout(slot.timer); _pending.delete(id); }
+      resolve({ ok: false, error: err.message });
+    }
+  });
+
+  // Persist to disk so subsequent Craft restarts re-enroll automatically.
+  if (result.ok) {
+    try {
+      if (!existsSync(REFERENCE_DIR)) mkdirSync(REFERENCE_DIR, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fname = `enrolled-${ts}.png`;
+      const fpath = join(REFERENCE_DIR, fname);
+      writeFileSync(fpath, Buffer.from(clean, 'base64'));
+      result.savedAs = fname;
+      _status.enrolledCount = (result.enrolledCount ?? _status.enrolledCount ?? 0);
+      if (result.label) _status.enrolledLabel = result.label;
+      console.log(`[FaceID] Enrolled new face → ${fname} (total enrolled: ${_status.enrolledCount})`);
+    } catch (e) {
+      console.warn(`[FaceID] enroll: descriptor added to worker but failed to persist image: ${e.message}`);
+    }
+  }
+  return result;
 }

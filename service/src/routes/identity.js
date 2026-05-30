@@ -293,6 +293,52 @@ router.get('/voice/:id', (req, res) => {
   createReadStream(row.voice_sample_path).pipe(res);
 });
 
+// ── Face enrollment ──────────────────────────────────────────────────────────
+//
+// POST /api/v1/identity/enroll-face
+//   body: { base64: 'data:image/jpeg;base64,...' | '...raw base64...',
+//           label?: 'Tereseus' }
+//   resp: { ok, enrolledCount, label, savedAs?, error? }
+//
+// The webcam watcher's face-id worker keeps an in-memory descriptor set. By
+// default it loads from Me_pics/ at boot — but if that dir is empty (the new
+// PC just got set up, no photos copied over yet) every webcam capture comes
+// back identity='unknown'. This endpoint accepts a fresh face snap (from the
+// browser's getUserMedia, or any photo of the user), sends the descriptor to
+// the worker for IMMEDIATE matching, and persists the image to Me_pics/ so
+// subsequent Craft restarts re-enroll automatically.
+//
+// Body size cap: 8MB raw base64 (≈6MB binary). Browser captures at 640×480
+// JPEG are ~50-100KB so this is generous.
+router.post('/enroll-face', async (req, res) => {
+  try {
+    const { base64, label } = req.body || {};
+    if (!base64 || typeof base64 !== 'string') {
+      return res.status(400).json({ ok: false, error: 'missing base64 image' });
+    }
+    if (base64.length > 8 * 1024 * 1024) {
+      return res.status(413).json({ ok: false, error: 'image too large (max 8MB base64)' });
+    }
+    // Dynamic import so face-id (and its heavy face-api dependency) isn't
+    // loaded at route-init time if it's never used.
+    const { enrollFace } = await import('../face-id.js');
+    const result = await enrollFace(base64, label);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || 'enroll failed' });
+  }
+});
+
+// GET /api/v1/identity/face-status — what the face-id worker knows right now
+router.get('/face-status', async (req, res) => {
+  try {
+    const { getFaceIdStatus } = await import('../face-id.js');
+    res.json(getFaceIdStatus());
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
 export default router;
 
 // Programmatic API for in-process callers (webcam-watcher, voice route)
