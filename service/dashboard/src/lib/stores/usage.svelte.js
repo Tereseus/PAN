@@ -10,7 +10,7 @@ import { voice } from '$lib/stores/voice.svelte.js';
 import { perf } from '$lib/stores/perf.svelte.js';
 
 export const usage = $state({
-	/** @type {{claude?:object, gemini?:object, stats?:object}|null} */
+	/** @type {{claude?:object, gemini?:object, stats?:object, llmRouting?:object}|null} */
 	data: null,
 });
 
@@ -20,11 +20,18 @@ export async function loadUsageData() {
 	try {
 		const provider = (voice.settings?.terminal_ai_provider || '').toLowerCase();
 		const isGemini = provider === 'gemini';
-		const [u, stats] = await Promise.all([
+		// llmRouting is a separate fetch — it answers "where do PAN's internal
+		// LLM calls go" (router/scout/intuition-classifier/etc → Cerebras vs
+		// Ollama). Different question from claude-usage which is just the
+		// user's CLI subscription. Both shown side-by-side in UsagePanel.
+		const [u, stats, llmRouting] = await Promise.all([
 			api(isGemini ? '/api/v1/gemini-usage' : '/api/v1/claude-usage'),
 			api('/dashboard/api/stats'),
+			api('/api/v1/usage/llm-routing').catch(() => null),
 		]);
-		usage.data = isGemini ? { gemini: u, stats } : { claude: u, stats };
+		usage.data = isGemini
+			? { gemini: u, stats, llmRouting }
+			: { claude: u, stats, llmRouting };
 		perf.loadTimings.usageWidget ||= Math.round(performance.now()); // best-effort, see perf store
 	} catch (e) {
 		console.error('Failed to load usage data:', e);
