@@ -70,6 +70,42 @@
 	const VAD_SILENCE_MS    = 1500;       // silence after speech → end-of-utterance
 	const VAD_MIN_SPEECH_MS = 300;        // ignore utterances shorter than this (clicks/coughs)
 	const VAD_MAX_UTTER_MS  = 20000;      // safety cap on a single utterance — bumped from 15s
+	const PARTIAL_HOLD_MS   = 2000;       // how long to wait for the rest of a sentence
+	                                       // when looksIncomplete() flagged the previous
+	                                       // utterance. If no follow-on arrives, flush
+	                                       // the partial as-is so the user isn't ignored.
+
+	// State for the semantic-EoT deferral. pendingPartial holds the transcript
+	// fragment that looked mid-thought; the next handleTurn prepends it.
+	let pendingPartial = $state(/** @type {string|null} */ (null));
+	let partialDeferredAt = 0;
+	let partialFlushTimer = null;
+	function flushPartial() {
+		if (!pendingPartial) return;
+		// Synthesize a handleTurn-equivalent ship: send the partial alone to the
+		// router. The micChunks are already empty (we returned them after STT),
+		// so we POST directly. Mirror the success-path logic from handleTurn.
+		const transcript = pendingPartial;
+		pendingPartial = null;
+		if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
+		isThinking = true;
+		fetch('/api/v1/chat', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ message: transcript, source: 'voice-call', thread_id: chatThreadId }),
+		}).then(r => r.json()).then(routerJson => {
+			const reply = (routerJson?.response || '').trim();
+			if (reply) {
+				const nowMs = Date.now();
+				chatMessages = [
+					...chatMessages,
+					{ id: routerJson?.user_message_id || ('cmsg_local_u_' + nowMs), sender_id: 'self', body: transcript, body_type: 'text', created_at: nowMs },
+					{ id: routerJson?.pan_message_id  || ('cmsg_local_p_' + (nowMs + 1)), sender_id: chatThreadId === 'thread-pan-system' ? 'contact-pan-system' : 'pan', body: reply, body_type: 'text', created_at: nowMs + 1, metadata: routerJson?.debug ? { debug: routerJson.debug } : null },
+				];
+			}
+		}).catch(e => { console.warn('[call] partial flush failed:', e?.message); })
+		  .finally(() => { isThinking = false; });
+	}
 	let lastSpeechAt = 0;
 	let utterStartedAt = 0;
 
@@ -454,6 +490,48 @@
 		vadRaf = requestAnimationFrame(tick);
 	}
 
+	// Language-agnostic semantic end-of-turn detection.
+	//
+	// Whisper inserts terminal punctuation (. ! ? 。 ?) correctly across all
+	// 99 languages it supports, so checking the punctuation at transcript
+	// tail is a free signal. Function-word length (conjunctions, prepositions,
+	// articles) clusters at 1-3 chars across nearly every language family —
+	// Indo-European ("and", "y", "ή", "und", "и"), Sinitic ("和", "但"),
+	// Japonic ("が", "から"), Slavic ("и", "но"), Afro-Asiatic ("و", "و"),
+	// Dravidian ("మరియు" is longer but the language uses verb-final particles
+	// that hit the heuristic differently — accept the false negative there).
+	//
+	// We don't hardcode any word lists — those don't generalize. Just two
+	// universal cues: terminal punctuation, and short trailing word with no
+	// terminal mark. Erring on the side of "looks incomplete" is cheap (we
+	// wait an extra second); erring on "looks complete" cuts the user off.
+	function looksIncomplete(transcript) {
+		if (!transcript) return false;
+		const t = transcript.trim();
+		// Final punctuation present → Whisper is confident this was a complete
+		// sentence in whatever language it heard. Treat as complete.
+		if (/[.!?。?！…]$/.test(t)) return false;
+		// Continuation marks (comma, semicolon, Arabic comma, Chinese enumeration
+		// comma, etc.) → user paused but signaled there's more coming.
+		if (/[,;:،、；：]$/.test(t)) return true;
+		// No ending punctuation. Last "word" heuristic — if it's a tiny token
+		// (1-3 chars) with no leading uppercase/initial-cap (proper-name guard
+		// for languages with capitalization), it's likely a conjunction or
+		// preposition the user hasn't completed past yet. Many CJK languages
+		// have NO whitespace tokenization at all, so .split fails gracefully
+		// and returns the whole string as one "word" — in that case fall back
+		// to the length-of-whole-thing check (very short utterance → assume
+		// incomplete, give it more time).
+		const lastWord = t.split(/\s+/).pop() || '';
+		if (lastWord && lastWord.length <= 3 && lastWord === lastWord.toLowerCase()) {
+			return true;
+		}
+		// CJK / no-space fallback: if the whole transcript is < 6 chars and
+		// has no terminal punct, it's almost certainly mid-thought.
+		if (t.length < 6 && !/\s/.test(t)) return true;
+		return false;
+	}
+
 	async function handleTurn() {
 		if (!micChunks.length) { return; }
 		isThinking = true;
@@ -476,8 +554,37 @@
 			});
 			const stt = await sttRes.json();
 			if (!sttRes.ok) throw new Error(stt.error || 'STT failed');
-			const transcript = (stt.text || '').trim();
+			let transcript = (stt.text || '').trim();
 			if (!transcript) { isThinking = false; return; } // silence / noise — keep listening
+
+			// Semantic EoT check — if the transcript looks like the user paused
+			// mid-thought (no terminal punctuation + trailing function-word, OR
+			// trailing comma/semicolon), DON'T ship to router yet. Instead,
+			// stash the partial and let VAD listen for ~2s more. The next
+			// utterance (if any) will be prepended with this partial so the
+			// router sees the joined thought as one turn.
+			//
+			// Skip the deferral if we ALREADY deferred on the previous turn
+			// (don't loop forever) — at that point we've waited 2s, treat the
+			// joined text as the final thing whether complete-looking or not.
+			if (looksIncomplete(transcript) && !pendingPartial) {
+				pendingPartial = transcript;
+				partialDeferredAt = Date.now();
+				// Auto-flush after PARTIAL_HOLD_MS in case the user is just
+				// genuinely done and there's no follow-on utterance. Without
+				// this, an incomplete-looking final word would hang forever.
+				if (partialFlushTimer) clearTimeout(partialFlushTimer);
+				partialFlushTimer = setTimeout(() => flushPartial(), PARTIAL_HOLD_MS);
+				isThinking = false;
+				return;
+			}
+			// If we DO have a pending partial, prepend it. Two pauses joined
+			// into one logical turn for the router.
+			if (pendingPartial) {
+				transcript = pendingPartial + ' ' + transcript;
+				pendingPartial = null;
+				if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
+			}
 
 			// 2. Router
 			const routerRes = await fetch('/api/v1/chat', {
