@@ -1149,6 +1149,18 @@ async function classifyAxes(snap) {
       const sensorsStale = wcStale && scStale && userActive;
 
       // (1) Life Needs candidates — one per need that's hurting.
+      // SUPPRESSED NEEDS: PAN has no real sensor data for nourishment or
+      // hydration (no camera-based food detection, no fridge sensor, no
+      // watch). The "you haven't eaten in 328h" interjections were pure
+      // counter-increment noise — useless and annoying. Per user note
+      // 2026-06-01: turn them off until real data exists. Other needs
+      // (rest, focus, social) DO have signals (typing cadence, idle time,
+      // social-message frequency) so they stay live.
+      //
+      // To re-enable later: drop the need_id from SUPPRESSED_NEEDS, or
+      // gate behind a separate "real-data-available" flag once camera-based
+      // meal detection lands.
+      const SUPPRESSED_NEEDS = new Set(['nourishment', 'hydration']);
       const NEED_THRESHOLD = 0.5; // urgency >= this → considered a candidate
       try {
         if (sensorsStale) {
@@ -1156,6 +1168,7 @@ async function classifyAxes(snap) {
         } else {
           const evald = needs.evaluate(userId);
           for (const n of evald) {
+            if (SUPPRESSED_NEEDS.has(n.need_id)) continue;
             if (n.urgency >= NEED_THRESHOLD) {
               candidates.push({
                 id: `need:${n.need_id}`,
