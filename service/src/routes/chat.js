@@ -462,17 +462,26 @@ router.get('/calls/:callId/signals', (req, res) => {
 // Active call lookup — used by LiveCallPanel widget to show "On call (0:33)"
 // in the main dashboard without needing the popup open. Returns the single
 // most-recent active call (`status='active'` or `status='ringing'` initiated
-// by self), or null if no live call exists. We don't need to filter by
-// thread_id since the user only has one active call at a time.
+// by self), or null if no live call exists.
+//
+// Staleness guard: a call older than CALL_MAX_AGE_MS without an end-event
+// is almost certainly an orphan from a crashed popup or rage-quit. The DB
+// has a March 2026 ringing-call that proves this — never got cleaned up.
+// Filter at the query level so the widget doesn't show stale calls as
+// active. The orphan rows stay in the table for history, just don't get
+// surfaced as live.
+const CALL_MAX_AGE_MS = 30 * 60_000; // 30 minutes
 router.get('/calls/active', (req, res) => {
   try {
+    const cutoff = Date.now() - CALL_MAX_AGE_MS;
     const call = db.prepare(`
       SELECT id as call_id, thread_id, type, initiator, status, started_at, answered_at
       FROM chat_calls
       WHERE status IN ('active', 'ringing')
+        AND started_at > ?
       ORDER BY started_at DESC
       LIMIT 1
-    `).get();
+    `).get(cutoff);
     res.json({ call: call || null });
   } catch (e) {
     res.json({ call: null, error: e.message });
