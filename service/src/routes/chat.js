@@ -459,6 +459,26 @@ router.get('/calls/:callId/signals', (req, res) => {
 });
 
 // Incoming calls (status=ringing, not initiated by self)
+// Active call lookup — used by LiveCallPanel widget to show "On call (0:33)"
+// in the main dashboard without needing the popup open. Returns the single
+// most-recent active call (`status='active'` or `status='ringing'` initiated
+// by self), or null if no live call exists. We don't need to filter by
+// thread_id since the user only has one active call at a time.
+router.get('/calls/active', (req, res) => {
+  try {
+    const call = db.prepare(`
+      SELECT id as call_id, thread_id, type, initiator, status, started_at, answered_at
+      FROM chat_calls
+      WHERE status IN ('active', 'ringing')
+      ORDER BY started_at DESC
+      LIMIT 1
+    `).get();
+    res.json({ call: call || null });
+  } catch (e) {
+    res.json({ call: null, error: e.message });
+  }
+});
+
 // Must be defined BEFORE /:callId to avoid Express matching 'incoming' as a callId param
 router.get('/calls/incoming', (req, res) => {
   const calls = db.prepare(`

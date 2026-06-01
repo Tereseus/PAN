@@ -42,6 +42,7 @@
 	import CenterChatView from '$lib/components/widgets/CenterChatView.svelte';
 	import ImagePreviewBar from '$lib/components/widgets/ImagePreviewBar.svelte';
 	import UsagePanel from '$lib/components/widgets/UsagePanel.svelte';
+	import LiveCallPanel from '$lib/components/widgets/LiveCallPanel.svelte';
 	import { terminal as terminalStore } from '$lib/stores/terminal.svelte.js';
 	import { usage as usageStore, loadUsageData as storeLoadUsageData } from '$lib/stores/usage.svelte.js';
 	// 2026-05-28: perf store. Parent keeps the trigger sites
@@ -4545,6 +4546,7 @@
 				{#if widgetVisible('intuition')}<option value="intuition">Intuition</option>{/if}
 				{#if widgetVisible('lifeboat')}<option value="lifeboat">Lifeboat</option>{/if}
 				{#if widgetVisible('library')}<option value="library">Library</option>{/if}
+					<option value="live-call">Live Call</option>
 				{#if widgetVisible('mail')}<option value="mail">Mail</option>{/if}
 				{#if widgetVisible('perf')}<option value="perf">Performance</option>{/if}
 				{#if widgetVisible('project')}<option value="project">Project</option>{/if}
@@ -4623,6 +4625,8 @@
 				<PipelinePanel />
 			{:else if leftSection === 'mail'}
 				<MailPanel />
+			{:else if leftSection === 'live-call'}
+				<LiveCallPanel />
 			{/if}
 		</div>
 	</div>
@@ -4776,6 +4780,7 @@
 				{#if widgetVisible('intuition')}<option value="intuition">Intuition</option>{/if}
 				{#if widgetVisible('lifeboat')}<option value="lifeboat">Lifeboat</option>{/if}
 				{#if widgetVisible('library')}<option value="library">Library</option>{/if}
+					<option value="live-call">Live Call</option>
 				{#if widgetVisible('mail')}<option value="mail">Mail</option>{/if}
 				{#if widgetVisible('perf')}<option value="perf">Performance</option>{/if}
 				{#if widgetVisible('project')}<option value="project">Project</option>{/if}
@@ -4830,6 +4835,8 @@
 				</div>
 			{:else if rightSection === 'usage'}
 				<UsagePanel />
+			{:else if rightSection === 'live-call'}
+				<LiveCallPanel />
 			{:else if rightSection === 'approvals'}
 				<ApprovalsPanel bind:count={approvalsCount} />
 			{:else if rightSection === 'devices'}
