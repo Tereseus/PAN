@@ -399,6 +399,18 @@ async function handleUnified(text, context) {
   // (topic/phase/pending_question/user_pattern/likely_turn_complete/summary)
   // maintained by conv-state-watcher. The router doesn't think about the
   // whole conversation — it just reads the pre-chewed state.
+  //
+  // VOICE FAST-PATH (added 2026-06-01): when this is a live voice call we
+  // SKIP the heavy context blocks. Building all 10 blocks below pulls 8+s
+  // of synchronous SQLite reads on the main thread — fine for the dashboard
+  // (user can wait), fatal for voice (the human is listening to silence).
+  // Voice gets only the cheap blocks: situation snapshot, recent mind,
+  // conv-state distillation. Those three are pre-computed and cheap to read.
+  // Everything else (dialog history, active tasks, dismissal feedback,
+  // memory facts, episodic hits) is the dashboard / PTY chat experience.
+  // Task #63 is the proper fix (move SQLite off main thread); this is the
+  // tactical fix so voice calls feel real-time today.
+  const isVoiceCall = context.source === 'voice-call' || context.source === 'phone';
   const situationBlock = buildSituationBlock(context.org_id);
   const recentMindBlock = buildRecentMindBlock();
   const convStateBlock  = buildConvStateBlock(context.org_id);
@@ -409,13 +421,13 @@ async function handleUnified(text, context) {
   // the call comes through /api/v1/chat (dashboard), or a fixed 'global' key
   // so the in-memory Map still works for ad-hoc calls without continuity loss.
   const dialogKey = context.session_id || context.thread_id || 'global';
-  const dialogHistoryBlock     = buildDialogHistoryBlock(context.session_id || null);
-  const dialogStateBlock       = buildDialogStateBlock(dialogKey);
-  const activeTasksBlock       = buildActiveTasksBlock();
-  const recentTopicsBlock      = buildRecentTopicsBlock();
-  const dismissalFeedbackBlock = buildDismissalFeedbackBlock();
-  const memoryFactsBlock       = buildMemoryFactsBlock();
-  const episodicHitsBlock      = buildEpisodicHitsBlock();
+  const dialogHistoryBlock     = isVoiceCall ? '' : buildDialogHistoryBlock(context.session_id || null);
+  const dialogStateBlock       = buildDialogStateBlock(dialogKey); // cheap — in-memory Map, keep
+  const activeTasksBlock       = isVoiceCall ? '' : buildActiveTasksBlock();
+  const recentTopicsBlock      = isVoiceCall ? '' : buildRecentTopicsBlock();
+  const dismissalFeedbackBlock = isVoiceCall ? '' : buildDismissalFeedbackBlock();
+  const memoryFactsBlock       = isVoiceCall ? '' : buildMemoryFactsBlock();
+  const episodicHitsBlock      = isVoiceCall ? '' : buildEpisodicHitsBlock();
   try {
     const cs = getConversationState(context.org_id || null);
     if (cs) {
