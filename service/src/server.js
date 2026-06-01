@@ -2492,6 +2492,193 @@ app.get('/api/v1/gemini-usage', async (req, res) => {
   }
 });
 
+// GET /api/v1/usage/llm-routing — per-caller LLM routing snapshot.
+//
+// Answers: who's calling the LLM, which model is each caller configured to use,
+// where does each call actually go (cloud / local), and how much budget is each
+// caller burning on the cloud tier (Cerebras free quota).
+//
+// The dashboard's UsagePanel renders this in an "LLM Routing" section so the
+// user can see — at a glance — what's pinned to Cerebras vs running locally
+// on minipc, and decide whether to repoint things if quota gets tight.
+//
+// Routing config sources, in priority order:
+//   1. job_models[caller]   — per-caller override (highest priority)
+//   2. ai_model             — default model when caller not in job_models
+//   3. ai_fallback_chain_*  — chain used by askAIWithFallback (router/voice)
+//
+// Window: last 7 days of ai_usage. Returns null if the table is empty.
+app.get('/api/v1/usage/llm-routing', (req, res) => {
+  try {
+    const cutoff7d = new Date(Date.now() - 7 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+
+    // Classify a model id as cloud or local based on its prefix / known
+    // vision-model names. Keep the rules here in one place so the dashboard
+    // doesn't have to duplicate them.
+    const classify = (model) => {
+      if (!model) return 'unknown';
+      if (model.startsWith('cerebras:')) return 'cloud';
+      if (model.startsWith('groq:') || model.startsWith('gemini:') || model.startsWith('openai:')) return 'cloud';
+      if (model.startsWith('sdk:') || model.startsWith('claude-') || model.startsWith('anthropic:')) return 'cloud';
+      if (model.startsWith('ollama:')) return 'local';
+      // Bare vision-model names (legacy logging from screen-watcher /
+      // dashboard-vision-verifier — they call analyzeImage directly without
+      // an ollama: prefix, so the model column has just "minicpm-v" etc.)
+      if (/^(minicpm-v|moondream|qwen2\.5vl|llava-phi3|qwen3:\d|qwen3-embedding)/.test(model)) return 'local';
+      return 'unknown';
+    };
+
+    // Provider label for the UI (so we can show "Cerebras" / "Ollama" tags).
+    const provider = (model) => {
+      if (!model) return null;
+      if (model.startsWith('cerebras:')) return 'Cerebras';
+      if (model.startsWith('groq:'))     return 'Groq';
+      if (model.startsWith('gemini:'))   return 'Gemini';
+      if (model.startsWith('openai:'))   return 'OpenAI';
+      if (model.startsWith('sdk:') || model.startsWith('claude-') || model.startsWith('anthropic:')) return 'Anthropic (SDK)';
+      if (model.startsWith('ollama:'))   return 'Ollama (minipc)';
+      if (/^(minicpm-v|moondream|qwen2\.5vl|llava-phi3|qwen3:\d|qwen3-embedding)/.test(model)) return 'Ollama (minipc)';
+      return null;
+    };
+
+    // Per-caller × per-model breakdown from ai_usage. We do NOT compare
+    // created_at against epoch numbers — created_at is stored as TEXT
+    // ('YYYY-MM-DD HH:MM:SS'), so we use string compare against an ISO
+    // cutoff string. Fixing the bug that made my prior counts off by ~50×.
+    const rows = all(`
+      SELECT caller, model,
+             COUNT(*) AS n,
+             SUM(COALESCE(input_tokens, 0))  AS in_tok,
+             SUM(COALESCE(output_tokens, 0)) AS out_tok,
+             ROUND(AVG(latency_ms))          AS avg_ms
+      FROM ai_usage
+      WHERE created_at > :cutoff
+      GROUP BY caller, model
+      ORDER BY n DESC
+    `, { ':cutoff': cutoff7d });
+
+    // Aggregate per-caller (a single caller can hit multiple models — e.g.
+    // router falls back to claude-haiku when Cerebras 429s — so we sum
+    // both rows under one caller).
+    const byCaller = new Map();
+    for (const r of rows) {
+      if (!byCaller.has(r.caller)) {
+        byCaller.set(r.caller, {
+          caller: r.caller,
+          calls_7d: 0,
+          tokens_7d: 0,
+          cloud_calls_7d: 0,
+          local_calls_7d: 0,
+          cloud_tokens_7d: 0,
+          local_tokens_7d: 0,
+          models: [],
+          configured_model: null, // filled below from job_models / ai_model
+          where_primary: null,    // 'cloud' | 'local' (the configured destination)
+          provider_primary: null,
+        });
+      }
+      const c = byCaller.get(r.caller);
+      const where = classify(r.model);
+      const tok   = (r.in_tok || 0) + (r.out_tok || 0);
+      c.calls_7d  += r.n;
+      c.tokens_7d += tok;
+      if (where === 'cloud') { c.cloud_calls_7d += r.n; c.cloud_tokens_7d += tok; }
+      else if (where === 'local') { c.local_calls_7d += r.n; c.local_tokens_7d += tok; }
+      c.models.push({
+        model: r.model,
+        where,
+        provider: provider(r.model),
+        calls_7d: r.n,
+        tokens_7d: tok,
+        avg_latency_ms: r.avg_ms,
+      });
+    }
+
+    // Decorate with current routing intent (the model the caller would hit on
+    // the NEXT call, regardless of historical 7-day mix). Reads job_models +
+    // ai_model from settings — the same path llm.js getModelForCaller uses.
+    let jobModels = {};
+    try {
+      const jm = get(`SELECT value FROM settings WHERE key = 'job_models'`);
+      if (jm) jobModels = JSON.parse(jm.value);
+    } catch {}
+    let defaultModel = null;
+    try {
+      const ai = get(`SELECT value FROM settings WHERE key = 'ai_model'`);
+      if (ai) defaultModel = ai.value.replace(/^"|"$/g, '');
+    } catch {}
+
+    for (const c of byCaller.values()) {
+      c.configured_model = jobModels[c.caller] || defaultModel;
+      c.where_primary    = classify(c.configured_model);
+      c.provider_primary = provider(c.configured_model);
+    }
+
+    // Cloud totals (the only thing that burns Cerebras quota). Local calls
+    // are 100% free and don't count toward the daily caps shown on
+    // cloud.cerebras.ai/platform/.../limits.
+    let cloud_calls = 0, cloud_tokens_in = 0, cloud_tokens_out = 0;
+    let local_calls = 0;
+    for (const r of rows) {
+      const where = classify(r.model);
+      if (where === 'cloud') {
+        cloud_calls += r.n;
+        cloud_tokens_in  += (r.in_tok  || 0);
+        cloud_tokens_out += (r.out_tok || 0);
+      } else if (where === 'local') {
+        local_calls += r.n;
+      }
+    }
+
+    // Cerebras personal tier — the binding caps the user is actually subject
+    // to. Hard-coded from cloud.cerebras.ai (no API exposes them). These are
+    // the caps we measure usage against in the dashboard.
+    const cerebrasPersonalTier = {
+      rpm_cap:     5,
+      rph_cap:     150,
+      rpd_cap:     2400,
+      tpm_cap:     30_000,
+      tph_cap:     1_000_000,
+      tpd_cap:     1_000_000,
+    };
+
+    const callers = Array.from(byCaller.values()).sort((a, b) => b.tokens_7d - a.tokens_7d);
+
+    res.json({
+      window: '7d',
+      cutoff_at: cutoff7d,
+      generated_at: new Date().toISOString(),
+      defaults: {
+        ai_model_default: defaultModel,
+        job_models_count: Object.keys(jobModels).length,
+      },
+      totals: {
+        cloud_calls_7d:      cloud_calls,
+        cloud_tokens_in_7d:  cloud_tokens_in,
+        cloud_tokens_out_7d: cloud_tokens_out,
+        cloud_tokens_7d:     cloud_tokens_in + cloud_tokens_out,
+        cloud_calls_per_day: Math.round(cloud_calls / 7),
+        cloud_tokens_per_day: Math.round((cloud_tokens_in + cloud_tokens_out) / 7),
+        local_calls_7d:      local_calls,
+        local_calls_per_day: Math.round(local_calls / 7),
+      },
+      cerebras_personal_tier: cerebrasPersonalTier,
+      headroom: {
+        // Headroom multipliers vs personal-tier caps. >1 means you're under
+        // the cap; <1 means you'd be rate-limited if traffic stayed flat.
+        rpd_headroom: cloud_calls > 0 ? +(cerebrasPersonalTier.rpd_cap * 7 / cloud_calls).toFixed(2) : null,
+        tpd_headroom: (cloud_tokens_in + cloud_tokens_out) > 0
+          ? +(cerebrasPersonalTier.tpd_cap * 7 / (cloud_tokens_in + cloud_tokens_out)).toFixed(2)
+          : null,
+      },
+      callers,
+    });
+  } catch (e) {
+    console.error('[LLM Routing] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/v1/settings — read all PAN settings (for mobile sync + dashboard)
 app.get('/api/v1/settings', (req, res) => {
   try {
