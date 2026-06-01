@@ -390,8 +390,15 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
   //     so even a heavy thinking pass leaves headroom for actual output.
   // Both are no-ops on non-thinking Cerebras models (the API ignores fields it
   // doesn't recognise) so this is safe to apply unconditionally.
-  const isThinking = /^(gpt-oss-|zai-glm-)/.test(modelId);
-  const body = { model: modelId, messages: oaiMessages, max_completion_tokens: Math.max(maxTokens, isThinking ? 600 : maxTokens), temperature: 0.7, stream: false };
+  // Floor max_completion_tokens by model. zai-glm-4.7 burns ~150 tokens of
+  // verbose reasoning even on trivial prompts; gpt-oss with reasoning_effort
+  // 'low' uses ~10. So zai-glm needs a much bigger floor to leave room for
+  // actual content after the reasoning tax. 1000 is the empirical sweet
+  // spot from a series of router-style prompts.
+  const tokenFloor = modelId.startsWith('zai-glm-') ? 1000
+                   : modelId.startsWith('gpt-oss-')  ? 600
+                   : maxTokens;
+  const body = { model: modelId, messages: oaiMessages, max_completion_tokens: Math.max(maxTokens, tokenFloor), temperature: 0.7, stream: false };
   if (modelId.startsWith('gpt-oss-')) body.reasoning_effort = 'low';
 
   const response = await fetch(CEREBRAS_URL, {
@@ -422,8 +429,33 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
     throw new Error(`Cerebras ${response.status}: ${errText}`);
   }
   const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || '';
+  // Thinking-model empty-content guard. Both gpt-oss and especially zai-glm
+  // can return a successful 200 with `content: ""` when the reasoning phase
+  // consumed the entire max_completion_tokens budget (zai-glm has been
+  // observed burning 157 reasoning tokens on a trivial "say hi" prompt).
+  // From PAN's perspective an empty reply is indistinguishable from a 5xx
+  // — the router's JSON.parse('') throws "Unexpected end of JSON input"
+  // and the user sees "PAN is having trouble thinking right now" even
+  // though the network round-trip succeeded.
+  //
+  // Treat empty content as a retriable failure so askAIWithFallback's
+  // chain advances to the next backend. Logs the usage so we can see in
+  // ai_fallback_attempt events that the model exhausted budget on
+  // reasoning. classifyError in llm-fallback already buckets generic
+  // throws as retriable=true; this just keeps the error message explicit.
+  if (!content) {
+    const reasoning = data.usage?.completion_tokens_details?.reasoning_tokens ?? null;
+    const total    = data.usage?.completion_tokens ?? null;
+    const err = new Error(
+      `Cerebras ${modelId} returned empty content` +
+      (reasoning !== null ? ` (${reasoning}/${total} completion tokens spent on reasoning — raise max_completion_tokens or use reasoning_effort:'low')` : '')
+    );
+    err.code = 'empty_content';
+    throw err;
+  }
   return {
-    text: data.choices?.[0]?.message?.content || '',
+    text: content,
     usage: { input_tokens: data.usage?.prompt_tokens || 0, output_tokens: data.usage?.completion_tokens || 0 },
   };
 }
@@ -447,11 +479,14 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
   }));
 
   // Mirror the thinking-model adaptations from the non-streaming path so
-  // streamed router calls don't starve on token budget either.
-  const isThinkingS = /^(gpt-oss-|zai-glm-)/.test(modelId);
+  // streamed router calls don't starve on token budget either. Per-model
+  // floor: zai-glm 1000 (verbose CoT), gpt-oss 600 (with reasoning_effort:'low').
+  const streamTokenFloor = modelId.startsWith('zai-glm-') ? 1000
+                         : modelId.startsWith('gpt-oss-')  ? 600
+                         : maxTokens;
   const streamBody = {
     model: modelId, messages: oaiMessages,
-    max_completion_tokens: Math.max(maxTokens, isThinkingS ? 600 : maxTokens),
+    max_completion_tokens: Math.max(maxTokens, streamTokenFloor),
     temperature: 0.7, stream: true,
     stream_options: { include_usage: true }, // #465: surface tokens so we can logUsage
   };
