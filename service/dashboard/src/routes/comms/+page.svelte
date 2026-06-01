@@ -286,6 +286,24 @@
 		}
 	}
 
+	// Voice-server-status heartbeat — runs while a call is active. The badge
+	// state was getting stuck on "Voice server not running" after a transient
+	// 503 (e.g. during a Carrier restart) because nothing ever re-checked the
+	// server. Now we poll /api/v1/voice/status every 5s: if it returns ok, we
+	// clear that specific error so the user can keep talking without
+	// restarting the call. Errors from other paths (F5-TTS unavailable,
+	// recorder failed) stay sticky on purpose — those need explicit user
+	// action.
+	let voiceStatusTimer = null;
+	async function pollVoiceStatus() {
+		try {
+			const r = await fetch('/api/v1/voice/status').then(x => x.json()).catch(() => null);
+			if (r?.ok && voiceError && /voice server not running/i.test(String(voiceError))) {
+				voiceError = null;
+			}
+		} catch {}
+	}
+
 	async function startCall() {
 		if (callActive) return;
 		voiceError = null;
@@ -295,6 +313,10 @@
 		callTimer = setInterval(() => {
 			callElapsed = Math.floor((Date.now() - callStartedAt) / 1000);
 		}, 1000);
+		// Kick the voice-status heartbeat so a transient 503 doesn't latch.
+		if (voiceStatusTimer) clearInterval(voiceStatusTimer);
+		pollVoiceStatus();
+		voiceStatusTimer = setInterval(pollVoiceStatus, 5000);
 		// Auto-acquire mic. This was triggered by the user clicking the Call
 		// button (same user-gesture chain), so most browsers will allow getUserMedia.
 		// If the WebView blocked it, the popout will show an explicit Enable button.
@@ -339,6 +361,9 @@
 			currentAudio = null;
 		}
 		if (callTimer) { clearInterval(callTimer); callTimer = null; }
+		// Stop voice-status heartbeat too. If it's running when the user
+		// hangs up we'd keep polling a server they no longer care about.
+		if (voiceStatusTimer) { clearInterval(voiceStatusTimer); voiceStatusTimer = null; }
 		const duration = callStartedAt ? Date.now() - callStartedAt : 0;
 		try {
 			if (callId) {
@@ -408,6 +433,14 @@
 		isThinking = true;
 		const blob = new Blob(micChunks, { type: voiceMime });
 		micChunks = [];
+		// Clear the "Voice server not running" badge at the start of each turn
+		// so a single transient 503 from earlier doesn't latch forever. If THIS
+		// turn fails the same way, the catch will set it again. Errors from
+		// other paths (F5-TTS, recorder, network) still latch — they need
+		// explicit user attention.
+		if (voiceError && /voice server not running/i.test(String(voiceError))) {
+			voiceError = null;
+		}
 		try {
 			// 1. STT
 			const sttRes = await fetch('/api/v1/voice/transcribe-browser', {

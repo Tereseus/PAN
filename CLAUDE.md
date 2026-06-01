@@ -266,8 +266,16 @@ Three-tier hierarchy. See `docs/SUPER-CARRIER.md` for full details.
 
 > **⚠️ CODE-RELOAD RULE (bug #753 — nightmare bug #8):**
 > To reload server code (`router.js`, `claude.js`, `terminal.js`, anything under `service/src/`), **use Craft swap** (`POST /api/carrier/swap`). It only touches HTTP routing — PTYs, claude child processes, and active assistant sessions survive.
-> **Do NOT use `POST /api/carrier/restart`** from inside an active assistant session. The Carrier owns the PTY process tree, so restarting it kills the running claude child mid-task. TodoWrite state, transcript, and in-flight work are lost. See `docs/NIGHTMARE_BUGS.md` entry for #753 for the full story and the architectural fix needed.
 > **Mnemonic: swap = safe, restart = death.**
+>
+> **AUTONOMOUS-MODE OVERRIDE (Tereseus — 2026-06-01):**
+> User has standing authorization to run swaps + restarts without asking.
+> - **Craft swap (`POST /api/carrier/swap`)** — run automatically whenever code under `service/src/` has changed and the change needs to be live. Never ask first. Verify with `/api/carrier/swap-history` after.
+> - **Carrier restart (`POST /api/carrier/restart`)** — run automatically when the swap won't pick up the change (e.g., the Carrier itself was edited, port collision, the Carrier holds stale in-memory state that swap doesn't clear). The user accepts that this kills PTY/claude children; that's a known trade-off and they prefer it to broken voice/router. Do NOT prompt for permission.
+> - Existing PTYs / running claude sessions live in the Carrier. If a restart is about to fire, briefly note what's about to die ("PTY in tab X will reconnect on its own, claude session Y will exit") but proceed without confirmation.
+> - The only thing that still warrants a heads-up: a `super-carrier` restart, because that kills port 7777 entirely. Currently no endpoint for this — only PAN.bat relaunch. If you need it, name it explicitly and do the bat relaunch.
+>
+> See `docs/NIGHTMARE_BUGS.md` entry for #753 for the architectural-fix-needed story; the override above is the user's working solution until that lands.
 
 <!-- PAN-CONTEXT-START -->
 ## PAN Session Context
@@ -277,10 +285,7 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### This Tab *(session: 2f6176fd-780, recap)*
-No notable activity recorded.
-
-### Recent Project Work *(session: 30ed3dcc-960, recap)*
+### Recent Project Work *(session: 64f8db59-61d, recap)*
 No notable activity recorded.
 
 ### Open Tasks
