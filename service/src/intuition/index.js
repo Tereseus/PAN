@@ -887,7 +887,12 @@ function _classifyModels() {
     if (local) refs.push(`ollama:${local.model}`);
   } catch {}
   // Last-resort backstop only if the registry table isn't initialised yet.
-  if (refs.length === 0) return ['cerebras:qwen-3-235b', 'ollama:qwen3:4b'];
+  // Use the same model names that ship in the seeded model_selections rows
+  // (db.js seed): zai-glm-4.7 is the current reasoning_cloud default, qwen3:4b
+  // is chat_local. Previously hardcoded `cerebras:qwen-3-235b` which was
+  // retired by Cerebras on 2026-05-27 — every fresh Craft that hit this
+  // backstop before db.js seeded the rows would 404 forever.
+  if (refs.length === 0) return ['cerebras:zai-glm-4.7', 'ollama:qwen3:4b'];
   return refs;
 }
 // IMPORTANT: don't freeze this at module load. The user can change the

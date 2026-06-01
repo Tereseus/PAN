@@ -378,10 +378,26 @@ async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) 
 
   const oaiMessages = messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n') }));
 
+  // Thinking-model adaptation. Both current free Cerebras models — gpt-oss-120b
+  // and zai-glm-4.7 — are reasoning/thinking models that consume part of the
+  // max_completion_tokens budget on internal chain-of-thought BEFORE emitting
+  // user-visible content. With the router's default 300-token cap the thinking
+  // phase routinely ate the whole budget, leaving empty content (`message.content
+  // = ""`) and the chain rejecting the empty reply as failure.
+  //   - For gpt-oss: pass `reasoning_effort: 'low'` so the model doesn't burn
+  //     tokens on deep CoT for what's usually a one-paragraph response.
+  //   - For all reasoning Cerebras models: keep a floor on max_completion_tokens
+  //     so even a heavy thinking pass leaves headroom for actual output.
+  // Both are no-ops on non-thinking Cerebras models (the API ignores fields it
+  // doesn't recognise) so this is safe to apply unconditionally.
+  const isThinking = /^(gpt-oss-|zai-glm-)/.test(modelId);
+  const body = { model: modelId, messages: oaiMessages, max_completion_tokens: Math.max(maxTokens, isThinking ? 600 : maxTokens), temperature: 0.7, stream: false };
+  if (modelId.startsWith('gpt-oss-')) body.reasoning_effort = 'low';
+
   const response = await fetch(CEREBRAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: modelId, messages: oaiMessages, max_completion_tokens: maxTokens, temperature: 0.7, stream: false }),
+    body: JSON.stringify(body),
     signal,
   });
 
@@ -430,14 +446,21 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
     content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
   }));
 
+  // Mirror the thinking-model adaptations from the non-streaming path so
+  // streamed router calls don't starve on token budget either.
+  const isThinkingS = /^(gpt-oss-|zai-glm-)/.test(modelId);
+  const streamBody = {
+    model: modelId, messages: oaiMessages,
+    max_completion_tokens: Math.max(maxTokens, isThinkingS ? 600 : maxTokens),
+    temperature: 0.7, stream: true,
+    stream_options: { include_usage: true }, // #465: surface tokens so we can logUsage
+  };
+  if (modelId.startsWith('gpt-oss-')) streamBody.reasoning_effort = 'low';
+
   const response = await fetch(CEREBRAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: modelId, messages: oaiMessages, max_completion_tokens: maxTokens,
-      temperature: 0.7, stream: true,
-      stream_options: { include_usage: true }, // #465: surface tokens so we can logUsage
-    }),
+    body: JSON.stringify(streamBody),
     signal,
   });
 
