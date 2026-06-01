@@ -41,9 +41,35 @@
 	let voiceMime = 'audio/webm';
 	// VAD tuning
 	const VAD_SPEECH_RMS    = 0.012;      // threshold to count as speech (0..1)
-	const VAD_SILENCE_MS    = 900;        // silence after speech → end-of-utterance
+	// VAD silence threshold — how long after speech goes quiet before we
+	// decide the user is done talking and ship the utterance to STT.
+	//
+	// Sweet spot across languages: 1500ms.
+	//   - English: end-of-thought pause is typically 700-1000ms but extended
+	//     thinking pauses run 1200-1500ms ("hmm, well…").
+	//   - Greek: "ee/eh" hesitation marker runs 1000-1400ms naturally; needs
+	//     the headroom or every breath truncates the sentence.
+	//   - German: verb-final structure means mid-clause pauses can hit
+	//     1200-1800ms before the final verb lands. 1500ms keeps most intact.
+	//   - Japanese: cultural turn-taking allows up to 1500ms before
+	//     listener jumps in.
+	//   - Romance languages (ES/IT/FR): enthusiastic mid-sentence pauses
+	//     1000-1400ms.
+	//
+	// 900ms (old value) was too aggressive — the 2026-06-01 voice test
+	// (turn 11) got cut off mid-sentence at "but many of…" because the
+	// commander paused for breath before completing the thought, then PAN
+	// got a fragment without a question in it and (correctly per the prompt
+	// rule) classified it ambient.
+	//
+	// Industry comparison: Siri ~1200ms, Google Assistant ~1500ms, Alexa
+	// ~1000ms+beamforming, OpenAI Realtime ~500ms+semantic-EOT layer.
+	// Until we add semantic end-of-turn detection (does the sentence look
+	// syntactically complete? if not, extend silence by 500ms), the flat
+	// 1500ms is the right universal default.
+	const VAD_SILENCE_MS    = 1500;       // silence after speech → end-of-utterance
 	const VAD_MIN_SPEECH_MS = 300;        // ignore utterances shorter than this (clicks/coughs)
-	const VAD_MAX_UTTER_MS  = 15000;      // safety cap on a single utterance
+	const VAD_MAX_UTTER_MS  = 20000;      // safety cap on a single utterance — bumped from 15s
 	let lastSpeechAt = 0;
 	let utterStartedAt = 0;
 
