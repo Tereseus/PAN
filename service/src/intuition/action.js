@@ -19,6 +19,71 @@
 import { panNotify } from '../pan-notify.js';
 import { run, get, all } from '../db.js';
 
+// Pick the single device to deliver a vocal interjection to. Priority:
+//   1. Server (the Hub) — when intuition says user is here, OR when most
+//      recent input was a Hub-flavored source (dashboard/voice-call/pty).
+//   2. Phone — when intuition says user is mobile, OR when most recent
+//      input was source='phone' / contains 'phone' / is a Tailscale-routed
+//      mobile session.
+//   3. Other PCs — only when neither Hub nor phone matched and at least
+//      one client is online.
+//
+// Returns the device_id to ship to, or null if no suitable device exists
+// (chat-thread persistence in Channel 1 already covers that case so the
+// user can read the interjection on any device that opens the dashboard).
+async function _pickInterjectionTarget(clients, snapshot) {
+  if (!clients || !clients.length) return null;
+
+  // Where does intuition think the user is right now?
+  const where = String(snapshot?.now?.where || '').toLowerCase();
+  const isAtHub  = /(hub|desktop|computer|workstation|office|home)/.test(where);
+  const isMobile = /(mobile|car|outside|walking|away|gym|store)/.test(where);
+
+  // What was the last input source? (recency beats inference)
+  // Pull the most recent chat message metadata — its source tells us which
+  // device the user just used. Cheap query, in-memory SQLite.
+  let lastSource = null;
+  try {
+    const row = get(`
+      SELECT metadata FROM chat_messages
+      WHERE sender_id = 'self'
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    if (row?.metadata) {
+      const m = JSON.parse(row.metadata);
+      lastSource = (m?.source || '').toLowerCase();
+    }
+  } catch {}
+
+  const hubByLast    = /(dashboard|voice-call|pty|terminal)/.test(lastSource || '');
+  const phoneByLast  = /(phone|mobile|pendant)/.test(lastSource || '');
+
+  // Classify each connected client into Hub / phone / other bucket.
+  const buckets = { hub: [], phone: [], other: [] };
+  for (const c of clients) {
+    const name = String(c.name || '').toLowerCase();
+    const platform = String(c.platform || '').toLowerCase();
+    if (/(android|ios|mobile|phone|pixel|iphone)/.test(name + ' ' + platform)) {
+      buckets.phone.push(c.device_id);
+    } else if (/(hub|server|main|desktop|workstation)/.test(name) || platform === 'win32' || platform === 'darwin' || platform === 'linux') {
+      buckets.hub.push(c.device_id);
+    } else {
+      buckets.other.push(c.device_id);
+    }
+  }
+
+  // Apply priority. Recency cue beats inference cue when they disagree.
+  if (phoneByLast && buckets.phone.length) return buckets.phone[0];
+  if (hubByLast   && buckets.hub.length)   return buckets.hub[0];
+  if (isAtHub     && buckets.hub.length)   return buckets.hub[0];
+  if (isMobile    && buckets.phone.length) return buckets.phone[0];
+  // No inference signal — fall through priority order.
+  if (buckets.hub.length)   return buckets.hub[0];
+  if (buckets.phone.length) return buckets.phone[0];
+  if (buckets.other.length) return buckets.other[0];
+  return null;
+}
+
 // Lazy imports so we don't crash if terminal/client-manager aren't yet up.
 let _broadcast = null;
 let _sendToClient = null;
@@ -180,7 +245,17 @@ export async function dispatchAction(candidate, opts = {}) {
     if (recent) return { dispatched: false, reason: 'deduped (recent)' };
   } catch { /* table may not exist yet on first run */ }
 
-  const phrase = phraseFor(candidate);
+  // Phrase resolution: callers can pass `phraseOverride` when they have a
+  // verbatim line (e.g. router's ambient interjection already has the model's
+  // exact vocal text — don't rerun a template). Otherwise use the candidate's
+  // ID to look up a phrasing template.
+  const phrase = opts.phraseOverride && typeof opts.phraseOverride === 'object'
+    ? {
+        subject: String(opts.phraseOverride.subject || candidate.reason || '').slice(0, 80),
+        body:    String(opts.phraseOverride.body    || opts.phraseOverride.speak || ''),
+        speak:   String(opts.phraseOverride.speak   || opts.phraseOverride.body  || ''),
+      }
+    : phraseFor(candidate);
   await lazyChannels();
 
   // Channel 1: Π chat thread (always — this is the persistent visible record)
@@ -219,27 +294,44 @@ export async function dispatchAction(candidate, opts = {}) {
     console.warn('[Intuition/Action] WS broadcast failed:', e.message);
   }
 
-  // Channel 3: connected clients — fire-and-forget speak/notify to phone +
-  // desktop. Best-effort; offline devices are skipped.
+  // Channel 3: connected clients — vocal interjection routed by presence.
+  //
+  // Old behavior: speak fanout to EVERY connected client. The user heard
+  // the same alert from the Hub speakers + phone TTS + any other PC,
+  // overlapping each other.
+  //
+  // New behavior (per 2026-06-01 design discussion):
+  //   1. Server (this PC, "the Hub") wins when intuition says the user
+  //      is here. Detected by intuition snapshot's `where` field matching
+  //      anything Hub-flavored ("at the hub", "desktop", "computer"), OR
+  //      by the most recent input being source='dashboard'/'voice-call'/'pty'.
+  //   2. Phone wins when intuition says user is mobile, OR when last input
+  //      was source='phone' / source contains 'phone'.
+  //   3. Other PCs are tertiary — only if neither Hub nor phone matched.
+  //
+  // We ship to EXACTLY ONE device per interjection. Suppressed devices
+  // still see the chat message (Channel 1) so the user can review on
+  // any device — they just don't hear the same vocal nudge twice.
   let clientFanout = 0;
+  let targetDevice = null;
   try {
     if (_sendToClient && _getConnectedClients) {
-      const clients = _getConnectedClients() || [];
-      for (const cl of clients) {
-        if (!cl?.device_id) continue;
+      const clients = (_getConnectedClients() || []).filter(c => c?.online && c.trusted !== false);
+      targetDevice = await _pickInterjectionTarget(clients, opts.scoreCtx?.snapshot || null);
+      if (targetDevice) {
         try {
-          _sendToClient(cl.device_id, 'speak', {
+          _sendToClient(targetDevice, 'speak', {
             text: phrase.speak,
             subject: phrase.subject,
             source: 'pan-interjection',
             action_key: key,
           });
-          clientFanout++;
-        } catch { /* per-client errors are non-fatal */ }
+          clientFanout = 1;
+        } catch { /* non-fatal */ }
       }
     }
   } catch (e) {
-    console.warn('[Intuition/Action] client fanout failed:', e.message);
+    console.warn('[Intuition/Action] device-aware fanout failed:', e.message);
   }
 
   // Record the dispatch for learning + dedupe.
