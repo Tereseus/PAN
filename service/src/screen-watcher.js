@@ -18,6 +18,47 @@ import { writeThought, recentThoughtMatches } from './thoughts.js';
 import { noteFoodInScreenDescription } from './intuition/nourishment.js';
 import { noteSignalsInScreenDescription } from './intuition/signals.js';
 
+// Vision interjection — cheap regex pre-screen on the vision description.
+// Returns { text, reason } when the description warrants a vocal nudge, or
+// null when it doesn't. Stays in the file because the patterns are tuned
+// to the specific output style of minicpm-v / llava-phi3.
+//
+// Categories (kept narrow on purpose — false-positive vocal interjections
+// are way more annoying than missed ones):
+//
+//   safety:   visible danger / risk in the description ("exposed wire",
+//             "hot pan", "spill near laptop").
+//   anomaly:  unexpected state PAN should flag ("error dialog", "blue screen",
+//             "build failed", "disk full warning").
+//   focus:    user appears stuck — same screen for many ticks, frustration
+//             cues in description ("frustrated", "head down").
+//
+// All cues are kept short + composable so they generalise across the
+// vision models' phrasing. False positives get reigned in by the dedupe
+// in dispatchAction (30-min localtime cooldown per action_key).
+const VISION_INTERJECTION_PATTERNS = [
+  // Safety — wires, heat, spills, slips
+  { re: /\b(exposed|bare|frayed) (wire|cable|cord)\b/i,        reason: 'safety', text: 'Heads up — that wire looks exposed.' },
+  { re: /\b(hot|burning|sizzling) (pan|pot|skillet|stove)\b/i, reason: 'safety', text: 'Watch out, that pan looks hot.' },
+  { re: /\b(spill|spilled|liquid).*?(laptop|keyboard|electronics)\b/i, reason: 'safety', text: 'There is a spill near electronics.' },
+
+  // Anomaly — system/UI errors
+  { re: /\b(error dialog|crash dump|blue screen|kernel panic)\b/i, reason: 'anomaly', text: 'I see a system error on screen.' },
+  { re: /\b(build|deploy|compile|test).{0,20}(failed|error)\b/i,   reason: 'anomaly', text: 'Looks like a build error popped up.' },
+  { re: /\b(disk (full|low)|out of (memory|space))\b/i,             reason: 'anomaly', text: 'Low on disk or memory.' },
+
+  // Focus / frustration
+  { re: /\b(frustrated|head in hands|head down on desk)\b/i,    reason: 'focus', text: 'Looks like a rough spot. Want me to summarize where we are?' },
+];
+
+function _checkVisionInterjection(description) {
+  if (!description || typeof description !== 'string') return null;
+  for (const p of VISION_INTERJECTION_PATTERNS) {
+    if (p.re.test(description)) return { text: p.text, reason: p.reason };
+  }
+  return null;
+}
+
 const INTERVAL_MS  = 120_000;  // screenshot every 120s (was 60s — minicpm-v needs more headroom + Ollama keep-alive can't keep the 5.5GB model loaded perfectly between every-60s polls).
 const STALE_MS     = 240_000;  // context older than 240s ignored by intuition
 // Idle check is disabled (IDLE_THRESH = Infinity) because voice-first users may not touch keyboard for hours
@@ -335,6 +376,42 @@ async function runCapture() {
         const r = noteSignalsInScreenDescription(description, { source: 'screen-watcher' });
         for (const a of r.applied || []) {
           console.log(`[ScreenWatcher] 💧 ${a.need} observed: ${a.term}`);
+        }
+      } catch { /* non-fatal */ }
+
+      // Vision interjection trigger — if the description hits one of the
+      // safety/correction/volunteer patterns, fire a vocal nudge. This is the
+      // mirror of the ambient-utterance interjection path in router.js: same
+      // dispatch channel, same device-aware routing, same dedupe.
+      //
+      // Two-stage filter so we don't burn LLM budget on every vision tick:
+      //   1. Cheap regex pre-screen — the description must contain at least
+      //      one safety/risk/anomaly cue. The vast majority of vision ticks
+      //      ("a code editor" / "documentation page") don't match anything
+      //      and exit immediately.
+      //   2. (TODO when needed) Tiny LLM classifier on the matched subset
+      //      to confirm interjection-worthiness. For now we just dispatch
+      //      directly using the regex match as the candidate reason — keeps
+      //      the trigger live but low-rate.
+      try {
+        const interject = _checkVisionInterjection(description);
+        if (interject) {
+          console.log(`[ScreenWatcher] 🗯 vision interjection: ${interject.text}`);
+          import('./intuition/action.js').then(({ dispatchAction }) => {
+            dispatchAction({
+              id: `vision:${interject.reason}`,
+              kind: 'vision',
+              score: 0.8,
+              reason: description.slice(0, 100),
+            }, {
+              userId: 'owner',
+              phraseOverride: {
+                subject: interject.text.slice(0, 60),
+                body:    interject.text,
+                speak:   interject.text,
+              },
+            }).catch(() => {});
+          }).catch(() => {});
         }
       } catch { /* non-fatal */ }
 

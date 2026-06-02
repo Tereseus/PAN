@@ -533,12 +533,21 @@ ${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${dialogH
 ${isDash ? `The commander just said: "${safeText}"` : `Mic heard (may have STT typos/garbling — infer the most likely intent): "${safeText}"`}
 Answer THIS message specifically. The blocks above are background context — use them to ground your answer, but the response must address what the commander just said, not what was said before.
 
-${isDash ? 'Always respond.' : 'CRITICAL: If speech is clearly NOT directed at you (PAN), return EXACTLY: {"intent":"ambient","response":"[AMBIENT]"}'}
+${isDash ? 'Always respond.' : 'CRITICAL: If speech is clearly NOT directed at you (PAN), return ambient — but you MAY still interject vocally if the ambient conversation reveals something you should warn about, correct, or volunteer. See AMBIENT INTERJECTION RULES below.'}
 ${isDash ? '' : `NEVER return ambient for: questions (what/when/where/how/why/who/can you), commands (play/open/set/remind/add), anything addressed to "Pan"/"Pam".
 Return ambient for: side-conversations to another person, personal statements/thoughts NOT asking PAN anything ("I'll call you back", "I told him yesterday", "hold on let me finish this", "yeah that makes sense").
 Ambient examples: "no no I told him it was fine" → ambient. "I was thinking we could go to dinner" → ambient. "yeah that makes sense" → ambient. "the weather looks nice today" → ambient.
 Not ambient: "what the weather" (question). "remind me to buy milk" (command). "what time is it" (question). "open spotify" (command).
-Rule: if there is no question and no command for PAN — return ambient.`}
+Rule: if there is no question and no command for PAN — return ambient.
+
+AMBIENT INTERJECTION RULES (only for ambient turns):
+Even when classifying as ambient, PAN may have a reason to speak up. Set "interjection" field with a SHORT vocal nudge (1 sentence, ≤ 15 words) ONLY when one of these triggers fires:
+- SAFETY: user about to do something dangerous ("don't touch that wire", "watch the stairs"). Confidence must be high — guess wrong and we're a nag.
+- CORRECTION: user states something factually wrong PAN can verify ("no, the deploy was at 3pm not 2pm" — only if recent context proves it).
+- VOLUNTEER: user explicitly wonders aloud ("what was that song again", "where did I leave it") and PAN actually knows.
+- TIME-CRITICAL: a scheduled event becomes relevant by what was just said ("meeting in 5 min" cued by them mentioning the project).
+If NONE of these fire (which is the vast majority of ambient utterances), OMIT the interjection field entirely. Silence is the default. Do NOT chatter on filler / agreement / thinking-aloud.
+Response shape when interjecting: {"intent":"ambient","response":"[AMBIENT]","interjection":"Hey, the meeting starts in five.","interjection_reason":"safety|correction|volunteer|time"}`}
 
 Every response MUST ALSO include two debug fields:
 - "why": ONE short sentence (≤ 20 words) explaining why you chose THIS specific reply for THIS utterance. Reasoning about the current turn only.
@@ -611,7 +620,40 @@ ${memoryContext}`,
       try { noteMealMention(text || '', { source: context?.source || null, intent }); } catch {}
       try { noteSignalsInUtterance(text || '', { source: context?.source || null, intent }); } catch {}
       if (intent === 'ambient') {
-        writeThought('router', `I heard "${heardShort}" — not addressed to me, ignoring.`, { intent }, 0.1);
+        // Ambient interjection — when the model decided this ambient utterance
+        // warrants speaking up (safety / correction / volunteer / time-critical),
+        // it sets action.interjection. Route through dispatchAction so it goes
+        // through the same device-aware speak channel + dedupe + audit log as
+        // any other interjection. The chat-thread row gets the brief vocal
+        // text as both subject (preview) and body (full).
+        if (typeof action.interjection === 'string' && action.interjection.trim().length > 0) {
+          const interText = action.interjection.trim().slice(0, 200);
+          const interReason = String(action.interjection_reason || 'volunteer').toLowerCase();
+          writeThought('router', `Ambient: "${heardShort}" — interjecting (${interReason}): "${interText}"`, { intent, interjection_reason: interReason }, 0.6);
+          // Fire-and-forget — don't block the router response. dispatchAction
+          // is idempotent on action_key, so even if this duplicates with the
+          // intuition deliberation later, only one speak goes out.
+          import('./intuition/action.js').then(({ dispatchAction }) => {
+            dispatchAction({
+              id: `ambient:${interReason}`,
+              kind: 'ambient',
+              score: 0.7,
+              reason: heardShort,
+            }, {
+              userId: 'owner',
+              scoreCtx: { snapshot: { now: { where: context?.where || null } } },
+              // Override phrase so the dispatch uses the model's verbatim
+              // interjection rather than a generic template.
+              phraseOverride: {
+                subject: interText.slice(0, 60),
+                body:    interText,
+                speak:   interText,
+              },
+            }).catch(() => {});
+          }).catch(() => {});
+        } else {
+          writeThought('router', `I heard "${heardShort}" — not addressed to me, ignoring.`, { intent }, 0.1);
+        }
       } else {
         const verb = intent === 'query'
           ? 'answering'
