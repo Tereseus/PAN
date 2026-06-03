@@ -133,6 +133,14 @@
 		document.title = callMode ? 'Call Π' : view === 'contacts' ? 'Contacts' : view === 'mail' ? 'Mail' : 'Calendar';
 		loadData();
 
+		// Idle voice-status poll — runs whenever the popup is open at all
+		// (no call required). Slow rate so it's cheap when nobody cares.
+		// The point: clear a stale "Voice server not running" badge that
+		// got set by a 503 during page load before the user even started
+		// a call. Faster polling kicks in once a call starts (see startCall).
+		pollVoiceStatus();
+		voiceStatusIdleTimer = setInterval(pollVoiceStatus, 15000);
+
 		// Auto-open the Π system thread if launched from the terminal Call button.
 		if (initialThread === 'thread-pan-system') {
 			view = 'contacts';
@@ -348,15 +356,14 @@
 		}
 	}
 
-	// Voice-server-status heartbeat — runs while a call is active. The badge
-	// state was getting stuck on "Voice server not running" after a transient
-	// 503 (e.g. during a Carrier restart) because nothing ever re-checked the
-	// server. Now we poll /api/v1/voice/status every 5s: if it returns ok, we
-	// clear that specific error so the user can keep talking without
-	// restarting the call. Errors from other paths (F5-TTS unavailable,
-	// recorder failed) stay sticky on purpose — those need explicit user
-	// action.
+	// Voice-server-status heartbeat. Originally only ran during an active
+	// call, but the badge can get stuck BEFORE the call starts (e.g. a 503
+	// during page load from a Carrier restart that finished mid-fetch).
+	// Now we run a slow heartbeat while the popup is open AT ALL, and a
+	// faster one while the call is active. Both auto-clear the specific
+	// "Voice server not running" error when whisper recovers.
 	let voiceStatusTimer = null;
+	let voiceStatusIdleTimer = null;
 	async function pollVoiceStatus() {
 		try {
 			const r = await fetch('/api/v1/voice/status').then(x => x.json()).catch(() => null);
