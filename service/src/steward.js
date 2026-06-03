@@ -33,6 +33,22 @@ import { spawn, execSync, execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
+// Tiny native-http GET — used for service health probes that don't want
+// the fetch/undici cost. Resolves the response body as a string, rejects
+// on any error or timeout. Used by the whisper port-health check during
+// Craft swap (zero-downtime reuse path).
+function httpGet(url, { timeout = 2000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    req.setTimeout(timeout, () => { req.destroy(new Error('timeout')); });
+  });
+}
+
 // Run a PowerShell script with a hard wall-clock timeout that ACTUALLY kills
 // the process. execSync's `timeout` option is unreliable on Windows when
 // PowerShell stalls in COM init (observed 180+ second hangs during heavy
@@ -195,15 +211,23 @@ const services = [
     interval: null, // always-on
     startFn: () => {
       const whisperScript = join(__dirname, 'whisper-server.py');
-      // Kill any pre-existing whisper-server.py instances before spawning a new
-      // one. Each instance commits ~1.95GB and steward used to leak one per
-      // PAN restart (detached + .unref() means they outlived the parent node).
-      // We saw 11 zombies eating ~21GB committed in the wild — never again.
-      // Was execSync — PowerShell COM init can hang past `timeout` on Windows,
-      // and this fires at boot, so a stall here stalls the whole Craft boot →
-      // Carrier perf probe fails → auto-rollback. Now: kill is fully async,
-      // and the new whisper-server is launched from the kill's close handler
-      // (or a timeout fallback) so they can't race.
+      // Whisper is spawned detached + unref'd so it survives Craft swaps.
+      // BUT the nuke-on-startFn step used to kill the healthy survivor and
+      // start fresh, causing a 60-second voice outage on every swap — the
+      // whole Python warmup + faster-whisper model load. (Events at
+      // 2026-06-03 15:13:45 → 15:14:45 confirm.)
+      //
+      // New behavior: before killing anything, probe :7782 with GET /. If
+      // a whisper is already serving healthy, reuse it — no kill, no
+      // respawn, instant boot. The zombie-accumulation concern from the
+      // original comment ("11 instances eating 21GB") is still handled
+      // because:
+      //   1. If port :7782 responds healthy, only that one process owns
+      //      the port — others would have failed to bind.
+      //   2. If port :7782 is dead, we fall through to the original
+      //      kill-then-spawn path so any orphans get reaped.
+      // Net: zero downtime on swap when whisper is already healthy, full
+      // recovery when it isn't.
       const launchWhisper = () => {
         try {
           spawn('python', [whisperScript], {
@@ -218,24 +242,38 @@ const services = [
       };
       let launched = false;
       const launchOnce = () => { if (!launched) { launched = true; launchWhisper(); } };
-      try {
-        const killProc = spawn('powershell', [
-          '-NoProfile',
-          '-Command',
-          "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*whisper-server*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
-        ], { stdio: 'ignore', windowsHide: true, shell: false });
-        killProc.on('error', () => launchOnce()); // kill couldn't even start → just spawn new
-        killProc.on('close', () => launchOnce()); // kill finished → safe to spawn
-        // Hard fallback: PowerShell COM init hung → force-kill + spawn anyway.
-        // Old whisper instances will still get reaped on next reboot if any survived.
-        setTimeout(() => {
-          try { killProc.kill('SIGKILL'); } catch {}
+      const killThenLaunch = () => {
+        try {
+          const killProc = spawn('powershell', [
+            '-NoProfile',
+            '-Command',
+            "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*whisper-server*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+          ], { stdio: 'ignore', windowsHide: true, shell: false });
+          killProc.on('error', () => launchOnce());
+          killProc.on('close', () => launchOnce());
+          setTimeout(() => {
+            try { killProc.kill('SIGKILL'); } catch {}
+            launchOnce();
+          }, 8000);
+        } catch (err) {
+          console.warn('[Steward] Whisper pre-kill spawn failed (non-fatal):', err.message);
           launchOnce();
-        }, 8000);
-      } catch (err) {
-        console.warn('[Steward] Whisper pre-kill spawn failed (non-fatal):', err.message);
-        launchOnce();
-      }
+        }
+      };
+      // Port-health probe FIRST. If alive, reuse and skip the whole dance.
+      const probe = httpGet('http://127.0.0.1:7782/', { timeout: 2000 });
+      probe.then(body => {
+        try {
+          const parsed = JSON.parse(body || '{}');
+          if (parsed?.status === 'ok' && parsed?.engine) {
+            console.log('[Steward] Whisper already healthy on :7782 — reusing (zero-downtime swap)');
+            launched = true; // suppress fallback launch
+            return;
+          }
+        } catch {}
+        // Healthy-shaped response missing → treat as dead, full restart.
+        killThenLaunch();
+      }).catch(() => killThenLaunch());
     },
     stopFn: null,
     _status: 'unknown',
