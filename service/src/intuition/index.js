@@ -1148,53 +1148,120 @@ async function classifyAxes(snap) {
       const userActive = sinceMin != null && sinceMin < 30;
       const sensorsStale = wcStale && scStale && userActive;
 
-      // (1) Life Needs candidates — one per need that's hurting.
-      // SUPPRESSED NEEDS: PAN has no real sensor data for nourishment or
-      // hydration (no camera-based food detection, no fridge sensor, no
-      // watch). The "you haven't eaten in 328h" interjections were pure
-      // counter-increment noise — useless and annoying. Per user note
-      // 2026-06-01: turn them off until real data exists. Other needs
-      // (rest, focus, social) DO have signals (typing cadence, idle time,
-      // social-message frequency) so they stay live.
+      // (1) Life Needs candidates — gated by TWO rules per 2026-06-03 user
+      // policy: "if you don't have data from it, the initial data point, you
+      // shouldn't even be tracking it" + "after a certain amount of time it
+      // said these things, it should just stop sending those messages."
       //
-      // To re-enable later: drop the need_id from SUPPRESSED_NEEDS, or
-      // gate behind a separate "real-data-available" flag once camera-based
-      // meal detection lands.
-      const SUPPRESSED_NEEDS = new Set(['nourishment', 'hydration']);
-      const NEED_THRESHOLD = 0.5; // urgency >= this → considered a candidate
+      //   GATE A — VALIDATED-DATA-SOURCE ALLOWLIST
+      //   A need only earns a candidate slot if it's on ENABLED_NEEDS — the
+      //   explicit list of needs PAN has a validated data source for. We
+      //   previously tried "any non-decay pan_need_events row," but the
+      //   screen-watcher was forging signals by pattern-matching coffee mugs
+      //   and food images in screenshots (64 nourishment + 43 hydration
+      //   "signals" all from screen-watcher in the wild — none were real
+      //   consumption). Vision pattern-match ≠ real data.
+      //
+      //   Currently ENABLED:
+      //     - safety: event-driven only, never decay-spam → always allowed
+      //   Currently SUPPRESSED (no real signal source):
+      //     - nourishment, hydration, rest, health_physical, health_mental,
+      //       social, focus, fun, environment
+      //
+      //   To re-enable a need: add its id to ENABLED_NEEDS once a trusted
+      //   signal source lands (pendant, watch, manual log, vision-with-
+      //   confirmation, real social-messaging hook).
+      //
+      //   GATE B — IGNORED-LOOP AUTO-SNOOZE
+      //   Even for ENABLED needs: if the same action_key fires N=3 times in
+      //   a row with status 'delivered' (no accept/dismiss/snooze feedback
+      //   from the user), suppress further candidates for 24h. User feedback
+      //   resets the streak. Prevents the same "Social is at 0/100" from
+      //   firing every hour across days when the user is clearly ignoring it.
+      const ENABLED_NEEDS = new Set(['safety']);
+      const NEED_THRESHOLD = 0.5;
+      const IGNORED_LOOP_N = 3;
+      const IGNORED_SNOOZE_HRS = 24;
       try {
         if (sensorsStale) {
           dbg(`[Intuition] need:* candidates suppressed — sensors stale (wc=${wcAge}ms, sc=${scAge}ms) while user active (${sinceMin}m)`);
         } else {
           const evald = needs.evaluate(userId);
           for (const n of evald) {
-            if (SUPPRESSED_NEEDS.has(n.need_id)) continue;
-            if (n.urgency >= NEED_THRESHOLD) {
-              candidates.push({
-                id: `need:${n.need_id}`,
-                kind: 'need',
-                score: n.urgency,           // 0..2 — naturally higher when weight=2
-                reason: `${n.label.toLowerCase()} at ${Math.round(n.level)}/100 (weight ${n.weight})`,
-              });
+            if (n.urgency < NEED_THRESHOLD) continue;
+            // GATE A
+            if (!ENABLED_NEEDS.has(n.need_id)) {
+              dbg(`[Intuition] need:${n.need_id} suppressed — not in ENABLED_NEEDS (no validated data source)`);
+              continue;
             }
+            // safety bypasses Gate B too (event-driven, not decay-driven).
+            if (n.need_id === 'safety') {
+              candidates.push({ id: `need:${n.need_id}`, kind: 'need', score: n.urgency, reason: `${n.label.toLowerCase()} event` });
+              continue;
+            }
+            // GATE B
+            let ignoredStreak = false;
+            try {
+              const recent = all(
+                `SELECT status FROM pan_interjections
+                 WHERE user_id = :u AND action_key = :k
+                   AND created_at > datetime('now', 'localtime', '-${IGNORED_SNOOZE_HRS} hours')
+                 ORDER BY id DESC LIMIT :lim`,
+                { ':u': userId, ':k': `act:need:${n.need_id}`, ':lim': IGNORED_LOOP_N }
+              );
+              if (recent && recent.length >= IGNORED_LOOP_N && recent.every(r => r.status === 'delivered')) {
+                ignoredStreak = true;
+              }
+            } catch {}
+            if (ignoredStreak) {
+              dbg(`[Intuition] need:${n.need_id} suppressed — ${IGNORED_LOOP_N} consecutive deliveries ignored in last ${IGNORED_SNOOZE_HRS}h`);
+              continue;
+            }
+            candidates.push({
+              id: `need:${n.need_id}`,
+              kind: 'need',
+              score: n.urgency,
+              reason: `${n.label.toLowerCase()} at ${Math.round(n.level)}/100 (weight ${n.weight})`,
+            });
           }
         }
       } catch (e) { dbg(`[Intuition] needs.evaluate failed: ${e.message}`); }
 
-      // (2) State-signal candidates.
-      // state:emergency depends on assumption inference which leans on the
-      // same stale sensors → suppress when sensorsStale. state:not_ok / mood
-      // / quiet come from conversation tone, which is independent → keep.
+      // Cross-kind helper: same Gate B logic for state:* and conv:* candidates.
+      // Keeps any candidate kind from spamming when the user is clearly
+      // ignoring it. Returns true if the action_key has N consecutive
+      // ignored deliveries in the lookback window.
+      const _isIgnoredStreak = (actionKey) => {
+        try {
+          const recent = all(
+            `SELECT status FROM pan_interjections
+             WHERE user_id = :u AND action_key = :k
+               AND created_at > datetime('now', 'localtime', '-${IGNORED_SNOOZE_HRS} hours')
+             ORDER BY id DESC LIMIT :lim`,
+            { ':u': userId, ':k': actionKey, ':lim': IGNORED_LOOP_N }
+          );
+          return recent && recent.length >= IGNORED_LOOP_N && recent.every(r => r.status === 'delivered');
+        } catch { return false; }
+      };
+
+      // (2) State-signal candidates. Each candidate is gated by Gate B
+      // (ignored-loop snooze) — same rule as needs: 3 deliveries with no
+      // user feedback in 24h → suppress. Mood/quiet candidates are the
+      // most prone to spam if the user just sits there working.
+      const _pushIfNotIgnored = (cand) => {
+        if (!_isIgnoredStreak(`act:${cand.id}`)) candidates.push(cand);
+        else dbg(`[Intuition] ${cand.id} suppressed — ignored streak`);
+      };
       if (snap.now.assumption === 'emergency' && !sensorsStale) {
-        candidates.push({ id: 'state:emergency', kind: 'state', score: 1.5, reason: 'assumption=emergency' });
+        _pushIfNotIgnored({ id: 'state:emergency', kind: 'state', score: 1.5, reason: 'assumption=emergency' });
       } else if (snap.now.assumption === 'not_ok' || snap.now.assumption === 'not ok') {
-        candidates.push({ id: 'state:not_ok', kind: 'state', score: 0.6, reason: 'assumption=not_ok' });
+        _pushIfNotIgnored({ id: 'state:not_ok', kind: 'state', score: 0.6, reason: 'assumption=not_ok' });
       }
       if (snap.now.mood && /frustrated|anxious|sad|angry/i.test(snap.now.mood)) {
-        candidates.push({ id: `state:mood_${snap.now.mood.toLowerCase()}`, kind: 'state', score: 0.55, reason: `mood=${snap.now.mood}` });
+        _pushIfNotIgnored({ id: `state:mood_${snap.now.mood.toLowerCase()}`, kind: 'state', score: 0.55, reason: `mood=${snap.now.mood}` });
       }
       if (sinceMin != null && sinceMin > 60) {
-        candidates.push({ id: 'state:quiet', kind: 'state', score: 0.45, reason: `quiet ${sinceMin}m` });
+        _pushIfNotIgnored({ id: 'state:quiet', kind: 'state', score: 0.45, reason: `quiet ${sinceMin}m` });
       }
 
       // (3) Conversation-flow candidates (conv:*) — fire even in flow.
@@ -1209,7 +1276,7 @@ async function classifyAxes(snap) {
              AND data LIKE '%?%'`
         )?.n || 0;
         if (confusedCount >= 3) {
-          candidates.push({
+          _pushIfNotIgnored({
             id: 'conv:confused',
             kind: 'conv',
             score: 0.75,
@@ -1229,7 +1296,7 @@ async function classifyAxes(snap) {
           if (r?.data && STUCK_RE.test(r.data)) stuckCount++;
         }
         if (stuckCount >= 2) {
-          candidates.push({
+          _pushIfNotIgnored({
             id: 'conv:stuck',
             kind: 'conv',
             score: 0.80,
@@ -1254,7 +1321,7 @@ async function classifyAxes(snap) {
             } catch {}
           }
           if (prevFocus) {
-            candidates.push({
+            _pushIfNotIgnored({
               id: 'conv:tangent',
               kind: 'conv',
               score: 0.70,
@@ -1267,7 +1334,7 @@ async function classifyAxes(snap) {
 
         // conv:idle — quiet 10-30 min (state:quiet handles 60+)
         if (sinceMin != null && sinceMin >= 10 && sinceMin <= 30) {
-          candidates.push({
+          _pushIfNotIgnored({
             id: 'conv:idle',
             kind: 'conv',
             score: 0.65,
