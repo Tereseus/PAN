@@ -427,13 +427,14 @@ router.post('/:id/deny', (req, res) => {
 
 // ── POST /api/v1/client/heartbeat ─────────────────────────────────────────────
 // HTTP fallback heartbeat (for clients where WS heartbeat may be blocked).
+// Now also returns any pending commands the client should pull — gives us
+// an HTTP-poll command channel so clients without an active WebSocket
+// connection (e.g. minipc right now) can still receive instructions
+// from the hub, including self_update commands.
 router.post('/heartbeat', (req, res) => {
   const { device_id, service_state, service_manager } = req.body;
   if (!device_id) return res.status(400).json({ ok: false, error: 'device_id required' });
   try {
-    // #497: refresh service_state/manager on every heartbeat. Clients re-evaluate
-    // local service health each loop so a service that gets uninstalled/disabled
-    // shows up in the dashboard without waiting for a re-register.
     if (service_state !== undefined || service_manager !== undefined) {
       run(`UPDATE devices SET online = 1,
            service_state = COALESCE(:ss, service_state),
@@ -444,7 +445,40 @@ router.post('/heartbeat', (req, res) => {
       run("UPDATE devices SET online = 1, last_seen = datetime('now','localtime') WHERE hostname = :h", { ':h': device_id });
     }
   } catch {}
-  res.json({ ok: true, connected: isClientConnected(device_id) });
+  // Drain pending commands for this device. _pendingClientCommands is a
+  // simple in-memory queue. self_update lands here when WS isn't available.
+  const pending = (_pendingClientCommands.get(device_id) || []).splice(0);
+  res.json({ ok: true, connected: isClientConnected(device_id), commands: pending });
+});
+
+// In-memory pending-command queue for HTTP-poll clients. Keyed by device_id.
+// Cleared whenever the device drains via /heartbeat. WS-connected clients use
+// sendToClient directly and never touch this; only HTTP-poll clients do.
+const _pendingClientCommands = new Map();
+
+// ── POST /api/v1/client/push-update ──────────────────────────────────────────
+// Hub-side trigger: send a self_update command to a specific device. Uses WS
+// if connected (instant); falls back to enqueuing for the next /heartbeat
+// (max ~1 minute delay) if not. Either way the user doesn't have to touch
+// the remote machine.
+router.post('/push-update', async (req, res) => {
+  const { device_id, strategy = 'git_pull', bundle = null } = req.body || {};
+  if (!device_id) return res.status(400).json({ ok: false, error: 'device_id required' });
+  const params = { strategy };
+  if (strategy === 'bundle' && bundle) params.bundle = bundle;
+  try {
+    if (isClientConnected(device_id)) {
+      // WS path — fire and report whether the client acknowledged.
+      fireToClient(device_id, 'self_update', params);
+      return res.json({ ok: true, dispatched_via: 'ws', device_id, strategy });
+    }
+    // HTTP-poll path — enqueue for the next heartbeat.
+    if (!_pendingClientCommands.has(device_id)) _pendingClientCommands.set(device_id, []);
+    _pendingClientCommands.get(device_id).push({ id: `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'self_update', params });
+    res.json({ ok: true, dispatched_via: 'http-queue', device_id, strategy, hint: 'Will be delivered on next /heartbeat (within ~1 min).' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ── POST /api/v1/client/presence ──────────────────────────────────────────────

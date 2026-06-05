@@ -791,6 +791,72 @@ async function handleCommand(msg) {
         reply(null, `Command type '${type}' requires Tauri shell — not yet implemented`);
         break;
 
+      case 'self_update': {
+        // Auto-update path. Pulls latest pan-client.js from git and respawns
+        // ourselves. No manual SSH/RDP needed for the user — the hub sends
+        // this command and the remote machine updates itself.
+        //
+        // Strategy depends on how this pan-client was installed:
+        //  - git clone: just `git pull` in the pan-client directory and respawn
+        //  - copied file: ask the hub to ship the new pan-client.js (params.bundle
+        //    is a base64-encoded string) and write it locally
+        //
+        // After the new code is on disk we re-exec ourselves so the running
+        // process is the updated one. process.argv is preserved so config,
+        // tokens, names all carry over.
+        const strategy = params.strategy || 'git_pull';
+        try {
+          if (strategy === 'git_pull') {
+            const repoRoot = join(__dirname, '..');
+            const probe = await new Promise((resolve) => {
+              execFile('git', ['rev-parse', '--git-dir'], { cwd: repoRoot, windowsHide: true }, (err, out) => {
+                resolve(err ? null : out.toString().trim());
+              });
+            });
+            if (!probe) {
+              reply(null, 'self_update strategy=git_pull but ' + repoRoot + ' is not a git repo');
+              break;
+            }
+            const result = await new Promise((resolve) => {
+              execFile('git', ['pull', '--ff-only'], { cwd: repoRoot, windowsHide: true, timeout: 60_000 }, (err, stdout, stderr) => {
+                resolve({ ok: !err, stdout: (stdout || '').toString().slice(0, 1000), stderr: (stderr || '').toString().slice(0, 1000) });
+              });
+            });
+            if (!result.ok) {
+              reply(null, `git pull failed: ${result.stderr || 'unknown'}`);
+              break;
+            }
+            reply({ ok: true, strategy: 'git_pull', stdout: result.stdout, stderr: result.stderr, respawning_in_ms: 1500 });
+            // Respawn with the same args. The OS-level service manager (pm2 /
+            // systemd / Task Scheduler / nssm) will re-launch us with the new
+            // code. If no service manager is in front of us, exit cleanly so a
+            // wrapper loop (or the user) restarts.
+            setTimeout(() => {
+              console.log('[Self-Update] git pull complete — exiting for respawn');
+              process.exit(0);
+            }, 1500);
+          } else if (strategy === 'bundle' && typeof params.bundle === 'string') {
+            // Hub-pushed bundle: write the new pan-client.js to disk, then
+            // exit so the supervisor respawns us. Backup the old one first
+            // so a bad push is recoverable.
+            const targetPath = join(__dirname, 'pan-client.js');
+            const backupPath = targetPath + '.prev';
+            try { writeFileSync(backupPath, readFileSync(targetPath)); } catch {}
+            writeFileSync(targetPath, Buffer.from(params.bundle, 'base64'));
+            reply({ ok: true, strategy: 'bundle', written_bytes: params.bundle.length, respawning_in_ms: 1500 });
+            setTimeout(() => {
+              console.log('[Self-Update] bundle written — exiting for respawn');
+              process.exit(0);
+            }, 1500);
+          } else {
+            reply(null, `Unknown self_update strategy: ${strategy}`);
+          }
+        } catch (err) {
+          reply(null, `self_update failed: ${err.message}`);
+        }
+        break;
+      }
+
       default:
         reply(null, `Unknown command type: ${type}`);
     }
@@ -1267,7 +1333,7 @@ function startHttpMode() {
           }
         }
         const svc = detectServiceState();
-        await httpRequest('POST', '/api/v1/client/heartbeat', {
+        const hbResp = await httpRequest('POST', '/api/v1/client/heartbeat', {
           device_id: DEVICE_ID,
           mem_free_mb: Math.round(freemem() / 1024 / 1024),
           mem_total_mb: Math.round(totalmem() / 1024 / 1024),
@@ -1275,10 +1341,26 @@ function startHttpMode() {
           services,
           service_state: svc.service_state,
           service_manager: svc.service_manager,
+          restart_history: getRestartHistory(),
         });
         // HTTP path proves server reachability — record success for the tray.
         _lastHeartbeatOkMs = Date.now();
         connected = true;
+        // The hub piggybacks pending commands on the heartbeat response so
+        // HTTP-poll clients (no WS) still receive instructions. Execute any
+        // that arrived. self_update is the most important one here — the
+        // hub uses it to push pan-client updates to minipc etc without
+        // anyone SSHing to those machines.
+        try {
+          const cmds = Array.isArray(hbResp?.body?.commands) ? hbResp.body.commands : [];
+          for (const c of cmds) {
+            if (!c?.type) continue;
+            console.log(`[HTTP-Poll] Executing pulled command: ${c.type}`);
+            await handleCommand({ id: c.id, type: c.type, params: c.params || {} });
+          }
+        } catch (e) {
+          console.warn('[HTTP-Poll] command execution failed:', e.message);
+        }
       } catch {
         connected = false;
       }
