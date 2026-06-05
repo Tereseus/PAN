@@ -35,28 +35,42 @@ class BargeInMonitor {
         private const val TAG             = "BargeIn"
         private const val SAMPLE_RATE     = 16000
         private const val WINDOW_MS       = 80        // detection window size
-        // Calibration window — longer (800ms) lets AEC converge before we measure.
-        // The hardware AEC on most phones (incl. Pixel 10) needs a few hundred ms
-        // after activation before the cancellation reaches steady-state. Measuring
-        // too early captures pre-convergence echo as "baseline" and underestimates it.
-        private const val CALIBRATION_MS  = 800
-        // Sustained signal requirement: 4 × 80ms = 320ms of continuous above-threshold
-        // audio. A transient AEC residual spike from a hard consonant in TTS is
-        // typically <100ms; a real human "hey wait" syllable is 200ms+. This cleanly
-        // separates the two.
-        private const val CONSECUTIVE     = 4
+        // Calibration window — bumped from 800 to 1200ms (TTS-cutoff fix
+        // 2026-06-05). Symptom: PAN starts answering, then cuts off as soon
+        // as it speaks the FIRST few syllables. Root cause was AEC hadn't
+        // fully converged in the original 800ms window, so the peak-residual
+        // sample underestimated the worst-case TTS bleed. As soon as a hard
+        // consonant transient in PAN's actual answer happened, it crossed
+        // the (too-low) threshold and fired barge-in → tts.stop().
+        // 1200ms is more headroom than the AEC needs but the cost is only
+        // 400ms before barge-in becomes responsive — well worth it.
+        private const val CALIBRATION_MS  = 1200
+        // Sustained signal requirement: bumped from 4 to 6 windows
+        // (4×80=320ms → 6×80=480ms). Same TTS-cutoff fix. A real human
+        // "hey wait" / interrupt is comfortably 400ms+; transient TTS
+        // residual peaks from one-syllable spikes max out around 200ms.
+        // Going to 480ms moves the threshold further from the noise floor
+        // while still catching genuine barge-in well within human reaction
+        // expectations.
+        private const val CONSECUTIVE     = 6
         // Threshold = peak_during_calibration × headroom, floored at MIN_THRESHOLD.
-        // Headroom keeps us ABOVE the worst residual peak observed during TTS.
-        private const val THRESHOLD_HEADROOM = 1.8
-        // Higher floor — AEC is not perfect. 350 still detects normal speech (which
-        // hits 1500-3000 RMS easily) but ignores residual TTS leak peaks that
-        // empirically land in the 100-250 range on Pixel-class hardware.
-        private const val MIN_THRESHOLD   = 350.0
-        private const val MIN_THRESHOLD_NO_AEC = 1200.0  // fallback floor without AEC — also raised
-        // Post-calibration grace period — ignore detections for this long after
-        // calibration ends. Covers the moment when the next TTS sentence kicks in
-        // with a fresh transient before AEC adapts.
-        private const val POST_CALIB_GRACE_MS = 250L
+        // Headroom bumped from 1.8x to 2.2x for the same reason. Combined with
+        // the longer CALIBRATION_MS, peak now reflects an actually-converged
+        // AEC and the headroom buys safety margin against transient spikes.
+        private const val THRESHOLD_HEADROOM = 2.2
+        // Higher floor — AEC is not perfect. Bumped from 350 to 500 because
+        // empirically on Pixel 10 Pro, residual TTS leak peaks during a
+        // fresh utterance can hit 350-450 even with AEC active. 500 still
+        // detects normal speech (1500-3000 RMS) but stays above the
+        // residual ceiling.
+        private const val MIN_THRESHOLD   = 500.0
+        private const val MIN_THRESHOLD_NO_AEC = 1500.0  // fallback floor without AEC — also raised
+        // Post-calibration grace period — bumped from 250 to 500ms.
+        // The very first 200-300ms of TTS playback have the LOUDEST
+        // residual because the AEC reference signal (TTS audio) hasn't
+        // had time to populate AEC's internal model yet. By the time
+        // 500ms have passed, AEC has steady-state convergence.
+        private const val POST_CALIB_GRACE_MS = 500L
     }
 
     var onBargeIn: (() -> Unit)? = null
