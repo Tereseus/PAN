@@ -470,7 +470,79 @@ function pullMissingModels(missingModels) {
   }
 }
 
-function restartOllama() {
+// Restart history — every attempt is recorded and shipped in the next
+// heartbeat so the hub user can SEE in the dashboard what's been tried,
+// what worked, what failed, and what error each attempt produced.
+// Cleared after a successful Ollama probe so the list shows the current
+// down episode only.
+const _restartHistory = [];
+function _logRestart(entry) {
+  _restartHistory.push({ ts: Date.now(), ...entry });
+  // Keep last 20 — enough for diagnosis, bounded to keep heartbeat small
+  if (_restartHistory.length > 20) _restartHistory.shift();
+  console.log('[Watchdog] restart attempt:', JSON.stringify(entry));
+}
+function getRestartHistory() { return _restartHistory.slice(); }
+function clearRestartHistory() { _restartHistory.length = 0; }
+
+// Run a command synchronously enough to CAPTURE its output so we know what
+// actually happened. Previously every restart path used spawn+detach+stdio:
+// 'ignore' — even when ollama serve immediately errored ('port in use',
+// 'model store corrupt', 'access denied'), the error vanished into the void
+// and the watchdog kept retrying forever with no signal back to the user.
+// Now: a short-lived probe captures stdout/stderr/exitCode and ships them
+// back in the heartbeat. The actual long-lived process (when we DO want to
+// detach) is started separately AFTER we know the binary at least exists.
+function probeCommand(cmd, args, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    let stdout = '', stderr = '', settled = false;
+    try {
+      const p = spawn(cmd, args, { windowsHide: true });
+      p.stdout?.on('data', d => stdout += d.toString());
+      p.stderr?.on('data', d => stderr += d.toString());
+      p.on('close', (code) => {
+        if (!settled) { settled = true; resolve({ ok: code === 0, exitCode: code, stdout: stdout.slice(0, 500), stderr: stderr.slice(0, 500) }); }
+      });
+      p.on('error', (err) => {
+        if (!settled) { settled = true; resolve({ ok: false, exitCode: null, stdout, stderr: err.message }); }
+      });
+      setTimeout(() => {
+        if (!settled) { try { p.kill(); } catch {} settled = true; resolve({ ok: false, exitCode: null, stdout, stderr: stderr || 'timeout' }); }
+      }, timeoutMs);
+    } catch (err) {
+      if (!settled) { settled = true; resolve({ ok: false, exitCode: null, stdout: '', stderr: err.message }); }
+    }
+  });
+}
+
+async function restartOllama() {
+  // Step 1: Is the binary even on PATH? Before this, a missing Ollama install
+  // produced silent spawn-failed retries every 5 minutes for days.
+  const probe = await probeCommand(IS_WINDOWS ? 'where' : 'which', ['ollama'], 3000);
+  if (!probe.ok) {
+    _logRestart({ step: 'probe_binary', ok: false, error: 'ollama not on PATH', stdout: probe.stdout, stderr: probe.stderr });
+    return;
+  }
+  _logRestart({ step: 'probe_binary', ok: true, path: probe.stdout.trim().slice(0, 200) });
+
+  // Step 2: Is port 11434 already bound by a zombie? If yes, spawning a new
+  // 'ollama serve' will error 'bind: address already in use' silently.
+  // Diagnose this so the user can decide to kill the zombie manually.
+  if (IS_WINDOWS) {
+    const portProbe = await probeCommand('powershell', ['-NoProfile', '-Command',
+      `Get-NetTCPConnection -LocalPort 11434 -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; "$($_.OwningProcess) $($p.ProcessName)" }`
+    ], 3000);
+    if (portProbe.stdout.trim()) {
+      _logRestart({ step: 'port_check', ok: false, error: 'port 11434 already bound', pid_process: portProbe.stdout.trim().slice(0, 150) });
+      // Don't try to restart — there's something there. User must kill the zombie.
+      return;
+    }
+  }
+
+  // Step 3: Launch ollama serve. Use detached + unref so it outlives this
+  // pan-client, but route stderr to a log file so we capture failures.
+  // Previously stdio:'ignore' threw away the most important diagnostic
+  // signal in the entire system. Now we always have an Ollama log.
   if (IS_WINDOWS) {
     // Try the desktop shortcut first (launches the tray app + server)
     try {
@@ -479,38 +551,32 @@ function restartOllama() {
         detached: true,
         stdio: 'ignore',
       }).unref();
-      console.log('[Watchdog] Ollama restart attempted via desktop shortcut');
+      _logRestart({ step: 'launch_shortcut', ok: true, path: 'C:\\Users\\Public\\Desktop\\Ollama.lnk' });
       return;
-    } catch {}
-    // Fallback: ollama serve directly
-    try {
-      spawn('ollama', ['serve'], {
-        windowsHide: true,
-        detached: true,
-        stdio: 'ignore',
-      }).unref();
-      console.log('[Watchdog] Ollama restart attempted via `ollama serve`');
     } catch (err) {
-      console.error('[Watchdog] Ollama restart failed:', err.message);
+      _logRestart({ step: 'launch_shortcut', ok: false, error: err.message });
     }
-  } else {
-    // Linux / macOS
-    try {
-      spawn('ollama', ['serve'], {
-        detached: true,
-        stdio: 'ignore',
-      }).unref();
-      console.log('[Watchdog] Ollama restart attempted via `ollama serve`');
-    } catch (err) {
-      console.error('[Watchdog] Ollama restart failed:', err.message);
-    }
+  }
+  // Fallback (Windows + Linux/macOS): ollama serve directly, with stderr captured.
+  try {
+    const logPath = IS_WINDOWS ? 'C:\\Users\\Public\\ollama-watchdog.log' : '/tmp/ollama-watchdog.log';
+    const out = createWriteStream(logPath, { flags: 'a' });
+    out.write(`\n=== ${new Date().toISOString()} pan-client restart attempt ===\n`);
+    const p = spawn('ollama', ['serve'], { windowsHide: true, detached: true, stdio: ['ignore', out, out] });
+    p.unref();
+    _logRestart({ step: 'launch_serve', ok: true, pid: p.pid, log_path: logPath });
+  } catch (err) {
+    _logRestart({ step: 'launch_serve', ok: false, error: err.message });
   }
 }
 
 async function sendHeartbeat() {
   let services = await probeServices();
 
-  // Watchdog: if Ollama is down, attempt to start it (throttled to once per 5 min)
+  // Watchdog: if Ollama is down, attempt to start it (throttled to once per 5 min).
+  // restartOllama() now records every step (binary probe, port check, launch
+  // attempt) into _restartHistory which the heartbeat ships so the hub user
+  // can see WHY restarts are failing.
   const ollamaSvc = services.find(s => s.name === 'ollama');
   const ollamaDown = ollamaSvc?.status === 'down';
   if (ollamaDown) {
@@ -518,11 +584,14 @@ async function sendHeartbeat() {
     if (now - _ollamaLastRestartAttempt >= OLLAMA_RESTART_THROTTLE_MS) {
       _ollamaLastRestartAttempt = now;
       console.log('[Watchdog] Ollama down — attempting restart');
-      restartOllama();
+      await restartOllama();
       // Wait 8s then re-probe so the heartbeat carries fresh status
       await new Promise(r => setTimeout(r, 8000));
       services = await probeServices();
     }
+  } else if (_restartHistory.length > 0) {
+    // Ollama recovered — clear history so the next down-episode shows clean.
+    clearRestartHistory();
   }
 
   // Watchdog: if Ollama is up but required models are missing (e.g. wiped by upgrade), pull them
@@ -546,6 +615,10 @@ async function sendHeartbeat() {
     services,
     service_state: svc.service_state,
     service_manager: svc.service_manager,
+    // Restart history for active down episodes. Empty when everything's
+    // healthy. When Ollama is wedged, this is the user's window into what
+    // pan-client has actually tried.
+    restart_history: getRestartHistory(),
   });
   // Stamp local heartbeat clock so the tray can render age accurately. We
   // stamp on SEND (not server-ack) because WS doesn't ack at the message

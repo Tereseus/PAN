@@ -10,6 +10,7 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { get, all, run, insert, invalidateOllamaUrlCache } from './db.js';
+import { createAlert } from './routes/dashboard.js';
 import crypto from 'crypto';
 import { hostname } from 'os';
 import { broadcastNotification } from './terminal-bridge.js';
@@ -413,8 +414,56 @@ function handleHeartbeat(deviceId, msg) {
     if (msg.services) entry.reported_services = msg.services;
     if (msg.service_state) entry.service_state = msg.service_state;
     if (msg.service_manager) entry.service_manager = msg.service_manager;
+    if (Array.isArray(msg.restart_history)) entry.restart_history = msg.restart_history;
   }
   setDeviceOnline(deviceId, true);
+  // Restart-history visibility: when pan-client has been trying to revive a
+  // service (Ollama on minipc being the recurring case), every attempt
+  // gets recorded with its step name, ok/fail, and the exact error. Persist
+  // a compact representation as an event so the dashboard timeline shows
+  // what's been tried and what failed — not just "still down."
+  if (Array.isArray(msg.restart_history) && msg.restart_history.length > 0) {
+    try {
+      // Only fire once per unique restart-attempt timestamp to avoid spamming
+      // events every heartbeat with the same history list.
+      entry._lastRestartTs = entry._lastRestartTs || 0;
+      const fresh = msg.restart_history.filter(h => h.ts > entry._lastRestartTs);
+      if (fresh.length) {
+        const latestTs = Math.max(...fresh.map(h => h.ts));
+        entry._lastRestartTs = latestTs;
+        insert(
+          `INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`,
+          {
+            ':sid': 'pan-client',
+            ':type': 'ClientRestartAttempt',
+            ':data': JSON.stringify({ device: deviceId, attempts: fresh }),
+          }
+        );
+        // Also create an alert on the most-recent failure if it surfaced
+        // something the user must act on (binary missing / port stuck / etc).
+        const failed = fresh.filter(h => h.ok === false);
+        if (failed.length) {
+          const worst = failed[failed.length - 1];
+          createAlert({
+            alert_type: 'client_restart_failed',
+            severity: 'warning',
+            title: `${deviceId} watchdog: ${worst.step} failed`,
+            detail: JSON.stringify({
+              device: deviceId,
+              step: worst.step,
+              error: worst.error,
+              stderr: worst.stderr,
+              hint: worst.step === 'probe_binary' ? 'Ollama not on PATH on the host machine'
+                  : worst.step === 'port_check'   ? `Port 11434 already bound on ${deviceId} — kill the zombie process: ${worst.pid_process}`
+                  : 'Check the pan-client log for stderr',
+            }),
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[ClientMgr] restart_history persist failed:', e.message);
+    }
+  }
   if (msg.services) {
     run("UPDATE devices SET reported_services = :s WHERE hostname = :h",
       { ':s': JSON.stringify(msg.services), ':h': deviceId });
