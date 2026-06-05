@@ -688,16 +688,26 @@ async function checkServiceHealth(svc) {
               transitionServiceState(svc, models.length === 0 ? ServiceState.DEGRADED : ServiceState.RUNNING, 'url health check ok');
             }
           } else {
+            // Capture the real error so the status_change event has a reason,
+            // not error:null. Before this, Ollama could be down for 4+ days
+            // with every event saying error:null — the user had no visible
+            // signal about what was wrong (port unreachable / timeout / etc).
+            const reason = `HTTP ${res.status}`;
+            svc._lastError = `url health check ${reason}`;
             svc._urlFailureHistory.push(now);
             svc._urlSuccessStreak = 0;
             const failCount = svc._urlFailureHistory.length;
             if (failCount >= FAIL_THRESHOLD) {
-              transitionServiceState(svc, ServiceState.DOWN, `url health check HTTP ${res.status} (${failCount}/${FAIL_THRESHOLD} in 5min window)`);
+              transitionServiceState(svc, ServiceState.DOWN, `url health check ${reason} (${failCount}/${FAIL_THRESHOLD} in 5min window)`);
             } else {
-              console.warn(`[Steward] ${svc.id} HTTP ${res.status} (${failCount}/${FAIL_THRESHOLD} in 5min) — debouncing`);
+              console.warn(`[Steward] ${svc.id} ${reason} (${failCount}/${FAIL_THRESHOLD} in 5min) — debouncing`);
             }
           }
         } catch (urlErr) {
+          // Same root cause as above — without saving _lastError here, every
+          // single Ollama-down event read error:null while console had the
+          // useful 'fetch failed' / 'ECONNREFUSED' / 'timeout' detail.
+          svc._lastError = `url health check failed: ${urlErr.message}`;
           svc._urlFailureHistory.push(now);
           svc._urlSuccessStreak = 0;
           const failCount = svc._urlFailureHistory.length;
@@ -880,6 +890,45 @@ async function healthCheck() {
         error: svc._lastError,
       });
       try { broadcastNotification('widget_update', { widget: 'services' }); } catch {}
+
+      // Alert on transition to DOWN. Previously only the giving-up branch
+      // (after 5 failed restart attempts) ever created an alert — services
+      // without a startFn (i.e. remote services like Ollama on minipc)
+      // would NEVER alert because they couldn't be auto-restarted. Ollama
+      // went down 2026-06-01 at 10:59 and stayed silent for 4+ days. Now:
+      // every DOWN transition creates a single alert immediately, with the
+      // captured _lastError so the user can see what actually broke.
+      // Duplicate alerts for the same service in a short window are guarded
+      // by the alerts table's natural deduplication via status='open' rows.
+      if (svc._status === ServiceState.DOWN) {
+        svc._downSince = Date.now();
+        try {
+          createAlert({
+            alert_type: 'service_down',
+            severity: svc.startFn ? 'warning' : 'critical', // remote services can't self-heal → critical
+            title: `${svc.name} is DOWN`,
+            detail: JSON.stringify({
+              service: svc.id,
+              name: svc.name,
+              was: prevStatus,
+              error: svc._lastError || '(no error captured)',
+              port: svc.port || null,
+              healthCheck: svc.healthCheck || null,
+              startFn_available: !!svc.startFn,
+              hint: svc.startFn
+                ? 'Steward will attempt auto-restart with exponential backoff.'
+                : 'Remote service — Steward cannot restart this. Manual intervention required on the hosting machine.',
+            }),
+          });
+        } catch (e) {
+          console.warn(`[Steward] createAlert failed for ${svc.id} DOWN:`, e.message);
+        }
+      } else if (svc._status === ServiceState.RUNNING && svc._downSince) {
+        // Recovery — log how long we were down so the timeline panel shows it.
+        const downMs = Date.now() - svc._downSince;
+        svc._downSince = null;
+        logServiceEvent(svc.id, 'recovered', { down_for_ms: downMs, down_for_min: Math.round(downMs / 60000) });
+      }
     }
 
     // Auto-restart services that have a startFn and are down — with backoff.
