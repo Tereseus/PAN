@@ -5759,6 +5759,16 @@ function start() {
 
         // Steward boots all background services in dependency order.
         bootAll().catch(err => console.error('[Steward] Boot error:', err.message));
+
+        // Smart Steward — the LLM-driven autonomous supervisor that watches
+        // for problems Steward's fast-path can't fix on its own (e.g. a
+        // remote service down for hours, a watchdog failing in a loop, a
+        // service requiring human-decisioned action). 5-minute tick, uses
+        // Claude (not Cerebras) for careful reasoning. See smart-steward.js
+        // header for the full design + safety model.
+        import('./smart-steward.js').then(({ startSmartSteward }) => {
+          try { startSmartSteward(); } catch (e) { console.warn('[SmartSteward] startup failed:', e.message); }
+        }).catch(e => console.warn('[SmartSteward] import failed:', e.message));
       }
 
       // Resume restart test if one was in progress before we died
