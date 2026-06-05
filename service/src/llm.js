@@ -516,6 +516,7 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
+  let chunksYielded = 0; // empty-stream guard (see end of finally)
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -526,17 +527,49 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
-        if (data === '[DONE]') return;
+        if (data === '[DONE]') {
+          // Mirror the non-streaming empty-content guard. zai-glm-4.7 stream
+          // can return 0 content chunks when the entire max_completion_tokens
+          // budget is consumed by verbose reasoning. The fallback chain saw
+          // it as "stream finished cleanly" and never advanced to the next
+          // backend — phone call 2026-06-05 09:32:33 hit this exact path
+          // (3,108ms for an empty stream, then chain marched on to a dead
+          // Ollama). Throw so askAIStreamWithFallback's catch recognises it
+          // as retriable (classifyError already buckets unknown throws to
+          // retriable=true).
+          if (chunksYielded === 0) {
+            const reasoning = usageOut?.completion_tokens_details?.reasoning_tokens ?? null;
+            const total    = usageOut?.output_tokens ?? null;
+            const err = new Error(
+              `Cerebras stream ${modelId} returned empty content` +
+              (reasoning !== null ? ` (${reasoning}/${total} completion tokens went to reasoning)` : '')
+            );
+            err.code = 'empty_stream';
+            throw err;
+          }
+          return;
+        }
         try {
           const parsed = JSON.parse(data);
           const chunk = parsed.choices?.[0]?.delta?.content;
-          if (chunk) yield chunk;
+          if (chunk) { yield chunk; chunksYielded++; }
           if (usageOut && parsed.usage) {
             usageOut.input_tokens = parsed.usage.prompt_tokens || 0;
             usageOut.output_tokens = parsed.usage.completion_tokens || 0;
+            if (parsed.usage.completion_tokens_details) {
+              usageOut.completion_tokens_details = parsed.usage.completion_tokens_details;
+            }
           }
         } catch {}
       }
+    }
+    // Stream ended without [DONE] AND we yielded nothing → same empty-content
+    // path. Network glitch or upstream bug; treat as retriable so the chain
+    // advances rather than returning silently to the caller.
+    if (chunksYielded === 0) {
+      const err = new Error(`Cerebras stream ${modelId} closed without content`);
+      err.code = 'empty_stream';
+      throw err;
     }
   } finally {
     reader.releaseLock();

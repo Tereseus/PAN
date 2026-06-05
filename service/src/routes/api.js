@@ -1013,6 +1013,46 @@ router.post('/query', async (req, res) => {
       response_time_ms: result.response_time_ms || null,
     }), req.user?.id);
 
+    // Persist phone turn to chat_messages on the Π system thread so the
+    // conversation is VISIBLE on the desktop (Π thread, comms popup,
+    // LiveCallPanel widget). Before this, phone calls only showed up in
+    // command_queue + VoiceCommand events — invisible to every dashboard
+    // surface. Same shape as /api/v1/chat does when thread_id is set,
+    // including the debug-metadata payload so the chip + intuition trace
+    // render the same way as desktop voice calls.
+    //
+    // Skip persistence for ambient classifications since they're not part
+    // of the conversation — same rule the dashboard popup follows.
+    try {
+      if (result.intent !== 'ambient' && result.response && result.response !== 'No response') {
+        const crypto = await import('crypto');
+        const now = Date.now();
+        const PAN_THREAD = 'thread-pan-system';
+        const userMsgId = 'cmsg_' + crypto.randomBytes(8).toString('hex');
+        const panMsgId  = 'cmsg_pan_' + now + '_' + crypto.randomBytes(4).toString('hex');
+        const phoneSource = device_id ? `phone-${device_id}` : 'phone';
+        db.prepare(`
+          INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
+          VALUES (?, ?, 'self', ?, 'text', ?, ?)
+        `).run(userMsgId, PAN_THREAD, text, JSON.stringify({
+          source: phoneSource,
+          device_id,
+          speaker_id: req.body.speaker_id || null,
+        }), now);
+        db.prepare(`
+          INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
+          VALUES (?, ?, 'contact-pan-system', ?, 'text', ?, ?)
+        `).run(panMsgId, PAN_THREAD, result.response, JSON.stringify({
+          intent: result.intent || null,
+          source: phoneSource,
+          debug: result._debug || null,
+        }), now + 1);
+        db.prepare(`UPDATE chat_threads SET updated_at = ? WHERE id = ?`).run(now + 1, PAN_THREAD);
+      }
+    } catch (e) {
+      console.warn('[/api/v1/query] phone-to-chat-thread persist failed:', e.message);
+    }
+
     // Build actions array — describes where each intent should be executed
     const actions = [];
     if (result.route === 'music' || result.intent === 'music') {
