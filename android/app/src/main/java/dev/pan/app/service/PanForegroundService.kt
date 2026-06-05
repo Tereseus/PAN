@@ -273,7 +273,17 @@ class PanForegroundService : Service() {
 
             // When TTS finishes speaking, restart STT listening
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
-            sttEngine.onInterrupt = { panLog("User interrupted TTS"); tts.stop() }
+            // sttEngine.onInterrupt is the SECOND barge-in path — fires when
+            // the SpeechRecognizer thinks the user spoke during TTS playback.
+            // It races BargeInMonitor: STT can flip on its own internal
+            // "speech detected" heuristic from TTS bleed it picks up,
+            // calling tts.stop() before BargeInMonitor's AEC + threshold
+            // logic has even decided. Removing the auto-stop here so only
+            // BargeInMonitor controls TTS interruption — single source of
+            // truth, no race. The log still fires so we can see if STT
+            // was independently detecting speech (useful diagnostic) but
+            // we no longer act on it. (TTS-cutoff fix 2026-06-05.)
+            sttEngine.onInterrupt = { panLog("STT detected speech during TTS (deferring to BargeInMonitor)") }
             val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
             tts.onSpeakingStateChanged = { speaking ->
                 if (speaking) {
