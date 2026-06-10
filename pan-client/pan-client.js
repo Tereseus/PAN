@@ -439,6 +439,149 @@ function probeServices() {
   });
 }
 
+// ── Local Claude Control ──────────────────────────────────────────────────────
+// User design 2026-06-09: every pan-client machine should host its OWN Claude
+// Code session so it can build a per-machine profile (favorites, file paths,
+// app-launch habits) over time. The Hub already runs claude-control via the
+// node-pty PTY in service/src/claude-control.js. Here we mirror the API
+// without the native-build hassle by using `claude --print --continue` —
+// Claude Code's documented persistent-session mode. Each pan-client machine's
+// session lives in its own Claude Code memory store.
+//
+// API surface (mirrors server-side claude-control.js):
+//   _initLocalClaude()          probe binary, start fresh session
+//   sendToLocalClaude(text)     run one turn, capture output (returns Promise<string|null>)
+//   getLocalClaudeStatus()      { available, version, last_send_at, sends, last_error }
+//
+// Failure handling: if `claude` isn't on PATH, sets _claude.available=false
+// and the heartbeat just reports it. The hub-side router checks the flag
+// before dispatching a `send_to_local_claude` command to this client.
+
+const _claude = {
+  available:      false,
+  binPath:        null,
+  version:        null,
+  hasSession:     false,   // false until first --print succeeds; then --continue
+  lastSendAt:     0,
+  sends:          0,
+  lastError:      null,
+  recentOutput:   '',      // last successful Claude reply (≤4 KB)
+  // Concurrency guard — Claude Code can crash if two --continue calls overlap
+  // because they fight for the same session lock. Queue serial.
+  busy:           false,
+};
+
+async function _probeBinary(file, args) {
+  return new Promise((resolve) => {
+    let out = '', err = '', settled = false;
+    try {
+      const p = spawn(file, args, { windowsHide: true });
+      p.stdout?.on('data', d => out += d.toString());
+      p.stderr?.on('data', d => err += d.toString());
+      p.on('close', (code) => { if (!settled) { settled = true; resolve({ ok: code === 0, stdout: out.trim(), stderr: err.trim() }); } });
+      p.on('error', () => { if (!settled) { settled = true; resolve({ ok: false, stdout: out, stderr: err || 'spawn error' }); } });
+      setTimeout(() => { if (!settled) { try { p.kill(); } catch {} settled = true; resolve({ ok: false, stdout: out, stderr: 'timeout' }); } }, 5000);
+    } catch (e) { resolve({ ok: false, stdout: '', stderr: e.message }); }
+  });
+}
+
+async function _initLocalClaude() {
+  // Resolve binary once at startup. On Windows it's typically claude.cmd via
+  // npm/nvm; on POSIX it's `claude` on PATH. The probe doubles as a version
+  // check so the heartbeat can show what version each client is running.
+  const probe = await _probeBinary(IS_WINDOWS ? 'where' : 'which', ['claude']);
+  if (!probe.ok || !probe.stdout) {
+    _claude.available = false;
+    _claude.lastError = 'claude not on PATH';
+    console.log('[ClaudeControl] not available — claude binary not on PATH');
+    return;
+  }
+  _claude.binPath = probe.stdout.split(/\r?\n/)[0].trim();
+  // Version check via `claude --version`. If this errors, we still report
+  // available=false rather than silently letting send calls explode.
+  const ver = await _probeBinary(_claude.binPath, ['--version']);
+  if (ver.ok) {
+    _claude.version = ver.stdout || ver.stderr || 'unknown';
+    _claude.available = true;
+    console.log(`[ClaudeControl] available — ${_claude.binPath} (${_claude.version})`);
+  } else {
+    _claude.available = false;
+    _claude.lastError = `version probe failed: ${ver.stderr}`;
+    console.warn('[ClaudeControl] version probe failed:', ver.stderr);
+  }
+}
+
+function sendToLocalClaude(text, timeoutMs = 60_000) {
+  return new Promise((resolve) => {
+    if (!_claude.available) return resolve({ ok: false, error: 'claude not available on this host' });
+    if (_claude.busy) return resolve({ ok: false, error: 'busy — previous send still in flight' });
+    if (typeof text !== 'string' || !text.trim().length) return resolve({ ok: false, error: 'empty text' });
+
+    _claude.busy = true;
+    // `claude --print` runs a single non-interactive turn. `--continue` reuses
+    // the most recent session so context (CLAUDE.md, prior decisions, learned
+    // file paths, etc.) carries forward turn-to-turn — that's the "profile"
+    // building up on this specific machine over time.
+    const args = ['--print'];
+    if (_claude.hasSession) args.push('--continue');
+    args.push(text);
+
+    let stdout = '', stderr = '', settled = false;
+    let proc;
+    try {
+      proc = spawn(_claude.binPath, args, { windowsHide: true });
+    } catch (e) {
+      _claude.busy = false;
+      _claude.lastError = `spawn failed: ${e.message}`;
+      return resolve({ ok: false, error: _claude.lastError });
+    }
+    proc.stdout?.on('data', d => stdout += d.toString());
+    proc.stderr?.on('data', d => stderr += d.toString());
+    proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      _claude.busy = false;
+      _claude.lastSendAt = Date.now();
+      _claude.sends += 1;
+      if (code !== 0) {
+        _claude.lastError = `exit ${code}: ${stderr.slice(0, 300)}`;
+        return resolve({ ok: false, error: _claude.lastError, stdout, stderr });
+      }
+      _claude.hasSession = true; // future calls can use --continue
+      _claude.recentOutput = stdout.slice(-4096);
+      _claude.lastError = null;
+      resolve({ ok: true, output: stdout, stderr });
+    });
+    proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      _claude.busy = false;
+      _claude.lastError = err.message;
+      resolve({ ok: false, error: err.message });
+    });
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { proc.kill(); } catch {}
+      _claude.busy = false;
+      _claude.lastError = `timeout > ${timeoutMs}ms`;
+      resolve({ ok: false, error: _claude.lastError, stdout, stderr });
+    }, timeoutMs);
+  });
+}
+
+function getLocalClaudeStatus() {
+  return {
+    available:    _claude.available,
+    version:      _claude.version,
+    has_session:  _claude.hasSession,
+    last_send_at: _claude.lastSendAt,
+    sends:        _claude.sends,
+    last_error:   _claude.lastError,
+    bin_path:     _claude.binPath,
+  };
+}
+
 // ── Ollama watchdog ───────────────────────────────────────────────────────────
 // Throttle: don't attempt restart more than once every 5 minutes.
 let _ollamaLastRestartAttempt = 0;
@@ -619,6 +762,9 @@ async function sendHeartbeat() {
     // healthy. When Ollama is wedged, this is the user's window into what
     // pan-client has actually tried.
     restart_history: getRestartHistory(),
+    // Local Claude Code availability — the hub-side router uses this to
+    // decide whether to dispatch send_to_local_claude commands here.
+    claude_control: getLocalClaudeStatus(),
   });
   // Stamp local heartbeat clock so the tray can render age accurately. We
   // stamp on SEND (not server-ack) because WS doesn't ack at the message
@@ -790,6 +936,35 @@ async function handleCommand(msg) {
         // Phase 6 / stub
         reply(null, `Command type '${type}' requires Tauri shell — not yet implemented`);
         break;
+
+      case 'send_to_local_claude': {
+        // Hub-dispatched computer-control command for THIS machine. Runs the
+        // user's text against the local Claude Code session (persistent via
+        // --continue), captures stdout, returns it so the hub can speak it
+        // back as TTS or surface it in the dashboard.
+        try {
+          const text = params.text || params.command || '';
+          const timeout_ms = params.timeout_ms || 60_000;
+          if (!_claude.available) {
+            reply(null, 'claude-control not available on this host');
+            break;
+          }
+          const r = await sendToLocalClaude(text, timeout_ms);
+          if (!r.ok) {
+            reply(null, r.error || 'send_to_local_claude failed');
+            break;
+          }
+          reply({
+            ok: true,
+            output: (r.output || '').slice(0, 8000),
+            sends:  _claude.sends,
+            host:   DEVICE_ID,
+          });
+        } catch (err) {
+          reply(null, `send_to_local_claude error: ${err.message}`);
+        }
+        break;
+      }
 
       case 'self_update': {
         // Auto-update path. Pulls latest pan-client.js from git and respawns
@@ -1186,6 +1361,12 @@ console.log(`[PAN Client] v${VERSION} — ${NAME} (${PLATFORM}/${arch()})`);
 console.log(`[PAN Client] Hub: ${HUB_WS}`);
 console.log(`[PAN Client] Hub HTTP: ${HUB_HTTP}`);
 
+// Probe Claude Code at startup so the first heartbeat already reports
+// availability accurately. Non-blocking — if claude isn't installed, the
+// flag stays false and the hub-side router won't dispatch send_to_local_claude
+// commands to this device.
+_initLocalClaude().catch(e => console.warn('[ClaudeControl] init failed:', e.message));
+
 async function boot() {
   // Step 1: HTTP register — works through Cloudflare (no WebSocket upgrade needed)
   console.log('[PAN Client] Registering with hub via HTTP...');
@@ -1342,6 +1523,7 @@ function startHttpMode() {
           service_state: svc.service_state,
           service_manager: svc.service_manager,
           restart_history: getRestartHistory(),
+          claude_control: getLocalClaudeStatus(),
         });
         // HTTP path proves server reachability — record success for the tray.
         _lastHeartbeatOkMs = Date.now();

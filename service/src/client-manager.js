@@ -415,6 +415,12 @@ function handleHeartbeat(deviceId, msg) {
     if (msg.service_state) entry.service_state = msg.service_state;
     if (msg.service_manager) entry.service_manager = msg.service_manager;
     if (Array.isArray(msg.restart_history)) entry.restart_history = msg.restart_history;
+    // Per-device Claude Code availability — used by router.js to decide
+    // which machine to dispatch a claude_control intent to. See
+    // pan-client.js getLocalClaudeStatus() for the shape.
+    if (msg.claude_control && typeof msg.claude_control === 'object') {
+      entry.claude_control = msg.claude_control;
+    }
   }
   setDeviceOnline(deviceId, true);
   // Restart-history visibility: when pan-client has been trying to revive a
@@ -636,6 +642,7 @@ export function getConnectedClients() {
       mem_free_mb: entry.mem_free_mb,
       online: entry.ws.readyState === WebSocket.OPEN,
       trusted: entry.trusted,         // false = pending approval
+      claude_control: entry.claude_control || null, // per-device Claude Code availability
     });
   }
   return result;
