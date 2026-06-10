@@ -1,6 +1,6 @@
 ---
 name: Send to Claude (Computer Control)
-triggers: [tell claude to {action}, ask claude to {action}, have claude {action}, claude {action}, computer control {action}]
+triggers: [tell claude to {action}, ask claude to {action}, have claude {action}, claude {action}, computer control {action}, on my computer {action}, on the hub {action}, can you {action} on my computer, can you {action} on the hub, please {action} on my computer, run {action}, execute {action}, do {action} for me]
 intent: claude_control
 priority: 8
 ---

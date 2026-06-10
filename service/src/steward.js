@@ -152,6 +152,49 @@ const MODEL_TIERS = {
 
 const services = [
   {
+    // Always-on Claude Code PTY dedicated to computer-control voice commands.
+    // The dashboard terminal stack is brittle and the user has stopped using
+    // it; this is a separate background service. See claude-control.js for
+    // the full design — Steward owns lifecycle (start, health-check via the
+    // /status endpoint, auto-restart on PID death) so the user never has
+    // to spawn a fresh claude session before issuing a voice command.
+    id: 'claude-control',
+    name: 'Claude Control',
+    technicalName: 'claude-control PTY',
+    description: 'Always-on Claude Code PTY for computer-control voice commands',
+    modelTier: 'interactive',
+    modelMinSize: 'N/A',
+    modelCurrent: 'Claude Code default',
+    port: null,
+    healthCheck: 'function',
+    healthFn: async () => {
+      try {
+        const { getStatus } = await import('./claude-control.js');
+        const s = getStatus();
+        return { up: !!s.running, lastError: s.running ? null : 'PTY not running' };
+      } catch (e) { return { up: false, lastError: e.message }; }
+    },
+    bootOrder: 1,
+    dependsOn: [],
+    interval: null, // always-on
+    startFn: async () => {
+      try {
+        const { startClaudeControl } = await import('./claude-control.js');
+        startClaudeControl();
+      } catch (e) { console.warn('[Steward] claude-control startFn failed:', e.message); }
+    },
+    stopFn: async () => {
+      try {
+        const { stopClaudeControl } = await import('./claude-control.js');
+        stopClaudeControl();
+      } catch {}
+    },
+    _status: 'unknown',
+    _lastCheck: null,
+    _lastError: null,
+    _lastRun: null,
+  },
+  {
     id: 'ollama',
     name: 'Local Intelligence',
     technicalName: 'Ollama',
@@ -746,9 +789,31 @@ async function checkServiceHealth(svc) {
         break;
       }
       case 'function': {
-        // Embeddings — check if Ollama is responding to embedding requests
-        const ollamaSvc = serviceMap.get('ollama');
-        transitionServiceState(svc, ollamaSvc?._status === ServiceState.RUNNING ? ServiceState.RUNNING : ServiceState.DEGRADED, 'function health check');
+        // Two paths under the function-health bucket:
+        //   1. If the service defines svc.healthFn, call it. The function
+        //      returns { up: bool, lastError: string|null }. This is the
+        //      generic path — used by claude-control and any future service
+        //      that needs custom liveness logic.
+        //   2. Otherwise (legacy embeddings behavior), defer to ollama's
+        //      state since embeddings rides on it.
+        if (typeof svc.healthFn === 'function') {
+          try {
+            const r = await svc.healthFn();
+            if (r?.up) {
+              svc._lastError = null;
+              transitionServiceState(svc, ServiceState.RUNNING, 'function health check ok');
+            } else {
+              svc._lastError = r?.lastError || 'health function reported down';
+              transitionServiceState(svc, ServiceState.DOWN, `function health check: ${svc._lastError}`);
+            }
+          } catch (err) {
+            svc._lastError = err.message;
+            transitionServiceState(svc, ServiceState.DOWN, `function health check threw: ${err.message}`);
+          }
+        } else {
+          const ollamaSvc = serviceMap.get('ollama');
+          transitionServiceState(svc, ollamaSvc?._status === ServiceState.RUNNING ? ServiceState.RUNNING : ServiceState.DEGRADED, 'function health check');
+        }
         break;
       }
       default:
