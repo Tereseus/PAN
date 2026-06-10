@@ -527,7 +527,11 @@ async function _initLocalClaude() {
   }
 }
 
-function sendToLocalClaude(text, timeoutMs = 60_000) {
+function sendToLocalClaude(text, timeoutMs = 180_000) {
+  // 180s default — first call has no --continue and cold-starts a fresh
+  // Claude Code session which can take 30-90s. Subsequent calls reuse
+  // the session via --continue and typically return in 5-15s, but the
+  // ceiling has to accommodate the cold start.
   return new Promise((resolve) => {
     if (!_claude.available) return resolve({ ok: false, error: 'claude not available on this host' });
     if (_claude.busy) return resolve({ ok: false, error: 'busy — previous send still in flight' });
