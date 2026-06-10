@@ -542,16 +542,22 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
     // the most recent session so context (CLAUDE.md, prior decisions, learned
     // file paths, etc.) carries forward turn-to-turn — that's the "profile"
     // building up on this specific machine over time.
+    //
+    // Pass the prompt via stdin (NOT as a positional arg) — multi-word
+    // prompts with shell:true on Windows get tokenized by cmd.exe and the
+    // call hangs forever waiting on the wrong shape. stdin is universally
+    // safe and matches how voice-call utterances flow naturally.
     const args = ['--print'];
     if (_claude.hasSession) args.push('--continue');
-    args.push(text);
 
     let stdout = '', stderr = '', settled = false;
     let proc;
     try {
       // Same shell:true rationale as _probeBinary — required for .cmd
       // shims on Windows native spawn.
-      proc = spawn(_claude.binPath, args, { windowsHide: true, shell: IS_WINDOWS });
+      proc = spawn(_claude.binPath, args, { windowsHide: true, shell: IS_WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
+      proc.stdin.write(text);
+      proc.stdin.end();
     } catch (e) {
       _claude.busy = false;
       _claude.lastError = `spawn failed: ${e.message}`;
