@@ -475,7 +475,10 @@ async function _probeBinary(file, args) {
   return new Promise((resolve) => {
     let out = '', err = '', settled = false;
     try {
-      const p = spawn(file, args, { windowsHide: true });
+      // shell:true on Windows so .cmd / .bat shims execute through cmd.exe
+      // — direct spawn of a .cmd file produces ENOENT / EINVAL on some Node
+      // versions. Cost is negligible for one-shot probes.
+      const p = spawn(file, args, { windowsHide: true, shell: IS_WINDOWS });
       p.stdout?.on('data', d => out += d.toString());
       p.stderr?.on('data', d => err += d.toString());
       p.on('close', (code) => { if (!settled) { settled = true; resolve({ ok: code === 0, stdout: out.trim(), stderr: err.trim() }); } });
@@ -496,7 +499,20 @@ async function _initLocalClaude() {
     console.log('[ClaudeControl] not available — claude binary not on PATH');
     return;
   }
-  _claude.binPath = probe.stdout.split(/\r?\n/)[0].trim();
+  // `where claude` on Windows returns multiple paths — typically the Unix
+  // shell shim ('C:\nvm4w\nodejs\claude' with no extension) FIRST, then
+  // the executable wrapper ('claude.cmd' / '.bat' / '.ps1' / '.exe').
+  // Native node spawn() can't run the shim, so pick the executable suffix
+  // explicitly. Order of preference matches what cmd.exe's PATHEXT defaults to.
+  const candidates = probe.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (IS_WINDOWS) {
+    const exts = ['.cmd', '.bat', '.exe', '.ps1'];
+    const exec = candidates.find(p => exts.some(e => p.toLowerCase().endsWith(e)))
+              || candidates[0]; // fall back if nothing matched (e.g. portable install)
+    _claude.binPath = exec;
+  } else {
+    _claude.binPath = candidates[0];
+  }
   // Version check via `claude --version`. If this errors, we still report
   // available=false rather than silently letting send calls explode.
   const ver = await _probeBinary(_claude.binPath, ['--version']);
@@ -506,8 +522,8 @@ async function _initLocalClaude() {
     console.log(`[ClaudeControl] available — ${_claude.binPath} (${_claude.version})`);
   } else {
     _claude.available = false;
-    _claude.lastError = `version probe failed: ${ver.stderr}`;
-    console.warn('[ClaudeControl] version probe failed:', ver.stderr);
+    _claude.lastError = `version probe failed at ${_claude.binPath}: ${ver.stderr}`;
+    console.warn(`[ClaudeControl] version probe failed at ${_claude.binPath}:`, ver.stderr);
   }
 }
 
@@ -529,7 +545,9 @@ function sendToLocalClaude(text, timeoutMs = 60_000) {
     let stdout = '', stderr = '', settled = false;
     let proc;
     try {
-      proc = spawn(_claude.binPath, args, { windowsHide: true });
+      // Same shell:true rationale as _probeBinary — required for .cmd
+      // shims on Windows native spawn.
+      proc = spawn(_claude.binPath, args, { windowsHide: true, shell: IS_WINDOWS });
     } catch (e) {
       _claude.busy = false;
       _claude.lastError = `spawn failed: ${e.message}`;
