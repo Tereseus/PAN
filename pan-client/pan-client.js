@@ -564,11 +564,13 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
     try {
       writeFileSync(promptFile, text, 'utf8');
       // type tmpfile | claude.cmd --print [--continue]
-      // Using `type` (Windows cat equivalent) + pipe instead of `<`
-      // redirection — survives nested cmd quoting better. Single string
-      // form because Node spawn with shell:true treats it verbatim.
+      // Path NOT quoted on Windows — cmd.exe under shell:true mishandles
+      // double-quotes around a single token even when there are no spaces,
+      // resulting in "command not recognised". The nvm4w install path
+      // (default) has no spaces so this is safe. If a future install path
+      // contains spaces, we'd need 8.3 short-name resolution.
       const cmdLine = IS_WINDOWS
-        ? `type "${promptFile}" | "${_claude.binPath}" ${args.join(' ')}`
+        ? `type "${promptFile}" | ${_claude.binPath} ${args.join(' ')}`
         : `cat "${promptFile}" | "${_claude.binPath}" ${args.join(' ')}`;
       proc = spawn(cmdLine, { windowsHide: true, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
