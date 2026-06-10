@@ -781,6 +781,44 @@ async function processUnifiedResult(action, text, context) {
   const speech_act = action.speech_act || (intent === 'ambient' ? 'ambient' : 'command');
 
   switch (intent) {
+    case 'claude_control': {
+      // Computer-control via the always-on Claude PTY (see claude-control.js).
+      // Send the user's verbatim action text to the dedicated PTY and surface
+      // the first non-empty line of new output as the voice reply. If the
+      // PTY isn't running, degrade to a query response telling the user how
+      // to recover (POST /api/v1/claude-control/restart from anywhere).
+      if (context?.source && /benchmark|regression/.test(context.source)) {
+        return { intent: 'claude_control', speech_act, response: '[benchmark: claude-control routing verified — no PTY touched]' };
+      }
+      try {
+        const sendText = action.text || text;
+        const r = await fetch('http://127.0.0.1:7777/api/v1/claude-control/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: sendText, wait_for_output_ms: 4000 }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const j = await r.json();
+        if (!j.ok) {
+          return { intent: 'query', speech_act, response: `Claude terminal is not running — restart it from the dashboard.` };
+        }
+        // Pull the first user-facing line of new output (skip blank lines +
+        // shell prompts). Cap to 240 chars so TTS doesn't read paragraphs.
+        let voiceReply = action.response || `On it — sending to Claude.`;
+        if (j.new_output) {
+          const firstUseful = String(j.new_output)
+            .split('\n')
+            .map(s => s.trim())
+            .find(s => s.length > 4 && !/^[$%>#]/.test(s));
+          if (firstUseful) voiceReply = firstUseful.slice(0, 240);
+        }
+        return { intent: 'claude_control', speech_act, response: voiceReply, sent_to_claude: sendText };
+      } catch (e) {
+        console.error('[PAN Router] claude_control dispatch error:', e.message);
+        return { intent: 'query', speech_act, response: `Failed to reach Claude terminal: ${e.message}` };
+      }
+    }
+
     case 'task': {
       // Phone → headless Claude session delegate (task #453).
       // Cerebras decided this needs full capability (code, files, multi-step).

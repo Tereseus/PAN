@@ -2680,6 +2680,64 @@ app.get('/api/v1/usage/llm-routing', (req, res) => {
 });
 
 // GET /api/v1/settings — read all PAN settings (for mobile sync + dashboard)
+// ── Claude Control endpoints ───────────────────────────────────────────────
+// Dedicated always-on Claude PTY for computer-control voice commands. See
+// src/claude-control.js for the full design. The router's send-to-claude
+// skill POSTs to /send and optionally waits for output via /output.
+
+app.post('/api/v1/claude-control/send', async (req, res) => {
+  try {
+    const { text, wait_for_output_ms = 4000 } = req.body || {};
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ ok: false, error: 'text required' });
+    }
+    const { sendCommand, waitForOutput, getStatus } = await import('./claude-control.js');
+    const beforeTs = Date.now();
+    const r = sendCommand(text);
+    if (!r.ok) {
+      // 503 so the skill knows to tell the user "claude terminal not running"
+      return res.status(503).json(r);
+    }
+    let new_output = null;
+    if (wait_for_output_ms > 0) {
+      new_output = await waitForOutput(beforeTs, Math.min(wait_for_output_ms, 30000));
+    }
+    res.json({ ok: true, sent: text, new_output, status: getStatus() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/v1/claude-control/output', async (req, res) => {
+  try {
+    const { getRecentOutput, getStatus } = await import('./claude-control.js');
+    const maxBytes = Math.min(parseInt(req.query.bytes) || 4096, 16384);
+    res.json({ ok: true, output: getRecentOutput(maxBytes), status: getStatus() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/v1/claude-control/status', async (req, res) => {
+  try {
+    const { getStatus } = await import('./claude-control.js');
+    res.json({ ok: true, ...getStatus() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/v1/claude-control/restart', async (req, res) => {
+  try {
+    const { stopClaudeControl, startClaudeControl, getStatus } = await import('./claude-control.js');
+    stopClaudeControl();
+    setTimeout(() => { try { startClaudeControl(); } catch {} }, 500);
+    res.json({ ok: true, message: 'restart initiated', status_pre: getStatus() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/v1/settings', (req, res) => {
   try {
     const rows = all("SELECT key, value FROM settings");
@@ -5769,6 +5827,15 @@ function start() {
         import('./smart-steward.js').then(({ startSmartSteward }) => {
           try { startSmartSteward(); } catch (e) { console.warn('[SmartSteward] startup failed:', e.message); }
         }).catch(e => console.warn('[SmartSteward] import failed:', e.message));
+
+        // Claude Control — the always-on background Claude PTY dedicated to
+        // computer-control tasks. Separate from the dashboard terminal stack
+        // (which the user has stopped using). Voice/router dispatches
+        // computer-control intents to this PTY via the send-to-claude skill.
+        // Module-level state survives Craft swap; spawn is idempotent.
+        import('./claude-control.js').then(({ startClaudeControl }) => {
+          try { startClaudeControl(); } catch (e) { console.warn('[ClaudeControl] startup failed:', e.message); }
+        }).catch(e => console.warn('[ClaudeControl] import failed:', e.message));
       }
 
       // Resume restart test if one was in progress before we died
