@@ -1185,6 +1185,11 @@ async function resolveActionTarget(intent, text, user_id, org_id, activeDevices 
   // ── 2. Hard defaults (no device knowledge needed) ────────────────────────
   if (intent === 'terminal') return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
   if (intent === 'system')   return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
+  // claude_control is ALWAYS the Hub PTY — never ambiguous between devices.
+  // Without this, the action-target resolver was firing the generic
+  // "play it on minipc or Hub?" device-pick prompt for phone-sourced
+  // computer-control commands, swallowing the actual dispatch.
+  if (intent === 'claude_control') return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
   if (intent === 'navigate') return { device_type: 'phone', action_type, needsClarification: false, source: 'default' };
 
   // ── 3. Smart device + app selection ─────────────────────────────────────
