@@ -18,7 +18,8 @@ import { execFile, exec, execSync, spawn } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { hostname, platform, arch, totalmem, freemem, cpus } from 'os';
+import { hostname, platform, arch, totalmem, freemem, cpus, tmpdir } from 'os';
+import * as os from 'os';
 import { createInterface } from 'readline';
 import https from 'https';
 import http from 'http';
@@ -550,18 +551,21 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
     const args = ['--print'];
     if (_claude.hasSession) args.push('--continue');
 
+    // Windows spawn quirks (CVE-2024-27980 fallout):
+    //   - shell:false + direct .cmd path → EINVAL on Node 20+
+    //   - shell:true → cmd.exe owns stdin, proc.stdin.write() goes to cmd
+    //     which discards it
+    // Workaround: dump the prompt to a tmp file, then shell:true with
+    // input redirection (`< tmpfile`). cmd.exe handles the redirect into
+    // claude.cmd's stdin and everything threads through cleanly.
+    const promptFile = join(os.tmpdir(), `pan-claude-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
     let stdout = '', stderr = '', settled = false;
     let proc;
     try {
-      // shell:false here — when shell:true, Windows spawns cmd.exe which
-      // owns the stdin pipe, so proc.stdin.write() ends up writing to
-      // cmd.exe (which discards it) instead of claude.cmd. Direct spawn of
-      // .cmd works on Node 18+ Windows because Node has special-cased
-      // handling for batch files. The path was already normalised to the
-      // .cmd suffix during init so this is safe.
-      proc = spawn(_claude.binPath, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-      proc.stdin.write(text);
-      proc.stdin.end();
+      writeFileSync(promptFile, text, 'utf8');
+      // Single composed command string: claude.cmd --print [--continue] < tmpfile
+      const cmdLine = `"${_claude.binPath}" ${args.join(' ')} < "${promptFile}"`;
+      proc = spawn(cmdLine, { windowsHide: true, shell: IS_WINDOWS, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
       _claude.busy = false;
       _claude.lastError = `spawn failed: ${e.message}`;
@@ -572,6 +576,7 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
     proc.on('close', (code) => {
       if (settled) return;
       settled = true;
+      try { unlinkSync(promptFile); } catch {}
       _claude.busy = false;
       _claude.lastSendAt = Date.now();
       _claude.sends += 1;
