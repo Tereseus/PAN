@@ -776,6 +776,54 @@ async function resolveTerminalTarget(targetHint, context = {}) {
 }
 
 // Post-process the unified response into the correct return format
+// Pick which machine should execute a claude_control intent. Order:
+//   1. Explicit mention in the user's text ("on minipc", "on the hub", etc.) —
+//      strongest signal, user knows exactly what they want
+//   2. Intuition's `where` field — wherever the commander currently is, mapped
+//      to a device by name overlap (e.g. where="At The Hub" → Hub)
+//   3. Default to Hub — the always-on PAN server's local PTY
+//
+// Returns { device_id, reason }. device_id 'hub' means "use the local
+// server-side PTY at /api/v1/claude-control/send"; any other value means
+// dispatch via sendToClient to that pan-client.
+async function _pickClaudeControlTarget(userText, context) {
+  const text = (userText || '').toLowerCase();
+  // Snapshot of connected pan-clients with claude_control available.
+  let candidates = [];
+  try {
+    const { getConnectedClients } = await import('./client-manager.js');
+    candidates = (getConnectedClients() || []).filter(c =>
+      c.online && c.trusted !== false && c.claude_control?.available);
+  } catch {}
+
+  // (1) Explicit mention. Match each candidate's device_id and name. Also
+  // recognise 'hub' / 'this computer' / 'main pc' as the Hub.
+  if (/\b(on |at |to )?(this (computer|pc)|the hub|hub|main|server)\b/.test(text)) {
+    return { device_id: 'hub', reason: 'explicit_mention_hub' };
+  }
+  for (const c of candidates) {
+    const id = (c.device_id || '').toLowerCase();
+    const name = (c.name || '').toLowerCase();
+    if (id && text.includes(id)) return { device_id: c.device_id, reason: 'explicit_mention_device_id' };
+    if (name && name.length > 2 && text.includes(name)) return { device_id: c.device_id, reason: 'explicit_mention_name' };
+  }
+
+  // (2) Intuition's `where`. If it matches a candidate, use that.
+  const where = String(context?.where || '').toLowerCase();
+  if (where) {
+    if (/(hub|desktop|main|workstation|home)/.test(where)) {
+      return { device_id: 'hub', reason: `intuition_where=${where}` };
+    }
+    for (const c of candidates) {
+      const id = (c.device_id || '').toLowerCase();
+      if (id && where.includes(id)) return { device_id: c.device_id, reason: `intuition_where=${where}` };
+    }
+  }
+
+  // (3) Default — Hub.
+  return { device_id: 'hub', reason: 'default' };
+}
+
 async function processUnifiedResult(action, text, context) {
   const intent = action.intent || 'query';
   // Propagate speech_act through all return paths
@@ -783,37 +831,59 @@ async function processUnifiedResult(action, text, context) {
 
   switch (intent) {
     case 'claude_control': {
-      // Computer-control via the always-on Claude PTY (see claude-control.js).
-      // Send the user's verbatim action text to the dedicated PTY and surface
-      // the first non-empty line of new output as the voice reply. If the
-      // PTY isn't running, degrade to a query response telling the user how
-      // to recover (POST /api/v1/claude-control/restart from anywhere).
+      // Computer-control via a local Claude Code session. The dispatcher
+      // chooses which machine should act based on:
+      //   1. Explicit mention in the user's text ("on minipc", "on the hub")
+      //   2. Intuition's `where` field — wherever the commander currently is
+      //   3. Default to Hub
+      // The chosen target either runs locally (Hub PTY via /api/v1/claude-control/send)
+      // or remotely via sendToClient(device_id, 'send_to_local_claude').
+      // Per-machine sessions build their own profiles over time (file paths,
+      // app habits, favorites) because each uses `claude --continue` with
+      // that machine's local Claude Code memory.
       if (context?.source && /benchmark|regression/.test(context.source)) {
         return { intent: 'claude_control', speech_act, response: '[benchmark: claude-control routing verified — no PTY touched]' };
       }
       try {
         const sendText = action.text || text;
-        const r = await fetch('http://127.0.0.1:7777/api/v1/claude-control/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: sendText, wait_for_output_ms: 4000 }),
-          signal: AbortSignal.timeout(8000),
-        });
-        const j = await r.json();
-        if (!j.ok) {
-          return { intent: 'query', speech_act, response: `Claude terminal is not running — restart it from the dashboard.` };
+        const target = await _pickClaudeControlTarget(sendText, context);
+        const isHub = target.device_id === 'hub' || target.device_id === 'local';
+
+        let j;
+        if (isHub) {
+          // Hub PTY — the persistent node-pty session in claude-control.js
+          const r = await fetch('http://127.0.0.1:7777/api/v1/claude-control/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: sendText, wait_for_output_ms: 4000 }),
+            signal: AbortSignal.timeout(8000),
+          });
+          j = await r.json();
+        } else {
+          // Remote pan-client — fire 'send_to_local_claude' via WS, wait for reply
+          const { sendToClient } = await import('./client-manager.js');
+          try {
+            const out = await sendToClient(target.device_id, 'send_to_local_claude',
+              { text: sendText, timeout_ms: 30_000 }, 35_000);
+            j = { ok: !!out?.ok, new_output: out?.output || '', target: target.device_id, error: out?.error };
+          } catch (e) {
+            j = { ok: false, error: e.message, target: target.device_id };
+          }
         }
-        // Pull the first user-facing line of new output (skip blank lines +
-        // shell prompts). Cap to 240 chars so TTS doesn't read paragraphs.
-        let voiceReply = action.response || `On it — sending to Claude.`;
+
+        if (!j.ok) {
+          const where = target.device_id;
+          return { intent: 'query', speech_act, response: `Couldn't reach Claude on ${where}: ${j.error || 'no response'}.` };
+        }
+        let voiceReply = action.response || (isHub ? `On it — sending to Claude.` : `On it — sending to Claude on ${target.device_id}.`);
         if (j.new_output) {
           const firstUseful = String(j.new_output)
             .split('\n')
             .map(s => s.trim())
-            .find(s => s.length > 4 && !/^[$%>#]/.test(s));
+            .find(s => s.length > 4 && !/^[$%>#]/.test(s) && !/Claude Code>/.test(s));
           if (firstUseful) voiceReply = firstUseful.slice(0, 240);
         }
-        return { intent: 'claude_control', speech_act, response: voiceReply, sent_to_claude: sendText };
+        return { intent: 'claude_control', speech_act, response: voiceReply, sent_to_claude: sendText, target: target.device_id, target_reason: target.reason };
       } catch (e) {
         console.error('[PAN Router] claude_control dispatch error:', e.message);
         return { intent: 'query', speech_act, response: `Failed to reach Claude terminal: ${e.message}` };
@@ -1185,10 +1255,11 @@ async function resolveActionTarget(intent, text, user_id, org_id, activeDevices 
   // ── 2. Hard defaults (no device knowledge needed) ────────────────────────
   if (intent === 'terminal') return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
   if (intent === 'system')   return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
-  // claude_control is ALWAYS the Hub PTY — never ambiguous between devices.
-  // Without this, the action-target resolver was firing the generic
-  // "play it on minipc or Hub?" device-pick prompt for phone-sourced
-  // computer-control commands, swallowing the actual dispatch.
+  // claude_control runs the action on whichever machine currently has a
+  // local Claude Code session — Hub by default, or a specific pan-client
+  // when the user named one explicitly or intuition shows them on another
+  // machine. The picker logic itself lives in pickClaudeControlTarget()
+  // (below) since it needs the live connected-client list + intuition state.
   if (intent === 'claude_control') return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
   if (intent === 'navigate') return { device_type: 'phone', action_type, needsClarification: false, source: 'default' };
 
