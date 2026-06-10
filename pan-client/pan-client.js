@@ -966,7 +966,10 @@ async function handleCommand(msg) {
         // back as TTS or surface it in the dashboard.
         try {
           const text = params.text || params.command || '';
-          const timeout_ms = params.timeout_ms || 60_000;
+          // Honor hub-supplied claude_timeout_ms when present; otherwise
+          // let sendToLocalClaude use its 180s default — first call after
+          // a fresh session cold-starts and routinely runs 30-90s.
+          const timeout_ms = params.claude_timeout_ms || 180_000;
           if (!_claude.available) {
             reply(null, 'claude-control not available on this host');
             break;
