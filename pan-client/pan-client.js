@@ -563,9 +563,14 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
     let proc;
     try {
       writeFileSync(promptFile, text, 'utf8');
-      // Single composed command string: claude.cmd --print [--continue] < tmpfile
-      const cmdLine = `"${_claude.binPath}" ${args.join(' ')} < "${promptFile}"`;
-      proc = spawn(cmdLine, { windowsHide: true, shell: IS_WINDOWS, stdio: ['ignore', 'pipe', 'pipe'] });
+      // type tmpfile | claude.cmd --print [--continue]
+      // Using `type` (Windows cat equivalent) + pipe instead of `<`
+      // redirection — survives nested cmd quoting better. Single string
+      // form because Node spawn with shell:true treats it verbatim.
+      const cmdLine = IS_WINDOWS
+        ? `type "${promptFile}" | "${_claude.binPath}" ${args.join(' ')}`
+        : `cat "${promptFile}" | "${_claude.binPath}" ${args.join(' ')}`;
+      proc = spawn(cmdLine, { windowsHide: true, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
       _claude.busy = false;
       _claude.lastError = `spawn failed: ${e.message}`;
