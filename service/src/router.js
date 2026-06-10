@@ -876,12 +876,35 @@ async function processUnifiedResult(action, text, context) {
           });
           j = await r.json();
         } else {
-          // Remote pan-client — fire 'send_to_local_claude' via WS, wait for reply
-          const { sendToClient } = await import('./client-manager.js');
+          // Remote pan-client. WS sessions live on the Carrier (Craft's
+          // client-manager map is empty by design), so we relay through the
+          // /api/carrier/client-send endpoint just like /api/v1/client/command
+          // does. claude_timeout_ms is the per-call ceiling inside pan-client;
+          // the outer fetch timeout has to be a bit larger to allow round-trip
+          // overhead. First-call cold start on a fresh `claude --print` session
+          // can run 60-90s, so we give it room.
           try {
-            const out = await sendToClient(target.device_id, 'send_to_local_claude',
-              { text: sendText, timeout_ms: 30_000 }, 35_000);
-            j = { ok: !!out?.ok, new_output: out?.output || '', target: target.device_id, error: out?.error };
+            const carrierPort = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
+            const relayRes = await fetch(`http://127.0.0.1:${carrierPort}/api/carrier/client-send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                device_id: target.device_id,
+                type: 'send_to_local_claude',
+                text: sendText,
+                claude_timeout_ms: 180_000,
+                timeout_ms: 195_000,
+              }),
+              signal: AbortSignal.timeout(200_000),
+            });
+            const relayData = await relayRes.json();
+            const out = relayData?.result;
+            j = {
+              ok: !!out?.ok,
+              new_output: out?.output || '',
+              target: target.device_id,
+              error: out?.error || (relayRes.ok ? null : relayData?.error),
+            };
           } catch (e) {
             j = { ok: false, error: e.message, target: target.device_id };
           }
