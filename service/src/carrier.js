@@ -1246,6 +1246,28 @@ const carrierServer = http.createServer((req, res) => {
     return;
   }
 
+  // Connected-clients snapshot for the Craft. The Craft has its own
+  // client-manager but Carrier is where WS sessions actually terminate
+  // (Craft delegates via /api/carrier/client-send) — so getConnectedClients()
+  // on the Craft is always empty. The router's claude_control device picker
+  // needs to know which devices have a local Claude session available; that
+  // info rides on entry.claude_control here. Cheap endpoint, returns the
+  // same shape as client-manager getConnectedClients().
+  if (url.pathname === '/api/carrier/clients' && req.method === 'GET') {
+    (async () => {
+      try {
+        const cm = await import('./client-manager.js');
+        const list = cm.getConnectedClients() || [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, clients: list }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    })();
+    return;
+  }
+
   // Client command relay — Carrier owns WS connections, Craft delegates here
   // POST /api/carrier/client-send  { device_id, type, timeout_ms?, ...params }
   if (url.pathname === '/api/carrier/client-send' && req.method === 'POST') {
