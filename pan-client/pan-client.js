@@ -553,9 +553,13 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
     let stdout = '', stderr = '', settled = false;
     let proc;
     try {
-      // Same shell:true rationale as _probeBinary — required for .cmd
-      // shims on Windows native spawn.
-      proc = spawn(_claude.binPath, args, { windowsHide: true, shell: IS_WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
+      // shell:false here — when shell:true, Windows spawns cmd.exe which
+      // owns the stdin pipe, so proc.stdin.write() ends up writing to
+      // cmd.exe (which discards it) instead of claude.cmd. Direct spawn of
+      // .cmd works on Node 18+ Windows because Node has special-cased
+      // handling for batch files. The path was already normalised to the
+      // .cmd suffix during init so this is safe.
+      proc = spawn(_claude.binPath, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       proc.stdin.write(text);
       proc.stdin.end();
     } catch (e) {
