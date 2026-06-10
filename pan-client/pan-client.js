@@ -558,7 +558,13 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
     // Workaround: dump the prompt to a tmp file, then shell:true with
     // input redirection (`< tmpfile`). cmd.exe handles the redirect into
     // claude.cmd's stdin and everything threads through cleanly.
-    const promptFile = join(os.tmpdir(), `pan-claude-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+    // Use a fixed-location tmp dir under Public so it works equally well
+    // whether pan-client runs as SYSTEM (Windows Service) or a normal user.
+    // SYSTEM's os.tmpdir() resolves to a Windows service-specific path that
+    // cmd.exe under shell:true couldn't always read back via `type`.
+    const baseTmp = IS_WINDOWS ? 'C:\\Users\\Public\\pan-claude-tmp' : os.tmpdir();
+    try { mkdirSync(baseTmp, { recursive: true }); } catch {}
+    const promptFile = join(baseTmp, `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
     let stdout = '', stderr = '', settled = false;
     let proc;
     try {
@@ -572,6 +578,7 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
       const cmdLine = IS_WINDOWS
         ? `type "${promptFile}" | ${_claude.binPath} ${args.join(' ')}`
         : `cat "${promptFile}" | "${_claude.binPath}" ${args.join(' ')}`;
+      console.log('[ClaudeControl] spawn cmdLine:', cmdLine);
       proc = spawn(cmdLine, { windowsHide: true, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
       _claude.busy = false;
@@ -589,6 +596,7 @@ function sendToLocalClaude(text, timeoutMs = 180_000) {
       _claude.sends += 1;
       if (code !== 0) {
         _claude.lastError = `exit ${code}: ${stderr.slice(0, 300)}`;
+        console.warn('[ClaudeControl] exit ' + code + ' stderr=' + JSON.stringify(stderr.slice(0,500)) + ' stdout=' + JSON.stringify(stdout.slice(0,500)));
         return resolve({ ok: false, error: _claude.lastError, stdout, stderr });
       }
       _claude.hasSession = true; // future calls can use --continue
