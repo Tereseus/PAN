@@ -789,11 +789,27 @@ async function resolveTerminalTarget(targetHint, context = {}) {
 async function _pickClaudeControlTarget(userText, context) {
   const text = (userText || '').toLowerCase();
   // Snapshot of connected pan-clients with claude_control available.
+  // WS sessions live on the Carrier (Craft delegates via /api/carrier/client-send),
+  // so we must query the Carrier — the Craft's own client-manager map is empty.
   let candidates = [];
+  let _diagAll = [];
   try {
-    const { getConnectedClients } = await import('./client-manager.js');
-    candidates = (getConnectedClients() || []).filter(c =>
+    const carrierPort = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
+    const r = await fetch(`http://127.0.0.1:${carrierPort}/api/carrier/clients`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    const j = await r.json();
+    _diagAll = j?.clients || [];
+    candidates = _diagAll.filter(c =>
       c.online && c.trusted !== false && c.claude_control?.available);
+  } catch (e) {
+    console.warn('[PickClaudeControl] carrier query failed:', e.message);
+  }
+  try {
+    console.log('[PickClaudeControl] text=' + JSON.stringify(text.slice(0,120))
+      + ' connected=' + _diagAll.length
+      + ' candidates=' + candidates.length
+      + ' all=' + JSON.stringify(_diagAll.map(c => ({id: c.device_id, online: c.online, cc: c.claude_control?.available}))));
   } catch {}
 
   // (1) Explicit mention. Match each candidate's device_id and name. Also
