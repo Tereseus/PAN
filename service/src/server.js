@@ -30,6 +30,7 @@ import replicationRouter from './routes/replication.js';
 import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.js';
 import qualityLogRouter from './routes/quality-log.js';
 import mcpQualityLogRouter from './routes/mcp-quality-log.js';
+import mcpPanRouter from './routes/mcp-pan.js';
 import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
 import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
 import orgsRouter from './routes/orgs.js';
@@ -927,6 +928,13 @@ app.use('/api/v1/quality-log', qualityLogRouter);
 // Settings → Customize → Connectors → Add custom connector → Remote MCP
 // server URL. See routes/mcp-quality-log.js for the per-network URL guide.
 app.use('/mcp/quality-log', mcpQualityLogRouter);
+
+// THE umbrella PAN MCP — every PAN tool over HTTP. This is the connector
+// non-CLI Claude clients should use: it exposes pan_search (full-text over
+// past chats / commands / voice / system), pan_memory, pan_thoughts, the
+// `pan` router (conversations, sessions, tasks, voice, logs, ...), AND the
+// Paean Records quality_log tools. One URL, everything in PAN's database.
+app.use('/mcp/pan', mcpPanRouter);
 
 // T3 — Identity → user binding
 app.use('/api/v1/identity', identityRouter);
