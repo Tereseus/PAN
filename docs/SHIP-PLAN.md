@@ -61,14 +61,29 @@ security-wise, so off-by-default loses nothing structural.
 
 ## 4. BUILD — the new work, in order
 
-### Phase 1 — the profile mechanism (~1–2 weeks) ← everything depends on this
-The 26 route imports in server.js are boot-fatal, so `core` requires a
-mechanical pass: convert static imports to a profile-driven mount table
-(lazy `await import()` per route group), and filter Steward's 16-service
-registry by profile. Acceptance: `PAN_PROFILE=core` boots with zero
-watchers, zero experimental loops, all memory/MCP/voice endpoints green;
-`PAN_PROFILE=full` (default for this machine) behaves byte-identically to
-today.
+### Phase 1 — the profile mechanism ✅ SHIPPED 2026-06-12
+`service/src/profiles.js` is the single source of truth (29 gated features).
+server.js gates watcher startups, experimental loops, network extras, and 13
+full-only route mounts via `featureEnabled()`; steward entries carry
+`profiles: ['full']` and are filtered out of boot/health/status in core.
+Verified: dev-server with `PAN_PROFILE=core` → /health reports core, all 8
+sampled full-only routes 404, MCP (15 tools) + quality-log + intuition +
+events spine + capture hooks all green, steward registry filters 16 → 6
+(classifier, embeddings, intuition, ollama, pan-server, whisper). Prod swap
+with no env → `profile: full`, 13/16 services up (same as pre-change),
+watchers fire on stagger, full-only routes 200.
+
+Notes for later phases:
+- Static imports kept; gating is behavioral. Physical code exclusion =
+  packaging (Phase 5).
+- Discovered: `node server.js` standalone (outside Carrier, outside
+  dev-server) wedges during module load before listen — pre-existing,
+  likely the task #61 boot mystery. Installs always boot via
+  super-carrier→carrier→craft so not blocking, but Phase 3's installer
+  must not use bare `node server.js`.
+- db.js legacy-migration path fires on any empty PAN_DATA_DIR when
+  `service/data/pan.db` exists — surprising for fresh installs; revisit in
+  Phase 3.
 
 ### Phase 2 — close the capture gap (~2–3 weeks)
 Cloud Claudes (desktop app, Claude.ai, Cowork) currently have ZERO
