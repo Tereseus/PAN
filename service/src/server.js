@@ -29,6 +29,7 @@ import auditRouter from './routes/audit.js';
 import replicationRouter from './routes/replication.js';
 import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.js';
 import qualityLogRouter from './routes/quality-log.js';
+import mcpQualityLogRouter from './routes/mcp-quality-log.js';
 import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
 import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
 import orgsRouter from './routes/orgs.js';
@@ -920,6 +921,12 @@ app.use('/api/v1/zones', zonesRouter);
 // Math lives in routes/quality-log.js; the `quality-log` MCP server is a
 // thin HTTP proxy over these endpoints.
 app.use('/api/v1/quality-log', qualityLogRouter);
+
+// Same MCP server exposed over Streamable HTTP for the Claude desktop app,
+// Claude in Chrome, Claude.ai, and Cowork. Users paste this URL into
+// Settings → Customize → Connectors → Add custom connector → Remote MCP
+// server URL. See routes/mcp-quality-log.js for the per-network URL guide.
+app.use('/mcp/quality-log', mcpQualityLogRouter);
 
 // T3 — Identity → user binding
 app.use('/api/v1/identity', identityRouter);
