@@ -55,6 +55,13 @@ PAN is a persistent AI operating system across all devices, projects, and conver
 > feedback loop wire-by-wire with status. Where the router *should* read intuition
 > but doesn't lives there with task IDs (#NEW-1…#NEW-8).
 
+> **Dependency map: read [docs/PAN-DEPENDENCY-MAP.md](./docs/PAN-DEPENDENCY-MAP.md) before removing,
+> extracting, or "shipping a subset of" any subsystem.** Boot chain, who-imports-whom, DB table
+> ownership, the removability matrix (cut X → what breaks, with severity), per-surface capture
+> coverage, and minimal-ship configurations. Traps it documents: all 26 route imports in server.js
+> are boot-fatal; `getOllamaUrl()` silently depends on client-manager for remote Ollama discovery;
+> pan-client WS lives on the Carrier (Craft's local client map is always empty).
+
 ## Architecture
 
 ```mermaid
@@ -285,7 +292,10 @@ IMPORTANT: The project documentation is at the TOP of this CLAUDE.md file — re
 
 **Session context** (for the first message of a fresh session only — see Session Continuity Rule above):
 
-### Recent Project Work *(session: 64f8db59-61d, recap)*
+### This Tab *(session: dc86abe0-0b3, recap)*
+No notable activity recorded.
+
+### Recent Project Work *(session: b19becaa-1ce, recap)*
 No notable activity recorded.
 
 ### Open Tasks
