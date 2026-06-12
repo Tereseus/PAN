@@ -15,6 +15,7 @@
 // Atlas reads from Steward's registry to render the service graph.
 
 import { get, all, run, insert, getOllamaUrl } from './db.js';
+import { PROFILE } from './profiles.js';
 import { sendToClient } from './client-manager.js';
 import { startClassifier, stopClassifier } from './classifier.js';
 import { startIntuition, stopIntuition } from './intuition.js';
@@ -159,6 +160,7 @@ const services = [
     // /status endpoint, auto-restart on PID death) so the user never has
     // to spawn a fresh claude session before issuing a voice command.
     id: 'claude-control',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Claude Control',
     technicalName: 'claude-control PTY',
     description: 'Always-on Claude Code PTY for computer-control voice commands',
@@ -328,6 +330,7 @@ const services = [
   // The Tauri shell registers XButton1→Win+H and XButton2→dictate-vad.py directly.
   {
     id: 'voice-shell',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Voice Shell',
     technicalName: 'Tauri Shell',
     description: 'Native Windows dashboard & voice hotkey listener',
@@ -392,6 +395,7 @@ const services = [
   },
   {
     id: 'stack-scanner',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Cartographer',
     technicalName: 'Stack Scanner',
     description: 'Tech stack discovery from project files (package.json, Cargo.toml, etc.)',
@@ -413,6 +417,7 @@ const services = [
   },
   {
     id: 'dream',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Dream Cycle',
     description: 'Consolidates events into living state document (.pan-state.md)',
     modelTier: 'reasoning',
@@ -434,6 +439,7 @@ const services = [
   },
   {
     id: 'consolidation',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Archivist',
     technicalName: 'Memory Consolidation',
     description: 'Extracts episodes, facts, procedures from events into vector memory',
@@ -465,6 +471,7 @@ const services = [
   },
   {
     id: 'scout',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Scout',
     description: 'Tool discovery — GitHub trending, MCP servers, AI agents, CLI tools',
     modelTier: 'reasoning',
@@ -486,6 +493,7 @@ const services = [
   },
   {
     id: 'orchestrator',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Orchestrator',
     description: 'Autonomous agent — processes findings, generates tasks, identifies gaps',
     modelTier: 'reasoning',
@@ -507,6 +515,7 @@ const services = [
   },
   {
     id: 'evolution',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Evolution Engine',
     description: 'Self-improvement — observes behavior, critiques, generates config changes',
     modelTier: 'reasoning',
@@ -538,6 +547,7 @@ const services = [
   },
   {
     id: 'autodev',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Forge',
     technicalName: 'AutoDev',
     description: 'Automated development — spawns headless Claude sessions for tasks',
@@ -561,6 +571,7 @@ const services = [
   },
   {
     id: 'tailscale',
+    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Tether',
     technicalName: 'Tailscale',
     description: 'VPN mesh for remote access (phone, laptop, server)',
@@ -839,7 +850,17 @@ function loadToggles() {
   return _toggles;
 }
 
+// SHIP-PLAN Phase 1 — services tagged profiles:['full'] don't exist in the
+// core profile: not booted, not health-checked, not listed in status/Atlas.
+// Absence of the field = runs in every profile.
+function inProfile(svc) {
+  return !svc.profiles || svc.profiles.includes(PROFILE);
+}
+
 function isServiceEnabled(svc) {
+  // Profile gate first — a service outside the active profile is never
+  // eligible regardless of toggles.
+  if (!inProfile(svc)) return false;
   // Skip user-session-only services when running in service/Session 0 mode.
   // These need a desktop, console, or input simulation to function.
   if (svc.userOnly && IS_SERVICE_MODE) return false;
@@ -859,7 +880,7 @@ async function bootAll() {
 
   // Check external services first (ollama, whisper, ahk, tailscale).
   // userOnly services are skipped in service mode (no desktop to talk to).
-  const externals = services.filter(s => !s.startFn && s.healthCheck !== 'self' && !(s.userOnly && IS_SERVICE_MODE));
+  const externals = services.filter(s => inProfile(s) && !s.startFn && s.healthCheck !== 'self' && !(s.userOnly && IS_SERVICE_MODE));
   for (const svc of externals) {
     await checkServiceHealth(svc);
     const icon = svc._status === 'running' ? '✓' : svc._status === 'down' ? '✗' : '?';
@@ -893,8 +914,9 @@ async function bootAll() {
   // Run initial health check
   await healthCheck();
 
-  const running = services.filter(s => s._status === 'running').length;
-  console.log(`[Steward] Boot complete: ${running}/${services.length} services up`);
+  const active = services.filter(inProfile);
+  const running = active.filter(s => s._status === 'running').length;
+  console.log(`[Steward] Boot complete: ${running}/${active.length} services up (profile: ${PROFILE})`);
 }
 
 async function shutdownAll() {
@@ -940,6 +962,8 @@ function logServiceEvent(serviceId, action, details = {}) {
 
 async function healthCheck() {
   for (const svc of services) {
+    // Services outside the active profile don't exist — no checks, no alerts.
+    if (!inProfile(svc)) continue;
     // Skip userOnly services entirely in service/Session 0 mode — checking
     // them just produces "down" + auto-restart loops that can never succeed.
     if (svc.userOnly && IS_SERVICE_MODE) continue;
@@ -1107,13 +1131,13 @@ async function healthCheck() {
 
   // Log a heartbeat event
   try {
-    const summary = services.map(s => `${s.id}:${s._status}`).join(',');
+    const summary = services.filter(inProfile).map(s => `${s.id}:${s._status}`).join(',');
     insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
       ':sid': 'steward',
       ':type': 'StewardHeartbeat',
       ':data': JSON.stringify({
         timestamp: Date.now(),
-        services: services.map(s => ({
+        services: services.filter(inProfile).map(s => ({
           id: s.id, status: s._status, lastCheck: s._lastCheck, lastError: s._lastError,
           modelCurrent: (s.modelTier === 'reasoning' ? getConfiguredModel(s.id) : null) || s.modelCurrent,
           modelTier: s.modelTier,
@@ -1501,7 +1525,7 @@ function getConfiguredModel(serviceId) {
 function getAtlasData() {
   return {
     modelTiers: MODEL_TIERS,
-    services: services.map(svc => ({
+    services: services.filter(inProfile).map(svc => ({
       id: svc.id,
       name: svc.name,
       technicalName: svc.technicalName || svc.name,
@@ -1532,11 +1556,11 @@ function getAtlasData() {
     // Summary stats
     summary: {
       total: services.length,
-      running: services.filter(s => s._status === ServiceState.RUNNING).length,
-      stopped: services.filter(s => s._status === ServiceState.STOPPED).length,
-      down: services.filter(s => s._status === ServiceState.DOWN || s._status === ServiceState.GIVING_UP).length,
-      degraded: services.filter(s => s._status === ServiceState.DEGRADED).length,
-      unknown: services.filter(s => s._status === ServiceState.UNKNOWN || s._status === ServiceState.STARTING).length,
+      running: services.filter(s => inProfile(s) && s._status === ServiceState.RUNNING).length,
+      stopped: services.filter(s => inProfile(s) && s._status === ServiceState.STOPPED).length,
+      down: services.filter(s => inProfile(s) && (s._status === ServiceState.DOWN || s._status === ServiceState.GIVING_UP)).length,
+      degraded: services.filter(s => inProfile(s) && s._status === ServiceState.DEGRADED).length,
+      unknown: services.filter(s => inProfile(s) && (s._status === ServiceState.UNKNOWN || s._status === ServiceState.STARTING)).length,
     },
     timestamp: Date.now(),
   };

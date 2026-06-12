@@ -86,6 +86,7 @@ import activityRouter from './routes/activity.js';
 import { startActivityTracker } from './activity-tracker.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
+import { PROFILE, featureEnabled, profileSummary } from './profiles.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -902,21 +903,26 @@ app.use('/api/v1', apiRouter);
 // Device management
 app.use('/api/v1/devices', devicesRouter);
 
+// ── Profile-gated route groups (SHIP-PLAN.md Phase 1) ────────────────────────
+// In the `core` profile these mounts are skipped — endpoints 404 — while the
+// modules themselves stay statically imported (several export helpers the
+// boot path uses; see profiles.js header). `full` mounts everything.
+
 // Sensor management API
-app.use('/api/sensors', sensorsRouter);
+if (featureEnabled('routes_sensors')) app.use('/api/sensors', sensorsRouter);
 
 // Project Runner — start/stop/monitor project services
-app.use('/api/v1/runner', runnerRouter);
+if (featureEnabled('routes_runner')) app.use('/api/v1/runner', runnerRouter);
 
 // Incognito mode (Tier 0 Phase 4)
-app.use('/api/v1/incognito', incognitoRouter);
+if (featureEnabled('routes_incognito')) app.use('/api/v1/incognito', incognitoRouter);
 
 // Audit chain + Replication (Tier 0 Phase 6)
-app.use('/api/v1/audit', auditRouter);
-app.use('/api/v1/replication', replicationRouter);
+if (featureEnabled('routes_audit')) app.use('/api/v1/audit', auditRouter);
+if (featureEnabled('routes_replication')) app.use('/api/v1/replication', replicationRouter);
 
 // Geofencing + Zones (Tier 0 Phase 7)
-app.use('/api/v1/zones', zonesRouter);
+if (featureEnabled('routes_zones')) app.use('/api/v1/zones', zonesRouter);
 
 // Paean Records — Quality Log (MCDA scoring for songs, art, mechanics).
 // Math lives in routes/quality-log.js; the `quality-log` MCP server is a
@@ -940,10 +946,10 @@ app.use('/mcp/pan', mcpPanRouter);
 app.use('/api/v1/identity', identityRouter);
 
 // Personal Data Sync (Tier 0 Phase 8)
-app.use('/api/v1/sync', syncRouter);
+if (featureEnabled('routes_sync')) app.use('/api/v1/sync', syncRouter);
 
 // Org Management (Phase 2)
-app.use('/api/v1/orgs', orgsRouter);
+if (featureEnabled('routes_orgs')) app.use('/api/v1/orgs', orgsRouter);
 
 // Guardian Guillotine — content security scanner
 app.use('/api/v1/guardian', guardianRouter);
@@ -968,16 +974,16 @@ app.use('/api/v1/privacy', privacyRouter);
 app.use('/api/v1/chat', chatRouter);
 
 // Email — universal IMAP/SMTP integration
-app.use('/api/v1/email', emailRouter);
+if (featureEnabled('routes_email')) app.use('/api/v1/email', emailRouter);
 
 // Teams — groups within orgs, task assignment
-app.use('/api/v1/teams', teamsRouter);
+if (featureEnabled('routes_teams')) app.use('/api/v1/teams', teamsRouter);
 
 // Wrap — Tauri webview wrappers around third-party apps (Discord, Slack, etc.)
-app.use('/api/v1/wrap', wrapRouter);
+if (featureEnabled('routes_wrap')) app.use('/api/v1/wrap', wrapRouter);
 
 // Messaging preferences — per-user / per-org channel routing (Discord vs SMS vs email…)
-app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
+if (featureEnabled('routes_messaging_prefs')) app.use('/api/v1/messaging-prefs', messagingPrefsRouter);
 
 // Intuition — live situational state daemon (read by PAN voice, Forge, Atlas)
 app.use('/api/v1/intuition', intuitionRouter);
@@ -1016,7 +1022,7 @@ app.post('/api/v1/screen-watcher/reset-backoff', (req, res) => {
 });
 
 // Benchmark — AI model scoring suite (Intuition: Hearing/Reflex/Clarity/Reasoning/Memory/Voice)
-app.use('/api/v1/ai', benchmarkApiRouter);
+if (featureEnabled('routes_benchmark')) app.use('/api/v1/ai', benchmarkApiRouter);
 
 // Voice — Whisper STT + speaker ID (resemblyzer)
 registerVoiceRoutes(app);
@@ -2936,7 +2942,7 @@ app.get('/api/v1/voice/pack/:name', async (req, res) => {
 // Dashboard (web UI + API) — privacy middleware noises stats/counts on GET responses
 app.use('/dashboard', privacyMiddleware({ caller: 'dashboard' }), dashboardRouter);
 // Benchmark dashboard API — no privacy middleware needed (benchmark data only)
-app.use('/dashboard/api', benchmarkDashRouter);
+if (featureEnabled('routes_benchmark')) app.use('/dashboard/api', benchmarkDashRouter);
 
 // Redirect /dashboard/ to /v2/ (Svelte dashboard)
 app.get('/dashboard', (req, res) => res.redirect('/v2/'));
@@ -5129,6 +5135,7 @@ app.get('/health', (req, res) => {
     tailscaleIp: _tailscaleIpCache,
     hubName: hubName || 'PAN Hub',
     mode: PAN_MODE,
+    profile: PROFILE,
     craftId: process.env.PAN_CRAFT_ID || null,
     craftVersion: 'A',
     terminal_ai_provider
@@ -5303,6 +5310,7 @@ function start() {
   return new Promise((resolve, reject) => {
     server = app.listen(PORT, HOST, () => {
       console.log(`[PAN] Service running on http://${HOST}:${PORT}`);
+      console.log(profileSummary());
       console.log(`[PAN] Listening for Claude Code hooks...`);
 
       // Eager-import router.js so first /api/v1/chat call doesn't pay
@@ -5525,7 +5533,7 @@ function start() {
       _startupIntervals.push(setInterval(_verifyAuditChains, 60 * 60 * 1000)); // every 1 hour
 
       // Tier 0 Phase 8 — Start background personal data sync (every 1 hour)
-      startPersonalSync(60 * 60 * 1000);
+      if (featureEnabled('personal_sync')) startPersonalSync(60 * 60 * 1000);
 
       // Migrate timestamp-based tab session IDs to stable name-based IDs.
       // e.g. "dash-pan-1775843785916" → "dash-pan-main" (derived from tab_name).
@@ -5618,20 +5626,41 @@ function start() {
       if (!IS_DEV) {
         setTimeout(() => {
           console.log('[PAN] post-boot stagger firing — starting deferred watchers');
-          try { startScreenWatcher(); } catch (e) { console.warn('[PAN] screen-watcher start failed:', e?.message); }
-          import('./remote-screen-watcher.js').then(m => m.startRemoteScreenWatcher()).catch(() => {});
-          try { startWebcamWatcher(); } catch (e) { console.warn('[PAN] webcam-watcher start failed:', e?.message); }
-          try { startActivityTracker(); } catch (e) { console.warn('[PAN] activity-tracker start failed:', e?.message); }
-          try { startWatchdog(); } catch (e) { console.warn('[PAN] watchdog start failed:', e?.message); }
-          import('./dashboard-render-health.js')
-            .then(m => m.startDashboardRenderHealth())
-            .catch(e => console.warn('[DashboardRenderHealth] failed to start:', e.message));
-          import('./dashboard-vision-verifier.js')
-            .then(m => m.startDashboardVisionVerifier())
-            .catch(e => console.warn('[VisionVerifier] failed to start:', e.message));
-          import('./forge-dashboard.js')
-            .then(m => m.startForgeDashboard())
-            .catch(e => console.warn('[ForgeDashboard] failed to start:', e.message));
+          // Each watcher is profile-gated (SHIP-PLAN.md Phase 1): in the
+          // `core` profile none of these start — presence/screen/activity
+          // capture become opt-in features in Phase 4. All are DEGRADE-class
+          // (see PAN-DEPENDENCY-MAP.md §4) so skipping them never crashes
+          // intuition or the router.
+          if (featureEnabled('screen_watch')) {
+            try { startScreenWatcher(); } catch (e) { console.warn('[PAN] screen-watcher start failed:', e?.message); }
+          }
+          if (featureEnabled('remote_screen')) {
+            import('./remote-screen-watcher.js').then(m => m.startRemoteScreenWatcher()).catch(() => {});
+          }
+          if (featureEnabled('webcam')) {
+            try { startWebcamWatcher(); } catch (e) { console.warn('[PAN] webcam-watcher start failed:', e?.message); }
+          }
+          if (featureEnabled('activity_tracker')) {
+            try { startActivityTracker(); } catch (e) { console.warn('[PAN] activity-tracker start failed:', e?.message); }
+          }
+          if (featureEnabled('dashboard_watchdog')) {
+            try { startWatchdog(); } catch (e) { console.warn('[PAN] watchdog start failed:', e?.message); }
+          }
+          if (featureEnabled('dashboard_health')) {
+            import('./dashboard-render-health.js')
+              .then(m => m.startDashboardRenderHealth())
+              .catch(e => console.warn('[DashboardRenderHealth] failed to start:', e.message));
+          }
+          if (featureEnabled('vision_verifier')) {
+            import('./dashboard-vision-verifier.js')
+              .then(m => m.startDashboardVisionVerifier())
+              .catch(e => console.warn('[VisionVerifier] failed to start:', e.message));
+          }
+          if (featureEnabled('forge_dashboard')) {
+            import('./forge-dashboard.js')
+              .then(m => m.startForgeDashboard())
+              .catch(e => console.warn('[ForgeDashboard] failed to start:', e.message));
+          }
         }, POST_BOOT_DELAY_MS);
       }
 
@@ -5741,33 +5770,37 @@ function start() {
         }
 
         // Clean up stale Tailscale pan-* nodes on startup (delay to let Tailscale stabilize)
-        setTimeout(() => cleanupStaleTailscaleNodes(), 30000);
+        if (featureEnabled('tailscale_cleanup')) {
+          setTimeout(() => cleanupStaleTailscaleNodes(), 30000);
+        }
 
         // Auto-establish a public tunnel so any new device can scan the QR code
         // from anywhere — no Tailscale enrollment, no config, no user action needed.
         // Priority: Tailscale Funnel (best) → Cloudflare Quick Tunnel (zero-config) → LAN IP
-        setTimeout(async () => {
-          // 1. Try Tailscale Funnel (already set up users get this for free)
-          try {
-            execSync(`tailscale funnel ${PORT}`, { timeout: 5000, windowsHide: true, stdio: 'pipe' });
-            console.log(`[PAN] Tailscale Funnel active — QR codes use public ts.net URL`);
-            return; // Done — Tailscale Funnel handles it
-          } catch {
-            // Tailscale not running, or Funnel not enabled in admin console — try Cloudflare
-          }
+        if (featureEnabled('public_tunnel')) {
+          setTimeout(async () => {
+            // 1. Try Tailscale Funnel (already set up users get this for free)
+            try {
+              execSync(`tailscale funnel ${PORT}`, { timeout: 5000, windowsHide: true, stdio: 'pipe' });
+              console.log(`[PAN] Tailscale Funnel active — QR codes use public ts.net URL`);
+              return; // Done — Tailscale Funnel handles it
+            } catch {
+              // Tailscale not running, or Funnel not enabled in admin console — try Cloudflare
+            }
 
-          // 2. Fall back to Cloudflare Quick Tunnel — zero config, downloads binary automatically
-          const cfURL = await startCloudflareTunnel(PORT);
-          if (cfURL) {
-            console.log(`[PAN] Cloudflare Tunnel active — QR codes use ${cfURL}`);
-          } else {
-            console.log('[PAN] No public tunnel available — QR codes will use LAN IP (same network only)');
-          }
-        }, 5000); // Delay 5s to let Tailscale daemon stabilize after boot
+            // 2. Fall back to Cloudflare Quick Tunnel — zero config, downloads binary automatically
+            const cfURL = await startCloudflareTunnel(PORT);
+            if (cfURL) {
+              console.log(`[PAN] Cloudflare Tunnel active — QR codes use ${cfURL}`);
+            } else {
+              console.log('[PAN] No public tunnel available — QR codes will use LAN IP (same network only)');
+            }
+          }, 5000); // Delay 5s to let Tailscale daemon stabilize after boot
+        }
 
         // UDP discovery responder — lets the installer find this hub on LAN/Tailscale
         // without manual IP entry. Installer broadcasts "PAN_DISCOVER", we reply.
-        startDiscovery(PORT, '0.3.1');
+        if (featureEnabled('lan_discovery')) startDiscovery(PORT, '0.3.1');
 
         // Ensure Windows Firewall allows inbound on PORT so LAN discovery works.
         // Was execFileSync — netsh under heavy CPU load can block 3-8 seconds,
@@ -5775,13 +5808,15 @@ function start() {
         // It's idempotent (returns "rule already exists" for re-adds), so we
         // fire-and-forget. The rule exists after the first successful boot
         // anyway; this is mostly a no-op on subsequent boots.
-        try {
-          execFile('netsh', [
-            'advfirewall', 'firewall', 'add', 'rule',
-            `name=PAN Hub (${PORT})`, 'dir=in', 'action=allow',
-            'protocol=TCP', `localport=${PORT}`, 'profile=private,domain'
-          ], { windowsHide: true, timeout: 8000, killSignal: 'SIGKILL' }, () => {});
-        } catch { /* rule may already exist or not on Windows */ }
+        if (featureEnabled('firewall_rule')) {
+          try {
+            execFile('netsh', [
+              'advfirewall', 'firewall', 'add', 'rule',
+              `name=PAN Hub (${PORT})`, 'dir=in', 'action=allow',
+              'protocol=TCP', `localport=${PORT}`, 'profile=private,domain'
+            ], { windowsHide: true, timeout: 8000, killSignal: 'SIGKILL' }, () => {});
+          } catch { /* rule may already exist or not on Windows */ }
+        }
 
         // Daily 3am benchmark — runs ALL 12 suites sequentially on the active model.
         // Headless: all output → %LOCALAPPDATA%/PAN/data/benchmark.log via bmLog().
@@ -5833,7 +5868,7 @@ function start() {
               fs.appendFileSync(benchmarkLogPath(), `${new Date().toISOString()} INFO  [PAN Benchmark] Daily run scheduled for 3am (in ${Math.round(msUntil3am / 60000)}m) — all 12 suites\n`, 'utf8');
             } catch {}
           }
-          scheduleDailyBenchmark();
+          if (featureEnabled('benchmarks_daily')) scheduleDailyBenchmark();
         }
 
         // Steward boots all background services in dependency order.
@@ -5845,18 +5880,22 @@ function start() {
         // service requiring human-decisioned action). 5-minute tick, uses
         // Claude (not Cerebras) for careful reasoning. See smart-steward.js
         // header for the full design + safety model.
-        import('./smart-steward.js').then(({ startSmartSteward }) => {
-          try { startSmartSteward(); } catch (e) { console.warn('[SmartSteward] startup failed:', e.message); }
-        }).catch(e => console.warn('[SmartSteward] import failed:', e.message));
+        if (featureEnabled('smart_steward')) {
+          import('./smart-steward.js').then(({ startSmartSteward }) => {
+            try { startSmartSteward(); } catch (e) { console.warn('[SmartSteward] startup failed:', e.message); }
+          }).catch(e => console.warn('[SmartSteward] import failed:', e.message));
+        }
 
         // Claude Control — the always-on background Claude PTY dedicated to
         // computer-control tasks. Separate from the dashboard terminal stack
         // (which the user has stopped using). Voice/router dispatches
         // computer-control intents to this PTY via the send-to-claude skill.
         // Module-level state survives Craft swap; spawn is idempotent.
-        import('./claude-control.js').then(({ startClaudeControl }) => {
-          try { startClaudeControl(); } catch (e) { console.warn('[ClaudeControl] startup failed:', e.message); }
-        }).catch(e => console.warn('[ClaudeControl] import failed:', e.message));
+        if (featureEnabled('claude_control')) {
+          import('./claude-control.js').then(({ startClaudeControl }) => {
+            try { startClaudeControl(); } catch (e) { console.warn('[ClaudeControl] startup failed:', e.message); }
+          }).catch(e => console.warn('[ClaudeControl] import failed:', e.message));
+        }
       }
 
       // Resume restart test if one was in progress before we died
