@@ -28,6 +28,7 @@ import incognitoRouter, { cleanupExpiredIncognito } from './routes/incognito.js'
 import auditRouter from './routes/audit.js';
 import replicationRouter from './routes/replication.js';
 import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.js';
+import qualityLogRouter from './routes/quality-log.js';
 import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
 import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
 import orgsRouter from './routes/orgs.js';
@@ -914,6 +915,11 @@ app.use('/api/v1/replication', replicationRouter);
 
 // Geofencing + Zones (Tier 0 Phase 7)
 app.use('/api/v1/zones', zonesRouter);
+
+// Paean Records — Quality Log (MCDA scoring for songs, art, mechanics).
+// Math lives in routes/quality-log.js; the `quality-log` MCP server is a
+// thin HTTP proxy over these endpoints.
+app.use('/api/v1/quality-log', qualityLogRouter);
 
 // T3 — Identity → user binding
 app.use('/api/v1/identity', identityRouter);

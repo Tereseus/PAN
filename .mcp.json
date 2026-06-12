@@ -3,6 +3,10 @@
     "pan": {
       "command": "node",
       "args": ["%USERPROFILE%/Desktop/PAN/service/src/mcp-server.js"]
+    },
+    "quality-log": {
+      "command": "node",
+      "args": ["%USERPROFILE%/Desktop/PAN/service/src/quality-log-mcp.js"]
     }
   }
 }

@@ -951,3 +951,29 @@ CREATE TABLE IF NOT EXISTS pan_reasoning_cycles (
 );
 CREATE INDEX IF NOT EXISTS idx_reasoning_cycles_ts      ON pan_reasoning_cycles(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reasoning_cycles_user_ts ON pan_reasoning_cycles(user_id, ts DESC);
+
+-- quality_log — Paean Records song-creation MCDA scoring.
+-- See %USERPROFILE%\Desktop\Me stuff\Paean\song-creation-mathematics.md.
+-- One row per attempt. ratings / weights stored as JSON; q_avg / q_geo / q_min
+-- are computed at insert time in routes/quality-log.js so the math lives in
+-- exactly one place. Reused for game art + mechanics by varying `domain`.
+CREATE TABLE IF NOT EXISTS quality_log (
+    id            TEXT PRIMARY KEY,                        -- uuid
+    created_at    INTEGER NOT NULL,                        -- epoch ms
+    domain        TEXT NOT NULL,                           -- 'song' | 'art' | 'mechanic' | ...
+    genre         TEXT,                                    -- 'jazz' | 'afrobeat' | 'rap' | ...
+    round_id      TEXT NOT NULL,                           -- groups attempts toward one keeper
+    iteration_n   INTEGER NOT NULL,                        -- attempt number within round
+    ratings       TEXT NOT NULL,                           -- JSON: { dim: 1..10 }
+    weights       TEXT NOT NULL,                           -- JSON: { dim: weight } (snapshot)
+    q_avg         REAL NOT NULL,                           -- weighted additive (compensatory)
+    q_geo         REAL NOT NULL,                           -- weighted geometric (Cobb-Douglas)
+    q_min         REAL NOT NULL,                           -- weakest link
+    kept          INTEGER NOT NULL DEFAULT 0,              -- 0/1 — became a seed?
+    seed_of       TEXT,                                    -- id of the attempt this was built from
+    notes         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_quality_log_round   ON quality_log(round_id, iteration_n);
+CREATE INDEX IF NOT EXISTS idx_quality_log_domain  ON quality_log(domain, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quality_log_genre   ON quality_log(genre, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quality_log_kept    ON quality_log(kept, q_geo DESC);
