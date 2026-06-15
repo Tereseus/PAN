@@ -105,9 +105,20 @@ write-back — the biggest gap vs. the pitch.
 - pan-client hardening for multi-device (the SYSTEM-account credential and
   PATH battles from 2026-06-10 must be installer-handled, not user-handled).
 
-### Phase 4 — consent UX + minimal surface (~1–2 weeks)
-- Opt-in toggles for §2 with plain-language explanations and indicators.
-- One status page replaces the widget zoo in `core`.
+### Phase 4 — consent UX + minimal surface (IN PROGRESS)
+- ✅ **Capture-consent control plane shipped** (2026-06-15). `capture-consent.js`
+  owns the three user-facing capture features — identity (camera), screen,
+  activity — resolving each on/off via env > DB setting > profile default
+  (identity OFF everywhere; screen+activity ON in full, OFF in core). Toggling
+  writes consent + start/stops the watcher LIVE (no restart). New
+  `/api/v1/capture` API + standalone `/privacy` page (no build step, served in
+  every profile). Camera `/force` gates on the consent resolver. Verified:
+  live screen off→stops / on→restarts, persistence, camera stays off
+  throughout. profiles.js handed these three to capture-consent.
+- TODO: extend the consent surface — voice/mic capture toggle, remote_screen,
+  and the cloud-Claude capture write-back (Phase 2) as a consented item.
+- TODO: one status page replaces the widget zoo in `core` (the /privacy page
+  is the first piece; needs a "what's running / capture / services" view).
 - README + docs that lead with the memory demo, not the architecture.
 
 ### Phase 5 — ship
