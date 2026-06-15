@@ -998,8 +998,15 @@ app.get('/api/v1/webcam-watcher/status', (req, res) => {
   res.json({ ok: true, ...getWebcamStatus() });
 });
 
-// POST /api/v1/webcam-watcher/force — trigger immediate capture, return result
+// POST /api/v1/webcam-watcher/force — trigger immediate capture, return result.
+// Hard-gated on the identity opt-in: when identity is off (the default), this
+// refuses rather than opening the camera for a one-shot frame. "Identity off"
+// must mean PAN cannot touch the camera by any server path, not just that the
+// polling loop is stopped.
 app.post('/api/v1/webcam-watcher/force', async (req, res) => {
+  if (!featureEnabled('identity')) {
+    return res.status(403).json({ ok: false, error: 'identity/camera disabled — enable with PAN_ENABLE_IDENTITY=1' });
+  }
   const { forceCapture } = await import('./webcam-watcher.js');
   const result = await forceCapture();
   res.json(result);
