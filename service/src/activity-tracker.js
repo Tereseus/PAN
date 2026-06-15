@@ -42,6 +42,7 @@ let _lastProcessName = '';
 let _lastWindowTitle = '';
 let _lastFocusTime = Date.now();
 let _started = false;
+let _pollTimer = null;
 
 export function startActivityTracker() {
   if (process.platform !== 'win32') return;
@@ -49,7 +50,19 @@ export function startActivityTracker() {
   _started = true;
 
   console.log('[Activity] Tracker started — polling every 3s');
-  setInterval(pollActiveWindow, 3000);
+  _pollTimer = setInterval(pollActiveWindow, 3000);
+}
+
+// Live stop — used by the capture-consent toggle so app-activity tracking can
+// be turned off without a restart.
+export function stopActivityTracker() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  _started = false;
+  console.log('[Activity] Tracker stopped');
+}
+
+export function getActivityTrackerStatus() {
+  return { running: _started };
 }
 
 function pollActiveWindow() {

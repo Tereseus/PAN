@@ -31,6 +31,8 @@ import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.j
 import qualityLogRouter from './routes/quality-log.js';
 import mcpQualityLogRouter from './routes/mcp-quality-log.js';
 import mcpPanRouter from './routes/mcp-pan.js';
+import captureRouter from './routes/capture.js';
+import { applyCaptureConsentAtBoot, isCaptureOn } from './capture-consent.js';
 import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
 import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
 import orgsRouter from './routes/orgs.js';
@@ -942,6 +944,11 @@ app.use('/mcp/quality-log', mcpQualityLogRouter);
 // Paean Records quality_log tools. One URL, everything in PAN's database.
 app.use('/mcp/pan', mcpPanRouter);
 
+// Capture-consent control plane (SHIP-PLAN Phase 4) — ALWAYS mounted in every
+// profile. The user must be able to see + toggle camera/screen/activity
+// capture. Backs the /privacy page.
+app.use('/api/v1/capture', captureRouter);
+
 // T3 — Identity → user binding
 app.use('/api/v1/identity', identityRouter);
 
@@ -1004,8 +1011,8 @@ app.get('/api/v1/webcam-watcher/status', (req, res) => {
 // must mean PAN cannot touch the camera by any server path, not just that the
 // polling loop is stopped.
 app.post('/api/v1/webcam-watcher/force', async (req, res) => {
-  if (!featureEnabled('identity')) {
-    return res.status(403).json({ ok: false, error: 'identity/camera disabled — enable with PAN_ENABLE_IDENTITY=1' });
+  if (!isCaptureOn('identity')) {
+    return res.status(403).json({ ok: false, error: 'camera/identity is off — turn it on at /privacy (or set PAN_ENABLE_IDENTITY=1)' });
   }
   const { forceCapture } = await import('./webcam-watcher.js');
   const result = await forceCapture();
@@ -3009,6 +3016,13 @@ app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
     res.setHeader('Access-Control-Allow-Origin', '*');
   }
 }));
+
+// Privacy & Capture consent page (SHIP-PLAN Phase 4) — standalone, no build
+// step, served in every profile. Shows + toggles camera/screen/activity.
+app.get('/privacy', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.sendFile(join(__dirname, '..', 'public', 'privacy.html'));
+});
 
 // APK download — serves the latest debug build so the phone can sideload over Tailscale
 app.get('/apk/latest', (req, res) => {
@@ -5633,28 +5647,17 @@ function start() {
       if (!IS_DEV) {
         setTimeout(() => {
           console.log('[PAN] post-boot stagger firing — starting deferred watchers');
-          // Each watcher is profile-gated (SHIP-PLAN.md Phase 1): in the
-          // `core` profile none of these start — presence/screen/activity
-          // capture become opt-in features in Phase 4. All are DEGRADE-class
-          // (see PAN-DEPENDENCY-MAP.md §4) so skipping them never crashes
-          // intuition or the router.
-          if (featureEnabled('screen_watch')) {
-            try { startScreenWatcher(); } catch (e) { console.warn('[PAN] screen-watcher start failed:', e?.message); }
-          }
+          // Capture consent (SHIP-PLAN Phase 4) — camera / screen / activity
+          // start per the user's saved consent + profile defaults, resolved in
+          // capture-consent.js. identity (camera) is OFF unless opted in;
+          // screen + activity default on in full, off in core. All toggleable
+          // live from /privacy without a restart. All DEGRADE-class
+          // (PAN-DEPENDENCY-MAP §4) so any of them being off never crashes
+          // intuition or the router — presence just comes from whatever's left on.
+          try { applyCaptureConsentAtBoot(); } catch (e) { console.warn('[Capture] boot apply failed:', e?.message); }
+
           if (featureEnabled('remote_screen')) {
             import('./remote-screen-watcher.js').then(m => m.startRemoteScreenWatcher()).catch(() => {});
-          }
-          // identity = the webcam/face-id capture loop. OPT-IN (off by default,
-          // even in full) — the camera stays dark unless PAN_ENABLE_IDENTITY=1.
-          // Intuition runs fine without it: presence comes from activity-tracker,
-          // getWebcamContext() returns null and every consumer null-guards.
-          if (featureEnabled('identity')) {
-            try { startWebcamWatcher(); } catch (e) { console.warn('[PAN] webcam-watcher start failed:', e?.message); }
-          } else {
-            console.log('[PAN] identity/webcam capture OFF (opt-in: PAN_ENABLE_IDENTITY=1) — camera stays off');
-          }
-          if (featureEnabled('activity_tracker')) {
-            try { startActivityTracker(); } catch (e) { console.warn('[PAN] activity-tracker start failed:', e?.message); }
           }
           if (featureEnabled('dashboard_watchdog')) {
             try { startWatchdog(); } catch (e) { console.warn('[PAN] watchdog start failed:', e?.message); }
