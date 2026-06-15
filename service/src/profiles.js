@@ -33,17 +33,12 @@ export const IS_CORE = PROFILE === 'core';
 //                    PAN_ENABLE_<NAME>=1 is set. Use for privacy-sensitive
 //                    capture the user must consciously turn on.
 const FEATURES = {
-  // ── presence / sensors (DEGRADE-class; opt-in toggles arrive in Phase 4) ──
-  screen_watch:        ['full'],
-  // identity = the webcam capture loop (face-id + presence). OPT-IN, off in
-  // every profile including full — the camera only turns on with
-  // PAN_ENABLE_IDENTITY=1. Decoupled from intuition entirely: getWebcamContext()
-  // returns null when this is off, every consumer already null-guards, and
-  // currentUserId() falls back to the single-user default. Presence still
-  // flows from activity-tracker (keyboard/foreground window), no camera needed.
-  identity:            'optin',
-  activity_tracker:    ['full'],
-  remote_screen:       ['full'],   // polls pan-clients for their screens
+  // ── presence / sensors (DEGRADE-class) ──
+  // NOTE: the three user-facing capture features — identity (camera), screen,
+  // and activity — are NOT gated here. They live in capture-consent.js, which
+  // layers a live, DB-backed consent toggle (the /privacy page) on top of the
+  // profile default. profiles.js only owns boot-time, non-user-toggled gates.
+  remote_screen:       ['full'],   // polls pan-clients for their screens (multi-device)
   dashboard_watchdog:  ['full'],   // currently neutered anyway (early return)
   dashboard_health:    ['full'],   // dashboard render QA
   vision_verifier:     ['full'],   // vision-vs-DOM bug filing
