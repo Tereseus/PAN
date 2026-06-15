@@ -115,10 +115,19 @@ write-back — the biggest gap vs. the pitch.
   every profile). Camera `/force` gates on the consent resolver. Verified:
   live screen off→stops / on→restarts, persistence, camera stays off
   throughout. profiles.js handed these three to capture-consent.
-- TODO: extend the consent surface — voice/mic capture toggle, remote_screen,
-  and the cloud-Claude capture write-back (Phase 2) as a consented item.
-- TODO: one status page replaces the widget zoo in `core` (the /privacy page
-  is the first piece; needs a "what's running / capture / services" view).
+- ✅ **Single status console shipped** (2026-06-15). `/status` (+ `/privacy`
+  alias) is now the one page that replaces the widget zoo for core: Memory
+  stats (events / memories / sessions / db size — the "what PAN remembers"
+  pitch), live Capture toggles, a Voice info row (verified there's NO
+  continuous hub mic — voice is push-to-talk only, so it's an honest info
+  row not a fake toggle), Services health grouped by category, and the MCP
+  connector with a live reachability check + copy button. Standalone HTML, no
+  build step. Verified all four data sources live (capture, /dashboard/api/
+  stats, /dashboard/api/services, /mcp/pan tools/list = 15).
+- TODO: cloud-Claude capture write-back (Phase 2) — surface it here as a
+  consented item once built.
+- TODO (optional): mic/voice toggle only if a continuous listener is ever
+  added; today there's nothing to gate.
 - README + docs that lead with the memory demo, not the architecture.
 
 ### Phase 5 — ship
