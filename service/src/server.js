@@ -3017,11 +3017,13 @@ app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
   }
 }));
 
-// Privacy & Capture consent page (SHIP-PLAN Phase 4) — standalone, no build
-// step, served in every profile. Shows + toggles camera/screen/activity.
-app.get('/privacy', (req, res) => {
+// PAN status & privacy console (SHIP-PLAN Phase 4) — the single page that
+// replaces the widget zoo for `core`: memory stats, capture toggles, services
+// health, and the MCP connector. Standalone, no build step, every profile.
+// Served at both /status (canonical) and /privacy (the consent entry point).
+app.get(['/status', '/privacy'], (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(join(__dirname, '..', 'public', 'privacy.html'));
+  res.sendFile(join(__dirname, '..', 'public', 'status.html'));
 });
 
 // APK download — serves the latest debug build so the phone can sideload over Tailscale
