@@ -720,6 +720,11 @@ function buildSnapshot(trigger = 'heartbeat') {
       sensors_active: [...sensorsActive],
       active_apps: [...activeApps],
       screen_context: screenCtx ? { description: screenCtx.description, age_ms: now - screenCtx.ts } : null,
+      // Identity/webcam is OPT-IN (PAN_ENABLE_IDENTITY=1). When off — the
+      // default — getWebcamContext() returns null and webcam_context is simply
+      // absent from the snapshot. Intuition does NOT depend on it: presence is
+      // inferred from activity-tracker, and currentUserId() has its own
+      // fallback. Do not "fix" this null path into a hard requirement.
       webcam_context: (() => {
         const wc = getWebcamContext();
         if (!wc) return null;

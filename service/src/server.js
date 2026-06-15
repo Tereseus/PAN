@@ -5637,8 +5637,14 @@ function start() {
           if (featureEnabled('remote_screen')) {
             import('./remote-screen-watcher.js').then(m => m.startRemoteScreenWatcher()).catch(() => {});
           }
-          if (featureEnabled('webcam')) {
+          // identity = the webcam/face-id capture loop. OPT-IN (off by default,
+          // even in full) — the camera stays dark unless PAN_ENABLE_IDENTITY=1.
+          // Intuition runs fine without it: presence comes from activity-tracker,
+          // getWebcamContext() returns null and every consumer null-guards.
+          if (featureEnabled('identity')) {
             try { startWebcamWatcher(); } catch (e) { console.warn('[PAN] webcam-watcher start failed:', e?.message); }
+          } else {
+            console.log('[PAN] identity/webcam capture OFF (opt-in: PAN_ENABLE_IDENTITY=1) — camera stays off');
           }
           if (featureEnabled('activity_tracker')) {
             try { startActivityTracker(); } catch (e) { console.warn('[PAN] activity-tracker start failed:', e?.message); }

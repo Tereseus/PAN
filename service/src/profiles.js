@@ -27,12 +27,21 @@
 export const PROFILE = (process.env.PAN_PROFILE || 'full').toLowerCase();
 export const IS_CORE = PROFILE === 'core';
 
-// feature -> profiles it runs in. 'full' implicitly includes everything;
-// listing it keeps the table explicit and greppable.
+// feature -> where it runs. Two value shapes:
+//   ['full', ...]  — runs in the listed profiles (most features).
+//   'optin'        — OFF in every profile (including full) unless the env var
+//                    PAN_ENABLE_<NAME>=1 is set. Use for privacy-sensitive
+//                    capture the user must consciously turn on.
 const FEATURES = {
   // ── presence / sensors (DEGRADE-class; opt-in toggles arrive in Phase 4) ──
   screen_watch:        ['full'],
-  webcam:              ['full'],
+  // identity = the webcam capture loop (face-id + presence). OPT-IN, off in
+  // every profile including full — the camera only turns on with
+  // PAN_ENABLE_IDENTITY=1. Decoupled from intuition entirely: getWebcamContext()
+  // returns null when this is off, every consumer already null-guards, and
+  // currentUserId() falls back to the single-user default. Presence still
+  // flows from activity-tracker (keyboard/foreground window), no camera needed.
+  identity:            'optin',
   activity_tracker:    ['full'],
   remote_screen:       ['full'],   // polls pan-clients for their screens
   dashboard_watchdog:  ['full'],   // currently neutered anyway (early return)
@@ -68,15 +77,26 @@ const FEATURES = {
   routes_benchmark:        ['full'],
 };
 
-export function featureEnabled(name) {
-  const profiles = FEATURES[name];
-  if (!profiles) return true; // unknown feature: fail-open (protects `full`)
-  return profiles.includes(PROFILE);
+// Opt-in features default OFF; set PAN_ENABLE_<NAME>=1 to turn one on.
+function optInEnabled(name) {
+  const v = process.env[`PAN_ENABLE_${name.toUpperCase()}`];
+  return v === '1' || v === 'true';
 }
 
-// One-line boot summary so every log makes the active profile obvious.
+export function featureEnabled(name) {
+  const spec = FEATURES[name];
+  if (spec === undefined) return true;          // unknown feature: fail-open (protects `full`)
+  if (spec === 'optin') return optInEnabled(name);
+  return spec.includes(PROFILE);
+}
+
+// One-line boot summary so every log makes the active profile + opt-ins obvious.
 export function profileSummary() {
-  if (!IS_CORE) return `[PAN] Boot profile: ${PROFILE} (everything enabled)`;
+  const optIns = Object.keys(FEATURES).filter(f => FEATURES[f] === 'optin');
+  const optInState = optIns.map(f => `${f}=${featureEnabled(f) ? 'on' : 'off'}`).join(', ');
+  if (!IS_CORE) {
+    return `[PAN] Boot profile: full (everything enabled) · opt-ins: ${optInState}`;
+  }
   const off = Object.keys(FEATURES).filter(f => !featureEnabled(f));
-  return `[PAN] Boot profile: core — ${off.length} features gated off: ${off.join(', ')}`;
+  return `[PAN] Boot profile: core — ${off.length} features off: ${off.join(', ')}`;
 }
