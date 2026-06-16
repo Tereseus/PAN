@@ -67,6 +67,12 @@ function extractEventText(eventType, data) {
   }
   try {
     const obj = JSON.parse(data);
+    // Cloud-Claude write-back (Phase 2) — embed the conversation text, not the
+    // JSON envelope, so semantic recall matches the actual exchange.
+    if (eventType === 'CloudExchange') {
+      const parts = [obj.topic, obj.user_message, obj.assistant_message].filter(Boolean);
+      if (parts.length) return parts.join(' — ').slice(0, 2000);
+    }
     if (obj.prompt) return String(obj.prompt);
     if (obj.text) return String(obj.text);
     if (obj.message) return String(obj.message);
