@@ -85,14 +85,30 @@ Notes for later phases:
   `service/data/pan.db` exists — surprising for fresh installs; revisit in
   Phase 3.
 
-### Phase 2 — close the capture gap (~2–3 weeks)
-Cloud Claudes (desktop app, Claude.ai, Cowork) currently have ZERO
-write-back — the biggest gap vs. the pitch.
-1. Cheap + immediate: every `/mcp/pan` tool invocation logs an event
-   (tool, args summary, caller) — partial visibility for free.
-2. Real fix: `pan_log_exchange` MCP tool + plugin instruction so remote
-   Claudes write each user/assistant exchange back to events.
-3. Stretch: desktop-app transcript import sidecar.
+### Phase 2 — close the capture gap (CORE DONE 2026-06-16)
+Cloud Claudes (desktop app, Claude.ai, Cowork) had ZERO write-back — the
+biggest gap vs. the pitch. Now closed:
+1. ✅ **Passive floor** — every `/mcp/pan` tools/call logs an `McpToolCall`
+   event (tool, arg keys, UA), excluding pan_search (noise) + pan_log_exchange
+   (redundant). Surfaces that never log exchanges still leave a trail.
+2. ✅ **`pan_log_exchange` tool** — remote Claude saves an exchange (user +
+   assistant summary + topic) → POST `/api/v1/exchange` → `CloudExchange`
+   event. Server `instructions` (both transports) nudge the model to call it
+   when something's worth remembering.
+3. ✅ **Searchable like CLI sessions** — fixed `extractEventText` (db.js +
+   embedding worker) which returned null for CloudExchange, so they're now
+   FTS-indexed + embedded. Verified at the DB layer: a logged exchange is
+   found by both `data LIKE` (the path pan_search uses) and `events_fts MATCH`.
+4. TODO (stretch): desktop-app transcript import sidecar — bulk-import full
+   conversations rather than model-summarized exchanges.
+
+**Follow-up found (perf, not capture):** `/dashboard/api/events?q=` (what
+pan_search proxies to) uses `data LIKE '%q%'` — a full-table scan on 260k+
+rows that times out under load. The `events_fts` index exists but this
+endpoint doesn't use it. Switching pan_search to an FTS-backed fast path
+(LIKE fallback) would make the whole memory-search experience fast. Adjacent
+to task #63 (SQLite off main thread). Out of scope for write-back; flagged
+for a dedicated pass.
 
 ### Phase 3 — the install path (~2–4 weeks)
 - `core` single-machine install: one command (npx/installer), no Tailscale,
