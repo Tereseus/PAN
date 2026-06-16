@@ -652,6 +652,17 @@ function extractEventText(eventType, dataStr) {
     if (data.domain) parts.push(`Domain: ${data.domain}`);
     return parts.filter(Boolean).join(' — ');
   }
+  // Cloud-Claude write-back (Phase 2) — desktop app / Claude.ai / Cowork
+  // exchanges logged via pan_log_exchange. Index the conversation text so
+  // pan_search finds them exactly like CLI sessions.
+  if (eventType === 'CloudExchange') {
+    const parts = [];
+    if (data.topic) parts.push(`[${data.topic}]`);
+    if (data.user_message) parts.push(data.user_message);
+    if (data.assistant_message) parts.push(data.assistant_message);
+    const text = parts.filter(Boolean).join(' — ');
+    if (text) return text;
+  }
   return null;
 }
 
