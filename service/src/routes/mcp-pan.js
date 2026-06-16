@@ -17,13 +17,35 @@
 import { Router } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { registerPanTools } from '../mcp/pan-tools.js';
+import { registerPanTools, PAN_MCP_INSTRUCTIONS } from '../mcp/pan-tools.js';
+import { logEvent } from '../db.js';
 
 const router = Router();
 
+// Passive capture floor (SHIP-PLAN Phase 2): log every tool CALL a remote
+// Claude makes, so even surfaces that never call pan_log_exchange leave a
+// trail of what they did. Skip the high-frequency read (pan_search) and the
+// richer writer (pan_log_exchange logs its own CloudExchange) to avoid noise.
+const SKIP_PASSIVE_LOG = new Set(['pan_search', 'pan_log_exchange']);
+function logToolCall(req) {
+  try {
+    const b = req.body;
+    if (!b || b.method !== 'tools/call' || !b.params?.name) return;
+    if (SKIP_PASSIVE_LOG.has(b.params.name)) return;
+    const ua = String(req.headers['user-agent'] || '').slice(0, 120);
+    logEvent('mcp-remote', 'McpToolCall', {
+      tool: b.params.name,
+      arg_keys: Object.keys(b.params.arguments || {}),
+      ua,
+      ts: Date.now(),
+    });
+  } catch { /* never block a tool call on logging */ }
+}
+
 async function handle(req, res) {
   try {
-    const server = new McpServer({ name: 'pan', version: '2.1.0' });
+    logToolCall(req);
+    const server = new McpServer({ name: 'pan', version: '2.1.0' }, { instructions: PAN_MCP_INSTRUCTIONS });
     registerPanTools(server, {
       panBaseUrl: process.env.PAN_BASE_URL || 'http://127.0.0.1:7777',
     });

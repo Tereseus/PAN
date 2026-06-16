@@ -11,11 +11,11 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { registerPanTools } from './mcp/pan-tools.js';
+import { registerPanTools, PAN_MCP_INSTRUCTIONS } from './mcp/pan-tools.js';
 
 const PAN = process.env.PAN_BASE_URL || 'http://127.0.0.1:7777';
 
-const server = new McpServer({ name: 'pan', version: '2.1.0' });
+const server = new McpServer({ name: 'pan', version: '2.1.0' }, { instructions: PAN_MCP_INSTRUCTIONS });
 registerPanTools(server, { panBaseUrl: PAN });
 
 const transport = new StdioServerTransport();
