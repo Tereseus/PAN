@@ -32,6 +32,7 @@ import qualityLogRouter from './routes/quality-log.js';
 import mcpQualityLogRouter from './routes/mcp-quality-log.js';
 import mcpPanRouter from './routes/mcp-pan.js';
 import captureRouter from './routes/capture.js';
+import exchangeRouter from './routes/exchange.js';
 import { applyCaptureConsentAtBoot, isCaptureOn } from './capture-consent.js';
 import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
 import syncRouter, { startPersonalSync, stopPersonalSync } from './routes/sync.js';
@@ -948,6 +949,11 @@ app.use('/mcp/pan', mcpPanRouter);
 // profile. The user must be able to see + toggle camera/screen/activity
 // capture. Backs the /privacy page.
 app.use('/api/v1/capture', captureRouter);
+
+// Cloud-Claude exchange write-back (SHIP-PLAN Phase 2) — the pan_log_exchange
+// MCP tool POSTs conversation exchanges here so non-CLI Claudes land in the DB
+// and become searchable like CLI sessions. Always mounted (capture is core).
+app.use('/api/v1/exchange', exchangeRouter);
 
 // T3 — Identity → user binding
 app.use('/api/v1/identity', identityRouter);

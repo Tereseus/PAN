@@ -15,6 +15,14 @@
 
 import { z } from 'zod';
 
+// Server-level instructions surfaced to the connecting Claude on initialize.
+// The key nudge: non-CLI surfaces don't auto-capture, so logging exchanges is
+// how they contribute to the user's persistent memory.
+export const PAN_MCP_INSTRUCTIONS =
+  'PAN is the user\'s persistent memory across every Claude and device. ' +
+  'Use pan_search whenever the user refers to something from the past ("what did we decide", "the thing I mentioned", "last time") — their full history lives here. ' +
+  'IMPORTANT: this surface is NOT auto-captured. When a conversation reaches something worth remembering (a decision, an answer the user will want later, a finished task), call pan_log_exchange with a concise summary so it joins the user\'s searchable memory. Reuse one session_id across a conversation.';
+
 export function registerPanTools(server, { panBaseUrl }) {
   async function panFetch(path, { method = 'GET', body } = {}) {
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -47,6 +55,22 @@ export function registerPanTools(server, { panBaseUrl }) {
         if (type) path += `&event_type=${encodeURIComponent(type)}`;
         return ok(await panFetch(path));
       } catch (e) { return err(e); }
+    },
+  );
+
+  server.tool(
+    'pan_log_exchange',
+    'Save this conversation exchange to PAN so it is remembered and searchable forever — across every Claude, every device. PAN auto-captures the Claude Code CLI, but the desktop app / Claude.ai / Cowork do NOT write back on their own — calling this is how those surfaces feed PAN. Call it at the end of a meaningful exchange (a question answered, a decision made, a task done) with a CONCISE summary of what the user wanted and what you concluded — not a verbatim dump. Reuse the same session_id across one conversation so its turns group together.',
+    {
+      user_message: z.string().describe('What the user asked or wanted — their message or a concise summary.'),
+      assistant_message: z.string().describe('Your response or a concise summary of your conclusion / what you did.'),
+      topic: z.string().optional().describe('Short topic label for recall later, e.g. "PAN profiles", "song mix feedback".'),
+      client: z.string().optional().describe('Which surface this is: "desktop-app" | "claude.ai" | "cowork" | "chrome". Defaults to cloud-claude.'),
+      session_id: z.string().optional().describe('Stable id grouping one conversation. Reuse it across the conversation\'s turns.'),
+    },
+    async (args) => {
+      try { return ok(await panFetch('/api/v1/exchange', { method: 'POST', body: args })); }
+      catch (e) { return err(e); }
     },
   );
 
