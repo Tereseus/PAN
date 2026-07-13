@@ -1,13 +1,18 @@
-// PAN boot profiles — which subsystems start. (SHIP-PLAN.md Phase 1)
+// PAN boot profiles — which subsystems start.
+// (SHIP-PLAN.md Phase 1 + NORTH-STAR-AUDIT.md wearable profile.)
 //
-// One codebase, two profiles:
-//   full  — the personal PAN, everything on. DEFAULT: no env var = full,
-//           so this deployment's behavior is byte-identical to pre-profiles.
-//   core  — the shippable subset: memory spine + capture + MCP + voice +
-//           intuition. No watchers (camera/screen/activity are opt-in via
-//           feature toggles later — Phase 4), no experimental loops, no
-//           multi-org/enterprise routes, no network extras (tunnel,
-//           discovery, firewall).
+// One codebase, three profiles:
+//   full     — the personal PAN, everything on. DEFAULT (no env var = full),
+//              byte-identical to pre-profiles.
+//   core     — the shippable memory subset: DB + capture + MCP + voice +
+//              intuition. No watchers, no experimental loops, no feature routes.
+//   wearable — the north-star daily driver (NORTH-STAR-AUDIT.md). Voice +
+//              WATCH + NOTIFY + voice-actions + the device/QR control mesh, but
+//              NO browser dashboard (use Claude Code + the PAN MCP server) and
+//              none of the dead dev loops. Turns ON more than core in places
+//              (email watch, sensors, device mesh, claude-control, tailscale)
+//              and turns OFF the SvelteKit dashboard + quality-log. Nothing is
+//              deleted — "turn off, don't delete."
 //
 // This module gates STARTUP and MOUNTING, not code presence. Full-only
 // route modules are still statically imported by server.js (several export
@@ -26,6 +31,7 @@
 
 export const PROFILE = (process.env.PAN_PROFILE || 'full').toLowerCase();
 export const IS_CORE = PROFILE === 'core';
+export const IS_WEARABLE = PROFILE === 'wearable';
 
 // feature -> where it runs. Two value shapes:
 //   ['full', ...]  — runs in the listed profiles (most features).
@@ -34,42 +40,51 @@ export const IS_CORE = PROFILE === 'core';
 //                    capture the user must consciously turn on.
 const FEATURES = {
   // ── presence / sensors (DEGRADE-class) ──
-  // NOTE: the three user-facing capture features — identity (camera), screen,
-  // and activity — are NOT gated here. They live in capture-consent.js, which
-  // layers a live, DB-backed consent toggle (the /privacy page) on top of the
-  // profile default. profiles.js only owns boot-time, non-user-toggled gates.
-  remote_screen:       ['full'],   // polls pan-clients for their screens (multi-device)
-  dashboard_watchdog:  ['full'],   // currently neutered anyway (early return)
-  dashboard_health:    ['full'],   // dashboard render QA
-  vision_verifier:     ['full'],   // vision-vs-DOM bug filing
-  forge_dashboard:     ['full'],   // experimental auto-fix loop
+  // The three user-facing capture features (identity/screen/activity) are NOT
+  // gated here — they live in capture-consent.js as per-device opt-in toggles
+  // (the /privacy page). profiles.js only owns boot-time, non-user-toggled gates.
+  remote_screen:       ['full'],            // polls pan-clients for their screens
+  dashboard_watchdog:  ['full'],            // babysits the dashboard (off in wearable)
+  dashboard_health:    ['full'],            // dashboard render QA
+  vision_verifier:     ['full'],            // vision-vs-DOM bug filing
+  forge_dashboard:     ['full'],            // experimental auto-fix loop
 
-  // ── experiments / autonomous loops ──
-  smart_steward:       ['full'],
-  claude_control:      ['full'],   // computer-use PTY — opt-in later
+  // ── experiments / autonomous loops (OFF in core AND wearable) ──
+  smart_steward:       ['full'],            // plain 60s steward suffices
   benchmarks_daily:    ['full'],
+  personal_sync:       ['full'],            // T3 cross-node federation
 
-  // ── multi-device network extras (single-machine core needs none of these) ──
-  tailscale_cleanup:   ['full'],
-  public_tunnel:       ['full'],
-  lan_discovery:       ['full'],
-  firewall_rule:       ['full'],
-  personal_sync:       ['full'],   // T3 cross-node sync loop
+  // ── voice-action executor — ON in wearable (north-star job 4) ──
+  claude_control:      ['full', 'wearable'],
 
-  // ── full-only route groups (mount gating; modules still load) ──
-  routes_sensors:          ['full'],
-  routes_runner:           ['full'],
-  routes_incognito:        ['full'],
-  routes_audit:            ['full'],
-  routes_replication:      ['full'],
-  routes_zones:            ['full'],
-  routes_sync:             ['full'],
-  routes_orgs:             ['full'],
-  routes_email:            ['full'],
-  routes_teams:            ['full'],
-  routes_wrap:             ['full'],
+  // ── device mesh / transport / QR-onboarding — ON in wearable ──
+  // The "add PAN to any computer via QR + control it over SSH" mesh + the
+  // transport that reaches the phone/pendant. Load-bearing for wearable.
+  tailscale_cleanup:   ['full', 'wearable'],
+  public_tunnel:       ['full', 'wearable'],
+  lan_discovery:       ['full', 'wearable'],
+  firewall_rule:       ['full', 'wearable'],
+
+  // ── browser dashboard UI — OFF in wearable (Claude Code + MCP replace it) ──
+  dashboard_ui:        ['full', 'core'],
+
+  // ── route groups ──
+  // Functional routes the wearable NEEDS (watch / privacy / durability):
+  routes_sensors:          ['full', 'wearable'],  // capture/privacy control plane
+  routes_incognito:        ['full', 'wearable'],  // no-trace capture
+  routes_replication:      ['full', 'wearable'],  // backup/restore — never forgets
+  routes_sync:             ['full', 'wearable'],  // cross-device DB sync
+  routes_email:            ['full', 'wearable'],  // inbox = the in-repo cloud-watch source
+  // Off in wearable (dashboard-dev / SaaS / off-mission):
+  routes_runner:           ['full'],              // run dev servers — dashboard-dev
+  routes_audit:            ['full'],              // enterprise hash-chain audit
+  routes_zones:            ['full'],              // geofencing (unbuilt)
+  routes_orgs:             ['full'],              // multi-tenant (org_personal middleware is separate)
+  routes_teams:            ['full'],              // SaaS teams/projects
+  routes_wrap:             ['full'],              // Tauri webview scrapers
   routes_messaging_prefs:  ['full'],
-  routes_benchmark:        ['full'],
+  routes_benchmark:        ['full'],              // model benchmarking
+  routes_quality_log:      ['full'],              // Paean Records music subsystem — carved off
 };
 
 // Opt-in features default OFF; set PAN_ENABLE_<NAME>=1 to turn one on.
@@ -89,9 +104,9 @@ export function featureEnabled(name) {
 export function profileSummary() {
   const optIns = Object.keys(FEATURES).filter(f => FEATURES[f] === 'optin');
   const optInState = optIns.map(f => `${f}=${featureEnabled(f) ? 'on' : 'off'}`).join(', ');
-  if (!IS_CORE) {
+  if (PROFILE === 'full') {
     return `[PAN] Boot profile: full (everything enabled) · opt-ins: ${optInState}`;
   }
-  const off = Object.keys(FEATURES).filter(f => !featureEnabled(f));
-  return `[PAN] Boot profile: core — ${off.length} features off: ${off.join(', ')}`;
+  const off = Object.keys(FEATURES).filter(f => FEATURES[f] !== 'optin' && !featureEnabled(f));
+  return `[PAN] Boot profile: ${PROFILE} — ${off.length} features off: ${off.join(', ')} · opt-ins: ${optInState}`;
 }

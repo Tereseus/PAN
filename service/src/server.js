@@ -930,13 +930,13 @@ if (featureEnabled('routes_zones')) app.use('/api/v1/zones', zonesRouter);
 // Paean Records — Quality Log (MCDA scoring for songs, art, mechanics).
 // Math lives in routes/quality-log.js; the `quality-log` MCP server is a
 // thin HTTP proxy over these endpoints.
-app.use('/api/v1/quality-log', qualityLogRouter);
+if (featureEnabled('routes_quality_log')) app.use('/api/v1/quality-log', qualityLogRouter);
 
 // Same MCP server exposed over Streamable HTTP for the Claude desktop app,
 // Claude in Chrome, Claude.ai, and Cowork. Users paste this URL into
 // Settings → Customize → Connectors → Add custom connector → Remote MCP
 // server URL. See routes/mcp-quality-log.js for the per-network URL guide.
-app.use('/mcp/quality-log', mcpQualityLogRouter);
+if (featureEnabled('routes_quality_log')) app.use('/mcp/quality-log', mcpQualityLogRouter);
 
 // THE umbrella PAN MCP — every PAN tool over HTTP. This is the connector
 // non-CLI Claude clients should use: it exposes pan_search (full-text over
@@ -2975,6 +2975,9 @@ app.get('/atlas', (req, res) => res.redirect('/v2/atlas'));
 // Svelte v2 dashboard — static files
 // Immutable chunks (_app/immutable/**) have content-hashed filenames — cache forever.
 // index.html and version.json must never be cached (they change on rebuild).
+// Browser dashboard UI (SvelteKit) — gated: OFF in the `wearable` profile.
+// No browser dashboard; use Claude Code + the PAN MCP server instead.
+if (featureEnabled('dashboard_ui')) {
 app.use('/v2', express.static(join(__dirname, '..', 'public', 'v2'), {
   etag: true,
   lastModified: true,
@@ -2997,6 +3000,12 @@ app.get('/v2/*path', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(join(__dirname, '..', 'public', 'v2', 'index.html'));
 });
+} else {
+  // Dashboard UI off (e.g. wearable profile): 404 the entire /v2 tree so the
+  // root static catch-all further down doesn't half-serve the SvelteKit shell.
+  app.use('/v2', (req, res) => res.status(404).type('text')
+    .send('PAN dashboard is off in this profile — use Claude Code + the PAN MCP server (/mcp/pan).'));
+} // end dashboard_ui gate
 
 // Setup wizard — first-run page, no auth required, no caching
 app.use('/setup', express.static(join(__dirname, '..', 'public', 'setup'), {
@@ -3304,7 +3313,8 @@ loadProjectSelects();
 
 */
 
-// Old dashboard static files (fallback)
+// Old dashboard static files (fallback) — gated with the SvelteKit UI.
+if (featureEnabled('dashboard_ui'))
 app.use('/dashboard', express.static(join(__dirname, '..', 'public'), {
   etag: false,
   lastModified: true,

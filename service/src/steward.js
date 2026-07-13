@@ -160,7 +160,7 @@ const services = [
     // /status endpoint, auto-restart on PID death) so the user never has
     // to spawn a fresh claude session before issuing a voice command.
     id: 'claude-control',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Claude Control',
     technicalName: 'claude-control PTY',
     description: 'Always-on Claude Code PTY for computer-control voice commands',
@@ -439,7 +439,7 @@ const services = [
   },
   {
     id: 'consolidation',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Archivist',
     technicalName: 'Memory Consolidation',
     description: 'Extracts episodes, facts, procedures from events into vector memory',
@@ -571,7 +571,7 @@ const services = [
   },
   {
     id: 'tailscale',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // SHIP-PLAN Phase 1 — not started in the core profile
     name: 'Tether',
     technicalName: 'Tailscale',
     description: 'VPN mesh for remote access (phone, laptop, server)',
