@@ -32,6 +32,7 @@ import qualityLogRouter from './routes/quality-log.js';
 import mcpQualityLogRouter from './routes/mcp-quality-log.js';
 import mcpPanRouter from './routes/mcp-pan.js';
 import captureRouter from './routes/capture.js';
+import dashboardsRouter from './routes/dashboards.js';
 import exchangeRouter from './routes/exchange.js';
 import { applyCaptureConsentAtBoot, isCaptureOn } from './capture-consent.js';
 import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
@@ -949,6 +950,12 @@ app.use('/mcp/pan', mcpPanRouter);
 // profile. The user must be able to see + toggle camera/screen/activity
 // capture. Backs the /privacy page.
 app.use('/api/v1/capture', captureRouter);
+
+// Dashboard registry — the purpose-built HTML monitoring pages PAN knows about
+// (WoE, ServiceNow, ops, …), each on its own host/port and fed by its own push
+// scripts. Always mounted, every profile: it's how PAN knows the user's
+// monitoring surfaces + renders them on the phone. See routes/dashboards.js.
+app.use('/api/v1/dashboards', dashboardsRouter);
 
 // Cloud-Claude exchange write-back (SHIP-PLAN Phase 2) — the pan_log_exchange
 // MCP tool POSTs conversation exchanges here so non-CLI Claudes land in the DB

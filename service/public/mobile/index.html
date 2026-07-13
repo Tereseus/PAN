@@ -251,6 +251,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 <!-- Tabs — same widget names as desktop -->
 <div class="tabs" id="tab-bar">
   <div class="tab active" data-tab="chat">Chat</div>
+  <div class="tab" data-tab="dashboards">Dashboards</div>
   <div class="tab" data-tab="status">Usage</div>
   <div class="tab" data-tab="alerts">Alerts</div>
   <div class="tab" data-tab="tasks">Tasks</div>
@@ -301,6 +302,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 
 
 <!-- Widget pages — match desktop widget names -->
+<div id="dashboards" class="page"></div>
 <div id="status" class="page"></div>
 <div id="alerts" class="page"></div>
 <div id="tasks" class="page"></div>
@@ -341,6 +343,7 @@ function loadTab(name) {
   if (name !== 'status' && statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
   switch(name) {
     case 'chat': loadChat(); break;
+    case 'dashboards': loadDashboards(); break;
     case 'status': loadStatus(); if (!statusPollTimer) statusPollTimer = setInterval(loadStatus, 30000); break;
     case 'alerts': loadAlerts(); break;
     case 'tasks': loadTasks(); break;
@@ -946,6 +949,127 @@ async function loadProjects() {
 
     el.innerHTML = html;
   } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
+}
+
+// ========== DASHBOARDS ==========
+// PAN's registry of purpose-built HTML monitoring pages (WoE, ServiceNow, ops…),
+// each on its own host/port. Plain HTML → renders fine on the phone. Tap a card
+// to open it full-screen in an iframe.
+let _dashList = [];
+
+function renderDashHeader() {
+  return '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0 10px">' +
+    '<div class="section-title" style="padding:0">Dashboards</div>' +
+    '<button onclick="showAddDashboard()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:13px">+ Add</button>' +
+    '</div>';
+}
+
+function renderDashboards(list) {
+  _dashList = Array.isArray(list) ? list : [];
+  let html = renderDashHeader();
+  if (!_dashList.length) {
+    html += '<div class="card" style="padding:16px"><div class="muted">No dashboards registered yet.</div>' +
+      '<div class="muted" style="font-size:12px;margin-top:6px">Register your monitoring pages (WoE, ServiceNow, ops…) so PAN knows them and you can open them here. Tap <b>+ Add</b>.</div></div>';
+    return html;
+  }
+  html += '<div class="card" style="padding:2px 6px">';
+  for (const d of _dashList) {
+    const up = d.status === 'up';
+    const color = up ? '#3fb950' : (d.status === 'down' ? '#f85149' : 'var(--text2)');
+    const dot = '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + color + ';flex:none"></span>';
+    const sub = [d.host ? (d.host + (d.port ? (':' + d.port) : '')) : '', d.category || ''].filter(Boolean).join(' · ');
+    html += '<div onclick="openDashboard(' + d.id + ')" style="display:flex;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer">' +
+      dot +
+      '<span style="font-size:20px;flex:none">' + esc(d.icon || '📊') + '</span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(d.name) + '</div>' +
+        (d.description ? '<div class="muted" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(d.description) + '</div>' : '') +
+        (sub ? '<div class="muted" style="font-size:11px">' + esc(sub) + '</div>' : '') +
+      '</div>' +
+      '<button onclick="deleteDashboard(' + d.id + ',event)" style="background:none;border:none;color:var(--text2);font-size:16px;padding:4px 8px;flex:none">✕</button>' +
+    '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+async function loadDashboards() {
+  const el = document.getElementById('dashboards');
+  el.innerHTML = renderDashHeader() + '<div class="muted" style="padding:12px">Loading…</div>';
+  try {
+    // Fast render from last-known state, then probe health in the background.
+    const res = await fetch(API + '/api/v1/dashboards');
+    const data = await res.json();
+    el.innerHTML = renderDashboards(data.dashboards || []);
+    fetch(API + '/api/v1/dashboards/probe').then(r => r.json()).then(d => {
+      const active = document.querySelector('.page.active');
+      if (active && active.id === 'dashboards') el.innerHTML = renderDashboards(d.dashboards || []);
+    }).catch(() => {});
+  } catch (e) {
+    el.innerHTML = renderDashHeader() + '<div class="muted" style="padding:12px">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+// Full-screen iframe overlay. "Open direct" navigates the WebView to the URL as
+// a fallback for dashboards that block being framed (X-Frame-Options).
+function openDashboard(id) {
+  const d = _dashList.find(x => x.id === id);
+  if (!d) return;
+  const ov = document.createElement('div');
+  ov.id = 'dash-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;flex-direction:column';
+  ov.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg2);border-bottom:1px solid var(--border)">' +
+      '<span style="flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(d.icon || '📊') + ' ' + esc(d.name) + '</span>' +
+      '<a href="' + esc(d.url) + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-size:13px">Open direct ↗</a>' +
+      '<button onclick="closeDashboard()" style="background:var(--bg3);color:var(--text);border:none;border-radius:6px;padding:6px 12px;font-size:14px">✕</button>' +
+    '</div>' +
+    '<iframe src="' + esc(d.url) + '" style="flex:1;border:none;width:100%;background:#fff"></iframe>';
+  document.body.appendChild(ov);
+}
+function closeDashboard() { const o = document.getElementById('dash-overlay'); if (o) o.remove(); }
+
+function showAddDashboard() {
+  const ov = document.createElement('div');
+  ov.id = 'dash-add-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:20px';
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px';
+  ov.innerHTML =
+    '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;width:100%;max-width:360px">' +
+      '<h3 style="margin:0 0 12px">Register dashboard</h3>' +
+      '<input id="dash-name" placeholder="Name (e.g. WoE Live)" style="' + inp + '">' +
+      '<input id="dash-url" placeholder="URL (e.g. 100.86.16.10:8791)" style="' + inp + '">' +
+      '<input id="dash-icon" placeholder="Emoji (optional)" style="' + inp + '">' +
+      '<input id="dash-cat" placeholder="Category (optional)" style="' + inp + '">' +
+      '<div style="display:flex;gap:8px;margin-top:4px">' +
+        '<button onclick="closeAddDashboard()" style="flex:1;padding:10px;background:var(--bg3);color:var(--text);border:none;border-radius:8px">Cancel</button>' +
+        '<button onclick="saveDashboard()" style="flex:1;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:8px">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+}
+function closeAddDashboard() { const o = document.getElementById('dash-add-overlay'); if (o) o.remove(); }
+
+async function saveDashboard() {
+  const name = document.getElementById('dash-name').value.trim();
+  const url = document.getElementById('dash-url').value.trim();
+  if (!name || !url) return;
+  const body = {
+    name, url,
+    icon: document.getElementById('dash-icon').value.trim(),
+    category: document.getElementById('dash-cat').value.trim(),
+  };
+  try {
+    await fetch(API + '/api/v1/dashboards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch (e) {}
+  closeAddDashboard();
+  loadDashboards();
+}
+
+async function deleteDashboard(id, ev) {
+  if (ev) ev.stopPropagation();
+  try { await fetch(API + '/api/v1/dashboards/' + id, { method: 'DELETE' }); } catch (e) {}
+  loadDashboards();
 }
 
 // ========== SENSORS ==========

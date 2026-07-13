@@ -66,15 +66,39 @@ The browser xterm WS terminal server is now gated off in `wearable` via the
 `terminal_server` flag, with the phone's pipe path decoupled from it. Next is
 Step 3.
 
-### Step 3 — read-only situational view on the phone `/mobile`
-The only surviving "dashboard." Add to the static `/mobile` screen: service
-health, cloud/work-system state (inbox + ServiceNow/Jira/Slack watch), recent
-notifications/alerts, current intuition snapshot, AI usage. Read-only — never a
-terminal/model-picker/CRUD. Data endpoints already exist (`/dashboard/api/
-services|stats|events`, `/api/v1/intuition/current`, `/api/v1/capture`). Also
-split `chatRouter`/`dashboardRouter`: extract the KEEP endpoints (pan-reply/
-incoming/unread, phone-ping, read-only status) into a slim router before those
-big routers can be gated (they're boot-fatal if unmounted whole).
+### Step 3 — situational view on the phone `/mobile` — REDIRECTED + core SHIPPED
+Two findings reshaped this step:
+1. The `/mobile` page is **already** a full situational view (11 tabs: intuition,
+   usage, alerts, tasks, services, devices, sensors, events). Hand-coding more
+   widgets would duplicate it.
+2. **New direction (Tereseus, 2026-07):** don't build one universal dashboard or
+   poller. Each thing worth watching gets its **own purpose-built HTML page fed
+   by its own push scripts** (WoE, ServiceNow, ops…), each on its own host/port
+   (`localhost:877x`, `100.86.16.10:8791`, different IPs). PAN holds a
+   **registry** of them so it knows what exists and renders them on the phone —
+   plain HTML renders on mobile where the SvelteKit dashboard never did. This
+   also retires the dead universal remote-screen poller for good.
+
+SHIPPED: a **dashboard registry** — table `dashboards` + `routes/dashboards.js`
+(`GET/POST/PUT/DELETE /api/v1/dashboards` + `GET /api/v1/dashboards/probe` health
+check), always mounted every profile, and a new `/mobile` **Dashboards** tab
+(2nd tab) that lists registered dashboards with health dots, opens each in a
+full-screen iframe (`Open direct ↗` fallback for X-Frame-blocked pages), and has
+an inline add/delete form. Verified in prod: register → probe(up) → open(iframe)
+→ delete round-trip; card renders + health dot + iframe src correct.
+
+What's left on Step 3:
+- **Register the real dashboards.** WoE + ServiceNow dashboards exist on other
+  hosts/ports (one ~`877x`, one `8791`, different IPs) — get exact URLs from
+  Tereseus and either POST them or add via the phone. Registry seeded empty on
+  purpose (no guessed URLs).
+- The genuine remaining watch-gap is a **work-systems glance** (inbox +
+  ServiceNow/Jira/Slack). With the registry, the clean way is to build that as
+  its own small HTML dashboard fed by the SN/Jira/Slack bridges and register it,
+  rather than hand-coding it into `/mobile`.
+- (Deferred, only if a big router must be gated later) split `chatRouter`/
+  `dashboardRouter` to extract KEEP endpoints — they're boot-fatal if unmounted
+  whole. Not needed for the registry.
 
 ### Step 4 — pendant closes the loop
 Once wearable is the daily driver, wire the pendant firmware's frame+audio stream
