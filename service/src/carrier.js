@@ -1951,8 +1951,23 @@ async function boot() {
   // Client WS MUST be registered before terminal (terminal rejects unknown upgrade paths)
   await initClientServer(carrierServer);
 
-  // Phase 4: Carrier owns terminal/PTY
-  await initTerminal(carrierServer);
+  // Phase 4: Carrier owns terminal/PTY — but only when the profile serves the
+  // browser xterm surface (full/core). In `wearable` the WS terminal server is
+  // gated off; the phone's pipe-mode voice path runs over HTTP without it, and
+  // /ws/client (device mesh) has its own upgrade handler in client-manager.
+  try {
+    const { featureEnabled } = await import('./profiles.js');
+    if (featureEnabled('terminal_server')) {
+      await initTerminal(carrierServer);
+    } else {
+      console.log(`[Carrier] Terminal/PTY WS server SKIPPED — profile ${process.env.PAN_PROFILE || 'full'} (pipe mode still serves the phone over HTTP)`);
+    }
+  } catch (e) {
+    // Fail-open: if the profile check itself throws, keep the terminal server
+    // (protects the default `full` profile from a boot regression).
+    console.warn('[Carrier] profile gate failed, starting terminal anyway:', e?.message);
+    await initTerminal(carrierServer);
+  }
 
   // Start Claude handoff monitor (Phase 5)
   startClaudeHandoffMonitor();

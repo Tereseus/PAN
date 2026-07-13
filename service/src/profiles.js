@@ -68,6 +68,19 @@ const FEATURES = {
   // ── browser dashboard UI — OFF in wearable (Claude Code + MCP replace it) ──
   dashboard_ui:        ['full', 'core'],
 
+  // ── browser xterm terminal (WS PTY server) — OFF in wearable ──
+  // The dashboard's live shell surface: /ws/terminal PTY sessions, ScreenBuffer
+  // rendering, reconnect tokens, /ws/panels + /ws/whisper proxying. Pure
+  // dev-tool — replaced by Claude Code + the PAN MCP server. Critically, the
+  // PHONE's voice-action path does NOT use this: it drives pipe-mode Claude
+  // adapters over plain HTTP (/api/v1/terminal/pipe|send|messages|new), which
+  // run without the WS server (terminal.js loads ScreenBuffer eagerly so
+  // createPipeSession works standalone). So turning this OFF keeps the phone's
+  // north-star job-4 voice actions working — no APK change. Gated at the boot
+  // call in both carrier.js (prod: Carrier owns the PTY) and server.js
+  // (standalone/dev). See docs/HANDOFF-WEARABLE.md Step 2.
+  terminal_server:     ['full', 'core'],
+
   // ── route groups ──
   // Functional routes the wearable NEEDS (watch / privacy / durability):
   routes_sensors:          ['full', 'wearable'],  // capture/privacy control plane

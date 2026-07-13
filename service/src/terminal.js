@@ -19,6 +19,14 @@ import { getTerminalLogDir, getShell, getDataDir } from './platform.js';
 import { createAlert } from './routes/dashboard.js';
 import { ClaudeAdapter } from './llm-adapter-claude.js';
 import { GeminiAdapter } from './llm-adapter-gemini.js';
+// ScreenBuffer is needed by BOTH the browser WS terminal server AND pipe-mode
+// sessions (createPipeSession → new ScreenBufferClass). It used to be lazy-
+// loaded inside startTerminalServer(), which meant the phone's pipe path
+// silently depended on the browser terminal server having started. The
+// `wearable` profile gates that WS server off (terminal_server flag), so we
+// load it up front here — pipe mode then stands on its own. screen-buffer.js is
+// side-effect-free (pure class defs), so eager loading is free.
+import { ScreenBuffer } from './screen-buffer.js';
 
 // Terminal log directory — persists ScreenBuffer logs across server restarts
 const TERMINAL_LOG_DIR = getTerminalLogDir();
@@ -824,13 +832,9 @@ function getInFlightTool(cwd, claudeSessionIds) {
 const { shell: SHELL, args: SHELL_ARGS } = getShell();
 
 let wss = null;
-let ScreenBufferClass = null; // loaded async
+let ScreenBufferClass = ScreenBuffer; // eager (see import note above) — pipe mode needs it even when the WS server is gated off
 
 async function startTerminalServer(httpServer) {
-  // Load ScreenBuffer for server-side rendering
-  const { ScreenBuffer } = await import('./screen-buffer.js');
-  ScreenBufferClass = ScreenBuffer;
-
   wss = new WebSocketServer({ noServer: true });
 
   // Single upgrade handler for all PAN WebSocket paths
