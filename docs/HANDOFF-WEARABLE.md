@@ -87,11 +87,20 @@ full-screen iframe (`Open direct ↗` fallback for X-Frame-blocked pages), and h
 an inline add/delete form. Verified in prod: register → probe(up) → open(iframe)
 → delete round-trip; card renders + health dot + iframe src correct.
 
+Health check is **client-side** (`probeDashboardsClient` in `/mobile`): a no-cors
+`fetch` from the phone's own network context, because PAN's server can't reliably
+reach cross-machine Tailscale peers from its service session (undici aborts at
+8s where a user-session process connects in ~0.6s — the server `/probe` endpoint
+still exists + works for localhost dashboards). The phone is the right place to
+test reachability anyway — it's where you open them. PAN's hub Tailscale IP is
+`100.127.71.114`, so other machines register via
+`POST http://100.127.71.114:7777/api/v1/dashboards`.
+
 What's left on Step 3:
-- **Register the real dashboards.** WoE + ServiceNow dashboards exist on other
-  hosts/ports (one ~`877x`, one `8791`, different IPs) — get exact URLs from
-  Tereseus and either POST them or add via the phone. Registry seeded empty on
-  purpose (no guessed URLs).
+- **ServiceNow (A360) dashboard is REGISTERED** (id 4, `http://100.86.16.10:8791`,
+  confirmed reachable). Still to register: the **WoE** dashboard (Tereseus said
+  ~port `877x`, a different IP — need the exact host:port). Add via the phone's
+  **+ Add** or POST to the registry.
 - The genuine remaining watch-gap is a **work-systems glance** (inbox +
   ServiceNow/Jira/Slack). With the registry, the clean way is to build that as
   its own small HTML dashboard fed by the SN/Jira/Slack bridges and register it,

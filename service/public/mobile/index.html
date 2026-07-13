@@ -974,9 +974,10 @@ function renderDashboards(list) {
   }
   html += '<div class="card" style="padding:2px 6px">';
   for (const d of _dashList) {
-    const up = d.status === 'up';
-    const color = up ? '#3fb950' : (d.status === 'down' ? '#f85149' : 'var(--text2)');
-    const dot = '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + color + ';flex:none"></span>';
+    // Dot starts neutral; probeDashboardsClient() sets green/red from the phone's
+    // own network context (accurate — the server can't reliably reach cross-machine
+    // Tailscale dashboards from its service session).
+    const dot = '<span id="dash-dot-' + d.id + '" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--text2);flex:none"></span>';
     const sub = [d.host ? (d.host + (d.port ? (':' + d.port) : '')) : '', d.category || ''].filter(Boolean).join(' · ');
     html += '<div onclick="openDashboard(' + d.id + ')" style="display:flex;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer">' +
       dot +
@@ -1001,12 +1002,26 @@ async function loadDashboards() {
     const res = await fetch(API + '/api/v1/dashboards');
     const data = await res.json();
     el.innerHTML = renderDashboards(data.dashboards || []);
-    fetch(API + '/api/v1/dashboards/probe').then(r => r.json()).then(d => {
-      const active = document.querySelector('.page.active');
-      if (active && active.id === 'dashboards') el.innerHTML = renderDashboards(d.dashboards || []);
-    }).catch(() => {});
+    probeDashboardsClient(_dashList); // set health dots from the phone's own reachability
   } catch (e) {
     el.innerHTML = renderDashHeader() + '<div class="muted" style="padding:12px">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+// Health from the phone's own network context. no-cors fetch resolves (opaque)
+// if the server answered, throws on a real network failure. Runs per dashboard
+// in parallel; the first hit to a cold Tailscale peer can take a few seconds.
+function probeDashboardsClient(list) {
+  for (const d of (list || [])) {
+    (async () => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 6000);
+      let up = false;
+      try { await fetch(d.url, { mode: 'no-cors', signal: ctrl.signal, cache: 'no-store' }); up = true; }
+      catch (e) {} finally { clearTimeout(t); }
+      const dot = document.getElementById('dash-dot-' + d.id);
+      if (dot) dot.style.background = up ? '#3fb950' : '#f85149';
+    })();
   }
 }
 
