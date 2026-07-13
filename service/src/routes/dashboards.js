@@ -59,16 +59,20 @@ function parseHostPort(url) {
 }
 
 // Cheap reachability check. Many hand-rolled dashboards don't implement HEAD,
-// so GET with a short timeout and treat any HTTP response (even 4xx) as "up" —
-// we only care whether the server is answering, not the exact status.
+// so GET and treat any HTTP response (even 4xx) as "up" — we only care whether
+// the server is answering, not the exact status. Timeout is 8s, not a couple
+// seconds: dashboards on other Tailscale machines need a WireGuard handshake on
+// the FIRST connection to a cold peer (often via a DERP relay before it upgrades
+// to a direct path), which can take several seconds; warm peers answer in <1s.
 async function probe(url) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 3500);
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  const started = Date.now();
   try {
     const r = await fetch(url, { method: 'GET', signal: ctrl.signal, redirect: 'manual' });
     clearTimeout(t);
-    return r.status < 500;
-  } catch { clearTimeout(t); return false; }
+    return { up: r.status < 500, status: r.status, ms: Date.now() - started };
+  } catch (e) { clearTimeout(t); return { up: false, error: `${e.name}: ${e.message}`, ms: Date.now() - started }; }
 }
 
 router.get('/', (req, res) => {
@@ -80,12 +84,14 @@ router.get('/probe', async (req, res) => {
   try {
     const rows = all('SELECT id, url FROM dashboards') || [];
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const debug = [];
     await Promise.allSettled(rows.map(async (r) => {
-      const up = await probe(r.url);
+      const p = await probe(r.url);
+      debug.push({ id: r.id, ...p });
       run("UPDATE dashboards SET status = :s, last_seen = CASE WHEN :s = 'up' THEN :now ELSE last_seen END WHERE id = :id",
-          { ':s': up ? 'up' : 'down', ':now': now, ':id': r.id });
+          { ':s': p.up ? 'up' : 'down', ':now': now, ':id': r.id });
     }));
-    res.json({ ok: true, dashboards: all('SELECT * FROM dashboards ORDER BY category, name') || [] });
+    res.json({ ok: true, dashboards: all('SELECT * FROM dashboards ORDER BY category, name') || [], debug });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
