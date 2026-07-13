@@ -2212,17 +2212,35 @@ function _renderIntuition() {
   // Detail card (visible only when _intuitionDetailOpen)
   det.style.display = _intuitionDetailOpen ? 'block' : 'none';
   if (_intuitionDetailOpen) {
+    // Full observability panel — every signal PAN fused this tick, so you can
+    // watch (and iterate on) how the intuition reasons.
+    const urgency = (now.urgency || '').toString().trim();
+    const engagement = (now.engagement || '').toString().trim();
+    const complexity = (now.complexity || '').toString().trim();
+    const assumption = (now.assumption || '').toString().trim();
+    const social = Array.isArray(now.social) ? now.social : [];
+    const row = (label, val, extra) => !val ? '' :
+      '<div style="margin:2px 0"><span style="color:var(--text2)">' + label + '</span> · ' + esc(val) +
+      (extra ? ' <span style="opacity:0.65">— ' + esc(extra) + '</span>' : '') + '</div>';
+    const chip = (t, c) => '<span style="display:inline-block;background:' + c + ';color:#fff;border-radius:8px;padding:1px 7px;font-size:10px;margin:0 4px 3px 0">' + esc(t) + '</span>';
     const rows = [];
-    if (where) rows.push('<div><span style="color:var(--text2)">where</span> · ' + esc(where) + '</div>');
-    if (activity) rows.push('<div><span style="color:var(--text2)">activity</span> · ' + esc(activity) + '</div>');
-    if (focus) rows.push('<div><span style="color:var(--text2)">focus</span> · ' + esc(focus) + '</div>');
-    if (direction) rows.push('<div><span style="color:var(--text2)">direction</span> · ' + esc(direction) + '</div>');
-    if (need) rows.push('<div><span style="color:var(--text2)">need</span> · ' + esc(need) + '</div>');
-    if (mood) rows.push('<div><span style="color:var(--text2)">mood</span> · ' + esc(mood) + (now.mood_detail ? ' — ' + esc(now.mood_detail) : '') + '</div>');
-    if (recent.length) rows.push('<div><span style="color:var(--text2)">recent</span> · ' + recent.map(esc).join(', ') + '</div>');
+    rows.push(row('where', where));
+    rows.push(row('activity', activity));
+    rows.push(row('focus', focus));
+    rows.push(row('direction', direction));
+    rows.push(row('need', need));
+    rows.push(row('mood', mood, now.mood_detail));
+    rows.push(row('read', assumption, now.assumption_detail));   // PAN's read on your state
+    if (social.length) rows.push(row('with', social.join(', ')));
+    const chips = [];
+    if (urgency) chips.push(chip(urgency, /high|urgent/i.test(urgency) ? '#c0392b' : '#3b6fd6'));
+    if (engagement) chips.push(chip(engagement, '#4a4a5a'));
+    if (complexity) chips.push(chip(complexity, '#4a4a5a'));
+    if (chips.length) rows.push('<div style="margin:6px 0 2px">' + chips.join('') + '</div>');
+    if (recent.length) rows.push('<div style="margin-top:2px"><span style="color:var(--text2)">recent</span> · ' + recent.map(t => esc(t)).join(', ') + '</div>');
     const age = _lastIntuition.as_of ? Math.round((Date.now() - _lastIntuition.as_of) / 1000) : null;
-    if (age !== null) rows.push('<div style="opacity:0.5;margin-top:4px">updated ' + age + 's ago · trigger=' + esc(_lastIntuition.trigger || '?') + '</div>');
-    det.innerHTML = rows.join('');
+    if (age !== null) rows.push('<div style="opacity:0.5;margin-top:6px">updated ' + age + 's ago · trigger=' + esc(_lastIntuition.trigger || '?') + '</div>');
+    det.innerHTML = rows.filter(Boolean).join('');
   }
 }
 
