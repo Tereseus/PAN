@@ -417,7 +417,7 @@ const services = [
   },
   {
     id: 'dream',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // core to PAN's mind — builds the living situational-state doc; Consolidation (already wearable) depends on it
     name: 'Dream Cycle',
     description: 'Consolidates events into living state document (.pan-state.md)',
     modelTier: 'reasoning',
@@ -471,7 +471,7 @@ const services = [
   },
   {
     id: 'scout',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // resilience: proactive provider-model refresh + tool discovery — keep the router self-healing in the lean profile
     name: 'Scout',
     description: 'Tool discovery — GitHub trending, MCP servers, AI agents, CLI tools',
     modelTier: 'reasoning',
@@ -493,7 +493,7 @@ const services = [
   },
   {
     id: 'orchestrator',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // autonomous: findings -> tasks (deps Dream+Scout, both now on in wearable)
     name: 'Orchestrator',
     description: 'Autonomous agent — processes findings, generates tasks, identifies gaps',
     modelTier: 'reasoning',
@@ -515,7 +515,7 @@ const services = [
   },
   {
     id: 'evolution',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // self-improvement loop — kept on per user
     name: 'Evolution Engine',
     description: 'Self-improvement — observes behavior, critiques, generates config changes',
     modelTier: 'reasoning',
@@ -547,7 +547,7 @@ const services = [
   },
   {
     id: 'autodev',
-    profiles: ['full'],  // SHIP-PLAN Phase 1 — not started in the core profile
+    profiles: ['full', 'wearable'],  // Forge — kept on per user (harmless when idle)
     name: 'Forge',
     technicalName: 'AutoDev',
     description: 'Automated development — spawns headless Claude sessions for tasks',
