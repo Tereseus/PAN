@@ -957,6 +957,38 @@ app.use('/api/v1/capture', captureRouter);
 // monitoring surfaces + renders them on the phone. See routes/dashboards.js.
 app.use('/api/v1/dashboards', dashboardsRouter);
 
+// ServiceNow assist loop — DRAFTING BRAIN only (PAN never sends; the work-pc
+// dashboard sends on the user's click). Reverse-push: work-pc's watcher POSTs
+// a Slack conversation, gets a drafted reply back. Stateless. Body:
+// {channel, recent:[{sender,text}]} or {channel, sender, text}. Returns {ok, draft, skip}.
+app.post('/api/v1/sn-loop/draft', async (req, res) => {
+  try {
+    const { draftForConversation } = await import('./servicenow-loop.js');
+    const r = await draftForConversation(req.body || {});
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Tailscale peer status straight from the hub's own tailscaled (SYSTEM context).
+// This is how PAN "sees" whether each machine is on the tailnet — no per-machine
+// beacon needed, works for every device, authoritative.
+app.get('/api/v1/tailscale/peers', async (req, res) => {
+  try {
+    const { spawn } = await import('child_process');
+    const out = await new Promise((resolve) => {
+      const p = spawn('C:\\Program Files\\Tailscale\\tailscale.exe', ['status', '--json'], { windowsHide: true });
+      let o = ''; p.stdout.on('data', d => o += d); p.on('close', () => resolve(o)); p.on('error', () => resolve(''));
+      setTimeout(() => { try { p.kill(); } catch {} resolve(o); }, 8000);
+    });
+    const j = JSON.parse(out || '{}');
+    const peers = Object.values(j.Peer || {}).map(p => ({
+      host: p.HostName, online: !!p.Online, lastSeen: p.LastSeen || null,
+      os: p.OS || null, ip: (p.TailscaleIPs || [])[0] || null,
+    })).sort((a, b) => (a.host || '').localeCompare(b.host || ''));
+    res.json({ ok: true, self: j.Self?.HostName || null, backendState: j.BackendState || null, peers });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // Cloud-Claude exchange write-back (SHIP-PLAN Phase 2) — the pan_log_exchange
 // MCP tool POSTs conversation exchanges here so non-CLI Claudes land in the DB
 // and become searchable like CLI sessions. Always mounted (capture is core).
