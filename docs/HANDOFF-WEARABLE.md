@@ -20,6 +20,25 @@ tools. **Not** a coding env, **not** a dashboard dev tool. Governing principle:
   email/sensors/capture/incognito/sync/intuition/MCP on; tailscale + device mesh
   on; claude-control on. 9 steward services. Prod `full` verified byte-identical.
   Last commit: `a51bbcb`.
+- **Step 2 SHIPPED** — `wearable` now gates the **browser xterm terminal WS
+  server** off (`terminal_server` flag) while the phone's voice-action path
+  keeps working unchanged. **Deviated from this doc's original plan** (which said
+  "forward pipe → `claude-control.js`"): reading `terminal.js` showed the phone's
+  pipe mode only depended on the WS server for one thing — `ScreenBufferClass`,
+  which was lazy-loaded *inside* `startTerminalServer()`. Fixed by eager-loading
+  ScreenBuffer at module top, so `createPipeSession`/`pipeSend`/`getSessionMessages`
+  run standalone. This keeps **real per-session transcripts** (the claude-control
+  ring-buffer rewrite would have lost `/messages/:id`) and needs **no APK change**.
+  Gated at both boot sites: `carrier.js` (prod: Carrier owns the PTY) and
+  `server.js:5414` (standalone/dev). Verified on dev-server :7781: wearable →
+  no `/ws/terminal` (no 101), but `/new`+`/sessions`+`/pipe`+`/messages` full
+  round-trip works (adapter replied "PIPE_OK", transcript retrievable). `full` →
+  `/ws/terminal` returns 101, terminal ready; prod craft-swapped + verified
+  byte-identical. Did NOT gate the terminal HTTP endpoints (`/sessions|new|
+  set-model|…`) as the original plan suggested — **the phone uses them**; they're
+  cheap handlers that need no WS server. Did NOT add `terminal_dev_api` or trim
+  `cleanZombieSessions` (it already only touches sessions in the Map, which in
+  wearable are just the phone's pipe sessions, and it preserves the #807 fix).
 - Earlier in this arc: identity/camera made opt-in (camera off by default),
   `/status`+`/privacy` capture-consent console, cloud-Claude capture write-back
   (`pan_log_exchange` + `/api/v1/exchange` + CloudExchange FTS indexing),
@@ -42,20 +61,10 @@ Sensory input for the whole layer. Decided build:
 
 ## What's next — in trap order (do NOT reorder)
 
-### Step 2 — migrate phone voice-action off the terminal bridge (HIGH VALUE, tangled)
-Goal: let `wearable` gate the browser-PTY/terminal server off. Blocker: the phone
-currently drives a Claude session through `/api/v1/terminal/pipe` → `pipeSend`
-in `terminal.js`/`terminal-bridge.js`.
-- Keep `/api/v1/terminal/pipe`, `/send`, `/messages/:id`, `/wait-response` as a
-  **thin HTTP shim that forwards to `claude-control.js`** (the always-on Claude
-  Code PTY). Phone doesn't change → no APK rebuild, no plug-in.
-- Then add feature flags + gates so `wearable` turns OFF: `terminal.js` WS PTY
-  server (`/ws/terminal`), `screen-buffer.js`, reconnect tokens, `open_tabs`,
-  `/api/v1/terminal/sessions|new|adapter|set-model|…`. Add `terminal_server` +
-  `terminal_dev_api` flags to `profiles.js` (`['full','core']`).
-- Trim `steward.cleanZombieSessions` to scope only claude-control/voice PTYs
-  (it also resets the #807 frozen-adapter fix — keep that half).
-- Verify: wearable boots, phone pipe still answers, no `/ws/terminal`.
+### Step 2 — DONE (see "Done ✅" above for the shipped approach + verification)
+The browser xterm WS terminal server is now gated off in `wearable` via the
+`terminal_server` flag, with the phone's pipe path decoupled from it. Next is
+Step 3.
 
 ### Step 3 — read-only situational view on the phone `/mobile`
 The only surviving "dashboard." Add to the static `/mobile` screen: service

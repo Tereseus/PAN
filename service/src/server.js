@@ -5410,9 +5410,13 @@ function start() {
       // When running as Craft under Carrier, terminal is owned by Carrier — skip here.
       if (IS_CRAFT) {
         console.log('[PAN Craft] Terminal server SKIPPED — owned by Carrier');
-      } else if (IS_USER_MODE) {
+      } else if (IS_USER_MODE && featureEnabled('terminal_server')) {
+        // Standalone/dev mode owns its own terminal WS server (no Carrier).
         (IS_DEV ? startDevTerminalServer(server) : startTerminalServer(server))
           .catch(e => console.error('[PAN] Terminal init error:', e));
+      } else if (IS_USER_MODE) {
+        // wearable: browser xterm surface off; pipe mode over HTTP still serves the phone.
+        console.log(`[PAN] Terminal WS server SKIPPED — profile ${PROFILE} (pipe mode over HTTP still serves the phone)`);
       } else {
         console.log('[PAN] Terminal server SKIPPED — service mode (no console)');
       }
