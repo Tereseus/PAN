@@ -389,6 +389,7 @@ class PanForegroundService : Service() {
         // Notification updater
         serviceScope.launch {
             serverClient.isConnected.collect { connected ->
+                lastConnected = connected
                 notificationManager?.notify(
                     Constants.NOTIFICATION_ID,
                     buildNotification(listening = sttEngine.enabled, connected = connected)
@@ -398,9 +399,16 @@ class PanForegroundService : Service() {
 
         // Permission prompt polling — check every 5 seconds, show Android notification
         startPermissionPolling()
+        // Intuition glance — keep the ongoing notification showing PAN's live read (30s)
+        startIntuitionPolling()
     }
 
     private var lastPermId: Long = 0
+
+    // Live intuition shown in the ongoing notification (lock-screen glance).
+    @Volatile private var lastConnected: Boolean = false
+    @Volatile private var intuitionSummary: String? = null
+    @Volatile private var intuitionFull: String? = null
 
     private fun startPermissionPolling() {
         serviceScope.launch {
@@ -415,6 +423,36 @@ class PanForegroundService : Service() {
                     lastPermId = latest.id
                     showPermissionNotification(latest)
                 } catch (_: Exception) {}
+            }
+        }
+    }
+
+    // Polls PAN's live situational read and folds it into the ongoing notification,
+    // so you can glance at your lock screen (no unlock) and see what PAN senses.
+    private fun startIntuitionPolling() {
+        serviceScope.launch {
+            while (isActive) {
+                try {
+                    val now = serverClient.api.getIntuitionCurrent().body()?.snapshot?.now
+                    if (now != null) {
+                        fun clean(s: String?) = s?.trim()?.takeIf { it.isNotEmpty() }
+                        intuitionSummary = listOfNotNull(clean(now.mood), clean(now.focus), clean(now.activity))
+                            .joinToString(" · ").ifEmpty { null }
+                        val lines = mutableListOf<String>()
+                        clean(now.activity)?.let { lines.add("Activity: $it") }
+                        clean(now.focus)?.let { lines.add("Focus: $it") }
+                        clean(now.mood)?.let { m -> lines.add("Mood: $m" + (clean(now.mood_detail)?.let { " — $it" } ?: "")) }
+                        clean(now.direction)?.let { lines.add("Direction: $it") }
+                        clean(now.need)?.let { lines.add("Need: $it") }
+                        clean(now.urgency)?.takeIf { !it.equals("normal", true) }?.let { lines.add("Urgency: $it") }
+                        intuitionFull = lines.joinToString("\n").ifEmpty { null }
+                        notificationManager?.notify(
+                            Constants.NOTIFICATION_ID,
+                            buildNotification(listening = sttEngine.enabled, connected = lastConnected)
+                        )
+                    }
+                } catch (_: Exception) {}
+                delay(30000)
             }
         }
     }
@@ -1727,9 +1765,10 @@ class PanForegroundService : Service() {
         statusParts.add(if (connected) "Server OK" else "Offline")
         val toggleLabel = if (listening) "Mute All" else "Unmute All"
 
-        return NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
+        val statusLine = statusParts.joinToString(" | ")
+        val builder = NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(statusParts.joinToString(" | "))
+            .setContentText(intuitionSummary ?: statusLine)   // collapsed lock-screen line = live intuition
             .setSmallIcon(if (listening) android.R.drawable.ic_btn_speak_now else android.R.drawable.ic_media_pause)
             .setOngoing(true)
             .setSilent(true)
@@ -1740,7 +1779,11 @@ class PanForegroundService : Service() {
                 Intent(this, PanForegroundService::class.java).apply { action = "STOP_TTS" },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             ))
-            .build()
+        // Expanded view = the full read PAN fused this tick + service status.
+        intuitionFull?.let {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(it + "\n\n· " + statusLine))
+        }
+        return builder.build()
     }
 
     private fun acquireWakeLock() {
