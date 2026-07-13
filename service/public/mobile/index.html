@@ -251,6 +251,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 <!-- Tabs — same widget names as desktop -->
 <div class="tabs" id="tab-bar">
   <div class="tab active" data-tab="chat">Chat</div>
+  <div class="tab" data-tab="intuition">🧠 Intuition</div>
   <div class="tab" data-tab="dashboards">Dashboards</div>
   <div class="tab" data-tab="status">Usage</div>
   <div class="tab" data-tab="alerts">Alerts</div>
@@ -302,6 +303,7 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 
 
 <!-- Widget pages — match desktop widget names -->
+<div id="intuition" class="page"></div>
 <div id="dashboards" class="page"></div>
 <div id="status" class="page"></div>
 <div id="alerts" class="page"></div>
@@ -341,8 +343,10 @@ let statusPollTimer = null;
 function loadTab(name) {
   // Stop status polling when leaving status tab
   if (name !== 'status' && statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+  if (name !== 'intuition' && _intuitionTabTimer) { clearInterval(_intuitionTabTimer); _intuitionTabTimer = null; }
   switch(name) {
     case 'chat': loadChat(); break;
+    case 'intuition': loadIntuitionTab(); if (!_intuitionTabTimer) _intuitionTabTimer = setInterval(loadIntuitionTab, 30000); break;
     case 'dashboards': loadDashboards(); break;
     case 'status': loadStatus(); if (!statusPollTimer) statusPollTimer = setInterval(loadStatus, 30000); break;
     case 'alerts': loadAlerts(); break;
@@ -2164,6 +2168,86 @@ async function uploadScreenshot(input) {
   } catch (e) {
     _shipLog('error', 'uploadScreenshot top-level threw: ' + (e?.message || String(e)) + ' stack=' + (e?.stack || '').slice(0, 300));
   }
+}
+
+// ── Intuition TAB — the dedicated, full-detail read (its own page) ────────
+let _intuitionTabTimer = null;
+async function loadIntuitionTab() {
+  const page = document.getElementById('intuition');
+  if (!page) return;
+  let snap = _lastIntuition;
+  try {
+    const r = await fetch(API + '/api/v1/intuition/current');
+    if (r.ok) { const d = await r.json(); if (d && d.ok && d.snapshot) { snap = d.snapshot; _lastIntuition = d.snapshot; } }
+  } catch {}
+  if (!snap || !snap.now) {
+    page.innerHTML = '<div class="card" style="margin:14px"><div style="color:var(--text2)">No read yet — PAN is still forming one. Check back in ~30s.</div></div>';
+    return;
+  }
+  const n = snap.now, sig = snap.signals || {}, pan = snap.pan || {}, meta = snap.meta || {};
+  const moodColor = m => { m = (m || '').toLowerCase(); return m === 'focused' ? 'var(--green)' : (m.includes('frustrat') || m.includes('stress') || m.includes('anx')) ? 'var(--red)' : (m === 'calm' || m === 'content') ? '#89dceb' : '#f9e2af'; };
+  const conf = typeof sig.confidence === 'number' ? Math.round(sig.confidence * 100) : null;
+  const age = snap.as_of ? Math.round((Date.now() - snap.as_of) / 1000) : null;
+  const chip = (t, c) => '<span style="display:inline-block;background:' + (c || 'var(--bg3)') + ';color:' + (c ? '#fff' : 'var(--text2)') + ';border-radius:10px;padding:2px 9px;font-size:11px;margin:0 5px 5px 0">' + esc(t) + '</span>';
+  const row = (label, val, color) => !val ? '' : '<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text2);min-width:74px;flex-shrink:0">' + label + '</span><span style="' + (color ? 'color:' + color + ';' : '') + 'word-break:break-word;flex:1">' + esc(val) + '</span></div>';
+  let h = '';
+  // Headline
+  h += '<div style="padding:16px 14px 6px">';
+  h += '<div style="font-size:19px;font-weight:700;line-height:1.25">' + esc(n.activity || '—') + '</div>';
+  h += '<div style="margin-top:6px;color:var(--text2)">';
+  if (n.mood) h += '<span style="font-weight:600;color:' + moodColor(n.mood) + '">' + esc(n.mood) + '</span> ';
+  if (n.where) h += '· ' + esc(n.where) + ' ';
+  if (conf !== null) h += '· ' + conf + '% confident';
+  h += '</div></div>';
+  // The read
+  h += '<div class="card" style="margin:8px 12px">';
+  h += row('focus', n.focus);
+  h += row('direction', n.direction);
+  h += row('need', n.need);
+  h += row('why', n.mood_detail, moodColor(n.mood));
+  h += row('read', n.assumption_detail || n.assumption);
+  if (n.last_heard) h += row('heard', '“' + n.last_heard + '”');
+  let m1 = '';
+  if (n.urgency) m1 += chip(n.urgency, /high|urgent/i.test(n.urgency) ? 'var(--red)' : '');
+  if (n.engagement) m1 += chip(n.engagement);
+  if (n.complexity) m1 += chip(n.complexity);
+  if (m1) h += '<div style="margin-top:8px">' + m1 + '</div>';
+  if (Array.isArray(n.recent_topics) && n.recent_topics.length) {
+    h += '<div style="margin-top:8px;color:var(--text2);font-size:12px">recent</div><div style="margin-top:5px">';
+    for (const t of n.recent_topics.slice(0, 10)) h += chip(t);
+    h += '</div>';
+  }
+  h += '</div>';
+  // Signals — what it reasoned from (the "make it more advanced" section)
+  h += '<div class="section-title" style="margin:14px 12px 4px">Signals · what it read</div><div class="card" style="margin:0 12px 8px">';
+  const sg = (label, val) => (val === null || val === undefined || val === '') ? '' : '<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0"><span style="color:var(--text2)">' + label + '</span><span style="text-align:right;word-break:break-word;flex:1">' + esc(String(val)) + '</span></div>';
+  h += sg('confidence', conf !== null ? conf + '%' : null);
+  h += sg('source', sig.device_source);
+  h += sg('events sampled', sig.events_sampled);
+  h += sg('chat sampled', sig.wrap_messages_sampled);
+  h += sg('terminal sampled', sig.terminal_messages_sampled);
+  h += sg('active apps', (sig.active_apps && sig.active_apps.length) ? sig.active_apps.join(', ') : 'none');
+  h += sg('sensors', (sig.sensors_active && sig.sensors_active.length) ? sig.sensors_active.join(', ') : 'none');
+  h += sg('screen', sig.screen_context || 'none');
+  h += sg('webcam', sig.webcam_context || 'none');
+  h += '</div>';
+  // PAN health — tidy status dots (fixes the overflow)
+  if (Array.isArray(pan.services) && pan.services.length) {
+    h += '<div class="section-title" style="margin:14px 12px 4px">PAN health</div><div class="card" style="margin:0 12px 8px"><div style="display:flex;flex-wrap:wrap;gap:6px">';
+    for (const s of pan.services) {
+      const st = (s.status || '').toLowerCase();
+      const c = st === 'running' ? 'var(--green)' : st === 'down' ? 'var(--red)' : st === 'degraded' ? '#f9e2af' : 'var(--text2)';
+      h += '<span style="display:inline-flex;align-items:center;gap:5px;background:var(--bg3);border-radius:8px;padding:3px 9px;font-size:11px"><span style="width:7px;height:7px;border-radius:50%;background:' + c + ';flex-shrink:0"></span>' + esc(s.name || '?') + '</span>';
+    }
+    h += '</div></div>';
+  }
+  // Footer
+  h += '<div style="padding:6px 14px 24px;color:var(--text2);font-size:10px;opacity:0.7">';
+  if (age !== null) h += 'updated ' + age + 's ago · trigger=' + esc(snap.trigger || '?');
+  if (meta.generator) h += ' · ' + esc(meta.generator);
+  if (meta.disclaimer) h += '<div style="margin-top:4px">' + esc(meta.disclaimer) + '</div>';
+  h += '</div>';
+  page.innerHTML = h;
 }
 
 // ── Intuition banner (#471) ──────────────────────────────────────────────
