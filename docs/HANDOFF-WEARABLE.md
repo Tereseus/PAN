@@ -81,10 +81,23 @@ Once wearable is the daily driver, wire the pendant firmware's frame+audio strea
 into PAN's capture (`/api/v1/vision` + `/api/v1/audio` or a new pendant endpoint)
 so intuition sees/hears live.
 
-### Also on the list (from Tereseus, not yet built)
-- **Per-device capture control** — extend the `/privacy` capture toggles to each
-  pan-client so a device's camera/mic can be killed to save battery (currently
-  the toggles govern the hub only).
+### Also on the list (from Tereseus)
+- **Per-device capture control** — PARTIALLY SHIPPED. `capture-consent.js` now
+  has device-aware consent (`isDeviceCaptureOn`/`setDeviceCaptureConsent`, key
+  `capture_<name>@<device_id>`, default ON). `GET /api/v1/capture` returns a
+  `devices[]` array (read from the `devices` DB table — the Craft's in-memory
+  client map is always empty), `POST /api/v1/capture/:name` takes an optional
+  `device_id`. `remote-screen-watcher.js` skips devices opted out. The phone
+  `/mobile` Sensors tab now shows a "Capture & Privacy" card: the hub's own
+  camera/screen/activity kill-switches (these WORK today) + per-device screen
+  toggles ("save battery"). Verified in prod: API round-trips, toggles persist,
+  card renders + fires the API. **What's left:** (1) the continuous remote
+  poller (`remote-screen-watcher`) is currently a **no-op in prod** — it runs in
+  the Craft (server.js:5682) where `getConnectedClients()` is empty, so per-device
+  screen throttling has no live target yet; the gate is correct and future-proof
+  for when capture is active. (2) push a `capture_control` command to the client
+  so it also refuses locally (defense-in-depth) — needs a client/pendant rollout.
+  (3) camera/mic per-device once clients/pendant expose those watchers (Step 4).
 
 ## Traps / gotchas (respect these)
 - **Route imports in `server.js` are boot-fatal** — gate the `app.use(...)` mount,

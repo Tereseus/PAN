@@ -5,6 +5,7 @@
 import { getConnectedClients, sendToClient } from './client-manager.js';
 import { analyzeImage } from './llm.js';
 import { upsertDevicePresence } from './intuition.js';
+import { isDeviceCaptureOn } from './capture-consent.js';
 import { spawn } from 'child_process';
 
 const INTERVAL_MS   = 60_000;
@@ -93,7 +94,10 @@ async function tick() {
   const clients = getConnectedClients().filter(c =>
     c.trusted &&
     c.online &&
-    Array.isArray(c.capabilities) && c.capabilities.includes('screenshot')
+    Array.isArray(c.capabilities) && c.capabilities.includes('screenshot') &&
+    // Per-device capture consent — user can turn a device off to save its
+    // battery. Defaults ON, so this only excludes devices explicitly opted out.
+    isDeviceCaptureOn(c.device_id, 'screen')
   );
 
   // Fire captures in parallel — each is independently guarded by inFlight
