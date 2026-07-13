@@ -193,7 +193,17 @@ KEEP + TURN-OFF. So gating (not deleting) is safest, and these need order:
 
 ## 6. Where we go from there
 
-### Step 1 — the `wearable` profile (reversible, no deletions)
+### Step 1 — the `wearable` profile ✅ SHIPPED (2026-07-13)
+`PAN_PROFILE=wearable` is live. Verified: dashboard `/v2/*` all 404, quality-log
+404, teams/runner 404; email/sensors/capture/incognito/sync/intuition/MCP all up;
+`/mobile` + `/privacy` kept; steward runs 9 services (classifier, claude-control,
+consolidation, embeddings, intuition, ollama, pan-server, tailscale, whisper).
+Prod `full` confirmed byte-identical after the swap. Tailscale promoted to
+wearable. **Atlas decided OFF** ("we don't lose anything, but do we need it? No")
+— it rides on the SvelteKit dashboard, which `wearable` doesn't serve.
+(Note: `/health` on :7777 is the super-carrier's, so it won't show `profile`;
+the craft boot log does.)
+
 Extend `profiles.js` with a third profile below `core`:
 - Does NOT mount the OFF routers/WS servers (terminal, tests, dev, runner,
   benchmark, quality-log, teams, browser, users) and does NOT serve the SvelteKit
