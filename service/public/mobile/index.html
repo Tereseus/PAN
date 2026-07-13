@@ -949,12 +949,72 @@ async function loadProjects() {
 }
 
 // ========== SENSORS ==========
+// A capture toggle switch (reuses the sensor slider markup). onCh is a JS
+// expression string invoked with `this.checked`.
+function captureSwitch(checked, onChExpr) {
+  let h = '<label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">';
+  h += '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="' + onChExpr + '" style="opacity:0;width:0;height:0">';
+  h += '<span style="position:absolute;inset:0;background:' + (checked ? 'var(--accent)' : 'var(--bg3)') + ';border-radius:12px;transition:0.2s"></span>';
+  h += '<span style="position:absolute;top:2px;left:' + (checked ? '22px' : '2px') + ';width:20px;height:20px;background:#fff;border-radius:50%;transition:0.2s"></span>';
+  h += '</label>';
+  return h;
+}
+
+function captureRow(label, sub, checked, onChExpr, locked) {
+  let h = '<div class="sensor-row"><span class="sensor-name">' + esc(label);
+  if (sub) h += ' <span style="font-size:11px;color:var(--text2)">' + esc(sub) + '</span>';
+  h += '</span>';
+  h += locked ? '<span style="font-size:11px;color:var(--text2)">locked</span>' : captureSwitch(checked, onChExpr);
+  h += '</div>';
+  return h;
+}
+
+// Toggle capture consent. deviceId null/'hub' → this machine's watcher;
+// otherwise a remote device's per-device consent.
+async function toggleCapture(name, enabled, deviceId) {
+  try {
+    const body = { enabled: enabled };
+    if (deviceId && deviceId !== 'hub') body.device_id = deviceId;
+    await fetch(API + '/api/v1/capture/' + encodeURIComponent(name), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  } catch (e) {}
+  setTimeout(loadSensors, 300); // re-read authoritative state
+}
+
 async function loadSensors() {
   const el = document.getElementById('sensors');
   try {
+    // ── Capture & Privacy: what is watching, and the kill-switches ──
+    let capHtml = '';
+    try {
+      const capRes = await fetch(API + '/api/v1/capture');
+      const cap = await capRes.json();
+      capHtml += '<div class="section-title">Capture &amp; Privacy · this device</div><div class="card">';
+      for (const f of (cap.features || [])) {
+        const sub = f.running ? 'on' : (f.enabled ? 'starting' : 'off');
+        capHtml += captureRow(f.label || f.name, sub,
+          f.enabled, 'toggleCapture(\'' + esc(f.name) + '\',this.checked,null)', f.env_locked);
+      }
+      capHtml += '</div>';
+      const devs = (cap.devices || []).filter(d => (d.features || []).length);
+      if (devs.length) {
+        capHtml += '<div class="section-title">Capture · other devices <span style="font-size:11px;color:var(--text2)">(save battery)</span></div><div class="card">';
+        for (const d of devs) {
+          for (const f of d.features) {
+            const sub = (d.online ? 'online' : 'offline') + ' · ' + f.name;
+            capHtml += captureRow(d.name, sub, f.enabled,
+              'toggleCapture(\'' + esc(f.name) + '\',this.checked,\'' + esc(d.device_id) + '\')', false);
+          }
+        }
+        capHtml += '</div>';
+      }
+    } catch (e) { /* capture plane optional — don't block sensors */ }
+
     const res = await fetch(API + '/api/v1/devices/list');
     const devices = await res.json();
-    let html = '';
+    let html = capHtml;
+    if (Array.isArray(devices) && devices.length) html += '<div class="section-title">Sensors</div>';
     for (const dev of devices) {
       const devName = dev.name || dev.device_name || dev.device_id || 'Device ' + dev.id;
       html += '<div class="sensor-device"><h3>' + esc(devName) + '</h3>';

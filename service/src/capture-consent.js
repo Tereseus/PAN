@@ -124,6 +124,46 @@ export function setCaptureConsent(name, on) {
   return { ok: true, name, enabled: on, running: safe(f.status) };
 }
 
+// ── Per-device capture consent ──────────────────────────────────────────────
+// The three watchers above run on THIS machine (the hub). Remote pan-clients
+// are captured on-demand by the hub — remote-screen-watcher.js polls every PC
+// with a `screenshot` capability for a screenshot every 60s. The user must be
+// able to turn that off per device (save that device's battery + privacy), so
+// we persist a per-device consent flag and gate the hub-side poller on it.
+//
+// Defaults ON so nothing changes until the user opts a device out. This is the
+// same control surface the pendant (Step 4) will plug into once it streams
+// frames/audio. Key shape: capture_<name>@<device_id>  (value "on" / "off").
+export const DEVICE_CAPTURE_FEATURES = ['screen'];
+
+function deviceCaptureKey(name, deviceId) { return `capture_${name}@${deviceId}`; }
+
+export function isDeviceCaptureOn(deviceId, name = 'screen') {
+  if (!deviceId) return true;
+  try {
+    const row = get('SELECT value FROM settings WHERE key = :k', { ':k': deviceCaptureKey(name, deviceId) });
+    if (row) {
+      const v = String(row.value).replace(/^"|"$/g, '');
+      if (v === 'off') return false;
+      if (v === 'on')  return true;
+    }
+  } catch {}
+  return true; // default ON — preserves prior always-poll behavior until opted out
+}
+
+export function setDeviceCaptureConsent(deviceId, name, on) {
+  if (!deviceId) throw new Error('device_id required');
+  if (!DEVICE_CAPTURE_FEATURES.includes(name)) throw new Error(`unknown device capture feature: ${name}`);
+  run('INSERT OR REPLACE INTO settings (key, value) VALUES (:k, :v)',
+      { ':k': deviceCaptureKey(name, deviceId), ':v': JSON.stringify(on ? 'on' : 'off') });
+  console.log(`[Capture] device ${deviceId} ${name} → ${on ? 'ON' : 'OFF'} (user consent)`);
+  // NOTE: the hub-side gate in remote-screen-watcher.js is the working lever
+  // (it simply stops asking that device for screenshots). Pushing a
+  // `capture_control` command to the client so it also refuses locally is a
+  // follow-up that lands with the client/pendant capture rollout.
+  return { ok: true, device_id: deviceId, name, enabled: on };
+}
+
 // Boot hook — start whichever captures should be on per resolved state.
 // Replaces the per-feature featureEnabled() gates in server.js for these three.
 export function applyCaptureConsentAtBoot() {
