@@ -65,8 +65,8 @@ const FEATURES = {
   lan_discovery:       ['full', 'wearable'],
   firewall_rule:       ['full', 'wearable'],
 
-  // ── browser dashboard UI — OFF in wearable (Claude Code + MCP replace it) ──
-  dashboard_ui:        ['full', 'core'],
+  // ── browser dashboard UI — kept ON in wearable per user (Atlas + widgets live here) ──
+  dashboard_ui:        ['full', 'core', 'wearable'],
 
   // ── browser xterm terminal (WS PTY server) — OFF in wearable ──
   // The dashboard's live shell surface: /ws/terminal PTY sessions, ScreenBuffer
