@@ -383,12 +383,25 @@ async function handleUnified(text, context) {
   // Only the explicit recall sniff bypasses the gate on the first pass.
   let memoryContext = '';
   if (RECALL_RE.test(text)) {
-    const memResults = await searchMemory(text, { limit: 5, caller: 'router' });
+    // #461: searchMemory stalls indefinitely when ollama/embeddings are degraded,
+    // freezing the whole voice turn past the phone's 30s stream cap (a complex 2nd
+    // question hung here and returned null/empty). Bound it — degrade to "answer
+    // without memory" instead of hanging.
+    let memResults = [];
+    try {
+      memResults = await Promise.race([
+        searchMemory(text, { limit: 5, caller: 'router' }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 2.5s')), 2500)),
+      ]);
+    } catch (e) {
+      memResults = [];
+      logStep(cmdId, 'memory_recall_gate', `recall search bailed (${e.message}) — degraded embeddings, answering without memory`);
+    }
     memoryContext = memResults.length > 0
       ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
       : '';
     dbg.recall_hit = memResults.length > 0;
-    logStep(cmdId, 'memory_recall_gate', `recall match — ${memResults.length} hits`);
+    if (memResults.length > 0) logStep(cmdId, 'memory_recall_gate', `recall match — ${memResults.length} hits`);
   } else {
     logStep(cmdId, 'memory_recall_gate', 'no recall match — skipping DB lookup');
   }
