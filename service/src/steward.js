@@ -254,6 +254,11 @@ const services = [
     bootOrder: 3,
     dependsOn: [],
     interval: null, // always-on
+    // Turned off 2026-07-31 per user — desktop dictation is unused and the two
+    // python workers (:7782/:7783) sat at ~4.3GB resident. "Turn off, don't
+    // delete": flip feature_toggles.whisper = true to bring it back.
+    toggle: 'whisper',
+    defaultEnabled: false,
     startFn: () => {
       const whisperScript = join(__dirname, 'whisper-server.py');
       // Whisper is spawned detached + unref'd so it survives Craft swaps.
@@ -1129,13 +1134,16 @@ async function healthCheck() {
   // The 'ollama' service entry uses healthCheck:'url' against getOllamaUrl().
   // This already works whether Ollama is local or on Mini PC — single source of truth.
 
-  // Log a heartbeat event
+  // Heartbeat — stored as a single upsert-able setting, NOT an events row.
+  // Appending one event per 60s cycle bloated the DB by ~90k StewardHeartbeat
+  // rows (pure telemetry, worthless for memory recall). Liveness readers now
+  // use the 'steward_heartbeat' setting (see server.js health check).
   try {
     const summary = services.filter(inProfile).map(s => `${s.id}:${s._status}`).join(',');
-    insert(`INSERT INTO events (session_id, event_type, data) VALUES (:sid, :type, :data)`, {
-      ':sid': 'steward',
-      ':type': 'StewardHeartbeat',
-      ':data': JSON.stringify({
+    run(`INSERT INTO settings (key, value, updated_at)
+         VALUES ('steward_heartbeat', :v, datetime('now','localtime'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, {
+      ':v': JSON.stringify({
         timestamp: Date.now(),
         services: services.filter(inProfile).map(s => ({
           id: s.id, status: s._status, lastCheck: s._lastCheck, lastError: s._lastError,
