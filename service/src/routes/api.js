@@ -583,15 +583,30 @@ router.post('/capture', async (req, res) => {
   }
 });
 
-// ── Slack bridge: scoped work-pc client <-> phone ────────────────────────
+// ── Slack bridge: scoped Slack client <-> phone ──────────────────────────────
 // Two narrow relays, BOTH Craft-side (swap-safe, no Carrier restart), reusing the
 // existing Carrier client-send relay — no client-manager.js change.
-//   /slack/inbound : the scoped 'work-slack' client POSTs each new inbound
+// The bridge device is named by PAN_SLACK_BRIDGE_DEVICE so the deployment's
+// machine name stays out of source.
+//   /slack/inbound : the scoped Slack client POSTs each new inbound
 //     Slack message; we push it to the phone as a `slack_notify` command so the
 //     phone raises a native reply notification.
 //   /slack/reply   : the phone POSTs a reply; we dispatch ONLY `slack_reply` to the
 //     scoped client (which runs slack-reply.js). This route can send NO other
 //     command type — the phone can trigger a Slack reply and nothing else.
+// Device id of the scoped client that actually talks to Slack. Deployment-specific,
+// so it is resolved at call time from env -> settings -> generic default, and never
+// baked into source. Read per call (not cached) so changing the setting takes effect
+// without a restart.
+function slackBridgeDevice() {
+  if (process.env.PAN_SLACK_BRIDGE_DEVICE) return process.env.PAN_SLACK_BRIDGE_DEVICE;
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'slack_bridge_device'");
+    if (row?.value) return row.value;
+  } catch { /* settings unavailable — fall through to default */ }
+  return 'slack-bridge';
+}
+
 function carrierRelay(payload, timeoutMs = 10000) {
   const carrierPort = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
   return fetch(`http://127.0.0.1:${carrierPort}/api/carrier/client-send`, {
@@ -645,7 +660,7 @@ router.post('/slack/reply', async (req, res) => {
   try {
     const { channelId, text } = req.body || {};
     if (!channelId || !text) return res.status(400).json({ ok: false, error: 'missing channelId or text' });
-    const relay = await carrierRelay({ device_id: 'work-slack', type: 'slack_reply', channelId, text, timeout_ms: 90000 }, 95000);
+    const relay = await carrierRelay({ device_id: slackBridgeDevice(), type: 'slack_reply', channelId, text, timeout_ms: 90000 }, 95000);
     const data = await relay.json().catch(() => ({}));
     if (relay.ok && data.ok) return res.json({ ok: true, result: data.result || null });
     return res.status(relay.status === 404 ? 503 : 500).json({ ok: false, error: data.error || `slack client unreachable (${relay.status})` });
