@@ -506,6 +506,152 @@ router.post('/vision', async (req, res) => {
   }
 });
 
+// Capture pipe — the phone's interactive photo (the IMAGE, not just the spoken
+// description). Previously the frame was analyzed by /vision and discarded; only
+// text survived. Here we PERSIST the image so it reaches the desktop two ways:
+//   1. As a real file under public/captures/ — the Claude Code agent can open it.
+//   2. As one image message on the Π system thread — it renders in the dashboard.
+// The single public/captures location is BOTH the served URL AND the desktop file
+// (intentional — no second copy). Best-effort: never 500 the phone; a failed
+// capture must not break the voice reply the phone already spoke.
+router.post('/capture', async (req, res) => {
+  try {
+    const { image_base64, caption, question, device_id, on_device } = req.body || {};
+    if (!image_base64) return res.status(400).json({ error: 'missing image_base64' });
+
+    // service/src/routes → ../../public/captures = service/public/captures,
+    // served at /captures/* by the root express.static in server.js.
+    const CAPTURES_DIR = join(__dirname, '..', '..', 'public', 'captures');
+    if (!existsSync(CAPTURES_DIR)) mkdirSync(CAPTURES_DIR, { recursive: true });
+    const ts = Date.now();
+    const filename = `cap_${ts}.jpg`;
+    const localPath = join(CAPTURES_DIR, filename);
+    const imageUrl = `/captures/${filename}`;
+    writeFileSync(localPath, Buffer.from(image_base64, 'base64'));
+
+    // One image message on the Π thread — same INSERT/crypto-id shape as the
+    // phone-turn persist in /api/v1/query, but body_type='image' and metadata
+    // carries the served URL + on-desktop path so both surfaces can find it.
+    try {
+      const crypto = await import('crypto');
+      const now = Date.now();
+      const PAN_THREAD = 'thread-pan-system';
+      const msgId = 'cmsg_' + crypto.randomBytes(8).toString('hex');
+      const phoneSource = device_id ? `phone-${device_id}` : 'phone';
+      db.prepare(`
+        INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
+        VALUES (?, ?, 'self', ?, 'image', ?, ?)
+      `).run(msgId, PAN_THREAD, (caption && caption.trim()) ? caption : 'Photo', JSON.stringify({
+        source: phoneSource,
+        imageUrl,
+        localPath,
+        caption: caption || null,
+        question: question || null,
+      }), now);
+      db.prepare(`UPDATE chat_threads SET updated_at = ? WHERE id = ?`).run(now, PAN_THREAD);
+    } catch (e) {
+      console.warn('[/api/v1/capture] chat-thread persist failed:', e.message);
+    }
+
+    // If the photo was analyzed ON-DEVICE (Nano), /api/v1/vision was never hit,
+    // so no VisionAnalysis memory event was written. Write it here — matching the
+    // server path — so on-device observations are embedded + recallable, not just
+    // spoken and shown. (Server-analyzed photos already logged it in /vision;
+    // on_device gates this so we never double-log.)
+    if (on_device) {
+      try {
+        insertEvent(`vision-${ts}`, 'VisionAnalysis', JSON.stringify({
+          question: question || null,
+          description: (caption || '').slice(0, 500),
+          image_file: filename,
+          image_url: imageUrl,
+          image_size: image_base64.length,
+          source: device_id ? `phone-${device_id}` : 'phone',
+          analyzed_on_device: true,
+          timestamp: ts,
+        }), req.user?.id);
+      } catch (e) {
+        console.warn('[/api/v1/capture] VisionAnalysis event failed:', e.message);
+      }
+    }
+
+    console.log(`[PAN Capture] Saved ${filename} (${image_base64.length} b64 chars)`);
+    res.json({ ok: true, url: imageUrl, localPath });
+  } catch (err) {
+    console.warn('[/api/v1/capture] failed:', err.message);
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── Slack bridge: scoped work-pc client <-> phone ────────────────────────
+// Two narrow relays, BOTH Craft-side (swap-safe, no Carrier restart), reusing the
+// existing Carrier client-send relay — no client-manager.js change.
+//   /slack/inbound : the scoped 'work-slack' client POSTs each new inbound
+//     Slack message; we push it to the phone as a `slack_notify` command so the
+//     phone raises a native reply notification.
+//   /slack/reply   : the phone POSTs a reply; we dispatch ONLY `slack_reply` to the
+//     scoped client (which runs slack-reply.js). This route can send NO other
+//     command type — the phone can trigger a Slack reply and nothing else.
+function carrierRelay(payload, timeoutMs = 10000) {
+  const carrierPort = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
+  return fetch(`http://127.0.0.1:${carrierPort}/api/carrier/client-send`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs),
+  });
+}
+// The phone is NOT a pan-client and has no working push channel (its only live
+// server->phone path is polling, same as permissions/intuition). So /slack/inbound
+// ENQUEUES and the phone drains via GET /slack/pending on its ~5s poll. Single global
+// FIFO on purpose: the phone polls with a device id that never matches the server's
+// stored phone hostname, and this is a single-phone bridge, so per-device keying would
+// silently drop everything. Seq is seeded from the clock so a Craft swap (which resets
+// this module) still mints ids higher than the phone's last-seen high-water mark.
+let slackQueue = [];
+let slackSeq = Date.now();
+router.post('/slack/inbound', async (req, res) => {
+  try {
+    const { message } = req.body || {};
+    if (!message || !message.channelId) return res.status(400).json({ ok: false, error: 'missing message.channelId' });
+    const note = {
+      id: ++slackSeq, type: 'slack', channelId: message.channelId, channel: message.channel || null,
+      sender: message.sender || 'Slack', text: message.text || '',
+      kind: message.kind || null, received: message.received || null,
+    };
+    slackQueue.push(note);
+    if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);   // bound backlog
+    console.log(`[/slack/inbound] queued #${note.id} ${note.sender}: ${(note.text || '').slice(0, 50)}`);
+    res.json({ ok: true, queued: note.id });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+// Generic PAN notification enqueue — meeting reminders (and anything else that used to
+// go to ntfy) POST here with a type. Shares the same queue as slack; the phone drains it
+// and renders by type ('slack' = reply notification, 'meeting'/other = plain notification).
+router.post('/notify/inbound', (req, res) => {
+  try {
+    const { type = 'info', title = 'PAN', body = '', data = null } = req.body || {};
+    const note = { id: ++slackSeq, type, title: String(title).slice(0, 200), body: String(body).slice(0, 500), data };
+    slackQueue.push(note);
+    if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);
+    console.log(`[/notify/inbound] queued #${note.id} [${type}] ${title}: ${String(body).slice(0, 50)}`);
+    res.json({ ok: true, queued: note.id });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+// Phone drains ALL pending PAN notifications every ~5s (slack + meeting + …).
+router.get('/slack/pending', (req, res) => {
+  const notes = slackQueue; slackQueue = [];
+  res.json({ ok: true, notifications: notes });
+});
+router.post('/slack/reply', async (req, res) => {
+  try {
+    const { channelId, text } = req.body || {};
+    if (!channelId || !text) return res.status(400).json({ ok: false, error: 'missing channelId or text' });
+    const relay = await carrierRelay({ device_id: 'work-slack', type: 'slack_reply', channelId, text, timeout_ms: 90000 }, 95000);
+    const data = await relay.json().catch(() => ({}));
+    if (relay.ok && data.ok) return res.json({ ok: true, result: data.result || null });
+    return res.status(relay.status === 404 ? 503 : 500).json({ ok: false, error: data.error || `slack client unreachable (${relay.status})` });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // Recall — smart conversation search. Haiku extracts keywords, SQL pre-filters, Haiku summarizes.
 // Searches ALL event types: RouterCommand (Q&A), PhoneAudio (voice), UserPromptSubmit (terminal prompts), VisionAnalysis.
 router.post('/recall', async (req, res) => {
@@ -970,12 +1116,40 @@ router.post('/query', async (req, res) => {
     if (typeof sensors === 'string') {
       try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; }
     }
+
+    // Conversation-memory guarantee (server-side). The phone SHOULD send `context`,
+    // but the plain voice path sends null → cold prompt: PAN forgets its own last
+    // reply and contradicts itself a turn later. This is the SAME failure /chat hit
+    // and fixed (see the conversation_history builder above); the phone /query path
+    // never got it. Fix at the source, not the client: if no usable history came in,
+    // rebuild it from the last turns on the Π thread (where every phone turn is
+    // persisted). Device-agnostic — the pendant gets conversation memory for free,
+    // and it's one continuous thread across phone/pendant/desktop. 30-min recency
+    // window so an ongoing chat stays connected but a genuinely new one starts fresh.
+    let conversation_history = context;
+    if (!conversation_history || String(conversation_history).trim().length < 10) {
+      try {
+        const since = Date.now() - 30 * 60 * 1000;
+        const rows = db.prepare(`
+          SELECT sender_id, body FROM chat_messages
+          WHERE thread_id = 'thread-pan-system' AND body_type = 'text' AND created_at > ?
+          ORDER BY created_at DESC LIMIT 16
+        `).all(since);
+        if (rows.length > 0) {
+          conversation_history = rows.reverse().map(r => {
+            const who = r.sender_id === 'self' ? 'You' : 'PAN';
+            return `${who}: ${String(r.body || '').slice(0, 400)}`;
+          }).join('\n');
+        }
+      } catch (e) { console.warn('[/query] conversation-history fallback failed:', e?.message); }
+    }
+
     const result = await route(text, {
       source: device_id ? `phone-${device_id}` : 'phone',
       device_id,
       intent_hint,
       _commandId: cmdId,
-      conversation_history: context,
+      conversation_history,
       sensors: parsedSensors
     });
 
@@ -1242,11 +1416,33 @@ router.post('/query/stream', async (req, res) => {
   try {
     const { routeStream } = await import('../router.js');
     const deviceId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
+
+    // Same server-side conversation-memory guarantee as /query (see there): rebuild
+    // the thread from the Π thread when the client sends no usable history, so the
+    // streaming voice path is never a cold prompt either.
+    let convoHistory = context;
+    if (!convoHistory || String(convoHistory).trim().length < 10) {
+      try {
+        const since = Date.now() - 30 * 60 * 1000;
+        const rows = db.prepare(`
+          SELECT sender_id, body FROM chat_messages
+          WHERE thread_id = 'thread-pan-system' AND body_type = 'text' AND created_at > ?
+          ORDER BY created_at DESC LIMIT 16
+        `).all(since);
+        if (rows.length > 0) {
+          convoHistory = rows.reverse().map(r => {
+            const who = r.sender_id === 'self' ? 'You' : 'PAN';
+            return `${who}: ${String(r.body || '').slice(0, 400)}`;
+          }).join('\n');
+        }
+      } catch (e) { console.warn('[/query/stream] conversation-history fallback failed:', e?.message); }
+    }
+
     for await (const event of routeStream(text, {
       source: deviceId ? `phone-${deviceId}` : 'phone',
       device_id: deviceId,
       intent_hint,
-      conversation_history: context,
+      conversation_history: convoHistory,
       sensors: parsedSensors,
       org_id: req.org_id,
     })) {
