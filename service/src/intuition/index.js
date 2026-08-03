@@ -885,18 +885,19 @@ function _classifyModels() {
   try {
     const cloud = getModelForPurpose('reasoning_cloud');
     const local = getModelForPurpose('chat_local');
-    // Strip the @device suffix from provider names ("ollama@minipc"
-    // → "ollama") so the dispatcher in llm.js routes via getOllamaUrl()
-    // for any local Ollama instance.
+    // Cloud (Cerebras reasoning_cloud) FIRST — it's the smart model and intuition
+    // classification wants that quality. Local Ollama is only the fallback if the
+    // cloud call fails. Strip the @device suffix from provider names
+    // ("ollama@minipc" → "ollama") so the dispatcher in llm.js routes via
+    // getOllamaUrl() for any local Ollama instance.
     if (cloud) refs.push(`${cloud.provider.split('@')[0]}:${cloud.model}`);
     if (local) refs.push(`ollama:${local.model}`);
   } catch {}
   // Last-resort backstop only if the registry table isn't initialised yet.
-  // Use the same model names that ship in the seeded model_selections rows
-  // (db.js seed): zai-glm-4.7 is the current reasoning_cloud default, qwen3:4b
-  // is chat_local. Previously hardcoded `cerebras:qwen-3-235b` which was
-  // retired by Cerebras on 2026-05-27 — every fresh Craft that hit this
-  // backstop before db.js seeded the rows would 404 forever.
+  // cerebras:zai-glm-4.7 (cloud) tried first, qwen3:4b (local) as fallback.
+  // Previously hardcoded `cerebras:qwen-3-235b` which was retired by Cerebras
+  // on 2026-05-27 — every fresh Craft that hit this backstop before db.js
+  // seeded the rows would 404 forever.
   if (refs.length === 0) return ['cerebras:zai-glm-4.7', 'ollama:qwen3:4b'];
   return refs;
 }

@@ -1306,9 +1306,9 @@ router.get('/api/sessions', (req, res) => {
 });
 
 // DELETE /dashboard/api/events/:id
-router.delete('/api/events/:id', (req, res) => {
+router.delete('/api/events/:id', (req, res, next) => {
   const id = parseInt(req.params.id);
-  if (!id) return res.status(400).json({ error: 'invalid id' });
+  if (!id) return next(); // non-numeric (e.g. "bulk") — fall through to /api/events/bulk
 
   const existing = getScoped(req, `SELECT id FROM events WHERE id = :id AND org_id = :org_id`, { ':id': id });
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -2112,6 +2112,15 @@ const ALERT_TYPES = {
   context_bloat:        { label: 'Context Bloat',        category: 'usage',     defaultSeverity: 'warning',  source: 'hooks',    description: 'CLAUDE.md or injected context exceeds size threshold — burns tokens every message' },
   high_burn_rate:       { label: 'High Burn Rate',       category: 'usage',     defaultSeverity: 'warning',  source: 'hooks',    description: 'Session is consuming tokens faster than expected per message' },
   dashboard_render:     { label: 'Dashboard Render',     category: 'ui',        defaultSeverity: 'warning',  source: 'dashboard-render-health', description: 'A dashboard widget reported state=empty/error/stale for too long (L3 of self-heal stack)' },
+  ai_backend_degraded:  { label: 'AI Backend Degraded',  category: 'service',   defaultSeverity: 'critical', source: 'scout',    description: 'A configured cloud model (e.g. voice reasoning_cloud) is no longer in the provider\'s live model list — retired/404' },
+  vision_failed:        { label: 'Vision Analysis Failed', category: 'service',  defaultSeverity: 'warning',  source: 'vision',   description: 'A user photo got no answer — the mini PC Ollama vision model was unreachable/too slow and no cloud vision fallback (Claude/Gemini) was available' },
+  voice_failed:         { label: 'Voice Turn Failed',     category: 'service',   defaultSeverity: 'warning',  source: 'router',   description: 'A voice/router turn could not be answered — all AI backends (Cerebras → Claude → local Ollama) failed to produce a response' },
+  service_down:         { label: 'Service Down',          category: 'service',   defaultSeverity: 'critical', source: 'steward',  description: 'A monitored service failed its health check and transitioned to DOWN — includes the mini PC Ollama going unreachable, which underlies vision/embeddings/intuition' },
+  memory_critical:      { label: 'Memory Critical',       category: 'resource',  defaultSeverity: 'critical', source: 'server',   description: 'Craft heap exceeded the critical threshold — risk of GC stalls / OOM' },
+  memory_high:          { label: 'Memory High',           category: 'resource',  defaultSeverity: 'warning',  source: 'steward',  description: 'Process RSS is elevated — worth watching before it becomes critical' },
+  memory_warning:       { label: 'Memory Warning',        category: 'resource',  defaultSeverity: 'warning',  source: 'server',   description: 'Craft heap crossed the warning threshold' },
+  client_restart_failed:{ label: 'Client Restart Failed', category: 'service',   defaultSeverity: 'warning',  source: 'client',   description: 'A remote pan-client device could not be restarted after going unreachable' },
+  smart_steward:        { label: 'Smart Steward',         category: 'service',   defaultSeverity: 'warning',  source: 'smart-steward', description: 'The Smart Steward flagged a concern about a service or subsystem' },
 };
 
 // GET /dashboard/api/alerts/types — registry of all known alert types (for dropdowns)
