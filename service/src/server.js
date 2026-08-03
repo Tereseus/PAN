@@ -566,9 +566,10 @@ app.get('/api/system-check', async (req, res) => {
 
   // 4. Steward (check for recent heartbeat)
   try {
-    const hb = get("SELECT created_at FROM events WHERE event_type = 'StewardHeartbeat' ORDER BY id DESC LIMIT 1");
-    if (hb) {
-      const age = Date.now() - new Date(hb.created_at).getTime();
+    const hb = get("SELECT value FROM settings WHERE key = 'steward_heartbeat'");
+    const ts = hb ? (JSON.parse(hb.value).timestamp || 0) : 0;
+    if (ts) {
+      const age = Date.now() - ts;
       checks.steward = { ok: age < 120000, status: age < 120000 ? 'Running' : 'Stale', last_heartbeat_ms: age };
     } else {
       checks.steward = { ok: false, status: 'No Heartbeats' };
@@ -5838,7 +5839,7 @@ function start() {
         //     embeddings endpoint).
         if (process.env.PAN_DISABLE_EMBEDDINGS_BACKFILL !== '1') {
           setTimeout(() => {
-            backfillEmbeddings('main')
+            backfillEmbeddings('main', 2)
               .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
               .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
           }, 90_000);
