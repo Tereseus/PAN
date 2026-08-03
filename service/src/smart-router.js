@@ -200,7 +200,7 @@ export function pickDevice(action_type, devices, naturalHint = '') {
     }
   }
 
-  // Check aliases (user may have named devices: "projector" → work-pc)
+  // Check aliases (user may have named devices: "projector" → some-pc)
   if (naturalHint) {
     const words = hintLower.split(/\s+/);
     for (const word of words) {

@@ -958,8 +958,8 @@ app.use('/api/v1/capture', captureRouter);
 // monitoring surfaces + renders them on the phone. See routes/dashboards.js.
 app.use('/api/v1/dashboards', dashboardsRouter);
 
-// ServiceNow assist loop — DRAFTING BRAIN only (PAN never sends; the work-pc
-// dashboard sends on the user's click). Reverse-push: work-pc's watcher POSTs
+// ServiceNow assist loop — DRAFTING BRAIN only (PAN never sends; the bridge
+// dashboard sends on the user's click). Reverse-push: the bridge watcher POSTs
 // a Slack conversation, gets a drafted reply back. Stateless. Body:
 // {channel, recent:[{sender,text}]} or {channel, sender, text}. Returns {ok, draft, skip}.
 app.post('/api/v1/sn-loop/draft', async (req, res) => {
