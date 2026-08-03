@@ -755,6 +755,7 @@ setTimeout(() => {
 // All event inserts should go through this function.
 // Handles: insert + FTS indexing. Anonymization is available on export (raw data stays in encrypted DB).
 import { anonymize, anonymizeEventData } from './anonymizer.js';
+import { NEVER_STORE, NEVER_EMBED } from './event-filters.js';
 
 // --- Incognito state check ---
 // Lazy-loaded to avoid circular imports (incognito.js imports from db.js).
@@ -770,6 +771,8 @@ function _checkIncognito(userId) {
 }
 
 function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_personal', security = {}) {
+  // Pure telemetry that nothing reads — don't persist it at all (was bloating the DB).
+  if (NEVER_STORE.has(eventType)) return null;
   const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
 
   // Security fields with safe defaults
@@ -816,7 +819,10 @@ function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_person
   // becomes semantically searchable. Lazy import to avoid a circular ESM
   // dependency between db.js and memory-search.js (which imports db-registry,
   // which imports db.js). The dynamic import is cached after first call.
-  import('./memory-search.js').then(m => m.indexEventForSearch('main', eventId)).catch(() => {});
+  // Skip vectorizing pure telemetry — it's noise in semantic recall and wastes embed time.
+  if (!NEVER_EMBED.has(eventType)) {
+    import('./memory-search.js').then(m => m.indexEventForSearch('main', eventId)).catch(() => {});
+  }
   return eventId;
 }
 
