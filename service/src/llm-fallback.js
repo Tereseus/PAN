@@ -79,6 +79,17 @@ function _buildDefaultChain(kind) {
 // configures an absurd 10-entry chain.
 const MAX_ATTEMPTS = 3;
 
+// First-token watchdog for the STREAMING voice path. When the primary cloud
+// backend (Cerebras) accepts the connection (HTTP 200) but then stalls without
+// emitting a token — the field symptom of `token_quota_exceeded` / 429
+// rate-limiting starving the account — we abort the attempt after this many ms
+// and fall through to the next tier. Sized so a stall + one backup attempt still
+// fit inside the phone's 30s stream cap (a healthy Cerebras first token lands in
+// <1s). Applied to cerebras attempts ONLY (see askAIStreamWithFallback): for the
+// non-streaming backends the first `yield` is the COMPLETE answer and legitimately
+// takes longer than this window (CPU Ollama inference / SDK subprocess spin-up).
+const FIRST_TOKEN_TIMEOUT_MS = 7000;
+
 // Degraded-event sliding window — fire `pan_backend_degraded` when the primary
 // fails this many times in this window. Drives #468 (phone health banner).
 const DEGRADED_WINDOW_MS  = 10 * 60 * 1000;
@@ -345,14 +356,59 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
 
     // Try this backend. Buffer the first chunk before yielding so a connect-time
     // failure can fall back without the consumer seeing a half-stream.
+    //
+    // Per-attempt AbortController (fast voice failover). Lets the first-token
+    // watchdog abort THIS backend's in-flight fetch without touching sibling
+    // attempts, while still forwarding the caller's external cancel (user "stop"
+    // / new utterance) down to the underlying stream.
+    const attemptController = new AbortController();
+    let fwdAbort = null;
+    if (externalSignal) {
+      if (externalSignal.aborted) attemptController.abort();
+      else {
+        fwdAbort = () => { try { attemptController.abort(); } catch {} };
+        externalSignal.addEventListener('abort', fwdAbort, { once: true });
+      }
+    }
+
+    // First-token watchdog — cerebras (true streaming) attempts only. See the
+    // FIRST_TOKEN_TIMEOUT_MS comment: a 429 already fails over on its own (the
+    // fetch rejects fast, before the watchdog fires), so this only rescues the
+    // "200 then stall" case that used to hang the phone the full 30s.
+    const firstTokenWatchdog = String(model).startsWith('cerebras:');
+    const firstTokenDeadline = Date.now() + FIRST_TOKEN_TIMEOUT_MS;
+
     let yieldedAny = false;
     try {
-      const gen = askAIStream(prompt, { ...passthrough, caller, model, signal: externalSignal });
+      const gen = askAIStream(prompt, { ...passthrough, caller, model, signal: attemptController.signal });
       // Manual iteration so we can detect connect-time failure vs mid-stream.
       while (true) {
         let next;
         try {
-          next = await gen.next();
+          if (firstTokenWatchdog && !yieldedAny) {
+            // Race the first token against the watchdog deadline. On timeout,
+            // abort the attempt so the underlying Cerebras fetch unwinds, then
+            // throw an AbortError the catch below classifies as retriable timeout
+            // → advance to the next backend tier.
+            const nextP = gen.next();
+            nextP.catch(() => {}); // swallow the post-abort rejection we abandon
+            let wdTimer = null;
+            const watchP = new Promise((_, reject) => {
+              wdTimer = setTimeout(() => {
+                try { attemptController.abort(); } catch {}
+                const e = new Error(`Cerebras first-token timeout ${FIRST_TOKEN_TIMEOUT_MS}ms`);
+                e.name = 'AbortError';
+                reject(e);
+              }, Math.max(0, firstTokenDeadline - Date.now()));
+            });
+            try {
+              next = await Promise.race([nextP, watchP]);
+            } finally {
+              clearTimeout(wdTimer);
+            }
+          } else {
+            next = await gen.next();
+          }
         } catch (err) {
           // If nothing yielded yet, classify and maybe fall back.
           if (!yieldedAny) {
@@ -391,6 +447,12 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
     } catch (err) {
       // Either rethrown from inside or thrown by external code (e.g. non-retriable)
       throw err;
+    } finally {
+      // Detach the forwarded-abort listener so listeners don't accumulate across
+      // chain iterations (and so a later external abort can't fire a stale one).
+      if (externalSignal && fwdAbort) {
+        try { externalSignal.removeEventListener('abort', fwdAbort); } catch {}
+      }
     }
   }
 

@@ -1593,6 +1593,34 @@ function extractResponseField(buf) {
   return { text, done: false };
 }
 
+// De-dupe latch for voice/router-turn failure alerts. When every AI backend
+// cascade-fails (Cerebras → Claude → local Ollama all error), routeStream still
+// yields a canned reply so the phone isn't silent — but that failure was
+// previously invisible. Raise ONE alert, suppressing duplicates within a
+// 5-minute window; a turn that streams output clears the latch so the next
+// outage alerts immediately. Modelled on scout.js's _lastReasoningCloudAlertModel.
+let _lastVoiceAlertAt = 0;
+const VOICE_ALERT_WINDOW_MS = 5 * 60 * 1000;
+
+async function _raiseVoiceAlert(reason, source) {
+  const now = Date.now();
+  if (now - _lastVoiceAlertAt < VOICE_ALERT_WINDOW_MS) return; // de-dupe
+  _lastVoiceAlertAt = now;
+  try {
+    // Lazy import — routes/dashboard.js imports router.js indirectly, so a
+    // top-level import would be a circular dependency.
+    const { createAlert } = await import('./routes/dashboard.js');
+    createAlert({
+      alert_type: 'voice_failed',
+      severity: 'warning',
+      title: 'Voice turn failed — all AI backends errored',
+      detail: `A ${source || 'voice'} turn could not be answered: every configured backend (Cerebras → Claude → local Ollama) failed to produce a response. Error: ${reason}. PAN replied with a fallback message.`,
+    });
+  } catch (e) {
+    console.warn('[routeStream] Could not raise voice_failed alert:', e.message);
+  }
+}
+
 export async function* routeStream(text, context = {}) {
   // Batch 4 (#986): every `done` emit gets a prosody plan derived from
   // `result.importance`. Wrap once, use everywhere — keeps the diff small
@@ -1627,7 +1655,22 @@ export async function* routeStream(text, context = {}) {
   // conversation never touches FTS5/vector; only explicit recall sniff does.
   let memoryContext = '';
   if (RECALL_RE.test(text)) {
-    const memResults = await searchMemory(text, { limit: 5, caller: 'router-stream' });
+    // #461: bound the recall search on the streaming voice path — a degraded /
+    // stalled ollama (e.g. the embedding backfill loading the Mini PC) makes
+    // searchMemory hang, which freezes the whole voice turn BEFORE the first
+    // token, past the phone's 30s stream cap (empty body, utterance re-sent).
+    // Mirror handleUnified's guard: race a 2.5s timeout and degrade to
+    // "answer without memory" instead of hanging.
+    let memResults = [];
+    try {
+      memResults = await Promise.race([
+        searchMemory(text, { limit: 5, caller: 'router-stream' }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 2.5s')), 2500)),
+      ]);
+    } catch (e) {
+      memResults = [];
+      console.warn(`[routeStream] recall search bailed (${e.message}) — degraded embeddings, answering without memory`);
+    }
     memoryContext = memResults.length > 0
       ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
       : '';
@@ -1706,8 +1749,11 @@ ${memoryContext}`;
       }
       if (done) break;
     }
+    if (fullBuf) _lastVoiceAlertAt = 0; // stream produced output — backends healthy, re-arm
   } catch (e) {
     console.error('[routeStream] LLM error:', e.message);
+    // Surface the broken voice path in the Alerts panel (de-duped, fire-and-forget).
+    _raiseVoiceAlert(e.message, context.source);
     // Always yield a response — silence on the phone means the user thinks PAN is broken
     yield { type: 'done', result: withProsody({ intent: 'query', response: "Sorry, I ran into a problem thinking that through. Try again.", importance: 0.5 }) };
     return;
@@ -1724,7 +1770,18 @@ ${memoryContext}`;
       // which misses conversations/events and chokes on stop words.
       if (parsed.intent === 'memory' && (parsed.action === 'recall' || parsed.action === 'list')) {
         const searchTerm = parsed.content || text;
-        const hits = await searchMemory(searchTerm, { limit: 10, caller: 'routeStream' });
+        // #461: same 2.5s bound as the recall pre-gate above — never let a
+        // stalled ollama embedding hang the post-classification recall path.
+        let hits = [];
+        try {
+          hits = await Promise.race([
+            searchMemory(searchTerm, { limit: 10, caller: 'routeStream' }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 2.5s')), 2500)),
+          ]);
+        } catch (e) {
+          hits = [];
+          console.warn(`[routeStream] recall search bailed (${e.message}) — degraded embeddings, answering without memory`);
+        }
         let recallResponse;
         if (hits.length === 0) {
           recallResponse = `I don't have anything saved about that.`;

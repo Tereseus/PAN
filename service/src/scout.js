@@ -7,7 +7,7 @@
 // Philosophy: PAN is a compilation of the best tools available.
 // All we do is take what they create and put it into PAN.
 
-import { insert, all, get, run } from './db.js';
+import { insert, all, get, run, getModelForPurpose, setModelForPurpose } from './db.js';
 import { claude } from './claude.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -716,7 +716,88 @@ async function scanProviderModels() {
       console.warn(`[PAN Scout] Provider ${provider} scan failed: ${e.message}`);
     }
   }
+  // We just refreshed the live model lists — this is the one moment we KNOW
+  // whether the configured voice model still exists. Piggyback the health
+  // check here (no extra API calls, no new polling loop). Isolated so a check
+  // failure never affects the scan result the callers depend on.
+  try { await checkReasoningCloudHealth(); }
+  catch (e) { console.warn('[PAN Scout] reasoning_cloud health check failed:', e.message); }
   return summary;
+}
+
+// ── Voice / reasoning-cloud model health ─────────────────────────────────────
+// The voice path resolves its model from model_selections.reasoning_cloud. If
+// that model gets retired by the provider (e.g. Cerebras dropped qwen-3-235b on
+// 2026-05-27) it 404s on EVERY voice prompt — and nothing noticed before this
+// check existed, because Steward only supervises processes, not cloud-model
+// health. So: compare the configured reasoning_cloud model against the
+// freshly-scanned live list and, if it's gone, raise a DEGRADED alert and
+// self-heal to a live model.
+//
+// Replacement preference — all confirmed live on Cerebras free tier as of
+// 2026-07: gpt-oss-120b (the current voice default), then zai-glm-4.7, then
+// gemma-4-31b. Falls back to any live model if none of those are present.
+const REASONING_CLOUD_PREFERRED = ['gpt-oss-120b', 'zai-glm-4.7', 'gemma-4-31b'];
+let _lastReasoningCloudAlertModel = null; // de-dupe: don't re-alert the same retired model on every scan
+
+async function checkReasoningCloudHealth() {
+  let sel;
+  try { sel = getModelForPurpose('reasoning_cloud'); } catch { return; }
+  if (!sel || !sel.provider || !sel.model) return;
+
+  // Only providers we actually scan have a trustworthy live list. Strip any
+  // "@device" suffix (cloud providers don't use it, but be defensive).
+  const provider = String(sel.provider).split('@')[0];
+  if (!PROVIDER_ENDPOINTS[provider]) return;
+
+  const live = getKnownProviderModels(provider);
+  if (!live) return;             // never scanned / empty response — no info, don't false-alarm
+  if (live.has(sel.model)) {     // healthy — clear any prior de-dupe latch
+    _lastReasoningCloudAlertModel = null;
+    return;
+  }
+
+  // Configured voice model is NOT in the live list → retired / 404.
+  const retired = sel.model;
+  console.error(`[PAN Scout] DEGRADED: reasoning_cloud model "${provider}:${retired}" is not in ${provider}'s live model list — voice path will 404 until switched.`);
+
+  // Pick a live replacement, preferring gpt-oss-120b.
+  let replacement = REASONING_CLOUD_PREFERRED.find(m => live.has(m));
+  if (!replacement) replacement = [...live].sort()[0] || null; // deterministic last resort
+
+  // Self-heal via the existing helper (idempotent: current model isn't live,
+  // so replacement is always different from it).
+  let switched = false;
+  if (replacement && replacement !== retired) {
+    switched = setModelForPurpose('reasoning_cloud', provider, replacement, {
+      notes: `Auto-switched by Scout: "${retired}" left ${provider}'s live model list on ${new Date().toISOString().slice(0, 10)}`,
+    });
+    if (switched) console.log(`[PAN Scout] Self-heal: reasoning_cloud ${provider}:${retired} → ${provider}:${replacement}`);
+    else console.warn(`[PAN Scout] Self-heal FAILED: could not switch reasoning_cloud off retired ${provider}:${retired}`);
+  }
+
+  // Raise a DEGRADED alert (de-duped per retired model so we don't spam the
+  // panel on every 6h scan while it sits in a bad state).
+  if (_lastReasoningCloudAlertModel !== retired) {
+    _lastReasoningCloudAlertModel = retired;
+    try {
+      // Lazy import: routes/dashboard.js imports scout.js, so a top-level
+      // import here would be a circular dependency. This runs long after boot.
+      const { createAlert } = await import('./routes/dashboard.js');
+      createAlert({
+        alert_type: 'ai_backend_degraded',
+        severity: switched ? 'warning' : 'critical',
+        title: switched
+          ? `Voice model retired — auto-switched to ${provider}:${replacement}`
+          : `Voice model ${provider}:${retired} retired — no live replacement`,
+        detail: switched
+          ? `reasoning_cloud pointed at "${provider}:${retired}", which is no longer in ${provider}'s live model list. Scout auto-switched it to "${provider}:${replacement}".`
+          : `reasoning_cloud is "${provider}:${retired}", which is no longer in ${provider}'s live model list, and no live replacement was found among ${REASONING_CLOUD_PREFERRED.join(', ')}. Voice/reasoning will keep failing until this is fixed.`,
+      });
+    } catch (e) {
+      console.warn('[PAN Scout] Could not raise ai_backend_degraded alert:', e.message);
+    }
+  }
 }
 
 // Cached read for llm.js callers — synchronous since better-sqlite3 is sync.

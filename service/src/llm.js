@@ -851,6 +851,34 @@ function _getVisionModel() {
   return sel?.model || 'moondream';
 }
 
+// De-dupe latch for vision-failure alerts. A broken vision stack (mini PC
+// Ollama down) would otherwise raise an alert on every user photo. Suppress
+// duplicates within a 5-minute window; a successful mini-PC analysis clears it
+// so the next genuine failure alerts immediately. Modelled on scout.js's
+// _lastReasoningCloudAlertModel latch.
+let _lastVisionAlertAt = 0;
+const VISION_ALERT_WINDOW_MS = 5 * 60 * 1000;
+
+async function _raiseVisionAlert(model, reason) {
+  const now = Date.now();
+  if (now - _lastVisionAlertAt < VISION_ALERT_WINDOW_MS) return; // de-dupe
+  _lastVisionAlertAt = now;
+  try {
+    // Lazy import: routes/dashboard.js pulls in llm.js indirectly, so a
+    // top-level import would risk a circular dependency. Only runs on a
+    // genuine user-photo failure, long after boot.
+    const { createAlert } = await import('./routes/dashboard.js');
+    createAlert({
+      alert_type: 'vision_failed',
+      severity: 'warning',
+      title: 'Vision analysis failed — no answer for your photo',
+      detail: `A user photo got no result. ${reason} Model "${model}" was unreachable/too slow on the mini PC Ollama, and no cloud vision fallback (Claude/Gemini API key) was available.`,
+    });
+  } catch (e) {
+    console.warn('[PAN Vision] Could not raise vision_failed alert:', e.message);
+  }
+}
+
 export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [] } = {}) {
   // referenceImages: optional array of base64 strings prepended before the main image.
   // Ollama /api/generate supports images[] — first image(s) are reference, last is live frame.
@@ -864,8 +892,20 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   // and made the dashboard unresponsive. Cap the total run at 1/3 of the
   // per-provider budget. Successful Ollama returns in ~10-15s on CPU so
   // this still leaves headroom for the primary path.
-  const overallDeadline = startedAt + Math.max(15000, Math.round(timeout / 3));
+  // User-initiated photos (caller='vision') run LOCAL-ONLY on a CPU-only mini PC —
+  // moondream is ~15-30s (slower while the mini PC is also embedding). Give them the
+  // FULL budget instead of the /3 chain-split: there's effectively one local provider,
+  // and the user is waiting on a deliberate, private analysis. Background watchers keep
+  // the short /3 cap so they never pin the CPU for minutes.
+  const budgetMs = caller === 'vision'
+    ? Math.max(45000, timeout)
+    : Math.max(15000, Math.round(timeout / 3));
+  const overallDeadline = startedAt + budgetMs;
   const remaining = () => Math.max(500, overallDeadline - Date.now());
+
+  // Captured so the vision_failed alert (raised at the exhausted/throw exits
+  // below) can name why the mini PC Ollama primary failed.
+  let ollamaFailReason = null;
 
   // Primary: mini PC Ollama (getOllamaUrl() returns the discovered address)
   try {
@@ -889,11 +929,13 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
       const data = await res.json();
       const text = data.response?.trim() || '';
       if (text) {
+        _lastVisionAlertAt = 0; // mini PC answered — re-arm the failure-alert latch
         logUsage(caller, visionModel, { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 }, prompt.slice(0, 100), { started_at: startedAt });
         return text;
       }
     }
   } catch (e) {
+    ollamaFailReason = e.message;
     console.error(`[PAN Vision] Ollama ${_getVisionModel()} failed: ${e.message}`);
   }
 
@@ -936,6 +978,15 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   // If the overall budget already exhausted, bail before even calling Gemini.
   if (Date.now() >= overallDeadline) {
     console.warn('[PAN Vision] Overall budget exhausted before Gemini fallback — returning empty result');
+    // Surface user-facing failures in the Alerts panel (de-duped). Background
+    // watchers (screen/webcam) have their own backoff + the steward's
+    // service_down(ollama) alert — don't double-signal on those callers.
+    if (caller === 'vision') {
+      _raiseVisionAlert(_getVisionModel(),
+        ollamaFailReason
+          ? `Mini PC Ollama error: ${ollamaFailReason}. Overall time budget exhausted before a fallback could answer.`
+          : 'Overall time budget exhausted before any provider answered.');
+    }
     return '';
   }
 
@@ -963,6 +1014,11 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
     }
   }
 
+  // All providers exhausted — surface user-facing failures (de-duped).
+  if (caller === 'vision') {
+    _raiseVisionAlert(_getVisionModel(),
+      ollamaFailReason ? `Mini PC Ollama error: ${ollamaFailReason}.` : 'No provider produced a result.');
+  }
   throw new Error(`No vision provider available — ${_getVisionModel()} unreachable on mini PC and no API keys configured`);
 }
 
