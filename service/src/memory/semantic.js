@@ -31,20 +31,10 @@ async function store(fact) {
     const exEmbedding = fromBlob(ex.embedding);
     const sim = exEmbedding ? cosineSimilarity(embedding, exEmbedding) : 0;
 
-    // Near-duplicate (>0.85 similarity) — skip entirely, fact already exists
-    if (sim > 0.85 && ex.subject === subject) {
-      // Exact or near-duplicate of same subject — don't store again
-      console.log(`[PAN Memory] Dedup: skipping near-duplicate of fact #${ex.id} "${ex.subject}" (sim=${sim.toFixed(3)})`);
-      return ex.id;
-    }
-
-    // High similarity across different subjects — still a duplicate
-    if (sim > 0.90) {
-      console.log(`[PAN Memory] Dedup: skipping cross-subject duplicate of fact #${ex.id} (sim=${sim.toFixed(3)})`);
-      return ex.id;
-    }
-
-    // Contradiction — same subject, high similarity, different object
+    // Contradiction — same subject, high similarity, different object.
+    // MUST be checked before the dedup branches below: the near-duplicate guard
+    // (sim > 0.85 && same subject) is a superset of this condition, so if it runs
+    // first it returns early and this branch becomes unreachable dead code.
     if (sim > 0.85 && ex.subject === subject && ex.object !== object) {
       console.log(`[PAN Memory] Contradiction: "${subject} ${ex.predicate} ${ex.object}" superseded by "${subject} ${predicate} ${object}"`);
       run(
@@ -67,6 +57,18 @@ async function store(fact) {
           ':embedding': toBlob(embedding),
         }
       );
+    }
+
+    // Near-duplicate — same subject AND same object, fact already exists
+    if (sim > 0.85 && ex.subject === subject) {
+      console.log(`[PAN Memory] Dedup: skipping near-duplicate of fact #${ex.id} "${ex.subject}" (sim=${sim.toFixed(3)})`);
+      return ex.id;
+    }
+
+    // High similarity across different subjects — still a duplicate
+    if (sim > 0.90) {
+      console.log(`[PAN Memory] Dedup: skipping cross-subject duplicate of fact #${ex.id} (sim=${sim.toFixed(3)})`);
+      return ex.id;
     }
   }
 

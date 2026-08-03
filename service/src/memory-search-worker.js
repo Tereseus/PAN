@@ -38,6 +38,7 @@ const sqliteVec = require('sqlite-vec');
 // FRESH module instances scoped to this worker. The DB connection opened
 // here is independent of the main thread's connection.
 import { getDb } from './db-registry.js';
+import { NEVER_EMBED_SQL } from './event-filters.js';
 import { embedForWrite, toBlob, EMBED_DIM } from './memory/embeddings.js';
 
 const scope = workerData?.scope || 'main';
@@ -204,6 +205,7 @@ async function embedOne(db, eventRow) {
         SELECT id, event_type, data
         FROM events
         WHERE id NOT IN (SELECT rowid FROM event_embeddings)
+          AND event_type NOT IN (${NEVER_EMBED_SQL})
         ORDER BY id ASC
         LIMIT ?
       `).all(DB_BATCH);
