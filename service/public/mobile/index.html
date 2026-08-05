@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="/v2/pan-telemetry.js"></script>
+<!-- /v2/pan-telemetry.js does not exist; the SPA fallback answered it with 200 text/html,
+     so the browser parsed an HTML page as JS and threw "Unexpected token '<'" on every load. -->
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
 <title>Π</title>
 <style>
@@ -321,7 +323,40 @@ const API = window.location.origin;
 let projects = [];
 let activeProject = null;
 let chatPollTimer = null;
-let lastSentTime = 0; // prevent auto-refresh from wiping sent messages
+let lastSentTime = 0; // kept for send-timing telemetry; no longer gates rendering
+
+// ── Error visibility ─────────────────────────────────────────────────────────
+// This whole file is ONE inline <script> with ~32 inline onclick= handlers bound
+// to globals. A parse error kills the block and the page renders as dead static
+// HTML with no on-screen sign — the only trace is logcat, which needs a USB cable.
+// These two handlers make a failure visible on the phone itself.
+//
+// NOTE: appendChild, never `body.innerHTML +=`. The latter re-serializes and
+// re-parses the entire body, destroying every already-attached listener —
+// including the tab-bar delegate — so the one error path would leave the page
+// permanently untappable.
+function _showFatal(text) {
+  try {
+    let box = document.getElementById('pan-fatal');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'pan-fatal';
+      box.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#3a1113;color:#f38ba8;font:12px/1.4 monospace;padding:8px 10px;max-height:38vh;overflow:auto;border-top:2px solid #f38ba8';
+      box.addEventListener('click', () => box.remove());
+      document.body.appendChild(box);
+    }
+    const line = document.createElement('div');
+    line.textContent = text;
+    box.appendChild(line);
+  } catch {}
+}
+window.addEventListener('error', (e) => {
+  _showFatal('JS ERROR: ' + (e.message || 'unknown') + ' @' + (e.filename || '').split('/').pop() + ':' + (e.lineno || '?'));
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e && e.reason;
+  _showFatal('UNHANDLED: ' + ((r && (r.message || r)) || 'unknown'));
+});
 
 // NOTE: Previously overrode fetch to inject X-Device-Name/X-Device-Id headers,
 // but that caused a duplicate "PAN-Mobile" ghost device. The Android app already
@@ -531,21 +566,27 @@ async function init() {
     });
     const pan = projects.find(p => p.name === 'PAN');
     if (pan) { sel.value = pan.path; activeProject = pan; }
-  } catch(e) { console.error('init error:', e); document.body.innerHTML += '<div style="color:red;padding:20px">INIT ERROR: '+e.message+'</div>'; }
+  } catch(e) { console.error('init error:', e); _showFatal('INIT ERROR: ' + e.message); }
   loadOrgContext();
   loadSessionTabs().then(() => loadChat()); // load sessions first, then chat
   loadDynamicModels(); // populate model picker from API
   startIntuitionPoll(); // #471 — banner at top of chat page, 30s refresh
   // Refresh session tabs every 10s so new sessions appear
   setInterval(loadSessionTabs, 10000);
-  // Auto-refresh active tab every 1s (#376 fix: reduced from 3s to cut message delivery latency)
+  // Auto-refresh the active tab. Was 1s (#376, to cut message-delivery latency) —
+  // that latency is now handled by the /ws/terminal push, so this is back to 3s and
+  // exists only as a fallback for tabs with no realtime source.
+  // The chat tab is skipped entirely while its socket is live: it was costing 2
+  // requests/second (sessions + messages) forever, which is what made the page feel
+  // slow. If the socket drops, this resumes polling chat automatically.
   setInterval(() => {
     const active = document.querySelector('.page.active');
     if (!active) return;
     // Don't re-render settings if QR code is visible — it would wipe it
     if (active.id === 'settings' && document.getElementById('install-qr-area')?.style.display !== 'none') return;
+    if (active.id === 'chat' && _chatWs && _chatWs.readyState === WebSocket.OPEN) return;
     loadTab(active.id);
-  }, 1000);
+  }, 3000);
   // Poll approvals every 2 seconds — independent of active tab so the banner
   // appears no matter where the user is in the app
   pollApprovals();
@@ -594,7 +635,6 @@ const USERNAME = firstCap(PAN_USER);
 const LLMNAME = firstCap(PAN_LLM);
 
 let _renderedMsgIds = []; // append-only render: track which msgs have been rendered
-let _lastFingerprint = ''; // detect content changes, not just count
 function renderMsgLine(msg) {
   const role = msg.role || '';
   const type = msg.type || '';
@@ -614,12 +654,136 @@ function renderMsgLine(msg) {
   return null;
 }
 
+// ── Live transcript socket ───────────────────────────────────────────────────
+// Replaces the 1s poll loop. Attaches to the SAME pipe session the phone already
+// reads, on /ws/terminal (Carrier-owned, so it survives Craft swaps; the
+// Super-Carrier buffers frames across Carrier restarts and the browser never sees
+// a disconnect).
+//
+// SAFETY — two server behaviours we must not trip (service/src/terminal.js:908+):
+//   1. `if (!session)` SPAWNS A PTY. So only ever connect with a session id that
+//      was just returned by /api/v1/terminal/sessions. Never invent one.
+//   2. The dedup guard redirects when `projectName` is set. We pass ONLY ?session=
+//      (no project/cwd/cols/rows) so that branch cannot fire.
+// Polling stays as a slow fallback, so if the socket never opens the page still
+// works exactly as it did before — just slower.
+let _chatWs = null;
+let _chatWsSession = null;
+let _chatWsBackoff = 1000;
+let _chatWsTimer = null;
+let _onTranscriptPush = null; // sendChat installs a one-shot resolver here
+
+function connectChatWs(sessionId) {
+  if (!sessionId) return;
+  // Already connected (or connecting) to this session — nothing to do.
+  if (_chatWs && _chatWsSession === sessionId &&
+      (_chatWs.readyState === WebSocket.OPEN || _chatWs.readyState === WebSocket.CONNECTING)) return;
+  // Session changed — drop the old socket first.
+  if (_chatWs && _chatWsSession !== sessionId) {
+    try { _chatWs._intentionalClose = true; _chatWs.close(); } catch {}
+    _chatWs = null;
+  }
+  _chatWsSession = sessionId;
+  try {
+    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(scheme + '//' + location.host + '/ws/terminal?session=' + encodeURIComponent(sessionId));
+    _chatWs = ws;
+
+    ws.addEventListener('open', () => {
+      _chatWsBackoff = 1000;
+      console.log('[PAN Mobile] chat ws open:', sessionId);
+    });
+
+    ws.addEventListener('message', (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (!msg || !msg.type) return;
+      if (msg.type === 'session_redirect' && msg.session_id) {
+        // Server pointed us at the canonical session — follow it.
+        activeSessionId = msg.session_id;
+        connectChatWs(msg.session_id);
+        return;
+      }
+      if (msg.type === 'transcript_messages' && Array.isArray(msg.messages)) {
+        const recent = msg.messages
+          .filter(m => m.role === 'user' || m.role === 'assistant')
+          .slice(-50);
+        if (recent.length) applyMessages(recent);
+        if (_onTranscriptPush) _onTranscriptPush();
+      } else if (msg.type === 'pipe_ready') {
+        if (_onTranscriptPush) _onTranscriptPush();
+      }
+    });
+
+    ws.addEventListener('close', () => {
+      if (ws._intentionalClose) return;
+      if (_chatWs === ws) _chatWs = null;
+      // Exponential backoff capped at 30s (same shape as the desktop dashboard).
+      if (_chatWsTimer) clearTimeout(_chatWsTimer);
+      _chatWsTimer = setTimeout(() => connectChatWs(_chatWsSession), _chatWsBackoff);
+      _chatWsBackoff = Math.min(_chatWsBackoff * 2, 30000);
+    });
+
+    // 'error' is a no-op — 'close' always follows and owns the retry.
+    ws.addEventListener('error', () => {});
+  } catch (e) {
+    console.error('[PAN Mobile] chat ws failed, falling back to polling:', e);
+    _chatWs = null;
+  }
+}
+
+// Stable per-message key. Used to diff the incoming list against what is already
+// in the DOM so we can append instead of rebuilding. Text is included because the
+// LAST assistant message mutates in place as the server accumulates it.
+function _msgKey(m) {
+  return (m.role || '') + ':' + (m.text || m.content || '');
+}
+
+// Incremental render. The server always sends the FULL message array
+// (terminal.js flushBroadcast), so we diff here rather than wiping the DOM.
+// Finds the first index where the new list diverges from what is rendered,
+// drops only the nodes from there on, and appends the rest. Append-only in the
+// common case (one new message), full rebuild only when the 50-message window
+// slides. Nodes carry data-mi so #chat-typing (which has no data-mi) is never
+// touched and always stays last.
+function applyMessages(recent) {
+  const el = document.getElementById('chat-msgs');
+  if (!el) return;
+  const keys = recent.map(_msgKey);
+  const rendered = _renderedMsgIds || [];
+  let d = 0;
+  while (d < keys.length && d < rendered.length && keys[d] === rendered[d]) d++;
+  if (d === keys.length && keys.length === rendered.length) return; // nothing changed
+
+  const wasNearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
+  // Drop diverged tail
+  const nodes = el.querySelectorAll('.t-line[data-mi]');
+  for (const n of nodes) {
+    if (parseInt(n.dataset.mi, 10) >= d) n.remove();
+  }
+  // Append from the divergence point, keeping the typing placeholder last
+  const typing = document.getElementById('chat-typing');
+  let html = '';
+  for (let i = d; i < recent.length; i++) {
+    const m = recent[i];
+    const role = m.role || 'assistant';
+    const text = (m.text || m.content || '').slice(0, 1000);
+    if (!text.trim()) continue;
+    const cls = role === 'user' ? 't-user' : 't-assistant';
+    const name = role === 'user' ? USERNAME : LLMNAME;
+    html += '<div class="t-line ' + cls + '" data-mi="' + i + '"><span class="name">' + esc(name) + '</span><span class="sep">$ </span>' + esc(text) + '</div>';
+  }
+  if (html) {
+    if (typing) typing.insertAdjacentHTML('beforebegin', html);
+    else el.insertAdjacentHTML('beforeend', html);
+  }
+  // Keep length-accurate: sendChat's completion check reads .length (see #376).
+  _renderedMsgIds = keys;
+  if (wasNearBottom || d === 0) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+}
+
 async function loadChat() {
   const el = document.getElementById('chat-msgs');
-  // Don't auto-refresh if user sent a message in the last 5 seconds
-  // (but allow explicit calls from the send polling loop via _forceLoad flag)
-  if (!loadChat._forceLoad && Date.now() - lastSentTime < 5000) return;
-  loadChat._forceLoad = false;
   try {
     // Primary: load from active terminal sessions (pipe mode — where Claude actually lives)
     const sessRes = await fetch(API + '/api/v1/terminal/sessions');
@@ -640,33 +804,9 @@ async function loadChat() {
       // Only show last 50 messages to keep mobile snappy
       const recent = all.slice(-50);
       if (recent.length) {
-        // Fingerprint detects ANY content change — not just count (which stays at 50 in sliding window)
-        const fingerprint = recent.length + ':' + recent.map(m => (m.role||'') + (m.text||m.content||'').slice(0,40)).join('|');
-        const fpChanged = fingerprint !== _lastFingerprint;
-        console.log('[PAN Mobile] loadChat: msgs=' + all.length + ' recent=' + recent.length + ' fp_changed=' + fpChanged);
-        // Ship loadChat status to server for remote debugging
-        if (fpChanged) {
-          fetch(API + '/api/v1/logs', { method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ device_id: 'phone-dashboard', level: 'info', source: 'app',
-              message: 'loadChat: msgs=' + all.length + ' recent=' + recent.length + ' fp_changed=true rendering=' + recent.slice(-2).map(m=>m.role+':'+((m.text||m.content||'').slice(0,40))).join(' | ') })
-          }).catch(() => {});
-        }
-        if (!fpChanged) return;
-        _lastFingerprint = fingerprint;
-        const wasNearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
-        el.innerHTML = '';
-        for (const m of recent) {
-          const role = m.role || 'assistant';
-          const text = (m.text || m.content || '').slice(0, 1000);
-          if (!text.trim()) continue;
-          const cls = role === 'user' ? 't-user' : 't-assistant';
-          const name = role === 'user' ? USERNAME : LLMNAME;
-          el.insertAdjacentHTML('beforeend', '<div class="t-line ' + cls + '"><span class="name">' + esc(name) + '</span><span class="sep">$ </span>' + esc(text) + '</div>');
-        }
-        _renderedMsgIds = recent.map(() => 1);
-        // Always scroll to bottom — on mobile, latest messages matter most
-        // Use requestAnimationFrame to ensure DOM has rendered before scrolling
-        requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+        // Make sure the live socket is attached to whichever session we resolved.
+        connectChatWs(match.id);
+        applyMessages(recent);
         return;
       }
     }
@@ -776,13 +916,17 @@ async function sendChat() {
       if (status) status.style.display = 'none';
       return;
     }
-    // Poll transcript for Claude's response
+    // Wait for Claude's response. Primary signal is the live socket (arrives the
+    // moment the server broadcasts). The 3s poll is kept ONLY as a fallback for
+    // when the socket is down, so this path still completes without it.
     let prevCount = _renderedMsgIds.length;
     let respondedMs = null; // #474 — set when first new assistant message lands
     for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 3000));
-      loadChat._forceLoad = true;
-      await loadChat();
+      const wsPush = new Promise(resolve => { _onTranscriptPush = resolve; });
+      await Promise.race([ wsPush, new Promise(r => setTimeout(r, 3000)) ]);
+      _onTranscriptPush = null;
+      // Socket already applied the update; only refetch if it is not connected.
+      if (!_chatWs || _chatWs.readyState !== WebSocket.OPEN) await loadChat();
       if (_renderedMsgIds.length > prevCount + 1) {
         respondedMs = Date.now() - t0;
         const t = document.getElementById('chat-typing');
@@ -2054,8 +2198,7 @@ async function loadSessionTabs() {
 function switchSession(sessionId) {
   activeSessionId = sessionId;
   document.querySelectorAll('#session-row .session-tab').forEach(t => t.classList.toggle('active', t.dataset.session === sessionId));
-  _lastFingerprint = ''; _renderedMsgIds = [];
-  loadChat._forceLoad = true;
+  _renderedMsgIds = [];
   loadChat();
 }
 
@@ -2068,7 +2211,7 @@ async function closeSession(sessionId) {
     // Switch to first remaining tab
     const next = document.querySelector('#session-row .session-tab');
     if (next) switchSession(next.dataset.session);
-    else { activeSessionId = null; _lastFingerprint = ''; _renderedMsgIds = []; }
+    else { activeSessionId = null; _renderedMsgIds = []; }
   }
   // Kill on server — don't re-fetch tabs immediately (session may still be in list briefly)
   // The 10s interval will sync. Optimistic DOM removal above is enough for instant feedback.
@@ -2089,9 +2232,9 @@ async function newSession() {
     const data = await res.json();
     if (data.session_id || data.id) {
       activeSessionId = data.session_id || data.id;
-      _lastFingerprint = ''; _renderedMsgIds = [];
+      _renderedMsgIds = [];
       await loadSessionTabs();
-      loadChat._forceLoad = true; loadChat();
+      loadChat();
     }
   } catch(e) {
     console.error('[PAN Mobile] new session error:', e);
@@ -2430,7 +2573,6 @@ async function _uploadOneFile(file) {
 
     // Force a chat refresh so the user sees their auto-prompt appear, then
     // success status auto-hides after 8s.
-    loadChat._forceLoad = true;
     loadChat();
     setUploadStatus('✓ Screenshot sent to Claude → ' + (result.filename || result.path), '#a6e3a1', true);
   } catch(e) {
@@ -2459,25 +2601,21 @@ function autoGrowTextarea(el) {
 })();
 
 // Force-refresh chat transcript whenever the WebView comes back to the foreground.
-// Android backgrounds the WebView aggressively — the 3s loadChat poll freezes while
-// the app is hidden, so on resume the user sees stale content until they tap-send.
-// visibilitychange fires reliably on Android WebView; we force loadChat to bypass
-// the lastSentTime debounce so a fresh fetch happens immediately on resume.
+// Android backgrounds the WebView aggressively and kills the socket, so on resume
+// the user would otherwise see stale content until they tap-send.
+// Clearing _renderedMsgIds forces applyMessages to diverge at index 0, i.e. a full
+// repaint — this is the replacement for the old fingerprint bust. Re-arming the
+// socket is what actually keeps it live after a long background.
+function _resumeChat() {
+  _renderedMsgIds = [];
+  if (_chatWsSession) connectChatWs(_chatWsSession);
+  if (typeof loadChat === 'function') loadChat().catch(() => {});
+}
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && typeof loadChat === 'function') {
-    loadChat._forceLoad = true;
-    _lastFingerprint = ''; // bust the cache so DOM always repaints on resume
-    loadChat().catch(() => {});
-  }
+  if (document.visibilityState === 'visible') _resumeChat();
 });
 // pageshow also fires on Android when WebView restores from cache — belt + suspenders.
-window.addEventListener('pageshow', () => {
-  if (typeof loadChat === 'function') {
-    loadChat._forceLoad = true;
-    _lastFingerprint = '';
-    loadChat().catch(() => {});
-  }
-});
+window.addEventListener('pageshow', () => { _resumeChat(); });
 
 // ========== REFRESH BUTTON ==========
 function refreshCurrentTab() {
