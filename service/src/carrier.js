@@ -1899,37 +1899,62 @@ async function runCraftOrphanScan() {
   const SCAN_RANGE = 20;
   let killedCount = 0;
 
-  for (let offset = 0; offset <= SCAN_RANGE; offset++) {
-    const port = CRAFT_PORT_BASE + offset;
-    try {
-      let pids = new Set();
-      if (process.platform === 'win32') {
-        const result = _exec(
-          `netstat -ano | findstr :${port} | findstr LISTENING`,
-          { encoding: 'utf8', timeout: 5000, windowsHide: true }
-        );
-        for (const line of result.trim().split('\n')) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parseInt(parts[parts.length - 1]);
-          if (pid) pids.add(pid);
-        }
-      } else {
-        const result = _exec(`lsof -ti :${port}`, { encoding: 'utf8', timeout: 5000 });
-        for (const line of result.trim().split('\n')) {
-          const pid = parseInt(line.trim());
-          if (pid) pids.add(pid);
-        }
-      }
+  // port -> Set(pid) for the whole scan range, gathered in as few child processes
+  // as possible. This used to shell out once PER PORT — 21 `netstat -ano | findstr`
+  // invocations every 60s, i.e. ~1260 cmd.exe spawns an hour. Because those used a
+  // PIPE, execSync routed each one through cmd.exe, so they surfaced as console
+  // windows even with windowsHide set. One execFileSync with no shell replaces all
+  // of them: 21 cmd.exe -> 0.
+  const portPids = new Map();
+  const inRange = (p) => p >= CRAFT_PORT_BASE && p <= CRAFT_PORT_BASE + SCAN_RANGE;
 
-      for (const pid of pids) {
-        if (!knownPids.has(pid)) {
-          console.warn(`[Carrier] 🧹 Craft watchdog: orphan PID ${pid} on port ${port} — killing`);
-          try { process.kill(pid); } catch {}
-          killedCount++;
-        }
+  try {
+    if (process.platform === 'win32') {
+      const { execFileSync: _execFile } = await import('child_process');
+      // No shell, no pipe -> no cmd.exe. Filtering happens here instead of findstr.
+      const out = _execFile('netstat', ['-ano'], {
+        encoding: 'utf8', timeout: 5000, windowsHide: true,
+      });
+      for (const line of out.split('\n')) {
+        if (!line.includes('LISTENING')) continue;
+        const parts = line.trim().split(/\s+/);
+        // proto local foreign state pid
+        const local = parts[1] || '';
+        const pid = parseInt(parts[parts.length - 1]);
+        if (!pid) continue;
+        const port = parseInt(local.slice(local.lastIndexOf(':') + 1));
+        if (!port || !inRange(port)) continue;
+        if (!portPids.has(port)) portPids.set(port, new Set());
+        portPids.get(port).add(pid);
       }
-    } catch {
-      // Port not in use — good
+    } else {
+      // Unix: one lsof for the whole range rather than one per port.
+      const ports = [];
+      for (let o = 0; o <= SCAN_RANGE; o++) ports.push(CRAFT_PORT_BASE + o);
+      const out = _exec(`lsof -nP -iTCP:${ports.join(',')} -sTCP:LISTEN`, {
+        encoding: 'utf8', timeout: 5000,
+      });
+      for (const line of out.split('\n')) {
+        const parts = line.trim().split(/\s+/);
+        const pid = parseInt(parts[1]);
+        const name = parts[8] || '';
+        const port = parseInt(name.slice(name.lastIndexOf(':') + 1));
+        if (!pid || !port || !inRange(port)) continue;
+        if (!portPids.has(port)) portPids.set(port, new Set());
+        portPids.get(port).add(pid);
+      }
+    }
+  } catch {
+    // Nothing listening in range (or the tool is unavailable) — nothing to reap.
+  }
+
+  for (const [port, pids] of portPids) {
+    for (const pid of pids) {
+      if (!knownPids.has(pid)) {
+        console.warn(`[Carrier] 🧹 Craft watchdog: orphan PID ${pid} on port ${port} — killing`);
+        try { process.kill(pid); } catch {}
+        killedCount++;
+      }
     }
   }
 
