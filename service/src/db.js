@@ -918,17 +918,26 @@ try {
   // clobber a row the user has explicitly changed via the dashboard.
   const seeds = [
     ['embedding',            'ollama@minipc', 'qwen3-embedding:0.6b', 1024, null,  'Vector embeddings — must match event_embeddings dim'],
-    ['chat_local',           'ollama@minipc', 'qwen3:4b',             null, 32768, 'Local chat / intuition / classifier fallback'],
-    // Vision: minicpm-v (5.5GB) replaces the original moondream (1.7GB) seed.
-    // Field receipts (2026-05-30): moondream hallucinated literally every
-    // screenshot — returned "circles" on a Godot editor capture and "blue
-    // background with white text 'For more information, click here'" on every
-    // image in 100+ consecutive screen_context events. minicpm-v on the same
-    // Godot capture correctly returned "A Godot Editor with a project open
-    // that appears to be making video games or animations and an overlayed
-    // tabbed window for editing the code." On a 5.5GB local model the
-    // accuracy delta is worth the extra ~5-8s of CPU inference.
-    ['vision',               'ollama@minipc', 'minicpm-v:latest',     null, null,  'Screen + webcam understanding'],
+    ['chat_local',           'ollama@minipc', 'gemma4:e4b',           null, 131072, 'Local chat / intuition / classifier fallback'],
+    // Vision + chat_local are BOTH gemma4:e4b as of 2026-08-07. History:
+    // moondream (1.7GB) was the original seed and hallucinated literally every
+    // screenshot — "circles" on a Godot editor capture, and "blue background
+    // with white text 'For more information, click here'" across 100+
+    // consecutive screen_context events. minicpm-v (5.5GB) replaced it and was
+    // accurate but slow.
+    // Benchmarked on the Mini-PC (Ryzen 7 5800H, CPU-only), same photo + prompt:
+    //   gemma4:e4b   60s  — read the "OV3660" chip label off a ribbon cable
+    //   minicpm-v   140s  — called a clear container "a bowl", missed the label
+    //   qwen2.5vl   297s  — accurate, but 5x slower than gemma4
+    //   llava-phi3   38s  — hallucinated batteries that aren't in the frame
+    // Text-only classification, warm, same prompt:
+    //   gemma4:e4b  0.53s — correct answer
+    //   qwen3:4b     3.8s — EMPTY output; it spends the whole token budget on
+    //                       <think> and never emits an answer at short budgets
+    // One model for both purposes also stops the Mini-PC thrashing between a
+    // 5.5GB and a 2.5GB model on every alternating call. gemma4 additionally
+    // accepts audio (<=30s clips), which nothing in the old stack could do.
+    ['vision',               'ollama@minipc', 'gemma4:e4b',           null, null,  'Screen + webcam + audio understanding'],
     ['reasoning_cloud',      'cerebras',          'qwen-3-235b',          null, null,  'Smart cloud reasoning (substituted by Scout if retired)'],
     ['chat_cloud_fallback',  'anthropic',         'claude-haiku-4-5-20251001', null, null, 'Universal fallback when local + reasoning_cloud both fail'],
   ];
@@ -945,13 +954,26 @@ try {
   // user might have manually selected alone.
   try {
     const cur = get(`SELECT model FROM model_selections WHERE purpose = 'vision'`);
-    if (cur && /^moondream/i.test(cur.model || '')) {
+    if (cur && /^(moondream|minicpm-v)/i.test(cur.model || '')) {
       run(`UPDATE model_selections
-           SET model = 'minicpm-v:latest',
-               notes = 'Auto-upgraded from moondream — moondream produced garbage descriptions on every screenshot',
+           SET model = 'gemma4:e4b',
+               notes = 'Auto-upgraded to gemma4:e4b — 2.3x faster than minicpm-v and reads fine detail (chip labels) that minicpm-v missed',
                updated_at = datetime('now','localtime')
            WHERE purpose = 'vision'`);
-      console.log('[DB] vision model auto-upgraded: moondream → minicpm-v:latest');
+      console.log('[DB] vision model auto-upgraded → gemma4:e4b');
+    }
+    // qwen3:4b is a reasoning model: at short num_predict budgets it spends the
+    // entire budget inside <think> and returns an EMPTY string, which silently
+    // breaks classifier/intuition fallback. Move it to gemma4:e4b, which answers
+    // the same prompt in ~0.5s.
+    const curChat = get(`SELECT model FROM model_selections WHERE purpose = 'chat_local'`);
+    if (curChat && /^qwen3:4b/i.test(curChat.model || '')) {
+      run(`UPDATE model_selections
+           SET model = 'gemma4:e4b', context_window = 131072,
+               notes = 'Auto-upgraded from qwen3:4b — qwen3 returned empty output for short classification prompts (<think> consumed the budget)',
+               updated_at = datetime('now','localtime')
+           WHERE purpose = 'chat_local'`);
+      console.log('[DB] chat_local model auto-upgraded: qwen3:4b → gemma4:e4b');
     }
   } catch {}
 } catch {}
