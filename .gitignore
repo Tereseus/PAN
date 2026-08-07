@@ -21,7 +21,12 @@ service/data/
 Thumbs.db
 
 # Secrets - NEVER commit these
-service/src/claude.js
+# NOTE: service/src/claude.js used to be listed here because it once held API
+# keys inline. It has since been reduced to a 306-byte re-export shim over
+# llm.js with no secrets in it, while the ignore rule stayed. Because
+# memory/consolidation.js imports it, every fresh `git clone` crashed on boot
+# with ERR_MODULE_NOT_FOUND. Un-ignored and committed 2026-08-07. Real secrets
+# now live in settings/env, not in source.
 .env
 *.credentials.json
 
