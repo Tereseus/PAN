@@ -6,6 +6,7 @@ import { insert, get, run, getOllamaUrl, getModelForPurpose } from './db.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
+import { getSecret } from './secrets.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const CEREBRAS_URL  = 'https://api.cerebras.ai/v1/chat/completions';
@@ -102,8 +103,12 @@ function getApiKey(provider) {
       groq:      'groq_api_key',
       openai:    'openai_api_key',
     };
-    const row = get(`SELECT value FROM settings WHERE key = '${keyMap[provider]}'`);
-    if (row) return row.value.replace(/^"|"$/g, '').trim();
+    const key = keyMap[provider];
+    if (!key) return null;
+    // getSecret checks PAN_<KEY> in the environment first and falls back to the
+    // settings table, so a key can be moved out of the database by setting the
+    // env var — no code change, no migration, nothing breaks in the meantime.
+    return getSecret(key);
   } catch {}
   return null;
 }

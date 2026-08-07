@@ -91,6 +91,7 @@ import { startActivityTracker } from './activity-tracker.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
 import { PROFILE, featureEnabled, profileSummary } from './profiles.js';
+import { redactSettings, getSecret } from './secrets.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -320,8 +321,9 @@ async function cleanupStaleTailscaleNode(staleHostname) {
     }
 
     // Try Tailscale API to delete (needs API key with devices:write scope)
-    const clientId = get("SELECT value FROM settings WHERE key = 'tailscale_oauth_client_id'")?.value;
-    const clientSecret = get("SELECT value FROM settings WHERE key = 'tailscale_oauth_client_secret'")?.value;
+    // env-first (PAN_TAILSCALE_OAUTH_CLIENT_ID / _SECRET), db as fallback
+    const clientId = getSecret('tailscale_oauth_client_id');
+    const clientSecret = getSecret('tailscale_oauth_client_secret');
     if (clientId && clientSecret) {
       const auth = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
       const listRes = await fetch('https://api.tailscale.com/api/v2/tailnet/-/devices', {
@@ -2832,7 +2834,15 @@ app.get('/api/v1/settings', (req, res) => {
     for (const r of rows) {
       try { settings[r.key] = JSON.parse(r.value); } catch { settings[r.key] = r.value; }
     }
-    res.json(settings);
+    // Credentials NEVER go over the wire. This endpoint used to return the raw
+    // settings table, which meant provider API keys and OAuth client secrets
+    // were served to anyone who could reach it — and with public_tunnel on by
+    // default, "anyone" included the open internet (verified 2026-08-07).
+    // redactSettings() omits them entirely rather than masking: PUT is a
+    // partial merge and the dashboard saves one key at a time, so nothing
+    // round-trips a mask back over a real value. `_secrets` reports which names
+    // are configured, and whether from env or db, without the value.
+    res.json(redactSettings(settings));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
