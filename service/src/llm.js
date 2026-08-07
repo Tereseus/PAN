@@ -892,13 +892,22 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   // and made the dashboard unresponsive. Cap the total run at 1/3 of the
   // per-provider budget. Successful Ollama returns in ~10-15s on CPU so
   // this still leaves headroom for the primary path.
-  // User-initiated photos (caller='vision') run LOCAL-ONLY on a CPU-only mini PC —
-  // moondream is ~15-30s (slower while the mini PC is also embedding). Give them the
-  // FULL budget instead of the /3 chain-split: there's effectively one local provider,
-  // and the user is waiting on a deliberate, private analysis. Background watchers keep
-  // the short /3 cap so they never pin the CPU for minutes.
+  // User-initiated photos (caller='vision') run LOCAL-ONLY on a CPU-only mini PC.
+  // Give them the FULL budget instead of the /3 chain-split: there's effectively one
+  // local provider, and the user is waiting on a deliberate, private analysis.
+  // Background watchers keep the short /3 cap so they never pin the CPU for minutes.
+  //
+  // Floor raised 45s → 120s on 2026-08-07. The old floor was written when the
+  // seeded model was moondream and the estimate above it said "~10-15s on CPU".
+  // Measured on the Mini-PC (Ryzen 7 5800H, CPU-only), one 1.9MB photo:
+  //   moondream  35s · gemma4:e4b  60s · minicpm-v 140s · qwen2.5vl 297s
+  // routes/api.js:480 calls this with no explicit timeout, so it took the 70000
+  // default → a 70s budget. That is BELOW the real latency of every vision model
+  // seeded since moondream, so user-initiated /api/v1/vision was aborting and
+  // returning an empty description rather than failing loudly. 120s matches the
+  // budget screen-watcher already grants itself (360000/3).
   const budgetMs = caller === 'vision'
-    ? Math.max(45000, timeout)
+    ? Math.max(120000, timeout)
     : Math.max(15000, Math.round(timeout / 3));
   const overallDeadline = startedAt + budgetMs;
   const remaining = () => Math.max(500, overallDeadline - Date.now());
