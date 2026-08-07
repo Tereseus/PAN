@@ -61,7 +61,14 @@ const FEATURES = {
   // The "add PAN to any computer via QR + control it over SSH" mesh + the
   // transport that reaches the phone/pendant. Load-bearing for wearable.
   tailscale_cleanup:   ['full', 'wearable'],
-  public_tunnel:       ['full', 'wearable'],
+  // public_tunnel was ['full','wearable'] — i.e. ON BY DEFAULT. On boot it runs
+  // `tailscale funnel <port>` and falls back to a Cloudflare Quick Tunnel, which
+  // publishes the hub on the open internet. Verified 2026-08-07 from an external
+  // URL with NO credentials: /health, /dashboard/api/stats (full event counts)
+  // and /api/v1/settings (which contains API keys in plaintext) were all served.
+  // /ws/terminal has no auth either. Convenience for QR onboarding is not worth
+  // publishing the whole hub, so it is now opt-in: PAN_ENABLE_PUBLIC_TUNNEL=1.
+  public_tunnel:       'optin',
   lan_discovery:       ['full', 'wearable'],
   firewall_rule:       ['full', 'wearable'],
 
