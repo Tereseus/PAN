@@ -67,17 +67,34 @@ class CameraCapture @Inject constructor(
                         lifecycleOwner = owner
                         owner.start()
 
-                        // Build ImageCapture use case
+                        // Build ImageCapture use case.
+                        // MAXIMIZE_QUALITY runs the autofocus + auto-exposure precapture
+                        // sequence before the shutter. The old MINIMIZE_LATENCY snapped
+                        // instantly with NO focus — that's why "take a picture" produced a
+                        // blurry frame every time (there's no preview to drive continuous AF).
                         val capture = ImageCapture.Builder()
-                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                             .build()
                         imageCapture = capture
 
                         // Bind to back camera
                         val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-                        provider.bindToLifecycle(owner, cameraSelector, capture)
+                        val camera = provider.bindToLifecycle(owner, cameraSelector, capture)
 
-                        // Small delay to let auto-exposure settle, then capture to file
+                        // Explicitly trigger autofocus + metering at the center of the frame.
+                        // Headless capture has no preview to drive continuous AF, so without
+                        // this the lens never locks and every shot is soft.
+                        try {
+                            val factory = androidx.camera.core.SurfaceOrientedMeteringPointFactory(1f, 1f)
+                            val center = factory.createPoint(0.5f, 0.5f)
+                            val action = androidx.camera.core.FocusMeteringAction.Builder(center).build()
+                            camera.cameraControl.startFocusAndMetering(action)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Focus trigger failed: ${e.message}")
+                        }
+
+                        // Give AF + AE time to converge before the shutter (was 800ms and
+                        // exposure-only; 1200ms lets the lens actually lock focus).
                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                             val photoFile = java.io.File(context.cacheDir, "pan_capture_${System.currentTimeMillis()}.jpg")
                             val outputOptions = OutputFileOptions.Builder(photoFile).build()
@@ -118,7 +135,7 @@ class CameraCapture @Inject constructor(
                                     cont.resumeWithException(exception)
                                 }
                             })
-                        }, 800) // 800ms for auto-exposure
+                        }, 1200) // AF + AE convergence before shutter
                     } catch (e: Exception) {
                         release()
                         Log.e(TAG, "Camera bind failed: ${e.message}")

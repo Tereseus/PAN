@@ -156,6 +156,37 @@ data class TerminalWaitResponse(
     val error: String?
 )
 
+// Shared inbound-notification queue the phone polls for.
+// Server enqueues on POST /api/v1/slack/inbound (+ other kinds); phone drains
+// them on GET /api/v1/slack/pending. Every item carries a `type`:
+//   type == "slack"  → RemoteInput reply notification (slack fields populated)
+//   type == "meeting" (or any non-slack) → plain alert notification (title/body)
+// The queue is SHARED across kinds and ids are one monotonic sequence, so the
+// same high-water dedup covers all types.
+data class SlackPendingResponse(
+    val ok: Boolean = true,
+    val notifications: List<SlackNotify> = emptyList()
+)
+
+// Tolerant of BOTH queue shapes. Slack items fill channelId/sender/text/…;
+// meeting/alert items fill title/body/data. All are nullable so Gson parses
+// either shape without crashing (and it silently ignores unknown fields too).
+data class SlackNotify(
+    val id: Long,                 // server-assigned queue id (monotonic) — used for dedup
+    val type: String? = null,     // "slack" | "meeting" | … (absent on legacy slack items)
+    // ── Slack shape ──
+    val channelId: String? = null,// Slack channel id — echoed back on reply
+    val channel: String? = null,  // human-readable channel name (e.g. "#general")
+    val sender: String? = null,   // display name of who sent it
+    val text: String? = null,     // message body
+    val kind: String? = null,     // dm / channel / mention (optional)
+    val received: String? = null,
+    // ── Generic alert shape (meeting, etc.) ──
+    val title: String? = null,    // alert headline
+    val body: String? = null,     // alert body text
+    val data: Map<String, Any>? = null // arbitrary extra payload (unused for display)
+)
+
 // Sensor config DTOs
 data class SensorDefinition(
     val id: String,

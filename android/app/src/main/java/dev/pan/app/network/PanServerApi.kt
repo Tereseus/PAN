@@ -65,6 +65,13 @@ interface PanServerApi {
     @GET("/api/v1/terminal/permissions")
     suspend fun getPermissions(): Response<PermissionsResponse>
 
+    // Slack bridge — drain pending inbound Slack messages queued for this phone.
+    // Draining is server-side (returned items are removed), so each is seen once.
+    @GET("/api/v1/slack/pending")
+    suspend fun getSlackPending(
+        @retrofit2.http.Query("device_id") deviceId: String
+    ): Response<SlackPendingResponse>
+
     @POST("/api/v1/terminal/permissions/respond")
     suspend fun respondPermission(@Body request: PermissionRespondRequest): Response<Unit>
 

@@ -13,6 +13,7 @@ import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerApi
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.ui.commands.DeviceItem
+import dev.pan.app.update.UpdateChecker
 import dev.pan.app.util.Constants
 import dev.pan.app.vpn.RemoteAccessManager
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +28,7 @@ class SettingsViewModel @Inject constructor(
     private val serverClient: PanServerClient,
     private val localLlm: LocalLlm,
     private val application: Application,
+    private val updateChecker: UpdateChecker,
     val remoteAccessManager: RemoteAccessManager
 ) : ViewModel() {
 
@@ -112,6 +114,11 @@ class SettingsViewModel @Inject constructor(
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage
     fun clearToast() { _toastMessage.value = null }
+
+    // Manual OTA update check — true while a check/download is in flight so the
+    // button can show a "Checking…" state and prevent double-taps.
+    private val _updateChecking = MutableStateFlow(false)
+    val updateChecking: StateFlow<Boolean> = _updateChecking
 
     // Incognito mode — when on, the X-PAN-Scope header flips to "incognito"
     // and the server routes ALL phone-originated event writes to a sibling
@@ -380,6 +387,37 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun clearPersonality() = setPersonality("")
+
+    // --- Manual OTA update ---
+    //
+    // Pulls the same self-update flow MainActivity fires ~8s after launch, but
+    // on-demand from a Settings button. silent = false so any failure surfaces
+    // to the user via the snackbar instead of being swallowed. checkAndInstall
+    // already runs its network/IO on Dispatchers.IO internally, so launching
+    // from viewModelScope (Main) is safe.
+    fun checkForUpdate() {
+        if (_updateChecking.value) return
+        _updateChecking.value = true
+        viewModelScope.launch {
+            try {
+                when (val result = updateChecker.checkAndInstall(application, silent = false)) {
+                    is UpdateChecker.Result.UpToDate ->
+                        _toastMessage.value = "You're on the latest version"
+                    is UpdateChecker.Result.UpdateAvailable ->
+                        _toastMessage.value = "Updating to ${result.versionName}…"
+                    is UpdateChecker.Result.UpdateInstalling ->
+                        _toastMessage.value = "Updating to ${result.versionName}…"
+                    is UpdateChecker.Result.Error ->
+                        _toastMessage.value = "Update check failed: ${result.message}"
+                }
+            } catch (e: Exception) {
+                // silent = false re-throws instead of returning Result.Error
+                _toastMessage.value = "Update check failed: ${e.message}"
+            } finally {
+                _updateChecking.value = false
+            }
+        }
+    }
 
     // --- Incognito mode ---
     //

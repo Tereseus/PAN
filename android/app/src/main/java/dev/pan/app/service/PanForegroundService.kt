@@ -21,6 +21,7 @@ import android.provider.AlarmClock
 import android.util.Log
 import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
@@ -86,6 +87,18 @@ class PanForegroundService : Service() {
 
         // Speak the filler aloud if the first chunk hasn't arrived this fast.
         const val FILLER_SPEAK_AFTER_MS = 1500L
+
+        // Slack bridge — dedicated notification channel + RemoteInput plumbing.
+        const val SLACK_CHANNEL_ID = "pan_slack"
+        const val SLACK_REPLY_KEY = "slack_reply_text"   // RemoteInput result key
+        const val SLACK_NOTIF_BASE = 2000                // notification-id namespace for Slack
+        const val SLACK_POLL_INTERVAL_MS = 5000L
+
+        // Generic alerts (meeting reminders, etc.) relayed through the SAME poll
+        // queue as Slack but rendered as PLAIN notifications (no reply box).
+        // Distinct channel + notif-id namespace so they never collide with Slack.
+        const val ALERT_CHANNEL_ID = "pan_alerts"
+        const val ALERT_NOTIF_BASE = 3000                // notification-id namespace for alerts
     }
 
     @Inject lateinit var serverClient: PanServerClient
@@ -98,6 +111,7 @@ class PanForegroundService : Service() {
     // GeminiBrain removed — server handles all AI
     @Inject lateinit var voiceCollector: VoiceCollector
     @Inject lateinit var cameraCapture: CameraCapture
+    @Inject lateinit var nanoVision: dev.pan.app.ai.NanoVision
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -401,9 +415,14 @@ class PanForegroundService : Service() {
         startPermissionPolling()
         // Intuition glance — keep the ongoing notification showing PAN's live read (30s)
         startIntuitionPolling()
+        // Slack bridge — poll for inbound Slack messages, raise native reply notifications (5s)
+        startSlackPolling()
     }
 
     private var lastPermId: Long = 0
+    // High-water mark of the last Slack notify id we've already surfaced — the
+    // server drains its queue on GET, but this guards against re-delivery on retry.
+    @Volatile private var lastSlackId: Long = 0
 
     // Live intuition shown in the ongoing notification (lock-screen glance).
     @Volatile private var lastConnected: Boolean = false
@@ -502,6 +521,163 @@ class PanForegroundService : Service() {
             .build()
 
         notificationManager?.notify(999, notification)
+    }
+
+    // ── Slack bridge ─────────────────────────────────────────────────────────
+    // The phone has no open push channel (DevicePushClient is unused) — every
+    // server->phone signal today is POLLED (permissions, intuition). Slack
+    // follows the same model: drain a per-device queue on the hub and raise a
+    // native RemoteInput reply notification for each new message. The reply box
+    // supports voice dictation natively — reply by typing OR speaking.
+    private fun startSlackPolling() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(SLACK_POLL_INTERVAL_MS)
+                try {
+                    val resp = serverClient.api.getSlackPending(getPanDeviceId())
+                    val notes = resp.body()?.notifications ?: continue
+                    for (note in notes) {
+                        if (note.id <= lastSlackId) continue
+                        lastSlackId = note.id   // shared high-water across ALL types
+                        // Branch on type: slack (or anything carrying a channelId)
+                        // keeps the existing RemoteInput reply notification; every
+                        // other type renders as a plain alert (no reply box).
+                        if (note.type == "slack" || note.channelId != null) {
+                            showSlackNotification(note)
+                        } else {
+                            showAlertNotification(note)
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun ensureSlackChannel() {
+        val channel = NotificationChannel(
+            SLACK_CHANNEL_ID, "Slack",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Slack messages relayed through PAN — reply by voice or text"
+            enableVibration(true)
+        }
+        notificationManager?.createNotificationChannel(channel)
+    }
+
+    // Stable per-message notification id so the reply handler can update the
+    // exact same notification (Sending… -> Sent/Failed). Namespaced away from
+    // the ongoing (1) / permission (999) ids.
+    private fun slackNotifId(id: Long): Int = SLACK_NOTIF_BASE + (id % 100000).toInt()
+
+    private fun showSlackNotification(note: dev.pan.app.network.dto.SlackNotify) {
+        ensureSlackChannel()
+        val notifId = slackNotifId(note.id)
+
+        // Title = "#channel · sender" when we know the channel, else just sender.
+        val sender = note.sender?.takeIf { it.isNotBlank() } ?: "Slack"
+        val title = note.channel?.takeIf { it.isNotBlank() }?.let { "$it · $sender" } ?: sender
+        val bodyText = note.text ?: ""
+
+        // RemoteInput reply box — voice dictation works out of the box.
+        val remoteInput = RemoteInput.Builder(SLACK_REPLY_KEY)
+            .setLabel("Reply to Slack")
+            .build()
+
+        // MUST be MUTABLE — the system fills in the typed/spoken text on the intent.
+        val replyIntent = Intent(this, PanForegroundService::class.java).apply {
+            action = "SLACK_REPLY"
+            putExtra("channelId", note.channelId)
+            putExtra("notif_id", notifId)
+            putExtra("channel_title", title)
+        }
+        val replyPending = PendingIntent.getService(
+            this, notifId, replyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        )
+
+        val replyAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_send, "Reply", replyPending
+        ).addRemoteInput(remoteInput)
+            .setAllowGeneratedReplies(true)
+            .build()
+
+        val notification = NotificationCompat.Builder(this, SLACK_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(bodyText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .addAction(replyAction)
+            .build()
+
+        notificationManager?.notify(notifId, notification)
+        panLog("Slack notify #${note.id} from $sender -> notification $notifId")
+    }
+
+    // Re-post the notification after a reply attempt to reflect Sending/Sent/Failed.
+    private fun updateSlackStatus(notifId: Int, title: String, status: String, ongoing: Boolean) {
+        val notification = NotificationCompat.Builder(this, SLACK_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(status)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setOngoing(ongoing)
+            .setAutoCancel(!ongoing)
+            .build()
+        notificationManager?.notify(notifId, notification)
+    }
+
+    // ── Generic alerts (meeting reminders, etc.) ─────────────────────────────
+    // Same poll queue as Slack, but a PLAIN notification: title + body, no reply
+    // box. Tapping opens the app (same launch pattern as the ongoing notif).
+    // Retires ntfy — meeting/other pushes now ride the existing device queue.
+    private fun ensureAlertChannel() {
+        val channel = NotificationChannel(
+            ALERT_CHANNEL_ID, "PAN",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "PAN alerts (meeting reminders and other notifications)"
+            enableVibration(true)
+        }
+        notificationManager?.createNotificationChannel(channel)
+    }
+
+    // Distinct id namespace from Slack so the two never collide.
+    private fun alertNotifId(id: Long): Int = ALERT_NOTIF_BASE + (id % 100000).toInt()
+
+    private fun showAlertNotification(note: dev.pan.app.network.dto.SlackNotify) {
+        ensureAlertChannel()
+        val notifId = alertNotifId(note.id)
+
+        val title = note.title?.takeIf { it.isNotBlank() }
+            ?: note.type?.replaceFirstChar { it.uppercase() }
+            ?: "PAN"
+        val body = note.body ?: ""
+
+        // Tap → open the app (reuse the ongoing-notification launch pattern).
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openPending = PendingIntent.getActivity(
+            this, notifId, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(openPending)
+            .build()
+
+        notificationManager?.notify(notifId, notification)
+        panLog("Alert notify #${note.id} type=${note.type} '$title' -> notification $notifId")
     }
 
     // Stop STT before speaking, restart after TTS finishes (or barge-in)
@@ -1156,22 +1332,56 @@ class PanForegroundService : Service() {
                 val photoBytes = cameraCapture.takePhoto()
                 panLog("Photo captured: ${photoBytes.size} bytes")
 
-                // Convert to base64
-                val base64 = android.util.Base64.encodeToString(photoBytes, android.util.Base64.NO_WRAP)
-                panLog("Base64 encoded: ${base64.length} chars")
+                // Try on-device Gemini Nano FIRST (free, private, no network).
+                // Falls through to the existing server vision path below whenever
+                // Nano is unavailable, can't decode, or returns nothing.
+                var description: String? = null
+                var analyzedOnDevice = false
+                try {
+                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(photoBytes, 0, photoBytes.size)
+                    if (bitmap != null) {
+                        val nano = nanoVision.describe(bitmap, question)
+                        if (!nano.isNullOrBlank()) {
+                            description = nano
+                            analyzedOnDevice = true
+                            panLog("Image analyzed on-device (Nano): ${nano.take(100)}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    panLog("Nano vision failed, using server: ${e.message}")
+                }
 
-                // Send to server for vision analysis
-                val description = serverClient.analyzeImage(base64, question)
+                // Server fallback — UNCHANGED path when Nano produced nothing.
+                if (description == null) {
+                    // Convert to base64
+                    val base64 = android.util.Base64.encodeToString(photoBytes, android.util.Base64.NO_WRAP)
+                    panLog("Base64 encoded: ${base64.length} chars")
 
-                if (description != null && description.isNotBlank()) {
-                    panLog("Vision result: ${description.take(100)}")
+                    // Send to server for vision analysis
+                    description = serverClient.analyzeImage(base64, question)
+                }
+
+                // Snapshot into a val so it smart-casts and can be captured by the
+                // panSpeak closure (description is a reassigned var above).
+                val finalDescription = description
+
+                // Capture pipe — push the actual photo to the server so the IMAGE
+                // (not just the spoken description) reaches the desktop: saved as a
+                // file the desktop Claude can open + attached to the Π thread.
+                // Best-effort, launched non-blocking so it never delays the reply.
+                serviceScope.launch {
+                    serverClient.uploadCapture(photoBytes, finalDescription, question, analyzedOnDevice)
+                }
+
+                if (finalDescription != null && finalDescription.isNotBlank()) {
+                    panLog("Vision result: ${finalDescription.take(100)}")
                     addToHistory("User", "[photo] $question")
-                    addToHistory("PAN", description)
-                    dataRepository.addPanResponse(description)
+                    addToHistory("PAN", finalDescription)
+                    dataRepository.addPanResponse(finalDescription)
                     // Surface to PanThinkingCard before speaking.
-                    lastResponseText.value = description
+                    lastResponseText.value = finalDescription
                     currentFiller.value = ""
-                    mainHandler.post { panSpeak(description) }
+                    mainHandler.post { panSpeak(finalDescription) }
                 } else {
                     panLog("Vision analysis failed — no response")
                     mainHandler.post { panSpeak("I took a photo but couldn't analyze it. The server might be offline.") }
@@ -1697,6 +1907,36 @@ class PanForegroundService : Service() {
             }
             // Dismiss the notification
             notificationManager?.cancel(999)
+        }
+
+        if (intent?.action == "SLACK_REPLY") {
+            val replyText = RemoteInput.getResultsFromIntent(intent)
+                ?.getCharSequence(SLACK_REPLY_KEY)?.toString()?.trim()
+            val channelId = intent.getStringExtra("channelId")
+            val notifId = intent.getIntExtra("notif_id", 0)
+            val title = intent.getStringExtra("channel_title") ?: "Slack"
+            if (replyText.isNullOrBlank() || channelId.isNullOrBlank()) {
+                panLog("Slack reply ignored — empty text or missing channelId")
+                notificationManager?.cancel(notifId)
+            } else {
+                // Immediately reflect the reply in the shade (Android collapses the
+                // input box once the PendingIntent fires) and mark it Sending.
+                updateSlackStatus(notifId, title, "Sending: $replyText", ongoing = true)
+                serviceScope.launch {
+                    val ok = try {
+                        serverClient.sendSlackReply(channelId, replyText)
+                    } catch (e: Exception) {
+                        panLog("Slack reply exception: ${e.message}"); false
+                    }
+                    if (ok) {
+                        panLog("Slack reply sent to $channelId: ${replyText.take(60)}")
+                        updateSlackStatus(notifId, title, "Sent: $replyText", ongoing = false)
+                    } else {
+                        panLog("Slack reply FAILED to $channelId")
+                        updateSlackStatus(notifId, title, "Failed to send — tap to retry: $replyText", ongoing = false)
+                    }
+                }
+            }
         }
 
         if (intent?.action == "TOGGLE_MIC") {

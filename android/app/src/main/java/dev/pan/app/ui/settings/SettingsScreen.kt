@@ -47,6 +47,7 @@ fun SettingsScreen(
     val incognitoMode by viewModel.incognitoMode.collectAsState()
     val incognitoAllowed by viewModel.incognitoAllowed.collectAsState()
     val toastMessage by viewModel.toastMessage.collectAsState()
+    val updateChecking by viewModel.updateChecking.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -490,6 +491,30 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("Save Key") }
             }
+
+            HorizontalDivider()
+
+            // App Updates — manual OTA pull. The app auto-checks ~8s after
+            // launch; this button lets the user pull the update immediately.
+            Text("App Updates", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Version ${dev.pan.app.BuildConfig.VERSION_NAME} (${dev.pan.app.BuildConfig.VERSION_CODE})",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = { viewModel.checkForUpdate() },
+                enabled = !updateChecking,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (updateChecking) "Checking…" else "Check for updates")
+            }
+            Text(
+                "Pulls the latest APK from the PAN server. If an update is found, " +
+                "the system installer dialog will appear.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
         }
     }
