@@ -85,3 +85,28 @@ tmp-eval-claude-bot/
 tmp-eval-opencode-bot/
 service/tauri/src-tauri/target-new/
 docs/NIGHTMARE_BUGS.md
+
+# ── Added 2026-08-08 while committing accumulated drift ──────────────────────
+# Playwright MCP page snapshots — ~380 debug artifacts from May-Aug, pure noise.
+service/.playwright-mcp/
+
+# pan-client config holds a LIVE enrolment token + hub address. Per-machine
+# runtime state, never source.
+pan-client/pan-client-config.json
+pan-client/pan-status.json
+
+# Runtime/temp junk that keeps reappearing at the repo root
+tasks-tmp.json
+temp-tasks.json
+tasks.json
+startup-backup/
+docs/.~lock.*#
+
+# Malformed filenames from scripts that wrote a Windows path as a literal name
+C:*
+Temp*
+Users*
+
+# work-tools names internal work machines (work-pc) and the employer's
+# tooling. This repo is PUBLIC — keep it local. Nothing imports it.
+service/src/work-tools/
