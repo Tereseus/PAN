@@ -264,12 +264,19 @@ export async function askAIWithFallback(prompt, opts = {}) {
 
   // Per-attempt timeout heuristic. The router currently sends `timeout:15000`
   // which is fine for Cerebras/Claude (network) but too tight for Ollama on
-  // a CPU-only mini PC (qwen3:4b ~ 10-30s/turn). And the SDK path empirically
-  // hangs at 12-14s for healthy calls, so we want headroom.
-  // Strategy: keep caller's timeout for cloud, bump for ollama.
+  // a CPU-only mini PC. The SDK path empirically hangs at 12-14s for healthy
+  // calls, so we want headroom.
+  //
+  // The old ollama budget was 30s, sized when chat_local was qwen3:4b (2.5GB).
+  // chat_local is now gemma4:e4b (9.6GB), measured on the Mini-PC (Ryzen 7
+  // 5800H, CPU-only) with a realistic ~3.6KB router prompt at num_predict 300:
+  //     18.5s warm  ·  90.3s cold
+  // 30s therefore failed essentially always once the model went cold or the
+  // box was busy, and the fallback logged `ollama:gemma4:e4b -> timeout` on
+  // every voice turn. 75s covers warm comfortably and most cold starts.
   const baseTimeout = passthrough.timeout ?? 15_000;
   const timeoutForModel = (m) => {
-    if (m?.startsWith('ollama:')) return 30_000;
+    if (m?.startsWith('ollama:')) return 75_000;
     return baseTimeout;
   };
 
@@ -380,7 +387,24 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
 
     let yieldedAny = false;
     try {
-      const gen = askAIStream(prompt, { ...passthrough, caller, model, signal: attemptController.signal });
+      // Per-attempt timeout MUST be passed explicitly. askAIStream defaults to
+      // timeout=20000 and arms its own AbortController from it (llm.js:588-594).
+      // routeStream passes no timeout, so passthrough.timeout was undefined and
+      // every local attempt aborted at exactly 20s. The telemetry said it
+      // outright: `ollama:gemma4:e4b timeout ms=20001`.
+      //
+      // gemma4:e4b measures ~18.5s warm / ~90s cold on the Mini-PC (Ryzen 7
+      // 5800H, CPU-only) for a realistic router prompt, so it was losing that
+      // race by about a second and a half and the whole voice path answered
+      // "Sorry, I ran into a problem thinking that through."
+      //
+      // NOTE: the sibling askAIWithFallback has its own timeoutForModel/
+      // attemptTimeout — those are NOT in scope here. This is a separate
+      // function and previously had no per-attempt budget at all.
+      const attemptTimeoutMs = String(model).startsWith('ollama:')
+        ? 75_000
+        : (passthrough.timeout ?? 20_000);
+      const gen = askAIStream(prompt, { ...passthrough, timeout: attemptTimeoutMs, caller, model, signal: attemptController.signal });
       // Manual iteration so we can detect connect-time failure vs mid-stream.
       while (true) {
         let next;
