@@ -14,7 +14,7 @@
 //   ble_scan (stub), smart_home (stub)
 
 import { WebSocket } from 'ws';
-import { execFile, exec, execSync, spawn } from 'child_process';
+import { execFile, execFileSync, exec, execSync, spawn } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -844,8 +844,24 @@ async function getActiveWindow() {
         [Win32]::GetWindowText($h, $s, 256) | Out-Null
         $s.ToString()
       `.trim();
-      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${script.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`,
-        { timeout: 3000, windowsHide: true }).toString().trim();
+      // execFileSync with an ARGUMENT ARRAY, not execSync with a string.
+      // Two bugs this fixes, both of which were live:
+      //  1. execSync(string) runs the command through cmd.exe, so every poll
+      //     spawned `cmd.exe /d /s /c "powershell ..."` plus its conhost. That
+      //     is a visible console window flashing on the desktop, and
+      //     windowsHide:true does NOT suppress the intermediate cmd.exe.
+      //     No shell here means no cmd.exe at all.
+      //  2. The old code did .replace(/\n/g, ' '), collapsing the script onto a
+      //     single line — but `Add-Type @"..."@` is a PowerShell here-string and
+      //     `@"` MUST end its line. So this threw
+      //     "No characters are allowed after a here-string header" on EVERY call
+      //     and active-window detection never once worked. Passing the script as
+      //     one argv entry preserves the newlines.
+      const out = execFileSync(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        { timeout: 3000, windowsHide: true }
+      ).toString().trim();
       return out || null;
     } else if (PLATFORM === 'linux') {
       const out = execSync('xdotool getactivewindow getwindowname 2>/dev/null || wmctrl -a :ACTIVE: -v 2>&1 | head -1',
