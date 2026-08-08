@@ -1,0 +1,87 @@
+﻿<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="900">
+<title>Hardware Health - desktop-pc</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:16px;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+     background:#0e1117;color:#e6edf3}
+h1{font-size:18px;margin:0 0 2px}
+.sub{color:#8b949e;font-size:13px;margin-bottom:18px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px;margin-bottom:14px}
+.card h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#8b949e;margin:0 0 10px;font-weight:600}
+.verdict{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-bottom:6px}
+.good{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}
+.vtext{color:#8b949e;font-size:14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stat{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px}
+.stat .n{font-size:24px;font-weight:700;letter-spacing:-.02em}
+.stat .l{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+.chart{display:flex;align-items:flex-end;gap:2px;height:90px;margin-top:4px}
+.bar{flex:1;border-radius:2px 2px 0 0;min-height:2px;background:#21262d}
+.bar.bx{background:#f85149}
+.bar.post{background:#21262d}
+.bar.bx.post{background:#d29922}
+.legend{display:flex;gap:14px;font-size:11px;color:#8b949e;margin-top:8px}
+.sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td{padding:6px 0;border-bottom:1px solid #21262d}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:none}
+.muted{color:#8b949e}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.good{background:#3fb950}.dot.bad{background:#f85149}
+.foot{color:#484f58;font-size:11px;text-align:center;margin-top:18px}
+@media(prefers-color-scheme:light){
+ body{background:#f6f8fa;color:#1f2328}
+ .card{background:#fff;border-color:#d1d9e0}
+ .stat{background:#f6f8fa;border-color:#d1d9e0}
+ .bar{background:#d1d9e0}.bar.post{background:#d1d9e0}
+ td{border-color:#d1d9e0}
+}
+</style></head><body>
+
+<h1>Hardware Health</h1>
+<div class="sub">Dell G16 7630 &middot; i9-13900HX &middot; Service Tag JTSY434</div>
+
+<div class="card">
+  <h2>Is the voltage floor fix working?</h2>
+  <div class="verdict bad">STILL CLIMBING</div>
+  <div class="vtext">Rate increased despite the cap. Start planning a replacement on your own schedule.</div>
+</div>
+
+<div class="grid">
+  <div class="stat"><div class="n">11.58</div><div class="l">errors/day before fix</div></div>
+  <div class="stat"><div class="n bad">21.18</div><div class="l">errors/day since fix</div></div>
+  <div class="stat"><div class="n">135</div><div class="l">CPU errors, 60d</div></div>
+  <div class="stat"><div class="n">12</div><div class="l">hard power-offs, 60d</div></div>
+</div>
+
+<div class="card">
+  <h2>Corrected CPU errors, last 30 days</h2>
+  <div class="chart"><div class='bar b0' style='height:0%' title='2026-07-10 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-11 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-12 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-13 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-14 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-15 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-16 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-17 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-18 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-19 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-20 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-21 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-22 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-23 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-24 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-25 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-26 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-27 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-28 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-29 : 0 errors'></div><div class='bar b0' style='height:0%' title='2026-07-30 : 0 errors'></div><div class='bar bx' style='height:6%' title='2026-07-31 : 1 errors'></div><div class='bar b0' style='height:0%' title='2026-08-01 : 0 errors'></div><div class='bar bx' style='height:19%' title='2026-08-02 : 10 errors'></div><div class='bar bx' style='height:20%' title='2026-08-03 : 11 errors'></div><div class='bar bx post' style='height:100%' title='2026-08-04 : 54 errors'></div><div class='bar bx post' style='height:37%' title='2026-08-05 : 20 errors'></div><div class='bar bx post' style='height:39%' title='2026-08-06 : 21 errors'></div><div class='bar bx post' style='height:30%' title='2026-08-07 : 16 errors'></div><div class='bar bx post' style='height:6%' title='2026-08-08 : 2 errors'></div></div>
+  <div class="legend">
+    <span><span class="sw" style="background:#f85149"></span>before fix</span>
+    <span><span class="sw" style="background:#d29922"></span>after fix</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Which core</h2>
+  <table><tr><td>APIC 8</td><td class='num'>124</td></tr><tr><td>APIC 9</td><td class='num'>11</td></tr></table>
+</div>
+
+<div class="card">
+  <h2>Mitigations still applied</h2>
+  <table><tr><td>Max processor state (AC)</td><td class='num'><span class='dot good'></span>85%</td></tr><tr><td>USB selective suspend (AC)</td><td class='num'><span class='dot good'></span>disabled</td></tr><tr><td>Dock USB power management</td><td class='num'><span class='dot good'></span>6/6 excluded from power-down</td></tr></table>
+</div>
+
+<div class="card">
+  <h2>Unexpected power-offs</h2>
+  <table><tr><td>2026-08-08 06:42:09</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-08 04:48:14</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-07 15:54:02</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-06 08:08:35</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-05 05:20:28</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-05 05:10:08</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-05 03:57:53</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-04 14:56:11</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-04 11:33:10</td><td class='muted'>unexpected power-off</td></tr><tr><td>2026-08-04 10:22:08</td><td class='muted'>unexpected power-off</td></tr></table>
+</div>
+
+<div class="foot">Updated 2026-08-08 11:44 &middot; auto-refresh 15 min &middot; PAN-HardwareHealth</div>
+</body></html>
