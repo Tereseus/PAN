@@ -275,7 +275,7 @@ Three-tier hierarchy. See `docs/SUPER-CARRIER.md` for full details.
 > To reload server code (`router.js`, `claude.js`, `terminal.js`, anything under `service/src/`), **use Craft swap** (`POST /api/carrier/swap`). It only touches HTTP routing — PTYs, claude child processes, and active assistant sessions survive.
 > **Mnemonic: swap = safe, restart = death.**
 >
-> **AUTONOMOUS-MODE OVERRIDE (Tereseus — 2026-06-01):**
+> **AUTONOMOUS-MODE OVERRIDE (owner — 2026-06-01):**
 > User has standing authorization to run swaps + restarts without asking.
 > - **Craft swap (`POST /api/carrier/swap`)** — run automatically whenever code under `service/src/` has changed and the change needs to be live. Never ask first. Verify with `/api/carrier/swap-history` after.
 > - **Carrier restart (`POST /api/carrier/restart`)** — run automatically when the swap won't pick up the change (e.g., the Carrier itself was edited, port collision, the Carrier holds stale in-memory state that swap doesn't clear). The user accepts that this kills PTY/claude children; that's a known trade-off and they prefer it to broken voice/router. Do NOT prompt for permission.

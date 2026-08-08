@@ -582,7 +582,7 @@ Voice is stored per identity cluster, not separately.
 When a transcript contains a name or relationship word spoken **toward** someone
 visible in a contemporaneous webcam frame:
 - "Hey mom" → label the currently-visible cluster as "Mom" (if unlabeled)
-- "Tereseus come here" → attempt to match "Tereseus" cluster to the visible person
+- "owner come here" → attempt to match "owner" cluster to the visible person
 - Confidence weighted by how directly the utterance is addressed
 
 This is the primary way unknown clusters get labeled. No manual tagging required

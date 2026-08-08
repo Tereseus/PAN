@@ -16,12 +16,12 @@ process.stdin.on('end', () => {
       node_version: process.version
     };
     fs.writeFileSync(
-      path.join(process.env.USERPROFILE || '%USERPROFILE%', 'hook-debug.json'),
+      path.join(process.env.USERPROFILE || require('os').homedir(), 'hook-debug.json'),
       JSON.stringify(log, null, 2)
     );
   } catch (e) {
     fs.writeFileSync(
-      path.join(process.env.USERPROFILE || '%USERPROFILE%', 'hook-debug-error.txt'),
+      path.join(process.env.USERPROFILE || require('os').homedir(), 'hook-debug-error.txt'),
       e.stack || e.message || String(e)
     );
   }

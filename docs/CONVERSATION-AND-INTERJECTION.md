@@ -197,7 +197,7 @@ After **#NEW-2** and **#NEW-3** land, the router prompt grows a section like:
 
 ```
 Situation right now:
-- Commander: Tereseus (unknown at desk)
+- Commander: owner (unknown at desk)
 - Where: At The Hub
 - Focus: Phone Integration — direction: Clarifying ongoing work
 - Mood: Engaged

@@ -96,7 +96,7 @@ VALUES ('org_personal', 'personal', 'Personal', '#f5c2e7',
         CAST(strftime('%s','now') AS INTEGER) * 1000);
 
 -- Link every existing user to the personal org.
--- (Both Owner and the owner right now.)
+-- (Both seeded users right now.)
 INSERT OR IGNORE INTO memberships (user_id, org_id, joined_at)
 SELECT id, 'org_personal', CAST(strftime('%s','now') AS INTEGER) * 1000
 FROM users;

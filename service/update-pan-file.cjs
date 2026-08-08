@@ -42,7 +42,7 @@ process.stdin.on('end', () => {
     // Track the claude project dir for this cwd (so renames don't lose sessions)
     const cwdEncoded = 'C--' + cwd.replace(/^[A-Z]:[\\\/]/, '').replace(/[\\\/]/g, '-');
     const claudeProjectDir = path.join(
-      process.env.USERPROFILE || '%USERPROFILE%',
+      process.env.USERPROFILE || require('os').homedir(),
       '.claude', 'projects', cwdEncoded
     );
     if (fs.existsSync(claudeProjectDir)) {

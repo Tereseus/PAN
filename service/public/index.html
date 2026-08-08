@@ -4239,7 +4239,7 @@ function initTerminal() {
 
           const matchedProject = projectsData.find(p => p.name === s.project);
           const pid = matchedProject ? matchedProject.id : null;
-          createTab(s.id, s.project || 'Shell', s.cwd || '%USERPROFILE%\\Desktop', pid, true);
+          createTab(s.id, s.project || 'Shell', s.cwd || 'C:\\Users\\owner\\Desktop', pid, true);
           reconnected = true;
         }
       }
@@ -4655,7 +4655,7 @@ function switchTerminalProject() {
   const option = select.selectedOptions[0];
   const projectName = option.dataset.name || 'Shell';
   const projectId = parseInt(option.dataset.id) || null;
-  const cwd = value === '__shell__' ? '%USERPROFILE%\\Desktop' : value;
+  const cwd = value === '__shell__' ? 'C:\\Users\\owner\\Desktop' : value;
   const isMob = window.innerWidth <= 768;
   const prefix = isMob ? 'mob-' : 'dash-';
   const sessionId = prefix + (projectName || 'shell').toLowerCase().replace(/[^a-z0-9]/g, '-');
@@ -4675,7 +4675,7 @@ function newTerminalTab() {
   const option = select.selectedOptions?.[0];
   const projectName = (option?.dataset?.name) || 'Shell';
   const projectId = parseInt(option?.dataset?.id) || null;
-  const cwd = (!value || value === '__shell__') ? '%USERPROFILE%\\Desktop' : value;
+  const cwd = (!value || value === '__shell__') ? 'C:\\Users\\owner\\Desktop' : value;
 
   // Unique session ID with timestamp so multiple tabs per project work
   const isMob = window.innerWidth <= 768;

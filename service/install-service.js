@@ -15,10 +15,10 @@ const svc = new Service({
   nodeOptions: [],
   env: [
     { name: 'ANTHROPIC_API_KEY', value: process.env.ANTHROPIC_API_KEY || '' },
-    { name: 'USERPROFILE', value: process.env.USERPROFILE || '%USERPROFILE%' },
-    { name: 'HOME', value: process.env.USERPROFILE || '%USERPROFILE%' },
-    { name: 'APPDATA', value: process.env.APPDATA || '%USERPROFILE%\\AppData\\Roaming' },
-    { name: 'LOCALAPPDATA', value: process.env.LOCALAPPDATA || '%USERPROFILE%\\AppData\\Local' },
+    { name: 'USERPROFILE', value: process.env.USERPROFILE || require('os').homedir() },
+    { name: 'HOME', value: process.env.USERPROFILE || require('os').homedir() },
+    { name: 'APPDATA', value: process.env.APPDATA || require('path').join(require('os').homedir(),'AppData','Roaming') },
+    { name: 'LOCALAPPDATA', value: process.env.LOCALAPPDATA || require('path').join(require('os').homedir(),'AppData','Local') },
     { name: 'PATH', value: process.env.PATH || '' }
   ]
 });

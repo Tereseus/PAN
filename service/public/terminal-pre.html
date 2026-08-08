@@ -251,7 +251,7 @@ function linkify(html) {
 const params = new URLSearchParams(window.location.search);
 const sessionId = params.get('session') || 'dash-pre-test';
 const project = params.get('project') || 'PAN';
-const cwd = params.get('cwd') || '%USERPROFILE%\\Desktop\\PAN';
+const cwd = params.get('cwd') || 'C:\\Users\\owner\\Desktop\\PAN';
 const port = window.location.port || '7777';
 
 const outputEl = document.getElementById('output');

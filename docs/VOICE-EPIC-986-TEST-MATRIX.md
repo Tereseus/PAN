@@ -34,7 +34,7 @@ curl -s -X POST http://127.0.0.1:7777/api/v1/chat \
   -d '{"message":"say hi in three words","source":"dashboard"}' | jq
 ```
 **Expect:**
-- `response` ≈ "Hi there, Tereseus." (non-empty)
+- `response` ≈ "Hi there, owner." (non-empty)
 - `intent` = "query"
 - `prosody` = `{rate, pitch, segments[], importance, source}` (non-null)
 - `debug.fallback_attempts` = `null` (first attempt succeeded → no metadata surfaced)

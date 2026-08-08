@@ -1,6 +1,6 @@
 # PAN North-Star Audit
 
-*Decided 2026-07 with Tereseus. Companion to [SHIP-PLAN.md](./SHIP-PLAN.md) and
+*Decided 2026-07 with owner. Companion to [SHIP-PLAN.md](./SHIP-PLAN.md) and
 [PAN-DEPENDENCY-MAP.md](./PAN-DEPENDENCY-MAP.md). Backed by a full 354-component
 inventory (7-agent sweep of the whole codebase). This is the KEEP / TURN-OFF /
 MAYBE ledger against the new north star, plus the roadmap.*
@@ -19,7 +19,7 @@ PAN is **not** a coding environment and **not** a dashboard dev tool. All coding
 happens in terminal-native LLM tools (Claude Code CLI) + the PAN MCP server,
 which gives the same data access the dashboard used to.
 
-**THE CORE PRINCIPLE (Tereseus, verbatim): "I'm not saying delete it. Just turn
+**THE CORE PRINCIPLE (owner, verbatim): "I'm not saying delete it. Just turn
 it off."** Nothing in this audit gets deleted. Everything classified TURN-OFF is
 gated out of a new `wearable` boot profile — the code stays in the repo, `full`
 can still run it, and any of it can be turned back on. This is the existing
@@ -69,7 +69,7 @@ can still run it, and any of it can be turned back on. This is the existing
   `task` intents + `_pickClaudeControlTarget`.
 - **`/hooks/PermissionRequest`** — approve-by-voice/phone for Claude Code actions.
 
-### QR onboarding + control all my computers (confirmed CRITICAL by Tereseus)
+### QR onboarding + control all my computers (confirmed CRITICAL by owner)
 > "Control all my computers with just a QR code section of adding PAN to whatever
 > computer you want... being able to see and interact with any system via SSH."
 
@@ -144,7 +144,7 @@ state (inbox, ServiceNow/Jira/Slack watch), recent notifications/alerts, the cur
 intuition snapshot, active call, AI usage/cost. It must **never** regain a terminal,
 model picker, task CRUD, or deploy controls.
 
-- **Atlas** — Tereseus started to cut it, then said "no, we need that." Resolution:
+- **Atlas** — owner started to cut it, then said "no, we need that." Resolution:
   the **Atlas as a live system/situational map** (services + devices + what PAN is
   doing) is a legit read-only situational view → MAYBE-keep. The old *interactive*
   Atlas dev-diagram is not. (The QR/computer-control feature he pivoted to naming is

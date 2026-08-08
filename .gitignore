@@ -107,6 +107,13 @@ C:*
 Temp*
 Users*
 
-# work-tools names internal work machines (work-pc) and the employer's
+# work-tools names internal work machines and the employer's
 # tooling. This repo is PUBLIC — keep it local. Nothing imports it.
 service/src/work-tools/
+
+# .pan files are auto-generated per-machine session pointers (claude_project_dir,
+# session_history, absolute user paths). They rewrite themselves every session and
+# leak the owner's username. Local-only.
+.pan
+service/.pan
+*/.pan

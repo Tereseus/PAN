@@ -884,7 +884,7 @@ function insertScoped(req, sql, params = {}) {
 // dream/evolution cycles, etc.) used to hardcode model names as module
 // constants. When a provider retired a name (Cerebras dropping
 // qwen-3-235b-a22b-instruct-2507) or a device's installed tags changed
-// (the MiniPC having qwen3-embedding:latest instead of :0.6b), every
+// (the the local Ollama box having qwen3-embedding:latest instead of :0.6b), every
 // caller broke in a slightly different way and we had to grep + edit.
 //
 // New design: one table, one helper. Callers ask
@@ -897,13 +897,13 @@ function insertScoped(req, sql, params = {}) {
 // a model is a one-row UPDATE — no code edit, no Carrier restart.
 //
 // Provider naming convention is "provider[@device]":
-//   'ollama@minipc'   — Ollama running on the device with hostname minipc
 //   'ollama@local'        — Ollama on the same machine as PAN (single-PC setup)
+//   'ollama@<hostname>'   — Ollama on another device, e.g. 'ollama@my-mini-pc'
 //   'cerebras'            — cloud, no device suffix needed
 //   'groq', 'anthropic', 'openai' — same
 //
 // This naming is what scout.js's findDeviceWithModel + scanDeviceModels keys
-// on, so swapping the MiniPC for a new machine is just changing the suffix.
+// on, so swapping the the local Ollama box for a new machine is just changing the suffix.
 try {
   run(`CREATE TABLE IF NOT EXISTS model_selections (
     purpose TEXT PRIMARY KEY,
@@ -917,8 +917,8 @@ try {
   // Seed with the current canonical choices. INSERT OR IGNORE so we never
   // clobber a row the user has explicitly changed via the dashboard.
   const seeds = [
-    ['embedding',            'ollama@minipc', 'qwen3-embedding:0.6b', 1024, null,  'Vector embeddings — must match event_embeddings dim'],
-    ['chat_local',           'ollama@minipc', 'gemma4:e4b',           null, 131072, 'Local chat / intuition / classifier fallback'],
+    ['embedding',            'ollama@local', 'qwen3-embedding:0.6b', 1024, null,  'Vector embeddings — must match event_embeddings dim'],
+    ['chat_local',           'ollama@local', 'gemma4:e4b',           null, 131072, 'Local chat / intuition / classifier fallback'],
     // Vision + chat_local are BOTH gemma4:e4b as of 2026-08-07. History:
     // moondream (1.7GB) was the original seed and hallucinated literally every
     // screenshot — "circles" on a Godot editor capture, and "blue background
@@ -937,7 +937,7 @@ try {
     // One model for both purposes also stops the Mini-PC thrashing between a
     // 5.5GB and a 2.5GB model on every alternating call. gemma4 additionally
     // accepts audio (<=30s clips), which nothing in the old stack could do.
-    ['vision',               'ollama@minipc', 'gemma4:e4b',           null, null,  'Screen + webcam + audio understanding'],
+    ['vision',               'ollama@local', 'gemma4:e4b',           null, null,  'Screen + webcam + audio understanding'],
     ['reasoning_cloud',      'cerebras',          'qwen-3-235b',          null, null,  'Smart cloud reasoning (substituted by Scout if retired)'],
     ['chat_cloud_fallback',  'anthropic',         'claude-haiku-4-5-20251001', null, null, 'Universal fallback when local + reasoning_cloud both fail'],
   ];
@@ -1021,7 +1021,7 @@ export function listModelSelections() {
 //                                        survives reboots because Tailscale
 //                                        keeps the same node-IP, and the
 //                                        client's WS heartbeat keeps the row
-//                                        fresh so the dashboard's "MiniPC has
+//                                        fresh so the dashboard's "the local Ollama box has
 //                                        Ollama" knowledge is never stale.
 //   4. localhost:11434 fallback        — single-machine setup
 //
@@ -1052,7 +1052,7 @@ export function getOllamaUrl() {
 
   // (3) Auto-discover from devices that EVER reported ollama:up. We don't
   // filter by last_seen because Tailscale node IPs are stable across reboots
-  // and offline windows — if the MiniPC was enrolled once with Ollama, that
+  // and offline windows — if the the local Ollama box was enrolled once with Ollama, that
   // IP is the right target whenever it comes back up. Prefer most-recently-
   // seen device so the latest known good host wins. Steward + the embeddings
   // backfill back off naturally if the chosen URL doesn't actually answer.

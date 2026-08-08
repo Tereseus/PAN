@@ -1,7 +1,8 @@
+const path = require('path');
 const { spawn } = require('child_process');
 
 const cmdExe = 'C:\\Windows\\System32\\cmd.exe';
-const batFile = '%USERPROFILE%\\Desktop\\PAN\\do_build.bat';
+const batFile = path.join(__dirname, 'do_build.bat');
 
 console.log('Running build bat...');
 

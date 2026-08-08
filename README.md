@@ -325,4 +325,4 @@ At ~1.5 MB/day for text data, 256 GB lasts decades. With pendant photos, ~50-100
 ---
 
 **License:** Open Source
-**Created by:** [Tereseus](https://github.com/Tereseus)
+**Created by:** [owner](https://github.com/Tereseus)

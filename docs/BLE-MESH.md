@@ -67,7 +67,7 @@ The beacon is just a local radio signal, like a lighthouse.
 ## Mode 2 — Peer (PAN-to-PAN Contact Communication)
 
 ```
-DEVICE A (Tereseus's phone)          DEVICE B (contact's phone)
+DEVICE A (owner's phone)          DEVICE B (contact's phone)
     │                                     │
     │── BLE advertisement (low power) ───▶│
     │   Contains: PAN presence token       │
@@ -223,7 +223,7 @@ TRUST LEVEL (continuous score, 0-100)
          │                  │                  │
          ▼                  ▼                  ▼
    PAN Device A       PAN Device B       PAN Device C
-   (Tereseus)         (contact)          (stranger)
+   (owner)         (contact)          (stranger)
          │                  │                  │
     In org?            In org?            In org?
     YES → act          YES → act          NO → ignore

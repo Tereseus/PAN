@@ -212,7 +212,7 @@ auto-recovery loop.
 ### `webcam-watcher` — presence + identity (every 30s)
 **File:** invoked indirectly via `vision` caller path.
 **What it does:** Reads the webcam frame, runs face-id (now in
-worker thread per task #59) + a vision description ("Tereseus at
+worker thread per task #59) + a vision description ("owner at
 their desk, focused").
 **Models:** `face-api.js` for identity + `minicpm-v` for description.
 

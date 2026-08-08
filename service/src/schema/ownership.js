@@ -98,7 +98,7 @@ export function ensureOwnershipSchema(db) {
   //     and routes/preferences.js. Adding a parallel table was a duplication
   //     mistake in an earlier draft of T1.
 
-  // 4. Backfill: assign all existing devices to user 1 (Tereseus, the seeded owner)
+  // 4. Backfill: assign all existing devices to user 1 (owner, the seeded owner)
   //    where owner_user_id is NULL. One-shot — re-running is a no-op.
   try {
     const r = db.prepare(
