@@ -755,6 +755,17 @@
 		} catch { return null; }
 	}
 
+	// Pull the served image URL from a body_type='image' capture message.
+	// Same metadata-shape tolerance as extractDebug (object or JSON string).
+	function extractImageUrl(msg) {
+		try {
+			const meta = msg?.metadata;
+			if (!meta) return null;
+			const m = typeof meta === 'string' ? JSON.parse(meta) : meta;
+			return m && m.imageUrl ? m.imageUrl : null;
+		} catch { return null; }
+	}
+
 	function formatDate(ts) {
 		if (!ts) return '';
 		// SQLite datetime('now') returns "2026-04-22 21:13:10" (UTC, no timezone suffix).
@@ -860,6 +871,17 @@
 									<summary>{'\uD83E\uDDE0'} PAN intuition · {formatDate(msg.created_at)}</summary>
 									<pre class="intuition-body">{msg.body}</pre>
 								</details>
+							{:else if msg.body_type === 'image'}
+								{@const imgUrl = extractImageUrl(msg)}
+								<div class="chat-bubble" class:self={msg.sender_id === 'self'}>
+									{#if imgUrl}
+										<a href={imgUrl} target="_blank" rel="noopener">
+											<img class="bubble-image" src={imgUrl} alt={msg.body || 'Photo'} />
+										</a>
+									{/if}
+									{#if msg.body && msg.body !== 'Photo'}<div class="bubble-text">{msg.body}</div>{/if}
+									<div class="bubble-time">{formatDate(msg.created_at)}</div>
+								</div>
 							{:else}
 								<div class="chat-bubble" class:self={msg.sender_id === 'self'}>
 									<div class="bubble-text">{msg.body}</div>
@@ -1264,6 +1286,7 @@
 	}
 	.chat-bubble:not(.self) { border-bottom-left-radius: 4px; }
 	.bubble-text { font-size: 13px; line-height: 1.4; }
+	.bubble-image { display: block; max-width: 240px; max-height: 240px; border-radius: 8px; margin-bottom: 4px; }
 	.bubble-time { font-size: 10px; color: #6c7086; margin-top: 2px; text-align: right; }
 
 	.chat-input-bar {
