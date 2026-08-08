@@ -22,6 +22,13 @@ import javax.inject.Singleton
  *
  * Automatically restarts after each utterance to stay always-listening.
  * Pauses processing while TTS is speaking to avoid echo.
+ *
+ * IMPORTANT (2026-07-15 fix): the recognizer instance is REUSED across
+ * utterances. The previous code destroyed + recreated it on every result
+ * and every error, which (a) made the on-device recognition service throw
+ * ERROR_SERVER_DISCONNECTED (11) in a tight loop, and (b) opened a fresh
+ * mic-warmup gap each cycle that swallowed the user's first word. We now
+ * reuse one instance and only recreate on a HARD error, with backoff.
  */
 @Singleton
 class GoogleStreamingStt @Inject constructor(
@@ -31,9 +38,14 @@ class GoogleStreamingStt @Inject constructor(
     companion object {
         private const val TAG = "GoogleSTT"
         private const val RESTART_DELAY_MS = 300L
+        // Backoff after a HARD recognizer error (service disconnected / busy / client /
+        // server). Tight-looping a restart on ERROR 11 was the churn source — see onError().
+        private const val HARD_ERROR_BACKOFF_MS = 700L
     }
 
     private var recognizer: SpeechRecognizer? = null
+    private var recognitionListener: RecognitionListener? = null
+    private var hardErrors = 0   // consecutive hard errors → escalating backoff
     private var callback: ((String, Boolean) -> Unit)? = null
     private var _enabled = true
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -52,7 +64,12 @@ class GoogleStreamingStt @Inject constructor(
     // Track what PAN said recently for echo stripping
     private val recentTtsOutput = mutableListOf<String>()
     private val ttsTimestamps = mutableListOf<Long>()
-    private val TTS_ECHO_WINDOW_MS = 1000L
+    // Was 1000ms. Echo transcripts finalize ~4-5s AFTER PAN speaks (the recognizer waits out
+    // a 3-4s silence timeout before emitting a final), so a 1s window let PAN's own words
+    // sail through as a "user" command. 8s covers the finalize latency without holding
+    // phrases so long they'd clobber a genuine follow-up that reuses PAN's words.
+    // (2026-07-15 echo fix.)
+    private val TTS_ECHO_WINDOW_MS = 8000L
 
     var enabled: Boolean
         get() = _enabled
@@ -161,101 +178,142 @@ class GoogleStreamingStt @Inject constructor(
         }
 
         try {
-            recognizer?.destroy()
-
             // Mute system beeps before starting recognizer
             muteBeep()
 
-            // Use standard recognizer — on-device throws ERROR 11 on some Pixels
-            recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-
-            recognizer?.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {
-                    isListening = true
-                    log("Listening...")
+            // Reuse a single recognizer instance across utterances. Destroying +
+            // recreating it every cycle is what caused the ERROR_SERVER_DISCONNECTED (11)
+            // churn and the mic-warmup gap that ate the user's first word.
+            if (recognizer == null) {
+                recognizer = SpeechRecognizer.createSpeechRecognizer(context).also {
+                    it.setRecognitionListener(buildListener())
                 }
-
-                override fun onBeginningOfSpeech() {
-                    // User started talking — interrupt TTS if playing
-                    if (isTtsSpeaking?.invoke() == true) {
-                        onInterrupt?.invoke()
-                    }
-                }
-
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val texts = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    val partial = texts?.firstOrNull() ?: return
-                    // If actual words are being recognized while TTS is playing,
-                    // that's the user talking — interrupt TTS immediately
-                    if (partial.isNotBlank() && isTtsSpeaking?.invoke() == true) {
-                        onInterrupt?.invoke()
-                    }
-                }
-
-                override fun onResults(results: Bundle?) {
-                    val texts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    val finalText = texts?.firstOrNull() ?: ""
-
-                    if (finalText.isNotBlank()) {
-                        // If TTS was speaking during this recognition, it's echo — discard
-                        if (isTtsSpeaking?.invoke() == true) {
-                            log("Discarded (TTS speaking): $finalText")
-                        } else {
-                            val userSpeech = stripEcho(finalText)
-                            if (userSpeech.isNotBlank()) {
-                                log("Final: $userSpeech")
-                                callback?.invoke(userSpeech, true)
-                            } else {
-                                log("Echo filtered: $finalText")
-                            }
-                        }
-                    }
-
-                    // Auto-restart — but wait if TTS is speaking
-                    restartListening()
-                }
-
-                override fun onError(error: Int) {
-                    val errorName = when (error) {
-                        SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
-                        SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
-                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "PERMISSIONS"
-                        SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
-                        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
-                        SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
-                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "BUSY"
-                        SpeechRecognizer.ERROR_SERVER -> "SERVER"
-                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
-                        else -> "UNKNOWN($error)"
-                    }
-
-                    // Log ALL errors for debugging (NO_MATCH/SPEECH_TIMEOUT are normal but still useful to know)
-                    log("Error: $errorName")
-
-                    // Always restart
-                    restartListening()
-                }
-
-                override fun onEndOfSpeech() {
-                    isListening = false
-                }
-
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
+            } else {
+                // Reset any lingering session before re-arming so startListening doesn't BUSY.
+                try { recognizer?.cancel() } catch (_: Exception) {}
+            }
 
             recognizer?.startListening(createRecognizerIntent())
-            log("Recognizer started (available=${SpeechRecognizer.isRecognitionAvailable(context)})")
+            log("Recognizer listening (reuse)")
         } catch (e: Exception) {
             log("Failed to start: ${e.message}")
-            // Retry after delay
-            mainScope.launch {
-                delay(RESTART_DELAY_MS * 3)
-                if (_enabled) startRecognizer()
-            }
+            recreateSoon(RESTART_DELAY_MS * 3)
         }
+    }
+
+    /** Destroy the current recognizer and start a fresh one after [delayMs] — used only for
+     *  hard errors where the recognition service itself is wedged. */
+    private fun recreateSoon(delayMs: Long) {
+        try { recognizer?.destroy() } catch (_: Exception) {}
+        recognizer = null
+        mainScope.launch {
+            delay(delayMs)
+            if (_enabled) startRecognizer()
+        }
+    }
+
+    private fun errorName(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
+        SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "PERMISSIONS"
+        SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
+        SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "BUSY"
+        SpeechRecognizer.ERROR_SERVER -> "SERVER"
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
+        SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "SERVER_DISCONNECTED"
+        else -> "UNKNOWN($error)"
+    }
+
+    private fun buildListener(): RecognitionListener {
+        recognitionListener?.let { return it }
+        val l = object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                isListening = true
+                log("Listening...")
+            }
+
+            override fun onBeginningOfSpeech() {
+                // User started talking — interrupt TTS if playing
+                if (isTtsSpeaking?.invoke() == true) {
+                    onInterrupt?.invoke()
+                }
+            }
+
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val texts = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val partial = texts?.firstOrNull() ?: return
+                // If actual words are being recognized while TTS is playing,
+                // that's the user talking — interrupt TTS immediately
+                if (partial.isNotBlank() && isTtsSpeaking?.invoke() == true) {
+                    onInterrupt?.invoke()
+                }
+            }
+
+            override fun onResults(results: Bundle?) {
+                hardErrors = 0  // a clean result means the service is healthy again
+                val texts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val finalText = texts?.firstOrNull() ?: ""
+
+                if (finalText.isNotBlank()) {
+                    // If TTS was speaking during this recognition, it's echo — discard
+                    if (isTtsSpeaking?.invoke() == true) {
+                        log("Discarded (TTS speaking): $finalText")
+                    } else {
+                        val userSpeech = stripEcho(finalText)
+                        if (userSpeech.isNotBlank()) {
+                            log("Final: $userSpeech")
+                            callback?.invoke(userSpeech, true)
+                        } else {
+                            log("Echo filtered: $finalText")
+                        }
+                    }
+                }
+
+                // Auto-restart — but wait if TTS is speaking
+                restartListening()
+            }
+
+            override fun onError(error: Int) {
+                val name = errorName(error)
+                // Log ALL errors for debugging (NO_MATCH/SPEECH_TIMEOUT are normal but useful)
+                log("Error: $name")
+
+                when (error) {
+                    // HARD errors: the recognition service died / is wedged. Recreating on a
+                    // backoff (instead of hammering startListening) is what stops the ERROR 11
+                    // storm. If TTS/query is in-flight we defer to restartListening's wait loop.
+                    SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
+                    SpeechRecognizer.ERROR_CLIENT,
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+                    SpeechRecognizer.ERROR_SERVER -> {
+                        hardErrors++
+                        if (queryPending || isTtsSpeaking?.invoke() == true) {
+                            restartListening()
+                        } else {
+                            recreateSoon(HARD_ERROR_BACKOFF_MS * hardErrors.coerceAtMost(5))
+                        }
+                    }
+                    // SOFT errors (no speech / timeout): normal end-of-utterance — just re-arm.
+                    else -> {
+                        hardErrors = 0
+                        restartListening()
+                    }
+                }
+            }
+
+            override fun onEndOfSpeech() {
+                isListening = false
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        }
+        recognitionListener = l
+        return l
     }
 
     private fun restartListening() {
@@ -282,14 +340,21 @@ class GoogleStreamingStt @Inject constructor(
 
     override fun stopListening() {
         isListening = false
-        try { recognizer?.stopListening() } catch (_: Exception) {}
-        try { recognizer?.destroy() } catch (_: Exception) {}
-        recognizer = null
+        // Cancel (do NOT destroy) so the warm recognizer is REUSED on the next start.
+        // Destroying here reopened the ~200-500ms mic-warmup gap that swallowed the
+        // user's first word right after PAN finished speaking (e.g. "when do you
+        // contemplate it" arriving as "you contemplate it"). While cancelled the
+        // instance isn't capturing, so it can't echo during TTS. Full teardown is
+        // done only in destroy(). (2026-07-15 first-word fix #2.)
+        try { recognizer?.cancel() } catch (_: Exception) {}
     }
 
     fun destroy() {
         _enabled = false
-        stopListening()
+        isListening = false
+        try { recognizer?.cancel() } catch (_: Exception) {}
+        try { recognizer?.destroy() } catch (_: Exception) {}
+        recognizer = null
         mainScope.cancel()
     }
 }

@@ -105,6 +105,79 @@ class PanServerClient @Inject constructor(
         }
     }
 
+    /**
+     * Capture pipe — upload the actual photo bytes (not just the spoken
+     * description) so the IMAGE reaches the desktop: POSTs base64 JSON to
+     * /api/v1/capture, which writes public/captures/cap_<ts>.jpg and posts an
+     * image message to the Π thread. Best-effort: catch + log, never throw —
+     * a failed upload must not delay or break the voice reply.
+     */
+    suspend fun uploadCapture(imageBytes: ByteArray, caption: String?, question: String?, onDevice: Boolean = false) = withContext(Dispatchers.IO) {
+        try {
+            val deviceId = android.os.Build.MODEL.lowercase().replace(" ", "-")
+            val base64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
+            val body = JSONObject().apply {
+                put("image_base64", base64)
+                if (!caption.isNullOrBlank()) put("caption", caption)
+                if (!question.isNullOrBlank()) put("question", question)
+                put("device_id", deviceId)
+                // Tells the server this was analyzed on-device (Nano), so it writes
+                // the VisionAnalysis memory event that /vision would have written.
+                put("on_device", onDevice)
+            }.toString().toRequestBody("application/json".toMediaType())
+
+            // Same base-URL machinery as the streaming calls — the OkHttp
+            // interceptor rewrites to Tailscale when active.
+            val request = Request.Builder()
+                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/capture")
+                .post(body)
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w("Capture", "Upload failed: ${response.code}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("Capture", "Upload failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Slack bridge reply — POST {channelId, text} to /api/v1/slack/reply.
+     * The hub relays it to the scoped work-pc client which posts it to Slack
+     * as the user. Raw-OkHttp style (same as uploadCapture) so the OkHttp
+     * interceptor rewrites the base URL to Tailscale when active. Returns true
+     * only when the hub reports the reply was accepted (HTTP 2xx + {ok:true}).
+     */
+    suspend fun sendSlackReply(channelId: String, text: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply {
+                put("channelId", channelId)
+                put("text", text)
+            }.toString().toRequestBody("application/json".toMediaType())
+
+            val request = Request.Builder()
+                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/slack/reply")
+                .post(body)
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Slack reply failed: HTTP ${response.code}")
+                    return@withContext false
+                }
+                val ok = try {
+                    JSONObject(response.body?.string() ?: "{}").optBoolean("ok", true)
+                } catch (_: Exception) { true }
+                ok
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Slack reply failed: ${e.message}")
+            false
+        }
+    }
+
     suspend fun recall(text: String): String? {
         return try {
             val response = api.recall(QueryRequest(text))

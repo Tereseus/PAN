@@ -14,8 +14,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.4.3"
+        versionCode = 11
+        versionName = "0.4.8"
         ndk {
             // Phones are arm64 — ship only that ABI. Drops the x86/x86_64/armeabi-v7a
             // copies of sherpa-onnx (Piper), onnxruntime, and gojni (Tailscale): ~100 MB.
@@ -96,6 +96,9 @@ dependencies {
     // On-device AI — ML Kit GenAI Summarization uses the phone's built-in Gemini Nano
     // Used for on-device text classification (summarization API doubles as classifier)
     implementation("com.google.mlkit:genai-summarization:1.0.0-beta1")
+    // NanoVision — on-device image description (Gemini Nano). Captions "what is this?"
+    // photos on the phone (free, private, no cloud); server path stays as fallback.
+    implementation("com.google.mlkit:genai-image-description:1.0.0-beta1")
     // Also need guava-android for .await() on Tasks
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.7.3")
     // MediaPipe (bundles 1-2GB model) and llama.cpp REMOVED — not needed
