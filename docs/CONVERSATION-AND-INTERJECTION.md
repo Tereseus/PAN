@@ -212,6 +212,11 @@ The model now answers grounded in continuity. The "database lookup" stops being 
 
 After **#NEW-4** lands, PAN gains the symmetric ability — when intuition concludes "Commander is stuck on the same error 3× in 10min", deliberation produces a `conv:stuck` candidate, dispatchAction fires, the phone speaks "Want me to throw this at Scout?" without the user asking.
 
+## Update 2026-07-15 — this doc is partly stale, reconcile
+
+- **R6/R7 (getCurrentSnapshot, recentThoughts) are NOT missing anymore.** `router.js` now imports `getCurrentSnapshot` + `recentThoughts` (lines ~20-22) and builds a situation block + recent-mind block into the prompt (`router.js:~409`, marked `#NEW-2/#NEW-3`). The ❌ rows above are out of date — verify the exact wiring and flip them to ✅/⚠️.
+- **NEW keystone: server-side conversation-memory guarantee (reactive loop).** The phone `/api/v1/query` and `/api/v1/query/stream` handlers forwarded only the client-sent `context` as `conversation_history`; the phone's plain voice path sends `null`, so most voice turns were COLD (PAN forgot its own last reply). Fixed in `api.js`: when `context` is empty/short, the server rebuilds the thread from the last 16 text turns on `thread-pan-system` (30-min window). Conversation state is now a SERVER guarantee, device-agnostic (phone/pendant/desktop share one thread). Next: (B) phone always sends its buffer; (C) feed the live dialogue into the intuition snapshot. See memory `project_pan_conversation_memory`.
+
 ## See also
 
 - [PAN-ARCHITECTURE.md](./PAN-ARCHITECTURE.md) — what each section IS (Intuition cortex, sub-sections 1–5)
