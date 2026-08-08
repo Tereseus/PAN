@@ -297,7 +297,7 @@ router.get('/voice/:id', (req, res) => {
 //
 // POST /api/v1/identity/enroll-face
 //   body: { base64: 'data:image/jpeg;base64,...' | '...raw base64...',
-//           label?: 'Tereseus' }
+//           label?: 'owner' }
 //   resp: { ok, enrolledCount, label, savedAs?, error? }
 //
 // The webcam watcher's face-id worker keeps an in-memory descriptor set. By

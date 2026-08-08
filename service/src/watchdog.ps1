@@ -12,7 +12,7 @@
 $ErrorActionPreference = "Continue"
 
 # === CONFIG ===
-$PanDir = "%USERPROFILE%\OneDrive\Desktop\PAN"
+$PanDir = "$env:USERPROFILE\OneDrive\Desktop\PAN"
 $ServiceDir = "$PanDir\service"
 $LogFile = "$env:LOCALAPPDATA\PAN\data\steward.log"
 $CheckInterval = 30

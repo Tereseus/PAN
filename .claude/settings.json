@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"%USERPROFILE%/Desktop/PAN/service/src/hooks/bug-logging-rule.js\"",
+            "command": "node \"service/src/hooks/bug-logging-rule.js\"",
             "timeout": 5000
           }
         ]

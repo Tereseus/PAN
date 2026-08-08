@@ -980,7 +980,7 @@ const _SERVICES_TTL_MS = 3000;
 // timer; /api/services just reads this. This decouples request latency
 // from network probes — previously the dashboard paid the full Ollama
 // timeout (3s) on every cold sidebar refresh because Ollama is on a
-// remote MiniPC over Tailscale and probes can be slow even when up.
+// remote the local Ollama box over Tailscale and probes can be slow even when up.
 const _externalProbeSnapshot = {
   ts: 0,
   health:  { status: 'pending', value: null },

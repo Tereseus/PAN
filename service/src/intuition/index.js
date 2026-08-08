@@ -878,7 +878,7 @@ function persistSnapshot(snap, trigger) {
 // Fires after each tick to fill in axes that the aggregator can't determine.
 // Model selection now reads from model_selections via getModelForPurpose
 // so swapping the cloud model is a one-row DB edit, not a code change.
-// Local fallback uses chat_local (currently qwen3:4b on the MiniPC).
+// Local fallback uses chat_local (currently qwen3:4b on the the local Ollama box).
 let _classifyPending = false;
 function _classifyModels() {
   const refs = [];

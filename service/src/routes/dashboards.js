@@ -1,7 +1,7 @@
 // PAN Dashboard Registry — the list of purpose-built HTML monitoring dashboards
 // PAN knows about.
 //
-// Design (Tereseus, 2026-07): instead of one universal dashboard + a universal
+// Design (owner, 2026-07): instead of one universal dashboard + a universal
 // remote poller (which proved a dead end), each thing worth watching gets its
 // own plain-HTML page fed by its own push scripts — WoE, ServiceNow, ops, etc.
 // These often live on a different host/port (localhost:877x, 100.86.16.10:8791,

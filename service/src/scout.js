@@ -112,7 +112,7 @@ try {
 // Why a table and not hardcoded constants in embeddings.js / llm.js:
 //  - The user controls what's actually installed on each device. PAN
 //    learns it by probing /api/tags, not by guessing.
-//  - When the user runs `ollama pull <model>` on the MiniPC, the next
+//  - When the user runs `ollama pull <model>` on the the local Ollama box, the next
 //    Scout sweep picks it up — code doesn't need to be redeployed.
 //  - findDeviceWithModel(name) lets callers ask "who has *this exact
 //    model name*?" which is critical for embeddings (1024-dim qwen3-

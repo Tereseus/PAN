@@ -2,8 +2,8 @@
 # Runs via Windows Task Scheduler. Completely outside PAN/Steward.
 # Checks port 7777 every 60s. If dead, kills stuck processes and relaunches pan-loop.bat.
 
-$PANDir    = "%USERPROFILE%\Desktop\PAN\service"
-$LogFile   = "%USERPROFILE%\AppData\Local\PAN\data\guardian.log"
+$PANDir    = "$env:USERPROFILE\Desktop\PAN\service"
+$LogFile   = "$env:USERPROFILE\AppData\Local\PAN\data\guardian.log"
 $LoopBat   = "$PANDir\pan-loop.bat"
 $CheckPort = 7777
 $Interval  = 60   # seconds between health checks

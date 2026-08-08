@@ -1,6 +1,6 @@
 # Handoff — PAN Wearable Refactor (resume here)
 
-*Written 2026-07-13 at a context limit. A fresh session (or Tereseus) picks up
+*Written 2026-07-13 at a context limit. A fresh session (or owner) picks up
 from this. Read [NORTH-STAR-AUDIT.md](./NORTH-STAR-AUDIT.md) first — this is the
 "what's next + how" companion.*
 
@@ -71,7 +71,7 @@ Two findings reshaped this step:
 1. The `/mobile` page is **already** a full situational view (11 tabs: intuition,
    usage, alerts, tasks, services, devices, sensors, events). Hand-coding more
    widgets would duplicate it.
-2. **New direction (Tereseus, 2026-07):** don't build one universal dashboard or
+2. **New direction (owner, 2026-07):** don't build one universal dashboard or
    poller. Each thing worth watching gets its **own purpose-built HTML page fed
    by its own push scripts** (WoE, ServiceNow, ops…), each on its own host/port
    (`localhost:877x`, `100.86.16.10:8791`, different IPs). PAN holds a
@@ -98,7 +98,7 @@ test reachability anyway — it's where you open them. PAN's hub Tailscale IP is
 
 What's left on Step 3:
 - **ServiceNow (A360) dashboard is REGISTERED** (id 4, `http://100.86.16.10:8791`,
-  confirmed reachable). Still to register: the **WoE** dashboard (Tereseus said
+  confirmed reachable). Still to register: the **WoE** dashboard (owner said
   ~port `877x`, a different IP — need the exact host:port). Add via the phone's
   **+ Add** or POST to the registry.
 - The genuine remaining watch-gap is a **work-systems glance** (inbox +
@@ -114,7 +114,7 @@ Once wearable is the daily driver, wire the pendant firmware's frame+audio strea
 into PAN's capture (`/api/v1/vision` + `/api/v1/audio` or a new pendant endpoint)
 so intuition sees/hears live.
 
-### Also on the list (from Tereseus)
+### Also on the list (from owner)
 - **Per-device capture control** — PARTIALLY SHIPPED. `capture-consent.js` now
   has device-aware consent (`isDeviceCaptureOn`/`setDeviceCaptureConsent`, key
   `capture_<name>@<device_id>`, default ON). `GET /api/v1/capture` returns a

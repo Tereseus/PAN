@@ -79,7 +79,7 @@ function _resolveEnrolledLabel() {
     const row = get("SELECT value FROM settings WHERE key = 'display_name'");
     if (row?.value) return String(row.value).replace(/^"|"$/g, '');
   } catch {}
-  return 'Tereseus';
+  return 'owner';
 }
 
 function _spawnWorker() {

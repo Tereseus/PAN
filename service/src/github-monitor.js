@@ -8,7 +8,7 @@ import { execSync } from 'child_process';
 import { get, run, logEvent } from './db.js';
 import { registerJobType, upsertJob } from './jobs.js';
 
-const GITHUB_USER = 'Tereseus';
+const GITHUB_USER = 'owner';
 const SETTINGS_KEY = 'github_monitor_last_check';
 
 let intervalHandle = null;

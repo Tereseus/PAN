@@ -1,6 +1,7 @@
+const path = require('path');
 const { spawn } = require('child_process');
 
-const androidDir = '%USERPROFILE%\\Desktop\\PAN\\android';
+const androidDir = path.join(__dirname, 'android');
 const javaHome = 'C:\\Program Files\\Android\\Android Studio\\jbr';
 const cmdExe = 'C:\\Windows\\System32\\cmd.exe';
 
@@ -11,7 +12,7 @@ const env = Object.assign({}, process.env, { JAVA_HOME: javaHome });
 // Write a temp bat file to avoid quoting issues
 const fs = require('fs');
 const batContent = `@echo off\r\ncd /d ${androidDir}\r\ncall gradlew.bat assembleDebug\r\n`;
-const batFile = '%USERPROFILE%\\Desktop\\PAN\\do_build.bat';
+const batFile = path.join(__dirname, 'do_build.bat');
 fs.writeFileSync(batFile, batContent);
 
 console.log('Running:', batFile);

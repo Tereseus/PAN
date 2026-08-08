@@ -1,14 +1,15 @@
+const os = require('os');
 const { spawn } = require('child_process');
 const path = require('path');
 
 const cmdExe = 'C:\\Windows\\System32\\cmd.exe';
-const apkPath = '%USERPROFILE%\\Desktop\\PAN\\android\\app\\build\\outputs\\apk\\debug\\app-debug.apk';
+const apkPath = path.join(__dirname, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
 
 // Find adb
 const adbPaths = [
   process.env.LOCALAPPDATA + '\\Android\\Sdk\\platform-tools\\adb.exe',
   process.env.APPDATA + '\\..\\Local\\Android\\Sdk\\platform-tools\\adb.exe',
-  '%USERPROFILE%\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe',
+  path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Android', 'Sdk', 'platform-tools', 'adb.exe'),
 ];
 
 const fs = require('fs');

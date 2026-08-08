@@ -18,7 +18,7 @@
 // Why this matters: the old hardcoded `ollama:qwen2.5:14b` was wrong for
 // this user's hardware (CPU-only mini PC) — 14B params is ~3 min/query.
 // The registry now picks `chat_local` which seeds to `qwen3:4b`, the
-// model actually pulled on the MiniPC and realistic for CPU inference.
+// model actually pulled on the the local Ollama box and realistic for CPU inference.
 //
 // Retriable errors (will trigger fallback):
 //   • HTTP 429 (rate limit)
@@ -404,7 +404,29 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
       const attemptTimeoutMs = String(model).startsWith('ollama:')
         ? 75_000
         : (passthrough.timeout ?? 20_000);
-      const gen = askAIStream(prompt, { ...passthrough, timeout: attemptTimeoutMs, caller, model, signal: attemptController.signal });
+
+      // Local models need a BIGGER token budget than the cloud ones, not the
+      // same. routeStream sends maxTokens:300, which is plenty for Cerebras or
+      // Claude — they emit the JSON envelope tersely. gemma4 is verbose: it
+      // needs ~419 tokens to close the object. At 300 it is cut off mid-JSON
+      // and Ollama returns done_reason:"length" with an EMPTY response field,
+      // so extractResponseField finds nothing and the chain logs "empty-stream"
+      // after burning the full inference time. Measured on gemma4:e2b with the
+      // real router prompt:
+      //     num_predict 300  -> eval_count 300, done_reason length, response ""
+      //     num_predict 1200 -> eval_count 419, done_reason stop,   valid JSON
+      // This is almost certainly what made qwen3:4b look like it "returned
+      // empty" too — same ceiling, not a <think> problem.
+      const maxTokensForModel = String(model).startsWith('ollama:')
+        ? Math.max(passthrough.maxTokens ?? 300, 1200)
+        : passthrough.maxTokens;
+
+      const gen = askAIStream(prompt, {
+        ...passthrough,
+        timeout: attemptTimeoutMs,
+        maxTokens: maxTokensForModel,
+        caller, model, signal: attemptController.signal,
+      });
       // Manual iteration so we can detect connect-time failure vs mid-stream.
       while (true) {
         let next;

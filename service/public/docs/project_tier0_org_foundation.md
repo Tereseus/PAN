@@ -18,7 +18,7 @@ type: project
 
 | Table | Rows | Notes |
 |---|---|---|
-| `users` | 2 | INTEGER id. Has `email`, `display_name`, `avatar_url`, `role` (TEXT), `is_active`, `created_at`, `last_login`. Existing rows: id 1 = Owner, id 2 = <owner-email> (the owner, Google OAuth). |
+| `users` | 2 | INTEGER id. Has `email`, `display_name`, `avatar_url`, `role` (TEXT), `is_active`, `created_at`, `last_login`. Existing rows: id 1 = Owner, id 2 = the owner's Google account (gle OAuth). |
 | `roles` | 5 | INTEGER id. Has `name`, `level`, `permissions` (JSON), `color`. Existing roles include viewer, user, admin, owner (system roles). |
 | `user_oauth` | 1 | Links `user_id` to OAuth providers. Google already wired up. |
 | `api_tokens` | 8 | Per-user tokens with `scopes` JSON. Used for dev access. |
@@ -471,7 +471,7 @@ Pseudocode for `service/src/migrations/run.js`:
 4. **`memberships.user_id` is INTEGER**, references existing `users.id`
 5. **Existing `roles.permissions` column** is reused (was going to be `permissions_json`)
 6. **`sensor_toggles` is a new layer** on top of existing `device_sensors` (which has its own `muted` and `policy` columns we should respect)
-7. **Backfill links both existing users** (Owner + the owner), not just one
+7. **Backfill links both existing users** (both seeded users), not just one
 8. **Phase 2 is new** — wiring middleware into routes is its own phase, separated from schema migration so we can verify each step
 
 ## Open questions for later (not blocking)

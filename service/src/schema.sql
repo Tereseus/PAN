@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Seed default owner user (idempotent)
-INSERT OR IGNORE INTO users (id, email, display_name, role) VALUES (1, 'owner@localhost', 'Tereseus', 'owner');
+INSERT OR IGNORE INTO users (id, email, display_name, role) VALUES (1, 'owner@localhost', 'owner', 'owner');
 
 -- OAuth provider links (one user can link multiple providers)
 CREATE TABLE IF NOT EXISTS user_oauth (
@@ -802,7 +802,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_benchmark_model ON ai_benchmark(model);
 CREATE TABLE IF NOT EXISTS voice_prints (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER,                          -- NULL = anonymous enrolled speaker
-  label TEXT NOT NULL,                      -- display name, e.g. "Tereseus"
+  label TEXT NOT NULL,                      -- display name, e.g. "owner"
   embedding BLOB NOT NULL,                  -- 256-dim float32 numpy array, raw bytes
   sample_count INTEGER NOT NULL DEFAULT 1,  -- number of samples averaged in
   created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),

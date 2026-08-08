@@ -2,7 +2,7 @@
 name = "pan-shell"
 version = "0.1.0"
 description = "PAN Desktop Shell"
-authors = ["the owner"]
+authors = ["PAN contributors"]
 edition = "2021"
 
 [lib]

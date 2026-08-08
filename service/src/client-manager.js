@@ -476,7 +476,7 @@ function handleHeartbeat(deviceId, msg) {
 
     // Invalidate the dynamic-Ollama URL cache whenever a client reports a
     // change in its service list. Otherwise a 30-second-stale URL keeps
-    // pointing at the old host after the MiniPC reboots / Ollama restarts
+    // pointing at the old host after the the local Ollama box reboots / Ollama restarts
     // / Tailscale reassigns / etc. — every probe in that window times out
     // and the dashboard appears frozen for the user.
     try {

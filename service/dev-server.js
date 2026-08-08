@@ -38,13 +38,13 @@ try {
 process.env.PAN_PORT = String(port);
 process.env.PAN_DEV = '1';
 process.env.PAN_DATA_DIR = join(
-  process.env.LOCALAPPDATA || '%USERPROFILE%\\AppData\\Local',
+  process.env.LOCALAPPDATA || require('path').join(require('os').homedir(),'AppData','Local'),
   'PAN', 'data-dev'
 );
 
 // Clone prod DB to dev on first start (gives dev a real copy of all data)
 const prodDataDir = join(
-  process.env.LOCALAPPDATA || '%USERPROFILE%\\AppData\\Local',
+  process.env.LOCALAPPDATA || require('path').join(require('os').homedir(),'AppData','Local'),
   'PAN', 'data'
 );
 const devDataDir = process.env.PAN_DATA_DIR;

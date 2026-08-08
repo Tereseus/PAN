@@ -1,5 +1,5 @@
 {
   "Replace": {
-    "C:\\Program Files\\Go\\src\\net\\interface_linux.go": "%USERPROFILE%\\OneDrive\\Desktop\\PAN\\android\\pan-vpn\\overlay\\net\\interface_linux.go"
+    "C:\\Program Files\\Go\\src\\net\\interface_linux.go": "android\\pan-vpn\\overlay\\net\\interface_linux.go"
   }
 }
