@@ -133,3 +133,7 @@ service/.pan
 # just produces endless churn.
 service/public/pan-system.html
 service/public/hardware-health.html
+
+# Personal photos / ad-hoc screenshots — never commit these.
+temp_photos/
+service/public/screenshots/
