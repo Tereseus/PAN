@@ -2,7 +2,9 @@
 
 A local-first memory layer for your own machine. PAN watches what you do, records it to an encrypted database on your hardware, and exposes it to Claude Code (or any MCP client) so your AI tooling has continuous context instead of starting cold every session.
 
-Everything runs locally. The database is on your disk, the models run on your own GPU/CPU via Ollama, and nothing is sent to a cloud provider unless you configure a fallback and it is actually needed.
+Your data stays on your disk. The database is local and encrypted, and the models run on your own hardware via Ollama.
+
+One honest caveat: voice requests default to a cloud model first because latency is what makes voice usable, so prompt text does leave the machine on that path. Pin the chain to a single local model and nothing does. See [Fallback chain](#fallback-chain).
 
 ---
 
@@ -11,7 +13,7 @@ Everything runs locally. The database is on your disk, the models run on your ow
 Three things, wired together:
 
 1. **A capture layer.** Foreground window tracking, periodic screen analysis, and optional webcam presence detection write structured events to a local database.
-2. **A local model.** Gemma 4 (`gemma4:e4b`) runs under Ollama and handles classification, vision, and chat. Embeddings come from `qwen3-embedding:0.6b` at 1024 dimensions.
+2. **A local model.** Gemma 4 (`gemma4:e2b`) runs under Ollama and handles classification, vision, and chat. Embeddings come from `qwen3-embedding:0.6b` at 1024 dimensions.
 3. **An MCP server.** Claude Code connects to it and can query everything above — search memory, read past sessions, look up what you were doing on a given day, record notes.
 
 That is the core. If you strip everything else out, PAN is an encrypted SQLite database with vector search, a local model that indexes it, and an MCP endpoint that lets an AI assistant read it.
@@ -29,11 +31,11 @@ Configured in the `models` table, not hardcoded. Defaults:
 
 | Job | Provider | Model |
 |-----|----------|-------|
-| `chat_local` | `ollama@local` | `gemma4:e4b` |
-| `vision` | `ollama@local` | `gemma4:e4b` |
+| `chat_local` | `ollama@local` | `gemma4:e2b` |
+| `vision` | `ollama@local` | `gemma4:e2b` |
 | `embedding` | `ollama@local` | `qwen3-embedding:0.6b` |
 
-`ollama@local` means Ollama on the same machine as PAN. Point a job at `ollama@<hostname>` to use another device on your network instead. `gemma4:e2b` is the lighter option if `e4b` is too slow on your hardware.
+`ollama@local` means Ollama on the same machine as PAN. Point a job at `ollama@<hostname>` to use another device on your network instead. `gemma4:e4b` is the heavier option if you have the RAM and want better vision detail.
 
 ### Fallback chain
 
@@ -86,7 +88,7 @@ Dashboard at `http://localhost:7777/v2/terminal`.
 You will also need [Ollama](https://ollama.com) with the models pulled:
 
 ```bash
-ollama pull gemma4:e4b
+ollama pull gemma4:e2b
 ollama pull qwen3-embedding:0.6b
 ```
 
