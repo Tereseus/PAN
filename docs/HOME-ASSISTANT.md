@@ -305,17 +305,32 @@ HA handles the device layer. PAN handles everything above it.
 
 ---
 
-## Implementation Priority
+## Implementation Status
 
-1. Add HA to Docker compose on work-pc-1 — 30 minutes
-2. Generate HA long-lived access token in HA Profile settings
-3. Add `ha_url` and `ha_token` to PAN settings table and Settings UI
-4. Create `service/src/routes/homeassistant.js` — WebSocket subscriber + signed event writer
-5. Add `/home` iframe route to dashboard
-6. Add HA to Tauri window opener — open HA in PAN chrome from sidebar nav item
-7. Wire home state into CLAUDE.md injection — Claude knows who's home, what's on, what rooms have motion
+**Built (2026-08-09):**
 
-Phases 1-6 are a weekend of work. Phase 7 (AI context injection) is ongoing and compounds in value as more devices are connected.
+| Piece | Where |
+|-------|-------|
+| REST client, entity listing, service calls | `service/src/home-assistant.js` |
+| Spoken-name → `entity_id` resolver | `resolveEntity()` in the same file |
+| WebSocket `state_changed` subscriber + auto-reconnect | `startHaEventStream()` |
+| API surface at `/api/v1/ha/*` | `service/src/routes/homeassistant.js` |
+| Voice intent `home` | `router.js`, `case 'home'` |
+| Boot wiring (post-boot stagger, +20s) | `server.js` |
+| Token handling | `hass_token` via `secrets.js`, env-first as `PAN_HASS_TOKEN` |
+
+**Two deliberate departures from the design above:**
+
+1. **Ingestion is domain-filtered, not a firehose.** This doc originally said to capture every `state_changed`. That is wrong at PAN's scale: the events table was pruned from 365K rows to 108K in Aug 2026 specifically to remove high-frequency telemetry, and a single power-monitoring plug re-emits state every second. We log an allowlist of domains where a transition is something a human would later ask about, and drop attribute-only updates where `old_state === new_state`. Widen via the `ha_capture_domains` setting.
+
+2. **PAN resolves entity names, the model does not.** The classifier passes the device as the user said it (`"the theater"`) and never an `entity_id`. Letting an LLM emit an entity id means a hallucination physically actuates the wrong device. Ambiguous matches return a question rather than picking the top hit.
+
+**Still to do:**
+
+- Install Home Assistant somewhere (nothing is listening on 8123 on this network yet)
+- `/home` iframe route in the dashboard
+- HA in the Tauri window opener
+- Home state into context injection so Claude knows who is home and what is on
 
 ---
 
