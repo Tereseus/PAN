@@ -918,8 +918,8 @@ try {
   // clobber a row the user has explicitly changed via the dashboard.
   const seeds = [
     ['embedding',            'ollama@local', 'qwen3-embedding:0.6b', 1024, null,  'Vector embeddings — must match event_embeddings dim'],
-    ['chat_local',           'ollama@local', 'gemma4:e4b',           null, 131072, 'Local chat / intuition / classifier fallback'],
-    // Vision + chat_local are BOTH gemma4:e4b as of 2026-08-07. History:
+    ['chat_local',           'ollama@local', 'gemma4:e2b',           null, 131072, 'Local chat / intuition / classifier fallback'],
+    // Vision + chat_local are BOTH gemma4:e2b as of 2026-08-07. History:
     // moondream (1.7GB) was the original seed and hallucinated literally every
     // screenshot — "circles" on a Godot editor capture, and "blue background
     // with white text 'For more information, click here'" across 100+
@@ -937,7 +937,7 @@ try {
     // One model for both purposes also stops the Mini-PC thrashing between a
     // 5.5GB and a 2.5GB model on every alternating call. gemma4 additionally
     // accepts audio (<=30s clips), which nothing in the old stack could do.
-    ['vision',               'ollama@local', 'gemma4:e4b',           null, null,  'Screen + webcam + audio understanding'],
+    ['vision',               'ollama@local', 'gemma4:e2b',           null, null,  'Screen + webcam + audio understanding'],
     ['reasoning_cloud',      'cerebras',          'qwen-3-235b',          null, null,  'Smart cloud reasoning (substituted by Scout if retired)'],
     ['chat_cloud_fallback',  'anthropic',         'claude-haiku-4-5-20251001', null, null, 'Universal fallback when local + reasoning_cloud both fail'],
   ];
@@ -956,24 +956,24 @@ try {
     const cur = get(`SELECT model FROM model_selections WHERE purpose = 'vision'`);
     if (cur && /^(moondream|minicpm-v)/i.test(cur.model || '')) {
       run(`UPDATE model_selections
-           SET model = 'gemma4:e4b',
-               notes = 'Auto-upgraded to gemma4:e4b — 2.3x faster than minicpm-v and reads fine detail (chip labels) that minicpm-v missed',
+           SET model = 'gemma4:e2b',
+               notes = 'Auto-upgraded to gemma4:e2b — 2.3x faster than minicpm-v and reads fine detail (chip labels) that minicpm-v missed',
                updated_at = datetime('now','localtime')
            WHERE purpose = 'vision'`);
-      console.log('[DB] vision model auto-upgraded → gemma4:e4b');
+      console.log('[DB] vision model auto-upgraded → gemma4:e2b');
     }
     // qwen3:4b is a reasoning model: at short num_predict budgets it spends the
     // entire budget inside <think> and returns an EMPTY string, which silently
-    // breaks classifier/intuition fallback. Move it to gemma4:e4b, which answers
+    // breaks classifier/intuition fallback. Move it to gemma4:e2b, which answers
     // the same prompt in ~0.5s.
     const curChat = get(`SELECT model FROM model_selections WHERE purpose = 'chat_local'`);
     if (curChat && /^qwen3:4b/i.test(curChat.model || '')) {
       run(`UPDATE model_selections
-           SET model = 'gemma4:e4b', context_window = 131072,
+           SET model = 'gemma4:e2b', context_window = 131072,
                notes = 'Auto-upgraded from qwen3:4b — qwen3 returned empty output for short classification prompts (<think> consumed the budget)',
                updated_at = datetime('now','localtime')
            WHERE purpose = 'chat_local'`);
-      console.log('[DB] chat_local model auto-upgraded: qwen3:4b → gemma4:e4b');
+      console.log('[DB] chat_local model auto-upgraded: qwen3:4b → gemma4:e2b');
     }
   } catch {}
 } catch {}
