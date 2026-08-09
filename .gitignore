@@ -2,6 +2,17 @@
 .pan-briefing.md
 .pan-state.md
 
+# Vendor/build binaries — purged from history 2026-08-08 (they were 1 GB of the
+# repo's 559 MiB pack, which made every force-push crawl). Do not re-add:
+#   pan-installer-*  are built by .github/workflows/release-installer.yml on each
+#                    v*.*.* tag and published as GitHub release assets.
+#   cloudflared.exe  self-downloads on first use (service/src/cloudflare-tunnel.js).
+#   zrok2.exe        is not spawned by any code path.
+service/bin/pan-installer-linux
+service/bin/pan-installer-win.exe
+service/bin/cloudflared.exe
+service/bin/zrok2.exe
+
 # Build artifacts
 android/.gradle/
 android/.idea/
