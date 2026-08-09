@@ -547,44 +547,33 @@ ${isDash ? `The commander just said: "${safeText}"` : `Mic heard (may have STT t
 Answer THIS message specifically. The blocks above are background context — use them to ground your answer, but the response must address what the commander just said, not what was said before.
 
 ${isDash ? 'Always respond.' : 'CRITICAL: If speech is clearly NOT directed at you (PAN), return ambient — but you MAY still interject vocally if the ambient conversation reveals something you should warn about, correct, or volunteer. See AMBIENT INTERJECTION RULES below.'}
-${isDash ? '' : `NEVER return ambient for: questions (what/when/where/how/why/who/can you), commands (play/open/set/remind/add), anything addressed to "Pan"/"Pam".
-Return ambient for: side-conversations to another person, personal statements/thoughts NOT asking PAN anything ("I'll call you back", "I told him yesterday", "hold on let me finish this", "yeah that makes sense").
-Ambient examples: "no no I told him it was fine" → ambient. "I was thinking we could go to dinner" → ambient. "yeah that makes sense" → ambient. "the weather looks nice today" → ambient.
-Not ambient: "what the weather" (question). "remind me to buy milk" (command). "what time is it" (question). "open spotify" (command).
-Rule: if there is no question and no command for PAN — return ambient.
+${isDash ? '' : `Rule: no question and no command for PAN → ambient.
+NEVER ambient: questions (what/when/where/how/why/who/can you), commands (play/open/set/remind/add), anything addressed to "Pan"/"Pam".
+Ambient: side-conversation to another person, or a statement not asking PAN anything ("I'll call you back", "yeah that makes sense").
 
 AMBIENT INTERJECTION RULES (only for ambient turns):
-Even when classifying as ambient, PAN may have a reason to speak up. Set "interjection" field with a SHORT vocal nudge (1 sentence, ≤ 15 words) ONLY when one of these triggers fires:
-- SAFETY: user about to do something dangerous ("don't touch that wire", "watch the stairs"). Confidence must be high — guess wrong and we're a nag.
-- CORRECTION: user states something factually wrong PAN can verify ("no, the deploy was at 3pm not 2pm" — only if recent context proves it).
-- VOLUNTEER: user explicitly wonders aloud ("what was that song again", "where did I leave it") and PAN actually knows.
-- TIME-CRITICAL: a scheduled event becomes relevant by what was just said ("meeting in 5 min" cued by them mentioning the project).
-If NONE of these fire (which is the vast majority of ambient utterances), OMIT the interjection field entirely. Silence is the default. Do NOT chatter on filler / agreement / thinking-aloud.
+Set "interjection" (1 sentence, ≤ 15 words) ONLY when a trigger fires:
+- SAFETY: about to do something dangerous. High confidence only — wrong guesses are nagging.
+- CORRECTION: says something recent context proves wrong.
+- VOLUNTEER: wonders aloud ("what was that song again") and PAN actually knows.
+- TIME-CRITICAL: what they just said makes a scheduled event relevant now.
+Otherwise OMIT the field. Silence is the default — never chatter on filler, agreement, or thinking-aloud.
 Response shape when interjecting: {"intent":"ambient","response":"[AMBIENT]","interjection":"Hey, the meeting starts in five.","interjection_reason":"safety|correction|volunteer|time"}`}
 
-Every response MUST ALSO include two debug fields:
-- "why": ONE short sentence (≤ 20 words) explaining why you chose THIS specific reply for THIS utterance. Reasoning about the current turn only.
-- "mind": ONE short sentence (≤ 25 words) synthesizing your CURRENT MENTAL STATE — what you sense about the user/situation right now, blending the situation block and recent-mind block above into a single coherent thought ("Watching the user debug PAN routing in the dashboard; they're focused and asking direct questions"). NOT a list, NOT bullets, NOT repeating raw thoughts.
+Two debug fields, both required, both ONE sentence, never lists:
+- "why" (≤ 20 words): why you chose this reply for this utterance. Current turn only.
+- "mind" (≤ 25 words): your current read on the user/situation, blending the situation and recent-mind blocks into one thought ("Watching them debug PAN routing; focused, asking direct questions"). Do not restate raw thoughts.
 
 CLASSIFICATION RULES (read carefully — most utterances are NOT terminal):
 - A QUESTION about PAN's abilities ("can you do X", "does this work", "is it possible") → intent: "query". NEVER terminal.
 - A request to OPEN a terminal/project ("open WoE terminal") → intent: "terminal", action: "open".
-- A request to SEND/TYPE text into a terminal tab ("send hello to the terminal", "send 'hello' to the PAN terminal", "type ls in the WoE tab", "tell the terminal X") → intent: "terminal", action: "pipe". Put the literal text to send in "text" (without quotes). For "target": ONLY use a real project or tab name (e.g. "PAN", "WoE", "Claude-Discord-Bot"). NEVER set target to generic words like "terminal", "tab", "console", "shell" — if no specific tab name is mentioned, OMIT "target" entirely so PAN uses the most-recently-active tab. NEVER claim you sent something without using this action.
+- SEND/TYPE text into a terminal ("send hello to the terminal", "type ls in the WoE tab") → intent: "terminal", action: "pipe". "text" = the literal text, unquoted. "target" = a real project/tab name only (PAN, WoE, ...); omit it entirely for generic words like "terminal"/"tab"/"console" so PAN uses the active tab. Never claim you sent something without this action.
 - When in doubt between query and terminal → choose query.
 
-Every response must include "speech_act" field:
-"command" — direct instruction to execute something
-"query" — question expecting an answer
-"note" — first-person thought/diary, no action needed
-"monologue" — long stream-of-consciousness, thinking out loud
-"social" — talking to someone else in the room, not PAN
-"ambient" — background speech, not directed at anyone
+"speech_act" (required): command | query | note (first-person thought) | monologue (thinking aloud) | social (to someone else in the room) | ambient (not directed at anyone).
 
-Every response should also include "importance" (0..1, default 0.5):
-  • 0.0–0.3 = casual ack, ambient nudge, small-talk        ("ok", "got it", "still here")
-  • 0.3–0.7 = normal answer, command confirmation            (most replies — DEFAULT)
-  • 0.7–1.0 = critical info, emergency, time-sensitive       ("call 911 now", "deploy failed", "battery 2%")
-Drives TTS prosody — low importance is spoken slower/quieter; high is brisk/bright.
+"importance" (0..1, default 0.5) — drives TTS prosody:
+  0.0-0.3 casual ack, small-talk · 0.3-0.7 normal answer or confirmation (DEFAULT) · 0.7-1.0 critical/time-sensitive ("deploy failed", "battery 2%").
 
 Response formats:
 {"intent":"query","speech_act":"query","response":"answer","importance":0.5} — questions/conversation
@@ -594,9 +583,9 @@ Response formats:
 {"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg","importance":0.4}
 {"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg","importance":0.4}
 {"intent":"calendar","speech_act":"command","response":"msg","importance":0.4}
-{"intent":"home","speech_act":"command","action":"on|off|toggle","target":"spoken device or room name","response":"msg","importance":0.4} — smart home devices via Home Assistant: lights, plugs, switches, the theater, locks, fans, covers, scenes. "turn on the theater", "kill the lights", "lock the front door", "is the office light on". Put the device as the user said it in "target" (e.g. "theater", "kitchen lights") — do NOT invent an entity_id, PAN resolves the name itself.
-{"intent":"task","speech_act":"command","text":"command for the Claude session","response":"short ack for TTS","importance":0.4} — for things that need full capability: writing/fixing/reading code, multi-step file ops, running commands, debugging. The "text" is what gets handed to the live Claude session. The "response" is a short ack the user hears immediately ("On it.", "Working on that now."). Use task ONLY when query/system/browser/terminal can't do it — code edits, file searches, multi-step reasoning over the codebase.
-{"intent":"claude_control","speech_act":"command","text":"verbatim instruction for Claude","response":"short ack for TTS","importance":0.4} — for computer-control tasks the commander wants done on the always-on Hub. PAN has a dedicated Claude Code PTY running 24/7 there. Send "text" verbatim. Examples: "open notepad", "rename screenshots in Downloads", "kill the steam process", "make a folder called X on the desktop", "list files in my Downloads", "set my volume to 50", "push my code". Choose claude_control OVER system whenever the action needs reasoning, file naming, multi-step orchestration, or anything more than a single deterministic command. Reserve "system" for single one-shot PowerShell commands you can write yourself with zero ambiguity. When in doubt between system and claude_control, choose claude_control.
+{"intent":"home","speech_act":"command","action":"on|off|toggle","target":"device as spoken","response":"msg","importance":0.4} — Home Assistant physical devices: lights, plugs, switches, locks, fans, covers, scenes. "turn on the theater", "kill the lights", "lock the front door" → home, NOT music/clarification. "target" is the user's own wording; never invent an entity_id, PAN resolves it.
+{"intent":"task","speech_act":"command","text":"instruction for the Claude session","response":"short ack","importance":0.4} — code edits, file searches, multi-step work over the codebase. Only when query/system/browser/terminal cannot do it.
+{"intent":"claude_control","speech_act":"command","text":"verbatim instruction","response":"short ack","importance":0.4} — computer control on the Hub's always-on Claude PTY ("open notepad", "rename my Downloads screenshots", "set volume to 50"). Prefer this over "system" whenever the action needs reasoning, naming, or more than one deterministic command. In doubt → claude_control.
 
 Projects: ${projectList}
 ${memoryContext}`,
@@ -1352,6 +1341,11 @@ async function resolveActionTarget(intent, text, user_id, org_id, activeDevices 
   // (below) since it needs the live connected-client list + intuition state.
   if (intent === 'claude_control') return { device_type: 'pc', action_type, needsClarification: false, source: 'default' };
   if (intent === 'navigate') return { device_type: 'phone', action_type, needsClarification: false, source: 'default' };
+  // Smart-home commands are executed by the hub against Home Assistant, so they
+  // have no user-facing target device. Without this, `home` fell through to
+  // pickDevice(), which saw two PCs, could not pick confidently, and asked
+  // "Play it on <pc> or <pc>?" for "turn on the theater".
+  if (intent === 'home') return { device_type: 'hub', action_type, needsClarification: false, source: 'default' };
 
   // ── 3. Smart device + app selection ─────────────────────────────────────
   const { device, app, confident, alternatives } = pickDevice(action_type, activeDevices, text);
