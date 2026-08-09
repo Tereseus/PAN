@@ -594,6 +594,7 @@ Response formats:
 {"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg","importance":0.4}
 {"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg","importance":0.4}
 {"intent":"calendar","speech_act":"command","response":"msg","importance":0.4}
+{"intent":"home","speech_act":"command","action":"on|off|toggle","target":"spoken device or room name","response":"msg","importance":0.4} — smart home devices via Home Assistant: lights, plugs, switches, the theater, locks, fans, covers, scenes. "turn on the theater", "kill the lights", "lock the front door", "is the office light on". Put the device as the user said it in "target" (e.g. "theater", "kitchen lights") — do NOT invent an entity_id, PAN resolves the name itself.
 {"intent":"task","speech_act":"command","text":"command for the Claude session","response":"short ack for TTS","importance":0.4} — for things that need full capability: writing/fixing/reading code, multi-step file ops, running commands, debugging. The "text" is what gets handed to the live Claude session. The "response" is a short ack the user hears immediately ("On it.", "Working on that now."). Use task ONLY when query/system/browser/terminal can't do it — code edits, file searches, multi-step reasoning over the codebase.
 {"intent":"claude_control","speech_act":"command","text":"verbatim instruction for Claude","response":"short ack for TTS","importance":0.4} — for computer-control tasks the commander wants done on the always-on Hub. PAN has a dedicated Claude Code PTY running 24/7 there. Send "text" verbatim. Examples: "open notepad", "rename screenshots in Downloads", "kill the steam process", "make a folder called X on the desktop", "list files in my Downloads", "set my volume to 50", "push my code". Choose claude_control OVER system whenever the action needs reasoning, file naming, multi-step orchestration, or anything more than a single deterministic command. Reserve "system" for single one-shot PowerShell commands you can write yourself with zero ambiguity. When in doubt between system and claude_control, choose claude_control.
 
@@ -1116,6 +1117,43 @@ async function processUnifiedResult(action, text, context) {
       }
 
       return { intent: 'terminal', response: action.response || 'Terminal action processed.' };
+    }
+
+    case 'home': {
+      // Smart home via Home Assistant. The classifier hands us the device as
+      // the user said it ("the theater"); resolveEntity does the matching, so a
+      // model hallucinating an entity_id can't switch the wrong thing on.
+      const target = action.target || action.query || text;
+      const want = /\b(off|kill|shut|stop)\b/i.test(text) ? 'off'
+        : /\b(on|start|fire)\b/i.test(text) ? 'on'
+        : (action.action || 'toggle');
+      try {
+        const { controlEntity } = await import('./home-assistant.js');
+        const result = await controlEntity(target, want);
+        if (!result.ok) {
+          const names = (result.candidates || []).map(c => c.name).slice(0, 3);
+          return {
+            intent: 'home', route: 'home',
+            response: result.reason === 'ambiguous' && names.length
+              ? `More than one thing matches "${target}": ${names.join(', ')}. Which one?`
+              : `I couldn't find anything called "${target}" in Home Assistant.`,
+          };
+        }
+        return {
+          intent: 'home', route: 'home',
+          entity_id: result.entity_id,
+          response: action.response || `${result.name} ${want === 'toggle' ? 'toggled' : want}.`,
+        };
+      } catch (e) {
+        // Not configured / HA down / token rejected. Say so rather than
+        // reporting success for something that physically did not happen.
+        return {
+          intent: 'home', route: 'home',
+          response: /not configured/i.test(e.message)
+            ? 'Home Assistant is not set up yet.'
+            : `Home Assistant did not respond: ${e.message}`,
+        };
+      }
     }
 
     case 'music': {

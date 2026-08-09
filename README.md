@@ -70,7 +70,43 @@ A remote for the database on your computer, by voice or text. Speech is captured
 
 **Commands to your machines.** Any computer running `pan-client` registers with the hub over WebSocket and accepts dispatched commands, so the phone can drive machines it is not on.
 
-**Home Assistant control is planned, not built.** `docs/HOME-ASSISTANT.md` is a design document with no implementation behind it yet. Do not clone this expecting to control your house.
+**Smart home control.** "Turn on the theater" resolves the spoken name against your Home Assistant entities and calls the service. Requires a Home Assistant instance — see below.
+
+## Smart home (Home Assistant)
+
+PAN does not talk to Zigbee, Tuya or Matter directly. Home Assistant already solved that for 3,000+ device types, so PAN wraps it: HA owns the device layer, PAN owns the brain.
+
+Point PAN at an existing HA instance:
+
+```bash
+curl -X POST http://localhost:7777/api/v1/ha/config \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"http://localhost:8123","token":"<long-lived-access-token>"}'
+```
+
+Generate the token in HA under **Profile → Security → Long-Lived Access Tokens**. It is treated as a secret: env-first via `PAN_HASS_TOKEN`, and stripped from every settings API response.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/v1/ha/status` | configured / connected / last error |
+| `GET /api/v1/ha/entities?domain=light` | list entities |
+| `GET /api/v1/ha/resolve?q=theater` | preview what a phrase matches, without acting |
+| `POST /api/v1/ha/control` | `{"query":"theater","action":"on"}` |
+| `POST /api/v1/ha/service` | raw service call for scenes, climate setpoints, etc. |
+
+Name resolution is deliberate: the voice classifier passes the device **as you said it** and PAN matches it against friendly names itself, so a model inventing an `entity_id` cannot switch on the wrong thing. Ambiguous matches ask instead of guessing, because guessing wrong physically does something in your house.
+
+State changes stream in over HA's WebSocket API and land in the event database, so you can ask what time the lights went off. Ingestion is filtered to domains where a transition is meaningful (`light`, `switch`, `lock`, `climate`, `media_player`, `binary_sensor`, `person`, `device_tracker`, `cover`, `fan`, `alarm_control_panel`). Numeric `sensor` churn is skipped by default — a single power-monitoring plug can emit a state change every second and would bury the useful events. Override with the `ha_capture_domains` setting.
+
+---
+
+## Planned
+
+Not built. Listed so the direction is clear, not as a promise of dates.
+
+- **Pendant** — an ESP32-S3 wearable with camera, mic and sensors, talking to the phone over BLE. Intended to give PAN presence and context away from a desk, and room-level location from BLE signal strength without GPS.
+- **Voice fingerprinting** — speaker identification so PAN knows who is talking.
+- **Cross-system automations** — using HA state and PAN context together, e.g. lights that respond to where you actually are rather than to a motion timeout.
 
 ---
 
@@ -170,7 +206,9 @@ Roughly 1.5 MB/day of text data. A local model needs enough RAM to hold Gemma 4 
 
 **Rough edges:** the installer is unfinished and the dashboard has known bugs. If you pin the chain to a local-only model, expect voice latency to track your hardware rather than the sub-second cloud path.
 
-**Not built:** Home Assistant control. `docs/HOME-ASSISTANT.md` describes an intended design and nothing implements it.
+**Needs a dependency:** smart home control is implemented in PAN but does nothing until you have a Home Assistant instance for it to drive. Every `/api/v1/ha/*` endpoint returns "not configured" until `hass_token` is set.
+
+**Not built:** see [Planned](#planned).
 
 ---
 

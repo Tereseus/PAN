@@ -29,6 +29,7 @@ import auditRouter from './routes/audit.js';
 import replicationRouter from './routes/replication.js';
 import zonesRouter, { getActiveZones, findZonesForPoint } from './routes/zones.js';
 import qualityLogRouter from './routes/quality-log.js';
+import homeAssistantRouter from './routes/homeassistant.js';
 import mcpQualityLogRouter from './routes/mcp-quality-log.js';
 import mcpPanRouter from './routes/mcp-pan.js';
 import captureRouter from './routes/capture.js';
@@ -935,6 +936,9 @@ if (featureEnabled('routes_zones')) app.use('/api/v1/zones', zonesRouter);
 // Math lives in routes/quality-log.js; the `quality-log` MCP server is a
 // thin HTTP proxy over these endpoints.
 if (featureEnabled('routes_quality_log')) app.use('/api/v1/quality-log', qualityLogRouter);
+// Home Assistant. Always mounted — every endpoint returns "not configured"
+// until hass_token is set, so this costs nothing on a hub with no smart home.
+app.use('/api/v1/ha', homeAssistantRouter);
 
 // Same MCP server exposed over Streamable HTTP for the Claude desktop app,
 // Claude in Chrome, Claude.ai, and Cowork. Users paste this URL into
@@ -5749,6 +5753,13 @@ function start() {
               .then(m => m.startForgeDashboard())
               .catch(e => console.warn('[ForgeDashboard] failed to start:', e.message));
           }
+          // Home Assistant event stream. No-ops when hass_token is unset, so a
+          // hub with no smart home pays nothing. Reconnects itself with
+          // backoff, except on auth_invalid where retrying is pointless.
+          import('./home-assistant.js')
+            .then(m => m.startHaEventStream())
+            .then(r => { if (r?.started) console.log('[HA] event stream started'); })
+            .catch(e => console.warn('[HA] event stream failed to start:', e.message));
         }, POST_BOOT_DELAY_MS);
       }
 
