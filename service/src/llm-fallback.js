@@ -18,7 +18,7 @@
 // Why this matters: the old hardcoded `ollama:qwen2.5:14b` was wrong for
 // this user's hardware (CPU-only mini PC) — 14B params is ~3 min/query.
 // The registry now picks `chat_local` which seeds to `qwen3:4b`, the
-// model actually pulled on the the local Ollama box and realistic for CPU inference.
+// model actually pulled on the local Ollama box and realistic for CPU inference.
 //
 // Retriable errors (will trigger fallback):
 //   • HTTP 429 (rate limit)
@@ -280,6 +280,29 @@ export async function askAIWithFallback(prompt, opts = {}) {
     return baseTimeout;
   };
 
+  // Token ceiling — the counterpart of the same guard in
+  // askAIStreamWithFallback. The streaming path got it; this one did not, so
+  // every NON-streaming voice turn still hit it. That is the phone's path:
+  // POST /api/v1/query -> route() -> here.
+  //
+  // MEASURED on the Mini-PC (Ryzen 7 5800H, gemma4:e2b already resident,
+  // identical prompt, only num_predict changed):
+  //     num_predict  50 -> 7.75s, all 50 tokens consumed, response EMPTY
+  //     num_predict 600 -> 0.68s, answered in 8 tokens
+  // The model reasons before answering. Starve the budget and the reasoning
+  // eats all of it, so it emits nothing; the empty string is scored a failed
+  // attempt, and the chain burns its whole 45s WALL_BUDGET_MS before giving
+  // up. That is the entire reason a voice turn measured 45.6s — not compute.
+  // Actual generation was 2.2s of a 45s turn.
+  //
+  // Give local models room to finish the thought. A short reply still stops
+  // on its own at ~8 tokens, so a high ceiling costs nothing when unused.
+  const maxTokensForModel = (m) => (
+    m?.startsWith('ollama:')
+      ? Math.max(passthrough.maxTokens ?? 300, 1200)
+      : passthrough.maxTokens
+  );
+
   for (let i = 0; i < chain.length; i++) {
     const model = chain[i];
     const t0 = Date.now();
@@ -298,7 +321,11 @@ export async function askAIWithFallback(prompt, opts = {}) {
     // Per-attempt timeout = min(model-default, remaining wall budget).
     const attemptTimeout = Math.min(timeoutForModel(model), remaining);
     try {
-      const text = await askAI(prompt, { ...passthrough, caller, model, timeout: attemptTimeout });
+      const text = await askAI(prompt, {
+        ...passthrough, caller, model,
+        timeout: attemptTimeout,
+        maxTokens: maxTokensForModel(model),
+      });
       const ms = Date.now() - t0;
       attempts.push({ model, ok: true, ms });
       if (i > 0) logAttempt(caller, model, i + 1, 'recovered', true, ms);
