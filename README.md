@@ -33,9 +33,20 @@ Configured in the `models` table, not hardcoded. Defaults:
 | `vision` | `ollama@local` | `gemma4:e4b` |
 | `embedding` | `ollama@local` | `qwen3-embedding:0.6b` |
 
-`ollama@local` means Ollama on the same machine as PAN. Point a job at `ollama@<hostname>` to use another device on your network instead.
+`ollama@local` means Ollama on the same machine as PAN. Point a job at `ollama@<hostname>` to use another device on your network instead. `gemma4:e2b` is the lighter option if `e4b` is too slow on your hardware.
 
-Requests fall back in order: local Gemma 4 → Cerebras → Claude. If the local model answers, nothing leaves the machine. Vision analysis is deliberately local-only.
+### Fallback chain
+
+Requests walk a chain of backends and move to the next one on failure. The default order depends on what is asking:
+
+| Caller | Default chain |
+|--------|---------------|
+| Voice | cloud reasoning → cloud fallback → local |
+| Background jobs | local → cloud reasoning |
+
+Voice goes cloud-first because latency is what makes a voice assistant usable, and a stalled first token is caught by a 7 second watchdog. Background work goes local-first because nothing is waiting on it.
+
+Override either with the `ai_fallback_chain_voice` and `ai_fallback_chain_background` settings. **Set a chain to a single entry to disable fallback entirely** and keep every request on one backend, which is the configuration to use if you want nothing leaving the machine. Vision analysis is local-only regardless.
 
 ## Components in this repo
 
@@ -43,11 +54,21 @@ Requests fall back in order: local Gemma 4 → Cerebras → Claude. If the local
 |------|-----------|
 | `service/` | The server. Node.js, Express, SQLite, MCP server, model routing. |
 | `service/dashboard/` | SvelteKit dashboard — terminal, projects, data browser, settings. |
-| `android/` | Android app. Voice capture via Google STT, talks to the server over Tailscale. |
+| `android/` | Android app. Voice and text control, memory lookups, command dispatch. See below. |
 | `browser-extension/` | Manifest V3 extension for reading and controlling browser tabs. |
 | `pan-client/` | Agent for other machines on your network. Registers over WebSocket, receives commands. |
 
 The dashboard and phone app are optional. The server, database, and MCP endpoint are the parts that matter.
+
+### The Android app
+
+A remote for the database on your computer, by voice or text. Speech is captured with Google's on-device STT and sent to the hub over Tailscale, so it works from anywhere without exposing a port.
+
+**Memory lookups.** Ask what you were working on last Tuesday, or what was said about a topic, and it searches the database on your computer and answers. Voice requests take the cloud-first chain above, so answers come back in about a second rather than waiting on local inference.
+
+**Commands to your machines.** Any computer running `pan-client` registers with the hub over WebSocket and accepts dispatched commands, so the phone can drive machines it is not on.
+
+**Home Assistant control is planned, not built.** `docs/HOME-ASSISTANT.md` is a design document with no implementation behind it yet. Do not clone this expecting to control your house.
 
 ---
 
@@ -143,9 +164,11 @@ Roughly 1.5 MB/day of text data. A local model needs enough RAM to hold Gemma 4 
 
 ## Status
 
-**Working:** local capture and storage, semantic + full-text search, MCP integration with Claude Code, local Gemma 4 for chat and vision, model fallback chain, dashboard, Android voice app, browser extension, multi-machine clients over Tailscale, hot-swap runtime.
+**Working:** local capture and storage, semantic + full-text search, MCP integration with Claude Code, local Gemma 4 for chat and vision, the fallback chain, dashboard, Android app for voice and text, browser extension, command dispatch to other machines over Tailscale, hot-swap runtime.
 
-**Rough edges:** the installer is unfinished, the dashboard has known bugs, and voice latency depends heavily on how fast your local model answers.
+**Rough edges:** the installer is unfinished and the dashboard has known bugs. If you pin the chain to a local-only model, expect voice latency to track your hardware rather than the sub-second cloud path.
+
+**Not built:** Home Assistant control. `docs/HOME-ASSISTANT.md` describes an intended design and nothing implements it.
 
 ---
 
