@@ -8,6 +8,7 @@
 // All we do is take what they create and put it into PAN.
 
 import { insert, all, get, run, getModelForPurpose, setModelForPurpose } from './db.js';
+import { getSecret } from './secrets.js';
 import { claude } from './claude.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -642,36 +643,131 @@ async function scanLocalApps() {
 const PROVIDER_ENDPOINTS = {
   cerebras: 'https://api.cerebras.ai/v1/models',
   groq:     'https://api.groq.com/openai/v1/models',
+  gemini:   'https://generativelanguage.googleapis.com/v1beta/models',
+};
+
+// Gemini differs from the OpenAI-compatible providers in both auth and shape:
+// key goes in the query string, and it answers { models: [{ name: "models/x",
+// supportedGenerationMethods: [...] }] } instead of { data: [{ id }] }.
+// Keeping the difference here means _fetchProviderModels stays uniform.
+//
+// Gemini was missing entirely until 2026-08-09, which mattered once voice moved
+// onto it: Scout could not have noticed a retired Gemini model, and Gemini does
+// retire them — gemini-2.5-flash 404'd the same day gemini-3.5-flash-lite worked.
+const PROVIDER_STYLE = {
+  gemini: {
+    url:     (base, key) => `${base}?key=${encodeURIComponent(key)}`,
+    headers: () => ({}),
+    parse:   (body) => (body.models || [])
+      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map((m) => ({ id: String(m.name).replace(/^models\//, '') })),
+  },
+};
+
+const DEFAULT_PROVIDER_STYLE = {
+  url:     (base) => base,
+  headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  parse:   (body) => (Array.isArray(body.data) ? body.data : []),
 };
 
 async function _fetchProviderModels(provider, apiKey, timeoutMs = 8000) {
-  const url = PROVIDER_ENDPOINTS[provider];
-  if (!url) throw new Error(`Unknown provider: ${provider}`);
+  const base = PROVIDER_ENDPOINTS[provider];
+  if (!base) throw new Error(`Unknown provider: ${provider}`);
+  const style = PROVIDER_STYLE[provider] || DEFAULT_PROVIDER_STYLE;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+    const res = await fetch(style.url(base, apiKey), {
+      headers: style.headers(apiKey),
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = await res.json();
-    // Both Cerebras and Groq return { data: [{ id: "...", ... }, ...] }
-    return Array.isArray(body.data) ? body.data : [];
+    if (!res.ok) {
+      // 402 = billing tier exhausted, 401/403 = key rejected. These are NOT
+      // transient, and they are exactly how Cerebras failed on 2026-08-09:
+      // /v1/models still answered, so "is the model listed" said healthy while
+      // every completion returned 402. Tag them so the caller can distinguish
+      // "provider is unusable" from "network blip".
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      err.unusable = res.status === 401 || res.status === 402 || res.status === 403;
+      throw err;
+    }
+    return style.parse(await res.json());
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Canary: actually ASK the provider for one token.
+//
+// Listing the catalogue is not proof of service. On 2026-08-09 Cerebras's
+// /v1/models returned 200 with three models while /chat/completions returned
+// 402 for every one of them — so "is the model listed?" reported healthy while
+// voice was completely dead. The only reliable liveness test is a real
+// completion. One tiny request per provider per scan (6h) is cheap.
+//
+// Returns { ok } on success, or { ok: false, status, unusable } where unusable
+// means the provider refused us outright rather than glitched.
+const PROVIDER_COMPLETION = {
+  cerebras: {
+    url:  () => 'https://api.cerebras.ai/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (m) => JSON.stringify({ model: m, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+  },
+  groq: {
+    url:  () => 'https://api.groq.com/openai/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (m) => JSON.stringify({ model: m, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+  },
+  gemini: {
+    url:  (k, m) => `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(k)}`,
+    headers: () => ({ 'Content-Type': 'application/json' }),
+    body: () => JSON.stringify({ contents: [{ parts: [{ text: 'hi' }] }] }),
+  },
+};
+
+async function _probeProviderServes(provider, apiKey, model, timeoutMs = 12000) {
+  const spec = PROVIDER_COMPLETION[provider];
+  if (!spec || !model) return { ok: true, skipped: true };   // unknown shape — don't false-alarm
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(spec.url(apiKey, model), {
+      method: 'POST',
+      headers: spec.headers(apiKey),
+      body: spec.body(model),
+      signal: controller.signal,
+    });
+    if (res.ok) return { ok: true };
+    return {
+      ok: false,
+      status: res.status,
+      // 429 is rate limiting — transient, NOT a reason to abandon the provider.
+      unusable: res.status === 401 || res.status === 402 || res.status === 403,
+    };
+  } catch {
+    return { ok: false, status: 0, unusable: false };  // network blip
   } finally {
     clearTimeout(timer);
   }
 }
 
 function _getProviderApiKey(provider) {
-  // Read directly from settings — avoids importing from llm.js (which
-  // would create a circular dep: scout → llm → router → ... → scout).
-  const keyMap = { cerebras: 'cerebras_api_key', groq: 'groq_api_key' };
+  // Was a raw `SELECT value FROM settings`, which silently stopped working on
+  // 2026-08-09 when the keys were moved out of the database into PAN_* env
+  // vars for security. Scout then reported no_api_key for every provider and
+  // could not detect a retired model at all — the exact failure it exists to
+  // catch. getSecret() resolves env first, database second, so both layouts
+  // work. secrets.js only imports db.js, so this adds no circular dependency.
+  const keyMap = {
+    cerebras: 'cerebras_api_key',
+    groq:     'groq_api_key',
+    gemini:   'gemini_api_key',
+  };
   const settingKey = keyMap[provider];
   if (!settingKey) return null;
   try {
-    const row = get(`SELECT value FROM settings WHERE key = :k`, { ':k': settingKey });
-    return row?.value?.replace(/^"|"$/g, '').trim() || null;
+    return getSecret(settingKey);
   } catch {
     return null;
   }
@@ -709,11 +805,33 @@ async function scanProviderModels() {
           stored++;
         } catch {}
       }
-      summary[provider] = { ok: true, count: stored };
-      console.log(`[PAN Scout] Provider ${provider}: ${stored} models discovered`);
+      // Catalogue fetched — now prove it will actually SERVE one. See
+      // _probeProviderServes: listing is not serving, and that difference is
+      // exactly what hid the Cerebras outage.
+      const probeModel = (REASONING_CLOUD_PREFERRED[provider] || []).find((m) => models.some((x) => x.id === m))
+        || models[0]?.id;
+      const probe = await _probeProviderServes(provider, apiKey, probeModel);
+      if (probe.unusable) {
+        _unusableProviders.add(provider);
+        summary[provider] = { ok: false, count: stored, reason: `lists ${stored} models but completions return HTTP ${probe.status}`, unusable: true };
+        console.error(`[PAN Scout] Provider ${provider} UNUSABLE: /models lists ${stored} models but a 1-token completion returned HTTP ${probe.status} (tier exhausted or key rejected).`);
+      } else {
+        _unusableProviders.delete(provider);
+        summary[provider] = { ok: true, count: stored, served: probe.ok };
+        console.log(`[PAN Scout] Provider ${provider}: ${stored} models discovered${probe.ok ? ', completion probe OK' : ''}`);
+      }
     } catch (e) {
-      summary[provider] = { ok: false, reason: e.message };
-      console.warn(`[PAN Scout] Provider ${provider} scan failed: ${e.message}`);
+      // 401/402/403 means the provider will refuse completions no matter what
+      // its catalogue says. Latch it so checkReasoningCloudHealth stops
+      // trusting the cached model list and fails over to another provider.
+      if (e.unusable) {
+        _unusableProviders.add(provider);
+        summary[provider] = { ok: false, reason: e.message, unusable: true };
+        console.error(`[PAN Scout] Provider ${provider} UNUSABLE (${e.message}) — key rejected or tier exhausted.`);
+      } else {
+        summary[provider] = { ok: false, reason: e.message };
+        console.warn(`[PAN Scout] Provider ${provider} scan failed: ${e.message}`);
+      }
     }
   }
   // We just refreshed the live model lists — this is the one moment we KNOW
@@ -737,7 +855,21 @@ async function scanProviderModels() {
 // Replacement preference — all confirmed live on Cerebras free tier as of
 // 2026-07: gpt-oss-120b (the current voice default), then zai-glm-4.7, then
 // gemma-4-31b. Falls back to any live model if none of those are present.
-const REASONING_CLOUD_PREFERRED = ['gpt-oss-120b', 'zai-glm-4.7', 'gemma-4-31b'];
+// Replacement preference PER PROVIDER. This used to be a single Cerebras-only
+// list, which broke the moment reasoning_cloud moved to Gemini: a retired
+// Gemini model would have been "healed" by writing a Cerebras model id that
+// does not exist there. Ordered best-first; falls back to any live model.
+const REASONING_CLOUD_PREFERRED = {
+  cerebras: ['gpt-oss-120b', 'zai-glm-4.7', 'gemma-4-31b'],
+  groq:     ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'gpt-oss-20b'],
+  gemini:   ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-2.0-flash-lite'],
+};
+
+// Providers whose LAST scan returned 401/402/403 — key rejected or tier
+// exhausted. Distinct from "scan failed": those are permanent-ish and mean the
+// provider cannot serve, no matter what its /models endpoint lists.
+const _unusableProviders = new Set();
+
 let _lastReasoningCloudAlertModel = null; // de-dupe: don't re-alert the same retired model on every scan
 
 async function checkReasoningCloudHealth() {
@@ -749,6 +881,33 @@ async function checkReasoningCloudHealth() {
   // "@device" suffix (cloud providers don't use it, but be defensive).
   const provider = String(sel.provider).split('@')[0];
   if (!PROVIDER_ENDPOINTS[provider]) return;
+
+  // THE 2026-08-09 CASE: Cerebras kept listing gpt-oss-120b on /v1/models while
+  // returning 402 for every completion. Membership in the cached list therefore
+  // said "healthy" while every real call failed. A provider that answered
+  // 401/402/403 cannot serve anything, so treat its whole catalogue as dead
+  // rather than trusting a list we may have cached before billing changed.
+  if (_unusableProviders.has(provider)) {
+    console.error(`[PAN Scout] DEGRADED: provider "${provider}" rejected us (401/402/403) — its model list is stale, every completion will fail.`);
+    const alt = Object.keys(PROVIDER_ENDPOINTS).find((p) => {
+      if (p === provider || _unusableProviders.has(p)) return false;
+      const m = getKnownProviderModels(p);
+      return m && m.size > 0;
+    });
+    if (alt) {
+      const altLive = getKnownProviderModels(alt);
+      const pick = (REASONING_CLOUD_PREFERRED[alt] || []).find((m) => altLive.has(m))
+        || [...altLive].sort()[0];
+      if (pick && setModelForPurpose('reasoning_cloud', alt, pick, {
+        notes: `Auto-switched by Scout: ${provider} returned 401/402/403 on ${new Date().toISOString().slice(0, 10)} (tier exhausted or key rejected)`,
+      })) {
+        console.log(`[PAN Scout] Self-heal: reasoning_cloud ${provider}:${sel.model} → ${alt}:${pick} (provider failover)`);
+      }
+    } else {
+      console.error('[PAN Scout] No usable cloud provider left — reasoning_cloud will fall through to local.');
+    }
+    return;
+  }
 
   const live = getKnownProviderModels(provider);
   if (!live) return;             // never scanned / empty response — no info, don't false-alarm
@@ -762,7 +921,7 @@ async function checkReasoningCloudHealth() {
   console.error(`[PAN Scout] DEGRADED: reasoning_cloud model "${provider}:${retired}" is not in ${provider}'s live model list — voice path will 404 until switched.`);
 
   // Pick a live replacement, preferring gpt-oss-120b.
-  let replacement = REASONING_CLOUD_PREFERRED.find(m => live.has(m));
+  let replacement = (REASONING_CLOUD_PREFERRED[provider] || []).find(m => live.has(m));
   if (!replacement) replacement = [...live].sort()[0] || null; // deterministic last resort
 
   // Self-heal via the existing helper (idempotent: current model isn't live,
