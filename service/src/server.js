@@ -4171,6 +4171,32 @@ app.get('/api/v1/memory/backfill-status', (req, res) => {
   res.json(backfillStatus(req.query.scope || 'main'));
 });
 
+// Where is the real hub? Answerable by ANY PAN instance, so a client that
+// reaches a stale one gets redirected instead of silently talking to an old
+// database.
+//
+// Exists because the hub moved from the Dell to the mini PC and the phone went
+// dark for nine days: its address was hardcoded in four Kotlin files, the phone
+// exposes no inbound port (verified — every port closed over the tailnet), so
+// the hub had no way to say "I moved". A client that can reach anything can now
+// find everything.
+//
+// Set `hub_base_url` to a Tailscale MagicDNS name (http://pan-hub:7777) rather
+// than an IP: move the hub to another machine, rename that machine in the
+// Tailscale admin console, and every client follows with no rebuild.
+app.get('/api/v1/hub-address', (req, res) => {
+  let configured = null;
+  try {
+    const row = get(`SELECT value FROM settings WHERE key = 'hub_base_url'`);
+    configured = row?.value?.replace(/^"|"$/g, '').trim() || null;
+  } catch { /* db not ready — null is a valid answer */ }
+  res.json({
+    ok: true,
+    base_url: configured,          // null = "I'm not authoritative, keep what works"
+    responding_host: req.headers.host || null,
+  });
+});
+
 // Quick admin endpoint to update model_selections without code edits or
 // swaps. Body: { purpose, provider, model, dim?, context_window?, notes? }
 // Returns the resulting row. Used to redirect reasoning_cloud away from
