@@ -252,13 +252,23 @@ export async function askAIWithFallback(prompt, opts = {}) {
   const attempts = [];
   let lastErr = null;
 
-  // Wall-clock budget across the entire chain. Previously the only cap was
-  // the per-attempt timeout, so a sequence of (SDK 200s-hang) + (Ollama 30s
-  // CPU inference) could keep a voice turn "thinking" for 4 minutes —
-  // dashboard shows a stale "Thinking 0:40 ⚠ timeout" warning and the user
-  // gives up. Cap at 45s total: enough for SDK + 1 backup, refuses to drag
-  // out longer than the user's patience.
-  const WALL_BUDGET_MS = passthrough.totalTimeout ?? 45_000;
+  // Wall-clock budget across the entire chain. The only cap used to be the
+  // per-attempt timeout, so (SDK 200s-hang) + (Ollama CPU inference) could keep
+  // a voice turn "thinking" for 4 minutes. 45s fixed that.
+  //
+  // But 45s is now the thing that breaks local-only operation. Measured on the
+  // Mini-PC (Ryzen 7 5800H, CPU-only, gemma4:e2b resident, prompt already
+  // trimmed 32%): a full router turn needs MORE than 45s, so when Gemini's free
+  // tier hit its 500/day cap on 2026-08-10 every request died at the ceiling —
+  // the local leg was in the chain but could never finish inside it. Warm and
+  // cold both measured 45.7s / 46.4s, i.e. exactly the budget, i.e. cut off.
+  //
+  // So scale the budget to what the chain can actually do. A local model on CPU
+  // is slow but it has no quota and no vendor, which is the whole reason it is
+  // the last leg. Cloud-only chains keep the tighter cap, because there a long
+  // wait means something is wrong rather than something is grinding.
+  const _hasLocal = chain.some((m) => String(m).startsWith('ollama:'));
+  const WALL_BUDGET_MS = passthrough.totalTimeout ?? (_hasLocal ? 120_000 : 45_000);
   const wallDeadline = Date.now() + WALL_BUDGET_MS;
   delete passthrough.totalTimeout;
 
