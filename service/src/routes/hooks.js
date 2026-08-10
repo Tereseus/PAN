@@ -362,6 +362,82 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
 // Local-only endpoint hit by service/src/hooks/behavioral-lock-breaker.js to enqueue
 // a system-level nudge that the next UserPromptSubmit will inject as
 // additionalContext. Cooldown-guarded so we don't spam the same session.
+/**
+ * POST /hooks/internal/session-report
+ *
+ * Receives one turn-boundary report from service/src/hooks/session-reporter.js,
+ * summarises it in one TTS-sized line, and delivers it as an interjection.
+ *
+ * This is the "let PAN narrate my Claude sessions" loop. Deliberately narrow:
+ *
+ *  - The HOOK decides which sessions report at all (cwd allowlist). Nothing
+ *    arrives here from a session you did not opt in.
+ *  - dispatchAction() dedupes on `act:<id>` for 30 minutes, and the id is keyed
+ *    to the session, so a chatty session yields at most one spoken line per
+ *    half hour no matter how many turns it takes. That cap is the whole reason
+ *    this is safe to run: pan_interjections still records #564..#581 firing in
+ *    ~1.5h on 2026-05-27 when a dedupe silently failed to match.
+ *  - `blocked` (the session asked you something and is now idle) speaks.
+ *    `progress` and `completed` are stored and shown, but only speak when
+ *    session_report_speak_all is on. Being told about work you did not ask to
+ *    be told about is how the last notification system became noise.
+ */
+router.post('/internal/session-report', async (req, res) => {
+  try {
+    const { session_id, cwd, project, kind, assistant_text, last_user_text, used_tools } = req.body || {};
+    if (!session_id || !assistant_text) {
+      return res.status(400).json({ ok: false, error: 'missing session_id or assistant_text' });
+    }
+
+    // One short spoken line. Local/cloud per the normal chain — a summary is a
+    // background job, not a voice turn, so it must never block a real one.
+    let line = '';
+    try {
+      const { askAIWithFallback } = await import('../llm-fallback.js');
+      line = await askAIWithFallback(
+        `Summarise what an AI coding session just did, for a spoken one-line notification.
+Project: ${project || 'unknown'}
+The user had asked: ${(last_user_text || '(nothing recorded)').slice(0, 200)}
+The assistant replied: ${String(assistant_text).slice(0, 900)}
+
+Reply with ONE sentence, under 20 words, plain speech, no markdown, no preamble.
+If the assistant is waiting on the user, say what it needs.`,
+        { caller: 'session-report', callerClass: 'background', maxTokens: 120, timeout: 20_000 }
+      );
+    } catch { /* summary is best effort — fall through to the raw first line */ }
+
+    line = String(line || '').trim().split('\n')[0].slice(0, 180);
+    if (!line) line = String(assistant_text).trim().split('\n')[0].slice(0, 180);
+
+    const label = project || 'a session';
+    const speak = kind === 'blocked'
+      ? `${label} needs you. ${line}`
+      : `${label}: ${line}`;
+
+    const shouldSpeak = kind === 'blocked' || /^(1|true|yes)$/i.test(
+      (get(`SELECT value FROM settings WHERE key = 'session_report_speak_all'`)?.value || '')
+        .replace(/^"|"$/g, '')
+    );
+
+    let dispatched = { dispatched: false, reason: 'not spoken (kind=' + kind + ')' };
+    if (shouldSpeak) {
+      const { dispatchAction } = await import('../intuition/action.js');
+      dispatched = await dispatchAction(
+        { id: `session-report:${session_id}`, reason: `${label} ${kind}` },
+        { userId: 'owner', phraseOverride: { subject: `${label} ${kind}`, body: speak, speak } }
+      );
+    }
+
+    broadcastNotification('pan_session_report', {
+      session_id, project: label, kind, used_tools: !!used_tools, line, cwd,
+    });
+
+    res.json({ ok: true, kind, line, spoke: shouldSpeak, dispatch: dispatched });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.post('/internal/session-nudges', (req, res) => {
   try {
     const { session_id, kind, body, detector_meta, cooldown_s } = req.body || {};
