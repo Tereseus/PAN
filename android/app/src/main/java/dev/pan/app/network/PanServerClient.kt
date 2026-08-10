@@ -129,7 +129,7 @@ class PanServerClient @Inject constructor(
             // Same base-URL machinery as the streaming calls — the OkHttp
             // interceptor rewrites to Tailscale when active.
             val request = Request.Builder()
-                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/capture")
+                .url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/capture")
                 .post(body)
                 .build()
 
@@ -158,7 +158,7 @@ class PanServerClient @Inject constructor(
             }.toString().toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/slack/reply")
+                .url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/slack/reply")
                 .post(body)
                 .build()
 
@@ -258,7 +258,7 @@ class PanServerClient @Inject constructor(
                 .toString().toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/recall/stream")
+                .url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/recall/stream")
                 .post(body)
                 .addHeader("Accept", "text/event-stream")
                 .build()
@@ -312,7 +312,7 @@ class PanServerClient @Inject constructor(
 
             // Build against default URL — the OkHttp interceptor will rewrite to Tailscale if active
             val request = Request.Builder()
-                .url("${Constants.DEFAULT_SERVER_URL}/api/v1/query/stream")
+                .url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/query/stream")
                 .post(body)
                 .addHeader("Accept", "text/event-stream")
                 .build()

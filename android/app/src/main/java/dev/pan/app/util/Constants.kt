@@ -17,6 +17,20 @@ object Constants {
     const val VAD_ENERGY_THRESHOLD = 50.0
 
     // Network
+    //
+    // DEPRECATED as an address. HubLocator resolves the hub at request time and
+    // the OkHttp interceptor rewrites every URL, so nothing should read this
+    // expecting to reach a server. It stayed hardcoded to a LAN IP while the hub
+    // moved machines, and the phone talked to a dead host for nine days.
+    //
+    // PLACEHOLDER_BASE_URL exists only because Retrofit demands a syntactically
+    // valid baseUrl when the client is built. It is never contacted.
+    const val PLACEHOLDER_BASE_URL = "http://localhost:7777"
+
+    @Deprecated(
+        "Hardcoded addresses break when the hub moves. Use HubLocator.resolve().",
+        ReplaceWith("HubLocator.resolve()")
+    )
     const val DEFAULT_SERVER_URL = "http://192.168.1.248:7777"
     const val SYNC_INTERVAL_MS = 5000L
 
