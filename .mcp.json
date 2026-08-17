@@ -2,11 +2,17 @@
   "mcpServers": {
     "pan": {
       "command": "node",
-      "args": ["service/src/mcp-server.js"]
+      "args": ["service/src/mcp-server.js"],
+      "env": {
+        "PAN_BASE_URL": "http://minipc-pan-hub:7777"
+      }
     },
     "quality-log": {
       "command": "node",
-      "args": ["service/src/quality-log-mcp.js"]
+      "args": ["service/src/quality-log-mcp.js"],
+      "env": {
+        "PAN_BASE_URL": "http://minipc-pan-hub:7777"
+      }
     }
   }
 }
