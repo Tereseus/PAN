@@ -72,10 +72,6 @@ A remote for the database on your computer, by voice or text. Speech is captured
 
 **Smart home control.** "Turn on the theater" resolves the spoken name against your Home Assistant entities and calls the service. Requires a Home Assistant instance — see below.
 
-## Smart home (Home Assistant)
-
-PAN does not talk to Zigbee, Tuya or Matter directly. Home Assistant already solved that for 3,000+ device types, so PAN wraps it: HA owns the device layer, PAN owns the brain.
-
 Point PAN at an existing HA instance:
 
 ```bash
@@ -105,8 +101,7 @@ State changes stream in over HA's WebSocket API and land in the event database, 
 Not built. Listed so the direction is clear, not as a promise of dates.
 
 - **Pendant** — an ESP32-S3 wearable with camera, mic and sensors, talking to the phone over BLE. Intended to give PAN presence and context away from a desk, and room-level location from BLE signal strength without GPS.
-- **Voice fingerprinting** — speaker identification so PAN knows who is talking.
-- **Cross-system automations** — using HA state and PAN context together, e.g. lights that respond to where you actually are rather than to a motion timeout.
+- **Cross-system automations** 
 
 ---
 
@@ -200,20 +195,11 @@ Roughly 1.5 MB/day of text data. A local model needs enough RAM to hold Gemma 4 
 
 ---
 
-## Status
-
-**Working:** local capture and storage, semantic + full-text search, MCP integration with Claude Code, local Gemma 4 for chat and vision, the fallback chain, dashboard, Android app for voice and text, browser extension, command dispatch to other machines over Tailscale, hot-swap runtime.
-
-**Rough edges:** the installer is unfinished and the dashboard has known bugs. If you pin the chain to a local-only model, expect voice latency to track your hardware rather than the sub-second cloud path.
-
-**Needs a dependency:** smart home control is implemented in PAN but does nothing until you have a Home Assistant instance for it to drive. Every `/api/v1/ha/*` endpoint returns "not configured" until `hass_token` is set.
-
-**Not built:** see [Planned](#planned).
 
 ---
 
 ## Notes
 
-PAN does not require a specific AI provider. Any project with a `.pan` file gets captured regardless of which assistant you use. The model is pluggable; the data is yours and stays on your disk.
+PAN does not require a specific AI provider. Any project with a `.pan` file gets captured regardless of which assistant you use. The model is pluggable; the data is yours.
 
 **License:** Open Source
