@@ -4171,6 +4171,27 @@ app.get('/api/v1/memory/backfill-status', (req, res) => {
   res.json(backfillStatus(req.query.scope || 'main'));
 });
 
+// Render PAN's memory as browsable markdown, so you can SEE what it captured
+// instead of only reaching it through similarity search.
+//
+// Derived output: every file is rebuilt from the database on each call, nothing
+// reads it back, nothing edits it by hand. Deliberately does not call an LLM —
+// the prose-writing half is the expensive part, and the Gemini free tier caps
+// at 500/day (hit on 2026-08-10, took voice down with it). A structural render
+// costs nothing and still answers "what is in here".
+app.get('/api/v1/memory/wiki', async (req, res) => {
+  try {
+    const { generateWiki } = await import('./memory/wiki.js');
+    // wiki.js defaults to a folder beside pan.db. server.js has no data-dir
+    // constant in scope (PAN_DATA_DIR is an env var read inside db.js), so
+    // letting the module own that resolution avoids a ReferenceError here.
+    const result = generateWiki(req.query.dir || undefined);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Where is the real hub? Answerable by ANY PAN instance, so a client that
 // reaches a stale one gets redirected instead of silently talking to an old
 // database.
