@@ -102,7 +102,18 @@ async function embedOllama(text, timeout = 3000) {
   const res = await fetch(`${url}/api/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt: text.slice(0, 8000) }),
+    // keep_alive: -1 pins the embedding model in memory, the same way
+    // analyzeImage pins the vision model (llm.js:936).
+    //
+    // Without it, semantic search dies permanently rather than intermittently.
+    // Measured on the Mini-PC 2026-08-25: a warm embedding takes 138-187ms, a
+    // cold one 3,637ms. memory-search.js gives the query embedding a 500ms
+    // budget. So once Ollama evicts the model, the next search goes cold,
+    // blows the budget, and falls back to FTS — and because it fell back, that
+    // path never warms the model again. It stays cold forever. That is why
+    // every /api/v1/memory/search result came back vecRank=null instead of
+    // failing now and then.
+    body: JSON.stringify({ model, prompt: text.slice(0, 8000), keep_alive: -1 }),
     signal: AbortSignal.timeout(timeout),
   });
   if (!res.ok) throw new Error(`Ollama ${res.status}`);
