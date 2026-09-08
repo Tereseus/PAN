@@ -66,6 +66,15 @@ class PendantBle @Inject constructor(
         /** Ask for the largest MTU the peer will grant; chunk size follows it. */
         private const val WANT_MTU = 517
 
+        /**
+         * Inter-packet gap the board should use, in ms. The firmware default of
+         * 3ms overruns the link and loses most of every frame. Bench sweep on a
+         * Windows host found the first lossless setting at 8ms; 15 is chosen as
+         * a deliberate margin over that, since a dropped packet costs the WHOLE
+         * frame while a few extra ms costs only latency on a 5s cadence.
+         */
+        private const val PACING_MS = 15
+
         /** A frame that has not completed in this long is abandoned, not merged
          *  into the next one. Bench worst case is well under 2s. */
         private const val FRAME_TIMEOUT_MS = 15_000L
@@ -94,6 +103,8 @@ class PendantBle @Inject constructor(
     private var gatt: BluetoothGatt? = null
     private var scanning = false
     @Volatile private var wantConnected = false
+    /** Guards against a burst of queued scan results each opening its own GATT. */
+    @Volatile private var connecting = false
 
     // ---- frame reassembly state -------------------------------------------
     private var expect = 0
@@ -167,6 +178,17 @@ class PendantBle @Inject constructor(
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val dev = result.device ?: return
+            // stopScan() does NOT stop results already queued in the stack, and
+            // more arrive for several milliseconds afterwards. Without this
+            // guard every one of them opened ANOTHER GATT connection: measured
+            // 2026-09-07, nine simultaneous connections to the same pendant, all
+            // subscribed, interleaving their packets into one reassembly buffer
+            // so that EVERY frame failed with an overflow. The link was fine; the
+            // client was talking to itself nine times over.
+            synchronized(this@PendantBle) {
+                if (connecting || gatt != null) return
+                connecting = true
+            }
             stopScan()
             Log.i(TAG, "found ${dev.address}, connecting")
             _status.value = "Connecting"
@@ -188,14 +210,26 @@ class PendantBle @Inject constructor(
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, statusCode: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                connecting = false
+                gatt = g
                 Log.i(TAG, "connected, requesting MTU $WANT_MTU")
                 _status.value = "Connected"
+                // CONNECTION INTERVAL, not just MTU. Android connects at roughly
+                // 30ms by default, so the link drains about half as fast as the
+                // board sends at its 15ms pacing, and the controller silently
+                // drops the excess. Measured 2026-09-07: the board reported
+                // sending all ~48 packets of a 23KB frame (gap=15, tx_ms=705)
+                // while the phone received only 3-6KB. HIGH priority asks for
+                // ~11.25ms, which puts the drain rate ahead of the send rate.
+                val ok = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                Log.i(TAG, "requestConnectionPriority(HIGH) -> $ok")
                 // MTU first, services after: chunk size is MTU-5, so discovering
                 // and subscribing before the MTU is raised means the first frame
                 // arrives in 18-byte pieces.
                 g.requestMtu(WANT_MTU)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.i(TAG, "disconnected (status=$statusCode)")
+                connecting = false
                 resetFrame()
                 try { g.close() } catch (_: Exception) {}
                 gatt = null
@@ -238,12 +272,21 @@ class PendantBle @Inject constructor(
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, statusCode: Int) {
-            Log.i(TAG, "notifications enabled (status=$statusCode); starting periodic capture")
+            Log.i(TAG, "notifications enabled (status=$statusCode); pacing then starting capture")
             _status.value = "Streaming"
-            // Let the BOARD drive the cadence. Phone-driven capture would need a
-            // BLE write per frame, which costs more radio time on the battery
-            // powered side for no benefit.
-            sendCommand("s")
+            // PACING MUST BE SET BEFORE STREAMING, and it is not optional.
+            //
+            // The firmware default is a 3ms inter-packet gap, which is faster
+            // than the link can drain: measured 2026-09-07 it loses most of every
+            // frame, arriving as 3-6KB of a ~25KB image. The board resets to that
+            // default whenever it is power cycled, so the phone has to set it on
+            // every connection rather than assuming a previous session's value
+            // survived.
+            //
+            // Sent as ONE write ("d15s") because the firmware parses a whole
+            // command string, and two back-to-back WRITE_NO_RESPONSE writes can
+            // be dropped by the stack.
+            sendCommand("d${PACING_MS}s")
         }
 
         // API 33+ delivers the payload as a parameter; 31/32 read it off the
@@ -298,6 +341,11 @@ class PendantBle @Inject constructor(
         lastSeq = -1; lost = 0; frameStartedAt = 0L
     }
 
+    // Synchronized: the stack delivers notifications on a binder thread POOL, so
+    // consecutive packets of one frame can land on different threads. Observed
+    // 2026-09-07 (thread ids 20162/20163/20165/20184 all writing the same frame).
+    // Reassembly state is shared mutable state and must not be raced.
+    @Synchronized
     private fun onPacket(pkt: ByteArray) {
         if (pkt.size < 2) return
         val seq = ((pkt[0].toInt() and 0xFF) shl 8) or (pkt[1].toInt() and 0xFF)
