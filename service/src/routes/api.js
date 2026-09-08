@@ -1474,6 +1474,28 @@ router.post('/query/stream', async (req, res) => {
   // Keepalive every 5s — prevents OkHttp 30s readTimeout from firing during slow LLM calls
   const keepaliveInterval = setInterval(sendKeepalive, 5000);
 
+  // Task #460 — cancel the in-flight turn when a new STT Final arrives.
+  //
+  // This endpoint previously passed NO signal to routeStream, so nothing could
+  // stop a turn once it started. When one stalled, the phone re-sent and the
+  // server ran every copy to completion: that is the triple-send. The
+  // 2026-07-15 searchMemory timeout removed the usual TRIGGER for the stall but
+  // not the ability to pile up, which is why this stayed open.
+  //
+  // Keyed by DEVICE rather than a random id, because the thing that should
+  // cancel a turn is the same phone saying something new. Reuses the existing
+  // streamControllers registry so /cancel and the TTL sweeper keep working
+  // instead of needing a second parallel mechanism.
+  const streamKey = `phone:${req.headers['x-device-id'] || req.headers['x-device-name'] || 'unknown'}`;
+  const superseded = streamControllers.get(streamKey);
+  if (superseded) {
+    try { superseded.controller.abort(); } catch {}
+    streamControllers.delete(streamKey);
+    console.log(`[/query/stream] superseded in-flight turn for ${streamKey}`);
+  }
+  const controller = new AbortController();
+  registerStream(streamKey, controller);
+
   // Client-disconnect cleanup — same fix as /recall/stream above. Without
   // this the keepalive interval leaked forever and the underlying socket
   // stayed in CLOSE_WAIT on Craft's side, piling up until Craft's HTTP
@@ -1481,6 +1503,9 @@ router.post('/query/stream', async (req, res) => {
   res.on('close', () => {
     if (!res.writableEnded) {
       clearInterval(keepaliveInterval);
+      // Abort too: a phone that hung up should not leave the model generating
+      // into a socket nobody is reading.
+      try { controller.abort(); } catch {}
     }
   });
 
@@ -1518,17 +1543,30 @@ router.post('/query/stream', async (req, res) => {
       intent_hint,
       conversation_history: convoHistory,
       sensors: parsedSensors,
+      signal: controller.signal,
       org_id: req.org_id,
     })) {
       send(event);
       if (event.type === 'done') break;
     }
   } catch (err) {
-    console.error('[query/stream]', err.message);
-    send({ type: 'chunk', text: 'Something went wrong.' });
-    send({ type: 'done', result: { intent: 'query', response: 'Something went wrong.' } });
+    // An abort is not a failure: it means a newer utterance superseded this
+    // turn. Saying "Something went wrong" there would speak an error at the
+    // user for doing the normal thing of talking again.
+    if (controller.signal.aborted) {
+      console.log('[query/stream] turn aborted (superseded or client gone)');
+      send({ type: 'done', result: { intent: 'cancelled', response: '' } });
+    } else {
+      console.error('[query/stream]', err.message);
+      send({ type: 'chunk', text: 'Something went wrong.' });
+      send({ type: 'done', result: { intent: 'query', response: 'Something went wrong.' } });
+    }
   } finally {
     clearInterval(keepaliveInterval);
+    // Only clear if this request still owns the slot. A newer turn may have
+    // already replaced it, and deleting blindly would unregister THAT one,
+    // making the next utterance unable to cancel it.
+    if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
   }
 
   if (!res.writableEnded) res.end();
