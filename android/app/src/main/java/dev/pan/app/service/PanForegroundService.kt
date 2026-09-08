@@ -115,6 +115,11 @@ class PanForegroundService : Service() {
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
     @Inject lateinit var pendantBle: dev.pan.app.ble.PendantBle
 
+    // Whether this service currently holds the MICROPHONE foreground-service
+    // type. False when it started from the background (boot), where Android 14
+    // refuses that type. STT must not run while this is false.
+    @Volatile private var micForegroundActive = false
+
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val mainHandler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
@@ -227,6 +232,38 @@ class PanForegroundService : Service() {
         } catch (_: Exception) { /* best effort */ }
     }
 
+    /**
+     * Claim the MICROPHONE foreground-service type, if we do not already hold it.
+     *
+     * Needed because a boot start cannot take that type (see onCreate): the
+     * service comes up as CONNECTED_DEVICE and must upgrade before any recording.
+     * Safe to call repeatedly; startForeground on an already-foreground service
+     * just updates it. Still guarded by try/catch, because if we are somehow not
+     * in an eligible state this must degrade rather than kill the service, which
+     * is the exact failure that made PAN unable to survive a reboot at all.
+     */
+    private fun ensureMicForeground(): Boolean {
+        if (micForegroundActive) return true
+        val hasMic = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasMic) return false
+        return try {
+            ServiceCompat.startForeground(
+                this,
+                Constants.NOTIFICATION_ID,
+                buildNotification(listening = true, connected = serverClient.isConnected.value),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+            micForegroundActive = true
+            panLog("microphone foreground type acquired")
+            true
+        } catch (e: SecurityException) {
+            panLog("cannot acquire mic foreground type yet: ${e.message}")
+            false
+        }
+    }
+
     // Persistent log — ships to PAN server via batched telemetry endpoint
     private fun panLog(msg: String) {
         Log.i(TAG, msg)
@@ -275,12 +312,41 @@ class PanForegroundService : Service() {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (hasMicPermission) {
-            ServiceCompat.startForeground(
-                this,
-                Constants.NOTIFICATION_ID,
-                buildNotification(listening = true, connected = false),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
+            // ANDROID 14 BACKGROUND-START RULE — this is why PAN never survived a
+            // reboot.
+            //
+            // RECORD_AUDIO is a foreground-ONLY permission, so starting a
+            // MICROPHONE foreground service additionally requires the app to be
+            // in an eligible (foreground) state. Holding the permission is not
+            // enough. A BootReceiver start is a BACKGROUND start, so this threw
+            // SecurityException, took the whole service down with it, and the
+            // system kept retrying: "PAN keeps stopping". Nothing ran after a
+            // reboot, which is why no phone logs reached the hub for weeks and
+            // why remote access looked broken.
+            //
+            // Falling back to CONNECTED_DEVICE keeps the service alive. That type
+            // is declared in the manifest, is legal from a background start, and
+            // is now literally accurate: this service owns the pendant BLE link.
+            // The microphone type is claimed later, from the foreground, by
+            // ensureMicForeground() when STT actually starts.
+            try {
+                ServiceCompat.startForeground(
+                    this,
+                    Constants.NOTIFICATION_ID,
+                    buildNotification(listening = true, connected = false),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+                micForegroundActive = true
+            } catch (e: SecurityException) {
+                micForegroundActive = false
+                Log.w(TAG, "mic FGS refused (background start), falling back: ${e.message}")
+                ServiceCompat.startForeground(
+                    this,
+                    Constants.NOTIFICATION_ID,
+                    buildNotification(listening = false, connected = false),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            }
 
             // Wire up logging
             sttEngine.onLog = { msg -> panLog(msg) }
@@ -818,6 +884,10 @@ class PanForegroundService : Service() {
         }
         if (lower.contains("unmute") || lower.contains("wake up") || lower.contains("start listening")) {
             panLog("PAN unmuted by voice command")
+            // If the service came up from boot it holds CONNECTED_DEVICE, not
+            // MICROPHONE. Claim the mic type before recording, or Android kills
+            // the recording (or the service) for using the mic without it.
+            ensureMicForeground()
             isMuted = false
             sttEngine.enabled = true
             micEnabled.value = true
