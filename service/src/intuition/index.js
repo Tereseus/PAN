@@ -473,6 +473,44 @@ function buildSnapshot(trigger = 'heartbeat') {
     if (wordChars < trimmed.length * 0.3) return false;
     return true;
   }
+  // WORLD CONTEXT â€” what the user's CAMERA saw, as distinct from what is on
+  // their screen. Fed by VisionAnalysis events, which is what /api/v1/vision and
+  // the pendant photo endpoint write.
+  //
+  // Before this, camera frames reached memory and full-text search but never
+  // reached intuition, so the wearable could not influence a single decision the
+  // system made. That was the entire point of the wearable.
+  //
+  // Deliberately SEPARATE from screen_context rather than folded into it: the
+  // screen says what he is working on, the camera says where he is and what is
+  // physically around him. Collapsing them would let a photo of a ceiling
+  // overwrite "building WoE" as the current activity.
+  //
+  // The staleness window is far longer than the screen's 240s. A screenshot is
+  // stale the moment he changes window; where he physically is, is not.
+  const WORLD_STALE_MS = 15 * 60_000;
+  function getLatestWorldContext() {
+    try {
+      const rows = all(`
+        SELECT data, created_at FROM events
+        WHERE event_type = 'VisionAnalysis'
+        ORDER BY id DESC LIMIT 1
+      `);
+      if (!rows.length) return null;
+      const d = JSON.parse(rows[0].data || '{}');
+      if (!d.description) return null;
+      const ts = d.timestamp || new Date(rows[0].created_at).getTime();
+      if (Date.now() - ts > WORLD_STALE_MS) return null;
+      return { description: d.description, ts, image_file: d.image_file || null, source: d.source || null };
+    } catch { return null; }
+  }
+  // Reuses the screen-vision garbage filter: the same local models emit the same
+  // URN/UUID cold-start noise regardless of which camera fed them.
+  const rawWorldCtx = getLatestWorldContext();
+  const worldCtx = rawWorldCtx && isUsefulScreenDescription(rawWorldCtx.description)
+    ? rawWorldCtx
+    : null;
+
   const rawScreenCtx = getLatestScreenContext() || getLatestScreenContextFromDB();
   const screenCtx = rawScreenCtx && isUsefulScreenDescription(rawScreenCtx.description)
     ? rawScreenCtx
@@ -720,6 +758,11 @@ function buildSnapshot(trigger = 'heartbeat') {
       sensors_active: [...sensorsActive],
       active_apps: [...activeApps],
       screen_context: screenCtx ? { description: screenCtx.description, age_ms: now - screenCtx.ts } : null,
+      // What the camera (pendant or phone) last saw. Null is normal and must
+      // stay non-fatal: there is no pendant attached most of the time.
+      world_context: worldCtx
+        ? { description: worldCtx.description, age_ms: now - worldCtx.ts, image_file: worldCtx.image_file, source: worldCtx.source }
+        : null,
       // Identity/webcam is OPT-IN (PAN_ENABLE_IDENTITY=1). When off — the
       // default — getWebcamContext() returns null and webcam_context is simply
       // absent from the snapshot. Intuition does NOT depend on it: presence is

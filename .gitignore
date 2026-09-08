@@ -137,3 +137,25 @@ service/public/hardware-health.html
 # Personal photos / ad-hoc screenshots — never commit these.
 temp_photos/
 service/public/screenshots/
+
+# ADDED 2026-09-07. pan-secrets.env.bat sits in the repo root of this PUBLIC
+# repo holding six live credentials (Tailscale OAuth id and secret, Google OAuth
+# id and secret, Gemini key, Cerebras key) and NOTHING was ignoring it. Git
+# history confirms it was never committed, but only luck prevented it. These are
+# the same keys that leaked on 2026-08-07 through an unauthenticated
+# GET /api/v1/settings over a public tunnel, the incident service/src/secrets.js
+# was written to fix. Do not remove these lines.
+pan-secrets.env.bat
+*.env.bat
+.env.*
+*secrets*.bat
+*secrets*.env
+pan.key
+*.pem
+*.key
+
+# Editing backups left beside live files when patching a running host in place.
+*.bak
+*.bak-*
+*.orig
+*.rej

@@ -457,12 +457,71 @@ router.post('/audio', (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/photo', (req, res) => {
-  const { jpeg_base64, timestamp, source } = req.body;
+// Pendant frame ingest.
+//
+// THIS USED TO DISCARD THE IMAGE. It stored only `size: jpeg_base64?.length`,
+// so a pendant streaming all day produced an endless log of "a 38KB photo
+// happened" with no picture and no description. The frame is now written to
+// disk exactly as /vision does.
+//
+// Analysis is OPT-IN per frame rather than automatic, and that is deliberate.
+// Storing a frame costs ~0.1s; describing one costs seconds. At one frame every
+// 5s, describing all of them would pin the box permanently to caption mostly
+// ceilings. So: keep everything, describe what is asked for. Pass
+// { analyze: true } for the "hey, look at this" path.
+router.post('/photo', async (req, res) => {
+  const { jpeg_base64, timestamp, source, analyze } = req.body || {};
+  if (!jpeg_base64) return res.status(400).json({ ok: false, error: 'missing jpeg_base64' });
 
-  insertEvent(`Pandant-${Date.now()}`, 'PandantPhoto', JSON.stringify({ timestamp, source, size: jpeg_base64?.length || 0 }), req.user?.id);
+  const ts = Number(timestamp) || Date.now();
+  const photoId = `pendant-${ts}`;
+  const photoFilename = `${photoId}.jpg`;
+  let saved = false;
+  try {
+    writeFileSync(join(PHOTOS_DIR, photoFilename), Buffer.from(jpeg_base64, 'base64'));
+    saved = true;
+  } catch (e) {
+    console.error(`[PAN Pendant] failed to save ${photoFilename}: ${e.message}`);
+  }
 
-  res.json({ ok: true });
+  // Event type stays 'PandantPhoto' (sic). The typo is load-bearing now that
+  // rows exist under it; renaming would orphan the history for no benefit.
+  insertEvent(photoId, 'PandantPhoto', JSON.stringify({
+    timestamp: ts,
+    source: source || 'pendant',
+    image_file: saved ? photoFilename : null,
+    image_size: jpeg_base64.length,
+  }), req.user?.id);
+
+  if (!analyze) {
+    return res.json({ ok: true, saved, image_file: saved ? photoFilename : null });
+  }
+
+  try {
+    const { analyzeImage } = await import('../claude.js');
+    const description = await analyzeImage(
+      'Describe what is in this scene in one or two short sentences.',
+      jpeg_base64,
+      { caller: 'vision' },
+    );
+    // Written as VisionAnalysis, NOT PandantPhoto, because VisionAnalysis is the
+    // event type intuition's world_context reads. A description filed under any
+    // other type would be searchable but invisible to intuition, which is the
+    // exact gap this change exists to close.
+    insertEvent(`vision-${Date.now()}`, 'VisionAnalysis', JSON.stringify({
+      question: 'pendant frame',
+      description: String(description || '').slice(0, 500),
+      image_file: saved ? photoFilename : null,
+      image_size: jpeg_base64.length,
+      source: source || 'pendant',
+      timestamp: Date.now(),
+    }), req.user?.id);
+    res.json({ ok: true, saved, image_file: saved ? photoFilename : null, description });
+  } catch (e) {
+    console.error(`[PAN Pendant] analyze failed: ${e.message}`);
+    // The frame is already stored, so a vision failure must not lose it.
+    res.json({ ok: true, saved, image_file: saved ? photoFilename : null, error: 'analysis failed', detail: e.message });
+  }
 });
 
 router.post('/vision', async (req, res) => {

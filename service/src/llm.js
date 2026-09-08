@@ -934,7 +934,16 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
         images: allImages,
         stream: false,
         keep_alive: -1,   // never unload — vision model stays hot between captures
-        options: { num_gpu: 0 }, // mini PC has AMD integrated GPU — force CPU inference
+        // gemma4 is a THINKING model and thinks by DEFAULT. With no think flag
+        // and no token cap it spends most of the wall clock reasoning before
+        // emitting any description. Measured 2026-09-07 on the hub, same model
+        // and same frame: think=true 25.4s, think=false 13.1s, and the uncapped
+        // live endpoint 57s. With this, the same endpoint returns in ~2s warm.
+        think: false,
+        // Cap the reply too. A description needs a couple of sentences, and an
+        // uncapped budget on a thinking model is how an 80 token probe once
+        // returned an EMPTY string with done_reason "length".
+        options: { num_gpu: 0, num_predict: 300 }, // mini PC has AMD integrated GPU — force CPU inference
       }),
       // Use the shared overall budget — each provider can take at most what's left.
       signal: AbortSignal.timeout(remaining()),
