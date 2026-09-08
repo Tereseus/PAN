@@ -75,6 +75,45 @@ class PendantBle @Inject constructor(
          */
         private const val PACING_MS = 15
 
+        /**
+         * Default frame size: QVGA 320x240. Measured on this phone 2026-09-08.
+         *
+         * SVGA is not viable on a battery here. Android connects at a slower
+         * interval than the bench Windows host, so an SVGA frame (~23KB, 48
+         * packets) needs ~120ms pacing to arrive intact, which puts transmit at
+         * 5.8s against a 5s cadence: the radio is on essentially permanently.
+         *
+         *   SVGA  @120ms   48 pkts   tx 5760ms   ~100% duty   clean
+         *   SVGA   @15ms   48 pkts   tx  720ms    ~14% duty   21% of frames survive
+         *   QVGA   @15ms   12 pkts   tx  160ms    ~7% duty    93% survive
+         *
+         * A quarter of the pixels is a quarter of the packets, which buys both
+         * reliability AND the duty cycle back. Shrink the payload rather than
+         * slowing the link.
+         */
+        private const val DEFAULT_SIZE = "q"
+
+        /**
+         * Tuning override, read from `filesDir/ble_pacing_ms` when present.
+         *
+         * Exists because finding this value empirically needs a dozen runs and a
+         * rebuild-per-value turns a ten minute sweep into an hour. A missing or
+         * unparseable file just means PACING_MS, so production behaviour is
+         * unchanged and there is nothing to remove later.
+         */
+        private const val PACING_OVERRIDE_FILE = "ble_pacing_ms"
+
+        /**
+         * Frame-size override, read from `filesDir/ble_size`: q = QVGA 320x240,
+         * m = SVGA 800x600, h = HD 1280x720. Default is the firmware's SVGA.
+         *
+         * Size is the dominant power term, not pacing. An SVGA frame is ~48
+         * packets; at the pacing needed to deliver it reliably on this phone the
+         * radio ends up on almost continuously, which defeats the point of a
+         * battery device. A quarter of the pixels is a quarter of the packets.
+         */
+        private const val SIZE_OVERRIDE_FILE = "ble_size"
+
         /** A frame that has not completed in this long is abandoned, not merged
          *  into the next one. Bench worst case is well under 2s. */
         private const val FRAME_TIMEOUT_MS = 15_000L
@@ -119,6 +158,26 @@ class PendantBle @Inject constructor(
     // -----------------------------------------------------------------------
 
     fun isSupported(): Boolean = adapter != null
+
+    /** Frame-size command letter: the tuning file if valid, else DEFAULT_SIZE. */
+    private fun sizeCmd(): String {
+        return try {
+            val f = java.io.File(context.filesDir, SIZE_OVERRIDE_FILE)
+            if (!f.exists()) return DEFAULT_SIZE
+            val v = f.readText().trim()
+            if (v in listOf("q", "m", "h")) v else DEFAULT_SIZE
+        } catch (_: Exception) { DEFAULT_SIZE }
+    }
+
+    /** PACING_MS unless overridden by the tuning file. Never throws. */
+    private fun pacingMs(): Int {
+        return try {
+            val f = java.io.File(context.filesDir, PACING_OVERRIDE_FILE)
+            if (!f.exists()) return PACING_MS
+            val v = f.readText().trim().toIntOrNull() ?: return PACING_MS
+            if (v in 1..500) v else PACING_MS
+        } catch (_: Exception) { PACING_MS }
+    }
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -286,7 +345,11 @@ class PendantBle @Inject constructor(
             // Sent as ONE write ("d15s") because the firmware parses a whole
             // command string, and two back-to-back WRITE_NO_RESPONSE writes can
             // be dropped by the stack.
-            sendCommand("d${PACING_MS}s")
+            val pacing = pacingMs()
+            val size = sizeCmd()
+            Log.i(TAG, "pacing = ${pacing}ms size = $size")
+            // Size before pacing before start, all in one write.
+            sendCommand("${size}d${pacing}s")
         }
 
         // API 33+ delivers the payload as a parameter; 31/32 read it off the
