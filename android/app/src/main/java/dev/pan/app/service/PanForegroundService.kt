@@ -113,6 +113,7 @@ class PanForegroundService : Service() {
     @Inject lateinit var cameraCapture: CameraCapture
     @Inject lateinit var nanoVision: dev.pan.app.ai.NanoVision
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
+    @Inject lateinit var pendantBle: dev.pan.app.ble.PendantBle
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -426,6 +427,43 @@ class PanForegroundService : Service() {
                 }
             } catch (e: Exception) {
                 panLog("VPN auto-connect failed: ${e.message}")
+            }
+        }
+
+        // Camera pendant over BLE. Frames are STORED, not analysed: analyse=false
+        // keeps the hub at ~0.1s per frame instead of seconds, which is what makes
+        // a five second cadence affordable at all. The expensive path is the
+        // deliberate "look at this" request, not the ambient stream.
+        pendantBle.onFrame = { jpeg, w, h ->
+            serviceScope.launch {
+                try {
+                    val b64 = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
+                    val resp = serverClient.api.uploadPhoto(
+                        dev.pan.app.network.dto.PhotoUpload(
+                            jpeg_base64 = b64,
+                            timestamp = System.currentTimeMillis(),
+                            source = "pendant",
+                            analyze = false,
+                        )
+                    )
+                    if (!resp.isSuccessful) panLog("Pendant frame upload HTTP ${resp.code()}")
+                } catch (e: Exception) {
+                    // Never let an upload failure kill the BLE link; the pendant
+                    // keeps streaming and the next frame gets another go.
+                    panLog("Pendant frame upload failed: ${e.message}")
+                }
+            }
+        }
+        serviceScope.launch {
+            try {
+                if (pendantBle.isSupported()) {
+                    panLog("Pendant BLE: starting scan for PAN-CAM")
+                    pendantBle.start()
+                } else {
+                    panLog("Pendant BLE: no bluetooth adapter, skipping")
+                }
+            } catch (e: Exception) {
+                panLog("Pendant BLE start failed: ${e.message}")
             }
         }
 
