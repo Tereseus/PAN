@@ -39,7 +39,12 @@ data class AudioUpload(
 data class PhotoUpload(
     val jpeg_base64: String,
     val timestamp: Long,
-    val source: String = "Pandant_camera"
+    val source: String = "Pandant_camera",
+    // Opt in to server-side vision analysis for THIS frame. Storing a frame is
+    // ~0.1s; describing one costs seconds of local vision, so at one frame every
+    // five seconds captioning everything would pin the hub to describe mostly
+    // ceilings. Default false: keep everything, describe on request.
+    val analyze: Boolean = false
 )
 
 data class SensorUpload(
