@@ -159,3 +159,10 @@ pan.key
 *.bak-*
 *.orig
 *.rej
+
+# One-off .cjs probes written at the repo ROOT while debugging the hub (bfdiag,
+# chk, orphans, vacuum, and ~20 more). Scoped with a LEADING SLASH so it matches
+# only the root: a bare *.cjs would also ignore the eight tracked files under
+# service/ (pan-installer.cjs, pan-tray.cjs, run-tests.cjs, claude-runner.cjs and
+# friends), which are real code.
+/*.cjs
