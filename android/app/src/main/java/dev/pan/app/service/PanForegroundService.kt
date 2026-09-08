@@ -391,6 +391,44 @@ class PanForegroundService : Service() {
 
         acquireWakeLock()
         logShipper.start()
+
+        // Bring remote access back up by itself.
+        //
+        // WHY HERE AND NOT IN BootReceiver: a BroadcastReceiver gets roughly ten
+        // seconds, while PanVpn.connect() polls for up to thirty, so doing it in
+        // the receiver would be killed part way. This service is started BY that
+        // receiver on boot and is long lived, so it is the right owner.
+        //
+        // WHAT WAS BROKEN: BootReceiver only ever started this service, nothing
+        // ever started the VPN, and connectTailscale() runs solely from
+        // MainScreen's LaunchedEffect. So after a reboot the phone came back
+        // with voice working but silently OFF the tailnet until the app was
+        // opened by hand.
+        //
+        // The consent check is load bearing: VpnService consent can only be
+        // granted from an Activity. prepareVpn() returning non-null means it has
+        // not been granted, and there is no way to ask from here, so skip
+        // quietly and let MainScreen prompt on next open rather than fail in a
+        // loop. autoConnect() itself is a no-op unless the user previously had
+        // remote access connected.
+        // Logged on every branch on purpose. The bug this replaces was invisible
+        // precisely because nothing said the VPN had not been started.
+        serviceScope.launch {
+            try {
+                if (dev.pan.app.vpn.PanVpn.prepareVpn(this@PanForegroundService) == null) {
+                    val wanted = getSharedPreferences("pan_vpn", MODE_PRIVATE)
+                        .getBoolean("enabled", false)
+                    panLog("VPN auto-connect: consent ok, previously enabled=$wanted")
+                    dev.pan.app.vpn.PanVpn.autoConnect(this@PanForegroundService)
+                    panLog("VPN auto-connect: returned")
+                } else {
+                    panLog("VPN auto-connect skipped: consent not granted yet")
+                }
+            } catch (e: Exception) {
+                panLog("VPN auto-connect failed: ${e.message}")
+            }
+        }
+
         serviceScope.launch { syncManager.start() }
         serviceScope.launch { loadHistory() }
         serviceScope.launch {
