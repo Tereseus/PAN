@@ -14,8 +14,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.4.8"
+        versionCode = 13
+        versionName = "0.4.10"
         ndk {
             // Phones are arm64 — ship only that ABI. Drops the x86/x86_64/armeabi-v7a
             // copies of sherpa-onnx (Piper), onnxruntime, and gojni (Tailscale): ~100 MB.

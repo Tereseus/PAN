@@ -78,6 +78,14 @@ object PanVpn {
                         // Also check if proxy is running
                         val proxyPort = try { Panvpn.getProxyPort().toInt() } catch (_: Exception) { 0 }
                         Log.i(TAG, "Connected: ip=${status.ip}, proxy=$proxyPort")
+                        // Remember that remote access is wanted, so it can come
+                        // back by itself after a reboot. KEY_ENABLED was READ by
+                        // autoConnect() but never WRITTEN by anything, so the
+                        // flag was permanently false and autoConnect could only
+                        // ever no-op. Written only on a genuinely established
+                        // connection: a config that never worked should not be
+                        // retried automatically on every boot.
+                        setEnabledPref(context, true)
                         return@withContext null
                     }
                 }
@@ -101,6 +109,10 @@ object PanVpn {
      */
     suspend fun disconnect(context: Context) = withContext(Dispatchers.IO) {
         try {
+            // Clear the flag FIRST, and outside the try/catch's failure path, so
+            // that an explicit disconnect is never resurrected by autoConnect on
+            // the next boot even if stopping the service itself throws.
+            setEnabledPref(context, false)
             val intent = Intent(context, PanVpnService::class.java).apply {
                 action = PanVpnService.ACTION_DISCONNECT
             }
@@ -108,6 +120,17 @@ object PanVpn {
             Log.i(TAG, "Disconnected")
         } catch (e: Exception) {
             Log.e(TAG, "Disconnect failed", e)
+        }
+    }
+
+    /** Persist whether the user wants remote access on. Read by [autoConnect]. */
+    private fun setEnabledPref(context: Context, value: Boolean) {
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_ENABLED, value).apply()
+            Log.i(TAG, "remote access enabled pref = $value")
+        } catch (e: Exception) {
+            Log.w(TAG, "could not persist enabled pref: ${e.message}")
         }
     }
 
