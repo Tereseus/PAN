@@ -93,6 +93,9 @@ class PendantBle @Inject constructor(
          */
         private const val DEFAULT_SIZE = "q"
 
+        /** How often to re-arm a scan that has found nothing. See rescanTimer. */
+        private const val RESCAN_INTERVAL_MS = 60_000L
+
         /**
          * Tuning override, read from `filesDir/ble_pacing_ms` when present.
          *
@@ -142,6 +145,19 @@ class PendantBle @Inject constructor(
     private var gatt: BluetoothGatt? = null
     private var scanning = false
     @Volatile private var wantConnected = false
+    /**
+     * Re-arms the scan periodically while we want a link but have none.
+     *
+     * The scan was previously started ONCE and never retried, so any of the
+     * ordinary ways a BLE scan ends left the pendant permanently undiscovered:
+     * Android silently stops long-running scans, throttles an app to 5
+     * startScan calls per 30s, and drops scans when the app leaves the
+     * foreground. Observed 2026-09-08 with the pendant sitting there
+     * advertising happily at RSSI -80 while the phone, still "scanning",
+     * received nothing and reported nothing. A one-shot scan on a device that
+     * comes and goes with its battery is not good enough.
+     */
+    private var rescanTimer: java.util.Timer? = null
     /** Guards against a burst of queued scan results each opening its own GATT. */
     @Volatile private var connecting = false
 
@@ -187,11 +203,41 @@ class PendantBle @Inject constructor(
         if (a == null) { fail("no bluetooth adapter"); return }
         if (!a.isEnabled) { fail("bluetooth is off"); return }
         startScan()
+        startRescanTimer()
+    }
+
+    /**
+     * Every RESCAN_INTERVAL_MS, if we want a link and do not have one, stop and
+     * restart the scan. Restarting is deliberate rather than only starting when
+     * `scanning` is false: the failure mode is a scan Android has quietly
+     * abandoned while our flag still says it is running, so trusting the flag
+     * would never recover. Well under the 5-calls-per-30s throttle.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startRescanTimer() {
+        rescanTimer?.cancel()
+        rescanTimer = java.util.Timer("pendant-rescan", true).apply {
+            schedule(object : java.util.TimerTask() {
+                override fun run() {
+                    if (!wantConnected) return
+                    if (gatt != null || connecting) return
+                    try {
+                        Log.i(TAG, "re-arming scan (still no pendant)")
+                        stopScan()
+                        startScan()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "rescan failed: ${e.message}")
+                    }
+                }
+            }, RESCAN_INTERVAL_MS, RESCAN_INTERVAL_MS)
+        }
     }
 
     @SuppressLint("MissingPermission")
     fun stop() {
         wantConnected = false
+        rescanTimer?.cancel()
+        rescanTimer = null
         stopScan()
         try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
         gatt = null
