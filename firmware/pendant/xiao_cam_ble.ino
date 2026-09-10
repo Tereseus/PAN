@@ -76,13 +76,17 @@ static bool camReady = false;
  * next frame: total_ms went 360 -> 886, taking the duty cycle from 7.2% to
  * 17.7%.
  *
- * Whether that trade pays depends on the OV2640's idle current, which has
- * never been measured on this board. At ~5mA idle the change is a net LOSS
- * (52 mA-s spent to save 20); at ~20mA it is a marginal gain. Enabling it
- * without that number would be shipping a power "optimisation" that may well
- * cost power, which is the same class of mistake as an unverified fix.
+ * MEASURED AND SETTLED 2026-09-10. Board idle, advertising, not connected,
+ * only this flag changed:
+ *     camera clocked   140 mA @ 5.3V
+ *     camera released  146 mA @ 5.3V
+ * No saving at all. The reason is hardware: PWDN_GPIO_NUM is -1 on the XIAO
+ * Sense, so the camera's power-down pin is NOT WIRED. esp_camera_deinit() stops
+ * the 20MHz XCLK but leaves the OV2640 powered, so there is nothing to reclaim.
  *
- * Turn it on once someone puts a meter on B+/B- and compares.
+ * Therefore this stays OFF permanently: it costs 526ms of extra active time per
+ * frame and buys nothing. Do not re-enable it hoping for a power win. Turning
+ * the sensor off on this board needs a MOSFET on its supply rail, not software.
  */
 static bool powerDownCamera = false;
 
@@ -451,7 +455,12 @@ void setup() {
   // to prove it works (CAM_OK); leaving it running afterwards would keep the
   // 20MHz XCLK alive for the whole first inter-frame gap.
   goIdle();
-  Serial.printf("IDLE cpu=%uMHz camera=off\n", (unsigned)CPU_IDLE_MHZ);
+  // Report the camera state HONESTLY. This line used to say "camera=off"
+  // unconditionally, which was false whenever powerDownCamera is disabled
+  // (the default). A log that misreports the thing being measured is how
+  // power work goes wrong.
+  Serial.printf("IDLE cpu=%uMHz camera=%s\n", (unsigned)CPU_IDLE_MHZ,
+                camReady ? "on (powerDownCamera disabled)" : "released");
 }
 
 void loop() {

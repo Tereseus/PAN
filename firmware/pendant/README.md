@@ -39,8 +39,29 @@ so roughly a 7% radio duty cycle at one frame every 5s.
   precompiled IDF libraries built without `CONFIG_PM_ENABLE`, so automatic
   light sleep needs a custom core build. Do not retry it expecting success.
 
-## Not measured
+## Measured power (2026-09-10, USB inline meter)
 
-Actual current draw. Every runtime and battery-capacity figure derived from
-this firmware is arithmetic on published component numbers, not a measurement.
-Put a meter on B+/B- at 3.8V to settle it, and revisit `powerDownCamera` then.
+Board idle: powered, BLE advertising, NOT connected, CPU at 80MHz. This is the
+state it is in ~93% of the time, so it dominates battery life.
+
+| state | current @ 5.3V |
+|---|---|
+| camera clocked (`powerDownCamera = false`, default) | 140 mA |
+| camera released (`powerDownCamera = true`) | 146 mA |
+
+**Releasing the camera saves nothing**, because `PWDN_GPIO_NUM` is `-1` on this
+board: the sensor's power-down pin is not wired, so `esp_camera_deinit()` stops
+the XCLK but leaves the OV2640 powered. `powerDownCamera` therefore stays OFF
+permanently; it costs 526ms of extra active time per frame for no saving. Turning
+the sensor off here needs a MOSFET on its supply rail, not software.
+
+~140mA idle is far above a bare ESP32-S3 advertising over BLE (published figures
+are ~30-50mA), so most of it is the Sense expansion board: the permanently
+powered camera plus OPI PSRAM.
+
+Implication: roughly 4 to 5 hours on a 1020mAh cell, ~3 hours on 700mAh. All-day
+runtime is NOT reachable on a pendant-sized cell with this architecture.
+
+The remaining levers, largest first: light sleep (needs a custom Arduino core,
+see the traps above), a hardware switch on the camera supply, a longer BLE
+advertising interval, or accepting ~4 hours and hot-swapping cells.
