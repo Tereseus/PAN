@@ -15,7 +15,7 @@
 
 import { WebSocket } from 'ws';
 import { execFile, execFileSync, exec, execSync, spawn } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync } from 'fs';
+import { existsSync as fsExistsSync, readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync, openSync, closeSync, writeSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { hostname, platform, arch, totalmem, freemem, cpus, tmpdir } from 'os';
@@ -50,6 +50,12 @@ const HUB_WS  = arg('hub')   || config.hub_ws  || process.env.PAN_HUB_WS;
 const TOKEN   = arg('token') || config.token   || process.env.PAN_TOKEN;
 const NAME    = arg('name')  || config.name    || hostname();
 const DEVICE_ID = config.device_id || hostname();
+
+// Ollama watchdog: only run on machines that are actually meant to HOST Ollama.
+// On a machine that just talks to a remote Ollama, a local watchdog does nothing
+// but retry a launch forever. Off via "ollama_watchdog": false in
+// pan-client-config.json, or PAN_OLLAMA_WATCHDOG=0.
+const OLLAMA_WATCHDOG = config.ollama_watchdog !== false && process.env.PAN_OLLAMA_WATCHDOG !== '0';
 
 if (!HUB_WS) {
   console.error('PAN Client: --hub <ws://hub:7777> is required');
@@ -271,7 +277,14 @@ async function httpRegister() {
       service_state: svc.service_state, service_manager: svc.service_manager });
 }
 
-function httpRequest(method, path, body = null) {
+// timeoutMs guards the connect, not just the response. A hub that is merely
+// POWERED OFF does not refuse connections — if it is a Tailscale peer, packets
+// are blackholed, so 'error' never fires and Node inherits the OS connect
+// timeout (~2 minutes on Linux, per attempt). Measured 2026-08-26 against an
+// offline mini-PC: registration sat silent for 95s with zero retries where the
+// 5-attempt loop should have given up in 15s. The same stall applies to every
+// heartbeat and status poll, so a brief hub blip freezes the client for minutes.
+function httpRequest(method, path, body = null, timeoutMs = 10_000) {
   return new Promise((resolve, reject) => {
     const mod = HUB_HTTP.startsWith('https') ? https : http;
     const u = new URL(HUB_HTTP + path);
@@ -279,12 +292,15 @@ function httpRequest(method, path, body = null) {
     const headers = { 'User-Agent': 'PAN-Client/1.0' };
     if (bodyStr) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = Buffer.byteLength(bodyStr); }
     const req = mod.request({ hostname: u.hostname, port: u.port || (HUB_HTTP.startsWith('https') ? 443 : 80),
-      path: u.pathname + u.search, method, headers, rejectUnauthorized: false }, (res) => {
+      path: u.pathname + u.search, method, headers, rejectUnauthorized: false, timeout: timeoutMs }, (res) => {
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => { try { resolve({ status: res.statusCode, body: JSON.parse(data) }); } catch { resolve({ status: res.statusCode, body: data }); } });
     });
     req.on('error', reject);
+    // destroy(err) surfaces through the 'error' handler above, so the promise
+    // rejects instead of hanging until the OS gives up.
+    req.on('timeout', () => req.destroy(new Error(`hub did not respond within ${timeoutMs}ms`)));
     if (bodyStr) req.write(bodyStr);
     req.end();
   });
@@ -710,15 +726,44 @@ function probeCommand(cmd, args, timeoutMs = 5000) {
   });
 }
 
+// Where Ollama actually installs itself, for when PATH does not have it.
+//
+// Ollama's Windows installer puts the binary in the USER's profile
+// (%LOCALAPPDATA%\\Programs\\Ollama). pan-client runs as a service, and a
+// service PATH does not include a user profile - so `where ollama` fails even
+// though the binary is right there and works. That single mismatch produced
+// 2,479 'Minipc watchdog: probe_binary failed' alerts, left ollama dead on
+// the hub, stalled the embedding backlog at 74,065 rows, and pointed
+// OLLAMA_FALLBACK at a corpse. Look in the real places before giving up.
+const OLLAMA_CANDIDATES = IS_WINDOWS ? [
+  process.env.LOCALAPPDATA && `${process.env.LOCALAPPDATA}\\Programs\\Ollama\\ollama.exe`,
+  'C:\\Users\\owner\\AppData\\Local\\Programs\\Ollama\\ollama.exe',
+  'C:\\Program Files\\Ollama\\ollama.exe',
+  process.env.ProgramData && `${process.env.ProgramData}\\Ollama\\ollama.exe`,
+].filter(Boolean) : [
+  '/usr/local/bin/ollama', '/usr/bin/ollama', '/opt/ollama/bin/ollama',
+];
+
+function findOllamaBinary() {
+  for (const p of OLLAMA_CANDIDATES) { try { if (fsExistsSync(p)) return p; } catch {} }
+  return null;
+}
+
 async function restartOllama() {
-  // Step 1: Is the binary even on PATH? Before this, a missing Ollama install
-  // produced silent spawn-failed retries every 5 minutes for days.
+  // Step 1: find the binary. PATH first, then the known install locations,
+  // because a service PATH routinely cannot see a per-user install.
   const probe = await probeCommand(IS_WINDOWS ? 'where' : 'which', ['ollama'], 3000);
-  if (!probe.ok) {
-    _logRestart({ step: 'probe_binary', ok: false, error: 'ollama not on PATH', stdout: probe.stdout, stderr: probe.stderr });
-    return;
+  let ollamaBin = probe.ok ? (probe.stdout.trim().split(/\r?\n/)[0] || 'ollama') : null;
+  if (!ollamaBin) {
+    ollamaBin = findOllamaBinary();
+    if (!ollamaBin) {
+      _logRestart({ step: 'probe_binary', ok: false, error: 'ollama not on PATH and not at any known install path', stdout: probe.stdout, stderr: probe.stderr, looked_in: OLLAMA_CANDIDATES });
+      return;
+    }
+    _logRestart({ step: 'probe_binary', ok: true, path: ollamaBin, note: 'not on PATH — resolved from known install location' });
+  } else {
+    _logRestart({ step: 'probe_binary', ok: true, path: ollamaBin });
   }
-  _logRestart({ step: 'probe_binary', ok: true, path: probe.stdout.trim().slice(0, 200) });
 
   // Step 2: Is port 11434 already bound by a zombie? If yes, spawning a new
   // 'ollama serve' will error 'bind: address already in use' silently.
@@ -734,20 +779,54 @@ async function restartOllama() {
     }
   }
 
+  // Poll until Ollama actually answers, or give up. Launching a process is not
+  // the same as the service being up, and conflating the two is what turned this
+  // watchdog into a no-op that reported success 198 times in a row.
+  const _ollamaUp = async (timeoutMs = 15000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2000) });
+        if (r.ok) return true;
+      } catch {}
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return false;
+  };
+
   // Step 3: Launch ollama serve. Use detached + unref so it outlives this
   // pan-client, but route stderr to a log file so we capture failures.
   // Previously stdio:'ignore' threw away the most important diagnostic
   // signal in the entire system. Now we always have an Ollama log.
   if (IS_WINDOWS) {
-    // Try the desktop shortcut first (launches the tray app + server)
-    try {
-      spawn('cmd', ['/c', 'start', '', 'C:\\Users\\Public\\Desktop\\Ollama.lnk'], {
+    // Try the desktop shortcut first (launches the tray app + server).
+    // Only if it actually exists: `cmd /c start "" <missing path>` makes `start`
+    // raise a "cannot find the file" dialog, and windowsHide:true hides that
+    // dialog rather than suppressing it, so the shell blocks forever waiting for
+    // a click nobody can make. Unguarded this leaked one stuck cmd.exe per
+    // watchdog tick (458 of them, 8GB, before it was caught).
+    const shortcut = 'C:\\Users\\Public\\Desktop\\Ollama.lnk';
+    if (!existsSync(shortcut)) {
+      _logRestart({ step: 'launch_shortcut', ok: false, skipped: true, error: 'shortcut not present — skipping to `ollama serve`', path: shortcut });
+    } else try {
+      spawn('cmd', ['/c', 'start', '', shortcut], {
         windowsHide: true,
         detached: true,
         stdio: 'ignore',
       }).unref();
-      _logRestart({ step: 'launch_shortcut', ok: true, path: 'C:\\Users\\Public\\Desktop\\Ollama.lnk' });
-      return;
+      // Verify. `start` returns as soon as it has handed off, so its exit code
+      // says nothing about whether Ollama is listening.
+      if (await _ollamaUp()) {
+        _logRestart({ step: 'launch_shortcut', ok: true, path: 'C:\\Users\\Public\\Desktop\\Ollama.lnk' });
+        return;
+      }
+      _logRestart({
+        step: 'launch_shortcut',
+        ok: false,
+        error: 'shortcut launched but nothing listening on 11434 after 15s',
+        path: 'C:\\Users\\Public\\Desktop\\Ollama.lnk',
+      });
+      // Fall through to `ollama serve` rather than returning a false success.
     } catch (err) {
       _logRestart({ step: 'launch_shortcut', ok: false, error: err.message });
     }
@@ -755,11 +834,35 @@ async function restartOllama() {
   // Fallback (Windows + Linux/macOS): ollama serve directly, with stderr captured.
   try {
     const logPath = IS_WINDOWS ? 'C:\\Users\\Public\\ollama-watchdog.log' : '/tmp/ollama-watchdog.log';
-    const out = createWriteStream(logPath, { flags: 'a' });
-    out.write(`\n=== ${new Date().toISOString()} pan-client restart attempt ===\n`);
-    const p = spawn('ollama', ['serve'], { windowsHide: true, detached: true, stdio: ['ignore', out, out] });
-    p.unref();
-    _logRestart({ step: 'launch_serve', ok: true, pid: p.pid, log_path: logPath });
+    // A FILE DESCRIPTOR, not a WriteStream.
+    //
+    // createWriteStream() returns immediately with fd === null and only opens
+    // the file asynchronously, so handing it straight to spawn() threw
+    //   The argument 'stdio' is invalid. Received WriteStream { fd: null, ... }
+    // every time. The watchdog therefore never restarted ollama and has been
+    // filing a warning alert every 5 minutes instead. openSync gives a real
+    // descriptor that spawn accepts, and it is inherited by the detached
+    // child, so the parent can close its own copy immediately.
+    const fd = openSync(logPath, 'a');
+    try {
+      writeSync(fd, `\n=== ${new Date().toISOString()} pan-client restart attempt ===\n`);
+      // Absolute path: the whole point of resolving it above is that the bare
+      // name is not resolvable from this process's PATH.
+      const p = spawn(ollamaBin, ['serve'], { windowsHide: true, detached: true, stdio: ['ignore', fd, fd] });
+      p.unref();
+    } finally {
+      try { closeSync(fd); } catch { /* child holds its own copy */ }
+    }
+    // Same rule: spawning is not starting. A false ok here makes the steward
+    // retry forever instead of raising the alert the user can actually act on.
+    const up = await _ollamaUp();
+    _logRestart({
+      step: 'launch_serve',
+      ok: up,
+      pid: p.pid,
+      log_path: logPath,
+      ...(up ? {} : { error: 'ollama serve spawned but nothing listening on 11434 after 15s — see log_path' }),
+    });
   } catch (err) {
     _logRestart({ step: 'launch_serve', ok: false, error: err.message });
   }
@@ -774,7 +877,7 @@ async function sendHeartbeat() {
   // can see WHY restarts are failing.
   const ollamaSvc = services.find(s => s.name === 'ollama');
   const ollamaDown = ollamaSvc?.status === 'down';
-  if (ollamaDown) {
+  if (ollamaDown && OLLAMA_WATCHDOG) {
     const now = Date.now();
     if (now - _ollamaLastRestartAttempt >= OLLAMA_RESTART_THROTTLE_MS) {
       _ollamaLastRestartAttempt = now;
