@@ -11,22 +11,6 @@ import * as semantic from './semantic.js';
 import * as procedural from './procedural.js';
 
 // Heuristic patterns for extracting facts without LLM
-const CORRECTION_PATTERNS = [
-  /no,?\s+(?:actually|it's|it is|that's|use)\s+(.+)/i,
-  /don't\s+(.+)/i,
-  /stop\s+(.+)/i,
-  /never\s+(.+)/i,
-  /always\s+(.+)/i,
-  /(?:I|we)\s+prefer\s+(.+)/i,
-  /(?:from now on|going forward)\s+(.+)/i,
-];
-
-const PREFERENCE_PATTERNS = [
-  /(?:I|we)\s+(?:like|want|need|prefer)\s+(.+)/i,
-  /(?:make sure|ensure|remember)\s+(?:to\s+)?(.+)/i,
-  /(?:the rule is|the pattern is)\s+(.+)/i,
-];
-
 // Extract episodes and facts from recent events using heuristics
 function heuristicExtract(events) {
   const episodes = [];
@@ -41,31 +25,26 @@ function heuristicExtract(events) {
       const prompt = data.prompt || '';
       if (prompt.length < 20 || prompt.startsWith('{')) continue;
 
-      // Check for corrections/preferences
-      for (const pattern of CORRECTION_PATTERNS) {
-        const match = prompt.match(pattern);
-        if (match) {
-          facts.push({
-            subject: 'user_correction',
-            predicate: 'stated',
-            object: match[1].slice(0, 200),
-            category: 'user_preference',
-            confidence: 0.9,
-          });
-        }
-      }
-      for (const pattern of PREFERENCE_PATTERNS) {
-        const match = prompt.match(pattern);
-        if (match) {
-          facts.push({
-            subject: 'user_preference',
-            predicate: 'wants',
-            object: match[1].slice(0, 200),
-            category: 'user_preference',
-            confidence: 0.8,
-          });
-        }
-      }
+      // REGEX FACT EXTRACTION REMOVED 2026-09-01. Do not reinstate it.
+      //
+      // The patterns were unanchored -- /don't\s+(.+)/i fires on "don't"
+      // ANYWHERE in an utterance and (.+) swallows the rest of the line. So
+      // "I don't know what the fuck it was. So there are video models..." was
+      // stored as a user preference, mid-sentence and meaningless.
+      //
+      // Measured before removal: 7,285 of 10,996 semantic_facts came from these
+      // regexes, heavily duplicated -- the same mangled capture stored 41 times,
+      // another 24 times, and one was a test fixture ("to buy groceries this
+      // weekend" -> expected: [reminder, task, personal]) filed as a real
+      // preference. Every row was embedded, so all of it competed with real
+      // content in every semantic search.
+      //
+      // A regex over conversational speech cannot tell "never restart without
+      // asking" (a rule) from "I never got that to work" (not one). llmExtract
+      // can, and does: it produces things like
+      //   scan_targets | scales_at | N^1.7
+      //   Tereseus | has_allergy | peanuts
+      // Extracting nothing when the LLM does not run beats extracting noise.
     }
 
     // Extract voice commands as episodes
@@ -135,7 +114,7 @@ Extract and return a JSON object with three arrays:
 
 {
   "episodes": [
-    {"summary": "brief what happened", "detail": "more context", "type": "interaction|task|error|observation", "outcome": "success|failure|partial", "importance": 0.0-1.0}
+    {"summary": "brief what happened", "detail": "more context", "type": "interaction|task|error|observation", "outcome": "success|failure|partial", "importance": 0.0-1.0, "participants": ["Person Name"]}
   ],
   "facts": [
     {"subject": "entity", "predicate": "relationship", "object": "value", "description": "natural language", "category": "user_preference|domain_knowledge|codebase|process|tool", "confidence": 0.0-1.0}
@@ -150,6 +129,7 @@ Rules:
 - Facts: corrections ("no, actually X"), preferences ("I want X"), domain knowledge ("X uses Y")
 - Procedures: multi-step patterns that were repeated or explicitly taught
 - Importance: errors=0.7+, corrections=0.8+, routine=0.3-0.5
+- Participants: real people involved in or discussed during the episode, e.g. colleagues, friends, family, named third parties. Use the name as written. Use [] when nobody is named. NEVER include the user themself, PAN, Claude, an AI model, a company, a tool, or a service name.
 - Be selective — only extract what's worth remembering long-term
 - Return ONLY the JSON object, no other text`;
 
@@ -289,19 +269,46 @@ async function consolidate({ since = null, useLLM = true } = {}) {
 
   console.log(`[PAN Memory] Consolidating ${events.length} events since ${sinceTime}...`);
 
-  // Heuristic extraction (always runs, fast)
-  const heuristic = heuristicExtract(events);
-
-  // LLM extraction (optional, more thorough)
-  let llm = { episodes: [], facts: [], procedures: [] };
-  if (useLLM && events.length >= 5) {
-    llm = await llmExtract(events);
+  // Extract PER SESSION rather than over the whole batch.
+  //
+  // WHY: this used to pass all 200 events to one extraction pass. The heuristic
+  // extractor stamps sessionId on each episode it makes, but llmExtract cannot --
+  // it is handed a mixed transcript and has no provenance to return. The result,
+  // measured 2026-09-01: all 504 stored episodes had session_id NULL and
+  // project_id NULL, which made recall({projectId}) and every per-project or
+  // per-topic view impossible. The topics were good; nothing could be filed.
+  //
+  // Grouping first fixes attribution AND improves extraction, because the model
+  // now sees one coherent conversation instead of several interleaved ones.
+  // Cost is one LLM call per active session per run rather than one per run,
+  // which at 2-5 active sessions on a 6h dream cycle is negligible.
+  const bySession = new Map();
+  for (const e of events) {
+    const k = e.session_id || '';
+    if (!bySession.has(k)) bySession.set(k, []);
+    bySession.get(k).push(e);
   }
 
-  // Merge results (LLM takes priority for episodes/facts, heuristic for corrections)
-  const allEpisodes = [...llm.episodes, ...heuristic.episodes];
-  const allFacts = [...llm.facts, ...heuristic.facts];
-  const allProcedures = llm.procedures || [];
+  const allEpisodes = [];
+  const allFacts = [];
+  const allProcedures = [];
+
+  for (const [sid, sessionEvents] of bySession) {
+    const heuristic = heuristicExtract(sessionEvents);
+
+    let llm = { episodes: [], facts: [], procedures: [] };
+    if (useLLM && sessionEvents.length >= 5) {
+      llm = await llmExtract(sessionEvents);
+    }
+
+    // Stamp provenance on anything that did not set it itself. episodic.store()
+    // turns sessionId into project_id via the session's own cwd.
+    const stamp = (arr) => (arr || []).map((x) => ({ ...x, sessionId: x.sessionId || sid || null }));
+
+    allEpisodes.push(...stamp(llm.episodes), ...stamp(heuristic.episodes));
+    allFacts.push(...(llm.facts || []), ...(heuristic.facts || []));
+    allProcedures.push(...(llm.procedures || []));
+  }
 
   // Store episodes
   let storedEpisodes = 0;

@@ -469,12 +469,20 @@ CREATE TABLE IF NOT EXISTS episodic_memories (
     importance REAL DEFAULT 0.5,              -- 0.0-1.0, used for retrieval ranking
     session_id TEXT REFERENCES sessions(id),
     project_id INTEGER REFERENCES projects(id),
+    -- project_name: the cwd basename. Added 2026-09-01 because project_id is an
+    -- INTEGER FK to a `projects` table that has never had a single row, so it can
+    -- never be populated validly. The name is what we actually know and can filter on.
+    project_name TEXT,
+    -- participants: JSON array of real people involved in or discussed during the
+    -- episode. Excludes the user, PAN, Claude, and tool names.
+    participants TEXT,
     embedding BLOB,                           -- vector embedding for semantic search
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodic_created ON episodic_memories(created_at);
 CREATE INDEX IF NOT EXISTS idx_episodic_project ON episodic_memories(project_id);
+CREATE INDEX IF NOT EXISTS idx_episodic_project_name ON episodic_memories(project_name);
 CREATE INDEX IF NOT EXISTS idx_episodic_importance ON episodic_memories(importance);
 
 -- Semantic memory — knowledge graph (subject-predicate-object triples with contradiction detection)

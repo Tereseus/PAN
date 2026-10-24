@@ -54,6 +54,29 @@ const OLLAMA_RECHECK_MS = 60_000; // re-probe Ollama every 60s when it's down
 //
 // Returns { url, model, viaRegistry: bool } so callers can log whether
 // the device_models table is doing its job.
+// Does this host actually have the embedding model? Cached briefly, because
+// embed() is called thousands of times during a backfill and /api/tags per
+// call would be absurd.
+const _HAS_MODEL_TTL_MS = 60_000;
+const _hasModelCache = new Map();   // url -> { ok, ts }
+
+async function _hasModel(url) {
+  const hit = _hasModelCache.get(url);
+  if (hit && Date.now() - hit.ts < _HAS_MODEL_TTL_MS) return hit.ok;
+  let ok = false;
+  try {
+    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(2500) });
+    if (res.ok) {
+      const data = await res.json();
+      ok = !!data.models?.some((m) => m.name === EMBED_MODEL);
+    }
+  } catch { ok = false; }
+  _hasModelCache.set(url, { ok, ts: Date.now() });
+  return ok;
+}
+
+let _loggedHostSwitch = false;
+
 async function _resolveEmbedTarget() {
   try {
     // Lazy import so we don't pull all of scout.js into the embedding hot
@@ -65,7 +88,31 @@ async function _resolveEmbedTarget() {
       if (hit) return { url: hit.url, model: hit.model, viaRegistry: true };
     }
   } catch {}
-  return { url: getOllamaUrl(), model: EMBED_MODEL, viaRegistry: false };
+
+  // VERIFY THE FALLBACK. It used to be returned blind.
+  //
+  // Scout is unavailable inside the backfill WORKER THREAD (its own module
+  // registry, no usable DB handle), so this fallback is the path the worker
+  // ALWAYS takes. getOllamaUrl() follows the ollama_url setting, which GAME
+  // MODE points at Mint — and Mint carries only the chat model, never the
+  // embedding one. So the worker asked a host with no embedding model, failed
+  // 5 times, backed off to 30 minutes, and repeated. Meanwhile a direct
+  // embed() on the main thread succeeded, because THAT path reached Scout.
+  // That split is why 74,000 events sat unembedded while embed() tested fine.
+  //
+  // The hub always has the embedding model, so it is the honest last resort.
+  const fallback = getOllamaUrl();
+  if (await _hasModel(fallback)) return { url: fallback, model: EMBED_MODEL, viaRegistry: false };
+
+  const hub = 'http://localhost:11434';
+  if (fallback !== hub && await _hasModel(hub)) {
+    if (!_loggedHostSwitch) {
+      console.log(`[PAN Memory] ${fallback} has no ${EMBED_MODEL} — embedding on the hub (${hub}) instead`);
+      _loggedHostSwitch = true;
+    }
+    return { url: hub, model: EMBED_MODEL, viaRegistry: false, viaHubFallback: true };
+  }
+  return { url: fallback, model: EMBED_MODEL, viaRegistry: false };
 }
 
 let _loggedMissing = false; // throttle the "model not installed" hint to once per process
@@ -97,7 +144,13 @@ async function checkOllama() {
 
 // Get embedding from Ollama. EXACT model match required.
 // timeout: 3s default keeps query-time searches snappy; write path passes 30s.
-async function embedOllama(text, timeout = 3000) {
+// maxChars: how much of the text to send. 8000 chars is safe for prose but NOT
+// for dense text (logs, JSON, code), where the tokenizer can run past
+// qwen3-embedding's 4,096-token context. Ollama then answers
+//   HTTP 500 {"error":"the input length exceeds the context length"}
+// which is a rejection of THIS ROW, not an outage. Callers that need to tell the
+// two apart read err.contextOverflow / err.status on the thrown error.
+async function embedOllama(text, timeout = 3000, maxChars = 8000) {
   const { url, model } = await _resolveEmbedTarget();
   const res = await fetch(`${url}/api/embeddings`, {
     method: 'POST',
@@ -113,10 +166,18 @@ async function embedOllama(text, timeout = 3000) {
     // path never warms the model again. It stays cold forever. That is why
     // every /api/v1/memory/search result came back vecRank=null instead of
     // failing now and then.
-    body: JSON.stringify({ model, prompt: text.slice(0, 8000), keep_alive: -1 }),
+    body: JSON.stringify({ model, prompt: text.slice(0, maxChars), keep_alive: -1 }),
     signal: AbortSignal.timeout(timeout),
   });
-  if (!res.ok) throw new Error(`Ollama ${res.status}`);
+  if (!res.ok) {
+    let body = '';
+    try { body = await res.text(); } catch {}
+    const err = new Error(`Ollama ${res.status}${body ? ': ' + body.slice(0, 160) : ''}`);
+    err.status = res.status;
+    err.body = body;
+    err.contextOverflow = /context length|too long|exceeds/i.test(body);
+    throw err;
+  }
   const data = await res.json();
   return data.embedding; // float64 array, EMBED_DIM length
 }
@@ -229,7 +290,16 @@ const _W_FAIL_LIMIT   = 5;
 // workers can await it without launching duplicate HTTP requests.
 async function _doWriteProbe(prevOk) {
   try {
-    const res = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(15000) });
+    // Use the RESOLVER, not getOllamaUrl().
+    //
+    // This probe decides whether the whole write path runs, and it was asking
+    // whichever host ollama_url points at. GAME MODE points that at Mint, which
+    // carries only the chat model - so the probe found no embedding model, set
+    // _wProbeOk = false, and every single write returned { unavailable: true }.
+    // 74,000 events sat unembedded while a direct embed() succeeded, because
+    // embed() goes through _resolveEmbedTarget and this did not.
+    const { url: probeUrl } = await _resolveEmbedTarget();
+    const res = await fetch(`${probeUrl}/api/tags`, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) {
       _wProbeOk = false;
     } else {
@@ -250,9 +320,31 @@ async function _doWriteProbe(prevOk) {
   return _wProbeOk;
 }
 
-async function embedForWrite(text) {
+// Detailed write-path embed. Returns exactly one of:
+//   { vec }                success
+//   { unavailable: true }  Ollama unreachable/erroring. Do NOT sentinel the row;
+//                          it is retried later.
+//   { hard: true, reason } this ROW can never embed (context overflow at every
+//                          rung of the ladder). DO sentinel it so it leaves the
+//                          queue for good.
+//
+// WHY (2026-09-06): the backfill had embedded ZERO rows since 2026-05-28. The
+// oldest unembedded event was a 1.7 MB UserPromptSubmit, a pasted ServiceNow
+// log. Its 8,000-char slice overflowed the 4,096-token context; Ollama returned
+// 500; embedForWrite mapped that to null -- the SAME signal as "Ollama is down"
+// -- so the worker backed off, refetched the same 20 rows at the head of
+// ORDER BY id ASC, and failed identically. Every night, for 14 weeks, while
+// `running: true` looked like progress. 5 rows over 500 KB and 251 over 8 KB
+// sat queued behind that one row.
+//
+// The ladder tries smaller slices first: the opening of a giant paste is
+// usually the human part and worth keeping. Only when even 800 chars overflow
+// do we give up on the row.
+const _WRITE_SLICE_LADDER = [8000, 2400, 800];
+
+async function embedForWriteDetailed(text) {
   const now = Date.now();
-  if (now < _wBackoffUntil) return null;
+  if (now < _wBackoffUntil) return { unavailable: true };
 
   // Shared probe: if a probe is already in-flight, all concurrent callers await
   // the same promise instead of each independently seeing stale _wProbeOk=false
@@ -272,25 +364,47 @@ async function embedForWrite(text) {
       console.warn(`[PAN Embeddings] write-path: ${_W_FAIL_LIMIT} consecutive failures — backing off 30s`);
       _wConsecFails = 0;
     }
-    return null;
+    return { unavailable: true };
   }
 
-  try {
-    const vec = await embedOllama(text, 30000);
-    _wConsecFails = 0;
-    return vec;
-  } catch (err) {
-    console.error('[PAN Embeddings] write-path embed failed:', err.message);
-    _wProbeOk = false;
-    _wProbeTs = Date.now();
-    _wConsecFails++;
-    if (_wConsecFails >= _W_FAIL_LIMIT) {
-      _wBackoffUntil = Date.now() + _W_BACKOFF_MS;
-      console.warn(`[PAN Embeddings] write-path: ${_W_FAIL_LIMIT} consecutive failures — backing off 30s`);
+  let lastOverflow = null;
+  for (const maxChars of _WRITE_SLICE_LADDER) {
+    // A smaller rung that would send the identical text cannot help.
+    if (lastOverflow && text.length <= maxChars) continue;
+    try {
+      const vec = await embedOllama(text, 30000, maxChars);
       _wConsecFails = 0;
+      return { vec };
+    } catch (err) {
+      if (err.contextOverflow || (err.status >= 400 && err.status < 500)) {
+        // Semantic rejection of THIS input. Not a connectivity problem: leave
+        // the probe/backoff counters alone and try a smaller slice.
+        lastOverflow = err;
+        continue;
+      }
+      // Timeout, ECONNREFUSED, or a 5xx without a context message: Ollama is
+      // unavailable. Preserve the original backoff behaviour exactly.
+      console.error('[PAN Embeddings] write-path embed failed:', err.message);
+      _wProbeOk = false;
+      _wProbeTs = Date.now();
+      _wConsecFails++;
+      if (_wConsecFails >= _W_FAIL_LIMIT) {
+        _wBackoffUntil = Date.now() + _W_BACKOFF_MS;
+        console.warn(`[PAN Embeddings] write-path: ${_W_FAIL_LIMIT} consecutive failures — backing off 30s`);
+        _wConsecFails = 0;
+      }
+      return { unavailable: true };
     }
-    return null;
   }
+  return { hard: true, reason: lastOverflow?.message || 'context overflow at every ladder rung' };
 }
 
-export { embed, embedForWrite, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM, EMBED_MODEL };
+// Back-compat wrapper. Callers that only know vec|null keep working; a hard
+// per-row failure reaches them as null (skipped now, sentinelled later by the
+// backfill, which uses the detailed form).
+async function embedForWrite(text) {
+  const r = await embedForWriteDetailed(text);
+  return r.vec ?? null;
+}
+
+export { embed, embedForWrite, embedForWriteDetailed, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM, EMBED_MODEL };

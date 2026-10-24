@@ -39,7 +39,7 @@ const sqliteVec = require('sqlite-vec');
 // here is independent of the main thread's connection.
 import { getDb } from './db-registry.js';
 import { NEVER_EMBED_SQL } from './event-filters.js';
-import { embedForWrite, toBlob, EMBED_DIM } from './memory/embeddings.js';
+import { embedForWriteDetailed, toBlob, EMBED_DIM } from './memory/embeddings.js';
 
 const scope = workerData?.scope || 'main';
 const concurrency = workerData?.concurrency || 1;
@@ -94,9 +94,29 @@ async function embedOne(db, eventRow) {
     db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(_SENTINEL_BLOB);
     return 'skip';
   }
-  const vec = await embedForWrite(text);
-  if (!vec) return false; // Ollama unavailable — skip
-  const blob = toBlob(vec);
+  const r = await embedForWriteDetailed(text);
+  if (r.hard) {
+    // This row can never embed (context overflow at every slice size). Sentinel
+    // it so it leaves the head of the queue. Left unsentinelled it blocks EVERY
+    // row behind it forever, which is exactly what happened 2026-05-28 ->
+    // 2026-09-06 (see embedForWriteDetailed).
+    log('PAN MemorySearch', `backfill: event ${id} unembeddable (${r.reason}) — sentinel written`);
+    db.prepare(`DELETE FROM event_embeddings WHERE rowid = ${id}`).run();
+    db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(_SENTINEL_BLOB);
+    return 'skip';
+  }
+  if (r.unavailable) {
+    // Say WHY. This returned a bare false, so the only trace was 'pool paused
+    // after 5 consecutive Ollama failures' with no cause anywhere - the backlog
+    // sat at 74,000 for days and there was nothing to read. Throttled to once
+    // per backoff tier so it cannot flood.
+    if (!globalThis.__embedReasonLogged || Date.now() - globalThis.__embedReasonLogged > 30000) {
+      globalThis.__embedReasonLogged = Date.now();
+      log('PAN MemorySearch', `backfill: embed unavailable — reason=${r.reason || '(none given)'} host=${r.url || r.host || '(unknown)'}`);
+    }
+    return false; // retry later; counts toward backoff
+  }
+  const blob = toBlob(r.vec);
   db.prepare(`DELETE FROM event_embeddings WHERE rowid = ${id}`).run();
   db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(blob);
   return true;
@@ -186,9 +206,22 @@ async function embedOne(db, eventRow) {
     }
 
     const DB_BATCH = concurrency * 10;
+    // Re-read the operator gate every batch. It used to be checked ONLY at
+    // start, so the 07:00 PAN-Backfill-Night-Off task set the flag and the
+    // already-running worker ignored it and ran straight through the working
+    // day -- the opposite of the "only at night" rule the flag exists for.
+    const gateStmt = db.prepare(`SELECT value FROM settings WHERE key = 'embeddings_backfill_disabled'`);
+    const gateClosed = () => {
+      try { const v = gateStmt.get()?.value; return !!v && /^"?true"?$/i.test(String(v)); }
+      catch { return false; }
+    };
     while (true) {
       if (aborted) {
         log('PAN MemorySearch', 'backfill aborted (worker thread)');
+        break;
+      }
+      if (gateClosed()) {
+        log('PAN MemorySearch', `backfill: embeddings_backfill_disabled is true — stopping cleanly (+${added} this run)`);
         break;
       }
 
@@ -229,5 +262,19 @@ async function embedOne(db, eventRow) {
     parentPort.postMessage({ type: 'done', result: { indexed: indexedStart + added, total: totalEvents, added } });
   } catch (err) {
     parentPort.postMessage({ type: 'error', error: String(err?.stack || err?.message || err) });
+  } finally {
+    // Let the thread actually die.
+    //
+    // parentPort.on('message') (the abort listener, registered at the top) keeps
+    // this worker's event loop alive indefinitely once the work is done. The
+    // thread therefore never exited, the parent's 'exit' handler never fired,
+    // and _backfillWorker stayed non-null -- so backfillStatus reported
+    // `running: true` forever with nothing running, and every later call to
+    // backfillEmbeddings() short-circuited on "worker already running".
+    //
+    // That made the whole thing single-shot per Craft boot: drain once, then
+    // never again. Closing the port drops the listener so the loop drains and
+    // the thread exits normally.
+    try { parentPort.close(); } catch {}
   }
 })();

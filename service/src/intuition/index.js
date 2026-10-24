@@ -991,6 +991,19 @@ Classify:
 }
 
 // Call Ollama directly (bypass askAI for local models)
+//
+// BUDGET, and it matters more than it looks. There is one local GPU and
+// ollama serialises per model, so this background mood classifier and the
+// voice path are the same queue. At a 10s budget these were measured taking
+// 11.6s, 11.7s and 12.2s, and a turn spoken during one of those windows waits
+// behind it - which reads as PAN going silent and then answering late.
+//
+// Intuition is background and already handles an empty result by skipping the
+// cycle; voice is the foreground. So the budget is deliberately shorter than
+// a person is willing to wait for a reply. Aborting the fetch cancels the
+// generation on ollama's side, which is what actually frees the slot.
+const INTUITION_LOCAL_BUDGET_MS = 4000;
+
 async function callOllama(prompt, model = 'qwen3:4b') {
   const resp = await fetch(`${getOllamaUrl()}/api/chat`, {
     method: 'POST',
@@ -1001,7 +1014,7 @@ async function callOllama(prompt, model = 'qwen3:4b') {
       stream: false,
       options: { temperature: 0.3, num_predict: 300 },
     }),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(INTUITION_LOCAL_BUDGET_MS),
   });
   if (!resp.ok) throw new Error(`Ollama ${resp.status}`);
   const data = await resp.json();

@@ -6,6 +6,32 @@
 import { all, get, insert, run } from '../db.js';
 import { embed, cosineSimilarity, toBlob, fromBlob } from './embeddings.js';
 
+// Derive the project from the session's own events when the caller did not
+// supply one.
+//
+// WHY: every episode written before 2026-09-01 had project_id NULL -- all 504 of
+// them. The extractors in consolidation.js set sessionId on each episode but
+// never projectId, and nothing downstream filled the gap, so recall({projectId})
+// and every per-project or per-topic view was impossible. The data was always
+// there: cwd travels in the event payload, and its basename is the project name
+// PAN uses everywhere else.
+function _deriveProjectName(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const row = get(
+      `SELECT json_extract(data, '$.cwd') AS cwd FROM events
+       WHERE session_id = :sid AND json_extract(data, '$.cwd') IS NOT NULL
+       ORDER BY created_at DESC LIMIT 1`,
+      { ':sid': sessionId }
+    );
+    if (!row?.cwd) return null;
+    const parts = String(row.cwd).split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : null;
+  } catch {
+    return null;
+  }
+}
+
 // Store a new episode
 async function store(episode) {
   const {
@@ -16,14 +42,21 @@ async function store(episode) {
     importance = 0.5,
     sessionId = null,
     projectId = null,
+    participants = null,
   } = episode;
+
+  // project_id stays an integer FK and is only set if a caller supplies a real
+  // one. project_name is what we can actually derive and filter on.
+  const resolvedProjectName = _deriveProjectName(sessionId);
+  const participantsJson =
+    Array.isArray(participants) && participants.length ? JSON.stringify(participants) : null;
 
   const text = `${summary} ${detail}`.trim();
   const embedding = await embed(text);
 
   return insert(
-    `INSERT INTO episodic_memories (summary, detail, episode_type, outcome, importance, session_id, project_id, embedding)
-     VALUES (:summary, :detail, :type, :outcome, :importance, :sid, :pid, :embedding)`,
+    `INSERT INTO episodic_memories (summary, detail, episode_type, outcome, importance, session_id, project_id, project_name, participants, embedding)
+     VALUES (:summary, :detail, :type, :outcome, :importance, :sid, :pid, :pname, :participants, :embedding)`,
     {
       ':summary': summary,
       ':detail': detail,
@@ -32,6 +65,8 @@ async function store(episode) {
       ':importance': importance,
       ':sid': sessionId,
       ':pid': projectId,
+      ':pname': resolvedProjectName,
+      ':participants': participantsJson,
       ':embedding': toBlob(embedding),
     }
   );

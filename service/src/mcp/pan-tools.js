@@ -227,7 +227,12 @@ export function registerPanTools(server, { panBaseUrl }) {
 
 Actions: conversations, projects, tasks, services, devices, stats, sessions, sensors, photos, scout, alerts, recording, windows, settings, logs, runner, library, context, processes, carrier, ops, voice`,
     {
-      action: z.string().describe('Action name (see @pan://actions for full list)'),
+      // Enum, not a free string: the client tool-discovery layer indexes the
+      // schema, so a bare z.string() hides every action from it and turns a
+      // wrong name into a runtime error instead of a validation one. Keep in
+      // sync with the switch below; pan://actions carries the parameters.
+      action: z.enum(['conversations', 'projects', 'tasks', 'services', 'devices', 'stats', 'sessions', 'sensors', 'photos', 'scout', 'alerts', 'recording', 'windows', 'settings', 'logs', 'runner', 'library', 'processes', 'carrier', 'ops', 'voice', 'context'])
+        .describe('Action name (see @pan://actions for per-action parameters)'),
       params: z.record(z.string(), z.any()).optional().describe('Action parameters as key-value pairs'),
     },
     async ({ action, params = {} }) => {

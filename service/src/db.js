@@ -576,9 +576,29 @@ function syncProjects() {
   // Sync DB
   const existing = all("SELECT * FROM projects");
 
+  // Only prune projects THIS machine can actually see.
+  //
+  // This function was written when PAN ran on the same box as the projects.
+  // It now runs on the headless hub, whose Desktop holds nothing but .claude
+  // and platform-tools -- every real project (Autokratia, WoE, PAN) lives on
+  // the G16. So `existsSync` was false for all of them and this loop deleted
+  // the ENTIRE projects table on every run. detectProject re-inserted on the
+  // next event, the next sync wiped it again, and the AUTOINCREMENT counter
+  // climbed to 15,340 while the table sat at 0 rows -- leaving every session's
+  // project_id pointing at a row that does not exist.
+  //
+  // A project whose path is not under a scan root that exists here belongs to
+  // another machine. Absence of evidence is not evidence of deletion.
+  const liveRoots = SCAN_ROOTS.filter((r) => existsSync(r)).map((r) => r.replace(/\\/g, '/').replace(/\/$/, ''));
+
   for (const p of existing) {
     const pPath = p.path.replace(/\\/g, '/');
     const pWinPath = pPath.replace(/\//g, sep);
+
+    // Is this project even in territory this machine is responsible for?
+    const isOurs = liveRoots.some((r) => pPath === r || pPath.startsWith(r + '/'));
+    if (!isOurs) continue;
+
     const pathExists = existsSync(pWinPath);
     const hasPanFile = pathExists && existsSync(join(pWinPath, '.pan'));
 
@@ -1031,13 +1051,133 @@ let _ollamaUrlCache = { url: null, ts: 0 };
 const _OLLAMA_URL_TTL_MS = 30_000;
 const OLLAMA_DEFAULT_PORT = 11434;
 
+// --- Ollama host health: latency-based failover -----------------------------
+//
+// The GPU box (Mint) is also the gaming machine. While a game has the card, a
+// generation that normally takes ~1.4s can take tens of seconds, and PAN would
+// sit there waiting because nothing ever checked.
+//
+// Probing /api/version does NOT detect this - it answers instantly whether or
+// not the GPU is saturated. The only honest signal is how long a REAL generation
+// took, so callers report that here and we route around a host that has gone
+// slow. This covers gaming, reboots, updates and the box being switched off,
+// without needing anything installed on Mint.
+//
+// Deliberately NOT fed by vision: moondream legitimately takes 10-15s, so
+// including it would mark the host degraded permanently.
+
+const OLLAMA_SLOW_MS = 8000;              // a normal local turn is ~1.4s
+const OLLAMA_SAMPLES = 3;                 // consecutive slow turns before backing off
+const OLLAMA_DEGRADE_MS = 3 * 60 * 1000;  // how long to route elsewhere before retrying
+const OLLAMA_FALLBACK = 'http://localhost:11434';  // the always-on hub
+
+// SLOW AND DOWN ARE DIFFERENT PROBLEMS AND GET DIFFERENT ANSWERS.
+//
+// They used to be one signal: `!ok || ms > OLLAMA_SLOW_MS`. So a connection
+// refused in 4ms was recorded as "slow", which is why the log said things like
+// "slow 3x (last 4ms)" - a sentence that cannot be true.
+//
+// It mattered more than the wording. The main cause of SLOW is the GPU
+// placement trap (see guardModelOnGpu in llm.js): the model loads during a
+// low-VRAM window, gets zero layers offloaded, and serves from CPU at ~10s a
+// turn. Routing around that moves every turn to the mini PC and leaves the
+// real fault in place, so the box quietly stays broken and the owner never asked for
+// his turns to go there. He handles the gaming case himself with the GAME MODE
+// button, which repoints the hub explicitly.
+//
+// So: slow is a REPAIR signal, handled where the model lives. Only a host that
+// is actually DOWN gets routed around, because then there is nothing to repair
+// and something has to answer him.
+const OLLAMA_SLOW_SAMPLES = 3;            // consecutive slow turns before we say so
+
+const _ollamaSlowStreak = new Map();
+const _ollamaDownStreak = new Map();   // unreachable, as opposed to merely slow   // url -> consecutive slow/failed turns
+const _ollamaDegradedUntil = new Map(); // url -> epoch ms
+
+const _normUrl = (u) => String(u || '').replace(/\/$/, '');
+
+/**
+ * Report how long a real text generation took against an Ollama host.
+ * Call this for text only. Never for vision.
+ */
+export function reportOllamaLatency(url, ms, ok = true) {
+  const u = _normUrl(url);
+  if (!u) return;
+  const down = !ok;                              // refused, timed out, HTTP error
+  const slow = ok && ms > OLLAMA_SLOW_MS;        // answered, but far too late
+
+  // DOWN -> route around it. Nothing to repair and he still needs an answer.
+  const downStreak = down ? (_ollamaDownStreak.get(u) || 0) + 1 : 0;
+  _ollamaDownStreak.set(u, downStreak);
+  if (downStreak >= OLLAMA_SAMPLES) {
+    const until = Date.now() + OLLAMA_DEGRADE_MS;
+    if (!(_ollamaDegradedUntil.get(u) > Date.now())) {
+      console.warn(`[ollama] ${u} unreachable ${downStreak}x — routing to ` +
+        `${OLLAMA_FALLBACK} for ${OLLAMA_DEGRADE_MS / 1000}s`);
+    }
+    _ollamaDegradedUntil.set(u, until);
+    _ollamaDownStreak.set(u, 0);
+    _ollamaUrlCache = { url: null, ts: 0 };   // force re-resolve on next call
+  }
+
+  // SLOW -> say so, loudly, and leave the routing alone. llm.js reacts to this
+  // by checking whether the model fell off the GPU and putting it back. Moving
+  // the traffic instead would hide the fault and land him on the mini PC.
+  const slowStreak = slow ? (_ollamaSlowStreak.get(u) || 0) + 1 : 0;
+  _ollamaSlowStreak.set(u, slowStreak);
+  if (slowStreak >= OLLAMA_SLOW_SAMPLES) {
+    console.warn(`[ollama] ${u} slow ${slowStreak}x (last ${Math.round(ms)}ms) — ` +
+      'staying put; checking GPU placement rather than rerouting');
+    _ollamaSlowStreak.set(u, 0);
+  }
+
+  if (ok && !slow && _ollamaDegradedUntil.has(u) && _ollamaDegradedUntil.get(u) <= Date.now()) {
+    _ollamaDegradedUntil.delete(u);
+    console.log(`[ollama] ${u} healthy again (${Math.round(ms)}ms)`);
+  }
+}
+
+/** Is this host currently being routed around? */
+export function isOllamaDegraded(url) {
+  const until = _ollamaDegradedUntil.get(_normUrl(url));
+  return !!until && until > Date.now();
+}
+
+/**
+ * Given the URL a caller WANTS, return the one it should actually use.
+ * Falls back to the always-on hub while the preferred host is degraded.
+ * Callers that resolve their own endpoint (llm.js reads a per-model url out of
+ * custom_models before ever calling getOllamaUrl) must route through this, or
+ * the failover silently does not apply to them.
+ */
+export function pickHealthyOllama(preferred) {
+  const p = _normUrl(preferred);
+  if (!p) return OLLAMA_FALLBACK;
+  if (p === OLLAMA_FALLBACK) return p;        // already the fallback; nowhere else to go
+  return isOllamaDegraded(p) ? OLLAMA_FALLBACK : p;
+}
+
+/** For diagnostics / tests. */
+export function _ollamaHealthSnapshot() {
+  const now = Date.now();
+  return {
+    degraded: [..._ollamaDegradedUntil.entries()]
+      .filter(([, t]) => t > now)
+      .map(([u, t]) => ({ url: u, secondsLeft: Math.round((t - now) / 1000) })),
+    streaks: [..._ollamaSlowStreak.entries()].filter(([, n]) => n > 0)
+      .map(([u, n]) => ({ url: u, slowInARow: n })),
+    slowThresholdMs: OLLAMA_SLOW_MS,
+    samplesBeforeBackoff: OLLAMA_SAMPLES,
+  };
+}
+
 export function getOllamaUrl() {
   const envUrl = process.env.PAN_OLLAMA_URL;
-  if (envUrl) return envUrl.replace(/\/$/, '');
+  if (envUrl) return pickHealthyOllama(envUrl.replace(/\/$/, ''));
 
   const now = Date.now();
   if (_ollamaUrlCache.url && (now - _ollamaUrlCache.ts) < _OLLAMA_URL_TTL_MS) {
-    return _ollamaUrlCache.url;
+    return pickHealthyOllama(_ollamaUrlCache.url);
   }
 
   let url = null;
@@ -1094,7 +1234,29 @@ export function getOllamaUrl() {
   if (!url) url = 'http://localhost:11434';
 
   _ollamaUrlCache = { url, ts: now };
-  return url;
+  return pickHealthyOllama(url);
+}
+
+/**
+ * The host the owner actually configured, WITHOUT health rerouting.
+ *
+ * getOllamaUrl() ends in pickHealthyOllama(), so while Mint is marked degraded
+ * it answers "http://localhost:11434". That is right for sending a turn and
+ * wrong for repairing anything: the GPU placement guard asked getOllamaUrl()
+ * which box to fix, was told the mini PC, found the mini PC perfectly fine, and
+ * left the actually-broken Mint on CPU indefinitely. The reroute hid the fault
+ * from the thing whose job was to fix it.
+ */
+export function getConfiguredOllamaUrl() {
+  const envUrl = process.env.PAN_OLLAMA_URL;
+  if (envUrl) return envUrl.replace(/\/$/, '');
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'ollama_url'");
+    if (row?.value) return row.value.replace(/\/$/, '');
+  } catch {}
+  // No explicit setting: the cache holds whatever auto-discovery resolved,
+  // which is the same value getOllamaUrl would have health-picked from.
+  return _ollamaUrlCache.url || 'http://localhost:11434';
 }
 
 // Force-invalidate the URL cache. Callers should fire this when a device

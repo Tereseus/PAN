@@ -18,8 +18,9 @@ const sqliteVec = require('sqlite-vec');
 
 import { getDb } from './db-registry.js';
 import { get as _settingsGet } from './db.js';
-import { embed, embedForWrite, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
+import { embed, embedForWriteDetailed, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
 import { privatizeSearch } from './privacy.js';
+import { NEVER_EMBED_SQL } from './event-filters.js';
 
 // Track which DB handles already have the vec extension loaded + tables
 // initialized. Loading the extension twice is harmless but slow; the table
@@ -192,9 +193,16 @@ async function embedEvent(db, eventRow) {
     db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(_SENTINEL_BLOB);
     return 'skip';
   }
-  const vec = await embedForWrite(text);
-  if (!vec) return false;  // Ollama unavailable — skip, never write keyword fallback to vec table
-  const blob = toBlob(vec);
+  const r = await embedForWriteDetailed(text);
+  if (r.hard) {
+    // Unembeddable at every slice size (e.g. a multi-MB paste). Sentinel it now
+    // so the backfill never inherits it as a head-of-queue blocker.
+    db.prepare(`DELETE FROM event_embeddings WHERE rowid = ${id}`).run();
+    db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(_SENTINEL_BLOB);
+    return 'skip';
+  }
+  if (r.unavailable) return false;  // Ollama unavailable — skip, never write keyword fallback to vec table
+  const blob = toBlob(r.vec);
   db.prepare(`DELETE FROM event_embeddings WHERE rowid = ${id}`).run();
   db.prepare(`INSERT INTO event_embeddings(rowid, embedding) VALUES (${id}, ?)`).run(blob);
   return true;
@@ -506,6 +514,31 @@ async function searchMemory(query, opts = {}) {
   // can afford to wait longer).
   const embedTimeoutMs = opts.embedTimeoutMs ?? 500;
   let vecRows = [];
+
+  // opts.skipVector: run lexical search ONLY, and return immediately.
+  //
+  // #461 above bounded the embed() call because it is network work that can
+  // hang. It assumed the vec0 query itself was cheap. Measured on this DB
+  // (2026-09-16, 130,744 rows x 1024 dims): FTS5 takes 2ms, the vec0 MATCH
+  // takes 4,168ms and 5,768ms. sqlite-vec has no ANN index - every query is a
+  // brute-force scan of every vector.
+  //
+  // better-sqlite3 is SYNCHRONOUS, so that scan freezes the entire event loop:
+  // every other request, every in-flight SSE stream, for 4-6 seconds. It is
+  // the cause of the [loop-block] 6000ms entries in hub.log, which appear
+  // immediately after every turn classified intent=memory action=recall.
+  //
+  // It also means a Promise.race timeout around searchMemory can NEVER bound
+  // it. A race cannot interrupt synchronous work, and while the scan runs the
+  // timer it is racing against cannot even be serviced. Any caller relying on
+  // one for latency is relying on nothing.
+  //
+  // So the interactive paths skip it. Lexical recall at 2ms beats semantic
+  // recall that stops PAN answering for five seconds. Background and offline
+  // callers, which can afford the stall, still get the full hybrid search.
+  if (opts.skipVector) {
+    if (opts.caller) console.log(`[PAN MemorySearch] FTS-only for caller=${opts.caller} (vec scan skipped)`);
+  } else {
   try {
     const qVec = await Promise.race([
       embed(q),
@@ -529,6 +562,7 @@ async function searchMemory(query, opts = {}) {
     // results from lexical hits. Logged at warn level so the degradation is
     // visible in console without crashing the search path.
     console.warn(`[PAN MemorySearch] vec query failed (FTS-only fallback for caller=${opts.caller || 'search'}):`, err.message);
+  }
   }
 
   // ---------- Reciprocal Rank Fusion ----------
@@ -578,6 +612,184 @@ async function searchMemory(query, opts = {}) {
 }
 
 /**
+ * "yesterday", "on september 1st", "last tuesday" — turn a spoken time phrase
+ * into a date range.
+ *
+ * WHY THIS EXISTS: neither FTS nor vectors index a date as something you can
+ * filter on. FTS matches words, vectors match meaning, and "what did I do
+ * yesterday" contains no word that appears in yesterday's events. So every
+ * date question either returned unrelated hits or nothing, and the model
+ * filled the gap by inventing an answer. Measured 2026-09-19: "what did i work
+ * on yesterday" produced a confident description of the wrong day.
+ *
+ * Returns { from, to, label } in the DB's own 'YYYY-MM-DD HH:MM:SS' localtime
+ * format, or null when the text names no time at all.
+ */
+const _MONTHS = {
+  january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
+  may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8,
+  september: 9, sep: 9, sept: 9, october: 10, oct: 10, november: 11, nov: 11,
+  december: 12, dec: 12,
+};
+const _DOW = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+
+function _dayBounds(d, label) {
+  const p = (n) => String(n).padStart(2, '0');
+  const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return { from: `${day} 00:00:00`, to: `${day} 23:59:59`, label };
+}
+
+// Spoken dates arrive as WORDS, not digits. STT gives "september first",
+// never "september 1st", so a parser that only accepts \d{1,2} silently fails
+// on the most common phrasing PAN actually hears - and the failure is bad,
+// because it drops to "I don't have anything saved about that" for a day the
+// hub is holding 300 prompts from.
+//
+// Normalising ordinals to digits up front means the existing month/day
+// patterns keep working unchanged, including "the first of september".
+const _ORDINAL_WORDS = (() => {
+  const base = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth',
+    'ninth', 'tenth', 'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth',
+    'sixteenth', 'seventeenth', 'eighteenth', 'nineteenth', 'twentieth'];
+  const map = new Map();
+  base.forEach((w, i) => map.set(w, i + 1));
+  map.set('thirtieth', 30);
+  // Compounds must be registered so they can be matched BEFORE their parts,
+  // or 'twenty first' becomes '20 1'.
+  for (let i = 1; i <= 9; i++) map.set('twenty ' + base[i - 1], 20 + i);
+  map.set('thirty first', 31);
+  return map;
+})();
+
+// Longest first, so 'twenty first' wins over 'first'.
+const _ORDINAL_RE = new RegExp(
+  '\\b(' + [..._ORDINAL_WORDS.keys()].sort((a, b) => b.length - a.length).join('|').replace(/ /g, '[\\s-]+') + ')\\b',
+  'g'
+);
+
+function _digitiseOrdinals(t) {
+  return t.replace(_ORDINAL_RE, (w) => {
+    const key = w.replace(/[\s-]+/g, ' ');
+    const n = _ORDINAL_WORDS.get(key);
+    return n === undefined ? w : String(n);
+  });
+}
+
+export function parseWhen(text, now = new Date()) {
+  const t = _digitiseOrdinals(String(text || '').toLowerCase());
+
+  if (/\btoday\b|\bthis morning\b|\bthis afternoon\b|\btonight\b/.test(t)) {
+    return _dayBounds(now, 'today');
+  }
+  if (/\byesterday\b|\blast night\b/.test(t)) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 1);
+    return _dayBounds(d, 'yesterday');
+  }
+
+  const ago = t.match(/\b(\d{1,2})\s+days?\s+ago\b/);
+  if (ago) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - parseInt(ago[1], 10));
+    return _dayBounds(d, `${ago[1]} days ago`);
+  }
+
+  // "september 1", "sept 1st", "1 september"
+  const mNames = Object.keys(_MONTHS).join('|');
+  let m = t.match(new RegExp(`\\b(${mNames})\\w*\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`));
+  if (!m) {
+    const m2 = t.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${mNames})\\w*\\b`));
+    if (m2) m = [m2[0], m2[2], m2[1]];
+  }
+  if (m) {
+    const month = _MONTHS[m[1]];
+    const day = parseInt(m[2], 10);
+    if (month && day >= 1 && day <= 31) {
+      // No year spoken: assume the most recent occurrence, never the future.
+      let year = now.getFullYear();
+      const cand = new Date(year, month - 1, day);
+      if (cand > now) year -= 1;
+      return _dayBounds(new Date(year, month - 1, day), `${m[1]} ${day}`);
+    }
+  }
+
+  // "last tuesday" / "on monday" — the most recent one that has already passed.
+  const dow = t.match(new RegExp(`\\b(?:last|on)\\s+(${Object.keys(_DOW).join('|')})\\b`));
+  if (dow) {
+    const want = _DOW[dow[1]];
+    const d = new Date(now);
+    do { d.setDate(d.getDate() - 1); } while (d.getDay() !== want);
+    return _dayBounds(d, dow[1]);
+  }
+
+  return null;
+}
+
+/**
+ * A preview worth showing a model.
+ *
+ * eventText() falls back to JSON.stringify(obj) when an event has no readable
+ * field, so hook rows come back as {"session_id":...,"transcript_path":...}.
+ * Those are the majority of FTS hits, and feeding them to the model as
+ * "relevant conversation history" is what produced invented answers. Anything
+ * that is really just the hook envelope is not history.
+ */
+export function isReadablePreview(s) {
+  const p = String(s || '').trim();
+  if (p.length < 12) return false;
+  if (/^[[{]/.test(p) && /"(session_id|transcript_path|tool_name|hook_event_name|cwd)"/.test(p)) return false;
+  // Mostly punctuation/escapes rather than words.
+  const words = p.replace(/[^a-z\s]/gi, ' ').split(/\s+/).filter((w) => w.length > 2);
+  return words.length >= 4;
+}
+
+/**
+ * Everything meaningful that happened in a date range.
+ *
+ * Date questions cannot be answered by relevance search, so this does not try:
+ * it returns the day's own record, newest first, with the hook noise excluded
+ * (the same exclusion list the embedder uses) and unreadable rows dropped.
+ */
+export function searchMemoryByDate({ from, to, limit = 25, scope = 'main', terms = [] } = {}) {
+  const db = getDb(scope);
+  ensureInitialized(db);
+
+  // A day is not a topic. "what did I do on autokratia today" names BOTH, and
+  // taking the newest N rows of the day answered with whatever project happened
+  // to be busiest - on 2026-09-22 that was the PAN session, so 19 real Autokratia
+  // prompts were never seen and PAN said it had no access to them.
+  //
+  // Filtering on `data` rather than the preview is deliberate: the hook payload
+  // carries `cwd`, so a project name matches every event from that folder even
+  // when the sentence he typed never mentions it.
+  const useTerms = (terms || []).filter((t) => t && t.length >= 4).slice(0, 4);
+  const termSql = useTerms.length
+    ? ' AND (' + useTerms.map(() => 'data LIKE ?').join(' OR ') + ')'
+    : '';
+  const args = [from, to, ...useTerms.map((t) => `%${t}%`), limit * 6];
+
+  const rows = db.prepare(`
+    SELECT id, event_type, data, created_at
+    FROM events
+    WHERE created_at >= ? AND created_at <= ?
+      AND event_type NOT IN (${NEVER_EMBED_SQL})
+      ${termSql}
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(...args);
+
+  const out = [];
+  for (const ev of rows) {
+    const preview = eventText(ev).slice(0, 280);
+    if (!isReadablePreview(preview)) continue;
+    out.push({ id: ev.id, score: 0, ftsRank: null, vecRank: null, hit: 'date', event: ev, preview });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+
+/**
  * Index a freshly inserted event for vector search. Called from db.logEvent()
  * via a hook so new events become searchable as soon as they're written.
  * Async + non-blocking: errors are logged, never thrown into the insert path.
@@ -599,14 +811,29 @@ function indexEventForSearch(scope, eventId) {
 function backfillStatus(scope = 'main') {
   try {
     const db = getDb(scope);
+    // event_embeddings is a vec0 virtual table, so this connection needs
+    // sqlite-vec loaded before it can even be COUNTed. Without this the endpoint
+    // returns `no such module: vec0` on a fresh Craft until some other code path
+    // (a search, the backfill worker) happens to initialise the handle first --
+    // which made a healthy hub look broken for the first ~90s after every boot.
+    ensureInitialized(db);
     const total = db.prepare('SELECT COUNT(*) as c FROM events').get().c;
     const indexed = db.prepare('SELECT COUNT(*) as c FROM event_embeddings').get().c;
+    // `remaining` used to be total - indexed, which counted every NEVER_EMBED
+    // row as outstanding work. On 2026-08-29 that reported 175,272 outstanding
+    // when the true backlog was ~17,000: 158,912 of those rows are types the
+    // backfill is designed never to touch, so the number could never reach zero
+    // and "stalled" was indistinguishable from "finished".
+    const embeddable = db.prepare(
+      `SELECT COUNT(*) as c FROM events WHERE event_type NOT IN (${NEVER_EMBED_SQL})`
+    ).get().c;
     // running reflects whether the worker thread is alive. Live rate + ETA
     // come from the worker's last 'progress' postMessage.
     return {
       total,
+      embeddable,
       indexed,
-      remaining: total - indexed,
+      remaining: Math.max(0, embeddable - indexed),
       running: _backfillWorker !== null,
       worker_thread: true,
       rate_per_sec: _backfillLastStats?.rate ?? 0,
