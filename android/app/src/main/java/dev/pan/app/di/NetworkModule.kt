@@ -92,10 +92,22 @@ object NetworkModule {
                 // of failing forever until the user reopens the app.
                 try {
                     val response = chain.proceed(request)
-                    if (response.isSuccessful) hub.reportSuccess() else hub.reportFailure()
+                    // ANY http response proves something is listening at this
+                    // address, so the address is RIGHT - even a 500. Counting a
+                    // non-2xx as "wrong hub" threw away a working address just
+                    // because the hub returned an error.
+                    hub.reportSuccess()
                     response
                 } catch (e: Exception) {
-                    hub.reportFailure()
+                    // Distinguish "nobody is there" from "they are slow".
+                    val addressLooksWrong = when (e) {
+                        is java.net.SocketTimeoutException -> false  // slow hub, address fine
+                        is java.net.ConnectException,
+                        is java.net.UnknownHostException,
+                        is java.net.NoRouteToHostException -> true
+                        else -> false
+                    }
+                    hub.reportFailure(addressLooksWrong)
                     throw e
                 }
             })

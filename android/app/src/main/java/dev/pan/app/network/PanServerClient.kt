@@ -359,7 +359,9 @@ class PanServerClient @Inject constructor(
                                     intent = result.optString("intent", "query"),
                                     route = result.optString("intent", null),
                                     query = result.optString("query", null),
-                                    actions = emptyList()
+                                    actions = emptyList(),
+                                    addressed = if (result.has("addressed") && !result.isNull("addressed")) result.optDouble("addressed") else null,
+                                    hold_ms = result.optLong("hold_ms", 0L)
                                 )
                             }
                             break

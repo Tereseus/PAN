@@ -48,10 +48,28 @@ class RemoteAccessManager @Inject constructor() {
      * Returns the local proxy URL, or null if not available.
      * OkHttp connects to localhost:<proxyPort> which tunnels through tsnet.
      */
+    @Volatile private var lastSelfHealAt = 0L
+
     fun getTailscaleBaseUrl(): String? {
-        val port = _proxyPort.value
-        if (!shouldUseTailscale || port <= 0) return null
-        return "http://127.0.0.1:$port"
+        if (!shouldUseTailscale || _proxyPort.value <= 0) {
+            // SELF-HEAL. refreshFromVpn() is called exactly once, immediately
+            // after startProxy(). If tsnet's netmap had not settled at that
+            // instant then status/port were wrong, and nothing in the service
+            // ever asked again - so this returned null forever, the proxy was
+            // never offered to HubLocator as a candidate, and every request
+            // fell back to LAN addresses that AP client isolation blocks. That
+            // is the disconnected/connected flapping. This method is called per
+            // request, so re-reading here turns a permanent race into one that
+            // corrects itself on the next call. Throttled so a burst of
+            // requests does not hammer the JNI boundary.
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastSelfHealAt > 1000L) {
+                lastSelfHealAt = now
+                runCatching { refreshFromVpn() }
+            }
+            if (!shouldUseTailscale || _proxyPort.value <= 0) return null
+        }
+        return "http://127.0.0.1:${_proxyPort.value}"
     }
 
     fun updateStatus(connected: Boolean, statusText: String, ipAddr: String, orgName: String) {

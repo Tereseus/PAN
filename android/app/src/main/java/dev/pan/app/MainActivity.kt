@@ -69,13 +69,43 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Any hardware key press (volume, power) stops TTS
+    /**
+     * Only the power button silences TTS.
+     *
+     * This used to catch EVERY key and `return true`, which consumed the event.
+     * So reaching for volume-up while PAN was talking both cut it off AND threw
+     * the keypress away, meaning the volume never actually changed - you could
+     * not turn it up, only mute it by accident.
+     *
+     * KEYCODE_POWER is normally swallowed by the system and never reaches an
+     * app, so the screen-off receiver below is what makes "power stops it"
+     * actually work. This branch is kept for the devices that do deliver it.
+     */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (tts.isSpeaking) {
+        if (keyCode == KeyEvent.KEYCODE_POWER && tts.isSpeaking) {
             tts.stop()
-            return true // consume the event
+            return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    /** Pressing power turns the screen off, which is the signal we can actually see. */
+    private val screenOffReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context?, i: Intent?) {
+            if (i?.action == Intent.ACTION_SCREEN_OFF && tts.isSpeaking) tts.stop()
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // ACTION_SCREEN_OFF is not sent to manifest-declared receivers, so it
+        // has to be registered at runtime.
+        registerReceiver(screenOffReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try { unregisterReceiver(screenOffReceiver) } catch (_: IllegalArgumentException) {}
     }
 
     private fun startPanService() {

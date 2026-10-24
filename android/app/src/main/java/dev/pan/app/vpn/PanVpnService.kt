@@ -10,10 +10,21 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.pan.app.R
 import dev.pan.app.di.TailscaleHostnameHolder
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 import kotlinx.coroutines.*
 import panvpn.Panvpn
 
+@AndroidEntryPoint
 class PanVpnService : VpnService() {
+
+    // The service is the ONLY thing that knows the proxy port, and it never told
+    // anyone. Every caller of refreshFromVpn() lived in a ViewModel, so the port
+    // was learned only while the UI happened to be open; in the background
+    // getTailscaleBaseUrl() stayed null, HubLocator lost its proxy candidate and
+    // fell back to LAN addresses that AP isolation blocks, failed three times,
+    // re-probed, and repeated forever. That is the connect/disconnect churn.
+    @Inject lateinit var remoteAccessManager: RemoteAccessManager
 
     companion object {
         private const val TAG = "PanVpnService"
@@ -144,8 +155,28 @@ class PanVpnService : VpnService() {
 
             // Now connected (either no login needed, or login completed) — find the PAN server
             loginUrl = null
-            val myIp = Panvpn.getStatus().ip
             val srvPort = getServerPort()
+
+            // WAIT for tsnet to actually come up before discovering anything.
+            //
+            // getStatus().ip is empty until the netmap arrives. Discovery used to run
+            // immediately, so every step failed in MILLISECONDS - saved server in 1ms,
+            // peer scan in 4ms - not because the hub was absent but because there was
+            // no network yet. It then logged 'No PAN server found' and RETURNED,
+            // so startProxy() never ran, proxy stayed 0, and the app fell back to
+            // LAN-only forever. Observed 2026-09-15: tsnet reported its IP a full two
+            // seconds AFTER discovery had already given up.
+            var myIp = ""
+            for (attempt in 1..40) {
+                myIp = try { Panvpn.getStatus().ip } catch (_: Exception) { "" }
+                if (myIp.isNotEmpty()) break
+                delay(500)
+            }
+            if (myIp.isEmpty()) {
+                Log.e(TAG, "tsnet never reported an IP after 20s")
+                updateNotification("Tailscale did not come up")
+                return
+            }
             Log.i(TAG, "Connected. Self=$myIp port=$srvPort")
 
             var serverHost = ""
@@ -167,8 +198,12 @@ class PanVpnService : VpnService() {
 
             // 2. Try pan-hub hostname
             if (serverHost.isEmpty()) {
-                val hubIp = Panvpn.findServerIP("pan-hub")
-                Log.i(TAG, "FindServerIP(pan-hub) = '$hubIp'")
+                // 'pan-hub' is the name the hub SHOULD have; 'minipc-pan-hub' is what
+                // the machine is actually called in Tailscale today. Trying only the
+                // aspirational name meant this step never once succeeded.
+                var hubIp = Panvpn.findServerIP("pan-hub")
+                if (hubIp.isEmpty()) hubIp = Panvpn.findServerIP("minipc-pan-hub")
+                Log.i(TAG, "FindServerIP = '$hubIp'")
                 if (hubIp.isNotEmpty() && hubIp != myIp) {
                     try {
                         val health = Panvpn.dialHTTP(hubIp, srvPort.toLong(), "/health")
@@ -200,13 +235,28 @@ class PanVpnService : VpnService() {
             }
 
             if (serverHost.isEmpty()) {
-                Log.e(TAG, "No PAN server found")
-                updateNotification("No server found")
+                // Peers can take a while to populate even after the IP appears, and a
+                // hub that is briefly down should not disable remote access until the
+                // next manual reconnect. Retry rather than returning.
+                Log.w(TAG, "No PAN server found; retrying in 15s")
+                updateNotification("Looking for the hub...")
+                delay(15_000)
+                serviceScope.launch { connect() }
                 return
             }
 
             val proxyPort = Panvpn.startProxy(serverHost, srvPort.toLong())
             Log.i(TAG, "Proxy: localhost:$proxyPort -> $serverHost:$srvPort")
+
+            // Publish it. refreshFromVpn() reads the live port, ip and org and is
+            // what flips status to "Connected" - which getTailscaleBaseUrl()
+            // requires before HubLocator will even consider the proxy.
+            try {
+                remoteAccessManager.refreshFromVpn()
+                Log.i(TAG, "Published proxy to RemoteAccessManager: ${remoteAccessManager.getTailscaleBaseUrl()}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not publish proxy port: ${e.message}")
+            }
             prefs.edit().putString("verified_server_ip", serverHost).apply()
             updateNotification("Connected")
         } catch (e: Exception) {

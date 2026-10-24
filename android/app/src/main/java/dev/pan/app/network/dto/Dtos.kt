@@ -75,7 +75,12 @@ data class QueryResponse(
     val query: String? = null,
     val response_time_ms: Long? = null,
     val intent: String? = null,
-    val actions: List<Action>? = null
+    val actions: List<Action>? = null,
+    // How sure the hub was that this was addressed to PAN, and how long to
+    // sit on the reply before speaking it. hold_ms > 0 means the hub landed
+    // in the middle of that range: say it only if he has stopped talking.
+    val addressed: Double? = null,
+    val hold_ms: Long = 0L
 )
 
 data class DeviceRegisterRequest(

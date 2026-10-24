@@ -1,6 +1,7 @@
 package dev.pan.app.network
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.net.HttpURLConnection
@@ -60,20 +61,69 @@ class HubLocator @Inject constructor(
 
         /** Consecutive failures before we stop trusting the cached address. */
         private const val FAILURES_BEFORE_REPROBE = 3
+
+        /**
+         * How long to stay quiet after a full scan came up empty.
+         *
+         * A scan that just failed will fail again for the same reason (hub off,
+         * wrong network). Without this, every caller re-walks all candidates at
+         * PROBE_TIMEOUT_MS each, forever. Observed 2026-09-11 with the hub
+         * powered off: five threads each scanning every ~5s, indefinitely.
+         */
+        private const val EMPTY_SCAN_BACKOFF_MS = 20_000L
     }
 
     private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
     @Volatile private var cached: String? = null
     private val consecutiveFailures = AtomicInteger(0)
+    private var lastScanProxy: String? = null
+
+    /** Serialises discovery so N concurrent callers cause ONE scan, not N. */
+    private val probeLock = Any()
+    @Volatile private var lastEmptyScanAt = 0L
+
+    init {
+        // Older builds persisted the per-session proxy port. Clear it once at
+        // startup so an upgraded install does not keep probing a dead port.
+        forgetStaleProxy()
+    }
 
     fun lastGood(): String? = cached ?: prefs.getString(KEY_LAST_GOOD, null)
 
     private fun remember(baseUrl: String) {
         cached = baseUrl
         consecutiveFailures.set(0)
-        prefs.edit().putString(KEY_LAST_GOOD, baseUrl).apply()
-        Log.i(TAG, "hub is $baseUrl")
+        lastEmptyScanAt = 0L
+        // NEVER persist the tsnet proxy address. Its port is assigned fresh on
+        // every VPN start (34877 one run, 44497 the next), so writing it here
+        // meant the FIRST candidate on every later scan was a port nothing was
+        // listening on. That cost a 2.5s probe, then the LAN fallbacks that AP
+        // client isolation blocks, then "no hub found" and a 20s backoff - which
+        // is the disconnected/connected/disconnected flapping. The live proxy is
+        // always passed in as proxyBase anyway, so caching it buys nothing and
+        // costs a guaranteed miss.
+        if (isEphemeralLoopback(baseUrl)) {
+            Log.i(TAG, "hub is $baseUrl (proxy — not persisted, port is per-session)")
+        } else {
+            prefs.edit().putString(KEY_LAST_GOOD, baseUrl).apply()
+            Log.i(TAG, "hub is $baseUrl")
+        }
+    }
+
+    private fun isEphemeralLoopback(url: String): Boolean =
+        url.startsWith("http://127.0.0.1:") || url.startsWith("http://localhost:")
+
+    /**
+     * Drop a stale persisted proxy address written by an older build. Without
+     * this the bad value survives upgrades and keeps costing a probe.
+     */
+    fun forgetStaleProxy() {
+        val saved = prefs.getString(KEY_LAST_GOOD, null) ?: return
+        if (isEphemeralLoopback(saved)) {
+            prefs.edit().remove(KEY_LAST_GOOD).apply()
+            Log.i(TAG, "dropped stale per-session proxy address $saved")
+        }
     }
 
     /**
@@ -81,7 +131,13 @@ class HubLocator @Inject constructor(
      * next resolve() re-probes. This is what turns "wrong address = dead
      * forever, reopen the app" into "recovers on its own within a poll cycle".
      */
-    fun reportFailure() {
+    fun reportFailure(addressLooksWrong: Boolean = true) {
+        // A slow hub is not a wrong hub. A read timeout (the hub taking 30s to
+        // answer a query) used to count here, so three slow answers threw away a
+        // perfectly good address and forced a re-probe - turning one slow reply
+        // into a disconnect. Only failures that mean "nothing is listening at
+        // this address" should invalidate it.
+        if (!addressLooksWrong) return
         if (consecutiveFailures.incrementAndGet() >= FAILURES_BEFORE_REPROBE) {
             Log.w(TAG, "$FAILURES_BEFORE_REPROBE consecutive failures — re-probing")
             cached = null
@@ -100,6 +156,31 @@ class HubLocator @Inject constructor(
     fun resolve(proxyBase: String? = null): String? {
         cached?.let { return it }
 
+        // Discovery is serialised. resolve() is called from an OkHttp
+        // Interceptor, so every in-flight request arrives here at once; before
+        // this lock each of them independently walked all candidates at
+        // PROBE_TIMEOUT_MS apiece, so one dead hub cost N x 4 x 2.5s of blocked
+        // threads and burned battery in a loop that never backed off.
+        synchronized(probeLock) {
+            // Someone may have found it while we waited for the lock.
+            cached?.let { return it }
+
+            val sinceEmpty = SystemClock.elapsedRealtime() - lastEmptyScanAt
+            // The backoff means "everything I could try failed, stop burning
+            // battery". A proxy address that was NOT available last time is new
+            // information, not a retry, so it must not be held behind that
+            // timer - the whole reason the last scan failed is that this
+            // candidate did not exist yet.
+            val haveNewProxy = proxyBase != null && proxyBase != lastScanProxy
+            if (lastEmptyScanAt != 0L && sinceEmpty < EMPTY_SCAN_BACKOFF_MS && !haveNewProxy) {
+                return null
+            }
+            return scan(proxyBase)
+        }
+    }
+
+    /** Caller MUST hold probeLock. */
+    private fun scan(proxyBase: String?): String? {
         val candidates = buildList {
             prefs.getString(KEY_LAST_GOOD, null)?.let { add(it) }
             proxyBase?.let { add(it) }
@@ -115,7 +196,14 @@ class HubLocator @Inject constructor(
             }
             remember(base); return base
         }
-        Log.w(TAG, "no hub found among ${candidates.size} candidates")
+        lastScanProxy = proxyBase
+        // Only arm the long backoff if the scan was actually complete. With the
+        // proxy still starting up, the candidate most likely to work was not in
+        // the list, so going quiet for 20s punishes the VPN for being slow.
+        lastEmptyScanAt = if (proxyBase != null) SystemClock.elapsedRealtime() else 0L
+        Log.w(TAG, "no hub found among ${candidates.size} candidates" +
+            if (proxyBase != null) "; quiet for ${EMPTY_SCAN_BACKOFF_MS / 1000}s"
+            else " (proxy not up yet — will retry immediately)")
         return null
     }
 
