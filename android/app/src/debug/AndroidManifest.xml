@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG ONLY manifest overlay.
+
+  Gradle merges this into debug builds and NOT into release, so the change below
+  cannot ship. src/main keeps android:exported="false".
+
+  Why it exists: PanForegroundService is unexported, so nothing outside the app
+  can start it, which meant the voice loop could only ever be tested by a human
+  talking to the phone and every audio change was verified by ear or not at all.
+  Exporting it in debug lets the TEST_SPEAK and TEST_SAY actions be driven from a
+  script via "am startservice" with a text extra.
+
+  The handlers themselves are additionally guarded by BuildConfig.DEBUG, so even
+  if this overlay ever leaked into a release build the actions would be inert.
+
+  (Note for future edits: XML comments may not contain a double hyphen, which is
+  why the adb examples live in PanForegroundService.kt rather than here.)
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <service
+            android:name=".service.PanForegroundService"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+
+</manifest>

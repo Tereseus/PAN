@@ -31,7 +31,16 @@ class GoogleSttEngine @Inject constructor(
     override var isListening: Boolean = false
         private set
 
-    var enabled: Boolean
+    // Unused interface members. Like VoskSttEngine, this engine has never been
+    // wired to anything — the service reached for GoogleStreamingStt instead.
+    override val listensThroughTts = false
+    override var onLog: ((String) -> Unit)? = null
+    override var isTtsSpeaking: (() -> Boolean)? = null
+    override var onInterrupt: (() -> Unit)? = null
+    override var queryPending: Boolean = false
+    override fun registerTtsOutput(text: String) {}
+
+    override var enabled: Boolean
         get() = _enabled
         set(value) {
             _enabled = value
@@ -55,7 +64,7 @@ class GoogleSttEngine @Inject constructor(
         isListening = false
     }
 
-    fun destroy() {
+    override fun destroy() {
         _enabled = false
         stopListening()
     }

@@ -169,7 +169,9 @@ fun SettingsScreen(
                 "android" to "Default (Android)",
                 "low" to "Piper Low (15MB)",
                 "medium" to "Piper Medium (60MB)",
-                "high" to "Piper High (110MB)"
+                "high" to "Piper High (110MB)",
+                "kokoro" to "Kokoro Natural (140MB)",
+                "supertonic" to "Supertonic Fast (81MB)"
             )
             ExposedDropdownMenuBox(
                 expanded = voiceExpanded,

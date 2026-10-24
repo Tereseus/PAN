@@ -35,7 +35,18 @@ class VoskSttEngine @Inject constructor(
     override var isListening: Boolean = false
         private set
 
-    var enabled: Boolean
+    // Interface members this engine does not use. It has never been wired to
+    // anything - the service injected GoogleStreamingStt concretely - and it
+    // has no model in assets, so it cannot run as written. Kept compiling
+    // rather than deleted, because removing it is a separate decision.
+    override val listensThroughTts = false
+    override var onLog: ((String) -> Unit)? = null
+    override var isTtsSpeaking: (() -> Boolean)? = null
+    override var onInterrupt: (() -> Unit)? = null
+    override var queryPending: Boolean = false
+    override fun registerTtsOutput(text: String) {}
+
+    override var enabled: Boolean
         get() = _enabled
         set(value) {
             _enabled = value
@@ -160,7 +171,7 @@ class VoskSttEngine @Inject constructor(
         isListening = false
     }
 
-    fun destroy() {
+    override fun destroy() {
         stopListening()
         model?.close()
         model = null

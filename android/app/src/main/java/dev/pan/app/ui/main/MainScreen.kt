@@ -112,18 +112,21 @@ fun MainScreen(
                 Text("PAN Dashboard")
             }
 
-            // Intuition — JARVIS-style situational awareness card (USER's intuition)
-            IntuitionCard(snapshot = intuition)
-
-            // PAN's own deliberation — mirrors IntuitionCard but for what PAN
-            // itself is doing right now (thinking / filler / last reply + ms).
+            // ONE status card. There used to be two stacked cards that both said
+            // idle: IntuitionCard headed with the user's activity ("Idle") and
+            // PanThinkingCard headed "PAN Idle". Two collapsed cards saying the
+            // same word is not two pieces of information. They are now one card,
+            // PAN's own state on top because that is the live part, the user's
+            // state under it, and it opens expanded - a status card you have to
+            // tap to read is not a status card.
             val isThinking by viewModel.isThinking.collectAsState()
             val currentFiller by viewModel.currentFiller.collectAsState()
             val lastQueryText by viewModel.lastQueryText.collectAsState()
             val lastResponseText by viewModel.lastResponseText.collectAsState()
             val lastResponseMs by viewModel.lastResponseMs.collectAsState()
             val lastFirstChunkMs by viewModel.lastFirstChunkMs.collectAsState()
-            PanThinkingCard(
+            StatusCard(
+                snapshot = intuition,
                 isThinking = isThinking,
                 filler = currentFiller,
                 lastQuery = lastQueryText,
@@ -218,7 +221,11 @@ fun MainScreen(
                         StatusDot(isActive = isServerConnected)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            if (isServerConnected) "AI - Cerebras (Active)" else "AI - Offline",
+                            // Was "AI - Cerebras (Active)". Cerebras has returned 402 on
+                            // every model since August and nothing has routed through it
+                            // since; naming it here was simply false. The label says what
+                            // this dot actually knows - whether the hub is answering.
+                            if (isServerConnected) "AI - Connected" else "AI - Offline",
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (isServerConnected) MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.onSurfaceVariant
@@ -440,15 +447,25 @@ fun SensorSection(
 }
 
 /**
- * PAN's own deliberation card — mirror of IntuitionCard but for what PAN
- * itself is doing. Shows:
- *   - Thinking spinner + conversational filler while a query is in flight
- *   - Last user query + PAN reply
- *   - ↳ X.Xs response-time badge (color-coded: green <2s, yellow <5s, red >5s)
- *   - Tap to expand for time-to-first-chunk breakdown
+ * ONE status card.
+ *
+ * There used to be two, stacked, and both of them said idle: IntuitionCard was
+ * headed with the user's activity ("Idle") and PanThinkingCard was headed "PAN
+ * Idle". Two collapsed cards showing the same word is not two pieces of
+ * information, it is one piece of information and a duplicate.
+ *
+ * Merged, in this order on purpose:
+ *   PAN's state first  - thinking / ready, the reply, the response-time badge.
+ *                        That is the part that changes while he is talking.
+ *   His state second   - activity, mood, where. That is the context for it.
+ *
+ * Opens EXPANDED. A status card you have to tap before it tells you anything is
+ * not a status card.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun PanThinkingCard(
+fun StatusCard(
+    snapshot: IntuitionSnapshot?,
     isThinking: Boolean,
     filler: String,
     lastQuery: String,
@@ -456,9 +473,21 @@ fun PanThinkingCard(
     lastResponseMs: Long,
     firstChunkMs: Long,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(true) }
 
-    // Color-code response time: green < 2s, yellow < 5s, red ≥ 5s
+    val now = snapshot?.now
+    val activity = now?.activity ?: "Waiting for signal..."
+    val mood = now?.mood ?: "Neutral"
+    val moodEmoji = when (mood.lowercase()) {
+        "engaged", "focused", "productive", "energetic" -> "\uD83D\uDFE2"
+        "calm", "relaxed", "neutral", "normal" -> "\uD83D\uDD35"
+        "tired", "distracted", "bored" -> "\uD83D\uDFE1"
+        "stressed", "frustrated", "anxious" -> "\uD83D\uDFE0"
+        "angry", "upset" -> "\uD83D\uDD34"
+        else -> "\uD83D\uDD35"
+    }
+
+    // Response time: green < 2s, yellow < 5s, red beyond.
     val rtSeconds = lastResponseMs / 1000.0
     val rtColor = when {
         lastResponseMs <= 0 -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -478,15 +507,17 @@ fun PanThinkingCard(
         onClick = { expanded = !expanded }
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
+
+            // ---- PAN ------------------------------------------------------
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (isThinking) "🧠" else "Π", fontSize = 20.sp)
+                Text(if (isThinking) "\uD83E\uDDE0" else "\u03A0", fontSize = 20.sp)
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        if (isThinking) "PAN is thinking…" else "PAN Idle",
+                        if (isThinking) "PAN is thinking\u2026" else "PAN ready",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -506,13 +537,12 @@ fun PanThinkingCard(
                     )
                 }
                 if (lastResponseMs > 0 && !isThinking) {
-                    // ↳ X.Xs response-time badge
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = rtColor.copy(alpha = 0.15f)
                     ) {
                         Text(
-                            "↳ ${"%.1f".format(rtSeconds)}s",
+                            "\u21B3 ${"%.1f".format(rtSeconds)}s",
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             style = MaterialTheme.typography.labelSmall,
                             color = rtColor,
@@ -522,9 +552,26 @@ fun PanThinkingCard(
                 }
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    if (expanded) "▲" else "▼",
+                    if (expanded) "\u25B2" else "\u25BC",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // ---- him ------------------------------------------------------
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(moodEmoji, fontSize = 16.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    buildString {
+                        append(activity)
+                        if (!now?.where.isNullOrBlank()) append("  \u00B7  ").also { append(now!!.where) }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -540,7 +587,6 @@ fun PanThinkingCard(
                         maxLines = 3, overflow = TextOverflow.Ellipsis)
                     Spacer(modifier = Modifier.height(6.dp))
                 }
-
                 if (lastResponse.isNotBlank()) {
                     Text("PAN replied", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -549,31 +595,104 @@ fun PanThinkingCard(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                // Timing breakdown
                 Row(modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("First chunk", style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            if (firstChunkMs > 0) "${firstChunkMs}ms" else "—",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Text(if (firstChunkMs > 0) "${firstChunkMs}ms" else "\u2014",
+                            style = MaterialTheme.typography.bodySmall)
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Total", style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            if (lastResponseMs > 0) "${"%.2f".format(rtSeconds)}s" else "—",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = rtColor
-                        )
+                        Text(if (lastResponseMs > 0) "${"%.2f".format(rtSeconds)}s" else "\u2014",
+                            style = MaterialTheme.typography.bodySmall, color = rtColor)
                     }
                 }
 
                 if (isThinking) {
                     Spacer(modifier = Modifier.height(8.dp))
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+
+                if (now != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Focus", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(now.focus ?: "\u2014", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Mood", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("$moodEmoji $mood", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Direction", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(now.direction ?: "\u2014", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Urgency", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(now.urgency ?: "Normal", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+
+                    val topics = now.recent_topics
+                    if (!topics.isNullOrEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Recent Topics", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            topics.take(5).forEach { topic ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                ) {
+                                    Text(topic,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                        }
+                    }
+
+                    val services = snapshot?.pan?.services
+                    if (!services.isNullOrEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        val running = services.count { it.status == "Running" }
+                        val stopped = services.filter { it.status != "Running" }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Services", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
+                                Text("$running running",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                            stopped.forEach { svc ->
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Surface(shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)) {
+                                    Text("${svc.name} \u2715",
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -588,160 +707,4 @@ fun StatusDot(isActive: Boolean) {
         color = if (isActive) MaterialTheme.colorScheme.primary
                else MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
     ) {}
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun IntuitionCard(snapshot: IntuitionSnapshot?) {
-    var expanded by remember { mutableStateOf(false) }
-
-    val now = snapshot?.now
-    val activity = now?.activity ?: "Waiting for signal..."
-    val mood = now?.mood ?: "Neutral"
-    val moodEmoji = when (mood.lowercase()) {
-        "engaged", "focused", "productive", "energetic" -> "🟢"
-        "calm", "relaxed", "neutral", "normal" -> "🔵"
-        "tired", "distracted", "bored" -> "🟡"
-        "stressed", "frustrated", "anxious" -> "🟠"
-        "angry", "upset" -> "🔴"
-        else -> "🔵"
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
-        onClick = { expanded = !expanded }
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            // Header: mood emoji + activity
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(moodEmoji, fontSize = 20.sp)
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        activity,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (now?.where != null) {
-                        Text(
-                            now.where,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
-                }
-                Text(
-                    if (expanded) "▲" else "▼",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            // Expanded details
-            if (expanded && now != null) {
-                Spacer(modifier = Modifier.height(10.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Focus + Mood + Direction
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Focus", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(now.focus ?: "—", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Mood", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("$moodEmoji $mood", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Direction", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(now.direction ?: "—", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Urgency", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(now.urgency ?: "Normal", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                // Recent topics as chips
-                val topics = now.recent_topics
-                if (!topics.isNullOrEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Recent Topics", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        topics.take(5).forEach { topic ->
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                            ) {
-                                Text(
-                                    topic,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Services summary
-                val services = snapshot.pan?.services
-                if (!services.isNullOrEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val running = services.count { it.status == "Running" }
-                    val stopped = services.filter { it.status != "Running" }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Services", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                        ) {
-                            Text(
-                                "$running running",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        stopped.forEach { svc ->
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
-                            ) {
-                                Text(
-                                    "${svc.name} ✕",
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }

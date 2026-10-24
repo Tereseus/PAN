@@ -53,13 +53,15 @@ class GoogleStreamingStt @Inject constructor(
     override var isListening: Boolean = false
         private set
 
-    var onLog: ((String) -> Unit)? = null
-    var isTtsSpeaking: (() -> Boolean)? = null
-    var onInterrupt: (() -> Unit)? = null
+    override val listensThroughTts = false
+
+    override var onLog: ((String) -> Unit)? = null
+    override var isTtsSpeaking: (() -> Boolean)? = null
+    override var onInterrupt: (() -> Unit)? = null
 
     // Set to true while a server query is in-flight (from query sent → TTS starts / query fails).
     // Prevents STT from restarting and picking up TTS audio before TTS has a chance to begin.
-    @Volatile var queryPending: Boolean = false
+    @Volatile override var queryPending: Boolean = false
 
     // Track what PAN said recently for echo stripping
     private val recentTtsOutput = mutableListOf<String>()
@@ -71,7 +73,7 @@ class GoogleStreamingStt @Inject constructor(
     // (2026-07-15 echo fix.)
     private val TTS_ECHO_WINDOW_MS = 8000L
 
-    var enabled: Boolean
+    override var enabled: Boolean
         get() = _enabled
         set(value) {
             _enabled = value
@@ -87,7 +89,7 @@ class GoogleStreamingStt @Inject constructor(
         onLog?.invoke("[STT] $msg")
     }
 
-    fun registerTtsOutput(text: String) {
+    override fun registerTtsOutput(text: String) {
         val lower = text.lowercase().trim()
         recentTtsOutput.add(lower)
         // Estimate TTS end time (~80ms per word)
@@ -138,9 +140,21 @@ class GoogleStreamingStt @Inject constructor(
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            // Keep listening longer before giving up on silence
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+            // Endpointing: how long a pause means "he stopped talking".
+            //
+            // This was 4000ms / 3000ms with the note "keep listening longer".
+            // That is four seconds of dead air after every sentence before PAN
+            // even begins thinking, which is most of why it never felt
+            // conversational. 300ms is what he asked for.
+            //
+            // The trade is real: too short and a mid-sentence pause to think gets
+            // read as the end of your turn. If it starts cutting you off, this
+            // number is the dial - raise it, do not raise the whole pipeline.
+            //
+            // NOTE these are HINTS. Google's recogniser honours them
+            // inconsistently across versions, so the improvement may be partial.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 300L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 300L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
         }
     }
@@ -349,7 +363,7 @@ class GoogleStreamingStt @Inject constructor(
         try { recognizer?.cancel() } catch (_: Exception) {}
     }
 
-    fun destroy() {
+    override fun destroy() {
         _enabled = false
         isListening = false
         try { recognizer?.cancel() } catch (_: Exception) {}
