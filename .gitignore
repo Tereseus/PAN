@@ -166,3 +166,9 @@ pan.key
 # service/ (pan-installer.cjs, pan-tray.cjs, run-tests.cjs, claude-runner.cjs and
 # friends), which are real code.
 /*.cjs
+
+# Credentials dropped in the repo root. creds.env was untracked but NOT
+# ignored on 2026-09-11, i.e. one "git add ." from a public commit.
+creds.env
+*.env
+!*.env.example

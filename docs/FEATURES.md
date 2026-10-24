@@ -1094,6 +1094,42 @@ same commit as the code change._
 
 ---
 
+## Phone end-of-turn detection (Smart Turn)
+
+Decides whether a pause means **"he's finished"** or **"he's just thinking"** — the difference between PAN answering on time and PAN cutting him off mid-sentence. Lives in the `sherpa` STT engine only.
+
+**Files:** `android/app/src/main/java/dev/pan/app/stt/SherpaStreamingStt.kt` (the decision), `SmartTurn.kt` (the model), `WhisperLogMel.kt` (its audio features).
+
+### How a turn ends
+1. **Candidate:** sherpa's endpoint fires after `ENDPOINT_SILENCE_S` = 0.35 s of trailing silence.
+2. **Judge:** [Pipecat Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn) listens to the last 8 s of the current turn's audio and returns P(finished). Once per pause, keyed on when he last spoke; runs off the audio thread (AudioRecord's ~160 ms buffer would otherwise drop the words after the pause).
+3. **Commit** only if P ≥ 0.5 **and** the last word is not dangling (`isTurnComplete` — "to", "because", "the"…). Otherwise hold up to `INCOMPLETE_MAX_WAIT_MS` (1.4 s), then commit anyway. Flow mode (`FLOW_SILENCE_MS`) is unchanged.
+
+### Model
+- `smart-turn-v3.2-gpu.onnx` — the **fp32** build (32,411,198 bytes; "-gpu" only means fp32, it runs on CPU). Downloaded once in the background from `huggingface.co/pipecat-ai/smart-turn-v3` into `filesDir/asr-model/`, size-verified. Until it lands, turns are judged on the word rule alone (the previous behaviour).
+- **Why not the int8 build Pipecat defaults to on CPU:** on identical input features its answer moves with the runtime and the CPU's int8 kernels — "I want you to" scored 0.63 / 0.49 / 0.25 on onnxruntime 1.24 / 1.30 / 1.18. fp32 gave the same four decimals on every runtime (0.43, correctly unfinished).
+- Runtime: `onnxruntime-android` 1.30.0. sherpa-onnx links its own onnxruntime statically and exposes no Java API, so it cannot run other models. +13.6 MB APK.
+
+### Guards (all logged, none silent)
+- Verdict not in within 0.35 s + `TURN_JUDGE_TIMEOUT_MS` (0.8 s) of the pause → decide on words alone.
+- Inference throws → that pause is decided on words alone; it is not retried per window.
+- Model fails to load → words alone for the session.
+
+### Logs (`[STT]`, shipped by LogShipper)
+`smart-turn loaded` · `smart-turn p=0.93 in 45ms` · `commit after 410ms p=0.93` · `holding, sounds unfinished p=0.12: ...move the meeting because` · `smart-turn slow (>800ms) - deciding on words alone`
+
+### Tests
+- `WhisperLogMelTest` — Kotlin features vs Pipecat's reference pipeline on five real-speech fixtures (`app/src/test/resources/smartturn/`); max |diff| ~2e-5. Always runs.
+- `SmartTurnModelTest` — the real model end to end; needs `SMARTTURN_MODEL=<path to the .onnx>`, skips otherwise.
+- Run `./gradlew.bat :app:testDebugUnitTest` — **not** the root `testDebugUnitTest`: `llama-lib`'s template `ExampleUnitTest` does not compile.
+- Desktop test runtime is pinned to onnxruntime 1.18.0: Android Studio's JBR loads msvcp140.dll 14.29, and newer Windows ORT builds crash the JVM on it. Desktop-only.
+
+### Pre-gate
+- STT engine must be `sherpa` (`pan_stt_prefs/engine`). The Google engine owns the microphone and hands back text, so there is no audio to judge.
+
+### Replaces
+- The dangling-word rule as the **sole** decider. It stays, as a veto.
+
 ## Android self-update
 
 PAN's Android app updates itself from the user's own PAN server — no Play Store, no manual sideload after the first install. Designed to be reusable for any future PAN-shipped Android app.
