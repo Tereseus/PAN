@@ -2,7 +2,7 @@
 // Supports Anthropic, Gemini, Cerebras, Ollama, and LM Studio.
 // Routes based on Settings > AI & Usage.
 
-import { insert, get, run, getOllamaUrl, getModelForPurpose } from './db.js';
+import { insert, get, run, getOllamaUrl, getConfiguredOllamaUrl, getModelForPurpose, pickHealthyOllama, reportOllamaLatency } from './db.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
@@ -146,6 +146,236 @@ async function callGemini(prompt, model, maxTokens, signal) {
   };
 }
 
+// Streaming Gemini. The whole voice pipeline was already built to stream -
+// the hub yields chunks, the phone speaks each sentence the moment it lands -
+// but askAIStream only had a real implementation for Cerebras, and Cerebras
+// has been returning 402 on every model since August. So every reply fell
+// into the 'non-streaming providers' else-branch, arrived as ONE chunk at the
+// end, and the phone could not start talking until the last word was written.
+// That single else is why the whole thing felt like a walkie-talkie: measured
+// first=43463ms total=43470ms, seven milliseconds apart.
+async function* callGeminiStream(prompt, model, maxTokens, signal, usageOut = null) {
+  const apiKey = getApiKey('gemini');
+  if (!apiKey) throw new Error('No Gemini API key found in Settings.');
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const genModel = genAI.getGenerativeModel({ model: model.replace('gemini:', '') || 'gemini-1.5-flash' });
+  const result = await genModel.generateContentStream({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: maxTokens },
+  });
+  for await (const chunk of result.stream) {
+    if (signal && signal.aborted) break;
+    let t = '';
+    try { t = chunk.text() || ''; } catch { t = ''; }
+    if (t) yield t;
+  }
+  if (usageOut) {
+    try {
+      const resp = await result.response;
+      usageOut.input_tokens  = resp.usageMetadata?.promptTokenCount || 0;
+      usageOut.output_tokens = resp.usageMetadata?.candidatesTokenCount || 0;
+    } catch {}
+  }
+}
+
+// Streaming Ollama. /api/chat with stream:true answers newline-delimited JSON,
+// one object per token-ish chunk. Same health reporting as the non-streaming
+// path so a degraded GPU box still trips the failover.
+// GPU PLACEMENT GUARD
+//
+// ollama decides GPU offload ONCE, when a model loads, from the VRAM free at
+// that instant - and never revisits it. Mint is also the gaming box. A game
+// takes the card, the model reloads into a ~1GiB window, gets ZERO layers
+// offloaded, and then serves every request from CPU for the rest of that load,
+// long after the game is closed and the card is idle again. Nothing errors. It
+// just goes slow and stays slow.
+//
+// Measured on Mint 2026-09-16, same model, same 3,223-token prompt:
+//   cold prefill  10,646ms (295 tok/s)  ->  1,114ms (2,894 tok/s)
+//   decode            24 tok/s          ->  78-81 tok/s
+// End to end that was a voice p90 of 11.8s against 1.6s.
+//
+// keep_alive: -1 prevents the reload that causes it. This is the second line of
+// defence for when the pin is not enough: ollama restarted, the model was
+// stopped by hand mid-game, or something else held the card at load time.
+//
+// It follows the CONFIGURED ollama url, so it never fights GAME MODE. When that
+// button points the hub at the mini PC, this checks the mini PC, and a model
+// deliberately stopped on Mint is left stopped.
+const VRAM_CHECK_EVERY_MS = 2 * 60 * 1000;
+const VRAM_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
+// The host PAN was configured to use on the previous call. When that changes
+// - which is exactly what the GAME MODE button does - the model left pinned on
+// the old host must be released, or it sits there forever.
+//
+// keep_alive: -1 made this mandatory. Before it, a model stranded by a config
+// switch expired on its own after OLLAMA_KEEP_ALIVE (5m) and the VRAM came
+// back. Pinned, it never expires: one leaked call during game mode",
+// permanently costs 1.7GB of the card he wanted for a game. Measured live.
+let _lastConfiguredUrl = null;
+let _lastVramCheck = 0;
+let _lastVramRepair = 0;
+
+// Unload a model we pinned on a host we are no longer pointed at.
+async function releasePinnedModel(url, model) {
+  try {
+    await fetch(`${url}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, keep_alive: 0, options: { num_predict: 1 } }),
+      signal: AbortSignal.timeout(15000),
+    });
+    console.log(`[ollama] released ${model} on ${url} — PAN is not using that host any more`);
+  } catch (e) {
+    console.warn(`[ollama] could not release ${model} on ${url}: ${e.message}`);
+  }
+}
+
+async function guardModelOnGpu(ollamaUrl, model, force = false) {
+  const now = Date.now();
+  // `force` is set when the turn that scheduled this was itself slow. The
+  // throttle exists so a busy conversation does not poll /api/ps every turn,
+  // but a slow turn IS the symptom - throttling the check exactly when the
+  // evidence arrives is backwards, and it is why this never fired in testing.
+  if (!force && now - _lastVramCheck < VRAM_CHECK_EVERY_MS) return;
+  _lastVramCheck = now;
+  const ps = async () => {
+    const r = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j.models || []).find((x) => x.name === model || x.model === model) || null;
+  };
+  try {
+    const m = await ps();
+    // Not loaded is fine - the next call loads it, and that load will be
+    // pinned. Only a LOADED model sitting at zero VRAM is the broken state.
+    if (!m) { console.log(`[ollama] guard: ${model} not loaded on ${ollamaUrl} — nothing to do`); return; }
+    if (m.size_vram > 0) return;   // already on the GPU, the normal case
+
+    if (now - _lastVramRepair < VRAM_REPAIR_COOLDOWN_MS) {
+      console.warn(`[ollama] ${model} is on CPU (size_vram=0) — repair on cooldown, not retrying yet`);
+      return;
+    }
+    _lastVramRepair = now;
+    console.warn(`[ollama] ${model} loaded with NO GPU offload — unloading and reloading to force placement`);
+
+    const post = (body, ms) => fetch(`${ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(ms),
+    });
+    await post({ model, prompt: 'x', keep_alive: 0, options: { num_predict: 1 } }, 30000);
+    await new Promise((r) => setTimeout(r, 1500));   // let the card actually free
+    await post({ model, prompt: 'x', keep_alive: -1, options: { num_predict: 1 } }, 120000);
+
+    const after = await ps();
+    if (after && after.size_vram > 0) {
+      console.log(`[ollama] ${model} back on GPU (${(after.size_vram / 1e9).toFixed(1)}GB VRAM)`);
+    } else {
+      // Reloading did not help, so something else is holding the card - most
+      // likely a game running right now. Say so rather than looping: the
+      // cooldown stops this becoming a thrash, and GAME MODE is the answer.
+      console.warn(`[ollama] ${model} STILL on CPU after reload — something else is holding VRAM (a game?). Use the GAME MODE button.`);
+    }
+  } catch (e) {
+    console.warn(`[ollama] GPU placement guard failed: ${e.message}`);
+  }
+}
+
+async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOut = null) {
+  const perModelOllama = getCustomModelConfig(ollamaModel);
+  // The CONFIGURED host, before any health rerouting. The guard has to repair
+  // THIS one. getOllamaUrl() already ends in pickHealthyOllama(), so asking it
+  // while Mint is degraded returns the mini PC - the guard then inspected the
+  // healthy box, found nothing wrong, and left Mint on CPU. Measured: the guard
+  // silently no-opped through two full test runs because of exactly this.
+  const configuredOllamaUrl = ((perModelOllama && perModelOllama.url) || getConfiguredOllamaUrl() || 'http://localhost:11434').replace(/\/$/, '');
+  const ollamaUrl = pickHealthyOllama(configuredOllamaUrl);
+  const t0 = Date.now();
+  let resp;
+  try {
+    resp = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel,
+        messages: [{ role: 'user', content: prompt }],
+        stream: true,
+        // think:false stays load-bearing here too - reasoning goes to
+        // message.thinking and content comes back empty.
+        think: false,
+        // keep_alive: -1 pins the chat model, as embeddings.js pins the
+        // embedding model and analyzeImage pins the vision model. Chat was the
+        // only unpinned one and the only latency-critical one. It is not about
+        // load time - see guardModelOnGpu below for what it actually prevents.
+        keep_alive: -1,
+        options: { num_predict: maxTokens },
+      }),
+      signal,
+    });
+  } catch (e) {
+    reportOllamaLatency(ollamaUrl, Date.now() - t0, false);
+    throw e;
+  }
+  if (!resp.ok) {
+    reportOllamaLatency(ollamaUrl, Date.now() - t0, false);
+    throw new Error(`Ollama ${resp.status}`);
+  }
+
+  // Scheduled here, NOT in the finally below.
+  //
+  // routeStream breaks out of its for-await the moment the JSON object closes,
+  // and that abrupt close does not reach this generator through
+  // askAIStreamWithFallback - so the finally never ran and the guard never
+  // fired. Verified: a debug log at the top of guardModelOnGpu printed nothing
+  // across three full test runs while turns were plainly being served here.
+  //
+  // The delay keeps the repair away from the turn that scheduled it, since the
+  // repair unloads the model and would otherwise cut its own stream off. The
+  // throttle inside guardModelOnGpu stops these piling up.
+  // The configured host changed since the last call (GAME MODE, or any
+  // settings edit). Hand the old host its VRAM back immediately - not on a
+  // timer, because the whole point is that he is waiting to start a game.
+  if (_lastConfiguredUrl && _lastConfiguredUrl !== configuredOllamaUrl) {
+    const stranded = _lastConfiguredUrl;
+    releasePinnedModel(stranded, ollamaModel).catch(() => {});
+  }
+  _lastConfiguredUrl = configuredOllamaUrl;
+
+  setTimeout(() => {
+    // A turn that took longer than the slow threshold is the strongest signal
+    // we get that the model fell off the GPU, so it skips the throttle.
+    const wasSlow = (Date.now() - t0) > 8000;
+    guardModelOnGpu(configuredOllamaUrl, ollamaModel, wasSlow).catch(() => {});
+  }, 15000).unref?.();
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        const piece = obj.message?.content || '';
+        if (piece) yield piece;
+        if (obj.done && usageOut) {
+          usageOut.input_tokens  = obj.prompt_eval_count || 0;
+          usageOut.output_tokens = obj.eval_count || 0;
+        }
+      }
+    }
+  } finally {
+    reportOllamaLatency(ollamaUrl, Date.now() - t0, true);
+  }
+}
 // Classify a model ID into { tier, sizeB } from its name.
 //
 // Used by the resolver's substitution path: when an exact and prefix-family
@@ -615,8 +845,18 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
       for await (const chunk of callCerebrasStream([{ role: 'user', content: prompt }], model, maxTokens, controller.signal, cerebrasUsage)) {
         yield chunk;
       }
+    } else if (model.startsWith('gemini:')) {
+      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
+      for await (const chunk of callGeminiStream(prompt, model, maxTokens, controller.signal, cerebrasUsage)) {
+        yield chunk;
+      }
+    } else if (model.startsWith('ollama:')) {
+      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
+      for await (const chunk of callOllamaStream(prompt, model.replace('ollama:', ''), maxTokens, controller.signal, cerebrasUsage)) {
+        yield chunk;
+      }
     } else {
-      // Non-streaming providers: yield full result at once
+      // Genuinely non-streaming providers: yield full result at once.
       const text = await askAI(rawPrompt, { model, timeout, maxTokens, caller, _skipAnonymize, source, device_id });
       if (text) yield text;
     }
@@ -667,7 +907,10 @@ async function callOpenAICompat(prompt, messages, config, maxTokens, signal) {
   const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model: config.id, messages: oaiMessages, max_tokens: maxTokens, stream: false }),
+    // think:false for Ollama: gemma4 thinks by default, which cost 1.52s vs 0.06s
+    // on the same question. Harmless for non-thinking models and for LM Studio.
+    // keep_alive only means anything to Ollama, hence the spread.
+    body: JSON.stringify({ model: config.id, messages: oaiMessages, max_tokens: maxTokens, stream: false, ...(isOllama ? { think: false, keep_alive: -1 } : {}) }),
     signal,
   });
 
@@ -754,20 +997,51 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       // "ollama:qwen3:4b", so the lookup missed and threw "Unknown model"
       // in 1ms, killing the local fallback. Route directly to Ollama here.
       const ollamaModel = model.replace(/^ollama:/, '');
-      const ollamaUrl   = (getOllamaUrl() || 'http://localhost:11434').replace(/\/$/, '');
-      const resp = await fetch(`${ollamaUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: ollamaModel,
-          messages: [{ role: 'user', content: prompt }],
-          stream: false,
-          options: { num_predict: maxTokens },
-        }),
-        signal: controller.signal,
-      });
-      if (!resp.ok) throw new Error(`Ollama ${resp.status}: ${await resp.text().catch(() => '')}`);
+      // A per-model url in custom_models wins over the global endpoint, so one
+      // model (the conversational one) can run on the GPU box while embeddings,
+      // vision, guardian and sensitivity stay on the always-on hub. custom_models
+      // keys on the BARE id, which is what ollamaModel already is.
+      const perModelOllama = getCustomModelConfig(ollamaModel);
+      // Through the health check: a per-model url from custom_models bypasses
+      // getOllamaUrl entirely, so without this the failover would not apply to
+      // exactly the model that runs on the GPU box - the one that goes slow
+      // when a game has the card.
+      const ollamaUrl   = pickHealthyOllama(((perModelOllama && perModelOllama.url) || getOllamaUrl() || 'http://localhost:11434').replace(/\/$/, ''));
+      const _ollamaT0 = Date.now();
+      let resp;
+      try {
+        resp = await fetch(`${ollamaUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: ollamaModel,
+            messages: [{ role: 'user', content: prompt }],
+            stream: false,
+            // gemma4 and qwen3 think by default; the flag is what keeps local fast.
+            think: false,
+            // Pinned for the same reason as the streaming path above: it keeps
+            // the model from reloading onto the CPU during a low-VRAM window.
+            keep_alive: -1,
+            options: { num_predict: maxTokens },
+          }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        // Refused or aborted is the loudest 'this host is not usable right now'
+        // signal there is. Count it here too, otherwise the failover would wait
+        // on the background classifier to notice while every voice turn in the
+        // meantime kept paying the full timeout first.
+        reportOllamaLatency(ollamaUrl, Date.now() - _ollamaT0, false);
+        throw e;
+      }
+      if (!resp.ok) {
+        reportOllamaLatency(ollamaUrl, Date.now() - _ollamaT0, false);
+        throw new Error(`Ollama ${resp.status}: ${await resp.text().catch(() => '')}`);
+      }
       const data = await resp.json();
+      // Text only. Vision never reports here - moondream is legitimately slow
+      // and would mark the host degraded forever.
+      reportOllamaLatency(ollamaUrl, Date.now() - _ollamaT0, true);
       result = {
         text: data.message?.content || '',
         usage: { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 },

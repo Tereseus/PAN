@@ -1,5 +1,14 @@
-import { start } from '../server.js';
 import { killProcessOnPort } from '../platform.js';
+
+// NOTE: server.js is imported LAZILY, inside the one branch that needs it.
+//
+// It used to be a static `import { start } from '../server.js'` here. In prod
+// this file's job is to hand off to super-carrier.js, which forks the Carrier,
+// which spawns the Craft -- the super-carrier process itself never calls
+// start(). But a static import still EXECUTES server.js top-level, so the
+// super-carrier ran every Craft side effect in its own process, including the
+// event-loop heartbeat. Measured 2026-09-06: 349,074 CPU-seconds over four
+// days, one core pinned at 100% for a process that should idle near zero.
 
 export default async function cmdStart(args) {
   const detached = args.includes('-d') || args.includes('--detach');
@@ -83,6 +92,7 @@ export default async function cmdStart(args) {
   } else {
     if (isDev) console.log('[PAN] Dev mode — booting server directly (no Carrier)');
     if (noCarrier) console.log('[PAN] --no-carrier flag — booting server directly');
+    const { start } = await import('../server.js');
     await start();
   }
 }

@@ -10,11 +10,50 @@ import time
 import tempfile
 import wave
 
-SILENCE_THRESHOLD = 150    # RMS below this = silence (very low to avoid premature stops)
-SILENCE_DURATION = float(os.environ.get('WHISPER_SILENCE', '1.4'))  # Configurable via env
+# RMS below this counts as silence. A FIXED value cannot suit a room whose
+# noise floor moves: too high and quiet speech reads as silence (cutting you off
+# mid-sentence), too low and background noise keeps the recording alive. So the
+# first CAL_SECONDS of every run measure the actual room, and the threshold is
+# set from that. WHISPER_THRESHOLD pins it to a fixed number if you prefer.
+_FIXED_THRESHOLD = int(os.environ.get('WHISPER_THRESHOLD', '0')) or None
+CAL_SECONDS = float(os.environ.get('WHISPER_CALIBRATE', '0.5'))
+NOISE_MULT = float(os.environ.get('WHISPER_NOISE_MULT', '1.7'))
+MIN_THRESHOLD = 60
+SILENCE_THRESHOLD = _FIXED_THRESHOLD or 150      # provisional until calibrated
+
+# 1.4s was shorter than a normal pause for thought and ended sentences early.
+SILENCE_DURATION = float(os.environ.get('WHISPER_SILENCE', '2.5'))
+
+# shared VAD state: calibration samples and the live threshold
+_vad = {"thresh": SILENCE_THRESHOLD, "cal": [], "ready": _FIXED_THRESHOLD is not None}
 MAX_DURATION = 300         # 5 minutes max recording
 SAMPLE_RATE = 16000
 CHANNELS = 1
+
+
+def pick_mic():
+    """Which input device to record from.
+
+    The Windows default input on this laptop resolves to the built-in Intel
+    microphone array, which sits behind a closed lid and hears nothing - that
+    produced a silent recording and "No speech detected" every time. So prefer
+    the desk mic by name instead, and leave the SYSTEM default alone so Discord
+    and games are unaffected.
+
+    PAN_MIC overrides: either a device index, or a substring of its name.
+    Returns None to fall back to the system default if nothing matches.
+    """
+    want = os.environ.get('PAN_MIC', 'HyperX')
+    try:
+        import sounddevice as _sd
+        if want.isdigit():
+            return int(want)
+        for idx, dev in enumerate(_sd.query_devices()):
+            if dev.get('max_input_channels', 0) > 0 and want.lower() in dev.get('name', '').lower():
+                return idx
+    except Exception:
+        pass
+    return None
 
 def get_rms(data):
     """Calculate RMS (volume level) of audio chunk."""
@@ -90,7 +129,20 @@ def record_until_silence():
         frames.append(indata.copy())
         rms = get_rms(indata)
 
-        if rms > SILENCE_THRESHOLD:
+        # Spend the first CAL_SECONDS listening to the room, then set the
+        # threshold from the measured noise floor rather than a fixed guess.
+        if not _vad["ready"]:
+            _vad["cal"].append(rms)
+            if len(_vad["cal"]) * (len(indata) / SAMPLE_RATE) >= CAL_SECONDS:
+                import statistics
+                floor = statistics.median(_vad["cal"]) if _vad["cal"] else 0
+                _vad["thresh"] = max(MIN_THRESHOLD, int(floor * NOISE_MULT))
+                _vad["ready"] = True
+                print("[vad] noise floor %d -> threshold %d" % (floor, _vad["thresh"]),
+                      file=sys.stderr, flush=True)
+            return
+
+        if rms > _vad["thresh"]:
             has_speech = True
             silence_start = None
         else:
@@ -99,7 +151,7 @@ def record_until_silence():
 
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
                        dtype='int16', callback=callback,
-                       blocksize=chunk_size):
+                       blocksize=chunk_size, device=pick_mic()):
         # Wait for speech to start (max 10 seconds)
         while not has_speech:
             time.sleep(0.05)

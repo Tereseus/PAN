@@ -27,10 +27,48 @@ import struct
 # --- Model Loading ---
 print("[PAN Whisper] Loading Whisper model...", flush=True)
 t0 = time.time()
+
+# ctranslate2 loads cuBLAS/cuDNN by name at the first transcribe(), NOT at
+# import, so a missing DLL does not stop the server starting - it listens
+# happily and then throws "Library cublas64_12.dll is not found" on the first
+# request. pip puts those DLLs under site-packages/nvidia/*/bin, which is not
+# searched by default on Windows, so register them explicitly here.
+if sys.platform == "win32":
+    try:
+        import site, glob
+        _roots = list(site.getsitepackages())
+        _roots.append(os.path.dirname(os.path.dirname(os.__file__)) + os.sep + "Lib" + os.sep + "site-packages")
+        _found = []
+        for _base in _roots:
+            for _p in glob.glob(os.path.join(_base, "nvidia", "*", "bin")):
+                if os.path.isdir(_p) and _p not in _found:
+                    _found.append(_p)
+        for _p in _found:
+            os.add_dll_directory(_p)
+        # add_dll_directory only covers loaders using LOAD_LIBRARY_SEARCH_*.
+        # ctranslate2 resolves cublas by plain name, which searches PATH, so
+        # prepend there too or it still reports the DLL as missing.
+        if _found:
+            os.environ["PATH"] = os.pathsep.join(_found) + os.pathsep + os.environ.get("PATH", "")
+        print(f"[PAN Whisper] CUDA dll dirs: {len(_found)} registered", flush=True)
+    except Exception as _e:
+        print(f"[PAN Whisper] could not register CUDA dll dirs: {_e}", flush=True)
+
 from faster_whisper import WhisperModel
 MODEL_SIZE = os.environ.get('WHISPER_MODEL', 'base')
-model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
-print(f"[PAN Whisper] Whisper loaded in {time.time()-t0:.1f}s ({MODEL_SIZE})", flush=True)
+
+# Prove CUDA actually works now rather than at the first user request.
+try:
+    model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
+    import numpy as _np
+    model.transcribe(_np.zeros(16000, dtype=_np.float32), beam_size=1)
+    _device = "cuda"
+except Exception as _e:
+    print(f"[PAN Whisper] CUDA unavailable ({_e}) - falling back to CPU", flush=True)
+    model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+    _device = "cpu"
+
+print(f"[PAN Whisper] Whisper loaded in {time.time()-t0:.1f}s ({MODEL_SIZE} on {_device})", flush=True)
 
 print("[PAN Whisper] Loading speaker encoder...", flush=True)
 t0 = time.time()

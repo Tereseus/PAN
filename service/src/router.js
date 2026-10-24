@@ -2,6 +2,8 @@ import { spawn } from 'child_process';
 import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
 import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './claude.js';
 import { askAIWithFallback, askAIStreamWithFallback } from './llm-fallback.js';
+import { buildToolBlocks } from './tools.js';
+import { buildSelfBlock } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
@@ -13,7 +15,7 @@ import {
   setLastAction, getLastAction, intentToActionType,
   setDialogState, getDialogState,
 } from './smart-router.js';
-import { searchMemory } from './memory-search.js';
+import { searchMemory, searchMemoryByDate, parseWhen, isReadablePreview } from './memory-search.js';
 import { writeThought } from './thoughts.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
@@ -26,6 +28,62 @@ import { planFromResult as planProsody } from './tts-prosody.js';
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
 // (#NEW-1) and docs/CONVERSATION-AND-INTERJECTION.md.
 const RECALL_RE = /\b(remember|recall|forgot|what (did|was|were|happened)|when (did|was|were)|where (did|was|were)|who (did|was|were|said)|find.*about|look.*up|tell me about)\b/i;
+
+// Evidence that a past-question is about HIS OWN history rather than the world.
+//
+// RECALL_RE alone is far too broad to refuse on: it matches "what WAS the
+// capital of peru". Refusing a general-knowledge question would be a worse
+// bug than the one being fixed, so the deterministic refusal needs a second
+// signal - a named date, or a shared-history pronoun.
+//
+// Checked against the whole 65-case corpus: exactly ONE case is eligible
+// ("what did we decide about the pendant"), and that one has records, so it
+// synthesises normally. Every general-knowledge case passes through.
+const OWN_HISTORY_RE = /\b(we|i|i'm|im|my|our|us)\b/i;
+
+// Words too generic to prove a hit is about the thing he asked.
+const _RECALL_STOP = new Set(['about','after','again','against','anything','around','because',
+  'been','before','being','below','between','both','could','decide','decided','decision','did',
+  'does','doing','done','down','during','each','from','further','gave','give','going','have',
+  'having','here','how','into','just','know','like','made','make','module','more','most','much',
+  'must','need','needed','once','only','other','over','plan','project','said','same','say','see',
+  'should','since','some','stuff','such','system','take','talk','talked','than','that','their',
+  'them','then','there','these','they','thing','things','this','those','through','thought','time',
+  'under','until','using','very','want','wanted','were','what','when','where','which','while',
+  'with','work','worked','would','your']);
+
+// Did the search actually find the thing he named?
+//
+// The emptiness check was not enough. Asked about a "submarine project" that
+// has never existed, FTS still returned readable rows - real sentences about
+// other projects, matched on generic words like "project" and "decide" - so
+// memResults was NOT empty, the block was labelled "Relevant memories", and
+// the model produced a confident architecture plan from unrelated text.
+//
+// A hit only counts if a DISTINCTIVE word from his question appears in it.
+// 'submarine' appears nowhere -> nothing relevant was found. 'pitch' and
+// 'formations' do appear -> genuine recall, pass it through.
+// What is he asking ABOUT, as opposed to when. Reuses the recall stop-list and
+// drops time words, so "what did i do on autokratia today" yields ['autokratia']
+// and "what did i do today" yields [] (meaning: the whole day is the answer).
+const _TIME_WORDS = new Set(['today', 'yesterday', 'tonight', 'morning', 'afternoon',
+  'evening', 'night', 'week', 'month', 'year', 'days', 'last', 'ago',
+  'january', 'february', 'march', 'april', 'june', 'july', 'august',
+  'september', 'october', 'november', 'december',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
+
+function _subjectTerms(text) {
+  const words = String(text || '').toLowerCase().match(/[a-z]{4,}/g) || [];
+  return [...new Set(words)].filter((w) => !_RECALL_STOP.has(w) && !_TIME_WORDS.has(w));
+}
+
+function _recallIsRelevant(text, hits) {
+  const terms = String(text || "").toLowerCase().match(/[a-z]{4,}/g) || [];
+  const distinctive = [...new Set(terms)].filter((w) => !_RECALL_STOP.has(w));
+  if (distinctive.length === 0) return true;   // nothing specific asked; do not block
+  const hay = hits.map((h) => String(h.preview || "")).join(" ").toLowerCase();
+  return distinctive.some((w) => hay.includes(w));
+}
 
 // Build the situation block from the live intuition snapshot. Returns '' when
 // no snapshot is available (boot-up, isolated tests). See task #745 (#NEW-2).
@@ -60,7 +118,23 @@ function buildConvStateBlock(orgId) {
     const lines = [];
     if (cs.topic)             lines.push(`- Topic: ${cs.topic}`);
     if (cs.phase)             lines.push(`- Phase: ${cs.phase}`);
-    if (cs.pending_question)  lines.push(`- Pending question: "${cs.pending_question}"`);
+    // pending_question intentionally NOT injected into the prompt.
+    //
+    // WHY (2026-09-11): the distiller is told to set this only when a question
+    // is "not yet answered", and it does not reliably clear it once answered.
+    // Because this block is rebuilt on EVERY turn, a stale entry made the model
+    // re-answer an old question forever. Reproduced from two fresh devices:
+    //   "name three countries in south america"
+    //     -> "Two plus two is four. Want me to tackle a harder one?"
+    //   "how tall is the eiffel tower"
+    //     -> "Two plus two is four. And the Eiffel Tower is about 330 meters tall."
+    // It presents to the user as "it did not understand my request".
+    //
+    // The genuinely useful case - PAN asked the user something and wants the
+    // next utterance read as the answer - is already covered by open_question
+    // in the dialog-state block, which HAS clearing logic (see the
+    // open_question handling further down). This one was the unreliable
+    // duplicate, so it is dropped rather than patched.
     if (cs.user_pattern)      lines.push(`- User pattern: ${cs.user_pattern}`);
     if (typeof cs.likely_turn_complete === 'boolean')
                               lines.push(`- Last utterance looked ${cs.likely_turn_complete ? 'complete' : 'mid-sentence'}`);
@@ -99,17 +173,31 @@ function buildRecentMindBlock() {
 // full-table scan on a multi-million-row events table will time out the
 // router (~30s hang). With the (event_type, created_at) filter the planner
 // hits idx_events_created and returns in <50ms.
-function buildDialogHistoryBlock(sessionId) {
+// `voiceOnly` exists because UserPromptSubmit / AssistantMessage / Stop are
+// CLAUDE CODE hook events. Every message typed to Claude, and every reply
+// Claude writes, lands in PAN's events table - so the voice prompt was being
+// fed a running transcript of a completely different conversation, in markdown,
+// and PAN concluded it should answer from THAT. Measured: 2877 of 10974 prompt
+// characters, containing lines about knobs, silo textures and this very fix.
+// It is also why voice answers drift onto whatever Claude was last doing.
+function buildDialogHistoryBlock(sessionId, voiceOnly = false) {
   try {
+    // Spoken turns only on the voice path. DashboardChat stays in because the
+    // dashboard and the phone are meant to share one thread; the Claude Code
+    // hook events are what has to go.
+    const types = voiceOnly
+      ? `'DashboardChat','MobileSend','VoiceCommand','RouterCommand'`
+      : `'UserPromptSubmit','Stop','AssistantMessage','DashboardChat','MobileSend','VoiceCommand','RouterCommand'`;
+    const limit = voiceOnly ? 8 : 15;
     const sql = sessionId
       ? `SELECT event_type, data, created_at FROM events
          WHERE session_id = :sid
-           AND event_type IN ('UserPromptSubmit','Stop','AssistantMessage','DashboardChat','MobileSend','VoiceCommand','RouterCommand')
-         ORDER BY id DESC LIMIT 15`
+           AND event_type IN (${types})
+         ORDER BY id DESC LIMIT ${limit}`
       : `SELECT event_type, data, created_at FROM events
          WHERE created_at > datetime('now','-2 hours','localtime')
-           AND event_type IN ('UserPromptSubmit','Stop','AssistantMessage','DashboardChat','MobileSend','VoiceCommand','RouterCommand')
-         ORDER BY id DESC LIMIT 15`;
+           AND event_type IN (${types})
+         ORDER BY id DESC LIMIT ${limit}`;
     const rows = all(sql, sessionId ? { ':sid': sessionId } : {});
     if (!rows || rows.length === 0) return '';
     const lines = rows.slice().reverse().map(r => {
@@ -121,9 +209,9 @@ function buildDialogHistoryBlock(sessionId) {
       if (!txt) return null;
       const who = (r.event_type === 'UserPromptSubmit' || r.event_type === 'DashboardChat' || r.event_type === 'MobileSend' || r.event_type === 'VoiceCommand' || r.event_type === 'RouterCommand') ? 'commander' : 'PAN';
       const ts = (r.created_at || '').slice(11, 16); // HH:MM
-      return `- ${ts} ${who}: "${String(txt).replace(/\s+/g,' ').slice(0, 200)}"`;
+      return `- ${ts} ${who}: "${String(txt).replace(/\s+/g,' ').slice(0, voiceOnly ? 100 : 200)}"`;
     }).filter(Boolean);
-    return lines.length ? `\nRecent dialog (last 15 turns):\n${lines.join('\n')}\n` : '';
+    return lines.length ? `\nRecent dialog (last ${limit} turns):\n${lines.join('\n')}\n` : '';
   } catch { return ''; }
 }
 
@@ -137,7 +225,18 @@ function buildActiveTasksBlock() {
        ORDER BY priority DESC, id DESC LIMIT 5`
     );
     if (!rows || rows.length === 0) return '';
-    const lines = rows.map(r => `- [${r.status}/p${r.priority || 0}] ${String(r.title || '').slice(0, 120)}`);
+    // De-duplicate by title. Auto-filed bugs repeat verbatim - the live prompt
+    // carried "Vision: apps markup=ok but vision says blank (auto-filed)" four
+    // times, which is three wasted lines and three chances to distract.
+    const seen = new Set();
+    const lines = [];
+    for (const r of rows) {
+      const title = String(r.title || '').slice(0, 100);
+      if (!title || seen.has(title)) continue;
+      seen.add(title);
+      lines.push(`- [${r.status}/p${r.priority || 0}] ${title}`);
+    }
+    if (!lines.length) return '';
     return `\nActive tasks:\n${lines.join('\n')}\n`;
   } catch { return ''; }
 }
@@ -258,13 +357,49 @@ function serverClassify(text) {
   return null;
 }
 
+// Is this utterance plainly aimed at PAN?
+//
+// WHY (2026-09-11): the classifier prompt says "NEVER ambient: questions
+// (what/when/where/how/why/who/can you), commands (play/open/set/remind/add)"
+// and the model does not reliably obey it. "hey what is the weather like
+// tomorrow" came back intent=ambient and the phone silently dropped it, so the
+// user got no answer and no error - the worst possible failure.
+// quickAmbientCheck was innocent; all five of its rules return false for it.
+//
+// Whether something is a question or an imperative is cheap to decide, so
+// decide it rather than trusting the model. Used ONLY to veto a wrong
+// 'ambient', never to force one, so the model keeps its freedom elsewhere.
+function looksDirectedAtPan(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  if (t.endsWith('?')) return true;
+  // Strip a leading greeting and/or wake word: "hey pan, what is..." -> "what is..."
+  const body = t
+    .replace(/^(?:hey|hi|hello|ok|okay)[,\s]+/, '')
+    .replace(/^(?:pan|pam|ben|pen)[,\s]+/, '');
+  const opener = /^(?:what|when|where|why|who|whose|which|how|can|could|would|should|will|is|are|am|do|does|did|tell|show|give|play|open|set|remind|add|search|find|send|call|start|stop|turn|make|read|write|check|look)\b/;
+  return opener.test(body);
+}
+
 // Fast ambient pre-filter — detects speech clearly not directed at PAN without LLM call
 // Only fires for voice/mic input (dashboard input is always a command)
 function quickAmbientCheck(text) {
   const t = text.trim();
   // 1. Addressing someone else by name: "hey John", "hi Sarah", "hello guys"
-  // Exclude question words — "hey what/how/when/where/why/who/can/could/would/should/will/do/does/is/are/so/the/a"
-  if (/^(?:hey|hi|hello)\s+(?!pan\b|pam\b|what\b|how\b|when\b|where\b|why\b|who\b|can\b|could\b|would\b|should\b|will\b|do\b|does\b|is\b|are\b|so\b|the\b)[a-z]{2,}/i.test(t)) return true;
+  //
+  // The exclusion list is the whole rule. Anything this catches is muted
+  // WITHOUT ever reaching the classifier, so a word wrongly treated as a name
+  // silently swallows the turn - "hey listen do you think this holds up" was
+  // dropped on the floor, and so were "hey so", "hey wait", "hey quick".
+  // Found by ambient-trap-hey-opener in the corpus.
+  //
+  // Everything here is a word that can FOLLOW "hey" while he is talking to PAN:
+  // question words, discourse markers, pronouns, and the familiar forms he uses
+  // toward PAN as readily as toward a person. A pre-filter earns its place only
+  // by being nearly always right; when in doubt it must defer to the classifier,
+  // which now has a calibrated number for exactly this.
+  const NOT_A_NAME = '(?:pan|pam|what|how|when|where|why|who|which|can|could|would|should|will|do|does|did|is|are|am|was|have|has|had|so|the|a|an|listen|look|look-see|wait|hold|hang|quick|quickly|sorry|just|um|uh|erm|er|ok|okay|alright|right|yeah|yes|no|now|again|also|about|by|for|one|two|real|really|mate|man|dude|buddy|love|there|here|this|that|these|those|it|its|i|im|ive|id|ill|we|weve|you|your|youre|my|me|us|they|them|he|she|his|her|tell|show|give|play|open|set|remind|add|search|find|send|call|start|stop|turn|make|read|write|check|help|got|get|need|want|think|know|remember)';
+  if (new RegExp('^(?:hey|hi|hello)\\s+(?!' + NOT_A_NAME + '\\b)[a-z]{2,}', 'i').test(t)) return true;
   // 2. Common person nouns as direct address at start
   if (/^(?:mom|dad|honey|babe|sis|bro|buddy|guys|everyone|y'all|folks)\b/i.test(t)) return true;
   // 3. "I'll be there / meet you / call you back" — talking to someone else
@@ -390,7 +525,9 @@ async function handleUnified(text, context) {
     let memResults = [];
     try {
       memResults = await Promise.race([
-        searchMemory(text, { limit: 5, caller: 'router' }),
+        // vec0 scan is 4-6s and SYNCHRONOUS; see skipVector in memory-search.js.
+        // The race below cannot bound it - it blocks its own timer.
+        searchMemory(text, { limit: 5, caller: 'router', skipVector: true }),
         new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 2.5s')), 2500)),
       ]);
     } catch (e) {
@@ -538,9 +675,13 @@ async function handleUnified(text, context) {
     // #996: route through fallback chain (cerebras → claude → ollama by default).
     // Honors `ai_fallback_enabled=false` for users who want single-backend semantics.
     const _fallbackMeta = {};
+    let weatherBlock = '';
+    try { weatherBlock = await buildToolBlocks(text, sensors); } catch {}
+    let selfBlock = '';
+    try { selfBlock = buildSelfBlock(); } catch {}
     raw = await askAIWithFallback(
       `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${dialogHistoryBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${memoryFactsBlock}${episodicHitsBlock}${historyBlock}${skillBlock}${sensorBlock}${hintBlock}
+${memoryFactsBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${dialogHistoryBlock}${historyBlock}${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${episodicHitsBlock}${skillBlock}${sensorBlock}${weatherBlock}${selfBlock}${hintBlock}
 
 === CURRENT TURN ===
 ${isDash ? `The commander just said: "${safeText}"` : `Mic heard (may have STT typos/garbling — infer the most likely intent): "${safeText}"`}
@@ -1262,6 +1403,23 @@ async function processUnifiedResult(action, text, context) {
       if (action.action === 'recall' || action.action === 'list') {
         // Use FTS5 + vector searchMemory against events (not memory_items LIKE — that was always empty)
         const searchTerm = action.content || text;
+        // VECTORS STAY ON for an EXPLICIT recall.
+        //
+        // skipVector was applied to every caller this morning to stop the 4-6s
+        // synchronous vec0 scan freezing the hub. Correct for the per-turn
+        // pre-gate, wrong here, and it cost the thing recall exists for.
+        //
+        // Measured on the same three queries: FTS-only returns raw hook JSON
+        // ({"session_id":...,"transcript_path":...}) because that scaffolding is
+        // in every event and bm25 ranks it; the vector half returns what he
+        // actually said ("Pike should be three rows finding, not two"). Handed
+        // JSON blobs as context, the model invented answers instead of recalling
+        // - which is exactly what "what did I work on" was doing.
+        //
+        // This path only runs when he EXPLICITLY asked to remember something, so
+        // it is rare and worth the seconds. The every-turn pre-gate stays
+        // FTS-only. The real fix is moving the vec scan off the main thread;
+        // until then this is the honest split.
         const hits = await searchMemory(searchTerm, { limit: 10, caller: 'router-recall' });
 
         if (hits.length === 0) return { intent: 'memory', response: `I searched conversation history for "${searchTerm}" but found nothing. We may not have discussed that yet.` };
@@ -1595,6 +1753,116 @@ User said: "${text}"`,
 // Extracts the "response" field from the streaming JSON as tokens arrive,
 // so the phone can start speaking word-by-word before the full reply is ready.
 
+// ---------------------------------------------------------------------------
+// ADDRESSED CONFIDENCE
+//
+// "Is he talking to me?" used to be a boolean, so a genuine 50/50 got rounded
+// to one of the two bad answers: PAN talked over his phone call, or sat silent
+// through a real question. The model now emits `addressed` 0..1 and the middle
+// of that range gets its own behaviour - hold the reply, let the next beat
+// decide - instead of being forced to yes or no.
+//
+// FIELD ORDER IS LOAD-BEARING. JSON is generated left to right, so `addressed`
+// sits before `response` in every template: by the time the first word of the
+// reply exists, the number that decides whether to speak it already does. Move
+// it after `response` and it arrives too late to gate anything.
+// READ THIS BEFORE TRUSTING `addressed`.
+//
+// The first measurement said separation 0.74 and looked excellent. It was an
+// artifact of a TWO-case negative class. Widening the corpus to 20 pieces of
+// overheard speech (10 of them held out of the prompt entirely) dropped it to
+// ~0.15 on held-out cases: gemma4:e2b mutes only 1-3 of 10 lines that were
+// plainly aimed at somebody else.
+//
+// Adding worked examples fixed the cases that BECAME examples and did not
+// generalise to the rest, which is why evals/conversation.json now marks
+// held-out cases and reports them separately. Quote those numbers, not the
+// headline ones.
+//
+// A control run (scratchpad solo_gate.mjs) put the same question to the same
+// model in a dedicated one-line prompt. It scored the clear physical-action
+// cases at exactly 0.0 and collapsed everything else - including cases that
+// WERE for PAN - to exactly 0.5. The model is not producing a probability. It
+// is producing three buckets: no / do not know / yes. So the honest reading of
+// `addressed` is a coarse verdict, and only its bottom bucket is trustworthy.
+//
+// The thresholds below are therefore chosen for SAFETY rather than accuracy:
+// 0.50 to speak keeps 44/45 genuinely-addressed turns answered immediately,
+// which is the failure that actually matters. 0.15 to mute is deliberately
+// low - it only silences the bottom bucket. The consequence is that PAN still
+// answers roughly half of overheard speech, and fixing that needs a different
+// mechanism, not a different number here.
+//
+// The middle band still earns its keep on a collision no threshold resolves:
+// "morning" (to PAN) and "yeah mate i'll call you back" (to a caller) BOTH
+// score 0.2. Held, they separate themselves - he stops talking after
+// "morning", and he carries on talking to the caller.
+const ADDRESSED_SPEAK = 0.50;    // >= this: answer immediately
+const ADDRESSED_HOLD = 0.15;     // >= this: hold it, speak only if he stops talking
+const ADDRESSED_HOLD_MS = 1200;  // how long the phone sits on a held reply
+
+// Index just past the end of the first complete top-level JSON object, or -1.
+//
+// Tracks string state, so a brace inside the reply text does not count. This
+// exists so the stream can stop the moment the object closes: breaking at the
+// end of the "response" string truncated the JSON and broke every parse, but
+// NOT breaking at all left the turn running to the model's own stop, holding
+// the local model's slot open while voice turns queued behind it.
+// Nothing structural from the JSON envelope may reach the speaker.
+//
+// Replies were occasionally spoken as "Paris. Simple enough.}{" - the tail of
+// the envelope leaking into the text. It is intermittent (65 corpus turns did
+// not reproduce it), so the BRACE-IN-REPLY diagnostic below stays in to catch
+// the cause. This is the separate question of what the speaker is allowed to
+// say: a voice reply has no legitimate use for a brace, so one arriving here
+// is corruption by definition and is dropped rather than pronounced.
+//
+// Deliberately narrow - only { and }. Quotes and apostrophes are ordinary in
+// speech ("it's"), so they are left alone.
+const UNSPEAKABLE = /[{}]/g;
+const speakable = (s) => String(s).replace(UNSPEAKABLE, "");
+
+function topLevelJsonEnd(buf) {
+  const start = buf.indexOf('{');
+  if (start < 0) return -1;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < buf.length; i++) {
+    const ch = buf[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return i + 1; }
+  }
+  return -1;
+}
+
+function readAddressGate(buf) {
+  const im = buf.match(/"intent"\s*:\s*"([a-z_]+)"/);
+  if (!im) return null;                       // nothing decided yet
+  // The trailing [,}] matters: without it a half-streamed "addressed":0 reads
+  // as zero and mutes a reply that was about to become 0.85.
+  const am = buf.match(/"addressed"\s*:\s*([0-9]*\.?[0-9]+)\s*[,}]/);
+  if (am) {
+    const a = Math.max(0, Math.min(1, Number(am[1])));
+    if (a >= ADDRESSED_SPEAK) return { gate: 'open', addressed: a };
+    if (a >= ADDRESSED_HOLD) return { gate: 'hold', addressed: a };
+    return { gate: 'mute', addressed: a };
+  }
+  // No number yet - wait for it, but only until the reply itself starts. A
+  // model that reached "response" without emitting `addressed` is not
+  // calibrating at all, and holding the turn open for a field that is never
+  // coming would mute every reply. Use the old boolean, and record that it did.
+  if (/"response"\s*:\s*"/.test(buf)) {
+    return { gate: im[1] === 'ambient' ? 'mute' : 'open', addressed: null };
+  }
+  return null;
+}
+
 function extractResponseField(buf) {
   // Find "response":"..." in a partially-streamed JSON buffer.
   // Returns { text: string, done: boolean }
@@ -1693,27 +1961,110 @@ export async function* routeStream(text, context = {}) {
     // token, past the phone's 30s stream cap (empty body, utterance re-sent).
     // Mirror handleUnified's guard: race a 2.5s timeout and degrade to
     // "answer without memory" instead of hanging.
+    // A DATE QUESTION IS NOT A RELEVANCE QUESTION.
+    //
+    // "what did I work on yesterday" shares no word with yesterday's events and
+    // no vector encodes a calendar day, so search returned unrelated rows — and
+    // the model, handed unrelated rows labelled "Relevant memories", described
+    // the wrong day with complete confidence. When the question names a time,
+    // read that day's actual record instead of searching for it.
+    const when = parseWhen(text);
     let memResults = [];
+    let subjectTerms = [];
     try {
-      memResults = await Promise.race([
-        searchMemory(text, { limit: 5, caller: 'router-stream' }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 2.5s')), 2500)),
-      ]);
+      if (when) {
+        // Small on purpose. At limit 20 with 280-char previews this block was
+        // ~5.6k chars, the prompt hit 17,942 (~4,486 tokens), and gemma4:e2b
+        // stopped emitting JSON - it replied in prose, extractResponseField found
+        // no response field, and the turn went SILENT. The recall was correct; the
+        // envelope collapsed under the weight.
+        // Scope to the day AND to whatever he named in it. If the subject
+        // turns up nothing, do NOT silently widen to the whole day - that
+        // would describe some other project's work as if it were his answer.
+        subjectTerms = _subjectTerms(text);
+        memResults = searchMemoryByDate({ from: when.from, to: when.to, limit: 8, terms: subjectTerms });
+        console.log(`[routeStream] recall scoped to ${when.label}${subjectTerms.length ? ' + ' + JSON.stringify(subjectTerms) : ''} — ${memResults.length} readable events`);
+      } else {
+        memResults = await Promise.race([
+          // FTS-only here on purpose: this fires on EVERY turn matching
+          // RECALL_RE, and the vec0 scan is 4-6s and synchronous. The explicit
+          // recall branch below still uses vectors.
+          searchMemory(text, { limit: 5, caller: 'router-stream', skipVector: true }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 2.5s')), 2500)),
+        ]);
+      }
     } catch (e) {
       memResults = [];
-      console.warn(`[routeStream] recall search bailed (${e.message}) — degraded embeddings, answering without memory`);
+      console.warn(`[routeStream] recall search bailed (${e.message}) — answering without memory`);
     }
-    memoryContext = memResults.length > 0
-      ? `\nRelevant memories:\n${memResults.map(r => `- ${r.preview}`).join('\n')}`
-      : '';
+
+    // Drop the hook envelope — {"session_id":...,"transcript_path":...} is in
+    // every hook row, so bm25 ranks it highly and it dominated the hits. It is
+    // not history, and handing it over as history is what the model invents from.
+    memResults = (memResults || []).filter((r) => isReadablePreview(r.preview));
+
+    // Relevance, not just readability. A date query is already scoped to the
+    // right day, so it is exempt - the whole day IS the answer there.
+    if (!when && memResults.length && !_recallIsRelevant(text, memResults)) {
+      console.log(`[routeStream] recall hits matched nothing distinctive in ${JSON.stringify(text.slice(0, 50))} — treating as no record`);
+      memResults = [];
+    }
+
+    // AN EMPTY BLOCK IS AN INVITATION TO GUESS.
+    //
+    // memoryContext used to be left as '' when nothing was found, so a question
+    // about his own past reached the model with no memory and no instruction —
+    // and it answered anyway. Asked what was decided about a project that has
+    // never existed, it produced a confident architecture plan. Say the search
+    // came back empty, in the prompt, where the model cannot miss it.
+    if (memResults.length > 0) {
+      const head = when ? `\nHis own notes from ${when.label}:` : `\nRelevant memories:`;
+      memoryContext = `${head}\n${memResults.map(r => `- ${(r.event && r.event.created_at ? r.event.created_at.slice(11, 16) + ' ' : '')}${String(r.preview).replace(/[\s]+/g, ' ').slice(0, 150)}`).join('\n')}`;
+    } else if (when || OWN_HISTORY_RE.test(text)) {
+      // ANSWER THIS IN CODE. Do not ask the model.
+      //
+      // A prompt instruction is not enough. With an explicit "MEMORY SEARCH
+      // FOUND NOTHING, say so, do not invent" block in front of it, gemma4:e2b
+      // was still asked "what did we decide about the submarine project" - a
+      // project that has never existed - and produced a confident architecture
+      // plan. Same lesson as the ambient gate and the veto classifier: on this
+      // model rules do nothing and only worked examples land, and examples only
+      // ever cover the shapes someone thought to write down.
+      //
+      // So when he asks about his OWN past and the search came back with
+      // nothing readable, the honest answer is produced here and the model is
+      // never consulted. It cannot confabulate about a turn it does not see.
+      // Bounded deliberately: needs a past-question AND a date or a
+      // shared-history pronoun, so world questions never reach this.
+      // Name the subject when there was one, or "nothing recorded from today"
+      // reads as though the whole day were blank.
+      const nothing = when
+        ? (subjectTerms.length
+            ? `I don't have anything recorded about ${subjectTerms[0]} from ${when.label}.`
+            : `I don't have anything recorded from ${when.label}.`)
+        : `I don't have anything saved about that.`;
+      console.log(`[routeStream] no readable memory for a past-question — answering honestly without the model: ${JSON.stringify(text.slice(0, 60))}`);
+      yield { type: 'chunk', text: speakable(nothing) };
+      yield { type: 'done', result: withProsody({ intent: 'memory', action: 'recall', response: nothing, addressed: 1, importance: 0.4 }) };
+      return;
+    } else {
+      const what = when ? `from ${when.label}` : `about that`;
+      memoryContext = `\nMEMORY SEARCH FOUND NOTHING ${what.toUpperCase()}.`
+        + `\nYou have no record of it. Say so plainly and ask him which thing he means.`
+        + `\nDo NOT answer from general knowledge, and do NOT explain what the words might mean —`
+        + ` he is asking about HIS OWN work, so anything you invent is wrong.`;
+    }
   }
 
   // #NEW-2 + #NEW-3 + #NEW-conv-state + #986 batch 1: mirror handleUnified —
   // snapshot, recent mind, conv-state, plus the deeper context blocks.
+  // recentMind is PAN's own interior monologue ('Holding - no reason to
+  // interrupt'). It is useful for deciding whether to speak UNPROMPTED; it is
+  // noise when answering a direct question, and it was 404 chars of it.
   const situationBlock = buildSituationBlock(context.org_id);
-  const recentMindBlock = buildRecentMindBlock();
+  const recentMindBlock = '';
   const convStateBlock  = buildConvStateBlock(context.org_id);
-  const dialogHistoryBlock     = buildDialogHistoryBlock(context.session_id || null);
+  const dialogHistoryBlock     = buildDialogHistoryBlock(context.session_id || null, true);
   const dialogStateBlock       = buildDialogStateBlock(context.session_id || null);
   const activeTasksBlock       = buildActiveTasksBlock();
   const recentTopicsBlock      = buildRecentTopicsBlock();
@@ -1744,29 +2095,195 @@ export async function* routeStream(text, context = {}) {
   const safeText = anonymizeForAI(text);
   const isDash = context.source === 'dashboard';
 
-  const prompt = `You are PAN, a personal AI. Be conversational, short (1-2 sentences, TTS). Return only JSON.${personalityBlock}
-${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${dialogHistoryBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${memoryFactsBlock}${episodicHitsBlock}${historyBlock}${sensorBlock}${hintBlock}
-${isDash ? `User typed: "${safeText}"` : `Mic heard: "${safeText}"`}
+  // Real forecast data when the question is about weather. Returns an empty
+  // string for anything else, when GPS is unknown, or if the API is slow - it
+  // has a hard 3s timeout because this runs inline on a voice turn.
+  let weatherBlock = '';
+  try { weatherBlock = await buildToolBlocks(text, sensors); } catch {}
+  // selfBlock is 1030 chars describing which model is running, what is
+  // local, what leaves the house. It is the right answer to "how do you
+  // work" / "is this private" and dead weight on every other turn, which
+  // is most of them. Gate it on the question instead of paying for it
+  // always - it is a live read, so nothing goes stale by being skipped.
+  let selfBlock = '';
+  try {
+    const _self = buildSelfBlock();
+    if (/\b(model|models|local|locally|offline|cloud|private|privacy|secure|encrypt|how do you work|how you work|what are you running|your config|leave the house|sent anywhere|listening)\b/i.test(String(text || ''))) {
+      selfBlock = _self;
+    } else {
+      // One line, always. Dropping the block entirely made PAN invent its own
+      // privacy state - asked how it was doing it said "still running on local
+      // iron instead of melting in the cloud" while it was on Gemini. That is
+      // the one thing it must never guess about, so the model line stays for
+      // ~120 chars and the other ~900 only load when actually asked.
+      const _line = (_self.split('\n').find(l => /conversation model/i.test(l)) || '').trim();
+      if (_line) selfBlock = `\n${_line}\nUse that line ONLY if he asks where you run or whether something is private. It is not your identity - never introduce yourself as a model or a model name, and never volunteer it.\n`;
+    }
+  } catch {}
 
-Every response must include "speech_act" field.
-Every response should also include "importance" (0..1, default 0.5):
-  • 0.0–0.3 = casual ack, ambient nudge, small-talk        ("ok", "got it", "still here")
-  • 0.3–0.7 = normal answer, command confirmation            (most replies — DEFAULT)
-  • 0.7–1.0 = critical info, emergency, time-sensitive       ("call 911 now", "deploy failed", "battery 2%")
-This drives TTS prosody — low importance is spoken slower/quieter, high is brisk/bright.
+  // "short (1-2 sentences)" was an instruction, and the model was obeying it.
+  // That is where "Understood." / "Fine." / "Got it." came from - not a small
+  // model failing to converse, but being told twice to be terse (here and in
+  // the persona). Brevity is right for an acknowledgement and wrong for
+  // everything else, so make length follow the moment instead of fixing it.
+  // This block is constant and sits at the FRONT, so it is a cache hit and
+  // costs effectively nothing per turn.
+  const prompt = `You are PAN, talking with him out loud. This is a conversation, not a lookup service.
+
+Length follows the moment. A word is fine when a word is enough. Three or four sentences when he
+asks something real, or when you disagree, or when the interesting part needs saying. Never pad,
+and never answer a real question with one flat word.
+
+React to what he actually said rather than restating it. Carry the thread from the turn before.
+Ask him something back when you genuinely want to know - that is what makes it a conversation
+rather than a series of lookups. Have opinions and say them.
+
+MOST OF WHAT HE SAYS IS NOT A COMMAND. When he states an opinion, thinks out loud, or pushes
+back at you, he is handing you something to engage with - agree, disagree, add the thing he has
+not considered, or ask what he means. "Understood." and "Got it." are what you say to an
+instruction, and saying them to an idea ends the conversation. If he says you do not know
+something, say what you do know or admit the gap in a way that gives him somewhere to go next.
+
+ALWAYS TALK BACK. A bare acknowledgement is never a complete reply on its own - "Understood.",
+"Got it.", "Fine.", "Noted." and "Okay." may only ever be the FIRST few words of something
+that then says an actual thing. Answer from what you already know rather than reaching for a
+lookup; you know a great deal, and he would rather have your view than an article.
+
+AMBIENT MEANS OVERHEARD, NOTHING ELSE. The microphone is always open, so ambient exists for
+speech aimed at somebody else in the room - a phone call, someone else's name, a conversation
+you are not part of. If there is any chance he is talking to YOU, answer him. A question, a
+statement of opinion, a complaint about you, or a fragment that follows on from your last reply
+is never ambient. When in doubt, speak.
+
+Anything he says ABOUT HIMSELF is addressed to you - that he is tired, stuck, pleased, that he
+has been at this since six. Those have no question in them and they are the ones that matter
+most. Saying nothing to "i'm exhausted" is the worst thing you can do.
+
+NEVER TALK ABOUT YOUR OWN CONTEXT. Do not say "the provided conversation history", "based on
+the context above", or that something "does not contain information". He cannot see any of
+that and it is not what a person sounds like. If you do not know something, just say you do not
+know it, in your own voice, and say what you would need to find out.
+
+WORKED EXAMPLES. These are the failures that actually happen, so copy the shape of the good ones.
+
+He says: "i'm exhausted i've been at this since six in the morning"
+  Bad:  "Understood."
+  Good: "Since six? No wonder. Are you stopping there or pushing through?"
+
+He says: "i don't think anything should be about ego"
+  Bad:  "Got it. Ego out."
+  Good: "Agreed, though ego is usually what makes someone finish the thing in the first place."
+
+He says: "i guess you don't know"
+  Bad:  "Understood."
+  Good: "I know plenty. I just don't know which part you're after."
+
+He says: "what did we decide about the pendant" and you cannot find it
+  Bad:  "The provided conversation history does not contain that information."
+  Good: "I can't find it. Was that the XIAO board, or the enclosure?"
+
+NEVER EXPLAIN HIS OWN WORK BACK TO HIM AS A GUESS. When he asks about
+something HE did and no memory block above covers it, you do not know. Saying
+what the words might generally mean is not an answer, it is a guess wearing
+the costume of one, and about his own project it is always wrong.
+
+He says: "what was the problem with the troll spacing"
+  Bad:  "Troll spacing is usually an issue with character width or alignment
+        in the layout." (invented — that is a text-rendering answer to a
+        question about units in his game)
+  Good: "I don't have anything on that. Which troll — the formation spacing,
+        or the sprite sheet?"
+
+He says: "yeah mate i'll call you back in ten minutes"
+  That is him on the phone to somebody else. Say nothing at all. "When in doubt, speak" does
+  not mean answer a conversation you are not part of - it means do not hide behind ambient when
+  he is plainly talking to you.
+
+OVERHEARD SPEECH. A rule did not work here; these examples did. He is not always
+the one talking to you, and answering the room is worse than missing a turn.
+YOU HAVE NO BODY - you cannot open a door, carry a thing, hand anything over,
+eat, or go anywhere. A request for a physical action in the room was never yours
+to take, however much it sounds like an instruction.
+
+He says: "mike can you grab the door"  -> addressed 0.1, say nothing.
+  Somebody is named and asked to do something physical. "can you" is not proof it is you.
+He says: "yeah a medium one please no sugar"  -> addressed 0.1, say nothing.
+  He is ordering from a person. It is not a music request.
+He says: "alright love see you in a bit bye"  -> addressed 0.1, say nothing.
+  That is the end of a call. Do not say goodbye back.
+He says: "who's a good boy then yes you are"  -> addressed 0.1, say nothing.
+  A question in shape only, and it is aimed at a dog.
+He says: "no she's upstairs i think"  -> addressed 0.1, say nothing.
+  He is answering someone else, not asking you.
+He says: "and that's the third goal of the match"  -> addressed 0.1, say nothing.
+  That is a television. Do not ask him which match.
+
+Do not over-correct into silence - these ARE for you, and each wears a feature
+the ones above have:
+He says: "cheers mate that's exactly what i needed"  -> addressed 0.9, answer him.
+  "mate" is how he talks. He is thanking YOU.
+He says: "sarah reckons the pendant idea is daft what do you think"  -> addressed 0.9.
+  Another person is named, and the question is still put to you.
+
+Return only JSON.${personalityBlock}
+${memoryFactsBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${dialogHistoryBlock}${historyBlock}${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${episodicHitsBlock}${sensorBlock}${weatherBlock}${selfBlock}${hintBlock}
+Always include "speech_act", and "importance" 0..1 (0.1 ambient, 0.5 normal,
+0.9 urgent) - it sets how the reply is spoken.
+
+Always include "addressed" 0..1: how sure you are he was speaking TO YOU, and
+not to another person in the room or on the phone. Give a probability, not a
+verdict. Use the middle of the range when you genuinely cannot tell - saying
+you are unsure is useful, and a confident guess is not. Calibrate it: when you
+say 0.6 you should be right about six times in ten, not nine.
+  1.0  he said your name, or it follows on from your own last reply
+  0.8  a question, or something about himself, with nobody else mentioned
+  0.5  genuinely ambiguous - a bare fragment, a name you do not recognise
+  0.2  he is plainly mid-sentence with somebody else
+  0.0  another person is named and spoken to
+Only write "[AMBIENT]" as the response when "addressed" is 0.15 or below.
+Anywhere above that, write the real reply you would give if he were talking
+to you, even when you are unsure he was. Whether it actually gets spoken is
+decided after you, and a reply you did not write cannot be spoken at all.
+Put "addressed" where the formats below put it, immediately after "intent" and
+before "response". It is read while you are still writing the reply.
+
 Response formats:
-{"intent":"query","speech_act":"query","response":"answer","importance":0.5}
-{"intent":"music","speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg","importance":0.4}
-{"intent":"memory","speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg","importance":0.4}
-{"intent":"ambient","response":"[AMBIENT]","importance":0.1}
+{"intent":"query","addressed":0.9,"speech_act":"query","response":"answer","importance":0.5}
+{"intent":"music","addressed":0.9,"speech_act":"command","query":"song","service":"spotify|youtube|any","response":"msg","importance":0.4}
+{"intent":"memory","addressed":0.9,"speech_act":"note","action":"save|recall","item_type":"type","content":"data","response":"msg","importance":0.4}
+{"intent":"ambient","addressed":0.1,"response":"[AMBIENT]","importance":0.1}
+${projectList ? `
+Projects: ${projectList}` : ''}${memoryContext}
 
-Projects: ${projectList}
-${memoryContext}`;
+There is no follow-up message and no background work. Answer in THIS reply or
+say plainly that you cannot. Never say "I am checking", "let me look that up"
+or "I will get back to you".
+
+LIVE DATA BLOCKS: when a block above is labelled WIKIPEDIA, LIVE WEATHER,
+EXCHANGE RATE, CRYPTO PRICES or AIR QUALITY, that is real data fetched just
+now. State it directly as fact and give the number. If the question needed
+such a block and none appeared, say plainly that you could not get it.
+
+=== ANSWER THIS ===
+${isDash ? `User typed` : `Mic heard`}: "${safeText}"
+Everything above is background context. Reply to THIS, and only this. Do not
+answer an earlier question, and do not narrate what the context blocks mention.`;
+
+  // Prompt size is the main latency and accuracy lever here - 13 context
+  // blocks are prepended before anything the user said. Logged so it is
+  // visible when it grows.
+  console.log(`[routeStream] prompt ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens) addr=${prompt.includes(String.fromCharCode(34) + 'addressed' + String.fromCharCode(34))}`);
 
   const model = getConfiguredModel ? getConfiguredModel() : 'cerebras:qwen-3-235b';
 
   let fullBuf = '';
+  // lastLen is what has actually been SPOKEN; held is what has been extracted.
+  // They used to be the same number - the gate is the reason they are not.
   let lastLen = 0;
+  let held = '';
+  let gate = null;      // null = undecided, so early words are buffered not spoken
+  let sawEnd = false;   // response string closed; keep reading for the tail
+  let addressed = null;
 
   try {
     // #996: streaming fallback wrapper. Connect-time failures cascade through
@@ -1774,14 +2291,62 @@ ${memoryContext}`;
     // truncation (no mid-stream switching — would corrupt the chunk sequence).
     for await (const chunk of askAIStreamWithFallback(prompt, { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null })) {
       fullBuf += chunk;
-      const { text: extracted, done } = extractResponseField(fullBuf);
-      if (extracted.length > lastLen) {
-        yield { type: 'chunk', text: extracted.slice(lastLen) };
-        lastLen = extracted.length;
+      if (gate === null) {
+        const d = readAddressGate(fullBuf);
+        if (d) { gate = d.gate; addressed = d.addressed; }
       }
-      if (done) break;
+      const { text: extracted, done } = extractResponseField(fullBuf);
+      // Keep the text even while muted: the looksDirectedAtPan veto below can
+      // still overrule the model, and it needs something to say.
+      if (extracted.length > held.length) held = extracted;
+      // A word already out of the speaker cannot be taken back; a held one
+      // costs nothing. So nothing is emitted until the gate opens.
+      if (gate === 'open' && held.length > lastLen) {
+        // lastLen still advances by the RAW length, so the stream position stays
+        // correct; only what gets spoken is filtered.
+        const delta = speakable(held.slice(lastLen));
+        lastLen = held.length;
+        if (delta) yield { type: 'chunk', text: delta };
+      }
+      // Stop at the closing BRACE, not at the closing quote and not at the
+      // model's own stop token.
+      //
+      // Breaking at the quote (the original) truncated fullBuf before the
+      // object closed, so JSON.parse failed on EVERY turn and every done event
+      // carried the "I didn't catch that" fallback while the chunks carried a
+      // perfectly good answer. Nobody noticed because the phone speaks chunks.
+      //
+      // Not breaking at all (the first fix) parsed correctly but kept the turn
+      // generating to the model's own stop. On a single local GPU that holds
+      // the slot open, and everything else - voice, intuition - queues behind
+      // it. Waiting for the brace gets valid JSON AND gives the slot back.
+      //
+      // The scan only runs once the reply has closed, so it is a few hundred
+      // characters, once per turn.
+      if (done) {
+        sawEnd = true;
+        if (topLevelJsonEnd(fullBuf) > 0) break;
+      }
     }
     if (fullBuf) _lastVoiceAlertAt = 0; // stream produced output — backends healthy, re-arm
+    // The head of the raw output is the only place that shows whether the
+    // model is emitting the fields it was asked for. Cheap, and it is what
+    // was missing while the done event silently fell back for months.
+    console.log(`[routeStream] raw head: ${String(fullBuf).slice(0, 120).split(String.fromCharCode(10)).join(' ')}${sawEnd ? '' : ' [NO-END]'}`);
+    // A reply that carries JSON punctuation is about to be SPOKEN as '}{'. Log
+    // the whole raw output when that happens - the head alone cannot show
+    // whether the model wrote the braces inside the string or the extractor
+    // ran past the closing quote.
+    if (/[{}]/.test(held)) {
+      console.warn(`[routeStream] BRACE-IN-REPLY held=${JSON.stringify(held.slice(0, 200))}`);
+      console.warn(`[routeStream] BRACE-IN-REPLY raw=${JSON.stringify(String(fullBuf).slice(0, 600))}`);
+    }
+    if (gate === null) {
+      // The model never emitted a parseable intent. That is broken output,
+      // not ambient - speak what it said rather than swallowing the turn.
+      console.warn('[routeStream] no intent in stream — gate defaulted open');
+      gate = 'open';
+    }
   } catch (e) {
     console.error('[routeStream] LLM error:', e.message);
     // Surface the broken voice path in the Alerts panel (de-duped, fire-and-forget).
@@ -1796,53 +2361,116 @@ ${memoryContext}`;
     const jsonMatch = fullBuf.match(/\{[\s\S]*\}/);
     const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
     if (parsed) {
+      // Veto a wrong 'ambient' on an utterance that is obviously a question
+      // or a command. See looksDirectedAtPan for why this is not left to the model.
+      if (parsed.intent === 'ambient' && looksDirectedAtPan(text)) {
+        console.warn('[routeStream] ambient -> query override: ' + String(text).slice(0, 70));
+        parsed.intent = 'query';
+        // A question mark or a question word is a harder signal than the
+        // model's own confidence, so it reopens the gate too. `held` was
+        // kept through the mute for exactly this.
+        gate = 'open';
+      }
       // If Claude classified this as a memory recall, execute the real DB search —
       // routeStream doesn't call processUnifiedResult so we must do it here.
       // Use searchMemory (FTS5 + vector) — NOT a raw LIKE query against memory_items,
       // which misses conversations/events and chokes on stop words.
       if (parsed.intent === 'memory' && (parsed.action === 'recall' || parsed.action === 'list')) {
         const searchTerm = parsed.content || text;
-        // #461: same 2.5s bound as the recall pre-gate above — never let a
-        // stalled ollama embedding hang the post-classification recall path.
+
+        // A DATE QUESTION IS NOT A RELEVANCE QUESTION.
+        //
+        // "what did I work on yesterday" shares no word with yesterday's events,
+        // and no vector encodes a calendar day, so both halves of the hybrid
+        // search returned unrelated rows - and the model, handed unrelated rows
+        // labelled 'relevant conversation history', described the wrong day with
+        // total confidence. When the question names a time, answer from that
+        // day's actual record instead of searching.
+        const when = parseWhen(text);
         let hits = [];
         try {
-          hits = await Promise.race([
-            searchMemory(searchTerm, { limit: 10, caller: 'routeStream' }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 2.5s')), 2500)),
-          ]);
+          if (when) {
+            hits = searchMemoryByDate({ from: when.from, to: when.to, limit: 25 });
+            console.log(`[routeStream] recall scoped to ${when.label} (${when.from} .. ${when.to}) — ${hits.length} readable events`);
+          } else {
+            // VECTORS STAY ON for an explicit recall. skipVector was applied to
+            // every caller to stop the 4-6s synchronous vec0 scan freezing the
+            // hub; right for the per-turn pre-gate, wrong here. FTS alone returns
+            // the hook envelope ({"session_id":...}), the vector half returns what
+            // he actually said. This path only runs when he explicitly asked to
+            // remember something, so it is rare and worth the seconds.
+            hits = await Promise.race([
+              searchMemory(searchTerm, { limit: 10, caller: 'routeStream' }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 8s')), 8000)),
+            ]);
+          }
         } catch (e) {
           hits = [];
-          console.warn(`[routeStream] recall search bailed (${e.message}) — degraded embeddings, answering without memory`);
+          console.warn(`[routeStream] recall search bailed (${e.message}) — answering without memory`);
         }
+
+        // Drop the hook envelope. These are the majority of FTS hits and they are
+        // not history; passing them to the model as history is what it invents from.
+        const before = hits.length;
+        hits = hits.filter((h) => isReadablePreview(h.preview));
+        if (before !== hits.length) console.log(`[routeStream] recall: dropped ${before - hits.length} unreadable hit(s), ${hits.length} left`);
+
         let recallResponse;
         if (hits.length === 0) {
-          recallResponse = `I don't have anything saved about that.`;
+          // SAY SO. Nothing retrieved must never become a guess - that is the
+          // failure being fixed here, not a tidy-up.
+          recallResponse = when
+            ? `I don't have anything recorded from ${when.label}.`
+            : `I don't have anything saved about that.`;
         } else {
-          // Synthesize a natural answer — don't just dump raw previews at the user
-          const snippets = hits.map((h, i) => `[${i+1}] ${h.preview}`).join('\n');
-          const synthesisPrompt = `The user asked: "${text}"\n\nRelevant conversation history:\n${snippets}\n\nAnswer the user's question in 1-3 sentences using only the information above. Be direct and conversational. Do not list sources.`;
+          const snippets = hits.map((h, i) => `[${i + 1}] ${(h.event && h.event.created_at ? h.event.created_at.slice(0, 16) + ' — ' : '')}${h.preview}`).join('\n');
+          const scope = when ? `These are his own notes from ${when.label}.` : 'These are his own past messages.';
+          const synthesisPrompt = `The user asked: "${text}"`
+            + `\n\n${scope}\n${snippets}`
+            + `\n\nAnswer in 1-3 sentences using ONLY what is above. Be direct and conversational, and do not list sources.`
+            + `\nIf what is above does not actually answer the question, say plainly that you do not have it. Never guess or fill the gap.`;
           try {
-            const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 200, timeout: 15000, source: context.source, device_id: context.device_id }); // #440: use configured model, increase timeout
+            const synthesized = await claude(synthesisPrompt, { caller: 'recall-synthesis', model: getConfiguredModel?.() || 'claude-haiku-4-5', maxTokens: 220, timeout: 15000, source: context.source, device_id: context.device_id });
             recallResponse = synthesized?.trim() || hits[0].preview;
           } catch {
             recallResponse = hits[0].preview;
           }
         }
         // Emit the recall response text as a chunk so TTS picks it up
-        if (lastLen === 0) yield { type: 'chunk', text: recallResponse };
+        if (lastLen === 0) yield { type: 'chunk', text: speakable(recallResponse) };
         yield { type: 'done', result: withProsody({ ...parsed, response: recallResponse }) };
         return;
       }
-
-      // If the LLM classified this as ambient, emit empty chunk + clear response
-      // so phone client doesn't speak "[AMBIENT]" literal.
-      if (parsed.intent === 'ambient') {
+      // THREE outcomes, not two. `gate` was decided from `addressed` while the
+      // reply was still being written, so by here it is only being acted on.
+      if (gate === 'mute') {
+        // Confidently not for us. Empty chunk keeps the phone from speaking
+        // the "[AMBIENT]" literal.
         yield { type: 'chunk', text: '' };
-        yield { type: 'done', result: withProsody({ ...parsed, response: '', importance: 0.1 }) };
+        yield { type: 'done', result: withProsody({ ...parsed, intent: 'ambient', response: '', addressed, importance: 0.1 }) };
+        return;
+      }
+      if (gate === 'hold') {
+        // The middle band, and the whole point of the number. Not sure enough
+        // to talk over him, not sure enough to swallow a real question. Hand
+        // the phone the words plus how long to sit on them: it speaks if the
+        // room goes quiet and drops them if he carries on talking.
+        // Same filter as the streamed path - this text is spoken too.
+        const heldText = speakable(String(held || parsed.response || '')).trim();
+        // A hold is only worth anything if there is something to say. When the
+        // model decided ambient it writes the "[AMBIENT]" placeholder, and
+        // holding a placeholder just delays silence - so treat that as a mute.
+        if (!heldText || /^\[ambient\]$/i.test(heldText)) {
+          yield { type: 'chunk', text: '' };
+          yield { type: 'done', result: withProsody({ ...parsed, intent: 'ambient', response: '', addressed, importance: 0.1 }) };
+          return;
+        }
+        console.log(`[routeStream] addressed=${addressed} — holding ${heldText.length} chars for ${ADDRESSED_HOLD_MS}ms`);
+        yield { type: 'done', result: withProsody({ ...parsed, response: heldText, addressed, hold_ms: ADDRESSED_HOLD_MS, importance: 0.3 }) };
         return;
       }
 
-      yield { type: 'done', result: withProsody({ ...parsed, response: parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '') }) };
+      yield { type: 'done', result: withProsody({ ...parsed, addressed, response: parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '') }) };
     } else {
       yield { type: 'done', result: withProsody({ intent: 'query', response: "I didn't catch that — could you try again?", importance: 0.4 }) };
     }

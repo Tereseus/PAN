@@ -895,6 +895,9 @@ router.post('/recall/stream', async (req, res) => {
     // The old hand-rolled FTS-only query missed semantic matches and accumulated
     // false negatives as failed searches got indexed as events (circular contamination).
     const { searchMemory } = await import('../memory-search.js');
+    // Explicit recall endpoint — vectors stay on. FTS-only returns the hook
+    // JSON scaffolding rather than what was said; see the routeStream recall
+    // branch for the measurement. The every-turn pre-gates remain FTS-only.
     const memHits = await searchMemory(text, { limit: 20, caller: 'recall-stream' });
 
     const recentEvents = allScoped(req,

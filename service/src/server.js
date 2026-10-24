@@ -75,7 +75,7 @@ export { getTunnelURL }; // re-export so client.js can import it
 import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir } from './platform.js';
-import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, logDecision } from './db.js';
+import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, invalidateOllamaUrlCache, logDecision } from './db.js';
 import { searchMemory, backfillEmbeddings, backfillStatus, abortBackfill } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
@@ -167,8 +167,16 @@ let _loopHeartbeatLast = performance.now();
 function _loopHeartbeat() {
   const now = performance.now();
   const elapsed = now - _loopHeartbeatLast;
-  // Expected: ~50ms (setImmediate fires roughly that fast under no load).
-  // If elapsed >> 50ms, the previous tick blocked the loop.
+  // Sampled every ~50ms via setTimeout. If elapsed >> 50ms, the previous tick
+  // blocked the loop.
+  //
+  // THIS USED TO BE setImmediate(_loopHeartbeat). setImmediate does NOT fire
+  // "roughly every 50ms" -- it fires once per event-loop iteration with zero
+  // delay, so a function that reschedules itself with it is a hot loop. Measured
+  // 2026-09-06 on the hub: every Craft pinned exactly one core at 100% for its
+  // entire life (Craft-5: 78,751 CPU-s in 78,160 s of uptime), and per-thread
+  // accounting put all of it on the main JS thread. The loop-block detector was
+  // itself the load. A 50ms timer keeps the same measurement at ~0% cost.
   if (elapsed > _BLOCK_THRESHOLD_MS) {
     const handles = process._getActiveHandles?.().length ?? -1;
     const requests = process._getActiveRequests?.().length ?? -1;
@@ -184,9 +192,9 @@ function _loopHeartbeat() {
     console.warn(`[loop-block] ${entry.duration_ms}ms · handles=${handles} reqs=${requests} at ${entry.at_iso}`);
   }
   _loopHeartbeatLast = now;
-  setImmediate(_loopHeartbeat);
+  setTimeout(_loopHeartbeat, 50).unref?.();
 }
-setImmediate(_loopHeartbeat);
+setTimeout(_loopHeartbeat, 50).unref?.();
 
 function _getLoopStats() {
   const ns_to_ms = 1e6;
@@ -2864,6 +2872,15 @@ app.put('/api/v1/settings', (req, res) => {
       });
     }
     console.log(`[PAN Settings] Updated: ${keys.join(', ')} (from ${req.headers['x-device-name'] || req.ip})`);
+    // getOllamaUrl() caches its answer for 30s. Without this, GAME MODE sets
+    // ollama_url to the mini PC and the hub carries on calling Mint for up to
+    // half a minute - long enough for one voice turn to reload the model onto
+    // the GPU the owner just freed. Observed exactly that: the card went 4279MB ->
+    // 1464MB and straight back to 4296MB.
+    if (keys.includes('ollama_url')) {
+      invalidateOllamaUrlCache();
+      console.log('[PAN Settings] ollama_url changed — url cache invalidated');
+    }
     // Audit log for settings changes (security-sensitive)
     try {
       const auditReq = { user: { id: req.user?.id || 1 }, org_id: req.org_id || 'org_personal' };
@@ -5906,11 +5923,28 @@ function start() {
         //     (you can still trigger it manually via the MCP `pan_dev` /
         //     embeddings endpoint).
         if (process.env.PAN_DISABLE_EMBEDDINGS_BACKFILL !== '1') {
-          setTimeout(() => {
+          const runBackfill = (why) =>
             backfillEmbeddings('main', 2)
-              .then(r => console.log(`[PAN MemorySearch] backfill: +${r.added} embeddings (${r.indexed}/${r.total})`))
-              .catch(err => console.warn('[PAN MemorySearch] backfill error:', err.message));
-          }, 90_000);
+              .then((r) => {
+                if (r && r.added > 0) {
+                  console.log(`[PAN MemorySearch] backfill (${why}): +${r.added} embeddings (${r.indexed}/${r.total})`);
+                }
+              })
+              .catch((err) => console.warn('[PAN MemorySearch] backfill error:', err.message));
+
+          setTimeout(() => runBackfill('boot'), 90_000);
+
+          // Keep draining. The backfill previously ran ONCE per Craft boot: it
+          // drained what it could, exited, and nothing restarted it, so every
+          // event written afterwards waited for the next boot (in practice, for
+          // the 00:00 scheduled task to force a Craft swap). That is why
+          // `remaining` climbed all day and search was always a day stale.
+          //
+          // Cheap to repeat: backfillEmbeddings() returns immediately if a worker
+          // is already running, and the worker exits at once when the queue is
+          // empty. Typical real volume is ~1,500 events/day, about 90 seconds of
+          // work, so this is idle almost all the time.
+          setInterval(() => runBackfill('interval'), 15 * 60_000).unref?.();
         } else {
           console.log('[PAN MemorySearch] backfill auto-start DISABLED via PAN_DISABLE_EMBEDDINGS_BACKFILL=1');
         }
@@ -6590,30 +6624,66 @@ app.get('/api/v1/dashboard/health', (req, res) => {
 // The node-windows wrapper automatically revives the process after exit.
 app.post('/api/admin/restart', async (req, res) => {
   if (IS_CRAFT) {
-    // Running under Carrier — restart the WHOLE Carrier (not just hot-swap Craft).
-    // Hot-swap only replaces Craft (server.js). To pick up Carrier code changes,
-    // we need to kill the old Carrier and spawn a fresh `node pan.js start`.
-    // The new Carrier will kill whatever is on port 7777 (via killProcessOnPort)
-    // and boot a brand new Carrier + Craft from disk.
-    res.json({ ok: true, message: 'Carrier restart initiated — spawning fresh Carrier...' });
-    console.log('[PAN Craft] Full Carrier restart requested — spawning new Carrier process');
-    setTimeout(async () => {
-      try {
-        const { spawn } = await import('child_process');
-        const child = spawn(process.execPath, ['pan.js', 'start'], {
-          cwd: join(__dirname, '..'),
-          stdio: 'ignore',
-          detached: true,
-          windowsHide: true,
-          env: { ...process.env, PAN_CRAFT: undefined }
+    // DELEGATE TO THE CARRIER. Do not spawn anything here.
+    //
+    // This used to spawn `node pan.js start` and rely on the comment below it:
+    // "the new Carrier will kill whatever is on port 7777". That was true before
+    // the Super-Carrier existed. It is not true now: 7777 is owned by the
+    // Super-Carrier, which is permanent BY DESIGN and must never be killed. So
+    // the freshly spawned process waited for a port it could never have, gave up,
+    // and died - while this endpoint had already answered {"ok":true}.
+    //
+    // The result was a restart that reported success and did nothing, every time.
+    // On 2026-09-16 that silently invalidated ~75 minutes of deploys: the code on
+    // disk was new, the running Craft was old, and every test measured the old
+    // code while appearing to test the new one. A restart that lies is worse than
+    // one that fails.
+    //
+    // Correct targets, both already implemented on the Carrier (:17760):
+    //   /api/carrier/swap    - new Craft, health-checked before cutover. Picks up
+    //                          anything under service/src/. PTYs and claude
+    //                          children survive. This is what "restart to load my
+    //                          code" almost always means.
+    //   /api/carrier/restart - Carrier exits and pan-loop respawns it. Needed only
+    //                          when carrier.js itself changed. Kills PTYs.
+    // Ask for the second with ?full=1.
+    //
+    // And AWAIT the Carrier rather than answering optimistically, so the caller
+    // finds out whether it actually happened.
+    const full = req.query.full === '1';
+    const target = full ? '/api/carrier/restart' : '/api/carrier/swap';
+    const carrier = `http://127.0.0.1:${process.env.PAN_CARRIER_INTERNAL_PORT || 17760}`;
+    console.log(`[PAN Craft] Restart requested — delegating to Carrier ${target}`);
+    try {
+      const r = await fetch(carrier + target, {
+        method: 'POST',
+        signal: AbortSignal.timeout(15000),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        console.warn(`[PAN Craft] Carrier refused ${target}: ${r.status} ${JSON.stringify(body)}`);
+        return res.status(r.status).json({
+          ok: false,
+          error: body.reason || `carrier returned ${r.status}`,
+          ...body,
         });
-        child.unref();
-        console.log(`[PAN Craft] New Carrier spawned (PID ${child.pid}) — old Carrier will be killed on port bind`);
-      } catch (err) {
-        console.error('[PAN Craft] Failed to spawn new Carrier:', err.message);
       }
-    }, 500);
-    return;
+      return res.json({
+        ok: true,
+        mode: full ? 'carrier_restart' : 'craft_swap',
+        message: full
+          ? 'Carrier restarting — PTYs will drop and reconnect.'
+          : 'Craft swap started. New Craft is health-checked before cutover, so code is live in ~5-45s, not instantly.',
+        carrier: body,
+      });
+    } catch (err) {
+      console.error(`[PAN Craft] Could not reach Carrier at ${carrier}: ${err.message}`);
+      return res.status(502).json({
+        ok: false,
+        error: `could not reach Carrier at ${carrier}: ${err.message}`,
+        hint: 'Nothing was restarted. Check the Carrier is alive before trusting any earlier restart.',
+      });
+    }
   }
   res.json({ ok: true, message: 'Restarting — process will exit and reload all code...' });
   console.log('[PAN] Restart requested');
