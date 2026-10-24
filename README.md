@@ -2,6 +2,8 @@
 
 A local-first memory layer for your own machine. PAN watches what you do, records it to an encrypted database on your hardware, and exposes it to Claude Code (or any MCP client) so your AI tooling has continuous context instead of starting cold every session.
 
+The goal is to take that off the desk: a clip-on wearable that sees and hears what you do, so you can ask your AI anything by voice without pulling out a phone, and talk to someone in another language in real time. See [The wearable](#the-wearable).
+
 Your data stays on your disk. The database is local and encrypted, and the models run on your own hardware via Ollama.
 
 One honest caveat: voice requests default to a cloud model first because latency is what makes voice usable, so prompt text does leave the machine on that path. Pin the chain to a single local model and nothing does. See [Fallback chain](#fallback-chain).
@@ -96,11 +98,41 @@ State changes stream in over HA's WebSocket API and land in the event database, 
 
 ---
 
+## The wearable
+
+A camera, mic and speaker clipped to your shirt. It is the eyes and ears; the phone and the hub do the thinking.
+
+**What it is for**
+
+- **Memory of the physical world.** A photo every 5 seconds goes into the same database as everything else, so you can later ask "who did I meet at lunch" or "where did I leave my keys" and get an answer from what it actually saw.
+- **Speaking up on its own.** The latest frame feeds PAN's context engine as a `world_context` signal, so it can interject ("don't cut that wire", "you left your keys upstairs") instead of only answering.
+- **AI without a phone.** Ask anything out loud; the answer comes back through the speaker on your chest.
+- **Live translation.** You speak English and the other person hears Japanese or Chinese from the wearable while you are still talking. They answer in their own language and you read subtitles on glasses or by glancing down at the wearable's screen. Both people speak their own language in real time, with no phone held between them.
+
+**What works today**
+
+The prototype is a Seeed XIAO ESP32-S3 Sense ([`firmware/pendant/`](firmware/pendant/)) with a phone-side BLE client ([`PendantBle.kt`](android/app/src/main/java/dev/pan/app/ble/PendantBle.kt)). Measured, not estimated:
+
+| | |
+|---|---|
+| One SVGA JPEG (~22 KB) over BLE, MTU 517 | 0.35 s, 62.9 kB/s, zero packets lost |
+| Radio duty at one frame per 5 s | ~7% |
+| Idle draw between frames (BLE advertising, CPU at 80 MHz) | 140 mA |
+| Runtime | ~3 h on 700 mAh, 4–5 h on 1020 mAh |
+| Frame → hub → local vision description | ~2 s warm; images never leave your hardware |
+
+Frames are stored on arrival and described on demand, so the vision model is not pinned describing ceilings.
+
+**What is in the way**
+
+Battery life. Idle current dominates, and on the XIAO Sense most of it is the camera and PSRAM staying powered, because the board does not wire the sensor's power-down pin. Boards that do wire it ([Espressif ESP-Mosaico](https://github.com/esp-mosaico) wires `CAM_PWDN` to GPIO48, and adds a speaker, screen, IMU and a finished enclosure) are the next target. The other half is not wanting to hand-build the battery and enclosure at all, which is why a finished, open board matters more than a smaller one.
+
 ## Planned
 
 Not built. Listed so the direction is clear, not as a promise of dates.
 
-- **Pendant** — an ESP32-S3 wearable with camera, mic and sensors, talking to the phone over BLE. Intended to give PAN presence and context away from a desk, and room-level location from BLE signal strength without GPS.
+- **Streaming translation path** — mic → streaming speech recognition → translation → speech out of the wearable, with subtitles back to glasses or the wearable's screen.
+- **Room-level location** from BLE signal strength, without GPS.
 - **Cross-system automations** 
 
 ---
@@ -202,4 +234,4 @@ Roughly 1.5 MB/day of text data. A local model needs enough RAM to hold Gemma 4 
 
 PAN does not require a specific AI provider. Any project with a `.pan` file gets captured regardless of which assistant you use. The model is pluggable; the data is yours.
 
-**License:** Open Source
+**License:** [GNU AGPL v3](LICENSE), with additional terms for the data dividend system. Anyone can use, modify and run it; anyone who runs a modified version, including as a service, must publish their changes under the same license.
