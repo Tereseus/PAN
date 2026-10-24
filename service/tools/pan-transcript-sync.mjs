@@ -25,7 +25,7 @@
  *   node pan-transcript-sync.mjs                    # full reconcile (default)
  *   node pan-transcript-sync.mjs --fast             # only turns past the high-water mark
  *   node pan-transcript-sync.mjs --since 2026-09-01
- *   node pan-transcript-sync.mjs --hub http://100.64.0.1:7777
+ *   node pan-transcript-sync.mjs --hub http://minipc-pan-hub:7777
  *
  * Default is a FULL reconcile: send every turn and let the hub reject what it
  * already has. The hub dedupes on content, so this is the only mode that fills a
@@ -44,7 +44,7 @@ const opt = (n, d) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
 };
 
-const HUB = (opt('hub', process.env.PAN_HUB || 'http://100.64.0.1:7777')).replace(/\/$/, '');
+const HUB = (opt('hub', process.env.PAN_HUB || 'http://minipc-pan-hub:7777')).replace(/\/$/, '');
 const ROOT = opt('root', join(homedir(), '.claude', 'projects'));
 const DRY = flag('dry-run');
 const FAST = flag('fast');

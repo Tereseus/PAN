@@ -32,7 +32,7 @@ auto-captured, encrypted, on your machine."**
 | Steward (deterministic service manager) | Keeps Whisper/services alive. Boring and necessary. |
 | Memory search (FTS + vector RRF) | The retrieve step. Needs *an* Ollama or falls back to FTS-only. |
 | client-manager + pan-client | Multi-device. Load-bearing for remote Ollama — this is HOW a weak PC gets strong models (the "diesel computer" answer). Optional at install, supported. |
-| Quality log (studio) | Small, clean, already shipped. Demonstrates the "log anything, score anything" pattern. |
+| Quality log | Small, clean, already shipped. Demonstrates the "log anything, score anything" pattern. |
 
 ## 2. KEEP but OPT-IN — shipped, OFF by default
 

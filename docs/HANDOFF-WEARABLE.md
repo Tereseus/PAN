@@ -73,8 +73,8 @@ Two findings reshaped this step:
    widgets would duplicate it.
 2. **New direction (owner, 2026-07):** don't build one universal dashboard or
    poller. Each thing worth watching gets its **own purpose-built HTML page fed
-   by its own push scripts** (WoE, ServiceNow, ops…), each on its own host/port
-   (`localhost:877x`, `100.64.0.4:8791`, different IPs). PAN holds a
+   by its own push scripts** (projects, work systems, ops…), each on its own host/port
+   (`localhost:877x`, other tailnet hosts). PAN holds a
    **registry** of them so it knows what exists and renders them on the phone —
    plain HTML renders on mobile where the SvelteKit dashboard never did. This
    also retires the dead universal remote-screen poller for good.
@@ -92,18 +92,16 @@ Health check is **client-side** (`probeDashboardsClient` in `/mobile`): a no-cor
 reach cross-machine Tailscale peers from its service session (undici aborts at
 8s where a user-session process connects in ~0.6s — the server `/probe` endpoint
 still exists + works for localhost dashboards). The phone is the right place to
-test reachability anyway — it's where you open them. PAN's hub Tailscale IP is
-`100.64.0.3`, so other machines register via
-`POST http://100.64.0.3:7777/api/v1/dashboards`.
+test reachability anyway — it's where you open them. Other machines register via
+`POST http://<hub>:7777/api/v1/dashboards`.
 
 What's left on Step 3:
-- **ServiceNow (WORK) dashboard is REGISTERED** (id 4, `http://100.64.0.4:8791`,
-  confirmed reachable). Still to register: the **WoE** dashboard (owner said
+- A work dashboard is registered and confirmed reachable. Still to register: the **WoE** dashboard (owner said
   ~port `877x`, a different IP — need the exact host:port). Add via the phone's
   **+ Add** or POST to the registry.
 - The genuine remaining watch-gap is a **work-systems glance** (inbox +
-  ServiceNow/Jira/Slack). With the registry, the clean way is to build that as
-  its own small HTML dashboard fed by the SN/Jira/Slack bridges and register it,
+  ticketing/chat). With the registry, the clean way is to build that as
+  its own small HTML dashboard fed by the work-system bridges and register it,
   rather than hand-coding it into `/mobile`.
 - (Deferred, only if a big router must be gated later) split `chatRouter`/
   `dashboardRouter` to extract KEEP endpoints — they're boot-fatal if unmounted

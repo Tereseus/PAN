@@ -961,7 +961,6 @@ CREATE INDEX IF NOT EXISTS idx_reasoning_cycles_ts      ON pan_reasoning_cycles(
 CREATE INDEX IF NOT EXISTS idx_reasoning_cycles_user_ts ON pan_reasoning_cycles(user_id, ts DESC);
 
 -- quality_log — Quality Log song-creation MCDA scoring.
--- See %USERPROFILE%\Desktop\Me stuff\studio\song-creation-mathematics.md.
 -- One row per attempt. ratings / weights stored as JSON; q_avg / q_geo / q_min
 -- are computed at insert time in routes/quality-log.js so the math lives in
 -- exactly one place. Reused for game art + mechanics by varying `domain`.

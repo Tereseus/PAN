@@ -967,7 +967,7 @@ app.use('/mcp/pan', mcpPanRouter);
 app.use('/api/v1/capture', captureRouter);
 
 // Dashboard registry — the purpose-built HTML monitoring pages PAN knows about
-// (WoE, ServiceNow, ops, …), each on its own host/port and fed by its own push
+// (projects, work systems, ops, …), each on its own host/port and fed by its own push
 // scripts. Always mounted, every profile: it's how PAN knows the user's
 // monitoring surfaces + renders them on the phone. See routes/dashboards.js.
 app.use('/api/v1/dashboards', dashboardsRouter);
@@ -2875,7 +2875,7 @@ app.put('/api/v1/settings', (req, res) => {
     // getOllamaUrl() caches its answer for 30s. Without this, GAME MODE sets
     // ollama_url to the mini PC and the hub carries on calling Mint for up to
     // half a minute - long enough for one voice turn to reload the model onto
-    // the GPU the owner just freed. Observed exactly that: the card went 4279MB ->
+    // the GPU the user just freed. Observed exactly that: the card went 4279MB ->
     // 1464MB and straight back to 4296MB.
     if (keys.includes('ollama_url')) {
       invalidateOllamaUrlCache();

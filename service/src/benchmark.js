@@ -591,7 +591,7 @@ Return ONLY JSON: {"coherence": N, "novelty": N, "accuracy": N, "reason": "brief
 const MEMORY_FLOORS = { recall: 9.0, drift: 10.0 }; // drift = max allowed % drift (lower = better floor)
 
 const MEMORY_FACTS = [
-  { id: 'F1', fact: 'The user\'s name is owner.',               query: 'what is the user\'s name',             expected: ['tereseus'] },
+  { id: 'F1', fact: 'The user\'s name is owner.',               query: 'what is the user\'s name',             expected: ['owner'] },
   { id: 'F2', fact: 'The PAN server runs on port 7777.',           query: 'what port does PAN server run on',     expected: ['7777'] },
   { id: 'F3', fact: 'The user\'s favorite game engine is Godot.',  query: 'what game engine does the user use',   expected: ['godot'] },
   { id: 'F4', fact: 'The AI model for routing is qwen-3-235b.',    query: 'what AI model routes voice commands',  expected: ['qwen', '235b'] },

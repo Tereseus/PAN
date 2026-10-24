@@ -69,7 +69,7 @@ async function wikipedia(text) {
     extract.slice(0, 700) + '\n';
 }
 
-// --- Currency: he runs a US LLC from home, so USD/EUR comes up -----------
+// --- Currency: USD/EUR conversions come up often ---------------------------
 const CURRENCY_RE = /\b(exchange rate|conversion rate|convert|how much is|worth in|in (?:usd|eur|dollars|euros|pounds|gbp))\b|\b(usd|eur|gbp|dollars?|euros?|pounds?)\b.*\bto\b.*\b(usd|eur|gbp|dollars?|euros?|pounds?)\b/i;
 const CODE = { dollar: 'USD', dollars: 'USD', usd: 'USD', euro: 'EUR', euros: 'EUR', eur: 'EUR', pound: 'GBP', pounds: 'GBP', gbp: 'GBP' };
 
@@ -113,7 +113,7 @@ async function crypto(text) {
   return '\nCRYPTO PRICES (CoinGecko, live) - real data:\n' + lines.join('\n') + '\n';
 }
 
-// --- Air quality: home, and he asked about the pendant's environment -----
+// --- Air quality: the wearer's local environment --------------------------
 const AIR_RE = /\b(air quality|pollution|smog|pm2\.?5|aqi)\b/i;
 
 async function airQuality(text, sensors) {
@@ -158,7 +158,7 @@ async function airQuality(text, sensors) {
 const SEARCH_RE = /\b(search (?:for|the web|online)|look (?:it|that|this) up|look up|google|what'?s (?:the )?latest|latest news|news (?:about|on|from)|what happened|any news|headlines|what'?s happening|in the news)\b/i;
 
 // Questions whose answer changes over time. Wikipedia returns the article about
-// the OFFICE for "who is the prime minister of greece" and never names the
+// the OFFICE for "who is the prime minister of a country" and never names the
 // holder, so these also need the news feed to get an actual name.
 // Also tightened: a bare "today" or "latest" appears in ordinary conversation
 // constantly ("how are you doing today"). These now need a news-shaped subject

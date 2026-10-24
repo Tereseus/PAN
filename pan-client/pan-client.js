@@ -732,12 +732,11 @@ function probeCommand(cmd, args, timeoutMs = 5000) {
 // (%LOCALAPPDATA%\\Programs\\Ollama). pan-client runs as a service, and a
 // service PATH does not include a user profile - so `where ollama` fails even
 // though the binary is right there and works. That single mismatch produced
-// 2,479 'Minipc watchdog: probe_binary failed' alerts, left ollama dead on
+// 2,479 'hub watchdog: probe_binary failed' alerts, left ollama dead on
 // the hub, stalled the embedding backlog at 74,065 rows, and pointed
 // OLLAMA_FALLBACK at a corpse. Look in the real places before giving up.
 const OLLAMA_CANDIDATES = IS_WINDOWS ? [
   process.env.LOCALAPPDATA && `${process.env.LOCALAPPDATA}\\Programs\\Ollama\\ollama.exe`,
-  'C:\\Users\\owner\\AppData\\Local\\Programs\\Ollama\\ollama.exe',
   'C:\\Program Files\\Ollama\\ollama.exe',
   process.env.ProgramData && `${process.env.ProgramData}\\Ollama\\ollama.exe`,
 ].filter(Boolean) : [

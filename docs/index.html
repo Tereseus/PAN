@@ -529,41 +529,12 @@
     <div class="pi-splash">&#928;</div>
   </div>
 
-  <!-- Pause complaint banner -->
-  <div class="pause-banner" id="pause-banner">
-    <span id="pause-text"><em>Come on man... it's a good song</em></span>
-  </div>
 
-  <audio id="bgm" loop preload="auto">
-    <source src="audio/huh.mp3" type="audio/mpeg">
-  </audio>
 
   <!-- Hero -->
   <div class="hero">
     <div class="logo"><span class="pi">&#928;</span></div>
     <div class="subtitle">&#928;an remembers</div>
-    <div style="margin-top: 24px;">
-      <div class="now-playing" id="now-playing" onclick="togglePlay(event)">
-        <img src="img/huh-cover.jpg" alt="cover">
-        <div class="track-info">
-          <div class="track-name">Huh</div>
-          <div class="artist"><a href="https://example.com" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:#8b949e;text-decoration:none;">artist</a></div>
-        </div>
-        <div class="play-pause-btn" id="play-pause-btn">
-          <!-- pause icon (shown when playing) -->
-          <svg id="icon-pause" viewBox="0 0 16 16"><path d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5zm5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5z"/></svg>
-          <!-- play icon (shown when paused) -->
-          <svg id="icon-play" viewBox="0 0 16 16" style="display:none"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
-        </div>
-        <div class="eq-bars paused" id="eq-bars">
-          <span></span><span></span><span></span><span></span><span></span>
-        </div>
-        <div class="volume-control" onclick="event.stopPropagation()">
-          <svg viewBox="0 0 16 16"><path d="M11.5 1a.5.5 0 0 1 .5.5v13a.5.5 0 0 1-1 0V1.5a.5.5 0 0 1 .5-.5zM6 3a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-1 0v-9A.5.5 0 0 1 6 3zm5.5 1a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM3.5 5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg>
-          <input type="range" class="volume-slider" id="volume" min="0" max="100" value="50">
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- Nav tabs -->
@@ -715,78 +686,14 @@
     }
     matrixLoop();
 
-    // ── Audio ──
-    let isPlaying = false;
-
-    // Auto-fade splash after 3 seconds
-    setTimeout(() => {
+    // ── Splash ──
+    function hideGate() {
       const gate = document.getElementById('audio-gate');
-      const audio = document.getElementById('bgm');
-      audio.volume = 0.5;
-      audio.play().then(() => {
-        isPlaying = true;
-        updatePlayState();
-      }).catch(() => {
-        // Browser blocked autoplay — user can click play button
-      });
       gate.classList.add('hidden');
       setTimeout(() => gate.style.display = 'none', 900);
-    }, 3000);
-
-    // Also allow clicking splash to skip the wait
-    document.getElementById('audio-gate').addEventListener('click', function() {
-      const gate = this;
-      const audio = document.getElementById('bgm');
-      audio.volume = 0.5;
-      audio.play().then(() => {
-        isPlaying = true;
-        updatePlayState();
-      }).catch(() => {});
-      gate.classList.add('hidden');
-      setTimeout(() => gate.style.display = 'none', 900);
-    });
-
-    function togglePlay(e) {
-      const audio = document.getElementById('bgm');
-      const banner = document.getElementById('pause-banner');
-      const pauseText = document.getElementById('pause-text');
-      if (isPlaying) {
-        audio.pause();
-        isPlaying = false;
-        matrixRunning = false;
-        pauseText.innerHTML = '<em>Come on mang, it\'s a good song</em>';
-        banner.classList.add('visible');
-      } else {
-        audio.play();
-        isPlaying = true;
-        matrixRunning = true;
-        // Show "Yeaa!" briefly then hide
-        pauseText.innerHTML = '<em>Yeaa!</em>';
-        setTimeout(() => {
-          banner.classList.remove('visible');
-        }, 1000);
-      }
-      updatePlayState();
     }
-
-    function updatePlayState() {
-      const eq = document.getElementById('eq-bars');
-      const iconPause = document.getElementById('icon-pause');
-      const iconPlay = document.getElementById('icon-play');
-      if (isPlaying) {
-        eq.classList.remove('paused');
-        iconPause.style.display = '';
-        iconPlay.style.display = 'none';
-      } else {
-        eq.classList.add('paused');
-        iconPause.style.display = 'none';
-        iconPlay.style.display = '';
-      }
-    }
-
-    document.getElementById('volume').addEventListener('input', (e) => {
-      document.getElementById('bgm').volume = e.target.value / 100;
-    });
+    setTimeout(hideGate, 3000);
+    document.getElementById('audio-gate').addEventListener('click', hideGate);
 
     // ── Fetch repo contents ──
     async function loadRepo() {

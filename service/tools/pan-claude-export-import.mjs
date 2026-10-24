@@ -27,7 +27,7 @@ const FILE = argv.find((a) => !a.startsWith('--'));
 const DRY = argv.includes('--dry-run');
 const hubArg = argv.indexOf('--hub');
 const HUB = (hubArg >= 0 && argv[hubArg + 1] ? argv[hubArg + 1]
-  : process.env.PAN_HUB || 'http://100.64.0.1:7777').replace(/\/$/, '');
+  : process.env.PAN_HUB || 'http://minipc-pan-hub:7777').replace(/\/$/, '');
 
 if (!FILE) {
   console.error('usage: node pan-claude-export-import.mjs <conversations.json> [--dry-run] [--hub URL]');

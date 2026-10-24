@@ -460,7 +460,7 @@ Actions: conversations, projects, tasks, services, devices, stats, sessions, sen
     },
   );
 
-  // ==================== Quality Log — Quality Log ====================
+  // ==================== QUALITY LOG ====================
   // Same tools as /mcp/quality-log, folded in here so one connector URL
   // (this one) reaches everything in PAN.
 

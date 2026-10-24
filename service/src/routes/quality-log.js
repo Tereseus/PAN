@@ -1,7 +1,6 @@
 // Quality Log — Quality Log scoring service.
 //
 // Implements the multi-criteria decision analysis (MCDA) scoring from
-// `%USERPROFILE%\Desktop\Me stuff\studio\song-creation-mathematics.md`.
 // The MCP server `quality-log-mcp.js` is a thin HTTP proxy over these routes,
 // so the math is defined here in exactly one place.
 //

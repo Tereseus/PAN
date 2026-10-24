@@ -47,8 +47,8 @@ can still run it, and any of it can be turned back on. This is the existing
 - **Reading files / sections PAN needs** — screen + activity + capture feed the
   cortex; PAN reads what it needs via the MCP data tools.
 - **Work-system watchers (the real "watch my cloud" job)** — these are the point:
-  - **ServiceNow tasks thread** + **ServiceNow↔Jira playbook thread** — live,
-    write-capable, the working example of "things update." KEEP.
+  - **Work ticketing threads** — live, write-capable, the working example of
+    "things update." KEEP.
   - **Email (IMAP)** watcher — the one in-repo cloud-state watcher.
   - Slack bridge (on work-pc) — external machine, KEEP as a watch source.
 - **Capture → memory spine**: `logEvent` → `events`/FTS/embeddings, `memory_items`,
@@ -140,7 +140,7 @@ This is a first-class feature, not just infra:
 
 If any dashboard survives, it is a **read-only status/widgets view**, ideally
 rehosted on the phone `/mobile` screen, showing: service health, cloud/work-system
-state (inbox, ServiceNow/Jira/Slack watch), recent notifications/alerts, the current
+state (inbox, work-system watch), recent notifications/alerts, the current
 intuition snapshot, active call, AI usage/cost. It must **never** regain a terminal,
 model picker, task CRUD, or deploy controls.
 

@@ -172,3 +172,16 @@ pan.key
 creds.env
 *.env
 !*.env.example
+
+# Personal, machine-specific helper scripts and tool scratch: never public.
+service/.playwright-mcp/
+service/bin/Dictate.ahk
+service/bin/archive-shots.ps1
+service/bin/claude-usage-report.py
+service/bin/clipboard-bridge.ps1
+service/bin/g16-shutdown-when-idle.ps1
+service/bin/sleep-now.ps1
+service/bin/start-dictation.vbs
+service/src/evals/
+service/src/prompts/
+temp-tasks.json

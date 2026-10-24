@@ -1100,7 +1100,7 @@ async function loadProjects() {
 }
 
 // ========== DASHBOARDS ==========
-// PAN's registry of purpose-built HTML monitoring pages (WoE, ServiceNow, ops…),
+// PAN's registry of purpose-built HTML monitoring pages (projects, work systems, ops…),
 // each on its own host/port. Plain HTML → renders fine on the phone. Tap a card
 // to open it full-screen in an iframe.
 let _dashList = [];
@@ -1117,7 +1117,7 @@ function renderDashboards(list) {
   let html = renderDashHeader();
   if (!_dashList.length) {
     html += '<div class="card" style="padding:16px"><div class="muted">No dashboards registered yet.</div>' +
-      '<div class="muted" style="font-size:12px;margin-top:6px">Register your monitoring pages (WoE, ServiceNow, ops…) so PAN knows them and you can open them here. Tap <b>+ Add</b>.</div></div>';
+      '<div class="muted" style="font-size:12px;margin-top:6px">Register your monitoring pages (projects, work systems, ops…) so PAN knows them and you can open them here. Tap <b>+ Add</b>.</div></div>';
     return html;
   }
   html += '<div class="card" style="padding:2px 6px">';
@@ -1201,7 +1201,7 @@ function showAddDashboard() {
     '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;width:100%;max-width:360px">' +
       '<h3 style="margin:0 0 12px">Register dashboard</h3>' +
       '<input id="dash-name" placeholder="Name (e.g. WoE Live)" style="' + inp + '">' +
-      '<input id="dash-url" placeholder="URL (e.g. 100.64.0.4:8791)" style="' + inp + '">' +
+      '<input id="dash-url" placeholder="URL (e.g. 100.x.y.z:8791)" style="' + inp + '">' +
       '<input id="dash-icon" placeholder="Emoji (optional)" style="' + inp + '">' +
       '<input id="dash-cat" placeholder="Category (optional)" style="' + inp + '">' +
       '<div style="display:flex;gap:8px;margin-top:4px">' +

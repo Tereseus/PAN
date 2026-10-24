@@ -329,7 +329,7 @@ async function _doWriteProbe(prevOk) {
 //                          queue for good.
 //
 // WHY (2026-09-06): the backfill had embedded ZERO rows since 2026-05-28. The
-// oldest unembedded event was a 1.7 MB UserPromptSubmit, a pasted ServiceNow
+// oldest unembedded event was a 1.7 MB UserPromptSubmit, a pasted
 // log. Its 8,000-char slice overflowed the 4,096-token context; Ollama returned
 // 500; embedForWrite mapped that to null -- the SAME signal as "Ollama is down"
 // -- so the worker backed off, refetched the same 20 rows at the head of

@@ -1081,7 +1081,7 @@ const OLLAMA_FALLBACK = 'http://localhost:11434';  // the always-on hub
 // placement trap (see guardModelOnGpu in llm.js): the model loads during a
 // low-VRAM window, gets zero layers offloaded, and serves from CPU at ~10s a
 // turn. Routing around that moves every turn to the mini PC and leaves the
-// real fault in place, so the box quietly stays broken and the owner never asked for
+// real fault in place, so the box quietly stays broken and the user never asked for
 // his turns to go there. He handles the gaming case himself with the GAME MODE
 // button, which repoints the hub explicitly.
 //
@@ -1217,7 +1217,7 @@ export function getOllamaUrl() {
         //   tailscale_ip       — set by pan-client on register
         //   tailscale_hostname — also populated by enrollment; for most rows
         //                        this actually contains the Tailscale IPv4
-        //                        (e.g. "100.64.0.1"), not a hostname.
+        //                        (e.g. "100.x.y.z"), not a hostname.
         //                        Confusingly-named column but it's where the
         //                        usable address lives when tailscale_ip is null.
         //   hostname           — last resort; only useful if MagicDNS resolves it.
@@ -1238,7 +1238,7 @@ export function getOllamaUrl() {
 }
 
 /**
- * The host the owner actually configured, WITHOUT health rerouting.
+ * The host the user actually configured, WITHOUT health rerouting.
  *
  * getOllamaUrl() ends in pickHealthyOllama(), so while Mint is marked degraded
  * it answers "http://localhost:11434". That is right for sending a turn and

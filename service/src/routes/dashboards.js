@@ -3,8 +3,8 @@
 //
 // Design (owner, 2026-07): instead of one universal dashboard + a universal
 // remote poller (which proved a dead end), each thing worth watching gets its
-// own plain-HTML page fed by its own push scripts — WoE, ServiceNow, ops, etc.
-// These often live on a different host/port (localhost:877x, 100.64.0.4:8791,
+// own plain-HTML page fed by its own push scripts — projects, work systems, ops, etc.
+// These often live on a different host/port (localhost:877x, 100.x.y.z:8791,
 // …). Registering them here lets PAN know what exists, health-check them, and
 // render them on the phone (/mobile) — plain HTML renders on mobile where the
 // SvelteKit dashboard never did. This is the north-star "watch" surface.

@@ -22,7 +22,7 @@ All known devices are in the `devices` table:
 ```sql
 devices (
   hostname       TEXT UNIQUE,     -- OS hostname, primary key
-  name           TEXT,            -- human-readable label (e.g. "Mini PC", "DESKTOP")
+  name           TEXT,            -- human-readable label (e.g. "Mini PC", "Desktop")
   device_type    TEXT,            -- 'pc' | 'phone' | 'tablet'
   capabilities   TEXT,            -- JSON array: ["windows", "app:vlc", "app:chrome", ...]
   online         INTEGER,         -- 1 = online now, 0 = offline

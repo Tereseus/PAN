@@ -43,7 +43,7 @@ function heuristicExtract(events) {
       // asking" (a rule) from "I never got that to work" (not one). llmExtract
       // can, and does: it produces things like
       //   scan_targets | scales_at | N^1.7
-      //   Tereseus | has_allergy | peanuts
+      //   User | has_allergy | peanuts
       // Extracting nothing when the LLM does not run beats extracting noise.
     }
 
