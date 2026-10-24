@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { run, get, all, insert, detectProject, indexEventFTS, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
+import { shouldStoreEvent } from '../event-filters.js';
 import { broadcastNotification, broadcastChatUpdate, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool, findSessionByClaudeId } from '../terminal-bridge.js';
 import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
@@ -8,6 +9,7 @@ import { buildSessionSummary, getSessionRecapText, getRecentProjectRecap } from 
 import { createAlert } from './dashboard.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { createHash } from 'crypto';
 
 // Context size thresholds (in chars)
 const CLAUDE_MD_WARN_SIZE = 15000;  // ~3,750 tokens — alert if CLAUDE.md exceeds this
@@ -483,6 +485,164 @@ router.post('/internal/session-nudges', (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Transcript reconciliation. See tools/pan-transcript-sync.mjs.
+//
+// Capture rides on fire-and-forget HTTP hooks, so a hub outage loses those
+// turns permanently - a ~9h outage on 2026-09-21 left 30 events for the whole
+// window. Claude Code independently writes every turn to a .jsonl on the
+// machine's own disk, which survives. These two endpoints let that file be
+// replayed into the hub.
+// ---------------------------------------------------------------------------
+
+// Reporting only: what does the hub already hold for these sessions?
+// NOT used as a sync cutoff. A high-water mark cannot see a hole in the
+// MIDDLE of a session, which is exactly the shape an outage leaves: the hub
+// died, came back, and the turns that resumed afterwards pushed MAX(created_at)
+// past the gap. Dedupe is done by content below instead.
+router.post('/internal/session-watermark', (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.session_ids) ? req.body.session_ids : [];
+    if (!ids.length) return res.status(400).json({ ok: false, error: 'missing session_ids' });
+    if (ids.length > 500) return res.status(400).json({ ok: false, error: 'max 500 session_ids per call' });
+
+    const marks = {};
+    for (const id of ids) {
+      if (typeof id !== 'string' || !id) continue;
+      const row = get('SELECT MAX(created_at) AS last, COUNT(*) AS n FROM events WHERE session_id = :sid', { ':sid': id });
+      marks[id] = { last: row?.last || null, events: row?.n || 0 };
+    }
+    const clock = get("SELECT datetime('now') AS utc, datetime('now','localtime') AS local");
+    res.status(200).json({ ok: true, marks, hub_now: clock });
+  } catch (err) {
+    console.error('[transcript-sync] session-watermark failed:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Stable identity for a turn, for dedupe across two capture paths that never
+// agreed on a shape. First 512 chars of whitespace-normalised text, so the
+// 6k truncation the sync applies still hashes equal to the untruncated row a
+// live hook wrote.
+function _textHash(text) {
+  const norm = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 512);
+  return createHash('sha1').update(norm).digest('hex');
+}
+
+// User and assistant turns need DIFFERENT dedupe rules, and assuming one rule
+// fit both put 3,326 duplicate rows in the DB on the first run.
+//
+// user: hash + local MINUTE. He really does say 'yes' twice in a session, and
+//   collapsing those loses a turn. His prompts are logged the instant he hits
+//   enter, so the minute is trustworthy.
+// assistant: hash ALONE. AssistantMessage rows are written when the Stop hook
+//   fires and re-reads the transcript, which lags the actual reply by minutes
+//   - so the minute never matched and every long session re-imported its own
+//   replies. Two identical 512-char assistant prefixes in one session is not a
+//   thing that happens, so the timestamp buys nothing here and costs dupes.
+function _turnKey(role, text, localMinute) {
+  return role === 'user' ? _textHash(text) + '|' + localMinute : _textHash(text);
+}
+
+// Batch ingest of historical turns read off a transcript.
+//
+// Deliberately NOT the live POST /hooks/:eventType path. That one fires recaps,
+// nudges, WS notifications and a transcript re-read on every Stop - all correct
+// for a turn happening now, all nonsense for a turn from three months ago, and
+// 56k of them would flatten the hub.
+router.post('/internal/transcript-sync', (req, res) => {
+  try {
+    const { session_id: sessionId, cwd = '', transcript_path = null, model = null, entries } = req.body || {};
+    if (!sessionId) return res.status(400).json({ ok: false, error: 'missing session_id' });
+    if (!Array.isArray(entries) || !entries.length) return res.status(400).json({ ok: false, error: 'missing entries' });
+    if (entries.length > 2000) return res.status(400).json({ ok: false, error: 'max 2000 entries per call' });
+
+    if (!getScoped(req, 'SELECT id FROM sessions WHERE id = :id AND org_id = :org_id', { ':id': sessionId })) {
+      runScoped(req, `INSERT INTO sessions (id, cwd, model, source, transcript_path, user_id, org_id)
+        VALUES (:id, :cwd, :model, 'transcript-sync', :tp, :uid, :org_id)`, {
+        ':id': sessionId, ':cwd': cwd, ':model': model, ':tp': transcript_path,
+        ':uid': req.user?.id || null,
+      });
+      if (cwd) {
+        runScoped(req, 'UPDATE sessions SET project_id = :pid WHERE id = :id AND org_id = :org_id',
+          { ':pid': detectProject(cwd).id, ':id': sessionId });
+      }
+    }
+
+    // Convert every incoming UTC stamp to hub-local in ONE query. Doing this in
+    // JS with a single 'now' offset would be wrong across a DST boundary and
+    // would silently re-insert a whole day; SQLite resolves each stamp properly.
+    const localMin = {};
+    for (const r of all(
+      `SELECT key AS k, strftime('%Y-%m-%d %H:%M', datetime(value, 'localtime')) AS m
+       FROM json_each(:arr)`,
+      { ':arr': JSON.stringify(entries.map((e) => e?.ts || '')) }
+    )) localMin[r.k] = r.m;
+
+    // Everything this session already holds, in both forms it can take:
+    // transcript_uuid for rows a previous sync wrote, content hash for rows a
+    // live hook wrote (those have no uuid to match on).
+    const seenUuid = new Set();
+    const seenKey = new Set();
+    for (const r of all(
+      `SELECT event_type, data, substr(created_at, 1, 16) AS min FROM events
+       WHERE session_id = :sid AND event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage')`,
+      { ':sid': sessionId }
+    )) {
+      let d;
+      try { d = JSON.parse(r.data); } catch { continue; }
+      if (d.transcript_uuid) seenUuid.add(d.transcript_uuid);
+      if (d.prompt) seenKey.add(_turnKey('user', d.prompt, r.min));
+      // last_assistant_message (Stop) and text (AssistantMessage) are the same
+      // reply seen through two different capture paths; both key the same way.
+      const reply = d.last_assistant_message || d.text;
+      if (reply) seenKey.add(_turnKey('assistant', reply, r.min));
+    }
+
+    let written = 0, skipped = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const uuid = e?.uuid;
+      const text = String(e?.text || '').trim();
+      const min = localMin[i];
+      if (!uuid || !text || !min) { skipped++; continue; }
+      if (seenUuid.has(uuid)) { skipped++; continue; }
+      const key = _turnKey(e.role, text, min);
+      if (seenKey.has(key)) { skipped++; continue; }
+
+      // user -> UserPromptSubmit, which IS embedded. 13k of them across both
+      // machines, and they are what recall actually matches on.
+      // assistant -> Stop, which is in NEVER_EMBED: still FTS-indexed and
+      // keyword-findable, but it cannot bury the vector backlog. There are 56k
+      // of those; embedding them on top of an 80k backlog would have made it
+      // permanently unrecoverable.
+      const isUser = e.role === 'user';
+      const eventType = isUser ? 'UserPromptSubmit' : 'Stop';
+      const dataStr = JSON.stringify(isUser
+        ? { prompt: text, cwd, transcript_uuid: uuid, backfill: true }
+        : { last_assistant_message: text, cwd, transcript_uuid: uuid, backfill: true });
+
+      // The whole point: created_at is when he said it, not when we noticed.
+      // Without this every backfilled row stamps as today, and 'what did I do
+      // on September 1st' returns the backfill instead of September 1st.
+      const eventId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, created_at, user_id, org_id)
+        VALUES (:sid, :type, :data, datetime(:ts, 'localtime'), :uid, :org_id)`, {
+        ':sid': sessionId, ':type': eventType, ':data': dataStr, ':ts': e.ts,
+        ':uid': req.user?.id || null,
+      });
+      indexEventFTS(eventId, eventType, dataStr);
+      seenUuid.add(uuid);
+      seenKey.add(key);
+      written++;
+    }
+
+    res.status(200).json({ ok: true, written, skipped });
+  } catch (err) {
+    console.error('[transcript-sync] ingest failed:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Inspect recent recaps — local debugging only.
 router.get('/internal/recap-inspect', (req, res) => {
   try {
@@ -720,17 +880,56 @@ router.post('/:eventType', (req, res) => {
       console.error('[PAN Hook] in-flight tracker failed:', e.message);
     }
 
-    // Store every event
+    // Store the event -- unless it is tool-hook noise.
+    //
+    // THIS HANDLER DOES NOT GO THROUGH logEvent. It inserts straight into
+    // `events`, which means the NEVER_STORE filter in event-filters.js never
+    // applied here. That bypass is exactly how 139,263 unread PreToolUse /
+    // PostToolUse rows accumulated -- 49% of the entire database -- while a
+    // filter written to stop them had existed since 2026-07-14.
+    //
+    // The Stop transcript extraction and recap watermark below still run either
+    // way; neither needs this row to exist.
     const dataStr = JSON.stringify(payload);
-    const eventId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, user_id, org_id) VALUES (:sid, :type, :data, :uid, :org_id)`, {
-      ':sid': sessionId,
-      ':type': eventType,
-      ':data': dataStr,
-      ':uid': req.user?.id || null
-    });
+    if (shouldStoreEvent(eventType, payload)) {
+      const eventId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, user_id, org_id) VALUES (:sid, :type, :data, :uid, :org_id)`, {
+        ':sid': sessionId,
+        ':type': eventType,
+        ':data': dataStr,
+        ':uid': req.user?.id || null
+      });
 
-    // Index into FTS for instant search
-    indexEventFTS(eventId, eventType, dataStr);
+      // Index into FTS for instant search
+      indexEventFTS(eventId, eventType, dataStr);
+    }
+
+    // On Stop: store the final assistant reply as its own AssistantMessage row.
+    //
+    // WHY THIS EXISTS SEPARATELY FROM THE TRANSCRIPT WALK BELOW: the walk needs
+    // payload.transcript_path to exist ON THE MACHINE RUNNING THIS HANDLER. The
+    // hub is the mini PC; the sessions are on other boxes. So existsSync() is
+    // false for every remote session and the entire block below silently skips.
+    // That is why the newest AssistantMessage row on 2026-09-01 was dated Aug 7:
+    // not a parser bug, a filesystem-locality bug. Three weeks of replies were
+    // captured only inside Stop.data, which is in NEVER_EMBED and therefore
+    // unsearchable.
+    //
+    // last_assistant_message travels in the payload, so it needs no file access
+    // and works for every machine on the tailnet.
+    if (eventType === 'Stop' && payload.last_assistant_message) {
+      try {
+        const txt = String(payload.last_assistant_message).trim();
+        if (txt) {
+          const d = JSON.stringify({ text: txt, cwd });
+          const id = insertScoped(req, `INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, 'AssistantMessage', :data, :org_id)`, {
+            ':sid': sessionId, ':data': d, ':uid': req.user?.id || null
+          });
+          indexEventFTS(id, 'AssistantMessage', d);
+        }
+      } catch (err) {
+        console.error('[PAN] AssistantMessage capture failed:', err.message);
+      }
+    }
 
     // On Stop: extract ALL assistant text messages from the transcript for this turn
     // so the chat shows every "white dot" response, not just the last one
@@ -757,10 +956,21 @@ router.post('/:eventType', (req, res) => {
           }
         }
 
-        // If there are multiple text blocks, store all except the last one
-        // (the last one is already in the Stop event as last_assistant_message)
-        if (assistantTexts.length > 1) {
-          for (let i = 0; i < assistantTexts.length - 1; i++) {
+        // Store EVERY assistant text block as its own AssistantMessage row.
+        //
+        // This used to skip the final block, on the reasoning that it "is already
+        // in the Stop event as last_assistant_message". True, but Stop is in
+        // NEVER_EMBED -- so the single most valuable thing in the whole
+        // conversation, what the assistant actually concluded, was stored in a
+        // form that can never be vectorised or semantically recalled. On
+        // 2026-09-01 the newest AssistantMessage row was three weeks old (Aug 7,
+        // when this hook surface replaced the PTY one), while 56k older ones sat
+        // happily indexed. Every reply since had been write-only.
+        //
+        // The duplication with Stop.last_assistant_message is deliberate and
+        // cheap: Stop is never embedded, so nothing gets vectorised twice.
+        if (assistantTexts.length > 0) {
+          for (let i = 0; i < assistantTexts.length; i++) {
             const msgData = JSON.stringify({ text: assistantTexts[i], cwd: cwd });
             const msgId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, org_id) VALUES (:sid, 'AssistantMessage', :data, :org_id)`, {
               ':sid': sessionId,
