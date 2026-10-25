@@ -1,0 +1,3 @@
+
+# Hook scripts run under sh on every OS; CRLF breaks them on Linux.
+.githooks/* text eol=lf
