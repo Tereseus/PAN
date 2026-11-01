@@ -68,25 +68,44 @@ async function start() {
         pendingRequests.clear();
       });
 
-      // Send initialize handshake
-      setTimeout(async () => {
-        try {
-          const initResult = await rpcCall('initialize', {
-            protocolVersion: '2024-11-05',
-            capabilities: {},
-            clientInfo: { name: 'pan', version: '1.0.0' }
-          }, 10000);
-          // Send initialized notification
-          sendMessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
-          initialized = true;
-          console.log('[Playwright MCP] initialized, tools:', initResult?.capabilities?.tools ? 'yes' : 'unknown');
-          resolve(true);
-        } catch (e) {
-          console.error('[Playwright MCP] init failed:', e.message);
-          stop();
-          resolve(false);
+      // Send the initialize handshake, with room to breathe and one retry.
+      //
+      // npx has to resolve the package and boot node before anything reads stdin,
+      // and under shell:true that goes through cmd.exe as well. A handshake sent at
+      // 1s was simply thrown away, so the bridge reported itself unavailable while
+      // the server sat there working fine. Measured: a hand probe that waited 3s got
+      // a valid reply ~3s later.
+      const handshakeWithRetry = async () => {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const initResult = await rpcCall('initialize', {
+              protocolVersion: '2024-11-05',
+              capabilities: {},
+              clientInfo: { name: 'pan', version: '1.0.0' }
+            }, 25000);
+            sendMessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
+            initialized = true;
+            console.log(`[Playwright MCP] initialized on attempt ${attempt}, tools:`,
+              initResult?.capabilities?.tools ? 'yes' : 'unknown');
+            return true;
+          } catch (e) {
+            console.warn(`[Playwright MCP] initialize attempt ${attempt} failed: ${e.message}`);
+            if (attempt === 1 && mcpProcess && !mcpProcess.killed) {
+              // Process is still alive, so the message was lost rather than refused.
+              await new Promise((r) => setTimeout(r, 2000));
+              continue;
+            }
+            return false;
+          }
         }
-      }, 1000); // give npx a moment to start
+        return false;
+      };
+      
+      setTimeout(async () => {
+        const ok = await handshakeWithRetry();
+        if (!ok) stop();
+        resolve(ok);
+      }, 3000); // npx + cmd.exe + node boot; 1000ms was too early and lost the write
 
     } catch (e) {
       console.error('[Playwright MCP] failed to spawn:', e.message);
@@ -97,7 +116,16 @@ async function start() {
 
 function stop() {
   if (mcpProcess && !mcpProcess.killed) {
+    const pid = mcpProcess.pid;
     mcpProcess.kill();
+    // kill() reaches the cmd.exe wrapper only. npx, node and Chromium below it
+    // survive as orphans - four such processes were found still alive, holding
+    // memory, long after their parent had gone. Take the whole tree.
+    if (process.platform === 'win32' && pid) {
+      try {
+        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } catch {}
+    }
   }
   mcpProcess = null;
   initialized = false;
@@ -234,3 +262,86 @@ export async function raw(toolName, args = {}, timeoutMs = 15000) {
 }
 
 export { start, stop };
+
+// ── Page text ──────────────────────────────────────────────────
+//
+// browser_snapshot returns an accessibility tree: roles and refs, not prose.
+// Fine for clicking, useless as evidence for a model. browser_evaluate runs in
+// the page and hands back document.innerText, which is the actual readable text.
+//
+// Two gotchas, both measured:
+//   1. browser_navigate returns before the page paints. Reading immediately gave
+//      "Page Title: Loading ...&rdr=1" and nothing else. A wait is required.
+//   2. Results arrive wrapped in Playwright's '### Result "..."' envelope with
+//      the text JSON-escaped, so it has to be unwrapped and unescaped.
+
+function extractEvalResult(raw) {
+  let s = String(raw || '');
+  const m = s.match(/### Result\s*([\s\S]*?)(?:\n### |$)/);
+  if (m) s = m[1].trim();
+  if (s.startsWith('"')) {
+    try {
+      s = JSON.parse(s);
+    } catch {
+      // Truncated or oddly escaped: unwrap by hand rather than lose the text.
+      s = s.replace(/^"/, '').replace(/"$/, '')
+           .replace(/\\n/g, '\n')
+           .replace(/\\"/g, '"')
+           .replace(/\\\\/g, '\\');
+    }
+  }
+  return s;
+}
+
+/** Run a JS function in the live page and return its value as text. */
+export async function evaluate(fn, timeoutMs = 15000) {
+  const result = await callTool('browser_evaluate', { function: fn }, timeoutMs);
+  return extractEvalResult(result);
+}
+
+/**
+ * Fetch the human-readable text of a URL.
+ * settleMs covers the redirect-and-paint gap that made bare navigate useless.
+ */
+export async function readUrl(url, { settleMs = 2000, maxChars = 4000 } = {}) {
+  await callTool('browser_navigate', { url }, 20000);
+  if (settleMs > 0) {
+    await callTool('browser_wait_for', { time: Math.ceil(settleMs / 1000) }, 20000);
+  }
+  // body.innerText leads with nav chrome and site banners: a Wikipedia read
+  // opened with 600 chars of fundraising appeal. Prefer the article region.
+  const text = await evaluate('() => { const el = document.querySelector("main, article, #content, [role=main]"); return (el && el.innerText.length > 200) ? el.innerText : document.body.innerText; }');
+  return String(text || '').replace(/\n{3,}/g, '\n\n').trim().slice(0, maxChars);
+}
+
+/**
+ * Boot the browser ahead of time.
+ *
+ * Cold start is npx + cmd.exe + node + Chromium, measured at ~3s. Paying that
+ * inside a voice turn is the difference between an answer and a dead pause, so
+ * the hub calls this at startup. Never throws and never blocks the caller.
+ */
+export function warm() {
+  if (isRunning()) return Promise.resolve(true);
+  const t0 = Date.now();
+  return start()
+    .then(async (ok) => {
+      if (!ok) {
+        console.log(`[Playwright MCP] warm FAILED in ${Date.now() - t0}ms`);
+        return false;
+      }
+      // Starting the server is not enough: it launches Chromium lazily, on the
+      // first navigation. Do that here so no voice turn ever pays for it.
+      try {
+        await callTool('browser_navigate', { url: 'about:blank' }, 30000);
+      } catch (e) {
+        console.warn('[Playwright MCP] warm navigation failed:', e.message);
+      }
+      console.log(`[Playwright MCP] warm ready in ${Date.now() - t0}ms`);
+      return true;
+    })
+    .catch((e) => {
+      console.warn('[Playwright MCP] warm failed:', e.message);
+      return false;
+    });
+}
