@@ -238,13 +238,28 @@ function takeLock() {
 }
 function ownsLock() { try { return readFileSync(LOCK, 'utf8').trim() === String(process.pid); } catch { return false; } }
 
+// Exiting while a fetch socket is still closing trips a libuv assertion on
+// Windows ("UV_HANDLE_CLOSING", exit 127). Let the reply check in flight
+// finish, flush stdout, then exit, so the JOB line can never be lost.
+let replyRun = null;
+function startReplyCheck() {
+  if (!replyRun) replyRun = checkReplies().catch(() => {}).finally(() => { replyRun = null; });
+}
+async function finish(replyTimer, line) {
+  clearInterval(replyTimer);
+  if (replyRun) await replyRun;
+  await new Promise(r => process.stdout.write(line + '\n', r));
+  setTimeout(() => process.exit(0), 200);
+  await new Promise(() => {});
+}
+
 async function waitLoop() {
   takeLock();
   let lastReport = 0;
-  const replyTimer = setInterval(() => { checkReplies().catch(() => {}); }, 3000);
-  checkReplies().catch(() => {});
+  const replyTimer = setInterval(startReplyCheck, 3000);
+  startReplyCheck();
   for (;;) {
-    if (!ownsLock()) { clearInterval(replyTimer); console.log('SUPERSEDED another wait loop took over; nothing to do'); process.exit(0); }
+    if (!ownsLock()) await finish(replyTimer, 'SUPERSEDED another wait loop took over; nothing to do');
     if (Date.now() - lastReport > 60_000) {
       try { await api('POST', '/api/v1/threads/report', { host: HOST, threads: listThreads() }); lastReport = Date.now(); }
       catch (e) { log(`report failed: ${e.message}`); }
@@ -255,10 +270,8 @@ async function waitLoop() {
     if (res?.job) {
       // Even if a newer loop took the lock mid-poll, this job is claimed by
       // us now and must be delivered, so print it either way.
-      clearInterval(replyTimer);
       const j = res.job;
-      console.log('JOB ' + JSON.stringify({ job_id: j.id, session_id: j.session_id, title: j.title, message: j.message }));
-      process.exit(0);
+      await finish(replyTimer, 'JOB ' + JSON.stringify({ job_id: j.id, session_id: j.session_id, title: j.title, message: j.message }));
     }
   }
 }
