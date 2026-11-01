@@ -34,6 +34,7 @@ import mcpQualityLogRouter from './routes/mcp-quality-log.js';
 import mcpPanRouter from './routes/mcp-pan.js';
 import captureRouter from './routes/capture.js';
 import dashboardsRouter from './routes/dashboards.js';
+import threadsRouter from './routes/threads.js';
 import exchangeRouter from './routes/exchange.js';
 import { applyCaptureConsentAtBoot, isCaptureOn } from './capture-consent.js';
 import identityRouter, { observeFace, observeVoice } from './routes/identity.js';
@@ -971,6 +972,9 @@ app.use('/api/v1/capture', captureRouter);
 // scripts. Always mounted, every profile: it's how PAN knows the user's
 // monitoring surfaces + renders them on the phone. See routes/dashboards.js.
 app.use('/api/v1/dashboards', dashboardsRouter);
+
+// Thread relay — voice to any Claude Code desktop thread. See src/thread-relay.js.
+app.use('/api/v1/threads', threadsRouter);
 
 // ServiceNow assist loop — DRAFTING BRAIN only (PAN never sends; the bridge
 // dashboard sends on the user's click). Reverse-push: the bridge watcher POSTs

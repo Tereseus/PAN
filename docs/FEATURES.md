@@ -681,6 +681,43 @@ children can have adult-sounding voices and vice versa).
 
 ---
 
+## Thread Relay (voice to any Claude Code desktop thread)
+
+- **Purpose:** Talk by voice from the phone to any Claude Code thread in the Claude
+  desktop app on any machine ("tell the billing thread to run the tests", "ask map
+  editor what it's doing") and hear the thread's answer back.
+- **Voice path:** `routeStream` / `route` in `router.js` call `_threadRelayFastPath`
+  BEFORE the ambient filter and the LLM. `parseThreadCommand` (in
+  `src/thread-relay.js`) is deterministic: verb + name + "thread/session/chat", "in
+  the X thread, ...", or verb + a confident unambiguous title match. Also handles
+  "tell it ..." (last thread, 15 min), "which threads are open", "what did the X
+  thread say", and a short answer to "Which thread, A or B?" (90 s). Benchmark and
+  regression sources get the parse only and never touch a thread.
+- **Matching:** fuzzy, IDF-weighted token match on titles the relays report;
+  duplicate titles resolve to a live relay first, then the most recent. Extra STT
+  aliases per install: `thread-aliases.json` next to the DB, `{ "heard": "title word" }`.
+- **Reply:** the voice turn holds up to 22 s (SSE keepalives) and speaks the answer
+  inline. Later answers (and failures) go to the phone queue as `type:'speak'`
+  (`enqueuePhoneNote` in `routes/api.js`); the app reads them aloud and leaves a
+  notification (app 0.4.41+).
+- **Hub API:** `routes/threads.js` at `/api/v1/threads` — `GET /` (registry + relay
+  health), `GET /match?name=`, `POST /ask {target,text,wait_ms}`, `GET /jobs`,
+  `GET /jobs/:id`; relay side `POST /report`, `GET /jobs/next?host=&wait=` (long-poll,
+  204 when idle), `POST /jobs/:id/delivered|reply|fail`. Tables
+  `thread_relay_threads`, `thread_relay_jobs`, `thread_relay_hosts` (self-migrating).
+- **Machine side:** `pan-client/thread-relay/relay.js` reads the desktop app's
+  session metadata (`claude-code-sessions/*/*/local_*.json`) for the thread list and
+  each thread's transcript (`~/.claude/projects/<cwd>/<cliSessionId>.jsonl`) for the
+  answer to the turn tagged `req <job id>`. One resident desktop thread titled
+  "PAN Voice Relay" runs `relay.js wait` in the background and delivers each job with
+  the session messaging tool; see `pan-client/thread-relay/RELAY.md`.
+- **Liveness:** heartbeat on every long-poll; `relay.js status` says ALIVE/DEAD. A
+  desktop scheduled task re-wakes the relay thread after an app restart.
+- **Preserves:** nothing is typed into a thread unless the utterance parsed to a
+  confident single match; ambiguous names ask first.
+
+---
+
 ## Installer — Smart Device Naming
 
 - **Purpose:** When a client device installs PAN, name it from hardware model

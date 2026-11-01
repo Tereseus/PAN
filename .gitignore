@@ -185,3 +185,6 @@ service/bin/start-dictation.vbs
 service/src/evals/
 service/src/prompts/
 temp-tasks.json
+
+# thread relay per-machine state (job offsets, wait lock)
+pan-client/thread-relay/.state/

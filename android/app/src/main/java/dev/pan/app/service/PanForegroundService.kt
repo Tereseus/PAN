@@ -787,6 +787,13 @@ class PanForegroundService : Service() {
                         // other type renders as a plain alert (no reply box).
                         if (note.type == "slack" || note.channelId != null) {
                             showSlackNotification(note)
+                        } else if (note.type == "speak") {
+                            // A Claude thread answered after the voice turn
+                            // closed (thread relay). Say it, and leave it on
+                            // screen in case it was missed or muted.
+                            val say = note.body?.trim().orEmpty()
+                            if (say.isNotEmpty()) mainHandler.post { panSpeak(say) }
+                            showAlertNotification(note)
                         } else {
                             showAlertNotification(note)
                         }

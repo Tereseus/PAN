@@ -1613,6 +1613,27 @@ async function handleCorrectionIfNeeded(text, context, activeDevices) {
   };
 }
 
+// Thread relay fast path — "tell the billing thread ...", "ask map editor ...".
+// Deterministic and BEFORE the classifier: the small local model cannot be
+// trusted to pick a thread name out of a sentence, and a wrong guess here
+// would put words in a real working thread. Returns null when the utterance is
+// not about threads. Benchmarks get the parse but never touch a real thread.
+async function* _threadRelayFastPath(text, context) {
+  let tr;
+  try { tr = await import('./thread-relay.js'); } catch (e) { console.warn('[PAN Router] thread-relay unavailable:', e.message); return; }
+  let cmd;
+  try { cmd = tr.parseThreadCommand(text); } catch (e) { console.warn('[PAN Router] thread parse failed:', e.message); return; }
+  if (!cmd) return;
+  if (context?.source && /benchmark|regression/.test(context.source)) {
+    const response = `[benchmark: thread relay parsed ${cmd.kind}${cmd.thread ? ' -> ' + cmd.thread.title : ''} — no thread touched]`;
+    yield { type: 'chunk', text: response };
+    yield { type: 'done', result: { intent: 'thread', speech_act: 'command', response, thread_parse: { kind: cmd.kind, title: cmd.thread?.title || null, text: cmd.text || null } } };
+    return;
+  }
+  writeThought('router', `Thread relay: "${text.slice(0, 80)}" -> ${cmd.kind}${cmd.thread ? ' ' + cmd.thread.title : ''}`, { intent: 'thread' }, 0.5);
+  yield* tr.handleThreadCommand(cmd, text, context);
+}
+
 async function route(text, context = {}) {
   const cmdId = context._commandId || null;
 
@@ -1627,6 +1648,18 @@ async function route(text, context = {}) {
       logStep(cmdId, 'completed', quick.response?.slice(0, 200));
       insertRouterEvent(text, quick.intent, quick.response, context);
       return quick;
+    }
+  }
+
+  // 1.2 Thread relay — talk to a Claude Code desktop thread (no LLM)
+  {
+    let result = null;
+    for await (const ev of _threadRelayFastPath(text, context)) if (ev.type === 'done') result = ev.result;
+    if (result) {
+      logStep(cmdId, 'classified', 'thread (relay fast path, no Claude)');
+      insertRouterEvent(text, result.intent, result.response, context);
+      try { result.prosody = planProsody(result); } catch {}
+      return result;
     }
   }
 
@@ -1936,6 +1969,22 @@ export async function* routeStream(text, context = {}) {
       yield { type: 'done', result: withProsody(quick) };
       return;
     }
+  }
+
+  // Thread relay — talk to a Claude Code desktop thread (no LLM). Streams the
+  // ack first, then the thread's answer if it lands while the turn is open.
+  {
+    let handled = false;
+    for await (const ev of _threadRelayFastPath(text, context)) {
+      handled = true;
+      if (ev.type === 'done') {
+        insertRouterEvent(text, ev.result.intent, ev.result.response, context);
+        yield { type: 'done', result: withProsody(ev.result) };
+      } else {
+        yield ev;
+      }
+    }
+    if (handled) return;
   }
 
   // Ambient pre-filter — emit dedicated 'ambient' chunk (not [AMBIENT] literal)

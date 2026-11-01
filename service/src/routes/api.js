@@ -699,14 +699,19 @@ router.post('/slack/inbound', async (req, res) => {
 });
 // Generic PAN notification enqueue — meeting reminders (and anything else that used to
 // go to ntfy) POST here with a type. Shares the same queue as slack; the phone drains it
-// and renders by type ('slack' = reply notification, 'meeting'/other = plain notification).
+// and renders by type ('slack' = reply notification, 'speak' = read aloud + notification,
+// 'meeting'/other = plain notification).
+export function enqueuePhoneNote({ type = 'info', title = 'PAN', body = '', data = null } = {}) {
+  const limit = type === 'speak' ? 2000 : 500;
+  const note = { id: ++slackSeq, type, title: String(title).slice(0, 200), body: String(body).slice(0, limit), data };
+  slackQueue.push(note);
+  if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);
+  console.log(`[notify] queued #${note.id} [${type}] ${title}: ${String(body).slice(0, 50)}`);
+  return note;
+}
 router.post('/notify/inbound', (req, res) => {
   try {
-    const { type = 'info', title = 'PAN', body = '', data = null } = req.body || {};
-    const note = { id: ++slackSeq, type, title: String(title).slice(0, 200), body: String(body).slice(0, 500), data };
-    slackQueue.push(note);
-    if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);
-    console.log(`[/notify/inbound] queued #${note.id} [${type}] ${title}: ${String(body).slice(0, 50)}`);
+    const note = enqueuePhoneNote(req.body || {});
     res.json({ ok: true, queued: note.id });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
