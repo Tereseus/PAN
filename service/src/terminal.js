@@ -920,7 +920,7 @@ async function startTerminalServer(httpServer) {
 
     const sessionId = tokenEntry?.sessionId || url.searchParams.get('session') || 'default';
     const projectName = tokenEntry?.project || url.searchParams.get('project') || '';
-    const cwd = tokenEntry?.cwd || url.searchParams.get('cwd') || '%USERPROFILE%\\Desktop';
+    const cwd = resolvePtyCwd(tokenEntry?.cwd || url.searchParams.get('cwd'));
     const tabName = url.searchParams.get('tab_name') || '';
     const cols = parseInt(url.searchParams.get('cols')) || 120;
     const rows = parseInt(url.searchParams.get('rows')) || 30;
@@ -1967,11 +1967,30 @@ function proxyWhisperWs(request, socket, head) {
   });
 }
 
+// A PTY's working directory has to exist on THIS machine. The old default was the literal
+// string '%USERPROFILE%\Desktop', which nothing ever expanded, and tabs restored from another
+// machine carry that machine's paths. Either way ConPTY refused with error 267 and the
+// dashboard reconnected straight into the same failure (1,748 times in one hub log). Expand
+// %VARS%, and fall back to the user's home (then the OS home) when the folder is missing.
+const _badCwdLogged = new Set();
+function resolvePtyCwd(cwd) {
+  const home = process.env.USERPROFILE || homedir();
+  if (!cwd) return existsSync(join(home, 'Desktop')) ? join(home, 'Desktop') : home;
+  let expanded = String(cwd).replace(/%([^%]+)%/g, (m, name) => process.env[name] ?? m);
+  if (process.platform === 'win32') expanded = expanded.replace(/\//g, '\\');
+  if (existsSync(expanded)) return expanded;
+  if (!_badCwdLogged.has(cwd)) {
+    _badCwdLogged.add(cwd);
+    console.warn(`[PAN Terminal] cwd ${cwd} does not exist here, using ${home}`);
+  }
+  return home;
+}
+
 // Create a lightweight pipe-only session (no PTY) for mobile new-tab flow.
 // The ClaudeAdapter is created lazily on first pipeSend — no PTY needed.
 function createPipeSession(sessionId, { cwd = null, projectName = '' } = {}) {
   if (sessions.has(sessionId)) return sessions.get(sessionId);
-  const resolvedCwd = cwd || process.env.USERPROFILE || '%USERPROFILE%\\Desktop';
+  const resolvedCwd = resolvePtyCwd(cwd);
   const term = new ScreenBufferClass(120, 30);
   const logFile = join(TERMINAL_LOG_DIR, sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') + '.jsonl');
   term.setLogFile(logFile);
