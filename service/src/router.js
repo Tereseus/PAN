@@ -2325,6 +2325,48 @@ answer an earlier question, and do not narrate what the context blocks mention.`
 
   const model = getConfiguredModel ? getConfiguredModel() : 'cerebras:qwen-3-235b';
 
+  // OmniΠ: a small model fine-tuned on this exact prompt's behaviour (plus who a line is for,
+  // turn type and camera need), so it gets only the live context - ~30 tokens instead of the
+  // ~2,600 above, and no 16-22s re-read when the prompt falls out of the KV cache.
+  // Setting voice_student_model (e.g. "ollama:omnipi") turns it on; empty or absent = off.
+  // If it cannot be reached, the turn falls back to the full prompt on the normal chain.
+  // A [CAMERA] reply also falls back: the phone does not take a photo on that flag yet, and
+  // OmniΠ still reads some "this/that" lines as needing a look, so the full prompt decides.
+  let studentModel = '';
+  try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
+  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(),
+    `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
+  const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
+  async function* voiceStream() {
+    if (studentModel) {
+      let got = false;
+      let head = '';        // held until the reply's first characters show whether it is [CAMERA]
+      let camera = false;
+      try {
+        for await (const c of askAIStreamWithFallback(studentPrompt, { ...streamOpts, chain: [studentModel] })) {
+          got = true;
+          if (head === null) { yield c; continue; }
+          head += c;
+          const r = head.match(/"response"\s*:\s*"([\s\S]*)/)?.[1] || '';
+          // Three characters tell [CAMERA] from [AMBIENT]; any other reply is released at once.
+          if (!r || (r.startsWith('[') && r.length < 3)) continue;
+          if (r.startsWith('[CA')) { camera = true; break; }
+          yield head;
+          head = null;
+        }
+        if (!camera) {
+          if (head) yield head;
+          return;
+        }
+        console.log(`[routeStream] ${studentModel} asked for the camera - full prompt instead`);
+      } catch (e) {
+        if (got && head === null) throw e;
+        console.warn(`[routeStream] ${studentModel} unavailable (${e.message}) - full prompt instead`);
+      }
+    }
+    yield* askAIStreamWithFallback(prompt, streamOpts);
+  }
+
   let fullBuf = '';
   // lastLen is what has actually been SPOKEN; held is what has been extracted.
   // They used to be the same number - the gate is the reason they are not.
@@ -2338,7 +2380,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     // #996: streaming fallback wrapper. Connect-time failures cascade through
     // chain (cerebras → claude → ollama); mid-stream failures propagate as
     // truncation (no mid-stream switching — would corrupt the chunk sequence).
-    for await (const chunk of askAIStreamWithFallback(prompt, { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null })) {
+    for await (const chunk of voiceStream()) {
       fullBuf += chunk;
       if (gate === null) {
         const d = readAddressGate(fullBuf);
@@ -2350,7 +2392,8 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       if (extracted.length > held.length) held = extracted;
       // A word already out of the speaker cannot be taken back; a held one
       // costs nothing. So nothing is emitted until the gate opens.
-      if (gate === 'open' && held.length > lastLen) {
+      // A bracketed placeholder ([AMBIENT], OmniΠ's [CAMERA]) is never spoken.
+      if (gate === 'open' && held.length > lastLen && !held.startsWith('[')) {
         // lastLen still advances by the RAW length, so the stream position stays
         // correct; only what gets spoken is filtered.
         const delta = speakable(held.slice(lastLen));
@@ -2409,6 +2452,15 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   try {
     const jsonMatch = fullBuf.match(/\{[\s\S]*\}/);
     const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    if (parsed && parsed.response === '[CAMERA]') {
+      // OmniΠ judged that answering needs a look. The phone still triggers its photo from its
+      // own phrase list, so until it acts on this flag, say so instead of guessing blind.
+      console.log(`[routeStream] camera needed: ${JSON.stringify(String(text).slice(0, 60))}`);
+      const ask = "I'd need to see that. Point me at it and say what is this.";
+      yield { type: 'chunk', text: ask };
+      yield { type: 'done', result: withProsody({ ...parsed, intent: 'query', camera: true, response: ask }) };
+      return;
+    }
     if (parsed) {
       // Veto a wrong 'ambient' on an utterance that is obviously a question
       // or a command. See looksDirectedAtPan for why this is not left to the model.

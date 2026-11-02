@@ -718,6 +718,23 @@ children can have adult-sounding voices and vice versa).
 
 ---
 
+## Voice student model (OmniΠ)
+
+- **Purpose:** answer voice turns with a small fine-tuned model that already knows the
+  voice prompt's behaviour, so it only gets the live context (recent lines, memory hits,
+  the heard line): about 30 tokens instead of about 2,600. First word in about 0.3 s on
+  the mini PC CPU.
+- **Switch:** setting `voice_student_model` (e.g. `"ollama:omnipi"`). Empty or absent =
+  off, every turn uses the full prompt as before.
+- **Code:** `voiceStream()` inside `routeStream` in `router.js`. Output is the same JSON
+  the full prompt produces, plus `to`, `turn` and `camera`.
+- **Falls back to the full prompt when:** the model cannot be reached, or its reply is
+  `[CAMERA]` (the phone does not act on that flag yet, and the model still over-reads
+  some "this/that" lines as needing a look).
+- **Preserves:** the gate, ambient veto and action handling downstream are unchanged.
+
+---
+
 ## Installer — Smart Device Naming
 
 - **Purpose:** When a client device installs PAN, name it from hardware model
