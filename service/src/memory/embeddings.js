@@ -78,6 +78,12 @@ async function _hasModel(url) {
 let _loggedHostSwitch = false;
 
 async function _resolveEmbedTarget() {
+  // ollama_url first: it is what GAME MODE switches. Asking Scout first sent embeddings to
+  // any device carrying the model, so the moment Mint got qwen3-embedding (2026-11-02) the
+  // hub pinned it on Mint's GPU while game mode had handed the card to someone else.
+  const primary = getOllamaUrl();
+  if (primary && await _hasModel(primary)) return { url: primary, model: EMBED_MODEL, viaRegistry: false };
+
   try {
     // Lazy import so we don't pull all of scout.js into the embedding hot
     // path before Craft has finished booting. After the first call Node

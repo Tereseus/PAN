@@ -87,6 +87,17 @@ function _recallIsRelevant(text, hits) {
 
 // Build the situation block from the live intuition snapshot. Returns '' when
 // no snapshot is available (boot-up, isolated tests). See task #745 (#NEW-2).
+// Date and time on every voice turn. Without it the model could not answer "what time is it
+// in Tokyo", so the phone answered time questions itself with a hard-coded shortcut, which
+// also swallowed "what time is it over there". The hub's clock is the one he lives by.
+function nowLine() {
+  const d = new Date();
+  const when = d.toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+  const off = -d.getTimezoneOffset() / 60;
+  return `Now: ${when} (${tz}, UTC${off >= 0 ? '+' : ''}${off}).`;
+}
+
 function buildSituationBlock(orgId) {
   try {
     const snap = getCurrentSnapshot(orgId || null);
@@ -2315,6 +2326,8 @@ He says: "sarah reckons the pendant idea is daft what do you think"  -> addresse
 
 Return only JSON.${personalityBlock}
 ${memoryFactsBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${dialogHistoryBlock}${historyBlock}${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${episodicHitsBlock}${sensorBlock}${weatherBlock}${selfBlock}${hintBlock}${standingBlock}
+${nowLine()}
+
 Always include "speech_act", and "importance" 0..1 (0.1 ambient, 0.5 normal,
 0.9 urgent) - it sets how the reply is spoken.
 
@@ -2380,13 +2393,13 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // prompt it answered in English, after 37s on the hub CPU. 1.2s and correct like this.
   const standingPrompt = standing ? [
     'You are PAN, his voice assistant. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
-    historyBlock.trim(), String(memoryContext || '').trim(),
+    historyBlock.trim(), String(memoryContext || '').trim(), nowLine(),
     `Standing instruction he gave at ${new Date(standing.at).toTimeString().slice(0, 5)}: "${standing.text}". Apply it to what he says now: "response" is exactly what that instruction asks for (for "translate what I say", only the translation of his words).`,
     `Mic heard: "${safeText}"`,
   ].filter(Boolean).join('\n\n') : '';
   // Asked how PAN works or what model it runs, OmniΠ gets one line of live facts (buildSelfLine);
   // without them it asked back "what hub do you mean?", and the full block confused it.
-  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '',
+  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(),
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
   async function* voiceStream() {
