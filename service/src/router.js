@@ -2376,14 +2376,21 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let cameraAsk = false;
   try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
   // OmniΠ does not follow standing instructions even when handed one (tested: still answered
-  // in English), gemma4:e2b does, so those turns take the full prompt.
-  if (standing) studentModel = '';
+  // in English). gemma4:e2b does, but only in a SHORT prompt: inside the ~3,000-token voice
+  // prompt it answered in English, after 37s on the hub CPU. 1.2s and correct like this.
+  const standingPrompt = standing ? [
+    'You are PAN, his voice assistant. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+    historyBlock.trim(), String(memoryContext || '').trim(),
+    `Standing instruction he gave at ${new Date(standing.at).toTimeString().slice(0, 5)}: "${standing.text}". Apply it to what he says now: "response" is exactly what that instruction asks for (for "translate what I say", only the translation of his words).`,
+    `Mic heard: "${safeText}"`,
+  ].filter(Boolean).join('\n\n') : '';
   // Asked how PAN works or what model it runs, OmniΠ gets one line of live facts (buildSelfLine);
   // without them it asked back "what hub do you mean?", and the full block confused it.
   const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
   async function* voiceStream() {
+    if (standing) { yield* askAIStreamWithFallback(standingPrompt, streamOpts); return; }
     if (studentModel) {
       // Where a turn's time goes, before and after the model: setup is everything above
       // (prompt blocks, memory), first is the model's first chunk.
