@@ -114,7 +114,7 @@ export function buildSelfBlock() {
   }
 
   lines.push('- Your speech is generated ON THE PHONE and never sent anywhere.');
-  lines.push('- His speech is turned into text by NVIDIA Parakeet on the mini PC (the phone's own small model is the fallback, and mishears words, so read what he says for what he most likely meant).');
+  lines.push("- His speech is turned into text by NVIDIA Parakeet on the mini PC (the phone's own small model is the fallback, and mishears words, so read what he says for what he most likely meant).");
   lines.push('- Live lookups you really have: weather, Wikipedia, currency rates, crypto prices, air quality.');
   lines.push('- You have NO general web search. The browser bridge exists but does not currently start.');
   lines.push('When asked how you work, what model you are, or whether something is private,');
