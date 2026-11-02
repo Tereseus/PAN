@@ -1473,6 +1473,7 @@ class PanForegroundService : Service() {
                     text = text,
                     conversationHistory = historyContext,
                     sensorJson = sensorJson,
+                    canCamera = sensorContext.cameraEnabled,
                     onChunk = { chunk ->
                         if (firstChunkTime == 0L) {
                             firstChunkTime = System.currentTimeMillis()
@@ -1504,6 +1505,14 @@ class PanForegroundService : Service() {
                 // #462: ambient verdict — silently drop, no TTS, no history, no fallback.
                 if (response?.intent == "ambient") {
                     panLog("Ambient (${elapsed}ms): no-op")
+                    return@launch
+                }
+
+                // The hub judged this needs a look ("does this look ripe") without one of the
+                // fixed camera phrases: same photo path as "what is this".
+                if (response?.camera == true) {
+                    panLog("Camera from hub (${elapsed}ms): $text")
+                    handleCameraCommand(text)
                     return@launch
                 }
 

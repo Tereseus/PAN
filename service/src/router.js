@@ -381,6 +381,17 @@ function looksDirectedAtPan(text) {
   return opener.test(body);
 }
 
+// Second opinion before OmniΠ's camera flag takes a photo. Its false alarms in testing were
+// "skip this song", "which server should we use", "no I don't think that's right", "let's see
+// if you can send a message to the terminal": a pointing word about something you can't
+// photograph, or no pointing word at all. A miss here costs nothing worse than today
+// (the full prompt answers); a wrong photo is the annoying failure.
+function looksVisual(text) {
+  const t = String(text || '').toLowerCase();
+  if (!/\b(this|these|that|those|here|look|looks|looking|see|seeing|read|wearing|colou?r|ripe)\b/.test(t)) return false;
+  return !/\b(song|track|music|playlist|server|page|website|app|message|terminal|code|idea|logic|game|thread|email|meeting)\b|\bthat'?s (right|wrong|true)\b|\blet'?s see\b/.test(t);
+}
+
 // Fast ambient pre-filter — detects speech clearly not directed at PAN without LLM call
 // Only fires for voice/mic input (dashboard input is always a command)
 function quickAmbientCheck(text) {
@@ -2330,9 +2341,11 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // ~2,600 above, and no 16-22s re-read when the prompt falls out of the KV cache.
   // Setting voice_student_model (e.g. "ollama:omnipi") turns it on; empty or absent = off.
   // If it cannot be reached, the turn falls back to the full prompt on the normal chain.
-  // A [CAMERA] reply also falls back: the phone does not take a photo on that flag yet, and
-  // OmniΠ still reads some "this/that" lines as needing a look, so the full prompt decides.
+  // A [CAMERA] reply becomes a photo only when the phone can take one (can_camera) and the
+  // line passes looksVisual; otherwise it falls back too, because OmniΠ still reads some
+  // "this/that" lines as needing a look.
   let studentModel = '';
+  let cameraAsk = false;
   try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
   const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(),
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
@@ -2358,6 +2371,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           if (head) yield head;
           return;
         }
+        if (context.canCamera && looksVisual(text)) { cameraAsk = true; return; }
         console.log(`[routeStream] ${studentModel} asked for the camera - full prompt instead`);
       } catch (e) {
         if (got && head === null) throw e;
@@ -2448,19 +2462,18 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     return;
   }
 
+  if (cameraAsk) {
+    // Empty reply on purpose: the phone says its own "let me have a look", takes the photo
+    // and answers from it (handleCameraCommand), the same path as "what is this".
+    console.log(`[routeStream] camera: ${JSON.stringify(String(text).slice(0, 60))}`);
+    yield { type: 'done', result: withProsody({ intent: 'query', addressed: 0.95, camera: true, response: '', importance: 0.5 }) };
+    return;
+  }
+
   // Parse the final JSON for intent + actions
   try {
     const jsonMatch = fullBuf.match(/\{[\s\S]*\}/);
     const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-    if (parsed && parsed.response === '[CAMERA]') {
-      // OmniΠ judged that answering needs a look. The phone still triggers its photo from its
-      // own phrase list, so until it acts on this flag, say so instead of guessing blind.
-      console.log(`[routeStream] camera needed: ${JSON.stringify(String(text).slice(0, 60))}`);
-      const ask = "I'd need to see that. Point me at it and say what is this.";
-      yield { type: 'chunk', text: ask };
-      yield { type: 'done', result: withProsody({ ...parsed, intent: 'query', camera: true, response: ask }) };
-      return;
-    }
     if (parsed) {
       // Veto a wrong 'ambient' on an utterance that is obviously a question
       // or a command. See looksDirectedAtPan for why this is not left to the model.

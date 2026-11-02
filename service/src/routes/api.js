@@ -1459,7 +1459,7 @@ router.post('/query', async (req, res) => {
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
 router.post('/query/stream', async (req, res) => {
-  const { text, context, intent_hint, sensors } = req.body;
+  const { text, context, intent_hint, sensors, can_camera } = req.body;
   if (!text) return res.status(400).json({ error: 'missing text' });
 
   // SSE headers
@@ -1553,6 +1553,8 @@ router.post('/query/stream', async (req, res) => {
       sensors: parsedSensors,
       signal: controller.signal,
       org_id: req.org_id,
+      // App 0.4.42+ with the camera on: a camera:true done event makes it take the photo.
+      canCamera: !!can_camera,
     })) {
       send(event);
       if (event.type === 'done') break;

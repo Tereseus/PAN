@@ -728,9 +728,14 @@ children can have adult-sounding voices and vice versa).
   off, every turn uses the full prompt as before.
 - **Code:** `voiceStream()` inside `routeStream` in `router.js`. Output is the same JSON
   the full prompt produces, plus `to`, `turn` and `camera`.
+- **Camera:** a `[CAMERA]` reply becomes a photo when the phone sent `can_camera`
+  (app 0.4.42+, camera on in sensor settings) AND the line passes `looksVisual` (a
+  pointing word, and not about a song, server, page, message...). The hub then sends
+  `done` with `camera:true` and an empty reply; the phone runs `handleCameraCommand`
+  (same as "what is this": ack, photo, Nano or server vision, speak).
 - **Falls back to the full prompt when:** the model cannot be reached, or its reply is
-  `[CAMERA]` (the phone does not act on that flag yet, and the model still over-reads
-  some "this/that" lines as needing a look).
+  `[CAMERA]` and the camera rule above does not hold (OmniΠ still over-reads some
+  "this/that" lines as needing a look).
 - **Preserves:** the gate, ambient veto and action handling downstream are unchanged.
 
 ---

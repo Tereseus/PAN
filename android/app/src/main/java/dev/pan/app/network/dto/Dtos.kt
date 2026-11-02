@@ -80,7 +80,9 @@ data class QueryResponse(
     // sit on the reply before speaking it. hold_ms > 0 means the hub landed
     // in the middle of that range: say it only if he has stopped talking.
     val addressed: Double? = null,
-    val hold_ms: Long = 0L
+    val hold_ms: Long = 0L,
+    // The hub decided answering needs a look: take a photo and answer from it.
+    val camera: Boolean = false
 )
 
 data class DeviceRegisterRequest(

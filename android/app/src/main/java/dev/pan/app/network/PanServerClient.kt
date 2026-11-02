@@ -301,6 +301,7 @@ class PanServerClient @Inject constructor(
         text: String,
         conversationHistory: String = "",
         sensorJson: String? = null,
+        canCamera: Boolean = false,
         onChunk: (String) -> Unit
     ): QueryResponse? = withContext(Dispatchers.IO) {
         try {
@@ -308,6 +309,7 @@ class PanServerClient @Inject constructor(
                 put("text", text)
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
                 if (sensorJson != null) put("sensors", sensorJson)
+                if (canCamera) put("can_camera", true)
             }.toString().toRequestBody("application/json".toMediaType())
 
             // Build against default URL — the OkHttp interceptor will rewrite to Tailscale if active
@@ -361,7 +363,8 @@ class PanServerClient @Inject constructor(
                                     query = result.optString("query", null),
                                     actions = emptyList(),
                                     addressed = if (result.has("addressed") && !result.isNull("addressed")) result.optDouble("addressed") else null,
-                                    hold_ms = result.optLong("hold_ms", 0L)
+                                    hold_ms = result.optLong("hold_ms", 0L),
+                                    camera = result.optBoolean("camera", false)
                                 )
                             }
                             break
