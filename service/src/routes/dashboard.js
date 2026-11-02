@@ -426,7 +426,24 @@ router.get('/api/search', (req, res) => {
   res.json(results);
 });
 
+// Free text -> FTS5 query. Each word becomes a quoted prefix term, so the user's
+// text can never be parsed as FTS syntax. joiner ' ' = every word, ' OR ' = any.
+function toFtsQuery(text, joiner) {
+  const words = String(text).match(/[\p{L}\p{N}_]+/gu) || [];
+  return words.slice(0, 12).map(w => `"${w}"*`).join(joiner);
+}
+
+// Window the LIKE-based project_path filter scans, counted back from the newest event.
+const PROJECT_PATH_SCAN_WINDOW = 50_000;
+
 // GET /dashboard/api/events?type=X&limit=50&offset=0&date=2026-03-20&q=search
+//
+// q goes through events_fts, never `data LIKE '%q%'`. That LIKE was the 200+
+// second Craft freezes of 2026-10-31..11-02: pan_search calls this endpoint,
+// and on a 12 GB encrypted DB the COUNT(*) plus the page query each decrypted
+// and scanned every row on the main thread. A multi-word q almost never
+// matched as one literal substring, so the page query scanned everything too:
+// two back-to-back ~220 s blocks per search, with /health still answering.
 router.get('/api/events', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 50, 500);
   const offset = parseInt(req.query.offset) || 0;
@@ -446,10 +463,6 @@ router.get('/api/events', (req, res) => {
     where.push("date(created_at) = :date");
     params[':date'] = date;
   }
-  if (search) {
-    where.push("data LIKE :q");
-    params[':q'] = `%${search}%`;
-  }
   if (sessionId) {
     where.push("session_id = :session_id");
     params[':session_id'] = sessionId;
@@ -460,20 +473,54 @@ router.get('/api/events', (req, res) => {
     // Events store cwd with JSON-escaped backslashes (\\\\) — normalize and match both forms
     const fwd = projectPath.replace(/\\/g, '/');                    // %USERPROFILE%/.../PAN
     const bk = fwd.replace(/\//g, '\\\\');                          // %USERPROFILE%\\...\\PAN (as in JSON)
+    // Bounded to recent events: callers only want the latest sessions for the
+    // project, and an unbounded LIKE is the same full scan as the old q path.
+    where.push("id > (SELECT MAX(id) FROM events) - :pp_window");
     where.push("(data LIKE :pp1 OR data LIKE :pp2)");
+    params[':pp_window'] = PROJECT_PATH_SCAN_WINDOW;
     params[':pp1'] = `%${bk}%`;
     params[':pp2'] = `%${fwd}%`;
   }
 
   const whereClause = `WHERE ${where.join(' AND ')}`;
 
-  const total = getScoped(req, `SELECT COUNT(*) as count FROM events ${whereClause}`, params);
+  if (search) {
+    // Candidate ids come from the FTS index only; at most `cap` events rows are read.
+    const cap = Math.max(2000, (offset + limit) * 2);
+    const page = { ...params, ':limit': limit, ':offset': offset, ':cap': cap };
+    // CROSS JOIN pins the FTS hits as the outer loop; with a plain JOIN the
+    // planner walked all of idx_events_org_id_created and probed the hits.
+    const fromFts = (fts, order) =>
+      `FROM (SELECT rowid AS fts_id FROM events_fts WHERE events_fts MATCH :fts ORDER BY ${order} LIMIT :cap) f CROSS JOIN events ON events.id = f.fts_id ${whereClause}`;
+    const runSearch = (fts, order) => {
+      if (!fts) return { events: [], total: 0 };
+      const p = { ...page, ':fts': fts };
+      const events = allScoped(req, `SELECT events.* ${fromFts(fts, order)} ORDER BY created_at DESC LIMIT :limit OFFSET :offset`, p);
+      const total = getScoped(req, `SELECT COUNT(*) AS count ${fromFts(fts, order)}`, p)?.count || 0;
+      return { events, total };
+    };
+    try {
+      // Every word, newest first. If nothing has all of them (pan_search often
+      // sends a bag of keywords), fall back to any word, best bm25 matches first.
+      let r = runSearch(toFtsQuery(search, ' '), 'rowid DESC');
+      if (r.total === 0) r = runSearch(toFtsQuery(search, ' OR '), 'rank');
+      return res.json({ ...r, limit, offset });
+    } catch (err) {
+      return res.status(400).json({ error: `search failed: ${err.message}`, events: [], total: 0, limit, offset });
+    }
+  }
+
+  // With the LIKE filter an exact COUNT would scan the whole window for nothing
+  // the callers use, so report what was returned instead.
   const events = allScoped(req,
     `SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT :limit OFFSET :offset`,
     { ...params, ':limit': limit, ':offset': offset }
   );
+  const total = projectPath
+    ? offset + events.length
+    : getScoped(req, `SELECT COUNT(*) as count FROM events ${whereClause}`, params)?.count || 0;
 
-  res.json({ events, total: total?.count || 0, limit, offset });
+  res.json({ events, total, limit, offset });
 });
 
 // Transcript cache — avoids re-parsing huge JSONL files on every poll
@@ -1080,7 +1127,10 @@ router.get('/api/services', async (req, res) => {
   }
 
   // Parse latest StewardHeartbeat — single source of truth for all service statuses
-  const heartbeatRow = getScoped(req, `SELECT data, created_at FROM events WHERE event_type = 'StewardHeartbeat' AND org_id = :org_id ORDER BY created_at DESC LIMIT 1`);
+  // ORDER BY id, not created_at: id order comes free from the (org_id, event_type)
+  // index. created_at made SQLite walk all 1M org rows newest-first looking for a
+  // heartbeat, a 5.7s block on the hub (the steward no longer writes these rows).
+  const heartbeatRow = getScoped(req, `SELECT data, created_at FROM events WHERE event_type = 'StewardHeartbeat' AND org_id = :org_id ORDER BY id DESC LIMIT 1`);
   let stewardServices = {};
   let heartbeatAge = Infinity;
   if (heartbeatRow) {

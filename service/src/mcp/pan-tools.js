@@ -52,7 +52,7 @@ export function registerPanTools(server, { panBaseUrl }) {
     async ({ q, limit, type }) => {
       try {
         let path = `/dashboard/api/events?q=${encodeURIComponent(q)}&limit=${limit || 50}`;
-        if (type) path += `&event_type=${encodeURIComponent(type)}`;
+        if (type) path += `&type=${encodeURIComponent(type)}`; // the endpoint reads `type`; `event_type` was silently ignored
         return ok(await panFetch(path));
       } catch (e) { return err(e); }
     },

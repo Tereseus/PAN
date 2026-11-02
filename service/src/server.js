@@ -4122,7 +4122,8 @@ app.get('/api/v1/terminal/wait-response', async (req, res) => {
 
   const poll = setInterval(() => {
     const event = get(
-      `SELECT data FROM events WHERE event_type = 'Stop' AND created_at > :since ORDER BY created_at DESC LIMIT 1`,
+      // `+event_type`: use the created_at range, not all 48k Stop rows (400ms on every 1s poll)
+      `SELECT data FROM events WHERE +event_type = 'Stop' AND created_at > :since ORDER BY created_at DESC LIMIT 1`,
       { ':since': since }
     );
     if (event) {

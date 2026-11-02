@@ -1013,7 +1013,7 @@ router.post('/:eventType', (req, res) => {
           } else {
             const stopsSince = get(
               `SELECT COUNT(*) AS n FROM events
-               WHERE session_id = :sid AND event_type = 'Stop' AND created_at > :c`,
+               WHERE session_id = :sid AND +event_type = 'Stop' AND created_at > :c`, // `+`: use the session index, not all 48k Stop rows
               { ':sid': sessionId, ':c': existing.created_at }
             )?.n || 0;
             if (stopsSince >= watermarkTurns) shouldWrite = true;

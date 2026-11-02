@@ -847,7 +847,8 @@ const suites = {
         id: 'steward-heartbeat', name: 'Steward: Heartbeat recent',
         description: 'StewardHeartbeat events exist within last 5 minutes',
         run: async () => {
-          const search = await apiGet('/dashboard/api/events?q=StewardHeartbeat&limit=3');
+          // Filter by type: q searches the FTS index of event text, which holds no type names.
+          const search = await apiGet('/dashboard/api/events?type=StewardHeartbeat&limit=3');
           const hb = (search.events || []).filter(e => e.event_type === 'StewardHeartbeat');
           if (hb.length === 0) return 'No heartbeat events yet (dev server just started — steward needs ~60s)';
           const latest = new Date(hb[0].created_at);

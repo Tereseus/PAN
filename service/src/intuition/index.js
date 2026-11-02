@@ -1331,9 +1331,15 @@ async function classifyAxes(snap) {
       // event stream + intuition snapshot history.
       try {
         // conv:confused — ≥3 clarifying ?-ending prompts in 5 min
+        //
+        // `+event_type` (here and in conv:stuck) keeps SQLite off idx_events_type.
+        // The DB has no sqlite_stat1, so the planner picked the type index and
+        // read every UserPromptSubmit row ever stored (41k on the hub) instead
+        // of the last few minutes via idx_events_created: 800ms + 750ms, a
+        // 1.5s event-loop block on every classify. With the `+`: 1ms each.
         const confusedCount = get(
           `SELECT COUNT(*) AS n FROM events
-           WHERE event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
+           WHERE +event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
              AND created_at > datetime('now','localtime','-5 minutes')
              AND data LIKE '%?%'`
         )?.n || 0;
@@ -1349,7 +1355,7 @@ async function classifyAxes(snap) {
         // conv:stuck — ≥2 stuck-phrase prompts in 10 min
         const stuckRows = all(
           `SELECT data FROM events
-           WHERE event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
+           WHERE +event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
              AND created_at > datetime('now','localtime','-10 minutes')`
         );
         const STUCK_RE = /stuck|don'?t know|not working|why isn'?t|why does(?:n'?t)?|broken|doesn'?t work|won'?t work/i;

@@ -1020,7 +1020,7 @@ The MCP server (`service/src/mcp-server.js`) exposes tools to Claude Code.
 
 | Tool | What it does |
 |------|-------------|
-| `pan_search` | Full-text search across events, memory, conversations |
+| `pan_search` | Full-text search across events, memory, conversations. Calls `GET /dashboard/api/events?q=`, which matches through the `events_fts` index (prompts, replies, voice, vision, decisions, cloud exchanges): every word as a prefix, newest first; if nothing has every word, any word ranked by bm25. Never a `data LIKE` scan, which froze the Craft for 200+ s per search on the 12 GB hub DB (2026-11-02). `type` filters by event type. |
 | `pan_memory` | Read classified memory items (episodic, semantic, procedural) |
 | `pan_decide` | Log an architectural decision to the DB with rationale |
 | `pan_restart` | Restart the PAN server (Craft swap or Carrier restart) |

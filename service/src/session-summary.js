@@ -36,11 +36,17 @@ const RECAP_MODEL = 'cerebras:qwen-3-235b';
 })();
 
 // Pull the last TodoWrite snapshot for this session and extract completed items.
+//
+// `+event_type` here and in getFilesTouched forces idx_events_session. Without
+// sqlite_stat1 the planner chose idx_events_type and ran json_extract over all
+// ~200k PreToolUse rows: 2.4s per query with a warm cache, a minute or more
+// cold on the 12 GB hub DB, on the main thread. That is the recurring 5s and
+// 60s [loop-block] lines that end with "[session-summary] built recap".
 function getCompletedTodos(sessionId) {
   try {
     const row = get(
       `SELECT data FROM events
-       WHERE session_id = :sid AND event_type = 'PreToolUse'
+       WHERE session_id = :sid AND +event_type = 'PreToolUse'
          AND json_extract(data, '$.tool_name') = 'TodoWrite'
        ORDER BY created_at DESC LIMIT 1`,
       { ':sid': sessionId }
@@ -81,7 +87,7 @@ function getFilesTouched(sessionId) {
   try {
     const rows = all(
       `SELECT data FROM events
-       WHERE session_id = :sid AND event_type = 'PreToolUse'
+       WHERE session_id = :sid AND +event_type = 'PreToolUse'
          AND json_extract(data, '$.tool_name') IN ('Edit','Write','NotebookEdit','MultiEdit')
        ORDER BY created_at ASC`,
       { ':sid': sessionId }
