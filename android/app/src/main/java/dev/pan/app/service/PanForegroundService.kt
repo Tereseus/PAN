@@ -1858,15 +1858,9 @@ class PanForegroundService : Service() {
             dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS); return "Going to previous."
         }
 
-        // Time
-        if (lower.contains("what time") || lower.contains("what's the time")) {
-            return "It's ${java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault()).format(java.util.Date())}."
-        }
-
-        // Date
-        if (lower.contains("what day") || lower.contains("what's the date") || lower.contains("what date")) {
-            return "It's ${java.text.SimpleDateFormat("EEEE, MMMM d", java.util.Locale.getDefault()).format(java.util.Date())}."
-        }
+        // No time or date shortcuts: the hub puts the date and time in every prompt, so the
+        // model answers "what time is it in Tokyo" too. The shortcut answered that with the
+        // local time and never asked the hub.
 
         // Battery
         if (lower.contains("battery") && (lower.contains("how much") || lower.contains("what") || lower.contains("level"))) {
@@ -1896,20 +1890,6 @@ class PanForegroundService : Service() {
         if (isCameraCommand(lower)) {
             handleCameraCommand(text)
             return "CAMERA_ASYNC" // signal that this was handled
-        }
-
-        // Time queries
-        if (lower.contains("what time") || lower.contains("what's the time")) {
-            val time = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
-                .format(java.util.Date())
-            return "It's $time."
-        }
-
-        // Date queries
-        if (lower.contains("what day") || lower.contains("what's the date") || lower.contains("what date")) {
-            val date = java.text.SimpleDateFormat("EEEE, MMMM d", java.util.Locale.getDefault())
-                .format(java.util.Date())
-            return "It's $date."
         }
 
         // Battery level
@@ -2251,9 +2231,7 @@ class PanForegroundService : Service() {
         // Explicit PAN address — always route
         if (lower.contains("hey pan") || lower.contains("hey pam")) {
             // Check if it's a local-answerable question with "hey pan" prefix
-            if (lower.contains("what time") || lower.contains("what's the time")
-                || lower.contains("what day") || lower.contains("what date")
-                || lower.contains("battery")) {
+            if (lower.contains("battery")) {
                 return "local"
             }
             return "query"
