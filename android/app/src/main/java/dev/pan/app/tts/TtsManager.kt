@@ -97,20 +97,21 @@ class TtsManager @Inject constructor(
 
                 if (best != null) {
                     tts?.voice = best
+                    englishVoice = best
                     Log.i(TAG, "TTS voice: ${best.name} (quality=${best.quality})")
                 }
             }
 
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    if (!piperActive) onSpeakingStateChanged?.invoke(true)
+                    if (!piperActive || utteranceId in foreignIds) onSpeakingStateChanged?.invoke(true)
                 }
                 override fun onDone(utteranceId: String?) {
-                    if (!piperActive) onSpeakingStateChanged?.invoke(false)
+                    if (!piperActive || foreignIds.remove(utteranceId)) onSpeakingStateChanged?.invoke(false)
                 }
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
-                    if (!piperActive) onSpeakingStateChanged?.invoke(false)
+                    if (!piperActive || foreignIds.remove(utteranceId)) onSpeakingStateChanged?.invoke(false)
                 }
             })
 
@@ -127,8 +128,42 @@ class TtsManager @Inject constructor(
         }
     }
 
+    // Piper's voices only speak English. A reply in another script (translate mode answering
+    // in Japanese) goes to the Android voice for that language instead of coming out as nothing.
+    private var englishVoice: android.speech.tts.Voice? = null
+    private val foreignIds: MutableSet<String> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
+    private fun scriptLocale(text: String): Locale? = when {
+        Regex("[\\u3040-\\u30FF]").containsMatchIn(text) -> Locale.JAPANESE   // kana, so Japanese
+        Regex("[\\uAC00-\\uD7AF]").containsMatchIn(text) -> Locale.KOREAN
+        Regex("[\\u4E00-\\u9FFF]").containsMatchIn(text) -> Locale.CHINESE    // Han without kana
+        Regex("[\\u0370-\\u03FF]").containsMatchIn(text) -> Locale("el")
+        Regex("[\\u0400-\\u04FF]").containsMatchIn(text) -> Locale("ru")
+        else -> null
+    }
+
+    private fun speakForeign(text: String, locale: Locale) {
+        val t = tts ?: return
+        val voice = t.voices
+            ?.filter { it.locale.language == locale.language }
+            ?.sortedWith(compareBy<android.speech.tts.Voice> { it.isNetworkConnectionRequired }.thenByDescending { it.quality })
+            ?.firstOrNull()
+        if (voice != null) t.voice = voice else t.language = locale
+        val id = "pan-fx-${System.currentTimeMillis()}"
+        foreignIds.add(id)
+        t.speak(text, TextToSpeech.QUEUE_ADD, Bundle(), id)
+        Log.d(TAG, "Speaking (${locale.language}, ${voice?.name ?: "default"}): ${text.take(30)}")
+    }
+
     fun speak(text: String) {
         if (text.isBlank()) return
+
+        val foreign = scriptLocale(text)
+        if (foreign != null && ready) {
+            speakForeign(text, foreign)
+            return
+        }
 
         if (piperActive) {
             piper.speak(text)
@@ -145,6 +180,8 @@ class TtsManager @Inject constructor(
             .replace(Regex("^[\\-*]\\s+", RegexOption.MULTILINE), "")
             .trim()
         val spoken = if (cleaned.length > 500) cleaned.take(500) + "... see full response in the app." else cleaned
+        // A foreign reply may have switched the voice; English goes back to the English one.
+        englishVoice?.let { if (tts?.voice != it) tts?.voice = it }
         val params = Bundle()
         tts?.speak(spoken, TextToSpeech.QUEUE_ADD, params, "pan-${System.currentTimeMillis()}")
         Log.d(TAG, "Speaking: ${spoken.take(50)}...")
