@@ -100,6 +100,9 @@ class SherpaStreamingStt @Inject constructor(
 
         // Smart Turn's window: it listens to the last 8 s of the current turn.
         private const val TURN_AUDIO_MAX = 8 * SAMPLE_RATE
+        // The whole turn is kept (up to the recogniser's own 20 s cap) so the hub can
+        // transcribe it again with Parakeet; a turn longer than this is not sent.
+        private const val UTT_AUDIO_MAX = 20 * SAMPLE_RATE
         // Longest we wait for a verdict before deciding on the words alone. The
         // model takes tens of ms; this only fires if the phone is badly loaded,
         // and it is logged when it does, so a slow model can never go unnoticed
@@ -256,6 +259,20 @@ class SherpaStreamingStt @Inject constructor(
     }
 
     // ---- echo bookkeeping ---------------------------------------------------
+    // The last committed turn's audio, keyed by its text so a later turn can never be sent
+    // with an earlier one's words. Set on the read loop, taken on the query path.
+    @Volatile private var lastTurn: Pair<String, ShortArray>? = null
+
+    override fun takeTurnAudio(text: String): ShortArray? {
+        val t = lastTurn ?: return null
+        if (t.first != text) return null
+        lastTurn = null
+        return t.second
+    }
+
+    private fun toPcm16(audio: FloatArray, len: Int): ShortArray =
+        ShortArray(len) { i -> (audio[i].coerceIn(-1f, 1f) * 32767f).toInt().toShort() }
+
     // Same approach GoogleStreamingStt already uses and which is proven on this
     // phone: remember what PAN said, and subtract it if it comes back.
     private val recentTtsOutput = mutableListOf<String>()
@@ -538,14 +555,16 @@ class SherpaStreamingStt @Inject constructor(
             // ---- Smart Turn ----
             // The audio of the CURRENT turn - exactly what the recogniser has been
             // fed since the last commit - so the model hears what was transcribed.
-            val turnAudio = FloatArray(TURN_AUDIO_MAX)
+            val turnAudio = FloatArray(UTT_AUDIO_MAX)
             var turnLen = 0
+            var turnClipped = false    // the start of this turn fell off the buffer
             fun feed(w: FloatArray) {
                 st.acceptWaveform(w, SAMPLE_RATE)
-                val over = turnLen + w.size - TURN_AUDIO_MAX
+                val over = turnLen + w.size - UTT_AUDIO_MAX
                 if (over > 0) {
                     System.arraycopy(turnAudio, over, turnAudio, 0, turnLen - over)
                     turnLen -= over
+                    turnClipped = true
                 }
                 System.arraycopy(w, 0, turnAudio, turnLen, w.size)
                 turnLen += w.size
@@ -711,7 +730,7 @@ class SherpaStreamingStt @Inject constructor(
                         // Ask the model about THIS pause, once.
                         val model = if (text.isBlank()) null else turnModelOrNull()
                         if (model != null && judgedFor != lastSpeechAt && judge == null) {
-                            val snap = turnAudio.copyOf(turnLen)
+                            val snap = turnAudio.copyOfRange(maxOf(0, turnLen - TURN_AUDIO_MAX), turnLen)
                             judgeFor = lastSpeechAt
                             judgeStarted = now
                             judge = scope.async(Dispatchers.Default) { model.probability(snap) }
@@ -762,12 +781,20 @@ class SherpaStreamingStt @Inject constructor(
                                 heldIncomplete = false
                                 lastCommitAt = now
                                 rec.reset(st)
+                                val pcm = if (turnClipped) null else toPcm16(turnAudio, turnLen)
                                 turnLen = 0
+                                turnClipped = false
                                 lastPartial = ""
                                 if (text.isNotBlank()) {
                                     val clean = stripEcho(text)
                                     if (clean.isBlank()) log("echo discarded: ${text.take(40)}")
-                                    else withContext(Dispatchers.Main) { callback?.invoke(clean, true) }
+                                    else {
+                                        // Only a turn with none of PAN's own voice in it goes to the
+                                        // hub: echo is subtracted from TEXT here, and a fresh
+                                        // transcript of the audio would bring it back.
+                                        lastTurn = if (pcm != null && clean == text) clean to pcm else null
+                                        withContext(Dispatchers.Main) { callback?.invoke(clean, true) }
+                                    }
                                 }
                             }
                         }

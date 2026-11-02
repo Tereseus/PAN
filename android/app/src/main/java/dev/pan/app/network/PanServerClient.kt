@@ -302,6 +302,8 @@ class PanServerClient @Inject constructor(
         conversationHistory: String = "",
         sensorJson: String? = null,
         canCamera: Boolean = false,
+        audio: ShortArray? = null,
+        onHeard: ((String) -> Unit)? = null,
         onChunk: (String) -> Unit
     ): QueryResponse? = withContext(Dispatchers.IO) {
         try {
@@ -310,6 +312,13 @@ class PanServerClient @Inject constructor(
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
                 if (sensorJson != null) put("sensors", sensorJson)
                 if (canCamera) put("can_camera", true)
+                // The turn's audio: the hub transcribes it again with a bigger model and
+                // answers what that heard (hub-asr.js). 16kHz PCM16 little-endian.
+                if (audio != null && audio.isNotEmpty()) {
+                    val bytes = java.nio.ByteBuffer.allocate(audio.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    bytes.asShortBuffer().put(audio)
+                    put("audio", android.util.Base64.encodeToString(bytes.array(), android.util.Base64.NO_WRAP))
+                }
             }.toString().toRequestBody("application/json".toMediaType())
 
             // Build against default URL — the OkHttp interceptor will rewrite to Tailscale if active
@@ -340,6 +349,10 @@ class PanServerClient @Inject constructor(
                         "chunk" -> {
                             val chunk = json.optString("text", "")
                             if (chunk.isNotEmpty()) onChunk(chunk)
+                        }
+                        "heard" -> {
+                            val heard = json.optString("text", "")
+                            if (heard.isNotEmpty()) onHeard?.invoke(heard)
                         }
                         "ambient" -> {
                             // #462: server flagged this as ambient — silently drop, no TTS.

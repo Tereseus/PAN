@@ -996,6 +996,8 @@ class PanForegroundService : Service() {
 
         panLog("Heard: $text")
         lastAction.value = text
+        // Taken here, keyed by this exact text, so it rides with THIS turn's query.
+        val turnAudio = sttEngine.takeTurnAudio(text)
 
         // Cooldown after TTS — ignore echo/residual audio for 2 seconds after PAN stops talking
         if (System.currentTimeMillis() - lastTtsDoneTime < TTS_COOLDOWN_MS) {
@@ -1474,6 +1476,11 @@ class PanForegroundService : Service() {
                     conversationHistory = historyContext,
                     sensorJson = sensorJson,
                     canCamera = sensorContext.cameraEnabled,
+                    audio = turnAudio,
+                    onHeard = { heard ->
+                        panLog("Hub heard: $heard")
+                        lastAction.value = heard
+                    },
                     onChunk = { chunk ->
                         if (firstChunkTime == 0L) {
                             firstChunkTime = System.currentTimeMillis()

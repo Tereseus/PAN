@@ -32,5 +32,8 @@
     "sqlite-vec": "^0.1.9",
     "ws": "^8.20.0",
     "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-node": "^2.0.1"
   }
 }

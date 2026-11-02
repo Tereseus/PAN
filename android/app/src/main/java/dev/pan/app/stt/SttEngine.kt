@@ -24,6 +24,12 @@ interface SttEngine {
     fun destroy()
 
     /**
+     * 16kHz PCM16 audio of the turn whose final text was [text], for the hub to transcribe
+     * again with a bigger model. Null when the engine has none for it. Hands it over once.
+     */
+    fun takeTurnAudio(text: String): ShortArray? = null
+
+    /**
      * True if the engine is meant to keep the microphone open while PAN speaks.
      *
      * A turn-based recogniser has to be stopped before TTS or it transcribes

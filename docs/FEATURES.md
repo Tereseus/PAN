@@ -1189,6 +1189,22 @@ Decides whether a pause means **"he's finished"** or **"he's just thinking"** â€
 ### Replaces
 - The dangling-word rule as the **sole** decider. It stays, as a veto.
 
+## Hub re-transcription (Parakeet)
+
+The phone's streaming zipformer decides WHEN a turn ends; the hub decides WHAT was said.
+
+### What it does
+- On commit, `SherpaStreamingStt` keeps the whole turn's audio (up to 20 s) keyed by its text. `PanForegroundService.onSpeech` takes it (`takeTurnAudio(text)`) and `askPanStream` sends it as `audio` (16kHz PCM16 LE, base64) with the text.
+- `/api/v1/query/stream` passes it to `transcribePcm16` in `service/src/hub-asr.js`: NVIDIA Parakeet TDT 0.6B v2 int8 through `sherpa-onnx-node` (optional dependency), about 0.5 s per sentence on the hub CPU. The result replaces the phone's text for routing, is logged as `[hub-asr] phone=... hub=...`, and goes back to the phone as an SSE `{type:'heard'}` event (logged `Hub heard:`).
+
+### Why
+- The zipformer learned English from audiobooks (LibriSpeech). On real speech it heard "what model is it using" as "what motto", "mot", "modo". Nemotron 0.6B streaming on the phone was tried and is about 7x heavier than the zipformer, too slow for the phone CPU.
+
+### Preserves / falls back
+- No package, no model in `<PAN data>/../models/parakeet-tdt-0.6b-v2-int8/`, a decode error, or a clip under 0.3 s or over 30 s: the phone's text is used exactly as before.
+- Turns where `stripEcho` removed any of PAN's own words are NOT sent (a fresh transcript would bring the echo back), nor are turns longer than 20 s.
+- Old apps send no audio, so nothing changes for them.
+
 ## Android self-update
 
 PAN's Android app updates itself from the user's own PAN server â€” no Play Store, no manual sideload after the first install. Designed to be reusable for any future PAN-shipped Android app.

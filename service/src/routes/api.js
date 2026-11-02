@@ -8,8 +8,10 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { transcribePcm16, warmHubAsr } from '../hub-asr.js';
 
 const execFilePromise = promisify(execFile);
+warmHubAsr();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = join(__dirname, '..', 'data', 'photos');
 if (!existsSync(PHOTOS_DIR)) mkdirSync(PHOTOS_DIR, { recursive: true });
@@ -1459,8 +1461,9 @@ router.post('/query', async (req, res) => {
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
 router.post('/query/stream', async (req, res) => {
-  const { text, context, intent_hint, sensors, can_camera } = req.body;
-  if (!text) return res.status(400).json({ error: 'missing text' });
+  const { text: phoneText, context, intent_hint, sensors, can_camera, audio } = req.body;
+  if (!phoneText) return res.status(400).json({ error: 'missing text' });
+  let text = phoneText;
 
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -1481,6 +1484,19 @@ router.post('/query/stream', async (req, res) => {
 
   // Keepalive every 5s — prevents OkHttp 30s readTimeout from firing during slow LLM calls
   const keepaliveInterval = setInterval(sendKeepalive, 5000);
+
+  // App 0.4.43+ sends the turn's audio (16kHz PCM16, base64). The phone's streaming model
+  // decided when the turn ended; Parakeet on the hub decides what was said (hub-asr.js).
+  // 'heard' tells the phone the corrected words for its own history.
+  if (audio) {
+    const t0 = Date.now();
+    const better = await transcribePcm16(audio);
+    if (better) {
+      console.log(`[hub-asr] ${Date.now() - t0}ms phone=${JSON.stringify(String(phoneText).slice(0, 80))} hub=${JSON.stringify(better.slice(0, 80))}`);
+      text = better;
+      send({ type: 'heard', text });
+    }
+  }
 
   // Task #460 — cancel the in-flight turn when a new STT Final arrives.
   //
