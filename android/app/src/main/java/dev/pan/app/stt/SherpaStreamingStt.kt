@@ -792,7 +792,10 @@ class SherpaStreamingStt @Inject constructor(
                                         // Only a turn with none of PAN's own voice in it goes to the
                                         // hub: echo is subtracted from TEXT here, and a fresh
                                         // transcript of the audio would bring it back.
-                                        lastTurn = if (pcm != null && clean == text) clean to pcm else null
+                                        // (stripEcho lowercases, and the zipformer speaks in
+                                        // capitals, so compare against the lowercased text or
+                                        // no turn is ever sent - which is what 0.4.43 did.)
+                                        lastTurn = if (pcm != null && clean == text.lowercase().trim()) clean to pcm else null
                                         withContext(Dispatchers.Main) { callback?.invoke(clean, true) }
                                     }
                                 }

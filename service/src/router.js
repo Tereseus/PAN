@@ -1970,6 +1970,7 @@ export async function* routeStream(text, context = {}) {
   // `result.importance`. Wrap once, use everywhere — keeps the diff small
   // and guarantees consumers always see a `prosody` field.
   const withProsody = (result) => ({ ...result, prosody: planProsody(result) });
+  const _turnStart = Date.now();   // for the [routeStream] timing line
 
   // Fast local intents — no LLM, return immediately
   const serverIntent = serverClassify(text);
@@ -2357,12 +2358,18 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
   async function* voiceStream() {
     if (studentModel) {
+      // Where a turn's time goes, before and after the model: setup is everything above
+      // (prompt blocks, memory), first is the model's first chunk.
+      console.log(`[routeStream] timing setup=${Date.now() - _turnStart}ms student_prompt=${studentPrompt.length} chars`);
+      const _modelStart = Date.now();
+      let _firstLogged = false;
       let got = false;
       let head = '';        // held until the reply's first characters show whether it is [CAMERA]
       let camera = false;
       try {
         for await (const c of askAIStreamWithFallback(studentPrompt, { ...streamOpts, chain: [studentModel] })) {
           got = true;
+          if (!_firstLogged) { _firstLogged = true; console.log(`[routeStream] timing first_chunk=${Date.now() - _modelStart}ms`); }
           if (head === null) { yield c; continue; }
           head += c;
           const r = head.match(/"response"\s*:\s*"([\s\S]*)/)?.[1] || '';
