@@ -392,6 +392,25 @@ function looksVisual(text) {
   return !/\b(song|track|music|playlist|server|page|website|app|message|terminal|code|idea|logic|game|thread|email|meeting)\b|\bthat'?s (right|wrong|true)\b|\blet'?s see\b/.test(t);
 }
 
+// Standing instructions: "translate everything I say into Japanese from now on". Before this,
+// the request only lived in the history lines, and the next turn answered in English. Kept
+// per device until he cancels it or STANDING_TTL_MS passes, and repeated on every turn.
+const _standing = new Map();   // device key -> { text, at }
+const STANDING_SET_RE = /\b(from now on|from this moment on|from here on|until i say otherwise|until i tell you (to stop|otherwise)|for the rest of (the|this) (conversation|chat|session))\b/i;
+const STANDING_CLEAR_RE = /\b(stop translating|back to normal|normal mode|cancel (that|the) instruction|forget (that|the) instruction|stop doing that)\b/i;
+const STANDING_TTL_MS = 2 * 60 * 60 * 1000;
+
+/** The instruction in force for this turn, or null. The turn that sets one returns null. */
+function standingInstruction(key, text) {
+  const t = String(text || '');
+  if (STANDING_CLEAR_RE.test(t)) { _standing.delete(key); return null; }
+  if (STANDING_SET_RE.test(t)) { _standing.set(key, { text: t.trim(), at: Date.now() }); return null; }
+  const s = _standing.get(key);
+  if (!s) return null;
+  if (Date.now() - s.at > STANDING_TTL_MS) { _standing.delete(key); return null; }
+  return s;
+}
+
 // Fast ambient pre-filter — detects speech clearly not directed at PAN without LLM call
 // Only fires for voice/mic input (dashboard input is always a command)
 function quickAmbientCheck(text) {
@@ -2136,6 +2155,11 @@ export async function* routeStream(text, context = {}) {
   const historyBlock = context.conversation_history
     ? `\nRecent conversation:\n${context.conversation_history}\n` : '';
 
+  const standing = standingInstruction(context.device_id || 'default', text);
+  const standingBlock = standing
+    ? `\nStanding instruction he gave at ${new Date(standing.at).toTimeString().slice(0, 5)}. Follow it on EVERY reply until he cancels it: "${standing.text}"\n`
+    : '';
+
   let sensorBlock = '';
   const sensors = context.sensors || null;
   if (sensors) {
@@ -2290,7 +2314,7 @@ He says: "sarah reckons the pendant idea is daft what do you think"  -> addresse
   Another person is named, and the question is still put to you.
 
 Return only JSON.${personalityBlock}
-${memoryFactsBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${dialogHistoryBlock}${historyBlock}${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${episodicHitsBlock}${sensorBlock}${weatherBlock}${selfBlock}${hintBlock}
+${memoryFactsBlock}${activeTasksBlock}${recentTopicsBlock}${dismissalFeedbackBlock}${dialogHistoryBlock}${historyBlock}${situationBlock}${convStateBlock}${dialogStateBlock}${recentMindBlock}${episodicHitsBlock}${sensorBlock}${weatherBlock}${selfBlock}${hintBlock}${standingBlock}
 Always include "speech_act", and "importance" 0..1 (0.1 ambient, 0.5 normal,
 0.9 urgent) - it sets how the reply is spoken.
 
@@ -2351,6 +2375,9 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let studentModel = '';
   let cameraAsk = false;
   try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
+  // OmniΠ does not follow standing instructions even when handed one (tested: still answered
+  // in English), gemma4:e2b does, so those turns take the full prompt.
+  if (standing) studentModel = '';
   // Asked how PAN works or what model it runs, OmniΠ gets one line of live facts (buildSelfLine);
   // without them it asked back "what hub do you mean?", and the full block confused it.
   const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '',
