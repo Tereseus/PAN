@@ -2166,17 +2166,20 @@ export async function* routeStream(text, context = {}) {
   // is most of them. Gate it on the question instead of paying for it
   // always - it is a live read, so nothing goes stale by being skipped.
   let selfBlock = '';
+  let selfAsked = false;
   try {
     const _self = buildSelfBlock();
-    if (/\b(model|models|local|locally|offline|cloud|private|privacy|secure|encrypt|how do you work|how you work|what are you running|your config|leave the house|sent anywhere|listening)\b/i.test(String(text || ''))) {
+    // modo/motto/modal: how the phone's speech-to-text has heard "model".
+    if (/\b(model|models|modo|motto|modal|local|locally|offline|cloud|private|privacy|secure|encrypt|how do you work|how you work|what are you running|your config|leave the house|sent anywhere|listening)\b/i.test(String(text || ''))) {
       selfBlock = _self;
+      selfAsked = true;
     } else {
       // One line, always. Dropping the block entirely made PAN invent its own
       // privacy state - asked how it was doing it said "still running on local
       // iron instead of melting in the cloud" while it was on Gemini. That is
       // the one thing it must never guess about, so the model line stays for
       // ~120 chars and the other ~900 only load when actually asked.
-      const _line = (_self.split('\n').find(l => /conversation model/i.test(l)) || '').trim();
+      const _line = (_self.split('\n').find(l => /(conversation|voice) model/i.test(l)) || '').trim();
       if (_line) selfBlock = `\n${_line}\nUse that line ONLY if he asks where you run or whether something is private. It is not your identity - never introduce yourself as a model or a model name, and never volunteer it.\n`;
     }
   } catch {}
@@ -2347,7 +2350,9 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let studentModel = '';
   let cameraAsk = false;
   try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
-  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(),
+  // Asked how PAN works or what model it runs, OmniΠ gets the same live facts the full
+  // prompt does; without them it asked back "what hub do you mean?".
+  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? selfBlock.trim() : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
   async function* voiceStream() {
