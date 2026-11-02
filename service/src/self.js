@@ -44,6 +44,26 @@ function describeModel(id) {
   return `${id} — runs LOCALLY on the mini PC. Nothing leaves the house.`;
 }
 
+function activeChainModel() {
+  let chain = [];
+  try { chain = JSON.parse(readSetting('ai_fallback_chain_voice') || '[]'); } catch {}
+  const fallbackOff = /^false$/i.test(readSetting('ai_fallback_enabled') || '');
+  return (fallbackOff || !chain.length) ? readSetting('ai_model') : chain[0];
+}
+
+/**
+ * One sentence for OmniΠ's short prompt. It was never trained on the long block below, and
+ * given it, it named the model from memory hits ("Gemma4 e4b") or skipped its own name.
+ * Tested on the hub: this shape answers correctly.
+ */
+export function buildSelfLine() {
+  const student = readSetting('voice_student_model');
+  if (!student) return '';
+  const back = activeChainModel() || 'unknown';
+  const where = isCloud(back) ? 'in the cloud' : 'on the same machine';
+  return `About you (live, this is fact): you are OmniPi (written OmniΠ), PAN's own voice model, a fine-tune of Liquid's LFM3-Omni-2B, running locally on the mini PC hub. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. Answer questions about yourself only from this line.`;
+}
+
 export function buildSelfBlock() {
   if (_cached && Date.now() - _cachedAt < CACHE_MS) return _cached;
 
@@ -94,7 +114,7 @@ export function buildSelfBlock() {
   }
 
   lines.push('- Your speech is generated ON THE PHONE and never sent anywhere.');
-  lines.push('- His speech is turned into text ON THE PHONE (a small sherpa-onnx streaming model). It mishears words, so read what he says for what he most likely meant.');
+  lines.push('- His speech is turned into text by NVIDIA Parakeet on the mini PC (the phone's own small model is the fallback, and mishears words, so read what he says for what he most likely meant).');
   lines.push('- Live lookups you really have: weather, Wikipedia, currency rates, crypto prices, air quality.');
   lines.push('- You have NO general web search. The browser bridge exists but does not currently start.');
   lines.push('When asked how you work, what model you are, or whether something is private,');

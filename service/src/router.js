@@ -3,7 +3,7 @@ import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
 import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './claude.js';
 import { askAIWithFallback, askAIStreamWithFallback } from './llm-fallback.js';
 import { buildToolBlocks } from './tools.js';
-import { buildSelfBlock } from './self.js';
+import { buildSelfBlock, buildSelfLine } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
 import * as playwright from './playwright-bridge.js';
@@ -2350,9 +2350,9 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let studentModel = '';
   let cameraAsk = false;
   try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
-  // Asked how PAN works or what model it runs, OmniΠ gets the same live facts the full
-  // prompt does; without them it asked back "what hub do you mean?".
-  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? selfBlock.trim() : '',
+  // Asked how PAN works or what model it runs, OmniΠ gets one line of live facts (buildSelfLine);
+  // without them it asked back "what hub do you mean?", and the full block confused it.
+  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
   async function* voiceStream() {
