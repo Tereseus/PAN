@@ -75,7 +75,7 @@ import { startCloudflareTunnel, stopCloudflareTunnel, getTunnelURL } from './clo
 export { getTunnelURL }; // re-export so client.js can import it
 import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
-import { getDataDir } from './platform.js';
+import { getDataDir, raiseProcessPriority } from './platform.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, invalidateOllamaUrlCache, logDecision } from './db.js';
 import { searchMemory, backfillEmbeddings, backfillStatus, abortBackfill } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
@@ -158,7 +158,12 @@ const _perfByRoute = new Map(); // route → { count, totalMs, maxMs }
 //   recent_blocks: [{ duration_ms, at, handles }] — last 20 detected blocks
 //
 // Read first. Optimize second.
+//
+// A loop can also stall with nothing running at all: started BelowNormal by the
+// PAN-Hub task, this thread got no CPU while an AboveNormal llama-server runner
+// held every core (see raiseProcessPriority in platform.js).
 import { monitorEventLoopDelay } from 'perf_hooks';
+raiseProcessPriority();
 const _loopMonitor = monitorEventLoopDelay({ resolution: 20 });
 _loopMonitor.enable();
 const _recentBlocks = []; // [{ duration_ms, at_iso, handles }]
@@ -4144,7 +4149,7 @@ app.get('/api/v1/terminal/wait-response', async (req, res) => {
 // Stack Scanner API
 app.get('/api/v1/stacks', (req, res) => res.json(getAllStacks()));
 app.post('/api/v1/stacks/scan', (req, res) => {
-  scanStacks();
+  scanStacks().catch(err => console.error('[PAN Stack]', err.message)); // async: the directory walk yields between reads
   res.json({ ok: true });
 });
 

@@ -33,9 +33,9 @@ export const NEVER_EMBED_SQL = [...NEVER_EMBED].map(t => `'${t}'`).join(',');
 
 // PreToolUse is the other half of the tool-hook flood (70,345 rows) and it can
 // NOT be dropped wholesale, because session-summary.js reads it for the two
-// things "ΠΑΝ Remembers" is built from:
-//   getCompletedTodos -> tool_name = 'TodoWrite'
-//   getFilesTouched   -> tool_name IN (Edit, Write, NotebookEdit, MultiEdit)
+// things "ΠΑΝ Remembers" is built from (getToolSignals):
+//   completed todos -> tool_name = 'TodoWrite'
+//   files touched   -> tool_name IN (Edit, Write, NotebookEdit, MultiEdit)
 // Every other PreToolUse row (Bash, Read, Grep, Task, MCP calls) is written once
 // and never read again. Keep the five that matter; drop the rest.
 export const PRETOOLUSE_KEEP = new Set([

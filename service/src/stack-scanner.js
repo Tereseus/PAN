@@ -7,6 +7,7 @@
 
 import { all, get, insert, run } from './db.js';
 import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readdir } from 'fs/promises';
 import { join, sep } from 'path';
 
 let scanInterval = null;
@@ -136,20 +137,25 @@ function parsePanFile(path) {
 }
 
 // Detect languages used in project by scanning file extensions
-function detectLanguages(projectPath) {
+//
+// Async on purpose. A project registered at a home folder (the hub has one, from a
+// session started in C:\Users\<user>) is 778 directories and 17k files at depth 3:
+// about 1 s cold with readdirSync, on the main thread, 15 s after every Craft boot
+// (measured 2026-11-03). Awaiting each directory lets voice turns run in between.
+async function detectLanguages(projectPath) {
   const winPath = projectPath.replace(/\//g, sep);
   const langs = {};
   const maxDepth = 3;
 
-  function scan(dir, depth) {
+  async function scan(dir, depth) {
     if (depth > maxDepth) return;
     try {
-      const entries = readdirSync(dir, { withFileTypes: true });
+      const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'build' ||
             entry.name === '.git' || entry.name === '__pycache__' || entry.name === 'target') continue;
         if (entry.isDirectory()) {
-          scan(join(dir, entry.name), depth + 1);
+          await scan(join(dir, entry.name), depth + 1);
         } else {
           const ext = '.' + entry.name.split('.').pop();
           if (LANG_EXTENSIONS[ext]) {
@@ -160,12 +166,12 @@ function detectLanguages(projectPath) {
     } catch {}
   }
 
-  scan(winPath, 0);
+  await scan(winPath, 0);
   return langs;
 }
 
 // Main scan function
-function scanStacks() {
+async function scanStacks() {
   console.log('[PAN Stack] Scanning project tech stacks...');
 
   const projects = all("SELECT * FROM projects ORDER BY name");
@@ -215,7 +221,7 @@ function scanStacks() {
     }
 
     // Detect languages
-    stack.languages = detectLanguages(projectPath);
+    stack.languages = await detectLanguages(projectPath);
 
     // Store in settings
     const key = `stack_${project.id}`;

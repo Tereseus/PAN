@@ -31,7 +31,8 @@ import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, createReadStream } from 'fs';
 import { hostname, tmpdir } from 'os';
 import { createHash } from 'crypto';
-import { killProcessOnPort, getDataDir } from './platform.js';
+import { killProcessOnPort, getDataDir, raiseProcessPriority } from './platform.js';
+import { stripHopByHop } from './proxy-headers.js';
 import { PerfEngine } from './perf/engine.js';
 import { toMarkdown as perfToMarkdown, SWAP_GATE } from './perf/stages.js';
 import {
@@ -51,6 +52,10 @@ try {
   // Non-fatal — carrier still runs, just without persistent log file.
   process.stderr.write(`[Carrier] setupCarrierLog failed: ${e.message}\n`);
 }
+
+// Every request to the Craft is proxied through here, so this loop must not be
+// starved by the CPU-bound model runners either (see platform.js).
+raiseProcessPriority();
 
 // Carrier has no DB — send Π notifications via HTTP to the Craft
 function panNotify(service, subject, body, opts = {}) {
@@ -691,16 +696,22 @@ function proxyRequest(req, res, targetPort) {
   const bodyChunks = [];
   req.on('data', (chunk) => bodyChunks.push(chunk));
 
+  // Hop-by-hop headers are stripped both ways (see proxy-headers.js). Sockets to
+  // Craft are pooled: forwarding a caller's `Connection: close` while Craft's SSE
+  // handlers answer keep-alive left a dead socket in the pool, and the next
+  // request on it got an empty 400 (bug 2026-11-03).
+  const forwardHeaders = stripHopByHop(req.headers);
+
   const proxyReq = http.request({
     hostname: '127.0.0.1',
     port: targetPort,
     path: req.url,
     method: req.method,
-    headers: req.headers,
+    headers: forwardHeaders,
     timeout: 120000,
   }, (proxyRes) => {
     primaryStatus = proxyRes.statusCode;
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    res.writeHead(proxyRes.statusCode, stripHopByHop(proxyRes.headers));
     proxyRes.pipe(res);
     proxyRes.on('end', () => {
       const primaryLatency = Date.now() - primaryStartMs;
@@ -760,7 +771,7 @@ function proxyRequest(req, res, targetPort) {
       port: shadowCraft.port,
       path: req.url,
       method: req.method,
-      headers: req.headers,
+      headers: forwardHeaders,
       timeout: 30000,
     }, (shadowRes) => {
       let body = '';

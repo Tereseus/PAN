@@ -254,10 +254,15 @@ async function consolidate({ since = null, useLLM = true } = {}) {
   const lastConsolidation = get("SELECT MAX(created_at) as t FROM events WHERE event_type = 'ConsolidationRun'");
   const sinceTime = since || lastConsolidation?.t || new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
+  // `+event_type` keeps the planner on idx_events_created. Without sqlite_stat1 it
+  // took idx_events_type instead and read every RouterCommand/UserPromptSubmit/Stop
+  // row ever written (created_at sits after the data blob) to keep the last few
+  // minutes of them: 1.2 s on the main thread, five minutes after every Craft boot
+  // and again inside every evolution cycle. Now under 1 ms. (Measured 2026-11-03.)
   const events = all(
     `SELECT id, session_id, event_type, data, created_at FROM events
      WHERE created_at > :since
-     AND event_type IN ('RouterCommand', 'UserPromptSubmit', 'Stop', 'VisionAnalysis')
+     AND +event_type IN ('RouterCommand', 'UserPromptSubmit', 'Stop', 'VisionAnalysis')
      ORDER BY created_at ASC LIMIT 200`,
     { ':since': sinceTime }
   );

@@ -485,26 +485,40 @@ function fixParams(params) {
   return fixed;
 }
 
+// Slow statements name themselves. better-sqlite3 runs every statement on the main
+// thread, so a 4 s query is a 4 s freeze for every voice turn in flight, and
+// [loop-block] can only say THAT the loop stalled, not on what. Finding the
+// 2026-11-03 blockers meant replaying suspects one by one in a separate process.
+// Anything at or over PAN_SLOW_SQL_MS (default 250) now logs its duration and SQL
+// right before the [loop-block] line it caused. Cost: two clock reads per statement.
+const SLOW_SQL_MS = Number(process.env.PAN_SLOW_SQL_MS) || 250;
+function _timed(sql, fn) {
+  const t0 = performance.now();
+  try {
+    return fn();
+  } finally {
+    const ms = performance.now() - t0;
+    if (ms >= SLOW_SQL_MS) {
+      console.warn(`[slow-sql] ${Math.round(ms)}ms ${String(sql).replace(/\s+/g, ' ').trim().slice(0, 220)}`);
+    }
+  }
+}
+
 // Query helpers — compatible with existing sql.js style params
 function run(sql, params = {}) {
-  const stmt = db.prepare(sql);
-  return stmt.run(fixParams(params));
+  return _timed(sql, () => db.prepare(sql).run(fixParams(params)));
 }
 
 function get(sql, params = {}) {
-  const stmt = db.prepare(sql);
-  return stmt.get(fixParams(params)) || null;
+  return _timed(sql, () => db.prepare(sql).get(fixParams(params)) || null);
 }
 
 function all(sql, params = {}) {
-  const stmt = db.prepare(sql);
-  return stmt.all(fixParams(params));
+  return _timed(sql, () => db.prepare(sql).all(fixParams(params)));
 }
 
 function insert(sql, params = {}) {
-  const stmt = db.prepare(sql);
-  const result = stmt.run(fixParams(params));
-  return result.lastInsertRowid;
+  return _timed(sql, () => db.prepare(sql).run(fixParams(params)).lastInsertRowid);
 }
 
 // save() is now a no-op — better-sqlite3 writes directly to disk
@@ -691,7 +705,8 @@ function indexEventFTS(eventId, eventType, dataStr) {
   const text = extractEventText(eventType, dataStr);
   if (text) {
     try {
-      db.prepare('INSERT INTO events_fts(rowid, content_text) VALUES (?, ?)').run(eventId, text.slice(0, 2000));
+      const sql = 'INSERT INTO events_fts(rowid, content_text) VALUES (?, ?)';
+      _timed(sql, () => db.prepare(sql).run(eventId, text.slice(0, 2000)));
     } catch (err) {
       // Ignore duplicates or FTS errors
     }
@@ -776,6 +791,7 @@ setTimeout(() => {
 // Handles: insert + FTS indexing. Anonymization is available on export (raw data stays in encrypted DB).
 import { anonymize, anonymizeEventData } from './anonymizer.js';
 import { NEVER_STORE, NEVER_EMBED } from './event-filters.js';
+import { isBench } from './bench-context.js';
 
 // --- Incognito state check ---
 // Lazy-loaded to avoid circular imports (incognito.js imports from db.js).
@@ -793,6 +809,8 @@ function _checkIncognito(userId) {
 function logEvent(sessionId, eventType, data, userId = null, orgId = 'org_personal', security = {}) {
   // Pure telemetry that nothing reads — don't persist it at all (was bloating the DB).
   if (NEVER_STORE.has(eventType)) return null;
+  // Benchmark turns are test lines, not things he said (bench-context.js).
+  if (isBench()) return null;
   const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
 
   // Security fields with safe defaults

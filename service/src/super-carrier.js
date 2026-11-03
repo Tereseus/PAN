@@ -19,8 +19,14 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { request as httpRequest } from 'http';
+import { stripHopByHop } from './proxy-headers.js';
+import { raiseProcessPriority } from './platform.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Port 7777 is the front door for every voice turn; keep it ahead of the CPU-bound
+// model runners (see platform.js).
+raiseProcessPriority();
 
 const SC_PORT      = parseInt(process.env.PAN_PORT) || 7777;
 const CARRIER_PORT = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
@@ -112,17 +118,20 @@ async function launchCarrier() {
 
 // ── HTTP reverse proxy ───────────────────────────────────────────────────────
 
+// Hop-by-hop headers are stripped both ways (see proxy-headers.js): the socket to
+// the Carrier is pooled, so a client's `Connection: close` must not reach it, and
+// this server decides keep-alive for the client's own connection.
 function proxyHttp(req, res) {
   const options = {
     hostname: '127.0.0.1',
     port:     CARRIER_PORT,
     path:     req.url,
     method:   req.method,
-    headers:  { ...req.headers, host: `127.0.0.1:${CARRIER_PORT}`, 'x-forwarded-host': req.headers.host || '' },
+    headers:  { ...stripHopByHop(req.headers), host: `127.0.0.1:${CARRIER_PORT}`, 'x-forwarded-host': req.headers.host || '' },
   };
 
   const proxy = httpRequest(options, proxyRes => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    res.writeHead(proxyRes.statusCode, stripHopByHop(proxyRes.headers));
     proxyRes.pipe(res, { end: true });
   });
 

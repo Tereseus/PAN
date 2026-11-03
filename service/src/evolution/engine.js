@@ -323,14 +323,29 @@ async function evolve() {
   console.log('[PAN Evolution] Starting evolution cycle...');
 
   try {
-    // Get events since last evolution
-    const lastEvolution = get("SELECT MAX(created_at) as t FROM evolution_versions");
+    // Get events since last evolution.
+    //
+    // "Last evolution" includes cycles that changed nothing. evolution_versions only
+    // gets a row when a change is APPLIED, and none has been since 2026-04-09, so
+    // every cycle re-read the same 200 events from April and sent the same 88
+    // corrections and 57 preferences to the critique model. The steward runs this
+    // 10 minutes after every Craft boot, which on a swap-heavy day is every half
+    // hour, and the critique runs on the hub CPU next to the voice model. The
+    // EvolutionCycle row is written at the end of every completed cycle.
+    const lastEvolution = get(
+      `SELECT MAX(t) AS t FROM (
+         SELECT MAX(created_at) AS t FROM evolution_versions
+         UNION ALL
+         SELECT created_at FROM events WHERE id = (SELECT MAX(id) FROM events WHERE event_type = 'EvolutionCycle')
+       )`
+    );
     const since = lastEvolution?.t || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
+    // `+event_type`: same planner trap as memory/consolidation.js (1.26 s -> ~1 ms).
     const events = all(
       `SELECT id, session_id, event_type, data, created_at FROM events
        WHERE created_at > :since
-       AND event_type IN ('UserPromptSubmit', 'Stop', 'RouterCommand', 'VisionAnalysis')
+       AND +event_type IN ('UserPromptSubmit', 'Stop', 'RouterCommand', 'VisionAnalysis')
        ORDER BY created_at ASC LIMIT 200`,
       { ':since': since }
     );

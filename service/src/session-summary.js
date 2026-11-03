@@ -29,80 +29,84 @@ const RECAP_MODEL = 'cerebras:qwen-3-235b';
 (function runMigrations() {
   const migrations = [
     "ALTER TABLE session_summaries ADD COLUMN signal_hash TEXT",
+    // When the row was last rebuilt. The upsert leaves created_at alone, so the
+    // Stop watermark in routes/hooks.js needs this to know a recap is fresh.
+    "ALTER TABLE session_summaries ADD COLUMN updated_at TEXT",
   ];
   for (const sql of migrations) {
     try { run(sql); } catch {} // Ignore duplicate column errors
   }
 })();
 
-// Pull the last TodoWrite snapshot for this session and extract completed items.
+// The last TodoWrite snapshot's completed items and the files touched (Edit, Write,
+// NotebookEdit), from the session's latest RECAP_WINDOW tool calls, in one pass.
 //
-// `+event_type` here and in getFilesTouched forces idx_events_session. Without
-// sqlite_stat1 the planner chose idx_events_type and ran json_extract over all
-// ~200k PreToolUse rows: 2.4s per query with a warm cache, a minute or more
-// cold on the 12 GB hub DB, on the main thread. That is the recurring 5s and
-// 60s [loop-block] lines that end with "[session-summary] built recap".
-function getCompletedTodos(sessionId) {
+// `+event_type` forces idx_events_session. Without sqlite_stat1 the planner chose
+// idx_events_type and ran json_extract over all ~200k PreToolUse rows: 2.4s per
+// query with a warm cache, a minute or more cold on the 12 GB hub DB, on the main
+// thread. That is the recurring 5s and 60s [loop-block] lines that end with
+// "[session-summary] built recap".
+//
+// The window came after: even on the right index, reading ALL of a multi-day
+// session's tool calls (25-30k rows, 40-46 MB) twice took ~1.5 s per recap, every
+// 10 turns per session, on the thread that serves voice. Turns landing in it waited
+// (2-4 s [loop-block] lines right after "built recap", voicebench 2026-11-02). The
+// id subquery walks the session index and skips rows without reading their data:
+// 6-60 ms for 2,000 calls, which is a few days of work.
+const RECAP_WINDOW = 2000;
+
+function getToolSignals(sessionId) {
+  const out = { completed_todos: [], files_touched: [] };
   try {
-    const row = get(
+    const rows = all(
       `SELECT data FROM events
-       WHERE session_id = :sid AND +event_type = 'PreToolUse'
-         AND json_extract(data, '$.tool_name') = 'TodoWrite'
-       ORDER BY created_at DESC LIMIT 1`,
-      { ':sid': sessionId }
+       WHERE id IN (SELECT id FROM events WHERE session_id = :sid AND +event_type = 'PreToolUse'
+                    ORDER BY id DESC LIMIT :n)
+         AND json_extract(data, '$.tool_name') IN ('TodoWrite','Edit','Write','NotebookEdit','MultiEdit')
+       ORDER BY id ASC`,
+      { ':sid': sessionId, ':n': RECAP_WINDOW }
     );
-    if (!row) return [];
-    const d = JSON.parse(row.data);
-    const todos = d?.tool_input?.todos || [];
-    return todos
+    const seen = new Set();
+    let todos = [];
+    for (const r of rows) {
+      try {
+        const d = JSON.parse(r.data);
+        if (d?.tool_name === 'TodoWrite') { todos = d?.tool_input?.todos || []; continue; }
+        const fp = d?.tool_input?.file_path;
+        if (fp && seen.size < 20) seen.add(fp);
+      } catch {}
+    }
+    out.files_touched = Array.from(seen);
+    out.completed_todos = todos
       .filter(t => t.status === 'completed')
       .map(t => t.content)
       .slice(0, 20);
-  } catch {
-    return [];
-  }
+  } catch {}
+  return out;
 }
+
+// cwds git called "not a git repository". A session from another machine carries
+// that machine's cwd, and spawning git for it on every recap blocks the main thread
+// for nothing.
+const _notRepo = new Set();
 
 // Git commits inside the session's time window for this cwd.
 function getCommits(cwd, startedAt, endedAt) {
-  if (!cwd) return [];
+  if (!cwd || _notRepo.has(cwd)) return [];
   try {
     const since = startedAt ? `--since="${startedAt}"` : '--since="6 hours ago"';
     const until = endedAt ? `--until="${endedAt}"` : '';
     const out = execSync(
       `git log ${since} ${until} --pretty=format:"%h|%s" -20`,
-      { cwd, encoding: 'utf8', windowsHide: true, timeout: 5000 }
+      { cwd, encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }
     );
     return out.split('\n').filter(Boolean).slice(0, 20).map(l => {
       const [sha, ...rest] = l.split('|');
       return { sha, subject: rest.join('|') };
     });
-  } catch {
-    return [];
-  }
-}
-
-// Files touched (Edit, Write, NotebookEdit) in this session.
-function getFilesTouched(sessionId) {
-  try {
-    const rows = all(
-      `SELECT data FROM events
-       WHERE session_id = :sid AND +event_type = 'PreToolUse'
-         AND json_extract(data, '$.tool_name') IN ('Edit','Write','NotebookEdit','MultiEdit')
-       ORDER BY created_at ASC`,
-      { ':sid': sessionId }
-    );
-    const seen = new Set();
-    for (const r of rows) {
-      try {
-        const d = JSON.parse(r.data);
-        const fp = d?.tool_input?.file_path;
-        if (fp && !seen.has(fp)) seen.add(fp);
-      } catch {}
-      if (seen.size >= 20) break;
-    }
-    return Array.from(seen);
-  } catch {
+  } catch (e) {
+    // ENOENT: the cwd does not exist on this machine at all (WoE lives on the laptop).
+    if (e?.code === 'ENOENT' || /not a git repository/i.test(String(e?.stderr || ''))) _notRepo.add(cwd);
     return [];
   }
 }
@@ -185,6 +189,9 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
   if (!sessionId) return null;
 
   try {
+    // Every step up to the upsert runs on the main thread unless the LLM polish
+    // fires, so time them: a recap that takes 200 ms+ says which step it was.
+    const tStart = performance.now();
     // Session window
     const session = get(
       `SELECT id, started_at, ended_at FROM sessions WHERE id = :id`,
@@ -205,10 +212,13 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
     }
 
     // Collect signals
-    const completed_todos = getCompletedTodos(sessionId);
+    const tLookup = performance.now();
+    const { completed_todos, files_touched } = getToolSignals(sessionId);
+    const tSignals = performance.now();
     const commits = getCommits(cwd, startedAt, endedAt);
-    const files_touched = getFilesTouched(sessionId);
+    const tGit = performance.now();
     const tasks_closed = getTasksClosed(projectId, startedAt, endedAt);
+    const tTasks = performance.now();
 
     const structured = { completed_todos, commits, files_touched, tasks_closed };
 
@@ -252,12 +262,13 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
     }
 
     // Upsert (ON CONFLICT replace) — re-running backfill should overwrite
+    const tWrite = performance.now();
     run(
       `INSERT INTO session_summaries
          (session_id, project_id, cwd, started_at, ended_at,
           completed_todos, commits, files_touched, tasks_closed,
-          llm_text, model_used, signal_hash)
-       VALUES (:sid, :pid, :cwd, :s, :e, :ct, :co, :ft, :tc, :lt, :mu, :sh)
+          llm_text, model_used, signal_hash, updated_at)
+       VALUES (:sid, :pid, :cwd, :s, :e, :ct, :co, :ft, :tc, :lt, :mu, :sh, datetime('now','localtime'))
        ON CONFLICT(session_id) DO UPDATE SET
          project_id    = excluded.project_id,
          cwd           = excluded.cwd,
@@ -269,7 +280,8 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
          tasks_closed  = excluded.tasks_closed,
          llm_text      = excluded.llm_text,
          model_used    = excluded.model_used,
-         signal_hash   = excluded.signal_hash`,
+         signal_hash   = excluded.signal_hash,
+         updated_at    = excluded.updated_at`,
       {
         ':sid': sessionId,
         ':pid': projectId,
@@ -286,9 +298,17 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
       }
     );
 
+    const tDone = performance.now();
+
     console.log(`[session-summary] built recap for ${sessionId.slice(0, 8)} ` +
       `(${completed_todos.length} todos, ${commits.length} commits, ${files_touched.length} files, ${tasks_closed.length} tasks, ` +
       `model=${model_used}, llm_fired=${llmFired}, hash=${signalHash.slice(0,8)})`);
+    const syncMs = (tTasks - tStart) + (tDone - tWrite);
+    if (syncMs >= 200) {
+      console.warn(`[session-summary] slow recap for ${sessionId.slice(0, 8)}: ${Math.round(syncMs)}ms on the main thread ` +
+        `(lookup=${Math.round(tLookup - tStart)} signals=${Math.round(tSignals - tLookup)} git=${Math.round(tGit - tSignals)} ` +
+        `tasks=${Math.round(tTasks - tGit)} write=${Math.round(tDone - tWrite)})`);
+    }
 
     return { ...structured, llm_text, model_used };
   } catch (err) {

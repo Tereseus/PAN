@@ -10,7 +10,7 @@
 import { execSync, execFile, spawn } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { homedir, tmpdir, platform as osPlatform } from 'os';
+import { homedir, tmpdir, platform as osPlatform, setPriority, constants as osConstants } from 'os';
 import { promisify } from 'util';
 
 const pexec = promisify(execFile);
@@ -101,6 +101,26 @@ export function getShell() {
 }
 
 // ── Process management ──────────────────────────────────────────────────
+
+/**
+ * Run the calling process at the CPU priority Ollama gives its llama-server
+ * runners (AboveNormal). Windows only; elsewhere raising priority needs root.
+ *
+ * The PAN-Hub scheduled task starts node at BelowNormal (Task Scheduler's
+ * default) and the hub runs its models on the CPU. While a runner holds every
+ * core, Windows gives a BelowNormal thread the CPU only through its ~4 s
+ * anti-starvation boost. Measured on the hub 2026-11-03: 12 s of AboveNormal
+ * load on all 16 logical CPUs froze the Craft for 4.6 s and the Super-Carrier
+ * for 7.5 s; with PAN at AboveNormal, nothing reached 1.5 s. Long inferences
+ * (memory consolidation on the hub CPU) were the 10-35 s [loop-block] lines.
+ *
+ * Every PAN process calls this for itself: a child of an AboveNormal parent
+ * starts at Normal, priority is only inherited from BelowNormal and Idle.
+ */
+export function raiseProcessPriority() {
+  if (!isWindows) return;
+  try { setPriority(osConstants.priority.PRIORITY_ABOVE_NORMAL); } catch {}
+}
 
 /**
  * Kill a process by PID. Tries graceful first, then force.

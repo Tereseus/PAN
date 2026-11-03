@@ -1107,6 +1107,9 @@ async function healthCheck() {
   // ALERT ONLY — never kills. User investigates and handles manually.
   await detectOrphanAiProcesses();
 
+  // End Ollama runners whose `ollama serve` is gone (always killed, see below).
+  await reapOrphanOllamaRunners();
+
   // DISABLED — ensureAiInSessions() ancestor walk was broken,
   // terminal.js already auto-launches AI on new PTY sessions.
   // ensureAiInSessions();
@@ -1434,6 +1437,51 @@ $result | ConvertTo-Json -Compress -Depth 3`;
     }
   } catch (err) {
     console.error(`[Steward] detectOrphanAiProcesses error: ${err.message}`);
+  }
+}
+
+// Ollama runs one llama-server.exe per loaded model and does not take them down when
+// `ollama serve` itself dies or is restarted. On the hub three runners from a server
+// that was gone since 10-31 (started 09-22, 10-22, 10-31) still held 22.6 GB of commit
+// on 2026-11-03. Nothing can ever use a runner whose server is gone, so it is always
+// ended, no age threshold and no prompt (the owner asked for exactly that). A pid can be
+// reused, so the parent must also be ollama.exe and older than the runner.
+const _OLLAMA_REAP_INTERVAL_MS = 5 * 60 * 1000;
+let _ollamaReapLastRun = 0;
+
+async function reapOrphanOllamaRunners() {
+  if (process.platform !== 'win32') return;
+  const now = Date.now();
+  if (now - _ollamaReapLastRun < _OLLAMA_REAP_INTERVAL_MS) return;
+  _ollamaReapLastRun = now;
+  try {
+    const ps = `$out = @()
+Get-CimInstance Win32_Process -Filter "Name='llama-server.exe' OR Name='ollama_llama_server.exe' OR (Name='ollama.exe' AND CommandLine LIKE '%runner%')" | ForEach-Object {
+  $r = $_
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($r.ParentProcessId)"
+  if (-not $p -or $p.Name -ne 'ollama.exe' -or $p.CreationDate -gt $r.CreationDate) {
+    $out += [pscustomobject]@{ pid = $r.ProcessId; ppid = $r.ParentProcessId; parent = $(if ($p) { $p.Name } else { '' }); started = $r.CreationDate.ToString('yyyy-MM-dd HH:mm'); mb = [math]::Round($r.PageFileUsage / 1KB) }
+  }
+}
+ConvertTo-Json -Compress -InputObject @($out)`;
+    const psFile = join(process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp', 'pan-reap-ollama.ps1');
+    writeFileSync(psFile, ps);
+    const out = await runPowerShellFile(psFile, 15000);
+    if (!out) return;
+    let orphans;
+    try { orphans = JSON.parse(out); } catch { return; }
+    if (!Array.isArray(orphans) || !orphans.length) return;
+    for (const o of orphans) {
+      try {
+        await execFileAsync('taskkill', ['/F', '/PID', String(o.pid)], { windowsHide: true, timeout: 5000, killSignal: 'SIGKILL' });
+        console.log(`[Steward] ☠ Ended orphaned Ollama runner pid=${o.pid} (started ${o.started}, ${o.mb} MB, parent ${o.ppid} ${o.parent || 'gone'})`);
+      } catch (killErr) {
+        console.warn(`[Steward] Could not end Ollama runner pid=${o.pid}: ${killErr.message}`);
+      }
+    }
+    logServiceEvent('ollama-runner-reaper', 'runners_reaped', { count: orphans.length, runners: orphans });
+  } catch (err) {
+    console.error(`[Steward] reapOrphanOllamaRunners error: ${err.message}`);
   }
 }
 

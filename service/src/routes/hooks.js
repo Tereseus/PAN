@@ -771,12 +771,15 @@ router.post('/:eventType', (req, res) => {
       // need a banner.)
       if (payload.source === 'resume') {
         try {
+          // Same org_id planner trap as the SessionEnd reconcile below: walking
+          // idx_events_org_id_created back to a session's last prompt is instant
+          // for a live session and seconds for one resumed after weeks.
           const lastPrompt = getScoped(req,
             `SELECT data, created_at FROM events
-             WHERE session_id = :sid
-             AND event_type = 'UserPromptSubmit'
-             AND org_id = :org_id
-             ORDER BY created_at DESC LIMIT 1`,
+             WHERE id = (SELECT id FROM events
+                         WHERE session_id = :sid AND +event_type = 'UserPromptSubmit'
+                         ORDER BY id DESC LIMIT 1)
+             AND +org_id = :org_id`,
             { ':sid': sessionId }
           );
           let lastTopic = '';
@@ -829,14 +832,24 @@ router.post('/:eventType', (req, res) => {
 
       // Task reconciliation — check if this session completed any open tasks
       // Runs async in background, non-blocking
+      //
+      // The read below is NOT non-blocking: async does not move a better-sqlite3
+      // call off the main thread. Written as `session_id = ? AND event_type IN (..)
+      // AND org_id = ?`, the planner (no sqlite_stat1) took idx_events_org_id_created,
+      // which matches every row of the org, and walked all ~1M events in time order
+      // checking each one: 4.2-4.3 s, measured 2026-11-03. That is the 4.3-4.5 s
+      // [loop-block] every 30 minutes, when the scheduled :14/:44 Desktop session
+      // ends. The id subquery walks the session index and reads only event_type,
+      // which sits before the data blob; `+org_id` keeps the outer read on rowid.
       (async () => {
         try {
           const recentEvents = allScoped(req,
             `SELECT id, session_id, event_type, data, created_at FROM events
-             WHERE session_id = :sid
-             AND event_type IN ('UserPromptSubmit', 'Stop')
-             AND org_id = :org_id
-             ORDER BY created_at ASC LIMIT 100`,
+             WHERE id IN (SELECT id FROM events
+                          WHERE session_id = :sid AND +event_type IN ('UserPromptSubmit', 'Stop')
+                          ORDER BY id ASC LIMIT 100)
+             AND +org_id = :org_id
+             ORDER BY created_at ASC`,
             { ':sid': sessionId }
           );
           if (recentEvents.length >= 2) {
@@ -996,8 +1009,11 @@ router.post('/:eventType', (req, res) => {
       try {
         const watermarkMin = Number(get(`SELECT value FROM settings WHERE key = 'recap_watermark_minutes'`)?.value) || 30;
         const watermarkTurns = Number(get(`SELECT value FROM settings WHERE key = 'recap_watermark_turns'`)?.value) || 10;
+        // updated_at, not created_at: the recap upsert never touches created_at, so
+        // measured from it every session older than 30 minutes looked due on EVERY
+        // Stop and rebuilt its recap every turn (cd39c27a's row still said June 16).
         const existing = get(
-          `SELECT created_at FROM session_summaries WHERE session_id = :sid`,
+          `SELECT COALESCE(updated_at, created_at) AS built_at FROM session_summaries WHERE session_id = :sid`,
           { ':sid': sessionId }
         );
         let shouldWrite = false;
@@ -1006,15 +1022,21 @@ router.post('/:eventType', (req, res) => {
         } else {
           const ageMin = get(
             `SELECT (julianday('now','localtime') - julianday(:c)) * 1440 AS m`,
-            { ':c': existing.created_at }
+            { ':c': existing.built_at }
           )?.m || 0;
           if (ageMin >= watermarkMin) {
             shouldWrite = true;
           } else {
+            // Counted by id, not `created_at > :c`: created_at sits after the data
+            // blob, so that form read every Stop row of the session in full, 670 ms
+            // for a 60k-event WoE session on every turn. The scalar finds the first
+            // event after the recap on idx_events_created; the count then walks only
+            // the session's index entries past that id.
             const stopsSince = get(
               `SELECT COUNT(*) AS n FROM events
-               WHERE session_id = :sid AND +event_type = 'Stop' AND created_at > :c`, // `+`: use the session index, not all 48k Stop rows
-              { ':sid': sessionId, ':c': existing.created_at }
+               WHERE session_id = :sid AND +event_type = 'Stop'
+                 AND id >= (SELECT id FROM events WHERE created_at > :c ORDER BY created_at LIMIT 1)`,
+              { ':sid': sessionId, ':c': existing.built_at }
             )?.n || 0;
             if (stopsSince >= watermarkTurns) shouldWrite = true;
           }
