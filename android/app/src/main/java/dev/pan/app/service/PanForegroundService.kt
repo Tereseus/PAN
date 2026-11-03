@@ -29,6 +29,8 @@ import dev.pan.app.MainActivity
 import dev.pan.app.audio.FeedbackSounds
 import dev.pan.app.camera.CameraCapture
 import dev.pan.app.data.DataRepository
+import dev.pan.app.debug.TestAudio
+import dev.pan.app.debug.VoiceEvents
 import dev.pan.app.network.LogShipper
 import dev.pan.app.network.PanServerClient
 import dev.pan.app.network.SyncManager
@@ -41,6 +43,7 @@ import dev.pan.app.audio.BargeInMonitor
 import dev.pan.app.stt.GoogleStreamingStt
 import dev.pan.app.tts.TtsManager
 import dev.pan.app.util.Constants
+import dev.pan.app.util.CpuBoost
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import javax.inject.Inject
@@ -122,7 +125,7 @@ class PanForegroundService : Service() {
     // last engine swap in here shipped wired to nothing and nobody could tell.
     private val sttEngine: dev.pan.app.stt.SttEngine by lazy {
         val name = getSharedPreferences("pan_stt_prefs", MODE_PRIVATE)
-            .getString("engine", "google") ?: "google"
+            .getString("engine", "sherpa") ?: "sherpa"
         panLog("STT engine: $name (${if (name == "sherpa") "continuous" else "turn-based"})")
         if (name == "sherpa") sherpaStt else googleStt
     }
@@ -180,6 +183,33 @@ class PanForegroundService : Service() {
         conversationHistory.add(role to text)
         while (conversationHistory.size > MAX_HISTORY) conversationHistory.removeAt(0)
     }
+
+    /** The hub's transcript replaces the phone's rougher guess at the same turn. */
+    private fun replaceUserLine(phoneText: String, hubText: String) {
+        val i = conversationHistory.indexOfLast { it.first == "User" && it.second == phoneText }
+        if (i >= 0) conversationHistory[i] = "User" to hubText
+    }
+
+    // Spoken commands match the WHOLE utterance. Substring matching muted PAN on
+    // "my commute was long" and unmuted it on "I had to wake up early" (voice plan,
+    // phase 1). "pan" may lead or trail, "please" may come along.
+    private val MUTE_CMD = Regex("^(?:(?:hey |ok |okay )?(?:pan|pam)[,.]?\\s+)?(?:please\\s+)?(?:mute(?: yourself)?|be quiet|shut up|stop listening|quiet)(?:\\s+please)?(?:[,]?\\s+(?:pan|pam))?[.!]?$")
+    private val UNMUTE_CMD = Regex("^(?:(?:hey |ok |okay )?(?:pan|pam)[,.]?\\s+)?(?:please\\s+)?(?:unmute(?: yourself)?|wake up|start listening)(?:\\s+please)?(?:[,]?\\s+(?:pan|pam))?[.!]?$")
+    private val STOP_WORDS = Regex("\\b(?:stop|enough|shut up|quiet)\\b")
+    // Only a plain report that the last action failed, not any sentence with
+    // "not working" in it ("my code is not working" reported a music failure).
+    private val DIDNT_WORK = Regex("^(?:(?:that|it) (?:didn'?t|did not) work|try something else|(?:that'?s|it'?s|that is|it is) not working)[.!]?$")
+    // Only plain requests go to the calendar or the terminal. Any sentence with
+    // "meeting", "email" or "check my" in it used to: "I have a meeting tomorrow and
+    // I'm nervous" read out the calendar, "check my reasoning" waited 45 s on a
+    // terminal.
+    private val CALENDAR_ASK = Regex("^(?:what(?:'s| is| are)|whats|read|check|tell me|show me|do i have|is there|are there|any)\\b.*\\b(?:calendar|schedule|meetings?|appointments?)\\b")
+    private val EMAIL_ASK = Regex("^(?:check|read|show me|open|any|do i have|what(?:'s| is| are)|whats)\\b.*\\b(?:e-?mails?|gmail|inbox|outlook)\\b|^send (?:an? )?(?:e-?mail|message)\\b")
+
+    // Bumped by every new turn AND by a barge-in. A reply only speaks while its turn
+    // is still current: cancelling the query does not un-post chunk callbacks that
+    // are already queued, so an interrupted answer used to start talking again.
+    private val replySeq = java.util.concurrent.atomic.AtomicInteger(0)
 
     private fun getHistoryContext(): String {
         if (conversationHistory.isEmpty()) return ""
@@ -240,7 +270,102 @@ class PanForegroundService : Service() {
     }
 
     /** Best-effort: ship one conversation turn to server for persistent history */
+    // His conversation, set aside while a benchmark runs (TEST_AUDIO). Test lines
+    // must never end up in it, and a run must not start from whatever he last said.
+    private var benchSavedHistory: List<Pair<String, String>>? = null
+    // A run unmutes PAN to play its clips and mutes it again at the end, which a run that
+    // dies never reaches.
+    private var benchStartedMuted = false
+
+    // Ends a session nothing has played into for 2 minutes. A run's longest pause between
+    // clips is a slow reply, well under that. Without it, a run that died (the USB cable came
+    // out mid-run, 2026-11-03) left the microphone replaced by silence and PAN unmuted, deaf
+    // to him until the app restarted.
+    private val benchWatchdog = object : Runnable {
+        override fun run() {
+            if (!TestAudio.active) return
+            if (TestAudio.idleMs() < 120_000L) { mainHandler.postDelayed(this, 30_000L); return }
+            panLog("Benchmark abandoned: nothing played for 2 minutes, ending it")
+            endBench()
+            if (benchStartedMuted && !isMuted) muteNow()
+        }
+    }
+
+    private fun beginBench() {
+        benchSavedHistory = conversationHistory.toList()
+        conversationHistory.clear()
+        benchStartedMuted = isMuted
+        mainHandler.removeCallbacks(benchWatchdog)
+        mainHandler.postDelayed(benchWatchdog, 30_000L)
+        VoiceEvents.emit("bench_start", "muted" to isMuted)
+        panLog("Benchmark started: history set aside, nothing persisted")
+    }
+
+    private fun resetConversationForBench() {
+        tts.stop()
+        cancelInFlight()
+        cancelHold("bench reset")
+        pendingTurn = null
+        conversationHistory.clear()
+        // A scenario may repeat an earlier scenario's line on purpose.
+        lastProcessedText = ""
+        lastProcessedTime = 0L
+        lastTtsDoneTime = 0L
+        VoiceEvents.emit("bench_reset")
+    }
+
+    private fun endBench() {
+        mainHandler.removeCallbacks(benchWatchdog)
+        TestAudio.end()
+        resetConversationForBench()
+        benchSavedHistory?.let { conversationHistory.addAll(it) }
+        benchSavedHistory = null
+        VoiceEvents.emit("bench_end")
+        panLog("Benchmark ended: history restored")
+    }
+
+    /**
+     * Same as the mute button: silence in both directions. Saying "shut up" and then being
+     * talked over for another sentence is the whole complaint.
+     */
+    private fun muteNow() {
+        isMuted = true
+        tts.stop()
+        cancelInFlight()
+        cancelHold("muted")
+        sttEngine.enabled = false
+        micEnabled.value = false
+        notificationManager?.notify(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = serverClient.isConnected.value))
+    }
+
+    /** Speak part of turn [seq]'s reply, unless a newer turn or a barge-in moved on. */
+    private fun speakReply(seq: Int, text: String) {
+        mainHandler.post {
+            if (replySeq.get() == seq) {
+                // PAN is answering it now, so his next words are a new turn, not more of this one.
+                pendingTurn = null
+                panSpeak(text)
+            }
+        }
+    }
+
+    /**
+     * Index of the first clause break (, ; :) with at least four words before it, or -1.
+     * Only a break already followed by a space counts, so "1,000" is never split mid-number.
+     * A one-word "Well," or "Sure," stays with what follows: a clip that short sounds clipped.
+     */
+    private fun firstClauseEnd(buf: String): Int {
+        for (i in 0 until buf.length - 1) {
+            if (buf[i] != ',' && buf[i] != ';' && buf[i] != ':') continue
+            if (buf[i + 1] != ' ') continue
+            if (buf.substring(0, i).trim().split(Regex("\\s+")).size >= 4) return i
+        }
+        return -1
+    }
+
     private fun persistHistoryTurn(role: String, text: String) {
+        // Benchmark lines are not his conversation (TestAudio.kt).
+        if (TestAudio.active) return
         serviceScope.launch(Dispatchers.IO) {
             try {
                 serverClient.api.appendHistory(
@@ -405,6 +530,11 @@ class PanForegroundService : Service() {
                     // energy heuristic to lose to, and PAN's own voice has
                     // already been subtracted. Act on it.
                     panLog("Barge-in (words heard during TTS) — stopping TTS")
+                    // Stop the ANSWER, not just the sound: the rest of it is still
+                    // streaming from the hub and would start PAN talking again.
+                    replySeq.incrementAndGet()
+                    cancelInFlight()
+                    cancelHold("barge-in")
                     tts.stop()
                     // Clear the post-TTS cooldown, or the sentence that just
                     // interrupted PAN gets thrown away by it.
@@ -950,6 +1080,7 @@ class PanForegroundService : Service() {
             panLog("Suppressed while muted: ${text.take(40)}")
             return
         }
+        VoiceEvents.emit("speak", "text" to text)
         sttEngine.registerTtsOutput(text)
         // A turn-based recogniser has to be stopped here or it transcribes PAN
         // and fights it for audio focus. A continuous one is built to stay open
@@ -964,6 +1095,7 @@ class PanForegroundService : Service() {
 
     // Log every command to the server so it's always visible for debugging
     private fun logToServer(text: String, intent: String, result: String, handledBy: String) {
+        if (TestAudio.active) return
         if (::logShipper.isInitialized) {
             logShipper.info("command", "[$handledBy|$intent] $text -> $result")
         }
@@ -975,6 +1107,26 @@ class PanForegroundService : Service() {
     // racing inside the same second. An answer to something he has already
     // moved past is worse than no answer. (Task #460.)
     @Volatile private var inFlightQuery: kotlinx.coroutines.Job? = null
+    // Its HTTP call. Cancelling the coroutine alone did not close the connection: the hub
+    // kept generating the dropped reply on its CPU while his next turn waited behind it.
+    // Closing the call is what tells the hub (res 'close' aborts the model).
+    @Volatile private var inFlightCall: okhttp3.Call? = null
+    @Volatile private var lastNoReplySpokenAt = 0L
+    private val NO_REPLY_REPEAT_MS = 60_000L
+
+    // The turn sent last, until PAN starts answering it. Words that follow within
+    // CARRY_ON_MS are the rest of it (onSpeech). Main thread only.
+    private class PendingTurn(val text: String, val audio: ShortArray?, val at: Long, val seq: Int)
+    private var pendingTurn: PendingTurn? = null
+    private val CARRY_ON_MS = 5000L
+    // 30 s of 16 kHz audio; past that the hub hears the phone's words instead.
+    private val CARRY_AUDIO_MAX = 30 * 16000
+
+    private fun cancelInFlight() {
+        inFlightQuery?.cancel()
+        inFlightCall?.cancel()
+        inFlightCall = null
+    }
 
     // A reply the hub was not sure enough to speak straight away. It sits here
     // for hold_ms and is cancelled the moment he says anything else, which is
@@ -982,13 +1134,17 @@ class PanForegroundService : Service() {
     // and this never fires. If the room goes quiet, he was talking to us.
     private var pendingHold: Runnable? = null
 
-    private fun onSpeech(text: String) {
-        val lower = text.lowercase().trim()
+    private fun onSpeech(heard: String) {
+        // Both can grow below, when this turn carries on from the last one (CARRY_ON_MS).
+        var text = heard
+        var lower = text.lowercase().trim()
 
         // Dedup — ignore identical text within 3 seconds
         val now = System.currentTimeMillis()
+        VoiceEvents.emit("on_speech", "text" to text)
         if (lower == lastProcessedText && now - lastProcessedTime < DEDUP_WINDOW_MS) {
             panLog("Dedup skipped: $lower")
+            VoiceEvents.emit("drop", "reason" to "dedup", "text" to text)
             return
         }
         lastProcessedText = lower
@@ -997,45 +1153,46 @@ class PanForegroundService : Service() {
         panLog("Heard: $text")
         lastAction.value = text
         // Taken here, keyed by this exact text, so it rides with THIS turn's query.
-        val turnAudio = sttEngine.takeTurnAudio(text)
+        var turnAudio = sttEngine.takeTurnAudio(text)
+        // He stopped mid-sentence and the wait for the rest ran out. Read before a carry_on
+        // merge: what matters is how the LAST piece ended.
+        val unfinished = sttEngine.turnUnfinished(text)
 
         // Cooldown after TTS — ignore echo/residual audio for 2 seconds after PAN stops talking
         if (System.currentTimeMillis() - lastTtsDoneTime < TTS_COOLDOWN_MS) {
             panLog("Cooldown (ignoring post-TTS echo): ${lower.take(30)}")
+            VoiceEvents.emit("drop", "reason" to "cooldown", "text" to text)
             return
         }
 
         // Stop talking — only exact short phrases while TTS is active
         if (tts.isSpeaking) {
-            if (lower.contains("stop") || lower.contains("enough") || lower.contains("shut up") || lower.contains("quiet")) {
+            if (STOP_WORDS.containsMatchIn(lower)) {
+                replySeq.incrementAndGet()
+                cancelInFlight()
                 tts.stop()
                 panLog("TTS stopped by user: $lower")
+                VoiceEvents.emit("user_stop", "text" to text)
                 return
             }
             // TTS is still talking and user said something else — ignore it (probably echo)
+            VoiceEvents.emit("drop", "reason" to "tts_speaking", "text" to text)
             return
         }
 
         // Mute / unmute check — before any other processing
-        if ((lower.contains("mute") && !lower.contains("unmute")) || lower.contains("shut up") || lower.contains("be quiet")) {
+        if (MUTE_CMD.matches(lower)) {
             panLog("PAN muted by voice command")
-            isMuted = true
-            // Same as the mute button: silence in both directions. Saying "shut
-            // up" and then being talked over for another sentence is the whole
-            // complaint.
-            tts.stop()
-            inFlightQuery?.cancel()
-            cancelHold("muted")
-            sttEngine.enabled = false
-            micEnabled.value = false
-            notificationManager?.notify(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = serverClient.isConnected.value))
+            VoiceEvents.emit("drop", "reason" to "mute_command", "text" to text)
+            muteNow()
             feedbackSounds.onCommandSent()
             serviceScope.launch { dataRepository.addUserMessage(text) }
             serviceScope.launch { dataRepository.addPanResponse("[PAN muted]") }
             return
         }
-        if (lower.contains("unmute") || lower.contains("wake up") || lower.contains("start listening")) {
+        if (UNMUTE_CMD.matches(lower)) {
             panLog("PAN unmuted by voice command")
+            VoiceEvents.emit("drop", "reason" to "unmute_command", "text" to text)
             // If the service came up from boot it holds CONNECTED_DEVICE, not
             // MICROPHONE. Claim the mic type before recording, or Android kills
             // the recording (or the service) for using the mic without it.
@@ -1051,21 +1208,28 @@ class PanForegroundService : Service() {
             return
         }
 
-        // A new question invalidates the previous one's numbers.
-        //
-        // lastFirstChunkMs and lastResponseMs are written in exactly ONE place each,
-        // inside the streaming branch. Anything answered without streaming - a local
-        // command, an instant hardware reply, a tool-only answer - never touched them,
-        // so the card kept showing the PREVIOUS interaction's timings beside the new
-        // question. That is how a 26ms local reply ended up displayed against a
-        // question that had just been asked.
-        //
-        // The UI already renders 0 as an em dash, so clearing here makes 'not
-        // measured' look like not measured instead of like a fast answer.
-        lastQueryText.value = text
-        lastResponseText.value = ""
-        lastFirstChunkMs.value = 0L
-        lastResponseMs.value = 0L
+        // He carried on. The pause before these words was long enough to commit the last
+        // ones, but PAN had not started answering them, so it is one turn said with a breath
+        // in it: "can you explain ... in simple words ... how a fridge keeps things cold" went
+        // to the hub as three turns (voicebench, 2026-11-02). The words and the audio go
+        // together, and the reply to the first part is cancelled below as superseded.
+        val prev = pendingTurn
+        if (prev != null && prev.seq == replySeq.get() && now - prev.at < CARRY_ON_MS) {
+            text = "${prev.text} $text"
+            lower = text.lowercase().trim()
+            val a = turnAudio
+            turnAudio = if (prev.audio != null && a != null && prev.audio.size + a.size <= CARRY_AUDIO_MAX) prev.audio + a else null
+            // Its line is the last one: nothing was said back to it.
+            if (conversationHistory.lastOrNull()?.first == "User") conversationHistory.removeAt(conversationHistory.size - 1)
+            VoiceEvents.emit("carry_on", "text" to text, "audio" to (turnAudio != null))
+        }
+        pendingTurn = null
+
+        // The card shows the last exchange PAN answered: question, reply and timings are
+        // written together when the reply lands (streaming branch), so they always match.
+        // They used to be cleared here, on every line heard: with a TV or other people in
+        // the room the reply he had just been told vanished seconds later, and "You asked"
+        // showed the phone's rough transcript, not what the hub heard (owner, 2026-11-03).
 
         // Always save transcript and user message for conversation screen
         persistHistoryTurn("user", text)
@@ -1082,7 +1246,7 @@ class PanForegroundService : Service() {
         }
 
         // "That didn't work" — report failure to resistance system
-        if (lower.contains("didn't work") || lower.contains("that didn't") || lower.contains("try something else") || lower.contains("not working")) {
+        if (DIDNT_WORK.matches(lower)) {
             val feedback = resistanceClient.reportLastFailed("play_music")
             mainHandler.post { panSpeak(feedback) }
             addToHistory("User", text)
@@ -1101,19 +1265,11 @@ class PanForegroundService : Service() {
         // Google/Microsoft app queries → try local Android APIs first, fall back to terminal MCP
         // But NOT "open gmail" / "open calendar" — those are just app launches, handled by LLM classifier
         val isOpenCommand = lowerStripped.startsWith("open ") || lowerStripped.startsWith("launch ") || lowerStripped.startsWith("go to ")
-        val isGoogleQuery = !isOpenCommand && (
-            lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
-            lowerStripped.contains("meeting") || lowerStripped.contains("appointment") ||
-            lowerStripped.contains("email") || lowerStripped.contains("gmail") ||
-            lowerStripped.contains("outlook") || lowerStripped.contains("inbox") ||
-            lowerStripped.contains("send email") || lowerStripped.contains("send a message") ||
-            lowerStripped.contains("check my") || lowerStripped.contains("read my") ||
-            lowerStripped.contains("what's on my")
-        )
+        val isCalendarAsk = !isOpenCommand && CALENDAR_ASK.containsMatchIn(lowerStripped)
+        val isGoogleQuery = isCalendarAsk || (!isOpenCommand && EMAIL_ASK.containsMatchIn(lowerStripped))
         if (isGoogleQuery) {
             // Try reading calendar directly from Android CalendarProvider (instant, no network)
-            if (lowerStripped.contains("calendar") || lowerStripped.contains("schedule") ||
-                lowerStripped.contains("meeting") || lowerStripped.contains("appointment")) {
+            if (isCalendarAsk) {
                 try {
                     val calResult = readPhoneCalendar()
                     if (calResult != null) {
@@ -1228,6 +1384,10 @@ class PanForegroundService : Service() {
             return
         }
 
+        // The lines BEFORE this one. The hub adds the heard line to the prompt itself,
+        // so taking history after adding it showed him saying it twice, unlike the
+        // training data.
+        val historyContext = getHistoryContext()
         addToHistory("User", text)
 
         // He said something new, so whatever the hub is still composing is about
@@ -1235,13 +1395,14 @@ class PanForegroundService : Service() {
         inFlightQuery?.let {
             if (it.isActive) {
                 panLog("Superseded — cancelling in-flight query")
-                it.cancel()
+                cancelInFlight()
             }
         }
+        val mySeq = replySeq.incrementAndGet()
+        pendingTurn = PendingTurn(text, turnAudio, now, mySeq)
 
         inFlightQuery = serviceScope.launch {
             try {
-            val historyContext = getHistoryContext()
 
             // Skip llama.cpp classifier — was adding 9s overhead
             // Return dummy "unknown" so everything falls through to GeminiBrain/server
@@ -1274,9 +1435,16 @@ class PanForegroundService : Service() {
             // about the future" was force-routed to recall and PAN searched the
             // user's own history for "the future". Any keyword that is a prefix of
             // a longer everyday word had the same failure mode.
-            val forceRecall = recallKeywords.any { kw ->
+            // About the conversation he is in right now ("what did I say the dog is
+            // called")? Then the history this turn carries has the answer, and the
+            // normal path reads it. Recall searches long-term memory WITHOUT that
+            // history and answered "nothing saved" two turns after he said it.
+            val longTermKeywords = listOf("do you remember", "remember when",
+                "previous conversation", "earlier conversation")
+            fun said(kws: List<String>) = kws.any { kw ->
                 Regex("\\b" + Regex.escape(kw) + "\\b").containsMatchIn(stripped)
             }
+            val forceRecall = said(recallKeywords) && (historyContext.isBlank() || said(longTermKeywords))
             val effectiveIntent = if (forceRecall && localIntent.intent != "recall") {
                 panLog("Override: ${localIntent.intent} → recall (keyword match)")
                 localIntent.copy(intent = "recall", local = true)
@@ -1399,13 +1567,13 @@ class PanForegroundService : Service() {
                                 if (lastPunct > 0) {
                                     val sentence = sentenceBuf.substring(0, lastPunct + 1).trim()
                                     sentenceBuf.delete(0, lastPunct + 1)
-                                    mainHandler.post { panSpeak(sentence) }
+                                    speakReply(mySeq, sentence)
                                 }
                             }
                             sttEngine.queryPending = false // clear on completion (no chunks case)
                             // Speak any trailing text that didn't end with punctuation
                             val tail = sentenceBuf.toString().trim()
-                            if (tail.isNotEmpty()) mainHandler.post { panSpeak(tail) }
+                            if (tail.isNotEmpty()) speakReply(mySeq, tail)
                             val fullMsg = fullBuf.toString().ifEmpty { "Couldn't search conversations." }
                             addToHistory("PAN", fullMsg)
                             dataRepository.addPanResponse(fullMsg)
@@ -1449,7 +1617,7 @@ class PanForegroundService : Service() {
             val filler = pickFiller()
             isThinking.value = true
             currentFiller.value = filler
-            lastQueryText.value = text
+            var heardText = text    // the card's "You asked": the hub's words replace these in onHeard
             // The SPOKEN filler is gone. It was scheduled at 1500ms, which used to
             // be comfortably inside the wait - the prompt cut and local streaming
             // brought first-token down to 0.7-1.9s, so it started firing just as
@@ -1470,37 +1638,55 @@ class PanForegroundService : Service() {
                 // Sentence buffer for streaming TTS — speak each sentence as it arrives
                 val sentenceBuf = StringBuilder()
                 var firstChunkTime = 0L
+                var spokeFirst = false
 
+                VoiceEvents.emit("query", "text" to text, "history_lines" to conversationHistory.size,
+                    "audio" to (turnAudio != null), "unfinished" to unfinished)
+                // Upload, the hub's reply stream and the first sentence's synthesis all run
+                // on this phone's cores; with the screen off they start unboosted.
+                CpuBoost.burst(applicationContext)
                 val response = serverClient.askPanStream(
                     text = text,
                     conversationHistory = historyContext,
                     sensorJson = sensorJson,
                     canCamera = sensorContext.cameraEnabled,
                     audio = turnAudio,
+                    bench = TestAudio.active,
+                    unfinished = unfinished,
+                    onCall = { inFlightCall = it },
                     onHeard = { heard ->
                         panLog("Hub heard: $heard")
+                        VoiceEvents.emit("heard", "text" to heard)
                         lastAction.value = heard
+                        heardText = heard
+                        // History keeps what the hub heard, not the phone's rougher guess.
+                        mainHandler.post { replaceUserLine(text, heard) }
                     },
                     onChunk = { chunk ->
                         if (firstChunkTime == 0L) {
                             firstChunkTime = System.currentTimeMillis()
+                            VoiceEvents.emit("first_chunk", "ms" to (firstChunkTime - startTime))
                             sttEngine.queryPending = false // first chunk = TTS about to start
                             // Stream started — cancel the audible filler and clear it
-                            // from the UI. lastFirstChunkMs feeds the response-time badge.
+                            // from the UI.
                             currentFiller.value = ""
-                            lastFirstChunkMs.value = firstChunkTime - startTime
                         }
                         sentenceBuf.append(chunk)
                         // Speak each complete sentence as it arrives
                         val buf = sentenceBuf.toString()
-                        val lastPunct = buf.indexOfLast { it == '.' || it == '!' || it == '?' }
+                        var lastPunct = buf.indexOfLast { it == '.' || it == '!' || it == '?' }
+                        // The reply's FIRST piece goes at its first clause, not its first full
+                        // stop: "Well, if the moon were twice as big," is ready well before the
+                        // sentence ends, and the rest is synthesised while it plays.
+                        if (lastPunct <= 0 && !spokeFirst) lastPunct = firstClauseEnd(buf)
                         if (lastPunct > 0) {
                             val sentence = buf.substring(0, lastPunct + 1).trim()
                             val remainder = buf.substring(lastPunct + 1)
                             sentenceBuf.clear()
                             sentenceBuf.append(remainder)
                             if (sentence.isNotBlank()) {
-                                mainHandler.post { panSpeak(sentence) }
+                                spokeFirst = true
+                                speakReply(mySeq, sentence)
                             }
                         }
                     }
@@ -1508,10 +1694,17 @@ class PanForegroundService : Service() {
 
                 val elapsed = System.currentTimeMillis() - startTime
                 sttEngine.queryPending = false // clear after response received
+                VoiceEvents.emit("reply_done", "intent" to response?.intent, "ms" to elapsed,
+                    "hold_ms" to (response?.hold_ms ?: 0L), "camera" to (response?.camera == true),
+                    "text" to response?.response_text)
 
-                // #462: ambient verdict — silently drop, no TTS, no history, no fallback.
+                // #462: ambient verdict — no TTS, no fallback.
                 if (response?.intent == "ambient") {
                     panLog("Ambient (${elapsed}ms): no-op")
+                    // The line STAYS in the history. A person in the room remembers what was
+                    // said near them, and "what did I say the dog is called" needs it. Dropping
+                    // it also dropped every statement the hub misjudged as room talk, which is
+                    // how recall went to 0% (voicebench, 2026-11-02).
                     return@launch
                 }
 
@@ -1533,7 +1726,7 @@ class PanForegroundService : Service() {
                         panLog("Held ${hold}ms (addressed=${response?.addressed}): ${text.take(50)}")
                         val r = Runnable {
                             pendingHold = null
-                            if (!isMuted) panSpeak(text)
+                            if (!isMuted && replySeq.get() == mySeq) panSpeak(text)
                         }
                         pendingHold = r
                         mainHandler.postDelayed(r, hold)
@@ -1544,7 +1737,7 @@ class PanForegroundService : Service() {
                 // Speak any remaining text in the buffer (incomplete sentence or no punct)
                 val remaining = sentenceBuf.toString().trim()
                 if (remaining.isNotBlank() && remaining != "[AMBIENT]") {
-                    mainHandler.post { panSpeak(remaining) }
+                    speakReply(mySeq, remaining)
                 } else if (firstChunkTime == 0L && response?.intent != "ambient") {
                     // NOTHING streamed. The hub still puts an answer in the done
                     // event's `response` field - the unparseable-output fallback
@@ -1554,7 +1747,7 @@ class PanForegroundService : Service() {
                     val fromDone = response?.response_text?.trim().orEmpty()
                     if (fromDone.isNotBlank() && fromDone != "[AMBIENT]") {
                         panLog("No chunks streamed — speaking the done-event reply")
-                        mainHandler.post { panSpeak(fromDone) }
+                        speakReply(mySeq, fromDone)
                     }
                 }
 
@@ -1577,17 +1770,30 @@ class PanForegroundService : Service() {
                     }
 
                     if (responseText != "[AMBIENT]") {
-                        addToHistory("PAN", "$responseText (${elapsed}ms)")
+                        // No "(1234ms)" suffix: the model reads this history, and its
+                        // training data has none.
+                        addToHistory("PAN", responseText)
                         persistHistoryTurn("assistant", responseText)
                         dataRepository.addPanResponse(responseText)
                         // Surface to native PanThinkingCard — shows the reply text +
-                        // ↳ X.Xs response-time badge.
+                        // ↳ X.Xs response-time badge, beside what the hub heard.
+                        lastQueryText.value = heardText
                         lastResponseText.value = responseText
+                        lastFirstChunkMs.value = firstWordMs
                         lastResponseMs.value = elapsed
                     }
                 } else if (remaining.isBlank()) {
                     panLog("Stream returned null/empty")
-                    mainHandler.post { panSpeak("Server didn't respond.") }
+                    // Once a minute, then a short tone. With the tunnel down every turn fails in
+                    // milliseconds, and during an internet outage he heard "Server didn't
+                    // respond." twelve times in a row (2026-11-02).
+                    val now = System.currentTimeMillis()
+                    if (now - lastNoReplySpokenAt > NO_REPLY_REPEAT_MS) {
+                        lastNoReplySpokenAt = now
+                        mainHandler.post { panSpeak("Server didn't respond.") }
+                    } else {
+                        feedbackSounds.onCommandFailed()
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // We cancelled this ourselves because he said something new, or
@@ -1675,22 +1881,26 @@ class PanForegroundService : Service() {
 
     // Camera trigger phrases — "what is this?", "what am I looking at?", etc.
     private val cameraPatterns = listOf(
-        "what is this", "what's this", "what is that", "what's that",
         "what am i looking at", "what am i seeing",
         "take a photo", "take a picture", "take photo", "take picture",
         "what do you see", "what can you see",
-        "look at this", "look at that",
-        "identify this", "identify that",
         "what's in front of me", "what is in front of me",
-        "describe what you see", "describe this",
+        "describe what you see",
         "what's around me", "what is around me",
-        "snap a photo", "snap a picture",
-        "capture this", "capture that"
+        "snap a photo", "snap a picture"
     )
+
+    // "What is that" means look only when nothing else follows it. "What is that movie
+    // called, the one with the..." is him reaching for a name, and answering it with "the
+    // camera is turned off" took the turn from the hub's word search (2026-11-03).
+    private val deicticCamera = Regex("\\b(what is|what's|look at|identify|describe|capture) (this|that)\\b(.*)$")
+    private val cameraTail = Regex("^\\s*((thing|things|one|here|there|right|over|called|pan|please|for me|real quick|now)\\b[\\s,.?!]*)*$")
 
     private fun isCameraCommand(text: String): Boolean {
         val lower = text.lowercase().trim()
-        return cameraPatterns.any { lower.contains(it) }
+        if (cameraPatterns.any { lower.contains(it) }) return true
+        val m = deicticCamera.find(lower) ?: return false
+        return cameraTail.matches(m.groupValues[3])
     }
 
     private fun handleCameraCommand(userText: String) {
@@ -2310,6 +2520,68 @@ class PanForegroundService : Service() {
             mainHandler.post { onSpeech(t) }
         }
 
+        // TEST_AUDIO -> recorded SPEECH in place of the microphone (TestAudio.kt).
+        //               TEST_SAY skips the VAD, recogniser, Smart Turn, echo filter
+        //               and barge-in, which is where most of the complaints live;
+        //               this runs all of them. The conversation benchmark
+        //               (service/src/evals/voicebench) drives it and reads the
+        //               PANEVT log lines (VoiceEvents.kt).
+        //
+        //   adb push q1.wav /sdcard/Android/data/dev.pan.app/files/voicebench/
+        //   adb shell am startservice -n dev.pan.app/.service.PanForegroundService \
+        //     -a TEST_AUDIO --es file q1.wav
+        //
+        // TEST_RESET starts a fresh conversation between scenarios. TEST_AUDIO_END
+        // gives back the microphone and his real conversation history.
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_AUDIO") {
+            val name = intent.getStringExtra("file") ?: ""
+            try {
+                val dir = getExternalFilesDir("voicebench") ?: error("no external files dir")
+                val pcm = TestAudio.readWav(java.io.File(dir, name))
+                if (!TestAudio.active) beginBench()
+                TestAudio.enqueue(name, pcm)
+                VoiceEvents.emit("inject_queued", "clip" to name, "samples" to pcm.size,
+                    "muted" to isMuted)
+            } catch (e: Exception) {
+                VoiceEvents.emit("inject_error", "clip" to name, "error" to (e.message ?: "?"))
+                panLog("TEST_AUDIO failed: ${e.message}")
+            }
+        }
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_RESET") {
+            mainHandler.post { resetConversationForBench() }
+        }
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_AUDIO_END") {
+            mainHandler.post { endBench() }
+        }
+        // TEST_TTS: tune the Supertonic voice live, by ear, then TEST_SPEAK a sentence.
+        //   adb shell am startservice -n dev.pan.app/.service.PanForegroundService \
+        //     -a TEST_TTS --es steps 10 --es speed 1.2 --es silence 0.2
+        //   --es voice supertonic3 switches the voice (saved, as from Settings) for an A/B.
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_TTS") {
+            intent.getStringExtra("voice")?.let { tts.voiceQuality = it }
+            intent.getStringExtra("steps")?.toIntOrNull()?.let { tts.piper.supertonicSteps = it }
+            intent.getStringExtra("speed")?.toFloatOrNull()?.let { tts.piper.speedOverride = it }
+            intent.getStringExtra("silence")?.toFloatOrNull()?.let { tts.piper.silenceScale = it }
+            panLog("TTS tuned: steps=${tts.piper.supertonicSteps} speed=${tts.piper.speedOverride} silence=${tts.piper.silenceScale}")
+        }
+        // TEST_PING: the hub round trip on the path a voice turn uses (in-app tailnet), N
+        // health requests spaced gap_ms apart. A gap longer than the Wi-Fi's idle timeout
+        // shows what a reply pays when the radio has gone to sleep between turns.
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_PING") {
+            // String extras: run.py passes everything with --es.
+            val n = intent.getStringExtra("n")?.toIntOrNull() ?: 5
+            val gap = intent.getStringExtra("gap_ms")?.toLongOrNull() ?: 1000L
+            serviceScope.launch(Dispatchers.IO) {
+                repeat(n) { i ->
+                    val t0 = android.os.SystemClock.elapsedRealtime()
+                    val ok = runCatching { serverClient.api.health().isSuccessful }.getOrDefault(false)
+                    VoiceEvents.emit("ping", "i" to i, "gap_ms" to gap, "ok" to ok,
+                        "ms" to (android.os.SystemClock.elapsedRealtime() - t0))
+                    delay(gap)
+                }
+            }
+        }
+
         // Swap recogniser without a rebuild, so the two can be compared on the
         // same voice on the same day:
         //
@@ -2382,7 +2654,7 @@ class PanForegroundService : Service() {
                 // was still in flight, eleven seconds after the mic was released.
                 // Mute has to mean silence in both directions.
                 tts.stop()
-                inFlightQuery?.cancel()
+                cancelInFlight()
                 panLog("Muted — mic released, TTS stopped, query cancelled")
             }
             sttEngine.enabled = newState

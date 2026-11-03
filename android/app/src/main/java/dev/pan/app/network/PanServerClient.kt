@@ -303,12 +303,20 @@ class PanServerClient @Inject constructor(
         sensorJson: String? = null,
         canCamera: Boolean = false,
         audio: ShortArray? = null,
+        bench: Boolean = false,
+        unfinished: Boolean = false,
+        onCall: ((okhttp3.Call) -> Unit)? = null,
         onHeard: ((String) -> Unit)? = null,
         onChunk: (String) -> Unit
     ): QueryResponse? = withContext(Dispatchers.IO) {
         try {
             val body = JSONObject().apply {
                 put("text", text)
+                // Conversation benchmark turn: the hub answers it the same way and
+                // persists nothing (service/src/bench-context.js).
+                if (bench) put("bench", true)
+                // He stopped mid-sentence (SttEngine.turnUnfinished): maybe searching for a word.
+                if (unfinished) put("unfinished", true)
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
                 if (sensorJson != null) put("sensors", sensorJson)
                 if (canCamera) put("can_camera", true)
@@ -328,7 +336,9 @@ class PanServerClient @Inject constructor(
                 .addHeader("Accept", "text/event-stream")
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
+            val call = okHttpClient.newCall(request)
+            onCall?.invoke(call)
+            val response = call.execute()
             if (!response.isSuccessful) {
                 Log.e(TAG, "Stream request failed: ${response.code}")
                 return@withContext null

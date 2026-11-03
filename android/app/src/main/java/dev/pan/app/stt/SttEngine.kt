@@ -30,6 +30,13 @@ interface SttEngine {
     fun takeTurnAudio(text: String): ShortArray? = null
 
     /**
+     * True if the turn whose final text was [text] went out because he stopped mid-sentence and
+     * the wait for the rest ran out, not because it sounded finished. The hub uses it to tell a
+     * word search ("that movie with the dreams inside dreams, the...") from a question.
+     */
+    fun turnUnfinished(text: String): Boolean = false
+
+    /**
      * True if the engine is meant to keep the microphone open while PAN speaks.
      *
      * A turn-based recogniser has to be stopped before TTS or it transcribes

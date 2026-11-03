@@ -134,13 +134,38 @@ class TtsManager @Inject constructor(
     private val foreignIds: MutableSet<String> =
         java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
-    private fun scriptLocale(text: String): Locale? = when {
-        Regex("[\\u3040-\\u30FF]").containsMatchIn(text) -> Locale.JAPANESE   // kana, so Japanese
-        Regex("[\\uAC00-\\uD7AF]").containsMatchIn(text) -> Locale.KOREAN
-        Regex("[\\u4E00-\\u9FFF]").containsMatchIn(text) -> Locale.CHINESE    // Han without kana
-        Regex("[\\u0370-\\u03FF]").containsMatchIn(text) -> Locale("el")
-        Regex("[\\u0400-\\u04FF]").containsMatchIn(text) -> Locale("ru")
-        else -> null
+    // Only when that script is most of the reply's letters: one Greek word in an English
+    // sentence ("your threads are ΠΑΝ, Map Creation...") read the whole sentence in the
+    // Greek voice (2026-11-03).
+    private fun scriptLocale(text: String): Locale? {
+        val letters = text.count { it.isLetter() }.coerceAtLeast(1)
+        fun most(script: String) = Regex("[$script]").findAll(text).count() * 2 > letters
+        val cjk = most("\\u3040-\\u30FF\\u4E00-\\u9FFF\\uAC00-\\uD7AF")
+        return when {
+            cjk && Regex("[\\u3040-\\u30FF]").containsMatchIn(text) -> Locale.JAPANESE   // kana, so Japanese
+            cjk && Regex("[\\uAC00-\\uD7AF]").containsMatchIn(text) -> Locale.KOREAN
+            cjk -> Locale.CHINESE    // Han without kana
+            most("\\u0370-\\u03FF\\u1F00-\\u1FFF") -> Locale("el")
+            most("\\u0400-\\u04FF") -> Locale("ru")
+            else -> null
+        }
+    }
+
+    private val greekLatin = mapOf('Α' to "A", 'Β' to "V", 'Γ' to "G", 'Δ' to "D", 'Ε' to "E", 'Ζ' to "Z",
+        'Η' to "I", 'Θ' to "Th", 'Ι' to "I", 'Κ' to "K", 'Λ' to "L", 'Μ' to "M", 'Ν' to "N", 'Ξ' to "X",
+        'Ο' to "O", 'Π' to "P", 'Ρ' to "R", 'Σ' to "S", 'Τ' to "T", 'Υ' to "Y", 'Φ' to "F", 'Χ' to "Ch",
+        'Ψ' to "Ps", 'Ω' to "O")
+
+    /** A few Greek letters in English, spelled in Latin for the English voices: "ΠΑΝ" is said "PAN". */
+    private fun latinGreek(text: String): String {
+        if (!Regex("[\\u0370-\\u03FF\\u1F00-\\u1FFF]").containsMatchIn(text)) return text
+        val plain = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD).replace(Regex("\\p{Mn}"), "")
+        return buildString {
+            for (c in plain) {
+                val latin = greekLatin[c.uppercaseChar()]
+                append(if (latin == null) c.toString() else if (c.isUpperCase()) latin.uppercase() else latin.lowercase())
+            }
+        }
     }
 
     private fun speakForeign(text: String, locale: Locale) {
@@ -166,13 +191,13 @@ class TtsManager @Inject constructor(
         }
 
         if (piperActive) {
-            piper.speak(text)
+            piper.speak(latinGreek(text))
             return
         }
 
         // Android TTS fallback
         if (!ready) return
-        var cleaned = text
+        var cleaned = latinGreek(text)
             .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
             .replace(Regex("\\*(.+?)\\*"), "$1")
             .replace(Regex("`(.+?)`"), "$1")

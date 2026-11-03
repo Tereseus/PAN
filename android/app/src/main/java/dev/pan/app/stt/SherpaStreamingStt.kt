@@ -7,6 +7,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import android.os.SystemClock
 import android.util.Log
 import com.k2fsa.sherpa.onnx.EndpointConfig
 import com.k2fsa.sherpa.onnx.EndpointRule
@@ -20,6 +21,10 @@ import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.pan.app.BuildConfig
+import dev.pan.app.debug.TestAudio
+import dev.pan.app.debug.VoiceEvents
+import dev.pan.app.util.CpuBoost
 import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
@@ -165,6 +170,27 @@ class SherpaStreamingStt @Inject constructor(
         // recogniser is not being fed while PAN speaks, so without this the
         // first half-second of the interruption would be gone.
         private const val PREROLL_MS = 600L
+        // A Smart Turn verdict this sure ends the turn even when the last word is on
+        // the DANGLING list. Questions end on those words all the time: "how many legs
+        // does a spider have" scored 0.99 and was still held 1.4 s for ending on
+        // "have" (voicebench, 2026-11-02). Unsure fragments like "I want you to"
+        // score well below this, so the word veto still catches them.
+        private const val STRONG_TURN_P = 0.9f
+
+        // Silence the VAD must hear before Smart Turn is asked: Pipecat's default for the
+        // same model. This used to wait for the recogniser's endpoint, which fires 0.9-1 s
+        // after he stops (chunk lookahead plus 0.35 s of decoded silence), and the verdict
+        // then usually missed the judge timeout: commits landed at 1.15-1.4 s after his
+        // last word, most with no verdict at all (voicebench, 2026-11-02).
+        private const val EOT_VAD_SILENCE_MS = 200L
+        // Zeros pushed through the recogniser at decision time. A streaming zipformer
+        // emits a word only after hearing ~0.5 s past it, so 0.2-0.7 s into a pause his
+        // last word is often still inside it; this pushes it out now. The sherpa-onnx
+        // examples flush these models with the same 0.66 s.
+        private const val FLUSH_PAD_S = 0.66f
+        // Second Smart Turn verdict for a pause the first one called unfinished. Late enough
+        // for the silence to count, early enough to beat INCOMPLETE_MAX_WAIT_MS by ~0.6 s.
+        private const val REJUDGE_MS = 650L
     }
 
     // Words a finished sentence does not end on. Kept deliberately small and
@@ -233,7 +259,8 @@ class SherpaStreamingStt @Inject constructor(
      * with a BPE tokenizer. Smart Turn v3.2 turned out to be 8.7MB and to take
      * AUDIO, not text, so it now runs on every pause (see SmartTurn.kt).
      *
-     * This rule is KEPT as a veto, not replaced. Hesitant fragments are exactly
+     * This rule is KEPT as a veto for UNSURE verdicts (below STRONG_TURN_P), not
+     * replaced. Hesitant fragments are exactly
      * where these models are least sure - the int8 build scored "I want you to"
      * anywhere from 0.25 to 0.63 depending on the runtime - and a sentence cannot
      * end on "to" whatever a model says. A wrong 'finished' cuts him off
@@ -270,6 +297,11 @@ class SherpaStreamingStt @Inject constructor(
         return t.second
     }
 
+    // Text of the last turn that went out still sounding unfinished (INCOMPLETE_MAX_WAIT_MS ran out).
+    @Volatile private var lastUnfinished: String? = null
+
+    override fun turnUnfinished(text: String): Boolean = lastUnfinished == text
+
     private fun toPcm16(audio: FloatArray, len: Int): ShortArray =
         ShortArray(len) { i -> (audio[i].coerceIn(-1f, 1f) * 32767f).toInt().toShort() }
 
@@ -291,6 +323,7 @@ class SherpaStreamingStt @Inject constructor(
     private fun stripEcho(text: String): String {
         val now = System.currentTimeMillis()
         var result = text.lowercase().trim()
+        var removed = false
         for (i in recentTtsOutput.indices) {
             if (now - ttsTimestamps[i] > TTS_ECHO_WINDOW_MS) continue
             val ttsWords = recentTtsOutput[i].split("\\s+".toRegex()).filter { it.length > 2 }.toSet()
@@ -308,10 +341,14 @@ class SherpaStreamingStt @Inject constructor(
             }
             if (matched.size > ttsWords.size * 0.8) {
                 result = resultWords.filterIndexed { k, _ -> k !in matched }.joinToString(" ").trim()
+                removed = true
             }
         }
         val remaining = result.split("\\s+".toRegex()).filter { it.length > 1 }
-        return if (remaining.size < 2) "" else result
+        // Only what is LEFT after taking PAN's own words out can be too short to be
+        // him. A turn with no echo in it is his, one word or not: blanking every
+        // turn under two words threw away "yes", "no", "why" and "thanks".
+        return if (remaining.isEmpty() || (removed && remaining.size < 2)) "" else result
     }
 
     // ---- model --------------------------------------------------------------
@@ -492,10 +529,13 @@ class SherpaStreamingStt @Inject constructor(
             // worth more than the accuracy it costs, so accuracy has to come from
             // somewhere else - a better acoustic model, not a rawer signal.
             val recorder = try {
+                // One second of headroom. A bigger buffer adds no delay (read() returns as
+                // soon as a window is there); it only stops a slow decode or a flush at the
+                // end of a turn from overrunning it and dropping his next words.
                 AudioRecord(
                     MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                     SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT, minBuf * 4
+                    AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf * 4, SAMPLE_RATE * 2)
                 )
             } catch (e: Exception) {
                 log("AudioRecord init FAILED: ${e.message}"); return@launch
@@ -544,6 +584,10 @@ class SherpaStreamingStt @Inject constructor(
             val preroll = ArrayDeque<FloatArray>()
 
             var lastSpeechAt = 0L      // last window the VAD called speech
+            // Last window of HIS speech that went to the recogniser. lastSpeechAt also moves on
+            // PAN's own echo while it talks, and a pause measured from that opened a "turn" on
+            // the first quiet window after every reply. End-of-turn is keyed on this instead.
+            var heardAt = 0L
             var speechRunStart = 0L    // start of the current unbroken speech run
             var barged = false         // already interrupted this TTS turn
             var gateOpen = false       // was the recogniser being fed last window
@@ -551,6 +595,8 @@ class SherpaStreamingStt @Inject constructor(
             var lastCommitAt = 0L      // when a turn was last handed to the service
             var ttsStartedAt = 0L      // when the current TTS playback began
             var residualPeak = 0f      // loudest echo seen during calibration
+            var wasSpeech = false      // VAD state last window, for the benchmark's vad_on/vad_off
+            var spokeSinceCommit = false // PAN answered the last turn, so this is not a run-on
 
             // ---- Smart Turn ----
             // The audio of the CURRENT turn - exactly what the recogniser has been
@@ -597,11 +643,18 @@ class SherpaStreamingStt @Inject constructor(
             var judgedFor = -1L        // lastSpeechAt the current verdict is about
             var verdict = -1f          // Smart Turn probability for that pause
             var slowLoggedFor = -1L    // pause we already reported a slow verdict for
+            var flushedFor = -1L       // pause the recogniser was already flushed for
+            var rejudgedFor = -1L      // pause that already had its second verdict
+            var decidedFor = 0L        // pause that already committed; only new speech reopens it
+            val flushPad = FloatArray((FLUSH_PAD_S * SAMPLE_RATE).toInt())
 
             try {
                 while (isActive && isListening) {
                     val n = recorder.read(shorts, 0, shorts.size)
                     if (n <= 0) continue
+                    // Benchmark audio replaces the microphone here and only here, so
+                    // everything below runs exactly as it does for him (TestAudio.kt).
+                    if (BuildConfig.DEBUG) TestAudio.fill(shorts, n)
                     for (i in 0 until n) {
                         if (carried < carry.size) carry[carried++] = shorts[i] / 32768.0f
                     }
@@ -640,6 +693,10 @@ class SherpaStreamingStt @Inject constructor(
                     val rms = kotlin.math.sqrt(sumSq / frame.size).toFloat()
 
                     val ttsOn = isTtsSpeaking?.invoke() == true
+                    if (isSpeech != wasSpeech) {
+                        wasSpeech = isSpeech
+                        VoiceEvents.emit(if (isSpeech) "vad_on" else "vad_off", "tts" to ttsOn)
+                    }
                     if (!ttsOn) {
                         barged = false
                         ttsStartedAt = 0L
@@ -648,6 +705,7 @@ class SherpaStreamingStt @Inject constructor(
                         ttsStartedAt = now
                         residualPeak = 0f
                     }
+                    if (ttsOn) spokeSinceCommit = true
 
                     if (ttsOn && !barged) {
                         // PAN is talking. Do not transcribe - what reaches the mic
@@ -675,6 +733,8 @@ class SherpaStreamingStt @Inject constructor(
                             barged = true
                             log("barge-in: ${now - speechRunStart}ms of speech at rms " +
                                 "%.4f over threshold %.4f (residual %.4f)".format(rms, threshold, residualPeak))
+                            VoiceEvents.emit("barge_in", "speech_ms" to (now - speechRunStart),
+                                "rms" to rms, "threshold" to threshold)
                             onInterrupt?.invoke()
                             for (w in preroll) feed(w)
                         }
@@ -682,8 +742,10 @@ class SherpaStreamingStt @Inject constructor(
                     }
 
                     // Gate. Stays open through the hangover so the recogniser
-                    // still sees the trailing silence that fires its endpoint.
-                    val open = now - lastSpeechAt <= VAD_HANGOVER_MS
+                    // still sees the trailing silence that fires its endpoint, and
+                    // until his last pause is decided, so one slow window near the end
+                    // of the hangover cannot strand a turn that never committed.
+                    val open = now - lastSpeechAt <= VAD_HANGOVER_MS || heardAt != decidedFor
                     if (!open) { gateOpen = false; continue }
 
                     // FIRST WORDS. Silero will not call it speech until it has
@@ -699,10 +761,11 @@ class SherpaStreamingStt @Inject constructor(
                     }
 
                     feed(frame)
+                    if (isSpeech) heardAt = now
                     while (rec.isReady(st)) rec.decode(st)
 
                     val endpoint = rec.isEndpoint(st)
-                    val text = rec.getResult(st).text.trim()
+                    var text = rec.getResult(st).text.trim()
 
                     // Collect a finished verdict. One that finished after he started
                     // talking again is about a pause that is over - drop it.
@@ -714,54 +777,81 @@ class SherpaStreamingStt @Inject constructor(
                             // A failed call still SETTLES the pause (verdict -1 = none).
                             // Leaving it unjudged would relaunch the model on every
                             // 32 ms window of the same pause, forever.
-                            if (judgeFor == lastSpeechAt) {
+                            CpuBoost.done(now - judgeStarted)
+                            if (judgeFor == heardAt) {
                                 verdict = p
                                 judgedFor = judgeFor
                                 if (p >= 0f) log("smart-turn p=%.2f in %dms".format(p, now - judgeStarted))
+                                VoiceEvents.emit("turn_p", "p" to p, "ms" to (now - judgeStarted))
                             }
                             judge = null
                         }
                     }
 
-                    if (endpoint) {
-                        // A candidate end-of-turn, not necessarily the end of a turn.
-                        val waited = now - lastSpeechAt
+                    // A candidate end-of-turn, not necessarily the end of a turn. It starts
+                    // at the VAD's silence (EOT_VAD_SILENCE_MS), not at the recogniser's
+                    // endpoint. With no Smart Turn to ask (not downloaded, or it failed to
+                    // load) there is nothing to decide at 0.2 s, so the endpoint stays the
+                    // trigger. Each pause is decided once; only new speech reopens it.
+                    val model = turnModelOrNull()
+                    val waited = now - heardAt
+                    val candidate = heardAt != decidedFor &&
+                        (if (model != null) waited >= EOT_VAD_SILENCE_MS else endpoint)
 
+                    if (candidate) {
                         // Ask the model about THIS pause, once.
-                        val model = if (text.isBlank()) null else turnModelOrNull()
-                        if (model != null && judgedFor != lastSpeechAt && judge == null) {
+                        if (model != null && judgedFor != heardAt && judge == null) {
                             val snap = turnAudio.copyOfRange(maxOf(0, turnLen - TURN_AUDIO_MAX), turnLen)
-                            judgeFor = lastSpeechAt
+                            judgeFor = heardAt
                             judgeStarted = now
+                            CpuBoost.burst(context)
                             judge = scope.async(Dispatchers.Default) { model.probability(snap) }
                         }
-                        val awaiting = model != null && judgedFor != lastSpeechAt
+                        val awaiting = model != null && judgedFor != heardAt
                         // Measured from the PAUSE, not from judgeStarted: a stale call
                         // for an earlier pause may still be the one in flight.
-                        val timedOut = awaiting &&
-                            waited > (ENDPOINT_SILENCE_S * 1000).toLong() + TURN_JUDGE_TIMEOUT_MS
-                        if (timedOut && slowLoggedFor != lastSpeechAt) {
-                            slowLoggedFor = lastSpeechAt
+                        val timedOut = awaiting && waited > EOT_VAD_SILENCE_MS + TURN_JUDGE_TIMEOUT_MS
+                        if (timedOut && slowLoggedFor != heardAt) {
+                            slowLoggedFor = heardAt
                             log("smart-turn slow (>${TURN_JUDGE_TIMEOUT_MS}ms) - deciding on words alone")
-                        }
-                        val modelDone = when {
-                            model == null -> true            // not downloaded yet / no text
-                            judgedFor == lastSpeechAt -> verdict < 0f || verdict >= SmartTurn.THRESHOLD
-                            else -> true                     // timed out
-                        }
-                        val complete = text.isBlank() || (isTurnComplete(text) && modelDone)
-                        val pTag = when {
-                            model == null || judgedFor != lastSpeechAt -> ""
-                            verdict < 0f -> " p=none"
-                            else -> " p=%.2f".format(verdict)
+                            VoiceEvents.emit("turn_slow")
                         }
 
                         if (awaiting && !timedOut) {
-                            // Verdict not in yet - it is tens of ms away. Keep
-                            // listening; the next window decides.
+                            // Verdict not in yet. Keep listening; the next window decides.
                         } else {
+                            // The words have to be whole before they are judged or sent.
+                            // Zeros go to the recogniser only, never to Smart Turn's buffer,
+                            // so a pause he talks on through just looks a little longer to it.
+                            if (flushedFor != heardAt) {
+                                flushedFor = heardAt
+                                val before = text
+                                val t0 = SystemClock.elapsedRealtime()
+                                st.acceptWaveform(flushPad, SAMPLE_RATE)
+                                while (rec.isReady(st)) rec.decode(st)
+                                text = rec.getResult(st).text.trim()
+                                VoiceEvents.emit("flush", "ms" to (SystemClock.elapsedRealtime() - t0),
+                                    "grew" to (text != before), "text" to text)
+                            }
+                            val modelDone = when {
+                                model == null -> true            // not downloaded yet
+                                judgedFor == heardAt -> verdict < 0f || verdict >= SmartTurn.THRESHOLD
+                                else -> true                     // timed out
+                            }
+                            val sure = judgedFor == heardAt && verdict >= STRONG_TURN_P
+                            val complete = text.isBlank() || sure || (isTurnComplete(text) && modelDone)
+                            val pTag = when {
+                                model == null || judgedFor != heardAt -> ""
+                                verdict < 0f -> " p=none"
+                                else -> " p=%.2f".format(verdict)
+                            }
                             // How long a pause this particular moment requires.
-                            val inFlow = lastCommitAt != 0L && (now - lastCommitAt) < FLOW_WINDOW_MS
+                            // Flow means he is still mid-thought across commits. Once PAN
+                            // has answered, his next words are a new turn, not a run-on,
+                            // and must not pay FLOW_SILENCE_MS. Keying on time alone would
+                            // tax every quick reply as soon as answers get fast.
+                            val inFlow = lastCommitAt != 0L && (now - lastCommitAt) < FLOW_WINDOW_MS &&
+                                !spokeSinceCommit
                             val needed = when {
                                 !complete -> INCOMPLETE_MAX_WAIT_MS
                                 inFlow    -> FLOW_SILENCE_MS
@@ -775,11 +865,30 @@ class SherpaStreamingStt @Inject constructor(
                                     heldIncomplete = true
                                     log(if (complete) "holding, still talking$pTag: ...${text.takeLast(24)}"
                                         else "holding, sounds unfinished$pTag: ...${text.takeLast(24)}")
+                                    VoiceEvents.emit("hold", "complete" to complete, "in_flow" to inFlow,
+                                        "needed_ms" to needed, "text" to text)
+                                }
+                                // One more look once the pause has grown. Smart Turn hears the
+                                // silence too, and 0.2 s of it is not much: "tell me a short joke"
+                                // scored 0.11 at 0.2 s and 0.99 at ~0.9 s (voicebench, 2026-11-02),
+                                // and was held the full INCOMPLETE_MAX_WAIT_MS for it.
+                                if (!complete && model != null && judge == null && rejudgedFor != heardAt &&
+                                    judgedFor == heardAt && waited >= REJUDGE_MS) {
+                                    rejudgedFor = heardAt
+                                    val snap = turnAudio.copyOfRange(maxOf(0, turnLen - TURN_AUDIO_MAX), turnLen)
+                                    judgeFor = heardAt
+                                    judgeStarted = now
+                                    CpuBoost.burst(context)
+                                    judge = scope.async(Dispatchers.Default) { model.probability(snap) }
                                 }
                             } else {
                                 log("commit after ${waited}ms$pTag")
+                                VoiceEvents.emit("commit", "waited_ms" to waited, "in_flow" to inFlow,
+                                    "p" to (if (judgedFor == heardAt) verdict else null), "text" to text)
                                 heldIncomplete = false
+                                decidedFor = heardAt
                                 lastCommitAt = now
+                                spokeSinceCommit = false
                                 rec.reset(st)
                                 val pcm = if (turnClipped) null else toPcm16(turnAudio, turnLen)
                                 turnLen = 0
@@ -787,8 +896,11 @@ class SherpaStreamingStt @Inject constructor(
                                 lastPartial = ""
                                 if (text.isNotBlank()) {
                                     val clean = stripEcho(text)
-                                    if (clean.isBlank()) log("echo discarded: ${text.take(40)}")
-                                    else {
+                                    if (clean.isBlank()) {
+                                        log("echo discarded: ${text.take(40)}")
+                                        VoiceEvents.emit("echo_drop", "text" to text)
+                                    } else {
+                                        VoiceEvents.emit("final", "text" to clean, "audio" to (pcm != null))
                                         // Only a turn with none of PAN's own voice in it goes to the
                                         // hub: echo is subtracted from TEXT here, and a fresh
                                         // transcript of the audio would bring it back.
@@ -796,6 +908,7 @@ class SherpaStreamingStt @Inject constructor(
                                         // capitals, so compare against the lowercased text or
                                         // no turn is ever sent - which is what 0.4.43 did.)
                                         lastTurn = if (pcm != null && clean == text.lowercase().trim()) clean to pcm else null
+                                        lastUnfinished = if (complete) null else clean
                                         withContext(Dispatchers.Main) { callback?.invoke(clean, true) }
                                     }
                                 }
@@ -804,6 +917,7 @@ class SherpaStreamingStt @Inject constructor(
                     } else if (text.isNotBlank() && text != lastPartial) {
                         heldIncomplete = false
                         lastPartial = text
+                        VoiceEvents.emit("partial", "text" to text)
                         withContext(Dispatchers.Main) { callback?.invoke(text, false) }
                     }
                 }

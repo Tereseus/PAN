@@ -9,6 +9,7 @@ import dev.pan.app.network.PanServerApi
 import dev.pan.app.util.Constants
 import dev.pan.app.vpn.RemoteAccessManager
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.ConnectionPool
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -51,6 +52,12 @@ object NetworkModule {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
+            // Drop idle connections BEFORE the hub does. Node closes an idle keep-alive
+            // connection after 5 s, but the in-app tailnet proxy (panvpn.go) never closes its
+            // localhost side when the hub hangs up, so OkHttp kept the dead connection pooled
+            // for its default 5 minutes and sent the next voice turn into it. Under 10 s idle
+            // OkHttp does not even health-check a pooled connection before reusing it.
+            .connectionPool(ConnectionPool(5, 4, TimeUnit.SECONDS))
             .addInterceptor(Interceptor { chain ->
                 var request = chain.request()
 
@@ -70,13 +77,15 @@ object NetworkModule {
                 //      reopening the app sometimes "fixed" it.
                 // HubLocator caches, so this is a map lookup on the hot path and
                 // only probes after repeated failures.
+                // No hub found: fail now and say so. Falling through sent the request to the
+                // placeholder (localhost:7777), which refused it in milliseconds with an error
+                // that pointed at the wrong thing.
                 val base = hub.resolve(ram.getTailscaleBaseUrl())
-                if (base != null) {
-                    val b = base.toHttpUrl()
-                    val newUrl = request.url.newBuilder()
-                        .scheme(b.scheme).host(b.host).port(b.port).build()
-                    request = request.newBuilder().url(newUrl).build()
-                }
+                    ?: throw java.io.IOException("PAN hub not reachable (no tunnel, no LAN route)")
+                val b = base.toHttpUrl()
+                val newUrl = request.url.newBuilder()
+                    .scheme(b.scheme).host(b.host).port(b.port).build()
+                request = request.newBuilder().url(newUrl).build()
 
                 val reqBuilder = request.newBuilder()
                     .addHeader("X-Device-Name", DeviceNameHolder.name)

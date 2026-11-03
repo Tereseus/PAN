@@ -3,6 +3,7 @@ package dev.pan.app.data
 import com.google.gson.Gson
 import dev.pan.app.data.dao.*
 import dev.pan.app.data.entity.*
+import dev.pan.app.debug.TestAudio
 import dev.pan.app.network.dto.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -17,6 +18,8 @@ class DataRepository @Inject constructor(
 
     // Pending uploads
     suspend fun queueAudioUpload(upload: AudioUpload) {
+        // Benchmark speech is a recording, not him (TestAudio.kt).
+        if (TestAudio.active) return
         pendingUploadDao.insert(PendingUploadEntity(
             type = "audio",
             payload = gson.toJson(upload)
@@ -54,10 +57,12 @@ class DataRepository @Inject constructor(
 
     // Conversations
     suspend fun addUserMessage(text: String) {
+        if (TestAudio.active) return
         conversationDao.insert(ConversationEntity(role = "user", text = text))
     }
 
     suspend fun addPanResponse(text: String) {
+        if (TestAudio.active) return
         conversationDao.insert(ConversationEntity(role = "pan", text = text))
     }
 

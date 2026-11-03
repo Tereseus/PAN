@@ -171,7 +171,8 @@ fun SettingsScreen(
                 "medium" to "Piper Medium (60MB)",
                 "high" to "Piper High (110MB)",
                 "kokoro" to "Kokoro Natural (140MB)",
-                "supertonic" to "Supertonic Fast (81MB)"
+                "supertonic" to "Supertonic Fast (81MB)",
+                "supertonic3" to "Supertonic 3 Clear (129MB)"
             )
             ExposedDropdownMenuBox(
                 expanded = voiceExpanded,

@@ -6,6 +6,8 @@ import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -188,8 +190,16 @@ class HubLocator @Inject constructor(
             addAll(LAN_FALLBACKS)
         }.distinct()
 
-        for (base in candidates) {
-            if (!probe(base)) continue
+        // All candidates are probed AT ONCE and the first in list order that answered wins.
+        // One by one, every dead candidate cost a full PROBE_TIMEOUT_MS (AP isolation makes the
+        // LAN fallbacks time out rather than refuse), so a re-probe took ~10 s and a voice turn
+        // waiting on it was answered with "Server didn't respond." (voicebench, 2026-11-02).
+        val probes = candidates.map { base ->
+            FutureTask { probe(base) }.also { Thread(it, "hub-probe").start() }
+        }
+        for ((i, base) in candidates.withIndex()) {
+            val ok = runCatching { probes[i].get(PROBE_TIMEOUT_MS + 500L, TimeUnit.MILLISECONDS) }.getOrDefault(false)
+            if (!ok) continue
             val canonical = askCanonical(base)
             if (canonical != null && canonical != base && probe(canonical)) {
                 remember(canonical); return canonical

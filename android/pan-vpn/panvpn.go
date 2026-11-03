@@ -422,13 +422,18 @@ func StartProxy(peerHostname string, peerPort int) (int, error) {
 				}
 				log.Printf("panvpn: proxy dial %s succeeded in %dms", target, dialMs)
 				defer remote.Close()
-				// Bidirectional copy
+				// Bidirectional copy. Whichever side finishes first closes the other:
+				// the hub drops an idle keep-alive socket after 5 s, and while this kept
+				// the phone's side open, OkHttp pooled the dead connection and the next
+				// voice turn waited on it (7-10 s stalls, voicebench 2026-11-02).
 				done := make(chan struct{})
 				go func() {
 					io.Copy(remote, local)
+					remote.Close()
 					done <- struct{}{}
 				}()
 				io.Copy(local, remote)
+				local.Close()
 				<-done
 			}()
 		}

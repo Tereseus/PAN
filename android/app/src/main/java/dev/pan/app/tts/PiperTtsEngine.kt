@@ -6,8 +6,12 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.SystemClock
 import android.util.Log
 import com.k2fsa.sherpa.onnx.GeneratedAudio
+import com.k2fsa.sherpa.onnx.GenerationConfig
+import dev.pan.app.debug.VoiceEvents
+import dev.pan.app.util.CpuBoost
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
@@ -16,7 +20,6 @@ import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.min
@@ -104,15 +107,34 @@ class PiperTtsEngine(private val context: Context) {
                 "sherpa-onnx-supertonic-tts-int8-2026-03-06", 85_000_000L, 44100,
                 // sid 9 of 10, chosen by ear from the full sampler.
                 // 1.0 reads as deliberate to the point of sounding slow in
-                // conversation. 1.18 is brisk without clipping consonants.
-                kind = "supertonic", sid = 9, numThreads = 4, speed = 1.35f)
+                // conversation. At 1.35 it swallowed and mangled words whatever the step
+                // count (2026-11-03): kept to compare against, supertonic3 below replaced it.
+                kind = "supertonic", sid = 9, numThreads = 4, speed = 1.35f),
+            // Supertonic 3 (May 2026): same four graphs and files as v2 above, so the same
+            // loader; Supertone says it repeats and skips words less. The owner heard v2 slur and
+            // mangle "determination" (2026-11-03). 12 sentences x3, transcribed by Parakeet:
+            // v2 misheard 2.3-6.9% of words at every speed and step count tried; v3 0.7% at
+            // 5 steps and 1.20, but 4-5% at 1.35 ("termination"). v3 talks faster on its own:
+            // 1.20 is the pace v2 had at 1.35. Each step costs about twice v2's.
+            "supertonic3" to VoiceModel("supertonic3", "Supertonic 3 (Clear)", "Clear",
+                "$REL/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
+                "sherpa-onnx-supertonic-3-tts-int8-2026-05-11", 129_000_000L, 44100,
+                kind = "supertonic", sid = 9, numThreads = 4, speed = 1.20f, steps = 5)
         )
     }
 
     data class VoiceModel(val id: String, val name: String, val quality: String,
         val tarUrl: String, val archiveDir: String, val sizeBytes: Long, val sampleRate: Int,
         val kind: String = "vits", val sid: Int = 0, val numThreads: Int = 2,
-        val speed: Float = 1.0f)
+        val speed: Float = 1.0f, val steps: Int = 8)
+
+    // Supertonic refines each sentence `steps` times (per voice above; the library default is
+    // 5). More steps did not stop v2's slurring; speed did most of the damage. supertonicSteps,
+    // speedOverride and silenceScale can be changed live from TEST_TTS (debug builds) to tune
+    // by ear; 0 = the voice's own.
+    @Volatile var supertonicSteps = 0
+    @Volatile var speedOverride = 0f            // 0 = the voice's own speed
+    @Volatile var silenceScale = 0.2f           // the library default
 
     private val modelsDir = File(context.filesDir, "piper-models")
     private val espeakDir = File(modelsDir, "espeak-ng-data")
@@ -142,6 +164,14 @@ class PiperTtsEngine(private val context: Context) {
      * to finish, which is also the order they should be heard in.
      */
     private val playLock = Mutex()
+
+    /**
+     * Synthesis is serialised separately, so the NEXT sentence is made while this one plays.
+     * It used to happen inside playLock: every sentence after the first waited for the one
+     * before it to finish playing and only then started synthesising, which put a 0.7-1 s
+     * silence between every pair of sentences (voicebench, 2026-11-02, screen off).
+     */
+    private val genLock = Mutex()
 
     /**
      * Utterances queued or playing. The speaking flag must go FALSE only when the
@@ -323,38 +353,70 @@ class PiperTtsEngine(private val context: Context) {
         // because AudioTrack.write() blocks uninterruptibly the old one kept
         // playing anyway - two voices at once. Queue behind the mutex instead.
         if (pending.getAndIncrement() == 0) onSpeakingStateChanged?.invoke(true)
-        speakJob = scope.launch {
-          playLock.withLock {
+        // UNDISPATCHED: the place in genLock's queue is taken right here, on the caller's
+        // thread, in the order the sentences arrived. A plain launch does not promise that two
+        // jobs reach the lock in the order they were launched.
+        speakJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var gen = false
+            var play = false
             try {
-                val cleaned = text
-                    .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
-                    .replace(Regex("\\*(.+?)\\*"), "$1")
-                    .replace(Regex("`(.+?)`"), "$1")
-                    .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")
-                    .replace(Regex("^[\\-*]\\s+", RegexOption.MULTILINE), "")
-                    // Dashes made the voice swallow the word right after them
-                    // once speed went above 1.0. A comma gives the same pause
-                    // and survives the phonemiser. Intra-word hyphens
-                    // ("well-known") are deliberately left alone.
-                    .replace(Regex("[\u2014\u2013]"), ", ")
-                    .replace(Regex("(?<=\\s)-+(?=\\s)"), ",")
-                    .trim()
-                val spoken = if (cleaned.length > 500) cleaned.take(500) + ". See the app." else cleaned
-                Log.d(TAG, "Generating: ${spoken.take(50)}...")
-                val audio: GeneratedAudio = tts.generate(text = spoken, sid = currentVoice?.sid ?: 0, speed = currentVoice?.speed ?: 1.0f)
+                genLock.lock(); gen = true
+                val audio = withContext(Dispatchers.IO) { synthesize(tts, text) }
+                // Queue for the speaker BEFORE the next sentence may synthesise, so sentences
+                // play in the order they were made. Waiting here is the one-sentence lookahead.
+                playLock.lock(); play = true
+                genLock.unlock(); gen = false
                 if (audio.samples.isNotEmpty() && isActive) {
                     playAudio(audio.samples, audio.sampleRate)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Speak failed: ${e.message}", e)
             } finally {
+                if (gen) genLock.unlock()
+                if (play) playLock.unlock()
                 if (pending.decrementAndGet() <= 0) {
                     pending.set(0)
                     onSpeakingStateChanged?.invoke(false)
                 }
             }
-          }
         }
+    }
+
+    private fun synthesize(tts: OfflineTts, text: String): GeneratedAudio {
+        val cleaned = text
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+            .replace(Regex("\\*(.+?)\\*"), "$1")
+            .replace(Regex("`(.+?)`"), "$1")
+            .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")
+            .replace(Regex("^[\\-*]\\s+", RegexOption.MULTILINE), "")
+            // Dashes made the voice swallow the word right after them
+            // once speed went above 1.0. A comma gives the same pause
+            // and survives the phonemiser. Intra-word hyphens
+            // ("well-known") are deliberately left alone.
+            .replace(Regex("[\u2014\u2013]"), ", ")
+            .replace(Regex("(?<=\\s)-+(?=\\s)"), ",")
+            .trim()
+        val spoken = if (cleaned.length > 500) cleaned.take(500) + ". See the app." else cleaned
+        Log.d(TAG, "Generating: ${spoken.take(50)}...")
+        // Screen off, synthesis ran 2-2.5x slower on unboosted cores (see CpuBoost).
+        CpuBoost.burst(context)
+        val genStart = SystemClock.elapsedRealtime()
+        VoiceEvents.emit("tts_gen_start", "chars" to spoken.length)
+        val voice = currentVoice
+        val speed = if (speedOverride > 0f) speedOverride else voice?.speed ?: 1.0f
+        val audio: GeneratedAudio = if (voice?.kind == "supertonic") {
+            tts.generateWithConfig(spoken, GenerationConfig(silenceScale = silenceScale, speed = speed,
+                sid = voice.sid, numSteps = if (supertonicSteps > 0) supertonicSteps else voice.steps))
+        } else {
+            tts.generate(text = spoken, sid = voice?.sid ?: 0, speed = speed)
+        }
+        val genMs = SystemClock.elapsedRealtime() - genStart
+        CpuBoost.done(genMs)
+        VoiceEvents.emit("tts_gen_end", "ms" to genMs,
+            "samples" to audio.samples.size, "rate" to audio.sampleRate)
+        return audio
     }
 
     private suspend fun playAudio(samples: FloatArray, sampleRate: Int) = withContext(Dispatchers.IO) {
@@ -429,6 +491,9 @@ class PiperTtsEngine(private val context: Context) {
             .build()
         audioTrack = track
         track.play()
+        // The benchmark's "PAN started talking". Output latency after this is the
+        // device's, and the acoustic run measures it.
+        VoiceEvents.emit("tts_play_start", "frames" to shortSamples.size, "rate" to sampleRate)
         val written = track.write(shortSamples, 0, shortSamples.size)
         Log.i(TAG, "Wrote $written/${shortSamples.size} samples, state=${track.playState}")
         // Wait for playback to ACTUALLY finish, not for a computed duration.
@@ -474,6 +539,8 @@ class PiperTtsEngine(private val context: Context) {
                 audioTrack = null
             }
             Log.i(TAG, "Playback ${if (interrupted) "CUT" else "done"} (${durationMs}ms, played $played/${shortSamples.size} frames)")
+            VoiceEvents.emit("tts_play_end", "cut" to interrupted, "played" to played,
+                "frames" to shortSamples.size, "rate" to sampleRate)
         }
     }
 
@@ -481,6 +548,7 @@ class PiperTtsEngine(private val context: Context) {
         // Cancel EVERY queued utterance, not just the most recent. speakJob only
         // ever held the last one, so a barge-in used to silence one sentence and
         // let the rest of the queue play on.
+        VoiceEvents.emit("tts_stop")
         scope.coroutineContext.cancelChildren()
         speakJob = null
         pending.set(0)
