@@ -13,7 +13,9 @@ thread costs nothing while idle: it only wakes when `relay.js wait` exits with a
 
 `relay.js` reads `../pan-client-config.json`. It uses `relay_hub_url` if set,
 otherwise derives `http://host:port` from `hub_ws`. The hub accepts the relay on
-LAN, tailnet or localhost. Check with:
+LAN, tailnet or localhost. On a laptop, set `relay_hub_url` to the hub's tailnet
+address: if `hub_ws` is a LAN address the relay goes dead as soon as the laptop
+leaves home. Check with:
 
     node relay.js threads     # what this machine will report
     node relay.js status      # ALIVE once a wait loop has polled the hub
