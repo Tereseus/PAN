@@ -44,10 +44,14 @@ Thumbs.db
 # Local-only planning docs — do not push
 docs/REFACTOR-STATE-MACHINE.md
 
-# Temp files that sometimes land in project root due to Windows path mangling
-Temp*/
-C*/
-Users*/
+# Temp files that sometimes land in project root due to Windows path mangling.
+# Anchored with a LEADING SLASH (2026-11-03). Unanchored, and with
+# core.ignorecase on, C*/ matched every folder starting with c at ANY depth: it
+# silently hid all of service/dashboard/src/lib/components/, routes/chat/ and
+# every new build chunk under public/v2/_app/immutable/chunks/.
+/Temp*/
+/C*/
+/Users*/
 *pan_settings.txt
 *pan-tasks.json
 *pan_tasks.json
@@ -113,10 +117,12 @@ tasks.json
 startup-backup/
 docs/.~lock.*#
 
-# Malformed filenames from scripts that wrote a Windows path as a literal name
-C:*
-Temp*
-Users*
+# Malformed filenames from scripts that wrote a Windows path as a literal name.
+# Root only, same trap as above: unanchored, Users* also hid
+# widgets/UsersPanel.svelte and Temp* would hide any templates/ folder.
+/C:*
+/Temp*
+/Users*
 
 # work-tools names internal work machines and the employer's
 # tooling. This repo is PUBLIC — keep it local. Nothing imports it.
@@ -188,3 +194,18 @@ temp-tasks.json
 
 # thread relay per-machine state (job offsets, wait lock)
 pan-client/thread-relay/.state/
+
+# Third-party "caveman" skill pack from a skills installer. The real copy is in
+# .agents/skills/, and .claude/skills/ and skills/ hold symlinks to it by
+# ABSOLUTE path, i.e. through a home directory, so committing them would leak
+# the owner's username. Local tooling, not PAN source. Until 2026-11-03 these
+# were hidden only by accident, by the unanchored C*/ rule.
+/.agents/skills/caveman*
+/.agents/skills/compress
+/.claude/skills/caveman*
+/.claude/skills/compress
+/skills/caveman*
+/skills/compress
+
+# Scratch copy of an old dashboard build's _app/immutable tree. Not source.
+service/dashboard/.immutable-backup/
