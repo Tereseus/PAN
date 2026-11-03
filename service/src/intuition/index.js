@@ -30,6 +30,7 @@ import { writeThought, lastThoughtFor } from './mind.js';
 import * as needs from './needs.js';
 import { currentUserId } from './nourishment.js';
 import { dispatchAction } from './action.js';
+import { getConversationState } from '../conv-state-watcher.js';
 
 // In-memory snapshot of last intuition verdict — used to compute deltas and
 // avoid restating the same conclusion every 60s. The intuition panel above
@@ -347,6 +348,23 @@ function buildSnapshot(trigger = 'heartbeat') {
     }
   } catch {}
 
+  // What he said to PAN out loud: the RouterCommand rows /query/stream writes for turns PAN
+  // answered (source 'phone-voice'). Voice never reached Intuition before 2026-11-03, so
+  // "last heard" was always a Claude Code prompt and "where" said the hub while he talked
+  // to his phone.
+  let recentVoiceMsgs = [];
+  try {
+    const rows = all(`SELECT data, created_at FROM events WHERE event_type = 'RouterCommand' ORDER BY id DESC LIMIT 5`);
+    for (const r of rows) {
+      try {
+        const d = JSON.parse(r.data);
+        if (d.source === 'phone-voice' && d.text) {
+          recentVoiceMsgs.push({ content: d.text, reply: d.result || '', place: d.place || null, created_at: r.created_at });
+        }
+      } catch {}
+    }
+  } catch {}
+
   // ─── PAN self-awareness: what are PAN's own systems doing? ───
   let stewardServices = [];
   let recentPanActions = [];
@@ -428,8 +446,9 @@ function buildSnapshot(trigger = 'heartbeat') {
     }
   }
 
-  // Device presence — figure out where Commander is interacting FROM
-  let lastDeviceSource = 'desktop';              // default: they're at the computer
+  // Device presence — figure out where Commander is interacting FROM. Unknown until an event
+  // says: the hub is a headless mini PC, so defaulting to "at the hub" was always wrong.
+  let lastDeviceSource = null;
   let lastDeviceTime = 0;
   for (const e of recentEvents) {
     try {
@@ -446,15 +465,20 @@ function buildSnapshot(trigger = 'heartbeat') {
     } catch {}
   }
 
+  // A voice turn is the phone too, and the newest thing he did if it beats the rest.
+  const newestVoice = recentVoiceMsgs[0] || null;
+  const voiceTime = newestVoice ? (new Date(newestVoice.created_at).getTime() || 0) : 0;
+  if (voiceTime > lastDeviceTime) { lastDeviceSource = 'phone'; lastDeviceTime = voiceTime; }
+
   // ─── WHERE — location inference ───
   // If interacting via localhost dashboard → at the hub (desktop computer)
-  // If last event was phone → mobile / away from hub
+  // If last event was phone → the place the phone gave with his last voice turn, or mobile
   // Pendant GPS will override when available
   let where = null;
   if (lastDeviceSource === 'desktop') {
     where = 'at the hub';
   } else if (lastDeviceSource === 'phone') {
-    where = 'mobile';
+    where = (newestVoice?.place && now - voiceTime < 30 * 60_000) ? newestVoice.place : 'mobile';
   }
 
   // ─── SCREEN CONTEXT — vision-based activity (highest priority signal) ───
@@ -554,6 +578,12 @@ function buildSnapshot(trigger = 'heartbeat') {
   } else if (recentTerminalMsgs.length > 0) {
     focus = extractTopic(recentTerminalMsgs, null);
   }
+  // Talking to PAN is the newest thing he did: the conversation state's topic says what
+  // about (distilled from the voice turns, see conv-state-watcher.js).
+  if (newestVoice && now - voiceTime < 10 * 60_000 && voiceTime >= (recentTerminalMsgs[0] ? new Date(recentTerminalMsgs[0].created_at).getTime() || 0 : 0)) {
+    const cs = getConversationState();
+    if (cs?.topic && cs.distilled_at && now - cs.distilled_at < 10 * 60_000) focus = String(cs.topic).toLowerCase();
+  }
   // Fallback to wrap messages only if no terminal activity
   if (!focus && recentWrap.length > 0) {
     focus = extractTopic(recentWrap.map(m => ({ content: m.text || '' })), null);
@@ -631,9 +661,16 @@ function buildSnapshot(trigger = 'heartbeat') {
     recentTopics.push(titleCase(`${activeProject.project} Development`));
   }
 
-  // Last heard = most recent REAL user message, trimmed to a readable length
+  // Last heard = most recent REAL user message, trimmed to a readable length. Said to PAN
+  // or typed to Claude Code, whichever came last.
   let lastHeard = null;
-  for (const m of recentTerminalMsgs) {
+  const termTime = recentTerminalMsgs[0] ? (new Date(recentTerminalMsgs[0].created_at).getTime() || 0) : 0;
+  if (newestVoice && voiceTime >= termTime) {
+    const raw = newestVoice.content.trim();
+    const firstSentence = raw.match(/^[^.!?\n]+[.!?]?/)?.[0] || raw;
+    lastHeard = firstSentence.length > 80 ? firstSentence.slice(0, 77) + '...' : firstSentence;
+  }
+  for (const m of (lastHeard ? [] : recentTerminalMsgs)) {
     if (m.role === 'assistant') continue;  // skip AI replies
     if (isRealMessage(m.content)) {
       // Take first sentence or first 80 chars, whichever is shorter
@@ -1499,6 +1536,17 @@ export function tickIntuition(trigger = 'heartbeat') {
   if (!_running) return null;
   try {
     const snap = buildSnapshot(trigger);
+    // Keep the classifier's reading until it runs again (on a signal change, or every 5 min).
+    // Each 60 s tick rebuilt the keyword guesses over it, so the panel flipped every minute,
+    // "Energized / Not Ok / Normal" then "Winding Down / Ok / Low" (audit, 2026-11-03).
+    const prev = _lastSnapshot;
+    if (prev?.meta?.classified_at && Date.now() - prev.meta.classified_at < 10 * 60_000) {
+      for (const k of ['mood', 'mood_detail', 'urgency', 'need', 'complexity', 'assumption', 'assumption_detail']) {
+        if (prev.now?.[k] != null) snap.now[k] = prev.now[k];
+      }
+      snap.meta.classifier = prev.meta.classifier;
+      snap.meta.classified_at = prev.meta.classified_at;
+    }
     persistSnapshot(snap, trigger);
     _lastSnapshot = snap;
 
@@ -1932,19 +1980,26 @@ export function getOrgSnapshotHistory(orgId = 'org_personal', limit = 50) {
 }
 
 export function getOrgMemberSnapshots(orgId = 'org_personal') {
-  // Latest snapshot per commander for this org
+  // Latest snapshot per commander for this org. This was one GROUP BY over every snapshot
+  // the org ever had (a row a minute since spring), reading each row's JSON: 5.8-7.5 s on the
+  // hub, synchronous, so with the Intuition panel open every voice turn could stall behind it
+  // twice a minute (2026-11-03). Members seen in the last day, then one indexed read each.
+  // `+commander`: without sqlite_stat1 the planner would walk idx_intuition_commander to group,
+  // which is the whole table again; this keeps it on the (org_id, as_of) range.
   try {
-    const rows = all(`
-      SELECT commander, MAX(as_of) as as_of, confidence, snapshot
-      FROM intuition_snapshots
-      WHERE org_id = :org_id
-      GROUP BY commander
-      ORDER BY as_of DESC
-    `, { org_id: orgId });
-    return rows.map(r => {
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    const latest = all(`
+      SELECT commander, MAX(as_of) AS as_of FROM intuition_snapshots
+      WHERE org_id = :org_id AND as_of > :since
+      GROUP BY +commander ORDER BY as_of DESC
+    `, { org_id: orgId, since });
+    return latest.map(l => {
+      const r = get(`SELECT confidence, snapshot FROM intuition_snapshots
+        WHERE commander IS :commander AND as_of = :as_of AND org_id = :org_id LIMIT 1`,
+        { commander: l.commander, as_of: l.as_of, org_id: orgId }) || {};
       let parsed = null;
       try { parsed = JSON.parse(r.snapshot); } catch {}
-      return { commander: r.commander, as_of: r.as_of, confidence: r.confidence, snapshot: parsed };
+      return { commander: l.commander, as_of: l.as_of, confidence: r.confidence, snapshot: parsed };
     });
   } catch { return []; }
 }

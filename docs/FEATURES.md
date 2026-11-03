@@ -197,8 +197,63 @@ Rules:
   on failure.
 - **Only runs in prod mode** (not dev — dev skips system-wide singletons).
 - **Not user-facing.** Visible indirectly via Perf panel "Processes" section.
+- **Ollama runner sweep** (`reapOrphanOllamaRunners`, Windows, every 5 min): ends any
+  `llama-server.exe` (or `ollama.exe runner`) whose parent is not a live `ollama.exe` older
+  than it. Ollama leaves its runners behind when `ollama serve` dies or restarts; three such
+  runners held 22.6 GB of commit on the hub for weeks (2026-11-03). Always killed, logged as
+  `[Steward] ☠ Ended orphaned Ollama runner` and a `runners_reaped` service event.
 
 ---
+
+## Craft main-thread stalls (`[loop-block]`, `[slow-sql]`)
+
+Everything the Craft does with SQLite (better-sqlite3) runs on the one thread that also
+serves voice turns, so a slow statement is a freeze for every turn in flight. `async`
+around a query does not change that.
+
+- **`[loop-block] <ms>ms · handles=N reqs=N at <UTC>`** (`server.js`): a 50 ms heartbeat
+  that fell more than 1.5 s behind. Printed when the block ENDS, so subtract the duration
+  to get its start. Last 20 also in `/dashboard/api/perf` as `recent_blocks`.
+- **`[slow-sql] <ms>ms <SQL>`** (`db.js`): every `run/get/all/insert` and the per-event FTS
+  insert that takes `PAN_SLOW_SQL_MS` (default 250) or longer. Prints right before the
+  `[loop-block]` line it caused. Statements run through `db.prepare()` directly are not
+  covered.
+- **`[session-summary] slow recap for <id>: Nms on the main thread (lookup= signals= git= tasks= write=)`**:
+  a recap build whose synchronous steps took 200 ms or more, split by step.
+- **Planner trap** (no `sqlite_stat1` on the hub DB): with no statistics SQLite assumes
+  `event_type = ?` and `org_id = ?` are selective, so it walks `idx_events_type` or
+  `idx_events_org_id_*` across the whole table. `created_at` and `org_id` sit after the
+  `data` blob, so checking them per row reads every row in full. Fixes used: `+event_type`
+  / `+org_id` to keep a term off an index, and `id IN (SELECT id ... ORDER BY id LIMIT n)`
+  subqueries that walk `idx_events_session` and only read `event_type`.
+- **Fixed 2026-11-03** (time measured read-only on the hub, before -> after):
+  - SessionEnd task-reconcile read (`routes/hooks.js`): 4.2-4.3 s -> under 5 ms. This was
+    the 4.3-4.5 s block every 30 minutes, when the scheduled :14/:44 Desktop session ends.
+  - Memory consolidation window (`memory/consolidation.js`): 1.2 s -> under 1 ms.
+  - Evolution window (`evolution/engine.js`): 1.26 s -> about 1 ms.
+  - Recap watermark Stop count (`routes/hooks.js`): 670 ms -> under 1 ms.
+  - SessionStart resume preamble: now an id lookup on the session index.
+  - Parakeet model load at boot: now off the main thread (see Hub re-transcription).
+  - Stack scanner (`stack-scanner.js`), 15 s after every boot and every 6 h: the language
+    walk is async. The hub has a project at the home folder (778 dirs, 17k files), about
+    1 s cold with `readdirSync`.
+- **CPU priority**: the Super-Carrier, Carrier and Craft each call `raiseProcessPriority()`
+  (`platform.js`) at start and run AboveNormal on Windows, the class Ollama gives its
+  llama-server runners. The PAN-Hub scheduled task starts them BelowNormal, and while a
+  runner held every core of the CPU-only hub they ran only when Windows' ~4 s
+  anti-starvation boost picked them: 12 s of AboveNormal load froze the Craft 4.6 s and
+  the Super-Carrier 7.5 s, none at AboveNormal (2026-11-03).
+  Long CPU inferences (memory consolidation, evolution critique) were the 10-35 s
+  `[loop-block]` lines. Children do not inherit it (Windows only passes on BelowNormal and
+  Idle), so each process sets its own. Check with `Get-Process node | Select Id,PriorityClass`.
+- **Recap watermark**: `session_summaries.updated_at` (added 2026-11-03) is set on every
+  rebuild. The Stop watermark compares against it, so a long session rebuilds its recap
+  every 30 minutes or 10 turns as designed. It used `created_at`, which the upsert never
+  moves, so every Stop on any session older than 30 minutes rebuilt the recap.
+- **Evolution window**: "since last evolution" is the later of the last applied change
+  (`evolution_versions`) and the last completed cycle (`EvolutionCycle` event). It used
+  `evolution_versions` alone, and no change has been applied since 2026-04-09, so every
+  cycle re-read and re-critiqued the same 200 April events on the hub CPU.
 
 ---
 
@@ -662,6 +717,12 @@ children can have adult-sounding voices and vice versa).
 - **WebSocket buffering:** Holds up to 200 WS frames in memory during Carrier
   restarts. Browser connection stays open; frames replay when Carrier comes back.
 - **Spawns:** Carrier via `fork()`. Auto-respawns on non-zero exit.
+- **Hop-by-hop headers:** this proxy and the Carrier's proxy to Craft both strip
+  `Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer` and `Upgrade`
+  in both directions (`service/src/proxy-headers.js`), because their upstream
+  sockets are pooled. Forwarding a client's `Connection: close` used to leave a
+  dead socket in the pool, and the next request on it got an empty 400
+  (2026-11-03). Regression test: `node service/src/__tests__/proxy-headers.test.js`.
 - **See:** `docs/SUPER-CARRIER.md` for full architecture.
 
 ---
@@ -725,14 +786,40 @@ children can have adult-sounding voices and vice versa).
 
 ---
 
-## Voice student model (OmniΠ)
+## Voice student model (Syrinx, formerly OmniΠ)
 
 - **Purpose:** answer voice turns with a small fine-tuned model that already knows the
   voice prompt's behaviour, so it only gets the live context (recent lines, memory hits,
-  the heard line): about 30 tokens instead of about 2,600. First word in about 0.3 s on
-  the mini PC CPU.
-- **Switch:** setting `voice_student_model` (e.g. `"ollama:omnipi"`). Empty or absent =
+  the heard line): about 30 tokens instead of about 2,600.
+- **Models:** round 9 (2026-11-03) is **Syrinx**, Pan's reed pipes. It writes `to` first and
+  then the reply (answer-first), so the reply's first words leave the hub as soon as `to`
+  says the line is for PAN; the other labels come after it. It was trained to contribute
+  rather than ask: about 1 reply in 10 ends with a question, against 9 in 10 for OmniΠ r7.
+  Ollama names keep the base model: `syrinx-lfm` (Liquid LFM3-Omni-2B), `syrinx-gemma`
+  (Google Gemma 4 E2B); `self.js` reads its name and base off that name. OmniΠ (`omnipi`)
+  was rounds 5-8 on LFM3-Omni-2B, labels before the reply (first words 1.3-1.6 s).
+- **Switch:** setting `voice_student_model` (e.g. `"ollama:syrinx-lfm"`). Empty or absent =
   off, every turn uses the full prompt as before.
+- **Live data:** the student never sees tool output. With it on, `buildToolBlocks` runs only
+  the live tools (weather, prices, air, search, a page, the world clock), and a turn that got
+  live data is answered from a short prompt holding that data, on the voice chain's cloud
+  model first (`toolPrompt`). Before this, a forecast or a price was fetched and thrown
+  away, and the student answered from its own head.
+- **Closing questions:** a reply's last sentence is held until the reply ends; an offer or a
+  menu ("want me to...", "A or B?") is dropped 9 times in 10 (`trailingQuestionCut`). Any
+  other closing question stays: Syrinx's are follow-ups (`KEEP_OTHER_Q`).
+- **Stuck on a word:** when the phone flags the turn `unfinished` (app 0.4.55+) and the words
+  end reaching for a name ("the one with the dreams inside dreams, the"), a short prompt on
+  the cloud model offers just the word ("Inception?") or stays quiet if unsure. Setting
+  `voice_interject`: `stuck` (default) or `off` (never offer).
+- **About itself and about him:** a question on how PAN works (model, local, cloud,
+  privacy) adds one line of live facts to the student's prompt (`buildSelfLine` in
+  `self.js`): PAN's name, his name from the `display_name` setting, the PAN app on his
+  phone, the hub, the voice model and the relay. A question on who he is or who PAN is
+  ("what's my name?", "who are you?", "what app am I using?", `identityAsked`) goes with
+  that line to the voice chain's cloud model instead (`selfPrompt`): given the line, Syrinx
+  still said "I'm not sure" to his name and "I'm LFM, built by Liquid AI" to "who are you"
+  (2026-11-03).
 - **Code:** `voiceStream()` inside `routeStream` in `router.js`. Output is the same JSON
   the full prompt produces, plus `to`, `turn` and `camera`.
 - **Camera:** a `[CAMERA]` reply becomes a photo when the phone sent `can_camera`
@@ -740,10 +827,93 @@ children can have adult-sounding voices and vice versa).
   pointing word, and not about a song, server, page, message...). The hub then sends
   `done` with `camera:true` and an empty reply; the phone runs `handleCameraCommand`
   (same as "what is this": ack, photo, Nano or server vision, speak).
+- **Phone shortcut:** the phone takes some camera lines itself before the hub sees them
+  (`isCameraCommand` in `PanForegroundService.kt`). Fixed phrases ("what am i looking at",
+  "take a photo") count anywhere in the line; "what is that / look at this" counts only when
+  nothing but filler follows it (app 0.4.58), so "what is that movie called, it has to do
+  with a" reaches the word search instead of "the camera is turned off".
 - **Falls back to the full prompt when:** the model cannot be reached, or its reply is
   `[CAMERA]` and the camera rule above does not hold (OmniΠ still over-reads some
   "this/that" lines as needing a look).
 - **Preserves:** the gate, ambient veto and action handling downstream are unchanged.
+
+---
+
+## Phone voice (text to speech)
+
+- **Where:** on the phone, never the hub (`tts/TtsManager.kt`, `tts/PiperTtsEngine.kt`,
+  sherpa-onnx). Settings → Voice picks it (`voice_quality` in `pan_tts_prefs`).
+- **Default:** Supertonic 3 (`supertonic3`, app 0.4.59; sid 9, speed 1.20 and 5 refinement
+  steps since 0.4.61, per voice in `VOICES`). Supertonic 2 (`supertonic`) slurred and mangled
+  words at every speed and step count tried ("documentimentation", dropped "stay" and
+  "depends on"; Parakeet misheard 2-7% of its words). Supertonic 3 misheard 0.7% at 1.20 and
+  4-5% at 1.35 ("termination"), and at 1.20 it talks as fast as v2 did at 1.35. Model files are staged into
+  `files/piper-models/<id>/` (over adb, or downloaded from the sherpa-onnx `tts-models`
+  release).
+- **Other scripts:** a reply mostly in another script (Japanese, Greek, Cyrillic) goes to
+  Android's own voice for that language; a few Greek letters in English ("ΠΑΝ") are spelled
+  in Latin for the English voice (app 0.4.57).
+- **Debug tuning:** `adb shell am startservice -n dev.pan.app/.service.PanForegroundService
+  -a TEST_TTS --es voice supertonic3 --es steps 8 --es speed 1.35 --es silence 0.2` (debug
+  builds; `voice` is saved like the Settings choice, the rest last until the app restarts).
+
+---
+
+## Voice lookup tools
+
+- **Purpose:** real data the model cannot know, fetched before the prompt is built
+  (`tools.js`, `buildToolBlocks`): weather (needs the phone's GPS, no fallback), Wikipedia
+  when asked for, currency, crypto, air quality, news/search, a named URL, and the world
+  clock. Matching tools run in parallel with a 1.5 s deadline; a miss adds no block.
+- **World clock:** "what time is it in Tokyo" reads the hub's clock in that zone, no
+  network: any IANA city, plus the countries and states people say ("California", "the
+  UK"). Only the place after "in" counts. The voice model cannot do time-zone sums.
+- **Decision calculator:** not run inline. It builds its ranges with `gemma4:e4b` on the hub
+  CPU (16-20 s) and failed 919 of 919 times inside the deadline, so every "should I" turn
+  waited 1.5 s for nothing (`slow: true` in `TOOLS`).
+- **Live vs not:** tools marked `live` (all but Wikipedia and the calculator) are the only
+  ones the voice student path runs and passes on (see Voice student model). Weather and
+  search count as live only for a real ask (`WEATHER_ASK`, `SEARCH_ASK`): their match words
+  also fire on "wind chimes" or "what happened to my build", and the "switch on your
+  location" note is never live data.
+
+---
+
+## Conversation benchmark (voicebench)
+
+- **Purpose:** measure how conversational the voice loop is, from real audio, so every
+  change to it is scored instead of judged by ear. Phase 0 of
+  `docs/research/reports/PAN conversational voice plan.md`.
+- **Phone (debug builds only, app 0.4.47+):**
+  - `TEST_AUDIO --es file X.wav` plays a 16 kHz mono WAV from
+    `/sdcard/Android/data/dev.pan.app/files/voicebench/` in place of the microphone.
+    `debug/TestAudio.kt` overwrites the samples in `SherpaStreamingStt`'s read loop, so the
+    VAD, recogniser, Smart Turn, echo filter, barge-in, hub and voice all run for real.
+    While a session is active the mic is silence between clips.
+  - `TEST_RESET` starts a fresh conversation (stops speech, cancels the query, clears
+    history, dedup and cooldown). `TEST_AUDIO_END` ends the session and restores his history.
+  - A session nothing has played into for 2 minutes ends itself (app 0.4.56+): history
+    restored, mic given back, and PAN muted again if it was muted when the run began. A run
+    that died (USB cable out) used to leave the mic replaced by silence until a restart.
+  - Every voice-loop moment is a JSON line on logcat tag `PANEVT` (`debug/VoiceEvents.kt`),
+    timed on `elapsedRealtime`: `inject_start/end`, `vad_on/off`, `partial`, `turn_p`,
+    `hold`, `commit`, `final`, `echo_drop`, `barge_in`, `on_speech`, `drop` (with reason),
+    `query`, `heard`, `first_chunk`, `reply_done`, `speak`, `tts_gen_start/end`,
+    `tts_play_start/end`, `tts_stop`.
+- **Nothing a run says is kept:** while a session is active the phone skips
+  `DataRepository` writes, history sync and log shipping, and sends `bench:true`. The hub
+  then runs the turn inside `bench-context.js`, where `logEvent`, `writeThought`, memory and
+  calendar inserts, meal/signal noting and correction learning do nothing, uses device key
+  `<device>-bench` (standing instructions stay separate) and skips the history fallback.
+- **Hub timings:** `voice-timing.jsonl` in the hub's data dir, one line per stage per turn
+  (`asr`, `setup`, `first_chunk`, `first_chunk_sent`, `total`) sharing a turn id
+  (`voice-timing.js`). Rolls over at 5 MB.
+- **Runner:** `service/src/evals/voicebench/` (Python, laptop or Mint with adb):
+  `make_clips.py` (SAPI voice, exact pauses) then `run.py [--only family]`, which unmutes
+  PAN for the run if needed and mutes it again, then `score.py` writes `summary.md` and
+  `scores.json` under `runs/<stamp>/` with the scorecard M1-M8 and M11.
+- **Preserves:** release builds are untouched (all actions and events are
+  `BuildConfig.DEBUG`-gated); a normal turn's hub path is unchanged apart from timing lines.
 
 ---
 
@@ -1203,12 +1373,14 @@ The phone's streaming zipformer decides WHEN a turn ends; the hub decides WHAT w
 ### What it does
 - On commit, `SherpaStreamingStt` keeps the whole turn's audio (up to 20 s) keyed by its text. `PanForegroundService.onSpeech` takes it (`takeTurnAudio(text)`) and `askPanStream` sends it as `audio` (16kHz PCM16 LE, base64) with the text.
 - `/api/v1/query/stream` passes it to `transcribePcm16` in `service/src/hub-asr.js`: NVIDIA Parakeet TDT 0.6B v2 int8 through `sherpa-onnx-node` (optional dependency), about 0.5 s per sentence on the hub CPU. The result replaces the phone's text for routing, is logged as `[hub-asr] phone=... hub=...`, and goes back to the phone as an SSE `{type:'heard'}` event (logged `Hub heard:`).
+- The model (~660 MB) loads 5 s after Craft boot with `OfflineRecognizer.createAsync`, on the libuv threadpool, logged `[hub-asr] parakeet loaded in Nms`. Decoding is `decodeAsync`. Neither runs on the main thread (the sync constructor used to freeze it for 2-3.6 s on every boot).
 
 ### Why
 - The zipformer learned English from audiobooks (LibriSpeech). On real speech it heard "what model is it using" as "what motto", "mot", "modo". Nemotron 0.6B streaming on the phone was tried and is about 7x heavier than the zipformer, too slow for the phone CPU.
 
 ### Preserves / falls back
 - No package, no model in `<PAN data>/../models/parakeet-tdt-0.6b-v2-int8/`, a decode error, or a clip under 0.3 s or over 30 s: the phone's text is used exactly as before.
+- A turn that arrives while the model is still loading also keeps the phone's text (it does not wait out the load).
 - Turns where `stripEcho` removed any of PAN's own words are NOT sent (a fresh transcript would bring the echo back), nor are turns longer than 20 s.
 - Old apps send no audio, so nothing changes for them.
 

@@ -23,38 +23,54 @@ const MODEL_DIR = process.env.PAN_ASR_DIR || join(dirname(getDataDir()), 'models
 const FILES = ['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt'];
 
 let recognizer = null;
+let loading = null;        // the in-flight load, so a turn during warm-up never starts a second one
 let unavailable = false;   // set once; a missing package or model is not retried every turn
 
+// Built with createAsync, which reads the weights on the libuv threadpool. The sync
+// constructor did it on the main thread: a 2-3.6 s [loop-block] right after
+// "[hub-asr] parakeet loaded" at every Craft boot, which on a swap-heavy day is
+// several times an hour, with voice turns queued behind it.
 function load() {
-  if (recognizer || unavailable) return recognizer;
-  try {
-    if (!FILES.every(f => existsSync(join(MODEL_DIR, f)))) {
-      unavailable = true;
-      console.log(`[hub-asr] no model in ${MODEL_DIR} - using the phone's text`);
-      return null;
-    }
-    const sherpa = require('sherpa-onnx-node');
-    recognizer = new sherpa.OfflineRecognizer({
-      featConfig: { sampleRate: 16000, featureDim: 80 },
-      modelConfig: {
-        transducer: {
-          encoder: join(MODEL_DIR, 'encoder.int8.onnx'),
-          decoder: join(MODEL_DIR, 'decoder.int8.onnx'),
-          joiner: join(MODEL_DIR, 'joiner.int8.onnx'),
+  if (recognizer || unavailable) return Promise.resolve(recognizer);
+  if (loading) return loading;
+  loading = (async () => {
+    try {
+      if (!FILES.every(f => existsSync(join(MODEL_DIR, f)))) {
+        unavailable = true;
+        console.log(`[hub-asr] no model in ${MODEL_DIR} - using the phone's text`);
+        return null;
+      }
+      const sherpa = require('sherpa-onnx-node');
+      const config = {
+        featConfig: { sampleRate: 16000, featureDim: 80 },
+        modelConfig: {
+          transducer: {
+            encoder: join(MODEL_DIR, 'encoder.int8.onnx'),
+            decoder: join(MODEL_DIR, 'decoder.int8.onnx'),
+            joiner: join(MODEL_DIR, 'joiner.int8.onnx'),
+          },
+          tokens: join(MODEL_DIR, 'tokens.txt'),
+          modelType: 'nemo_transducer',
+          numThreads: 4,
+          provider: 'cpu',
+          debug: 0,
         },
-        tokens: join(MODEL_DIR, 'tokens.txt'),
-        modelType: 'nemo_transducer',
-        numThreads: 4,
-        provider: 'cpu',
-        debug: 0,
-      },
-    });
-    console.log('[hub-asr] parakeet loaded');
-  } catch (e) {
-    unavailable = true;
-    console.warn(`[hub-asr] unavailable: ${e.message}`);
-  }
-  return recognizer;
+      };
+      const t0 = Date.now();
+      // createAsync arrived in sherpa-onnx-node 2.x; an older install still loads, just blocking.
+      recognizer = typeof sherpa.OfflineRecognizer.createAsync === 'function'
+        ? await sherpa.OfflineRecognizer.createAsync(config)
+        : new sherpa.OfflineRecognizer(config);
+      console.log(`[hub-asr] parakeet loaded in ${Date.now() - t0}ms`);
+    } catch (e) {
+      unavailable = true;
+      console.warn(`[hub-asr] unavailable: ${e.message}`);
+    } finally {
+      loading = null;
+    }
+    return recognizer;
+  })();
+  return loading;
 }
 
 /**
@@ -62,8 +78,11 @@ function load() {
  * (caller keeps the phone's text). Clips over 30s are not worth the wait on a voice turn.
  */
 export async function transcribePcm16(b64, sampleRate = 16000) {
-  const rec = load();
-  if (!rec || !b64) return null;
+  // A turn that lands while the model is still loading keeps the phone's words rather than
+  // waiting out the load: a second of latency costs more than one turn of the phone's ASR.
+  if (!recognizer) { load(); return null; }
+  const rec = recognizer;
+  if (!b64) return null;
   try {
     const buf = Buffer.from(b64, 'base64');
     const n = buf.length >> 1;
@@ -83,5 +102,5 @@ export async function transcribePcm16(b64, sampleRate = 16000) {
 
 /** Load at boot so the first voice turn does not pay the ~2s model load. */
 export function warmHubAsr() {
-  setTimeout(() => { try { load(); } catch {} }, 5000).unref?.();
+  setTimeout(() => { load().catch(() => {}); }, 5000).unref?.();
 }

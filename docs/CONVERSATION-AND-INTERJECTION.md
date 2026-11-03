@@ -165,6 +165,16 @@ The two loops barely talk to each other. That's the gap.
 - `conv:idle` — Commander silent ≥20min during active session → nudge progress
 Add corresponding phrasings.
 
+**Shipped 2026-11-02, inside the reactive loop rather than the intuition tick: "stuck on a word".**
+When he stops mid-sentence reaching for a name, PAN offers it the way a friend does ("Inception?")
+and lets him carry on. Wire: the phone's turn detector commits a turn that still sounds unfinished
+after `INCOMPLETE_MAX_WAIT_MS` and flags it (`SttEngine.turnUnfinished`, app 0.4.55+) → `/query/stream`
+`unfinished: true` → `routeStream` checks `WORD_SEARCH` (a trailing "the"/"a"/"uh", "what's it called",
+"can't remember", "tip of my tongue") → `wordSearchPrompt` on the voice chain's cloud model first
+(knowledge decides it; `gemma4:e2b` offered "Rembrandt?" for Van Gogh) → just the word with a question
+mark, or `[AMBIENT]` when unsure. His preference is the setting `voice_interject`: `stuck` (default) or
+`off`. voicebench scores it as "stuck on a word: PAN offered it" (scenarios `stuck_film`, `stuck_painter`).
+
 ### #NEW-5 — Atlas panel renders this wire map live
 **Where:** Dashboard's intuition section
 **Today:** Atlas shows the snapshot data but not the wiring or its status.
@@ -216,6 +226,32 @@ After **#NEW-4** lands, PAN gains the symmetric ability — when intuition concl
 
 - **R6/R7 (getCurrentSnapshot, recentThoughts) are NOT missing anymore.** `router.js` now imports `getCurrentSnapshot` + `recentThoughts` (lines ~20-22) and builds a situation block + recent-mind block into the prompt (`router.js:~409`, marked `#NEW-2/#NEW-3`). The ❌ rows above are out of date — verify the exact wiring and flip them to ✅/⚠️.
 - **NEW keystone: server-side conversation-memory guarantee (reactive loop).** The phone `/api/v1/query` and `/api/v1/query/stream` handlers forwarded only the client-sent `context` as `conversation_history`; the phone's plain voice path sends `null`, so most voice turns were COLD (PAN forgot its own last reply). Fixed in `api.js`: when `context` is empty/short, the server rebuilds the thread from the last 16 text turns on `thread-pan-system` (30-min window). Conversation state is now a SERVER guarantee, device-agnostic (phone/pendant/desktop share one thread). Next: (B) phone always sends its buffer; (C) feed the live dialogue into the intuition snapshot. See memory `project_pan_conversation_memory`.
+
+## Update 2026-11-03 — voice and Intuition, both directions
+
+Since the voice student model (Syrinx) took most turns, the reactive loop above ran only for
+the rare full-prompt turn, and `/query/stream` wrote nothing back. An audit that night found
+Intuition fed almost entirely by Claude Code prompts: "last heard" was never a voice line,
+"where" defaulted to the hub, and conversation state was empty. Wired since:
+
+- **Voice → Intuition.** `recordVoiceTurn` (`routes/api.js`) writes a turn PAN answered as a
+  `RouterCommand` event (`source: 'phone-voice'`, his words as the hub heard them, the reply,
+  the phone's place) and feeds conversation state (his line, PAN's reply). Speech PAN let
+  pass (TV, other people) only joins conversation state's in-memory buffer as overheard; it is
+  not stored and starts no distill. `buildSnapshot` (`intuition/index.js`) reads those voice
+  turns for `last_heard`, `where` (the phone's place, else "mobile") and `focus` (the distilled
+  topic), whichever of voice or Claude Code came last.
+- **Intuition → voice.** `buildSituationLine` (`router.js`): one line of the phone's place,
+  what his computers show (device presence), the phone camera's last look, the conversation's
+  topic, and other voices nearby, each only while fresh. Every cloud short prompt gets it
+  (word search, live data, who-am-I, the "Hey Pan" re-ask). Syrinx gets it only when he asks
+  what he is doing, where he is or what to do (or with setting `voice_situation` `on`): given
+  it every turn on the hub bench it answered "what am I working on?" from the line, but also
+  called "How's it going?" room talk. Next retrain: put the line in its training data.
+- **Still open from the audit:** the proactive triggers look for event types nobody writes
+  (`voice_command`, `pan_utterance`) and never fire; the phone is not a presence row between
+  turns; the dashboard panel asks needs for user "Tereseus" while producers write "owner", and
+  compares assumption case-sensitively.
 
 ## See also
 

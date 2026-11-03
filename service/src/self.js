@@ -52,16 +52,33 @@ function activeChainModel() {
 }
 
 /**
- * One sentence for OmniΠ's short prompt. It was never trained on the long block below, and
- * given it, it named the model from memory hits ("Gemma4 e4b") or skipped its own name.
+ * The voice student's name and what it was fine-tuned from, read off its Ollama name. Round 9
+ * (2026-11-03) renamed it Syrinx, Pan's reed pipes, because it need not be Liquid's model any
+ * more; the base that won is in the name (syrinx-lfm, syrinx-gemma).
+ */
+function studentIdentity(id) {
+  const base = /gemma/i.test(id) ? "Google's Gemma 4 E2B" : "Liquid's LFM3-Omni-2B";
+  return /syrinx/i.test(id) ? { name: 'Syrinx', short: 'Syrinx', base } : { name: 'OmniPi (written OmniΠ)', short: 'OmniΠ', base };
+}
+
+/**
+ * One sentence for the student's short prompt. It was never trained on the long block below,
+ * and given it, OmniΠ named the model from memory hits ("Gemma4 e4b") or skipped its own name.
  * Tested on the hub: this shape answers correctly.
  */
 export function buildSelfLine() {
   const student = readSetting('voice_student_model');
   if (!student) return '';
+  const { name, base } = studentIdentity(student);
   const back = activeChainModel() || 'unknown';
   const where = isCloud(back) ? 'in the cloud' : 'on the same machine';
-  return `About you (live, this is fact): you are OmniPi (written OmniΠ), PAN's own voice model, a fine-tune of Liquid's LFM3-Omni-2B, running locally on the mini PC hub. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. PAN's thread relay carries his voice to his Claude Code threads on his computers and reads their answers back: he says "tell the <name> thread ..." or "what is the <name> thread doing". Answer questions about yourself only from this line.`;
+  // Asked "what's my name?" with no line at all, Syrinx answered "I'm LFM, built by Liquid AI"
+  // four times running, and said he was talking to it "via the web interface" (2026-11-03).
+  const owner = readSetting('display_name');
+  // Second person and only positive facts: given "his phone" it said "his phone" back to him,
+  // and given "never call yourself LFM" it announced "I'm not LFM or Liquid".
+  const you = owner ? `The person talking to you is ${owner}: asked his own name, the answer is ${owner}. ` : '';
+  return `About you (live, this is fact): your name is PAN, his personal AI. ${you}He talks to you through the PAN app on his phone (say "your phone" to him), and you run on the mini PC hub in his home. Your voice model is ${name}, PAN's own fine-tune of ${base}. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. PAN's thread relay carries his voice to his Claude Code threads on his computers and reads their answers back: he says "tell the <name> thread ..." or "what is the <name> thread doing". Answer questions about yourself and about him only from this line.`;
 }
 
 export function buildSelfBlock() {
@@ -82,13 +99,14 @@ export function buildSelfBlock() {
   if (fallbackOff || !chain.length) active = readSetting('ai_model');
   else active = chain[0];
 
-  // With voice_student_model set, voice turns are answered by OmniΠ first; the chain above
-  // only takes the turns it hands back (camera lines, or when it is unreachable).
+  // With voice_student_model set, voice turns are answered by the student first; the chain
+  // above only takes the turns it hands back (camera lines, or when it is unreachable).
   const student = readSetting('voice_student_model');
   if (student) {
     const id = student.replace(/^ollama:/, '');
-    lines.push(`- Your voice model: OmniΠ (${id}), PAN's own fine-tune of Liquid's LFM3-Omni-2B, trained to answer like the full PAN prompt with a fraction of the text. ${describeModel(id).replace(/^[^—]*— /, '')}`);
-    lines.push(`- Turns OmniΠ hands back go to: ${describeModel(active)}`);
+    const { short, base } = studentIdentity(id);
+    lines.push(`- Your voice model: ${short} (${id}), PAN's own fine-tune of ${base}, trained to answer like the full PAN prompt with a fraction of the text. ${describeModel(id).replace(/^[^—]*— /, '')}`);
+    lines.push(`- Turns ${short} hands back go to: ${describeModel(active)}`);
   } else {
     lines.push(`- Your conversation model: ${describeModel(active)}`);
   }

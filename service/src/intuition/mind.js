@@ -19,6 +19,7 @@
 //   writeThought('intuition', "Commander seems focused on Svelte — mood normal, no need to interject.", { ai_usage_id: lastId });
 
 import { run, all } from '../db.js';
+import { isBench } from '../bench-context.js';
 
 const VALID_SOURCES = new Set([
   'intuition', 'screen', 'scout', 'router', 'interjection',
@@ -57,6 +58,8 @@ function localIsoFromMs(ms) {
  * @returns {number|null} The inserted row id, or null on failure.
  */
 export function writeThought(source, thought, refs = null, importance = 0.5) {
+  // Benchmark turns are test lines; PAN should not remember thinking about them.
+  if (isBench()) return null;
   try {
     if (!source || !VALID_SOURCES.has(source)) {
       console.warn(`[Thoughts] Unknown source "${source}" — accepting anyway`);

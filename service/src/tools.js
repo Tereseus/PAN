@@ -16,6 +16,7 @@ import { buildWeatherBlock, looksLikeWeather, resolveLocation, locationNeededBlo
 import * as browser from './playwright-bridge.js';
 import { spawn } from 'child_process';
 import { askAI } from './llm.js';
+import { get } from './db.js';
 
 const TIMEOUT_MS = 2500;
 
@@ -413,18 +414,100 @@ async function decideTool(text) {
     (decision.uncertainties || []).map((u) => `${u.id} ${u.low}..${u.high}`).join(', ') + '\n';
 }
 
+// --- Clock: the time somewhere else -----------------------------------------
+// "What time is it in Tokyo" is a time-zone sum, and the voice model cannot do
+// sums: told it was 00:45 in New York, it said 9:45 PM for Tokyo (Syrinx r9,
+// 2026-11-02). No network: the hub's own clock, in the zone he named. Any IANA
+// city works ("in lisbon"), plus the countries and states people actually say.
+const ZONE_ALIASES = {
+  california: 'America/Los_Angeles', 'san francisco': 'America/Los_Angeles', seattle: 'America/Los_Angeles',
+  'las vegas': 'America/Los_Angeles', 'west coast': 'America/Los_Angeles', 'east coast': 'America/New_York',
+  florida: 'America/New_York', miami: 'America/New_York', boston: 'America/New_York',
+  washington: 'America/New_York', atlanta: 'America/New_York', philadelphia: 'America/New_York', 'new jersey': 'America/New_York',
+  texas: 'America/Chicago', dallas: 'America/Chicago', houston: 'America/Chicago', colorado: 'America/Denver',
+  arizona: 'America/Phoenix', hawaii: 'Pacific/Honolulu', alaska: 'America/Anchorage',
+  canada: 'America/Toronto', ottawa: 'America/Toronto', montreal: 'America/Toronto', mexico: 'America/Mexico_City',
+  brazil: 'America/Sao_Paulo', rio: 'America/Sao_Paulo', argentina: 'America/Argentina/Buenos_Aires',
+  'buenos aires': 'America/Argentina/Buenos_Aires', uk: 'Europe/London', england: 'Europe/London',
+  britain: 'Europe/London', scotland: 'Europe/London', manchester: 'Europe/London', ireland: 'Europe/Dublin',
+  france: 'Europe/Paris', germany: 'Europe/Berlin', munich: 'Europe/Berlin', frankfurt: 'Europe/Berlin',
+  italy: 'Europe/Rome', milan: 'Europe/Rome', spain: 'Europe/Madrid', barcelona: 'Europe/Madrid',
+  portugal: 'Europe/Lisbon', netherlands: 'Europe/Amsterdam', switzerland: 'Europe/Zurich',
+  cyprus: 'Asia/Nicosia', turkey: 'Europe/Istanbul',
+  russia: 'Europe/Moscow', israel: 'Asia/Jerusalem', egypt: 'Africa/Cairo', 'south africa': 'Africa/Johannesburg',
+  uae: 'Asia/Dubai', 'abu dhabi': 'Asia/Dubai', india: 'Asia/Kolkata', mumbai: 'Asia/Kolkata', delhi: 'Asia/Kolkata',
+  bangalore: 'Asia/Kolkata', china: 'Asia/Shanghai', beijing: 'Asia/Shanghai', japan: 'Asia/Tokyo', osaka: 'Asia/Tokyo',
+  kyoto: 'Asia/Tokyo', korea: 'Asia/Seoul', 'south korea': 'Asia/Seoul', thailand: 'Asia/Bangkok',
+  vietnam: 'Asia/Ho_Chi_Minh', philippines: 'Asia/Manila', indonesia: 'Asia/Jakarta', bali: 'Asia/Makassar',
+  australia: 'Australia/Sydney', 'new zealand': 'Pacific/Auckland',
+};
+
+let zoneNames = null;
+function zones() {
+  if (zoneNames) return zoneNames;
+  // Places only he says (his own city, a work site) live in the zone_aliases setting,
+  // a JSON object of name -> IANA zone, not in this public file.
+  let own = {};
+  try { own = JSON.parse(get("SELECT value FROM settings WHERE key = 'zone_aliases'")?.value || '{}'); } catch {}
+  zoneNames = new Map(Object.entries({ ...ZONE_ALIASES, ...own }));
+  for (const z of Intl.supportedValuesOf('timeZone')) {
+    // Region/City only: the last word of a three-part sub-zone is often an
+    // ordinary word ("America/North_Dakota/Center", "America/Indiana/Knox").
+    const parts = z.split('/');
+    const city = parts.length === 2 ? parts[1].replace(/_/g, ' ').toLowerCase() : '';
+    if (city && !zoneNames.has(city)) zoneNames.set(city, z);
+  }
+  return zoneNames;
+}
+
+function worldClock(text) {
+  const t = String(text).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // The place is what follows "in": "what time is it (over there) in new york (right now)".
+  // Only there, so "what time is casey coming" never reads as Antarctica/Casey.
+  for (const m of t.matchAll(/\bin (?:the )?(?=[a-z])/g)) {
+    const rest = t.slice(m.index + m[0].length);
+    let best = '';
+    for (const name of zones().keys()) {
+      if (name.length > best.length && (rest === name || rest.startsWith(name + ' '))) best = name;
+    }
+    if (!best) continue;
+    const zone = zones().get(best);
+    try {
+      const when = new Date().toLocaleString('en-US', { timeZone: zone, weekday: 'long', hour: 'numeric', minute: '2-digit' });
+      const place = /^(uk|uae)$/.test(best) ? best.toUpperCase() : best.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+      return `\nCLOCK: in ${place} it is ${when} right now (${zone}).\n`;
+    } catch { return ''; }
+  }
+  return '';
+}
+
+// live: data that changes (weather, prices, news, a page, a clock), which the voice
+// student cannot answer from its own head; routeStream hands such a turn the data
+// instead of the student. A function when the match is looser than a real ask:
+// WEATHER_RE fires on "wind chimes" and "this coffee is too hot", SEARCH_RE on "what
+// happened to my build", and sending those past the student lost the reply
+// ("remember I hate wind chimes" got silence, 2026-11-03).
+const WEATHER_ASK = /\b(weather|forecast|rain(?:ing|y)?|snow(?:ing|y)?|umbrella|sunny|cloudy|windy|humid(?:ity)?|temperature (?:outside|today|tomorrow|tonight))\b/i;
+const SEARCH_ASK = /\b(search (?:for|the web|online)|look (?:it|that|this) up|look up|google|latest news|news (?:about|on|from)|any news|headlines|in the news)\b/i;
 const TOOLS = [
-  { name: 'weather',  match: (t) => looksLikeWeather(t), run: (t, s) => buildWeatherBlock(t, s) },
+  { name: 'weather',  live: (t) => WEATHER_ASK.test(t), match: (t) => looksLikeWeather(t), run: (t, s) => buildWeatherBlock(t, s) },
   { name: 'wikipedia',match: (t) => WIKI_RE.test(t) && !looksLikeWeather(t), run: (t) => wikipedia(t) },
-  { name: 'currency', match: (t) => CURRENCY_RE.test(t), run: (t) => currency(t) },
-  { name: 'crypto',   match: (t) => CRYPTO_RE.test(t),   run: (t) => crypto(t) },
-  { name: 'air',      match: (t) => AIR_RE.test(t),      run: (t, s) => airQuality(t, s) },
-  { name: 'search',   match: (t) => SEARCH_RE.test(t) || CURRENT_RE.test(t), run: (t) => webSearch(t) },
-  { name: 'page',     match: (t) => URL_RE.test(t),      run: (t) => readNamedUrl(t) },
-  { name: 'decide',   match: (t) => DECIDE_RE.test(t),   run: (t) => decideTool(t) },
+  { name: 'currency', live: true, match: (t) => CURRENCY_RE.test(t), run: (t) => currency(t) },
+  { name: 'crypto',   live: true, match: (t) => CRYPTO_RE.test(t),   run: (t) => crypto(t) },
+  { name: 'air',      live: true, match: (t) => AIR_RE.test(t),      run: (t, s) => airQuality(t, s) },
+  { name: 'search',   live: (t) => SEARCH_ASK.test(t) || CURRENT_RE.test(t), match: (t) => SEARCH_RE.test(t) || CURRENT_RE.test(t), run: (t) => webSearch(t) },
+  { name: 'page',     live: true, match: (t) => URL_RE.test(t),      run: (t) => readNamedUrl(t) },
+  { name: 'clock',    live: true, match: (t) => /\btime\b/i.test(t) && /\bin\b/i.test(t), run: (t) => worldClock(t) },
+  // decide builds its ranges with gemma4:e4b on the hub CPU, 16-20 s. Inside the
+  // deadline below it failed 919 times out of 919 (hub.log, Aug 7 to Nov 2), and
+  // every "should I" turn waited the full 1.5 s for it. Not run inline until it
+  // has a way to follow up after the reply.
+  { name: 'decide',   slow: true, match: (t) => DECIDE_RE.test(t), run: (t) => decideTool(t) },
 ];
 
-/** All matching tool outputs, fetched in parallel. '' when nothing matches. */
+/** All matching tool outputs, fetched in parallel. '' when nothing matches.
+ *  With { detail: true }: { text, live }, live when any block came from a live tool.
+ *  With { liveOnly: true }: only the live tools run. */
 // A tool gets this long to answer, total. Nothing here is worth making the
 // user wait: buildToolBlocks is awaited before the prompt is even built, and
 // Promise.allSettled waits for the SLOWEST tool with no ceiling - so one
@@ -442,26 +525,31 @@ function withDeadline(promise, ms, label) {
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
-export async function buildToolBlocks(text, sensors) {
+export async function buildToolBlocks(text, sensors, opts = {}) {
   const t = String(text || '');
-  if (!t) return '';
-  if (CONVERSATIONAL_RE.test(t)) return '';
+  const none = opts.detail ? { text: '', live: false } : '';
+  if (!t) return none;
+  if (CONVERSATIONAL_RE.test(t)) return none;
+  const isLive = (tool) => (typeof tool.live === 'function' ? tool.live(t) : !!tool.live);
   const hits = TOOLS.filter((tool) => {
-    try { return tool.match(t); } catch { return false; }
+    if (tool.slow) return false;
+    try { return tool.match(t) && (!opts.liveOnly || isLive(tool)); } catch { return false; }
   });
-  if (!hits.length) return '';
+  if (!hits.length) return none;
 
   const started = Date.now();
   const settled = await Promise.allSettled(
     hits.map((tool) => withDeadline(Promise.resolve().then(() => tool.run(t, sensors)),
                                     TOOL_DEADLINE_MS, tool.name)));
   const blocks = [];
+  let live = false;
   settled.forEach((r, i) => {
-    if (r.status === 'fulfilled' && r.value) blocks.push(r.value);
+    // "Switch on your location" is an instruction, not data: the student already gives it.
+    if (r.status === 'fulfilled' && r.value) { blocks.push(r.value); live = live || (isLive(hits[i]) && !r.value.includes('LOCATION UNAVAILABLE')); }
     else if (r.status === 'rejected') console.warn(`[tools] ${hits[i].name}: ${r.reason?.message || r.reason}`);
   });
   if (blocks.length) {
     console.log(`[tools] ${hits.map((h) => h.name).join('+')} -> ${blocks.length} block(s) in ${Date.now() - started}ms`);
   }
-  return blocks.join('');
+  return opts.detail ? { text: blocks.join(''), live } : blocks.join('');
 }

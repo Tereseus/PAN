@@ -9,6 +9,8 @@ import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { transcribePcm16, warmHubAsr } from '../hub-asr.js';
+import { benchContext } from '../bench-context.js';
+import { recordTiming } from '../voice-timing.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -344,6 +346,33 @@ router.get('/cancel/active', (_req, res) => {
 // matching SQLCipher file. 'main' is the canonical pan.db. Anything else is a
 // sibling DB lazily created by db-registry. The scope/req-aware overload is
 // the preferred form; the legacy 4-arg form keeps existing call sites working.
+// What a streaming voice turn leaves behind. /query/stream wrote nothing at all, so memory
+// search, recaps and Intuition never saw a word said to PAN: its "last heard" was whatever
+// he last typed to Claude Code (audit, 2026-11-03). A turn PAN answered becomes a
+// RouterCommand event (the shape the old /query route wrote, which recall and recaps read)
+// and goes to the conversation state with PAN's reply. A line it let pass (the TV, other
+// people) is not stored; it only joins the conversation state's short in-memory buffer as
+// overheard, which costs nothing until the next distill.
+function recordVoiceTurn(req, { text, result, deviceId, turnId, sensors }) {
+  try {
+    const intent = result?.intent || 'query';
+    const response = String(result?.response || '').trim();
+    const answered = intent !== 'ambient' && intent !== 'cancelled' && (!!response && response !== '[AMBIENT]' || !!result?.camera);
+    const orgId = req.org_id || 'org_personal';
+    if (answered) {
+      insertEvent(req, 'RouterCommand', JSON.stringify({
+        text, intent, result: response, addressed: result?.addressed ?? null,
+        camera: !!result?.camera, device_id: deviceId, turn_id: turnId, source: 'phone-voice',
+        place: sensors?.phone?.gps?.address || null,
+      }));
+    }
+    import('../conv-state-watcher.js').then(({ noteUtterance }) => {
+      noteUtterance({ orgId, text, isFinal: true, source: answered ? 'him' : 'room', deviceId, distill: answered });
+      if (answered && response) noteUtterance({ orgId, text: response, isFinal: true, source: 'pan', deviceId, distill: false });
+    }).catch(() => {});
+  } catch (e) { console.warn('[query/stream] recording the voice turn failed:', e.message); }
+}
+
 function insertEvent(sidOrReq, eventType, dataStr, userId) {
   // Overload: insertEvent(req, type, data, userId)
   if (sidOrReq && typeof sidOrReq === 'object' && sidOrReq.headers) {
@@ -1461,9 +1490,12 @@ router.post('/query', async (req, res) => {
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
 router.post('/query/stream', async (req, res) => {
-  const { text: phoneText, context, intent_hint, sensors, can_camera, audio } = req.body;
+  const { text: phoneText, context, intent_hint, sensors, can_camera, audio, bench } = req.body;
   if (!phoneText) return res.status(400).json({ error: 'missing text' });
   let text = phoneText;
+  // One id per turn so this handler's timings and the router's line up in voice-timing.jsonl.
+  const turnId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const turnStart = Date.now();
 
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -1485,19 +1517,8 @@ router.post('/query/stream', async (req, res) => {
   // Keepalive every 5s — prevents OkHttp 30s readTimeout from firing during slow LLM calls
   const keepaliveInterval = setInterval(sendKeepalive, 5000);
 
-  // App 0.4.43+ sends the turn's audio (16kHz PCM16, base64). The phone's streaming model
-  // decided when the turn ended; Parakeet on the hub decides what was said (hub-asr.js).
-  // 'heard' tells the phone the corrected words for its own history.
-  if (audio) {
-    const t0 = Date.now();
-    const better = await transcribePcm16(audio);
-    if (better) {
-      console.log(`[hub-asr] ${Date.now() - t0}ms phone=${JSON.stringify(String(phoneText).slice(0, 80))} hub=${JSON.stringify(better.slice(0, 80))}`);
-      text = better;
-      send({ type: 'heard', text });
-    }
-  }
-
+  // Before the transcription, not after it: the superseded turn's model was still
+  // generating on the hub CPU while this turn's Parakeet ran (voicebench, 2026-11-02).
   // Task #460 — cancel the in-flight turn when a new STT Final arrives.
   //
   // This endpoint previously passed NO signal to routeStream, so nothing could
@@ -1533,18 +1554,37 @@ router.post('/query/stream', async (req, res) => {
     }
   });
 
+  // App 0.4.43+ sends the turn's audio (16kHz PCM16, base64). The phone's streaming model
+  // decided when the turn ended; Parakeet on the hub decides what was said (hub-asr.js).
+  // 'heard' tells the phone the corrected words for its own history.
+  if (audio) {
+    const t0 = Date.now();
+    const better = await transcribePcm16(audio);
+    if (better) {
+      console.log(`[hub-asr] ${Date.now() - t0}ms phone=${JSON.stringify(String(phoneText).slice(0, 80))} hub=${JSON.stringify(better.slice(0, 80))}`);
+      text = better;
+      send({ type: 'heard', text });
+    }
+    recordTiming({ turn: turnId, stage: 'asr', ms: Date.now() - t0, bench: !!bench || undefined });
+  }
+
   let parsedSensors = sensors;
   if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }
 
   try {
     const { routeStream } = await import('../router.js');
-    const deviceId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
+    // A benchmark turn gets its own device key, so a test's standing instruction or
+    // dialog state can never leak into his real conversation (bench-context.js).
+    const realDeviceId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
+    const deviceId = bench ? `${realDeviceId || 'phone'}-bench` : realDeviceId;
 
     // Same server-side conversation-memory guarantee as /query (see there): rebuild
     // the thread from the Π thread when the client sends no usable history, so the
     // streaming voice path is never a cold prompt either.
     let convoHistory = context;
-    if (!convoHistory || String(convoHistory).trim().length < 10) {
+    // Not for a benchmark turn: its scenario starts with an empty history on purpose,
+    // and pulling his real thread in would make the run depend on his day.
+    if (!bench && (!convoHistory || String(convoHistory).trim().length < 10)) {
       try {
         const since = Date.now() - 30 * 60 * 1000;
         const rows = db.prepare(`
@@ -1561,20 +1601,37 @@ router.post('/query/stream', async (req, res) => {
       } catch (e) { console.warn('[/query/stream] conversation-history fallback failed:', e?.message); }
     }
 
-    for await (const event of routeStream(text, {
-      source: deviceId ? `phone-${deviceId}` : 'phone',
-      device_id: deviceId,
-      intent_hint,
-      conversation_history: convoHistory,
-      sensors: parsedSensors,
-      signal: controller.signal,
-      org_id: req.org_id,
-      // App 0.4.42+ with the camera on: a camera:true done event makes it take the photo.
-      canCamera: !!can_camera,
-    })) {
-      send(event);
-      if (event.type === 'done') break;
-    }
+    const runTurn = async () => {
+      let firstChunkSent = false;
+      for await (const event of routeStream(text, {
+        source: deviceId ? `phone-${deviceId}` : 'phone',
+        device_id: deviceId,
+        intent_hint,
+        conversation_history: convoHistory,
+        sensors: parsedSensors,
+        signal: controller.signal,
+        org_id: req.org_id,
+        // App 0.4.42+ with the camera on: a camera:true done event makes it take the photo.
+        canCamera: !!can_camera,
+        // App 0.4.55+: he stopped mid-sentence and the phone's wait for the rest ran out.
+        unfinished: !!req.body.unfinished,
+        turn_id: turnId,
+      })) {
+        if (event.type === 'chunk' && !firstChunkSent) {
+          firstChunkSent = true;
+          recordTiming({ turn: turnId, stage: 'first_chunk_sent', ms: Date.now() - turnStart });
+        }
+        send(event);
+        if (event.type === 'done') {
+          if (!bench) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
+          break;
+        }
+      }
+    };
+    // bench: the phone is playing recorded test speech (evals/voicebench). Same loop,
+    // nothing persisted.
+    if (bench) await benchContext.run({ bench: true }, runTurn);
+    else await runTurn();
   } catch (err) {
     // An abort is not a failure: it means a newer utterance superseded this
     // turn. Saying "Something went wrong" there would speak an error at the
@@ -1593,6 +1650,7 @@ router.post('/query/stream', async (req, res) => {
     // already replaced it, and deleting blindly would unregister THAT one,
     // making the next utterance unable to cancel it.
     if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+    recordTiming({ turn: turnId, stage: 'total', ms: Date.now() - turnStart, bench: !!bench || undefined });
   }
 
   if (!res.writableEnded) res.end();
@@ -1641,12 +1699,14 @@ router.post('/history', (req, res) => {
   const { role, text, device_id } = req.body;
   if (!role || !text) return res.status(400).json({ error: 'role and text required' });
   try {
-    insertScoped(req, `INSERT INTO events (event_type, session_id, transcript, response, data, created_at)
-      VALUES ('conversation_turn', :session_id, :transcript, :response, :data, datetime('now','localtime'))`, {
+    // The words go in `data`: events has no transcript/response columns, so every turn the
+    // phone sent failed with "no such column: transcript" and nothing survived an app
+    // restart (audit, 2026-11-03).
+    insertScoped(req, `INSERT INTO events (event_type, session_id, data, created_at, org_id)
+      VALUES ('conversation_turn', :session_id, :data, datetime('now','localtime'), :org_id)`, {
       ':session_id': device_id || 'phone',
-      ':transcript': role === 'user' ? text : '',
-      ':response': role === 'assistant' ? text : '',
-      ':data': JSON.stringify({ role, device_id }),
+      ':data': JSON.stringify({ role, device_id, text: String(text).slice(0, 2000) }),
+      ':org_id': req.org_id || 'org_personal',
     });
     res.json({ ok: true });
   } catch (e) {
@@ -1660,7 +1720,7 @@ router.get('/history', (req, res) => {
   const session_id = device_id || 'phone';
   try {
     const rows = allScoped(req, `
-      SELECT transcript, response, data, created_at FROM events
+      SELECT data, created_at FROM events
       WHERE event_type = 'conversation_turn'
         AND session_id = :session_id
         AND org_id = :org_id
@@ -1669,10 +1729,10 @@ router.get('/history', (req, res) => {
     `, { ':session_id': session_id, ':org_id': req.org_id || 'org_personal', ':limit': parseInt(limit) });
 
     const turns = rows.reverse().flatMap(r => {
-      const out = [];
-      if (r.transcript) out.push({ role: 'user', text: r.transcript, created_at: r.created_at });
-      if (r.response) out.push({ role: 'assistant', text: r.response, created_at: r.created_at });
-      return out;
+      let d = null;
+      try { d = JSON.parse(r.data); } catch {}
+      return d?.text && (d.role === 'user' || d.role === 'assistant')
+        ? [{ role: d.role, text: d.text, created_at: r.created_at }] : [];
     });
     res.json({ turns });
   } catch (e) {

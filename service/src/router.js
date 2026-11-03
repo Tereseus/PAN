@@ -1,7 +1,8 @@
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
 import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './claude.js';
-import { askAIWithFallback, askAIStreamWithFallback } from './llm-fallback.js';
+import { askAIWithFallback, askAIStreamWithFallback, readChain } from './llm-fallback.js';
 import { buildToolBlocks } from './tools.js';
 import { buildSelfBlock, buildSelfLine } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
@@ -17,10 +18,12 @@ import {
 } from './smart-router.js';
 import { searchMemory, searchMemoryByDate, parseWhen, isReadablePreview } from './memory-search.js';
 import { writeThought } from './thoughts.js';
+import { isBench } from './bench-context.js';
+import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
 import { getCurrentSnapshot } from './intuition/index.js';
-import { getConversationState } from './conv-state-watcher.js';
+import { getConversationState, getConversationBuffer } from './conv-state-watcher.js';
 import { recentThoughts } from './intuition/mind.js';
 import { planFromResult as planProsody } from './tts-prosody.js';
 
@@ -85,6 +88,17 @@ function _recallIsRelevant(text, hits) {
   return distinctive.some((w) => hay.includes(w));
 }
 
+// Is the answer to "what did I say the dog is called" sitting in the conversation the
+// phone just sent? Then it is not a memory question at all, and the coded "nothing
+// saved" refusal below must not fire: it answered that line while "the neighbour's dog
+// is called biscuit" was two turns up (voicebench recall scenarios, 2026-11-02).
+function _historyMentions(text, history) {
+  const hay = String(history || '').toLowerCase();
+  if (!hay.trim()) return false;
+  const terms = String(text || '').toLowerCase().match(/[a-z]{4,}/g) || [];
+  return [...new Set(terms)].filter((w) => !_RECALL_STOP.has(w)).some((w) => hay.includes(w));
+}
+
 // Build the situation block from the live intuition snapshot. Returns '' when
 // no snapshot is available (boot-up, isolated tests). See task #745 (#NEW-2).
 // Date and time on every voice turn. Without it the model could not answer "what time is it
@@ -112,6 +126,38 @@ function buildSituationBlock(orgId) {
     if (now.engagement) lines.push(`- Engagement: ${now.engagement}`);
     if (now.last_heard) lines.push(`- Last heard: "${String(now.last_heard).slice(0, 140)}"`);
     return lines.length ? `\nSituation right now:\n${lines.join('\n')}\n` : '';
+  } catch { return ''; }
+}
+
+// One line of what is going on around him, for the short voice prompts, which never got the
+// block above. Facts only, each from a live source and only while fresh: the phone's place,
+// what his computers are showing (pan-client presence), the phone camera's last look, what
+// the conversation is about, and whether other people are talking nearby. The owner, 2026-11-03:
+// Intuition should know "what you're doing, who you're talking to, what they're talking
+// about", and voice and Intuition should feed each other.
+function buildSituationLine(context = {}) {
+  try {
+    const parts = [];
+    const now = Date.now();
+    const org = context.org_id || 'org_personal';
+    const place = context.sensors?.phone?.gps?.address;
+    if (place) parts.push(`his phone is at ${String(place).slice(0, 60)}`);
+    // Device names stay home: a hostname is a label, not something a cloud model needs.
+    const screens = all(`SELECT device_id, activity, screen_title FROM device_presence WHERE as_of > :since ORDER BY as_of DESC LIMIT 4`,
+      { ':since': now - 2 * 60_000 })
+      .filter(p => p.screen_title && !/^idle$/i.test(p.activity || '') && !/minipc|hub/i.test(p.device_id || ''))
+      .slice(0, 2)
+      .map(p => `his ${/mint|desktop/i.test(p.device_id || '') ? 'desktop' : 'laptop'} shows "${String(p.screen_title).slice(0, 40)}"`);
+    parts.push(...screens);
+    const look = getCurrentSnapshot(context.org_id || null)?.signals?.world_context;
+    if (look?.description && (look.age_ms ?? Infinity) < 15 * 60_000) {
+      parts.push(`the phone camera saw ${String(look.description).slice(0, 70)} ${Math.max(1, Math.round(look.age_ms / 60_000))} min ago`);
+    }
+    const cs = getConversationState(org);
+    if (cs?.topic && cs.distilled_at && now - cs.distilled_at < 10 * 60_000) parts.push(`the talk is about ${String(cs.topic).slice(0, 50)}`);
+    const room = getConversationBuffer(org).filter(u => u.source === 'room' && now - u.at < 2 * 60_000).length;
+    if (room >= 2) parts.push('other voices nearby (TV or people)');
+    return parts.length ? `Situation (background only, never read it out): ${parts.join('; ')}.` : '';
   } catch { return ''; }
 }
 
@@ -403,6 +449,18 @@ function looksVisual(text) {
   return !/\b(song|track|music|playlist|server|page|website|app|message|terminal|code|idea|logic|game|thread|email|meeting)\b|\bthat'?s (right|wrong|true)\b|\blet'?s see\b/.test(t);
 }
 
+// HELP WHEN HE IS STUCK (the owner, 2026-11-02: "you're thinking of something and you can't remember
+// it. It should be able to recognize that and be like, oh, let me just tell him... based on if he
+// wants me to or doesn't"). The phone marks a turn `unfinished` when he stopped mid-sentence and
+// its 1.4 s wait for the rest ran out. If the words so far end like a search for a word or a name
+// ("that film with the dreams inside dreams, the..."), a friend offers it as a question
+// ("Inception?") and lets him carry on; finishing someone's sentence is an ordinary move in
+// recorded conversation. Setting voice_interject: 'off' = stay quiet and wait for the rest,
+// anything else = offer it. Only word-search endings: Smart Turn also calls some whole questions
+// unfinished ("what colour did I say the fence will be", voicebench 2026-11-02), and those are
+// answered as usual. Speech recognisers drop most "uh"s, so the trailing article carries it.
+const WORD_SEARCH = /\b(?:the|a|an|that|this|his|her|their|my|your|with|called|named|uh|um|er|erm)[\s.,?!-]*$|\bwhat(?:'?s| is| was) (?:it|that|the|his|her|their) (?:called|word|name|thing)\b|\b(?:forget|forgot|can'?t remember|cannot remember)\b|\btip of my tongue\b|\byou know the one\b/i;
+
 // Standing instructions: "translate everything I say into Japanese from now on". Before this,
 // the request only lived in the history lines, and the next turn answered in English. Kept
 // per device until he cancels it or STANDING_TTL_MS passes, and repeated on every turn.
@@ -446,9 +504,15 @@ function quickAmbientCheck(text) {
   // 3. "I'll be there / meet you / call you back" — talking to someone else
   if (/^I'(?:ll|m)\s+(?:be\s+there|meet\s+you|call\s+you\s+back|see\s+you)/i.test(t)) return true;
   // 4. Name + "I'll meet/be/call" — "Sarah I'll meet you..."
-  if (/^[A-Z][a-z]+\s+I'(?:ll|m)\s+/i.test(t)) return true;
+  //
+  // Only with the same talking-to-someone phrases as rule 3. It used to be any
+  // "<Word> I'm/I'll ..." under the i flag, so "So I'm thinking we should redo the
+  // pendant" and "Honestly I'm exhausted" never reached the model (voice plan,
+  // phase 1). A sentence-initial word cannot be told from a name by shape alone.
+  const TO_SOMEONE = String.raw`(?:be\s+there|meet\s+you|call\s+you(?:\s+back)?|see\s+you|on\s+my\s+way)`;
+  if (new RegExp(String.raw`^[a-z]+[,.]?\s+I'(?:ll|m)\s+` + TO_SOMEONE, 'i').test(t)) return true;
   // 5. Filler acknowledgement followed by "call/meet/be" — "ok I'll call you back"
-  if (/^(?:ok|okay|alright|yeah|sure|cool|got\s*it)[,.]?\s+I'(?:ll|m)\s+/i.test(t)) return true;
+  if (new RegExp(String.raw`^(?:ok|okay|alright|yeah|sure|cool|got\s*it)[,.]?\s+I'(?:ll|m)\s+` + TO_SOMEONE, 'i').test(t)) return true;
   return false;
 }
 
@@ -803,8 +867,10 @@ ${memoryContext}`,
       // Life Needs side-channel — scan utterance for meal/hunger phrases
       // regardless of intent (ambient mention of "just had lunch" still moves
       // Nourishment). Cheap regex; failures are non-fatal.
-      try { noteMealMention(text || '', { source: context?.source || null, intent }); } catch {}
-      try { noteSignalsInUtterance(text || '', { source: context?.source || null, intent }); } catch {}
+      if (!isBench()) {
+        try { noteMealMention(text || '', { source: context?.source || null, intent }); } catch {}
+        try { noteSignalsInUtterance(text || '', { source: context?.source || null, intent }); } catch {}
+      }
       if (intent === 'ambient') {
         // Ambient interjection — when the model decided this ambient utterance
         // warrants speaking up (safety / correction / volunteer / time-critical),
@@ -1042,7 +1108,7 @@ async function processUnifiedResult(action, text, context) {
       // Per-machine sessions build their own profiles over time (file paths,
       // app habits, favorites) because each uses `claude --continue` with
       // that machine's local Claude Code memory.
-      if (context?.source && /benchmark|regression/.test(context.source)) {
+      if (isTestTurn(context)) {
         return { intent: 'claude_control', speech_act, response: '[benchmark: claude-control routing verified — no PTY touched]' };
       }
       try {
@@ -1121,7 +1187,7 @@ async function processUnifiedResult(action, text, context) {
       //
       // Benchmark/test sources must NEVER touch a real user session — they would
       // inject messages into the active terminal, cost money, and corrupt history.
-      if (context?.source && /benchmark|regression/.test(context.source)) {
+      if (isTestTurn(context)) {
         return { intent: 'task', speech_act, response: '[benchmark: task routing verified — no session touched]' };
       }
       try {
@@ -1431,7 +1497,7 @@ async function processUnifiedResult(action, text, context) {
 
     case 'memory': {
       if (action.action === 'save') {
-        insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at, org_id)
+        if (!isBench()) insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at, org_id)
           VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'), :org_id)`, {
           ':type': action.item_type || 'note',
           ':content': action.content || text,
@@ -1480,7 +1546,7 @@ async function processUnifiedResult(action, text, context) {
     }
 
     case 'calendar': {
-      insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at, org_id)
+      if (!isBench()) insert(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at, org_id)
         VALUES (:type, :content, :ctx, 1.0, datetime('now','localtime'), :org_id)`, {
         ':type': 'calendar_event',
         ':content': text,
@@ -1635,7 +1701,7 @@ async function handleCorrectionIfNeeded(text, context, activeDevices) {
   if (!targetDevice) return null;
 
   // Save preference so we never ask again
-  learnCorrection(last.action_type, targetDevice, targetApp, context.org_id || 'org_personal', context.user_id || null);
+  if (!isBench()) learnCorrection(last.action_type, targetDevice, targetApp, context.org_id || 'org_personal', context.user_id || null);
 
   // Update last action
   if (session_id) setLastAction(session_id, last.action_type, targetDevice, targetApp, text);
@@ -1659,13 +1725,20 @@ async function handleCorrectionIfNeeded(text, context, activeDevices) {
 // trusted to pick a thread name out of a sentence, and a wrong guess here
 // would put words in a real working thread. Returns null when the utterance is
 // not about threads. Benchmarks get the parse but never touch a real thread.
+// A benchmark or regression source, or a bench turn from /query/stream (device "<id>-bench"),
+// must never reach a real session or thread. The bench form was missed: a hub test of "can you
+// see what my PC stuff thread is doing" went through the relay to his real thread (2026-11-03).
+function isTestTurn(context) {
+  return !!((context?.source && /benchmark|regression/.test(context.source)) || /-bench$/.test(String(context?.device_id || '')));
+}
+
 async function* _threadRelayFastPath(text, context) {
   let tr;
   try { tr = await import('./thread-relay.js'); } catch (e) { console.warn('[PAN Router] thread-relay unavailable:', e.message); return; }
   let cmd;
   try { cmd = tr.parseThreadCommand(text); } catch (e) { console.warn('[PAN Router] thread parse failed:', e.message); return; }
   if (!cmd) return;
-  if (context?.source && /benchmark|regression/.test(context.source)) {
+  if (isTestTurn(context)) {
     const response = `[benchmark: thread relay parsed ${cmd.kind}${cmd.thread ? ' -> ' + cmd.thread.title : ''} — no thread touched]`;
     yield { type: 'chunk', text: response };
     yield { type: 'done', result: { intent: 'thread', speech_act: 'command', response, thread_parse: { kind: cmd.kind, title: cmd.thread?.title || null, text: cmd.text || null } } };
@@ -1916,6 +1989,12 @@ function topLevelJsonEnd(buf) {
 }
 
 function readAddressGate(buf) {
+  // OmniΠ's first field says who a line is for. Answer-first OmniΠ (round 9) writes the reply
+  // straight after it, with addressed/intent AFTER the reply, so waiting for those held the whole
+  // answer back. "to" decides on its own: in 4,659 teacher labels "pan" always came with
+  // addressed 0.9-1.0 and everything else with 0-0.1.
+  const to = buf.match(/^\s*\{\s*"to"\s*:\s*"([a-z_]+)"/);
+  if (to) return to[1] === 'pan' ? { gate: 'open', addressed: 0.9 } : { gate: 'mute', addressed: 0.05 };
   const im = buf.match(/"intent"\s*:\s*"([a-z_]+)"/);
   if (!im) return null;                       // nothing decided yet
   // The trailing [,}] matters: without it a half-streamed "addressed":0 reads
@@ -1965,6 +2044,57 @@ function extractResponseField(buf) {
     }
   }
   return { text, done: false };
+}
+
+// FEWER TACKED-ON QUESTIONS.
+//
+// 47 of 66 benchmark replies ended with a question, nearly all of them an answer
+// with "Are you looking for A or B?" tacked on (voicebench, 2026-11-02). The owner: it
+// should ask some, but talk like a person. Conversational replies lose that last
+// question with the regexes and coin of the round 9 training data (F:\pan-finetune\
+// scripts\answer_first.py): an offer, a menu or a "why are you asking" 9 times in
+// 10, any other question 7 times in 10 (the data keeps 6 in 10 of those; the live
+// model asks more). A reply that IS a question keeps it, and the coin is a hash
+// of the reply, so the same reply always gets the same cut. What is left after
+// this is mostly one-sentence ask-backs ("I can give you the height, but in
+// meters or feet?"), which only the retrain can fix: cutting those would leave
+// a promise unkept.
+//
+// Syrinx (round 9, 2026-11-03) was trained to ask about as often as people do (8% of
+// replies when he asks, 15% when he tells: Switchboard), and ends 6% of its replies
+// with a question on the test sets against OmniΠ's 89%. Only menus and offers are
+// still cut; any other closing question is a real follow-up and stays.
+const SENTENCE_GAP = /(?<=[.!?])\s+(?=[A-Z0-9"'(])/g;
+const TRAILING_MENU = /^(?:want me to|do you want|would you like|should i|shall i|are you looking|are you thinking|are you asking|is that what|why (?:are|do) you (?:ask|want|need)|or (?:do|are|should|would))|\bor\b.*\?$/i;
+const KEEP_MENU_Q = 0.1, KEEP_OTHER_Q = 1.0;
+
+function lastSentenceGap(text) {
+  let gap = null;
+  for (const m of text.matchAll(SENTENCE_GAP)) gap = m;
+  return gap;
+}
+
+// Where the kept part of a reply ends (its last question is dropped), or -1 to keep it all.
+function trailingQuestionCut(reply, intent) {
+  const r = String(reply || '').trim();
+  if (intent !== 'query' || r.startsWith('[') || !r.endsWith('?')) return -1;
+  const gap = lastSentenceGap(r);
+  if (!gap) return -1;
+  const p = TRAILING_MENU.test(r.slice(gap.index + gap[0].length)) ? KEEP_MENU_Q : KEEP_OTHER_Q;
+  const coin = parseInt(createHash('md5').update(r, 'utf8').digest('hex').slice(0, 8), 16) / 0xFFFFFFFF;
+  return coin < p ? -1 : gap.index;
+}
+
+// How much of a streaming reply may go to the speaker yet. The first sentence
+// streams as it is written. A later one goes out whole once it ends in . or !,
+// and a question once the next sentence starts, because a question with nothing
+// after it may be cut. The phone speaks a later sentence only at its full stop
+// anyway, so this holds nothing it would have said sooner.
+function releasableEnd(held) {
+  const gap = lastSentenceGap(held);
+  const end = held.trimEnd().length;
+  if (!gap) return end;
+  return /[.!]["')\]]*$/.test(held.trimEnd()) ? end : gap.index;
 }
 
 // De-dupe latch for voice/router-turn failure alerts. When every AI backend
@@ -2038,10 +2168,6 @@ export async function* routeStream(text, context = {}) {
     return;
   }
 
-  // Build the same prompt handleUnified builds, then stream it
-  const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
-  const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
-
   // #NEW-1: intent-gated memory lookup (mirror of handleUnified). Pure
   // conversation never touches FTS5/vector; only explicit recall sniff does.
   let memoryContext = '';
@@ -2111,6 +2237,10 @@ export async function* routeStream(text, context = {}) {
     if (memResults.length > 0) {
       const head = when ? `\nHis own notes from ${when.label}:` : `\nRelevant memories:`;
       memoryContext = `${head}\n${memResults.map(r => `- ${(r.event && r.event.created_at ? r.event.created_at.slice(11, 16) + ' ' : '')}${String(r.preview).replace(/[\s]+/g, ' ').slice(0, 150)}`).join('\n')}`;
+    } else if (!when && _historyMentions(text, context.conversation_history)) {
+      // It is in the conversation he is having right now, which the model is given
+      // below. No memory block: "found nothing, say so" would make it refuse.
+      memoryContext = '';
     } else if (when || OWN_HISTORY_RE.test(text)) {
       // ANSWER THIS IN CODE. Do not ask the model.
       //
@@ -2152,21 +2282,17 @@ export async function* routeStream(text, context = {}) {
   // recentMind is PAN's own interior monologue ('Holding - no reason to
   // interrupt'). It is useful for deciding whether to speak UNPROMPTED; it is
   // noise when answering a direct question, and it was 404 chars of it.
-  const situationBlock = buildSituationBlock(context.org_id);
-  const recentMindBlock = '';
-  const convStateBlock  = buildConvStateBlock(context.org_id);
-  const dialogHistoryBlock     = buildDialogHistoryBlock(context.session_id || null, true);
-  const dialogStateBlock       = buildDialogStateBlock(context.session_id || null);
-  const activeTasksBlock       = buildActiveTasksBlock();
-  const recentTopicsBlock      = buildRecentTopicsBlock();
-  const dismissalFeedbackBlock = buildDismissalFeedbackBlock();
-  const memoryFactsBlock       = buildMemoryFactsBlock();
-  const episodicHitsBlock      = buildEpisodicHitsBlock();
-
   const historyBlock = context.conversation_history
     ? `\nRecent conversation:\n${context.conversation_history}\n` : '';
 
   const standing = standingInstruction(context.device_id || 'default', text);
+  // He stopped mid-sentence reaching for a word (see WORD_SEARCH).
+  const wordSearch = !!context.unfinished && !standing && WORD_SEARCH.test(String(text).trim());
+  let interject = 'stuck';
+  if (wordSearch) {
+    try { interject = String(get("SELECT value FROM settings WHERE key = 'voice_interject'")?.value || '').replace(/^"|"$/g, '').trim() || 'stuck'; } catch {}
+    console.log(`[routeStream] word search (voice_interject=${interject}): ${JSON.stringify(String(text).slice(-60))}`);
+  }
   const standingBlock = standing
     ? `\nStanding instruction he gave at ${new Date(standing.at).toTimeString().slice(0, 5)}. Follow it on EVERY reply until he cancels it: "${standing.text}"\n`
     : '';
@@ -2181,10 +2307,6 @@ export async function* routeStream(text, context = {}) {
     if (parts.length > 0) sensorBlock = `\nUser's current sensor readings: ${parts.join(' | ')}\n`;
   }
 
-  let personality = '';
-  try { const row = get("SELECT value FROM settings WHERE key = 'personality'"); if (row) personality = row.value.replace(/^"|"$/g, '').trim(); } catch {}
-  const personalityBlock = personality ? `\nPersonality: ${personality}\nAlways stay in character.` : '';
-
   const hintBlock = context.intent_hint
     ? `\nOVERRIDE: Server pattern matched — your response MUST use {"intent":"${context.intent_hint}",...}.\n` : '';
 
@@ -2194,8 +2316,14 @@ export async function* routeStream(text, context = {}) {
   // Real forecast data when the question is about weather. Returns an empty
   // string for anything else, when GPS is unknown, or if the API is slow - it
   // has a hard 3s timeout because this runs inline on a voice turn.
+  // The voice student (see below), read before the tools: with it on, only live tools run.
+  // It never sees the others, and a Wikipedia lookup it could not use cost ~1 s on "tell me
+  // about the history of the Roman empire" (hub voicebench, 2026-11-03).
+  let studentModel = '';
+  try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
   let weatherBlock = '';
-  try { weatherBlock = await buildToolBlocks(text, sensors); } catch {}
+  let liveData = false;   // a block holds data that changes (weather, prices, news, a clock)
+  try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel })); } catch {}
   // selfBlock is 1030 chars describing which model is running, what is
   // local, what leaves the house. It is the right answer to "how do you
   // work" / "is this private" and dead weight on every other turn, which
@@ -2203,10 +2331,12 @@ export async function* routeStream(text, context = {}) {
   // always - it is a live read, so nothing goes stale by being skipped.
   let selfBlock = '';
   let selfAsked = false;
+  let identityAsked = false;   // who he is / who PAN is: answered by the cloud model, see selfPrompt
   try {
     const _self = buildSelfBlock();
+    identityAsked = /\b(?:who are you|what are you(?=\W*$)|your name|(?:what(?:'s|s| is)|know|remember|say|tell me) my name|what my name is|name of (?:that|the|this) person|who am i(?=\W*$)|who (?:made|built) you|(?:what|which) (?:app|application)|(?:am i|you are|you're) talking to|how am i talking to you|(?:pan|thread) relay|the relay (?:for|do))/i.test(String(text || ''));
     // modo/motto/modal: how the phone's speech-to-text has heard "model".
-    if (/\b(model|models|modo|motto|modal|local|locally|offline|cloud|private|privacy|secure|encrypt|how do you work|how you work|what are you running|your config|leave the house|sent anywhere|listening)\b/i.test(String(text || ''))) {
+    if (identityAsked || /\b(model|models|modo|motto|modal|local|locally|offline|cloud|private|privacy|secure|encrypt|how do you work|how you work|what are you running|your config|leave the house|sent anywhere|listening)\b/i.test(String(text || ''))) {
       selfBlock = _self;
       selfAsked = true;
     } else {
@@ -2227,6 +2357,25 @@ export async function* routeStream(text, context = {}) {
   // everything else, so make length follow the moment instead of fixing it.
   // This block is constant and sits at the FRONT, so it is a cache hit and
   // costs effectively nothing per turn.
+  // The full prompt is only read when OmniΠ is off or falls back, and its context blocks are
+  // a dozen DB reads that used to run on every turn, inside the ~0.2 s "setup" before OmniΠ
+  // started (voicebench, 2026-11-02). Built on demand now.
+  const fullPrompt = () => {
+  const projects = allScoped(null, "SELECT name, path FROM projects WHERE org_id = :org_id ORDER BY name");
+  const projectList = projects.map(p => `- ${p.name}: ${p.path.replace(/\//g, '\\')}`).join('\n');
+  const situationBlock = buildSituationBlock(context.org_id);
+  const recentMindBlock = '';
+  const convStateBlock  = buildConvStateBlock(context.org_id);
+  const dialogHistoryBlock     = buildDialogHistoryBlock(context.session_id || null, true);
+  const dialogStateBlock       = buildDialogStateBlock(context.session_id || null);
+  const activeTasksBlock       = buildActiveTasksBlock();
+  const recentTopicsBlock      = buildRecentTopicsBlock();
+  const dismissalFeedbackBlock = buildDismissalFeedbackBlock();
+  const memoryFactsBlock       = buildMemoryFactsBlock();
+  const episodicHitsBlock      = buildEpisodicHitsBlock();
+  let personality = '';
+  try { const row = get("SELECT value FROM settings WHERE key = 'personality'"); if (row) personality = row.value.replace(/^"|"$/g, '').trim(); } catch {}
+  const personalityBlock = personality ? `\nPersonality: ${personality}\nAlways stay in character.` : '';
   const prompt = `You are PAN, talking with him out loud. This is a conversation, not a lookup service.
 
 Length follows the moment. A word is fine when a word is enough. Three or four sentences when he
@@ -2374,6 +2523,8 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // blocks are prepended before anything the user said. Logged so it is
   // visible when it grows.
   console.log(`[routeStream] prompt ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens) addr=${prompt.includes(String.fromCharCode(34) + 'addressed' + String.fromCharCode(34))}`);
+  return prompt;
+  };
 
   const model = getConfiguredModel ? getConfiguredModel() : 'cerebras:qwen-3-235b';
 
@@ -2384,10 +2535,8 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // If it cannot be reached, the turn falls back to the full prompt on the normal chain.
   // A [CAMERA] reply becomes a photo only when the phone can take one (can_camera) and the
   // line passes looksVisual; otherwise it falls back too, because OmniΠ still reads some
-  // "this/that" lines as needing a look.
-  let studentModel = '';
+  // "this/that" lines as needing a look. (studentModel is read above, before the tools.)
   let cameraAsk = false;
-  try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
   // OmniΠ does not follow standing instructions even when handed one (tested: still answered
   // in English). gemma4:e2b does, but only in a SHORT prompt: inside the ~3,000-token voice
   // prompt it answered in English, after 37s on the hub CPU. 1.2s and correct like this.
@@ -2397,17 +2546,67 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     `Standing instruction he gave at ${new Date(standing.at).toTimeString().slice(0, 5)}: "${standing.text}". Apply it to what he says now: "response" is exactly what that instruction asks for (for "translate what I say", only the translation of his words).`,
     `Mic heard: "${safeText}"`,
   ].filter(Boolean).join('\n\n') : '';
+  // Same short-prompt route for a word search: OmniΠ was never taught to finish his sentence.
+  // Knowledge decides it, so the voice chain's cloud model goes first, with only the last few
+  // lines of talk: gemma4:e2b offered "Rembrandt?" for the Dutch painter who cut off his ear.
+  // What is going on around him (buildSituationLine). The cloud short prompts always get it;
+  // Syrinx only with voice_situation 'on', since it was never trained with the line.
+  const situationLine = buildSituationLine(context);
+  // Given it on every turn (hub bench, 2026-11-03), Syrinx used it well when asked ("You're in
+  // Firefox, working on a map creation project" against "I don't have a record") but called
+  // "How's it going?" room talk. So until a retrain includes the line: only when he asks about
+  // what he is doing, where, or what to do, unless voice_situation is 'on'.
+  let situationForStudent = /\b(?:what am i (?:doing|working on|up to|looking at)|what(?:'s| is) on my (?:screen|desktop|computer|laptop)|where am i|what should i (?:do|have|eat|work on|make)|what do you think i should|any (?:thoughts|ideas) on what|can you see what i|what (?:are|were) we talking about)\b/i.test(String(text || ''));
+  try { situationForStudent = situationForStudent || /^on$/i.test(String(get("SELECT value FROM settings WHERE key = 'voice_situation'")?.value || '').replace(/^"|"$/g, '').trim()); } catch {}
+  const wordSearchPrompt = wordSearch ? [
+    'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+    context.conversation_history ? `Recent conversation:\n${String(context.conversation_history).trim().split('\n').slice(-6).join('\n')}` : '', nowLine(), situationLine,
+    `He stopped mid-sentence, reaching for a word or a name: "${safeText}". If you are confident which word or name he means, "response" is only that word or name with a question mark, the way a friend helps out ("Inception?"). If you are not sure, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"} and let him find it.`,
+  ].filter(Boolean).join('\n\n') : '';
+  // The student was trained without tool output and is never shown it, so a turn that
+  // fetched live data was answered from its own head: "I can't get the weather for
+  // your city, your GPS is off", with the forecast sitting unused. Such a turn gets a
+  // short prompt with the data, cloud first as for a word search: reading a few hundred
+  // tokens of data takes the local model ~3 s on the hub CPU.
+  const toolPrompt = studentModel && liveData && weatherBlock ? [
+    'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+    historyBlock.trim(), nowLine(), situationLine, weatherBlock.trim(),
+    `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
+    'Answer from the data above, briefly, the way you would say it out loud; if his words are not asking for it, answer what he did say. If he was not talking to you (the TV, someone else in the room), reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.',
+  ].filter(Boolean).join('\n\n') : '';
+  // Who he is and who PAN is. Syrinx, given the self line, still answered "what's my name?"
+  // with "I'm not sure" and "who are you?" with "the Liquid Foundation Model family", and said
+  // "his phone" to him (2026-11-03). Rare turns, so the cloud model takes them, as above.
+  const selfPrompt = studentModel && identityAsked ? [
+    'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+    historyBlock.trim(), buildSelfLine(), nowLine(), situationLine,
+    `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
+    'Answer in one or two short spoken sentences, talking to him as "you". If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.',
+  ].filter(Boolean).join('\n\n') : '';
+  const cloudFirst = () => {
+    const chain = readChain('voice');
+    return [...chain.filter((m) => !m.startsWith('ollama:')), ...chain.filter((m) => m.startsWith('ollama:'))];
+  };
   // Asked how PAN works or what model it runs, OmniΠ gets one line of live facts (buildSelfLine);
   // without them it asked back "what hub do you mean?", and the full block confused it.
-  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(),
+  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(), situationForStudent ? situationLine : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
   async function* voiceStream() {
     if (standing) { yield* askAIStreamWithFallback(standingPrompt, streamOpts); return; }
+    if (wordSearch) { yield* askAIStreamWithFallback(wordSearchPrompt, { ...streamOpts, chain: cloudFirst() }); return; }
+    if (toolPrompt) {
+      console.log(`[routeStream] live data (${weatherBlock.length} chars) - short prompt instead of ${studentModel}`);
+      yield* askAIStreamWithFallback(toolPrompt, { ...streamOpts, chain: cloudFirst() });
+      return;
+    }
+    if (selfPrompt) { yield* askAIStreamWithFallback(selfPrompt, { ...streamOpts, chain: cloudFirst() }); return; }
     if (studentModel) {
       // Where a turn's time goes, before and after the model: setup is everything above
       // (prompt blocks, memory), first is the model's first chunk.
-      console.log(`[routeStream] timing setup=${Date.now() - _turnStart}ms student_prompt=${studentPrompt.length} chars`);
+      console.log(`[routeStream] timing setup=${Date.now() - _turnStart}ms student_prompt=${studentPrompt.length} chars situation=${situationForStudent ? situationLine.length : 'off'}`);
+      if (String(context.device_id || '').endsWith('-bench') && situationLine) console.log(`[routeStream] situation: ${situationLine}`);
+      recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'setup', ms: Date.now() - _turnStart, prompt_chars: studentPrompt.length, model: studentModel });
       const _modelStart = Date.now();
       let _firstLogged = false;
       let got = false;
@@ -2416,7 +2615,11 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       try {
         for await (const c of askAIStreamWithFallback(studentPrompt, { ...streamOpts, chain: [studentModel] })) {
           got = true;
-          if (!_firstLogged) { _firstLogged = true; console.log(`[routeStream] timing first_chunk=${Date.now() - _modelStart}ms`); }
+          if (!_firstLogged) {
+            _firstLogged = true;
+            console.log(`[routeStream] timing first_chunk=${Date.now() - _modelStart}ms`);
+            recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'first_chunk', ms: Date.now() - _modelStart });
+          }
           if (head === null) { yield c; continue; }
           head += c;
           const r = head.match(/"response"\s*:\s*"([\s\S]*)/)?.[1] || '';
@@ -2431,13 +2634,42 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           return;
         }
         if (context.canCamera && looksVisual(text)) { cameraAsk = true; return; }
-        console.log(`[routeStream] ${studentModel} asked for the camera - full prompt instead`);
+        // A [CAMERA] on a line that needs no look ("should I bring a jacket if it is
+        // windy", "is it better to water plants in the morning") used to drop straight
+        // to the full prompt: 34-36 s of silence on the hub CPU (voicebench,
+        // 2026-11-02). Ask OmniΠ once more with the camera ruled out; only a second
+        // [CAMERA] pays for the full prompt.
+        console.log(`[routeStream] ${studentModel} asked for the camera - asking again without it`);
+        let head2 = '';
+        let camera2 = false;
+        for await (const c of askAIStreamWithFallback(`${studentPrompt}\n\n(No camera for this one: answer from his words alone.)`, { ...streamOpts, chain: [studentModel] })) {
+          if (head2 === null) { yield c; continue; }
+          head2 += c;
+          const r = head2.match(/"response"\s*:\s*"([\s\S]*)/)?.[1] || '';
+          if (!r || (r.startsWith('[') && r.length < 3)) continue;
+          if (r.startsWith('[CA')) { camera2 = true; break; }
+          yield head2;
+          head2 = null;
+        }
+        if (!camera2) {
+          if (head2) yield head2;
+          return;
+        }
+        console.log(`[routeStream] ${studentModel} asked for the camera twice - full prompt instead`);
       } catch (e) {
         if (got && head === null) throw e;
         console.warn(`[routeStream] ${studentModel} unavailable (${e.message}) - full prompt instead`);
       }
     }
-    yield* askAIStreamWithFallback(prompt, streamOpts);
+    yield* askAIStreamWithFallback(fullPrompt(), streamOpts);
+  }
+
+  if (wordSearch && interject === 'off') {
+    // He does not want help finding words: say nothing, and the phone joins the rest of his
+    // sentence onto this piece (carry_on) because PAN never started talking.
+    yield { type: 'chunk', text: '' };
+    yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.1, importance: 0.1 }) };
+    return;
   }
 
   let fullBuf = '';
@@ -2448,6 +2680,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let gate = null;      // null = undecided, so early words are buffered not spoken
   let sawEnd = false;   // response string closed; keep reading for the tail
   let addressed = null;
+  let spokenReply = null; // the reply minus a dropped trailing question, when one was dropped
 
   try {
     // #996: streaming fallback wrapper. Connect-time failures cascade through
@@ -2469,9 +2702,12 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       if (gate === 'open' && held.length > lastLen && !held.startsWith('[')) {
         // lastLen still advances by the RAW length, so the stream position stays
         // correct; only what gets spoken is filtered.
-        const delta = speakable(held.slice(lastLen));
-        lastLen = held.length;
-        if (delta) yield { type: 'chunk', text: delta };
+        const end = releasableEnd(held);
+        if (end > lastLen) {
+          const delta = speakable(held.slice(lastLen, end));
+          lastLen = end;
+          if (delta) yield { type: 'chunk', text: delta };
+        }
       }
       // Stop at the closing BRACE, not at the closing quote and not at the
       // model's own stop token.
@@ -2511,6 +2747,19 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       // not ambient - speak what it said rather than swallowing the turn.
       console.warn('[routeStream] no intent in stream — gate defaulted open');
       gate = 'open';
+    } else if (gate === 'open' && held.length > lastLen && !held.startsWith('[')) {
+      // The stream is over, so what is still held is the reply's last sentence.
+      // Answer-first OmniΠ writes intent after the reply, so it is read here.
+      const cut = trailingQuestionCut(held, fullBuf.match(/"intent"\s*:\s*"([a-z_]+)"/)?.[1]);
+      // Only if none of the question has gone out yet.
+      const drop = cut >= 0 && !held.slice(cut, lastLen).trim();
+      if (drop) {
+        console.log(`[routeStream] dropped trailing question: ${JSON.stringify(held.slice(cut).trim().slice(0, 80))}`);
+        spokenReply = held.slice(0, cut).trim();
+      }
+      const delta = speakable(held.slice(lastLen, drop ? Math.max(cut, lastLen) : held.length));
+      lastLen = held.length;
+      if (delta.trim()) yield { type: 'chunk', text: delta };
     }
   } catch (e) {
     console.error('[routeStream] LLM error:', e.message);
@@ -2543,6 +2792,30 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // model's own confidence, so it reopens the gate too. `held` was
         // kept through the mute for exactly this.
         gate = 'open';
+        // But the reply was the ambient marker, so there was nothing to say: "Hey Pan, what
+        // kind of horse is that?" got silence three times running (2026-11-03). Only when he
+        // used its name, since a question on the TV ends in "?" too: look if it is about
+        // something in view, else let the cloud model answer.
+        const said = speakable(String(held || parsed.response || '')).trim();
+        const named = /^(?:hey|hi|hello|ok|okay|yo)?[,\s]*(?:pan|pam)\b|\b(?:pan|pam)[\s?.!]*$/i.test(String(text || '').trim());
+        if ((!said || said.startsWith('[')) && named) {
+          if (context.canCamera && looksVisual(text)) {
+            console.log(`[routeStream] override -> camera: ${JSON.stringify(String(text).slice(0, 60))}`);
+            yield { type: 'done', result: withProsody({ intent: 'query', addressed: 0.95, camera: true, response: '', importance: 0.5 }) };
+            return;
+          }
+          const directPrompt = [
+            'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+            historyBlock.trim(), nowLine(), situationLine,
+            `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
+            'He said your name, so he is talking to you: answer him briefly, the way you would say it out loud.',
+          ].filter(Boolean).join('\n\n');
+          let again = '';
+          for await (const c of askAIStreamWithFallback(directPrompt, { ...streamOpts, chain: cloudFirst() })) again += c;
+          const r = (again.match(/"response"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] || '').replace(/\\"/g, '"').trim();
+          console.log(`[routeStream] override re-asked the cloud model: ${JSON.stringify(r.slice(0, 80))}`);
+          if (r && !r.startsWith('[')) parsed.response = r;
+        }
       }
       // If Claude classified this as a memory recall, execute the real DB search —
       // routeStream doesn't call processUnifiedResult so we must do it here.
@@ -2629,7 +2902,9 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // the phone the words plus how long to sit on them: it speaks if the
         // room goes quiet and drops them if he carries on talking.
         // Same filter as the streamed path - this text is spoken too.
-        const heldText = speakable(String(held || parsed.response || '')).trim();
+        let heldText = speakable(String(held || parsed.response || '')).trim();
+        const heldCut = trailingQuestionCut(heldText, parsed.intent);
+        if (heldCut >= 0) heldText = heldText.slice(0, heldCut).trim();
         // A hold is only worth anything if there is something to say. When the
         // model decided ambient it writes the "[AMBIENT]" placeholder, and
         // holding a placeholder just delays silence - so treat that as a mute.
@@ -2643,7 +2918,14 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         return;
       }
 
-      yield { type: 'done', result: withProsody({ ...parsed, addressed, response: parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : '') }) };
+      // The phone keeps this as PAN's line in the history, so it is what was actually said.
+      let reply = spokenReply ?? (parsed.response || (lastLen > 0 ? fullBuf.slice(fullBuf.indexOf('"response":"') + 12).split('"')[0] : ''));
+      if (spokenReply === null && lastLen === 0) {
+        // Nothing streamed (the ambient veto reopened the gate): the phone speaks this text.
+        const c = trailingQuestionCut(reply, parsed.intent);
+        if (c >= 0) reply = reply.slice(0, c).trim();
+      }
+      yield { type: 'done', result: withProsody({ ...parsed, addressed, response: reply }) };
     } else {
       yield { type: 'done', result: withProsody({ intent: 'query', response: "I didn't catch that — could you try again?", importance: 0.4 }) };
     }

@@ -486,13 +486,23 @@ export function parseThreadCommand(utterance) {
 
   const last = LAST_REPLY.exec(text);
   if (last) {
-    const name = last[1];
-    const m = /^(?:it|that|they)$/i.test(name.trim()) ? null : matchThread(name, threads);
-    const job = m?.ok
-      ? get(`SELECT * FROM thread_relay_jobs WHERE session_id = :s AND status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`, { ':s': m.thread.session_id })
-      : get(`SELECT * FROM thread_relay_jobs WHERE status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`);
-    if (job) return { kind: 'last', job };
-    if (m?.ok || /thread|session/i.test(text)) return { kind: 'last', job: null };
+    // Only a named thread, "thread"/"session" said out loud, or it/that/they while the last
+    // relay exchange is fresh. Any other name fell through to the newest relay job, so "what
+    // did I say the dog is called" was answered with another thread's reply (voicebench,
+    // 2026-11-02). A person ("I", "you", "she") is never a thread.
+    const name = last[1].trim();
+    const pronoun = /^(?:it|that|they)$/i.test(name);
+    const anchored = /\b(?:thread|session)\b/i.test(text);
+    const m = pronoun || /^(?:i|you|we|he|she)$/i.test(name) ? null : matchThread(name, threads);
+    if (m?.ok) {
+      const job = get(`SELECT * FROM thread_relay_jobs WHERE session_id = :s AND status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`, { ':s': m.thread.session_id });
+      return { kind: 'last', job: job || null };
+    }
+    if (pronoun || anchored) {
+      const job = get(`SELECT * FROM thread_relay_jobs WHERE status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`);
+      if (job && (anchored || Date.now() - job.created_at < FOLLOWUP_WINDOW_MS)) return { kind: 'last', job };
+      if (anchored) return { kind: 'last', job: null };
+    }
   }
 
   if (_pendingChoice && Date.now() - _pendingChoice.at < CHOICE_WINDOW_MS && text.split(/\s+/).length <= 6) {

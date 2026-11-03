@@ -71,7 +71,9 @@ function _orgSlot(orgId) {
  * Triggers a debounced distill ~500ms after each Final. Partials just
  * append to the buffer (cheap) so the next distill has them.
  */
-export function noteUtterance({ orgId = 'org_personal', text, isFinal = true, source = 'unknown', deviceId = null } = {}) {
+// distill: false files a final line without starting a distill (PAN's own reply, or speech
+// it overheard and let pass), so the next real turn's distill sees it at no extra cost.
+export function noteUtterance({ orgId = 'org_personal', text, isFinal = true, source = 'unknown', deviceId = null, distill = isFinal } = {}) {
   if (!text || typeof text !== 'string') return;
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -91,7 +93,7 @@ export function noteUtterance({ orgId = 'org_personal', text, isFinal = true, so
   slot.lastUtteranceAt = Date.now();
 
   // Only Finals trigger a distill. Partials accumulate.
-  if (isFinal) {
+  if (isFinal && distill) {
     if (slot.distillTimer) clearTimeout(slot.distillTimer);
     slot.distillTimer = setTimeout(() => {
       slot.distillTimer = null;
@@ -134,10 +136,14 @@ async function _distill(orgId) {
   // Build prompt
   const recent = slot.utterances.slice(-12);
   const partials = recent.filter(u => !u.isFinal).map(u => `(partial) ${u.text}`);
-  const finals = recent.filter(u => u.isFinal).map(u => u.text);
+  // Voice turns label who spoke: PAN's replies, and speech PAN overheard and let pass.
+  const finals = recent.filter(u => u.isFinal).map(u =>
+    u.source === 'pan' ? `PAN: ${u.text}` : u.source === 'room' ? `(overheard, not to PAN) ${u.text}` : u.text);
 
-  const situationLine = snapshot
-    ? `Where: ${snapshot.where || '?'} · Activity: ${snapshot.activity || '?'} · Focus: ${snapshot.focus || '?'} · Mood: ${snapshot.mood || '?'}`
+  // The snapshot keeps these under `now`; read at the top level they were always '?'.
+  const sn = snapshot?.now || snapshot;
+  const situationLine = sn
+    ? `Where: ${sn.where || '?'} · Activity: ${sn.activity || '?'} · Focus: ${sn.focus || '?'} · Mood: ${sn.mood || '?'}`
     : '(no intuition snapshot yet)';
 
   const thoughtsLine = recentThoughts.length

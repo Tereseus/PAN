@@ -96,7 +96,7 @@ const DEGRADED_WINDOW_MS  = 10 * 60 * 1000;
 const DEGRADED_THRESHOLD  = 3;
 const recentFailures = new Map(); // model -> [ts, ts, ...]
 
-function readChain(callerClass) {
+export function readChain(callerClass) {
   // callerClass: 'voice' | 'background'
   // If `ai_fallback_enabled` is explicitly "false", short-circuit: chain = [current model]
   // → behaves exactly like single-backend askAI (no retries, no degradation event).
