@@ -17,6 +17,10 @@
 //   node relay.js status   ALIVE / DEAD from the hub's heartbeat (exit 0 / 1)
 //   node relay.js threads  what this machine would report
 //   node relay.js scan <job_id>   debug: what reply the transcript gives for a job
+//   node relay.js peek <session_id>   what a status ask would say about a thread
+//
+// Status jobs ("what is the X thread doing") never reach the relay thread:
+// wait answers them from the transcript and keeps polling.
 //
 // Config: ../pan-client-config.json (hub_ws, device_id) or env PAN_HUB_URL,
 // PAN_RELAY_HOST. Optional config key relay_hub_url overrides the hub URL.
@@ -211,6 +215,53 @@ function scanForReply(job) {
   return { state: 'done', reply: reply || '(The thread finished without a text answer.)' };
 }
 
+// "What is the X thread doing?" answered from the transcript tail, so the
+// thread itself is never messaged or interrupted.
+// Spoken aloud, so no paths or raw commands.
+function describeTool(b) {
+  const i = b.input || {};
+  const file = i.file_path ? String(i.file_path).split(/[\\/]/).pop() : '';
+  const verbs = { Edit: 'editing', Write: 'writing', Read: 'reading', NotebookEdit: 'editing' };
+  if (verbs[b.name] && file) return `${verbs[b.name]} ${file}`;
+  if (i.description) return String(i.description).split('\n')[0].slice(0, 100);
+  if (b.name === 'Bash' || b.name === 'PowerShell') return 'running a command';
+  if (/^(?:Grep|Glob)$/.test(b.name)) return 'searching the code';
+  return b.name.replace(/^mcp__[^_]+__/, '').replace(/_/g, ' ');
+}
+function threadStatus(sessionId) {
+  const file = transcriptFor(sessionId);
+  if (!file) return "I couldn't find its transcript.";
+  const { text } = readFrom(file, Math.max(0, statSync(file).size - 2 * 1024 * 1024));
+  let working = false, lastSaid = '', lastTool = null, lastAsk = '';
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type === 'assistant') {
+      working = true;
+      const c = o.message?.content;
+      const said = contentText(c).trim();
+      if (said) lastSaid = said;
+      const tool = Array.isArray(c) ? c.filter(b => b.type === 'tool_use').pop() : null;
+      if (tool) lastTool = tool;
+    } else if (o.type === 'system' && (o.subtype === 'stop_hook_summary' || o.subtype === 'turn_duration')) {
+      working = false; lastTool = null;
+    } else if (o.type === 'user' && !isToolResult(o) && !o.isMeta) {
+      const t = contentText(o.message?.content).trim();
+      if (t && !t.startsWith('<')) { working = true; lastAsk = t; lastTool = null; }
+    }
+  }
+  const ageMin = Math.round((Date.now() - statSync(file).mtimeMs) / 60_000);
+  // A turn with no activity for 10 minutes is not really running (app closed, waiting on a prompt).
+  if (working && ageMin >= 10) working = false;
+  const when = ageMin < 1 ? 'just now' : ageMin < 90 ? `${ageMin} minutes ago` : `${Math.round(ageMin / 60)} hours ago`;
+  const short = s => s.replace(/\s+/g, ' ').slice(0, 300);
+  if (working) {
+    return `It's working right now${lastTool ? `: ${describeTool(lastTool)}` : ''}.`
+      + (lastSaid ? ` Last it said: ${short(lastSaid)}` : lastAsk ? ` It was asked: ${short(lastAsk)}` : '');
+  }
+  return `It's idle, last active ${when}.` + (lastSaid ? ` Last it said: ${short(lastSaid)}` : '');
+}
+
 async function checkReplies() {
   let jobs = [];
   try { jobs = (await api('GET', `/api/v1/threads/jobs?host=${encodeURIComponent(HOST)}&status=delivered`))?.jobs || []; } catch { return; }
@@ -267,6 +318,18 @@ async function waitLoop() {
     let res = null;
     try { res = await api('GET', `/api/v1/threads/jobs/next?host=${encodeURIComponent(HOST)}&wait=25000`, null, 40_000); }
     catch (e) { log(`poll failed: ${e.message}`); await new Promise(r => setTimeout(r, 5000)); continue; }
+    if (res?.job?.kind === 'status') {
+      const j = res.job;
+      try {
+        const say = threadStatus(j.session_id);
+        await api('POST', `/api/v1/threads/jobs/${j.id}/reply`, { text: say });
+        log(`status for ${j.title}: ${say.slice(0, 80)}`);
+      } catch (e) {
+        log(`status ${j.id}: ${e.message}`);
+        try { await api('POST', `/api/v1/threads/jobs/${j.id}/fail`, { error: 'the relay could not read it' }); } catch {}
+      }
+      continue;
+    }
     if (res?.job) {
       // Even if a newer loop took the lock mid-poll, this job is claimed by
       // us now and must be delivered, so print it either way.
@@ -299,8 +362,10 @@ try {
   } else if (cmd === 'scan') {
     const j = await api('GET', `/api/v1/threads/jobs/${args[0]}`);
     console.log(JSON.stringify(scanForReply(j.job), null, 2));
+  } else if (cmd === 'peek') {
+    console.log(threadStatus(args[0]));
   } else {
-    console.log('usage: relay.js wait | ack <job> <delivered|queued> [message_id] | fail <job> <reason> | status | threads | scan <job>');
+    console.log('usage: relay.js wait | ack <job> <delivered|queued> [message_id] | fail <job> <reason> | status | threads | scan <job> | peek <session>');
     process.exit(2);
   }
 } catch (e) {

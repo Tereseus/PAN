@@ -73,6 +73,9 @@ export function ensureThreadRelaySchema() {
       info       TEXT
     );
   `);
+  // kind: 'send' delivers text to the thread; 'status' is answered by the relay
+  // from the thread's transcript without disturbing it.
+  try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN kind TEXT DEFAULT 'send'`); } catch {}
   _schemaReady = true;
 }
 
@@ -268,17 +271,17 @@ export function composeMessage(job) {
     + `Handle it as if they typed it here. Your final message is read aloud to them, so open it with a short plain spoken answer (one to three sentences, no markdown); details can follow below that.`;
 }
 
-export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null }) {
+export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null, kind = 'send' }) {
   ensureThreadRelaySchema();
   const job = {
     id: newId(), host: thread.host, session_id: thread.session_id, title: thread.title,
     text: String(text).slice(0, 4000), utterance: utterance ? String(utterance).slice(0, 4000) : null,
-    status: 'queued', source, device_id, created_at: Date.now(),
+    status: 'queued', source, device_id, created_at: Date.now(), kind: kind === 'status' ? 'status' : 'send',
   };
-  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at)
-       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c)`, {
+  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at, kind)
+       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c, :k)`, {
     ':id': job.id, ':h': job.host, ':s': job.session_id, ':t': job.title, ':x': job.text,
-    ':u': job.utterance, ':src': source, ':d': device_id, ':c': job.created_at,
+    ':u': job.utterance, ':src': source, ':d': device_id, ':c': job.created_at, ':k': job.kind,
   });
   const ws = claimWaiters.get(job.host);
   if (ws) for (const r of [...ws]) r();
@@ -392,7 +395,8 @@ function sweep() {
 // Spoken name for a thread: drops a leading all-caps project tag ("ABC Map
 // Editor" -> "Map Editor") when something is left after it.
 export function shortTitle(title) {
-  const t = String(title || 'that').replace(/^[A-Z]{2,5}\s+(?=\S)/, '').replace(/\s*[+/&|]\s*/g, ' and ').trim();
+  // Drop a project tag ("WOE Map Creation" → "Map Creation"), but not when it is half the name ("PC Stuff").
+  const t = String(title || 'that').replace(/^[A-Z]{2,5}\s+(?=\S+\s+\S)/, '').replace(/\s*[+/&|]\s*/g, ' and ').trim();
   return t.length > 40 ? t.slice(0, 40).replace(/\s+\S*$/, '') : t;
 }
 
@@ -419,12 +423,14 @@ export function toSpeech(md, maxChars = 450) {
 export function spokenOutcome(job) {
   const name = shortTitle(job.title);
   if (job.status === 'failed') return `Couldn't get an answer from ${name}: ${job.error || 'it failed'}.`;
+  if (job.kind === 'status') return `${name}: ${toSpeech(job.reply)}`;
   return `${name} says: ${toSpeech(job.reply)}`;
 }
 
 // ── Voice parsing (deterministic, runs before the LLM) ───────────────────────
 
-const VERB = '(?:tell|ask|message|ping|text|say to|send to|check with)';
+// "send a new message to the X thread"; the phone often clips the first word, leaving "a new message the X thread".
+const VERB = '(?:tell|ask|(?:send\\s+)?(?:a\\s+)?(?:new\\s+)?message(?:\\s+to)?|ping|text|say to|send to|check with)';
 const LEAD = '^(?:(?:hey|ok|okay)\\s+)?(?:(?:pan|pam|pann)[,.]?\\s+)?(?:(?:can|could|would) you\\s+)?(?:please\\s+)?';
 const ANCHORED = new RegExp(`${LEAD}${VERB}\\s+(?:the\\s+|my\\s+)?(.{1,48}?)\\s+(?:thread|session|chat)\\b[\\s,:.-]*(.*)$`, 'i');
 const IN_THREAD = new RegExp(`${LEAD}(?:in|on|to|over in)\\s+(?:the\\s+|my\\s+)?(.{1,48}?)\\s+(?:thread|session|chat)\\b[\\s,:.-]+(.+)$`, 'i');
@@ -432,9 +438,16 @@ const LOOSE = new RegExp(`${LEAD}${VERB}\\s+(?:the\\s+)?(.+)$`, 'i');
 const FOLLOWUP = new RegExp(`${LEAD}(?:tell it|ask it|reply|answer it|say back|tell them|ask them)\\b[\\s,:.-]*(.+)$`, 'i');
 const LIST = /\b(?:list|which|what)\b.*\b(?:threads|sessions)\b/i;
 const LAST_REPLY = /\bwhat did (?:the\s+)?(.{1,48}?)\s*(?:thread|session)?\s+(?:say|answer|reply)\b/i;
+// Status asks are answered from the transcript, so a busy thread is never interrupted:
+// "can you see what my PC stuff thread is doing", "is the tasks thread done", "check on the map thread".
+const STATUS = [
+  /\b(?:what(?:'s| is)|see what|tell me what|check what|know what)\s+(?:the\s+|my\s+)?(.{1,48}?)\s+(?:thread|session|chat)\s+(?:is\s+|'s\s+)?(?:doing|up to|working on)\b/i,
+  /\b(?:check on|status of|how(?:'s| is))\s+(?:the\s+|my\s+)?(.{1,48}?)\s+(?:thread|session|chat)\b(?:\s+(?:doing|going))?\s*(?:right now|now)?\s*[?.!]*$/i,
+  /\bis\s+(?:the\s+|my\s+)?(.{1,48}?)\s+(?:thread|session|chat)\s+(?:done|finished|still (?:working|going|running)|busy|stuck|working)\b/i,
+];
 
 function cleanBody(s) {
-  return String(s || '').replace(/^(?:that|to)\s+/i, '').trim();
+  return String(s || '').replace(/^(?:that|to|saying)\s+/i, '').trim();
 }
 
 // "Which thread, Tasks or Jira Playbook?" → "the tasks one" picks from these.
@@ -457,6 +470,20 @@ export function parseThreadCommand(utterance) {
 
   if (LIST.test(text) && /\b(?:claude|threads|sessions|open)\b/i.test(text)) return { kind: 'list', threads };
 
+  for (const re of STATUS) {
+    const m = re.exec(text);
+    if (!m) continue;
+    if (!threads.length) return { kind: 'no_relay' };
+    const r = matchThread(m[1], threads);
+    if (r.ok) return { kind: 'send', status: true, thread: r.thread, text: 'What is this thread doing right now?' };
+    if (r.reason === 'ambiguous') {
+      const names = new Set(r.candidates.slice(0, 2).map(c => c.title));
+      _pendingChoice = { threads: distinctThreads(threads).filter(t => names.has(t.title)), text: 'What is this thread doing right now?', status: true, utterance: text, at: Date.now() };
+      return { kind: 'ambiguous', candidates: r.candidates };
+    }
+    return { kind: 'unknown', name: m[1] };
+  }
+
   const last = LAST_REPLY.exec(text);
   if (last) {
     const name = last[1];
@@ -472,7 +499,7 @@ export function parseThreadCommand(utterance) {
     const r = matchThread(text.replace(/\b(?:one|the|thread)\b/gi, ' '), _pendingChoice.threads);
     if (r.ok) {
       const pending = _pendingChoice; _pendingChoice = null;
-      return { kind: 'send', thread: r.thread, text: pending.text, utterance: pending.utterance };
+      return { kind: 'send', status: !!pending.status, thread: r.thread, text: pending.text, utterance: pending.utterance };
     }
   }
 
@@ -554,8 +581,8 @@ export async function* handleThreadCommand(cmd, utterance, context = {}, inlineW
 
   const name = shortTitle(cmd.thread.title);
   const alive = relayStatus().find(r => r.host === cmd.thread.host)?.alive;
-  const job = enqueueJob({ thread: cmd.thread, text: cmd.text, utterance: cmd.utterance || utterance, source: context.source || null, device_id: context.device_id || null });
-  const ack = alive ? `Sent to ${name}.` : `Queued for ${name}, but its relay looks offline.`;
+  const job = enqueueJob({ thread: cmd.thread, text: cmd.text, utterance: cmd.utterance || utterance, source: context.source || null, device_id: context.device_id || null, kind: cmd.status ? 'status' : 'send' });
+  const ack = !alive ? `Queued for ${name}, but its relay looks offline.` : cmd.status ? `Checking.` : `Sent to ${name}.`;
   yield { type: 'chunk', text: ack };
 
   const outcome = alive ? await waitForOutcome(job.id, inlineWaitMs, context.signal) : null;

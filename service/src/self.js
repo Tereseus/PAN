@@ -61,7 +61,7 @@ export function buildSelfLine() {
   if (!student) return '';
   const back = activeChainModel() || 'unknown';
   const where = isCloud(back) ? 'in the cloud' : 'on the same machine';
-  return `About you (live, this is fact): you are OmniPi (written OmniΠ), PAN's own voice model, a fine-tune of Liquid's LFM3-Omni-2B, running locally on the mini PC hub. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. Answer questions about yourself only from this line.`;
+  return `About you (live, this is fact): you are OmniPi (written OmniΠ), PAN's own voice model, a fine-tune of Liquid's LFM3-Omni-2B, running locally on the mini PC hub. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. PAN's thread relay carries his voice to his Claude Code threads on his computers and reads their answers back: he says "tell the <name> thread ..." or "what is the <name> thread doing". Answer questions about yourself only from this line.`;
 }
 
 export function buildSelfBlock() {

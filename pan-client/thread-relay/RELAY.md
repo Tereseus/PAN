@@ -8,6 +8,8 @@ The desktop app has no external API, so one resident desktop thread delivers
 messages with its session messaging tool. Everything else (thread list, waiting,
 reading answers out of transcripts) is `relay.js`, plain Node, so the relay
 thread costs nothing while idle: it only wakes when `relay.js wait` exits with a job.
+Status asks ("what is the X thread doing") never wake it: `wait` answers them from
+the transcript and keeps polling. `node relay.js peek <session_id>` shows that answer.
 
 ## 1. Hub address
 

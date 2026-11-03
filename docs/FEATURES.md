@@ -696,6 +696,10 @@ children can have adult-sounding voices and vice versa).
   "tell it ..." (last thread, 15 min), "which threads are open", "what did the X
   thread say", and a short answer to "Which thread, A or B?" (90 s). Benchmark and
   regression sources get the parse only and never touch a thread.
+- **Status asks:** "what is the X thread doing", "is the X thread done", "check on the
+  X thread" queue a job with `kind:'status'`. `relay.js wait` answers it itself from
+  the transcript tail (working or idle, current step, last thing it said) and keeps
+  polling, so the thread is never messaged and a busy thread still answers at once.
 - **Matching:** fuzzy, IDF-weighted token match on titles the relays report;
   duplicate titles resolve to a live relay first, then the most recent. Extra STT
   aliases per install: `thread-aliases.json` next to the DB, `{ "heard": "title word" }`.
