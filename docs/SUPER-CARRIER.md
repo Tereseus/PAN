@@ -46,6 +46,12 @@ Browsers and phones always connect to port 7777 — they never see the internal 
 ### Craft (`service/src/server.js`)
 - **Port:** 17700 (primary), 17701 (beta)
 - **Hot-swappable** via `POST /api/carrier/swap` (Lifeboat widget)
+- **Liveness watchdog:** the Carrier probes the primary Craft's `/health` every 15s
+  (5s timeout). After 6 misses in a row (~90s) it hot-swaps the Craft and logs a
+  `craft_swap` event with `trigger: liveness_watchdog`; it won't swap again within
+  5 min. This catches a Craft whose event loop is wedged, which the `healthy`
+  flag (set once at boot, cleared only on exit) never did. Tunable for tests with
+  `PAN_CRAFT_LIVENESS_INTERVAL_MS` and `PAN_CRAFT_LIVENESS_MAX_MISSES`.
 - **Owns:** HTTP routes, DB handlers, MCP server, dashboard routes, all business logic
 - **Does NOT own:** PTY sessions, WebSocket, reconnect tokens (those stay in Carrier)
 

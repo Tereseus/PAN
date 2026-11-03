@@ -26,6 +26,9 @@ Rules:
 - **Pre-gate:** New Craft must answer `/health` AND `perfEngine.isSwapSafe()`
   must be true before commit. Otherwise carrier runs `performRollback()`.
 - **UI state:** `lifeboatSwapping`, `lifeboatSwapStarted`, rollback countdown.
+- **Automatic trigger:** the Carrier's liveness watchdog runs the same swap when
+  the primary Craft misses `/health` for ~90s (wedged event loop). See
+  `docs/SUPER-CARRIER.md`.
 
 ---
 

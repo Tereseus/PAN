@@ -321,9 +321,9 @@ function scheduleHealthRecovery(craft) {
   }, 10000);
 }
 
-function fetchCraft(port, path) {
+function fetchCraft(port, path, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ hostname: '127.0.0.1', port, path, method: 'GET', timeout: 3000 }, (res) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path, method: 'GET', timeout: timeoutMs }, (res) => {
       let body = '';
       res.on('data', (c) => body += c);
       res.on('end', () => resolve({ status: res.statusCode, body }));
@@ -1971,6 +1971,55 @@ function startCraftOrphanWatchdog() {
   console.log('[Carrier] 🛡️  Craft orphan watchdog started (60s interval, ports 17700–17720)');
 }
 
+// ==================== Craft Liveness Watchdog ====================
+// A Craft is marked healthy once at boot and only loses that when its process
+// exits, so a Craft whose event loop is wedged (a 200s+ synchronous DB scan)
+// kept "craftHealthy: true" while every proxied request hung or 502'd.
+// Every 15s probe the primary Craft's /health; after ~90s of misses, hot-swap.
+const CRAFT_LIVENESS_INTERVAL_MS = parseInt(process.env.PAN_CRAFT_LIVENESS_INTERVAL_MS) || 15_000;
+const CRAFT_LIVENESS_TIMEOUT_MS = 5_000;
+const CRAFT_LIVENESS_MAX_MISSES = parseInt(process.env.PAN_CRAFT_LIVENESS_MAX_MISSES) || 6;
+const CRAFT_LIVENESS_COOLDOWN_MS = 5 * 60_000; // don't re-swap a fresh Craft that is still warming up
+let craftLivenessTimer = null;
+let craftLiveness = { craftId: null, misses: 0, lastSwapAt: 0, probing: false };
+
+async function runCraftLivenessProbe() {
+  const craft = primaryCraft;
+  if (!craft?.healthy || swapPending || craftLiveness.probing) return;
+  if (craftLiveness.craftId !== craft.id) craftLiveness = { ...craftLiveness, craftId: craft.id, misses: 0 };
+  craftLiveness.probing = true;
+  try {
+    const res = await fetchCraft(craft.port, '/health', CRAFT_LIVENESS_TIMEOUT_MS);
+    if (res.status !== 200) throw new Error(`status ${res.status}`);
+    if (craftLiveness.misses > 0) console.log(`[Carrier] Craft-${craft.id} answering /health again after ${craftLiveness.misses} miss(es)`);
+    craftLiveness.misses = 0;
+  } catch (e) {
+    if (craft !== primaryCraft) return;
+    craftLiveness.misses++;
+    console.warn(`[Carrier] Craft-${craft.id} /health miss ${craftLiveness.misses}/${CRAFT_LIVENESS_MAX_MISSES}: ${e.message}`);
+    if (craftLiveness.misses < CRAFT_LIVENESS_MAX_MISSES) return;
+    if (Date.now() - craftLiveness.lastSwapAt < CRAFT_LIVENESS_COOLDOWN_MS) return;
+    craftLiveness.misses = 0;
+    craftLiveness.lastSwapAt = Date.now();
+    console.error(`[Carrier] Craft-${craft.id} wedged (no /health for ~${Math.round(CRAFT_LIVENESS_MAX_MISSES * CRAFT_LIVENESS_INTERVAL_MS / 1000)}s) — hot-swapping`);
+    recordEvent('craft_swap', {
+      trigger: 'liveness_watchdog',
+      old_craft_id: craft.id,
+      old_craft_port: craft.port,
+      old_craft_pid: craft.proc?.pid,
+    });
+    performSwap().catch(err => console.error('[Carrier] liveness swap failed:', err.message));
+  } finally {
+    craftLiveness.probing = false;
+  }
+}
+
+function startCraftLivenessWatchdog() {
+  if (craftLivenessTimer) return;
+  craftLivenessTimer = setInterval(() => { runCraftLivenessProbe().catch(() => {}); }, CRAFT_LIVENESS_INTERVAL_MS);
+  console.log(`[Carrier] Craft liveness watchdog started (${CRAFT_LIVENESS_INTERVAL_MS / 1000}s interval, swap after ${CRAFT_LIVENESS_MAX_MISSES} misses)`);
+}
+
 // ==================== Boot ====================
 async function boot() {
   // Client WS MUST be registered before terminal (terminal rejects unknown upgrade paths)
@@ -1999,6 +2048,9 @@ async function boot() {
 
   // Start Craft orphan watchdog — kills stale Craft processes not tracked by Carrier
   startCraftOrphanWatchdog();
+
+  // Swap out a Craft whose event loop is wedged (healthy flag alone never notices)
+  startCraftLivenessWatchdog();
 
   // PerfEngine — give it the terminalServer reference for PTY probes, then start.
   // Boot-time marks are set when each subsystem finishes initializing.
