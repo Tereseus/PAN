@@ -76,6 +76,7 @@ export function ensureThreadRelaySchema() {
   // kind: 'send' delivers text to the thread; 'status' is answered by the relay
   // from the thread's transcript without disturbing it.
   try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN kind TEXT DEFAULT 'send'`); } catch {}
+  try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN convo TEXT`); } catch {}
   _schemaReady = true;
 }
 
@@ -268,20 +269,22 @@ export function composeMessage(job) {
     : `They say: "${job.text}"`;
   return `[PAN voice relay · req ${job.id}] Your user is talking to you by voice through PAN on their phone, away from the computer.\n`
     + `${said}\n`
+    + (job.convo ? `What they had just been talking about with PAN, oldest first:\n${job.convo}\n` : '')
     + `Handle it as if they typed it here. Your final message is read aloud to them, so open it with a short plain spoken answer (one to three sentences, no markdown); details can follow below that.`;
 }
 
-export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null, kind = 'send' }) {
+export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null, kind = 'send', convo = null }) {
   ensureThreadRelaySchema();
   const job = {
     id: newId(), host: thread.host, session_id: thread.session_id, title: thread.title,
     text: String(text).slice(0, 4000), utterance: utterance ? String(utterance).slice(0, 4000) : null,
     status: 'queued', source, device_id, created_at: Date.now(), kind: kind === 'status' ? 'status' : 'send',
+    convo: convo ? String(convo).slice(-3000) : null,
   };
-  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at, kind)
-       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c, :k)`, {
+  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at, kind, convo)
+       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c, :k, :cv)`, {
     ':id': job.id, ':h': job.host, ':s': job.session_id, ':t': job.title, ':x': job.text,
-    ':u': job.utterance, ':src': source, ':d': device_id, ':c': job.created_at, ':k': job.kind,
+    ':u': job.utterance, ':src': source, ':d': device_id, ':c': job.created_at, ':k': job.kind, ':cv': job.convo,
   });
   const ws = claimWaiters.get(job.host);
   if (ws) for (const r of [...ws]) r();
@@ -450,6 +453,23 @@ function cleanBody(s) {
   return String(s || '').replace(/^(?:that|to|saying)\s+/i, '').trim();
 }
 
+// "tell the PAN thread about what we just talked about": the words point at the voice
+// conversation, so the thread gets those turns too. Sent bare, the PAN thread got only
+// "about what you just talked about" and had nothing to go on (2026-11-03).
+const REFERS_BACK = /\b(?:what (?:you|we|i|you and i) (?:just |were )?(?:talk(?:ed|ing) about|said|discuss(?:ed|ing)|went over)|(?:our|this|the|that) (?:conversation|chat|discussion|talk)(?![-\w])|everything (?:we|you|i) (?:just )?(?:said|discussed|talked about)|^about (?:that|this|it)\s*[.!?]*$)/i;
+
+// The last voice turns before this one, relabelled for the thread. History lines come in as
+// "You:"/"User:" for him and "PAN:" for PAN; the line that asked for the relay is dropped,
+// matched on the request words too, since the phone's transcript of it can differ from the hub's.
+export function recentConvo(history, utterance, body = '', maxLines = 10) {
+  const said = String(utterance || '').trim().toLowerCase();
+  const ask = String(body || '').trim().toLowerCase();
+  const lines = String(history || '').split('\n').map(l => l.trim()).filter(Boolean)
+    .map(l => l.replace(/^(?:You|User|Me):\s*/i, 'User: '))
+    .filter(l => !(said && l.toLowerCase() === 'user: ' + said) && !(ask.length > 10 && /^user: /i.test(l) && l.toLowerCase().includes(ask)));
+  return lines.slice(-maxLines).join('\n') || null;
+}
+
 // "Which thread, Tasks or Jira Playbook?" → "the tasks one" picks from these.
 let _pendingChoice = null;   // { threads, text, at }
 const CHOICE_WINDOW_MS = 90_000;
@@ -591,8 +611,10 @@ export async function* handleThreadCommand(cmd, utterance, context = {}, inlineW
 
   const name = shortTitle(cmd.thread.title);
   const alive = relayStatus().find(r => r.host === cmd.thread.host)?.alive;
-  const job = enqueueJob({ thread: cmd.thread, text: cmd.text, utterance: cmd.utterance || utterance, source: context.source || null, device_id: context.device_id || null, kind: cmd.status ? 'status' : 'send' });
-  const ack = !alive ? `Queued for ${name}, but its relay looks offline.` : cmd.status ? `Checking.` : `Sent to ${name}.`;
+  const said = cmd.utterance || utterance;
+  const convo = !cmd.status && REFERS_BACK.test(cmd.text) ? recentConvo(context.conversation_history, said, cmd.text) : null;
+  const job = enqueueJob({ thread: cmd.thread, text: cmd.text, utterance: said, source: context.source || null, device_id: context.device_id || null, kind: cmd.status ? 'status' : 'send', convo });
+  const ack = !alive ? `Queued for ${name}, but its relay looks offline.` : cmd.status ? `Checking.` : convo ? `Sent to ${name}, with what we were just talking about.` : `Sent to ${name}.`;
   yield { type: 'chunk', text: ack };
 
   const outcome = alive ? await waitForOutcome(job.id, inlineWaitMs, context.signal) : null;

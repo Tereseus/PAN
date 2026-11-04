@@ -761,6 +761,11 @@ children can have adult-sounding voices and vice versa).
   X thread" queue a job with `kind:'status'`. `relay.js wait` answers it itself from
   the transcript tail (working or idle, current step, last thing it said) and keeps
   polling, so the thread is never messaged and a busy thread still answers at once.
+- **Conversation context:** a body that points back at the voice talk ("about what we
+  just talked about", "our conversation", "about that") carries the last 10 voice turns
+  (the turn's `conversation_history`, minus the request itself) in the job's `convo`
+  column, and the thread's message includes them. The ack says "with what we were just
+  talking about".
 - **Matching:** fuzzy, IDF-weighted token match on titles the relays report;
   duplicate titles resolve to a live relay first, then the most recent. Extra STT
   aliases per install: `thread-aliases.json` next to the DB, `{ "heard": "title word" }`.
