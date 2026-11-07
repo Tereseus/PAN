@@ -57,6 +57,7 @@ const ALLOWED_ACTIONS = new Set([
 let _tickTimer = null;
 let _lastTickAt = 0;
 let _lastActions = [];   // last 20 actions taken, for "have I already tried this"
+let _asked = { fp: '', at: 0, followedUp: false };   // the concerns the model last saw
 
 export function startSmartSteward() {
   if (_tickTimer) return;
@@ -79,6 +80,16 @@ async function tickOnce() {
   const concerns = surveyConcerns();
   if (concerns.length === 0) {
     return; // healthy — nothing to do
+  }
+  // Ask when the concerns change, and once more if they're still there an hour later so a
+  // lasting problem can be escalated. Asking about the same concerns every tick cost the hub
+  // 1,789 gemma4:e2b calls in 7 days, about 8 s of CPU each (2026-11-04).
+  const fp = JSON.stringify(concerns);
+  if (fp === _asked.fp) {
+    if (_asked.followedUp || Date.now() - _asked.at < 60 * 60_000) return;
+    _asked.followedUp = true;
+  } else {
+    _asked = { fp, at: Date.now(), followedUp: false };
   }
   console.log('[SmartSteward] ' + concerns.length + ' concern(s):', concerns.map(c => c.kind).join(', '));
 
@@ -148,12 +159,14 @@ async function tickOnce() {
 // data the prompt can include verbatim — no string mangling required.
 function surveyConcerns() {
   const concerns = [];
-  // Open alerts in the last 6h
+  // Open alerts in the last 6h. Not its own escalations: those are for the human, and reading
+  // them back had it "fix" them ("Service Down: Tether", then restart_service on a device that is not one).
   try {
     const alerts = all(
       `SELECT id, alert_type, severity, title, detail, created_at
        FROM alerts
        WHERE status = 'open'
+         AND COALESCE(alert_type, '') != 'smart_steward'
          AND created_at > datetime('now', 'localtime', '-6 hours')
        ORDER BY id DESC LIMIT :n`,
       { ':n': MAX_CONCERNS_PER_TICK }
@@ -279,6 +292,14 @@ function parseAction(raw) {
   return null;
 }
 
+// The model has named devices that don't exist ("all", "translate", a person's name) and offline ones
+// that time out, so a command only goes to a trusted device that is online now.
+function knownDevice(id) {
+  try {
+    return !!get('SELECT 1 FROM devices WHERE trusted = 1 AND online = 1 AND lower(hostname) = lower(:h)', { ':h': String(id) });
+  } catch { return false; }
+}
+
 // Execute the chosen action. Each branch handles ONE action type and
 // returns a result the persistence layer can store for the next tick to
 // see. No branch ever throws to the caller — failures get returned as
@@ -301,6 +322,7 @@ async function executeAction(action) {
     case 'restart_service': {
       const p = action.params || {};
       if (!p.device_id || !p.service) return { ok: false, error: 'device_id and service required' };
+      if (!knownDevice(p.device_id)) return { ok: false, error: `no trusted online device '${p.device_id}'` };
       // Fire via the existing /api/v1/client/command endpoint (loopback HTTP
       // so we go through the WS-or-HTTP-queue logic for free).
       try {
@@ -317,6 +339,7 @@ async function executeAction(action) {
     case 'push_update': {
       const p = action.params || {};
       if (!p.device_id) return { ok: false, error: 'device_id required' };
+      if (!knownDevice(p.device_id)) return { ok: false, error: `no trusted online device '${p.device_id}'` };
       try {
         const r = await fetch('http://127.0.0.1:7777/api/v1/client/push-update', {
           method: 'POST',

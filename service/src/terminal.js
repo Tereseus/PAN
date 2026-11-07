@@ -1809,44 +1809,6 @@ function sendToSession(sessionId, text, label, source = 'unknown') {
   return false;
 }
 
-// Pending permission prompts — for mobile polling and hook-based permission flow
-let pendingPermissions = [];
-
-function addPendingPermission(data) {
-  const permId = data.id || Date.now();
-  pendingPermissions.push({ ...data, id: permId, response: data.response || null });
-  // Safety net — auto-expire after 5 minutes if nobody responds
-  setTimeout(() => {
-    pendingPermissions = pendingPermissions.filter(p => p.id !== permId);
-  }, 300000);
-}
-
-function getPendingPermissions() {
-  // Filter out stale permissions (>30s old with no response — likely handled via terminal)
-  const cutoff = Date.now() - 30000;
-  pendingPermissions = pendingPermissions.filter(p => p.id > cutoff || p.response);
-  return pendingPermissions.filter(p => !p.response);
-}
-
-function clearPermission(id) {
-  pendingPermissions = pendingPermissions.filter(p => p.id !== id);
-}
-
-// Set the response on a pending permission (called when mobile user taps Allow/Deny)
-function respondToPermission(id, response) {
-  console.log(`[PAN Perm] respondToPermission called: id=${id} (type=${typeof id}), response=${response}`);
-  console.log(`[PAN Perm] Pending permissions: ${pendingPermissions.map(p => `${p.id}(type=${typeof p.id})`).join(', ')}`);
-  // Match by number or string — mobile might send either
-  const perm = pendingPermissions.find(p => p.id === id || p.id === String(id) || String(p.id) === String(id));
-  if (perm) {
-    perm.response = response; // 'allow' or 'deny'
-    console.log(`[PAN Perm] Set response=${response} on perm ${perm.id}`);
-    return true;
-  }
-  console.log(`[PAN Perm] Permission ${id} NOT FOUND in pending list`);
-  return false;
-}
-
 // Broadcast a notification to ALL connected WebSocket clients (across all sessions)
 // Used by hooks to notify dashboard of new events
 function broadcastNotification(type, data) {
@@ -2293,4 +2255,4 @@ setInterval(() => {
   }
 }, 10_000); // 10s — JSONLs are created/written immediately on claude startup
 
-export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, getPendingPermissions, clearPermission, addPendingPermission, respondToPermission, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, pipeResetAdapter, getSessionMessages, createPipeSession, getSessionBufferSize, delegateToPhoneToolsSession };
+export { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, broadcastChatUpdate, findSessionByClaudeId, listDevSessions, killDevSession, setInFlightTool, clearInFlightTool, getInFlightTool, registerProcess, deregisterProcess, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, pipeResetAdapter, getSessionMessages, createPipeSession, getSessionBufferSize, delegateToPhoneToolsSession };

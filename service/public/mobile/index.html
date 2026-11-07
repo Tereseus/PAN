@@ -541,7 +541,7 @@ async function respondToApproval(permId, response) {
     await fetch(API + '/api/v1/terminal/permissions/respond', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ id: permId, response: response })
+      body: JSON.stringify({ perm_id: permId, response: response })
     });
     _lastApprovalIds = ''; // force re-render on next poll
     setTimeout(pollApprovals, 200);

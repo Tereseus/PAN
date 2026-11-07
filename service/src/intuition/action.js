@@ -190,6 +190,17 @@ function phraseFor(candidate) {
   // to the kind: prefix, then a generic message.
   const direct = phrasings[candidate.id];
   if (direct) return direct(candidate);
+  // state:mood_<mood> had no phrasing, so the fallback below would have SAID "mood=Frustrated".
+  if (candidate.id.startsWith('state:mood_')) {
+    const mood = candidate.id.slice('state:mood_'.length);
+    const speak = {
+      frustrated: 'That sounded frustrating. Want a hand with it?',
+      anxious: "You seem a bit on edge. Anything I can take off your plate?",
+      sad: "You okay? I'm here if you want to talk.",
+      angry: "Rough moment? I'm here if you need anything.",
+    }[mood] || "Just checking in. I'm here if you need anything.";
+    return { subject: 'Checking in', body: candidate.reason || speak, speak };
+  }
   if (candidate.id.startsWith('need:')) {
     const need = candidate.id.split(':')[1] || 'something';
     return {
@@ -332,6 +343,26 @@ export async function dispatchAction(candidate, opts = {}) {
     }
   } catch (e) {
     console.warn('[Intuition/Action] device-aware fanout failed:', e.message);
+  }
+
+  // Channel 4: the phone, out loud. The phone is not a pan-client, so Channel 3 never
+  // reaches it; it drains the hub's note queue every few seconds and reads 'speak' notes
+  // aloud, as it does for thread relay replies. Only a check-in about him (state:*,
+  // need:safety), and only while he is using voice (PAN answered him in the last 20 min)
+  // and not dictating to Claude: never into an empty room, over his dictation, or while
+  // he sleeps. The 30-minute dedupe and the ignored-streak snooze above still apply.
+  try {
+    if (!clientFanout && /^(?:state:|need:safety)/.test(candidate.id || '')) {
+      const { panSpokeWithin, dictatingToClaude } = await import('../conv-state-watcher.js');
+      if (panSpokeWithin(20 * 60_000) && !dictatingToClaude()) {
+        const { enqueuePhoneNote } = await import('../routes/api.js');
+        enqueuePhoneNote({ type: 'speak', title: phrase.subject || 'PAN', body: phrase.speak });
+        clientFanout = 1;
+        targetDevice = 'phone';
+      }
+    }
+  } catch (e) {
+    console.warn('[Intuition/Action] phone speak failed:', e.message);
   }
 
   // Record the dispatch for learning + dedupe.

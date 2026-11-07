@@ -196,6 +196,13 @@ async function initTerminal(httpServer) {
 }
 
 // ==================== Craft Management ====================
+// The ids count up through the Carrier's own port: Craft 60 got 17760 and the swap failed its
+// health gate (2026-11-05).
+function nextCraftPort() {
+  if (CRAFT_PORT_BASE + craftIdCounter + 1 === CARRIER_PORT) craftIdCounter++;
+  return CRAFT_PORT_BASE + craftIdCounter + 1;
+}
+
 function spawnCraft(port, label = 'primary') {
   const id = ++craftIdCounter;
 
@@ -391,23 +398,6 @@ function handleCraftIPC(msg, craft) {
       craft.proc.send({ type: 'terminal:getInFlightTool:reply', id: msg.id, result });
       break;
     }
-    case 'terminal:addPendingPermission': {
-      if (terminalServer) terminalServer.addPendingPermission(msg.permission);
-      break;
-    }
-    case 'terminal:getPendingPermissions': {
-      const result = terminalServer ? terminalServer.getPendingPermissions() : [];
-      craft.proc.send({ type: 'terminal:getPendingPermissions:reply', id: msg.id, result });
-      break;
-    }
-    case 'terminal:clearPermission': {
-      if (terminalServer) terminalServer.clearPermission(msg.permissionId);
-      break;
-    }
-    case 'terminal:respondToPermission': {
-      if (terminalServer) terminalServer.respondToPermission(msg.permissionId, msg.response);
-      break;
-    }
     case 'terminal:pipeSend': {
       const result = terminalServer ? terminalServer.pipeSend(msg.sessionId, msg.text) : false;
       craft.proc.send({ type: 'terminal:pipeSend:reply', id: msg.id, result: !!result });
@@ -485,7 +475,7 @@ async function startPipelineBeta(source = 'manual') {
     return { ok: false, error: `Pipeline already ${pipeline.status}` };
   }
 
-  const betaPort = CRAFT_PORT_BASE + craftIdCounter + 1;
+  const betaPort = nextCraftPort();
   pipeline = { status: 'spawning', scores: null, passedSuites: [], failedSuites: [],
     startedAt: Date.now(), source, error: null, betaPort, betaCraftId: null, completedAt: null };
   broadcastPipelineEvent('beta_spawning', { port: betaPort, source });
@@ -1372,7 +1362,7 @@ async function performSwap() {
   }
 
   const oldCraft = primaryCraft;
-  const newPort = CRAFT_PORT_BASE + craftIdCounter + 1;
+  const newPort = nextCraftPort();
   const oldCommit = oldCraft?.gitCommit || 'unknown';
   const newCommit = getGitCommit();
   console.log(`[Carrier] ═══ HOT SWAP ═══ ${oldCommit} → ${newCommit} — starting Craft on port ${newPort}...`);

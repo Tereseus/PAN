@@ -248,11 +248,29 @@ Rules:
 }
 
 // Consolidate — run after session end or periodically
-async function consolidate({ since = null, useLLM = true } = {}) {
+const CONSOLIDATE_BATCH = 200;
+let _consolidating = false;
+
+// The steward's timer, its catch-up runs and the dream cycle can overlap, and two runs
+// would read the same window and store every episode twice.
+async function consolidate(opts = {}) {
+  if (_consolidating) return { episodes: 0, facts: 0, procedures: 0, busy: true };
+  _consolidating = true;
+  try {
+    return await consolidateWindow(opts);
+  } finally {
+    _consolidating = false;
+  }
+}
+
+async function consolidateWindow({ since = null, useLLM = true } = {}) {
   // Track consolidation window properly — use a dedicated marker, not episodic_memories timestamp
-  // This prevents re-processing the same events when no episodes were stored
-  const lastConsolidation = get("SELECT MAX(created_at) as t FROM events WHERE event_type = 'ConsolidationRun'");
-  const sinceTime = since || lastConsolidation?.t || new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+  // This prevents re-processing the same events when no episodes were stored.
+  // The window starts where the last run's events ended (`until`), not at the run's own time:
+  // a run takes at most CONSOLIDATE_BATCH events, and starting the next one at "now" dropped
+  // the rest of a busy window for good (2026-11-04).
+  const lastConsolidation = get("SELECT created_at AS t, json_extract(data, '$.until') AS until FROM events WHERE event_type = 'ConsolidationRun' ORDER BY id DESC LIMIT 1");
+  const sinceTime = since || lastConsolidation?.until || lastConsolidation?.t || new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
   // `+event_type` keeps the planner on idx_events_created. Without sqlite_stat1 it
   // took idx_events_type instead and read every RouterCommand/UserPromptSubmit/Stop
@@ -263,7 +281,7 @@ async function consolidate({ since = null, useLLM = true } = {}) {
     `SELECT id, session_id, event_type, data, created_at FROM events
      WHERE created_at > :since
      AND +event_type IN ('RouterCommand', 'UserPromptSubmit', 'Stop', 'VisionAnalysis')
-     ORDER BY created_at ASC LIMIT 200`,
+     ORDER BY created_at ASC LIMIT ${CONSOLIDATE_BATCH}`,
     { ':since': sinceTime }
   );
 
@@ -351,6 +369,7 @@ async function consolidate({ since = null, useLLM = true } = {}) {
   // Log consolidation run so we don't re-process the same events
   logEvent('system-consolidation', 'ConsolidationRun', {
     since: sinceTime,
+    until: events[events.length - 1].created_at,
     events_processed: events.length,
     episodes: storedEpisodes,
     facts: storedFacts,
@@ -369,7 +388,7 @@ async function consolidate({ since = null, useLLM = true } = {}) {
   }
 
   console.log(`[PAN Memory] Consolidated: ${storedEpisodes} episodes, ${storedFacts} facts, ${storedProcs} procedures, ${tasksUpdated} tasks updated`);
-  return { episodes: storedEpisodes, facts: storedFacts, procedures: storedProcs, tasksUpdated };
+  return { episodes: storedEpisodes, facts: storedFacts, procedures: storedProcs, tasksUpdated, more: events.length === CONSOLIDATE_BATCH };
 }
 
 export { consolidate, reconcileTasks, heuristicExtract, llmExtract };

@@ -23,6 +23,14 @@ object TestAudio {
     @Volatile var active = false
         private set
 
+    /**
+     * A live session (TEST_LIVE): the microphone stays the real one, so a second speaker can
+     * talk to the phone (someone speaking Japanese while PAN interprets), but it is still a
+     * session: nothing said is kept. fill() leaves the audio alone.
+     */
+    @Volatile var live = false
+        private set
+
     private val lock = Any()
     private val clips = ArrayDeque<Pair<String, ShortArray>>()
     private var current: Pair<String, ShortArray>? = null
@@ -32,6 +40,13 @@ object TestAudio {
     fun enqueue(id: String, pcm: ShortArray) {
         synchronized(lock) { clips.addLast(id to pcm) }
         lastActivity = android.os.SystemClock.elapsedRealtime()
+        live = false
+        active = true
+    }
+
+    fun beginLive() {
+        lastActivity = android.os.SystemClock.elapsedRealtime()
+        live = true
         active = true
     }
 
@@ -53,6 +68,7 @@ object TestAudio {
             current = null
             pos = 0
         }
+        live = false
         active = false
     }
 
@@ -61,7 +77,7 @@ object TestAudio {
      * with injected audio, or silence between clips, while a session is active.
      */
     fun fill(buf: ShortArray, n: Int) {
-        if (!active) return
+        if (!active || live) return
         synchronized(lock) {
             var i = 0
             while (i < n) {

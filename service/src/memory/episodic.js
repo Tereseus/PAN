@@ -15,13 +15,19 @@ import { embed, cosineSimilarity, toBlob, fromBlob } from './embeddings.js';
 // and every per-project or per-topic view was impossible. The data was always
 // there: cwd travels in the event payload, and its basename is the project name
 // PAN uses everywhere else.
+//
+// ORDER BY id, not created_at: idx_events_session holds rowids in order, so this walks the
+// session's events newest first and stops at the first with a cwd (2 ms). By created_at it
+// read and JSON-parsed every event of the session and sorted them: 6.6-16.6 s for a 65-74k
+// event session, on the main thread, and a voice turn caught behind it got a 502 (hub,
+// 2026-11-03).
 function _deriveProjectName(sessionId) {
   if (!sessionId) return null;
   try {
     const row = get(
       `SELECT json_extract(data, '$.cwd') AS cwd FROM events
        WHERE session_id = :sid AND json_extract(data, '$.cwd') IS NOT NULL
-       ORDER BY created_at DESC LIMIT 1`,
+       ORDER BY id DESC LIMIT 1`,
       { ':sid': sessionId }
     );
     if (!row?.cwd) return null;

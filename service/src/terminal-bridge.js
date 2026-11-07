@@ -134,26 +134,6 @@ export function getInFlightTool(cwd) {
   return directTerminal?.getInFlightTool(cwd);
 }
 
-export function getPendingPermissions() {
-  if (IS_CRAFT) return ipcRequest('terminal:getPendingPermissions').catch(() => []);
-  return directTerminal?.getPendingPermissions() || [];
-}
-
-export function clearPermission(permissionId) {
-  if (IS_CRAFT) return ipcFire('terminal:clearPermission', { permissionId });
-  return directTerminal?.clearPermission(permissionId);
-}
-
-export function addPendingPermission(permission) {
-  if (IS_CRAFT) return ipcFire('terminal:addPendingPermission', { permission });
-  return directTerminal?.addPendingPermission(permission);
-}
-
-export function respondToPermission(permissionId, response) {
-  if (IS_CRAFT) return ipcFire('terminal:respondToPermission', { permissionId, response });
-  return directTerminal?.respondToPermission(permissionId, response);
-}
-
 // Functions that only exist in direct mode (not needed by Craft)
 export function getTerminalProjects() {
   if (IS_CRAFT) return ipcRequest('terminal:getTerminalProjects');

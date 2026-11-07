@@ -14,7 +14,8 @@
 //
 // Atlas reads from Steward's registry to render the service graph.
 
-import { get, all, run, insert, getOllamaUrl } from './db.js';
+import { get, all, run, insert, getOllamaUrl, getConfiguredOllamaUrl } from './db.js';
+import { READER_PORT } from './voice-reader.js';
 import { PROFILE } from './profiles.js';
 import { sendToClient } from './client-manager.js';
 import { startClassifier, stopClassifier } from './classifier.js';
@@ -86,10 +87,123 @@ function runPowerShellFile(psFile, timeoutMs = 15000) {
 }
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { writeFileSync, existsSync } from 'fs';
+import { writeFileSync, existsSync, openSync } from 'fs';
 import { IS_USER_MODE, IS_SERVICE_MODE } from './mode.js';
+import { getDataDir } from './platform.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// The interpreter's local translator: translate-server.py on TRANSLATE_PORT, which router.js calls
+// (translate-local.js). Its venv and model live next to the data folder, like the speech models;
+// a machine without them has no translator service at all, so the steward does not loop
+// STARTING -> DOWN on it (#470). Only models whose licence allows commercial use (NLLB-200 was
+// removed on 2026-11-03 for its non-commercial one). The engine is the model folder named by the
+// `translate_model` setting ("none" turns it off), else the first installed of TRANSLATE_MODELS,
+// best first by the hub bench. A folder counts once its model.bin is complete (no .part files
+// beside it), so a download in progress is never loaded.
+const PAN_LOCAL = dirname(getDataDir());
+const TRANSLATE_PY = join(PAN_LOCAL, 'translate', 'venv', 'Scripts', 'python.exe');
+const TRANSLATE_SERVER = join(__dirname, 'translate-server.py');
+const TRANSLATE_MODELS = ['madlad400-3b-mt-ct2-int8', 'm2m100-418m-ct2-int8'];
+function pickTranslateModel() {
+  let name = null;
+  try { name = String(get("SELECT value FROM settings WHERE key = 'translate_model'")?.value || '').replace(/^"|"$/g, '').trim() || null; } catch {}
+  if (name === 'none') return null;
+  for (const n of name ? [name] : TRANSLATE_MODELS) {
+    const dir = join(PAN_LOCAL, 'models', n);
+    if (existsSync(join(dir, 'model.bin')) && !existsSync(join(dir, 'model.bin.part0'))) return dir;
+  }
+  return null;
+}
+const TRANSLATE_MODEL = pickTranslateModel();
+const TRANSLATE_READY = !!TRANSLATE_MODEL && existsSync(TRANSLATE_PY) && existsSync(TRANSLATE_SERVER);
+const TRANSLATE_PORT = 7784;
+
+// The voice reader (voice-reader.js): the model named "reader:<ollama model>" in a voice_student
+// setting, run on this machine's CPU by the llama-server Ollama ships, from the file Ollama holds.
+// --swa-full is why this exists: without it nothing a prompt shares with the last one is reused.
+// A machine with no such setting or no Ollama has no reader service, like the translator above.
+const READER_EXE = join(dirname(PAN_LOCAL), 'Programs', 'Ollama', 'lib', 'ollama', 'llama-server.exe');
+function pickReaderModel() {
+  for (const key of ['voice_student_model', 'voice_student_backup']) {
+    try {
+      const m = String(get(`SELECT value FROM settings WHERE key = '${key}'`)?.value || '').replace(/^"|"$/g, '').trim();
+      if (m.startsWith('reader:')) return m.slice('reader:'.length);
+    } catch {}
+  }
+  return null;
+}
+const READER_MODEL = pickReaderModel();
+const READER_READY = !!READER_MODEL && existsSync(READER_EXE);
+
+// Detached and unref'd, like whisper-server.py, so it outlives Craft swaps; a running one is
+// reused. startFn ran twice in the same second after a swap and two copies loaded, so a launch
+// waits a minute for the last one to come up; a copy that still races fails to bind and exits.
+let _translatorLaunchedAt = 0;
+function startTranslator() {
+  const launch = () => {
+    if (Date.now() - _translatorLaunchedAt < 60_000) return;
+    _translatorLaunchedAt = Date.now();
+    let log = 'ignore';
+    try { log = openSync(join(PAN_LOCAL, 'logs', 'translate.log'), 'a'); } catch {}
+    try {
+      // 8 threads: MADLAD's median line went 1.3 s -> 1.0 s from 4 (hub bench, 2026-11-04).
+      spawn(TRANSLATE_PY, [TRANSLATE_SERVER, '--model', TRANSLATE_MODEL, '--port', String(TRANSLATE_PORT), '--threads', '8'], {
+        detached: true,
+        stdio: ['ignore', log, log],
+        windowsHide: true,
+      }).unref();
+      console.log('[Steward] Launched the translator');
+    } catch (err) {
+      console.error('[Steward] Failed to launch the translator:', err.message);
+    }
+  };
+  httpGet(`http://127.0.0.1:${TRANSLATE_PORT}/`, { timeout: 2000 }).then((body) => {
+    try {
+      if (JSON.parse(body || '{}').status === 'ok') {
+        console.log(`[Steward] Translator already serving on :${TRANSLATE_PORT} — reusing`);
+        return;
+      }
+    } catch {}
+    launch();
+  }).catch(() => launch());
+}
+
+// Like the translator: detached, reused when already running, one launch a minute. A new model
+// only loads once the running reader is ended.
+let _readerLaunchedAt = 0;
+function startVoiceReader() {
+  const launch = async () => {
+    if (Date.now() - _readerLaunchedAt < 60_000) return;
+    _readerLaunchedAt = Date.now();
+    let log = 'ignore';
+    try { log = openSync(join(PAN_LOCAL, 'logs', 'voice-reader.log'), 'a'); } catch {}
+    try {
+      const r = await fetch(`${getConfiguredOllamaUrl()}/api/show`, { method: 'POST', body: JSON.stringify({ model: READER_MODEL }), signal: AbortSignal.timeout(5000) });
+      const file = (await r.json()).modelfile?.match(/^FROM (.+)$/m)?.[1]?.trim();
+      if (!file || !existsSync(file)) throw new Error(`no model file for ${READER_MODEL}`);
+      // 8 threads: one per core. --prio 1 is AboveNormal, what Ollama gives its own runners.
+      spawn(READER_EXE, ['--model', file, '--port', String(READER_PORT), '--host', '127.0.0.1', '-c', '4096', '-t', '8', '-ngl', '0', '-np', '1',
+        '--swa-full', '-cms', '8', '--cache-ram', '256', '--prio', '1', '--no-webui', '-lv', '2'], {
+        detached: true,
+        stdio: ['ignore', log, log],
+        windowsHide: true,
+      }).unref();
+      console.log(`[Steward] Launched the voice reader (${READER_MODEL})`);
+    } catch (err) {
+      console.error('[Steward] Failed to launch the voice reader:', err.message);
+    }
+  };
+  httpGet(`http://127.0.0.1:${READER_PORT}/health`, { timeout: 2000 }).then((body) => {
+    try {
+      if (JSON.parse(body || '{}').status === 'ok') {
+        console.log(`[Steward] Voice reader already serving on :${READER_PORT} — reusing`);
+        return;
+      }
+    } catch {}
+    launch();
+  }).catch(() => launch());
+}
 
 // ==================== SERVICE STATE MACHINE ====================
 // Single source of truth for every service's lifecycle state.
@@ -458,9 +572,14 @@ const services = [
     interval: '12h',
     intervalMs: 12 * 60 * 60 * 1000,
     startFn: () => {
-      // Run consolidation on a 12h timer (also triggered by dream cycle)
+      // Run consolidation on a 12h timer (also triggered by dream cycle). A run files at most
+      // 200 events; while one comes back full, the next follows in 20 minutes until the
+      // backlog is filed.
       const run = () => consolidateMemory({ useLLM: true })
-        .then(() => reportServiceRun('consolidation'))
+        .then((r) => {
+          reportServiceRun('consolidation');
+          if (r?.more) services.find(s => s.id === 'consolidation')._catchup = setTimeout(run, 20 * 60 * 1000);
+        })
         .catch(err => reportServiceRun('consolidation', err.message));
       setTimeout(run, 5 * 60 * 1000); // first run after 5 min
       services.find(s => s.id === 'consolidation')._timer = setInterval(run, 12 * 60 * 60 * 1000);
@@ -468,6 +587,7 @@ const services = [
     stopFn: () => {
       const svc = services.find(s => s.id === 'consolidation');
       if (svc._timer) { clearInterval(svc._timer); svc._timer = null; }
+      if (svc._catchup) { clearTimeout(svc._catchup); svc._catchup = null; }
     },
     _status: 'unknown',
     _lastCheck: null,
@@ -596,6 +716,46 @@ const services = [
     _lastError: null,
     _lastRun: null,
   },
+  ...(TRANSLATE_READY ? [{
+    id: 'translate',
+    name: 'Translator',
+    technicalName: 'Translator',
+    description: 'Local translation for the interpreter (CPU)',
+    modelTier: 'local',
+    modelMinSize: 'N/A',
+    modelCurrent: TRANSLATE_MODEL ? TRANSLATE_MODEL.split(/[\\/]/).pop() : 'none',
+    port: TRANSLATE_PORT,
+    healthCheck: 'port',
+    bootOrder: 3,
+    dependsOn: [],
+    interval: null, // always-on
+    startFn: startTranslator,
+    stopFn: null,
+    _status: 'unknown',
+    _lastCheck: null,
+    _lastError: null,
+    _lastRun: null,
+  }] : []),
+  ...(READER_READY ? [{
+    id: 'voice-reader',
+    name: 'Voice reader',
+    technicalName: 'Voice Reader',
+    description: 'The voice model on this CPU, reading the conversation before his words arrive',
+    modelTier: 'local',
+    modelMinSize: 'N/A',
+    modelCurrent: READER_MODEL,
+    port: READER_PORT,
+    healthCheck: 'port',
+    bootOrder: 3,
+    dependsOn: [],
+    interval: null, // always-on
+    startFn: startVoiceReader,
+    stopFn: null,
+    _status: 'unknown',
+    _lastCheck: null,
+    _lastError: null,
+    _lastRun: null,
+  }] : []),
   {
     id: 'pan-server',
     name: 'Core',
@@ -1445,7 +1605,8 @@ $result | ConvertTo-Json -Compress -Depth 3`;
 // that was gone since 10-31 (started 09-22, 10-22, 10-31) still held 22.6 GB of commit
 // on 2026-11-03. Nothing can ever use a runner whose server is gone, so it is always
 // ended, no age threshold and no prompt (the owner asked for exactly that). A pid can be
-// reused, so the parent must also be ollama.exe and older than the runner.
+// reused, so the parent must also be ollama.exe and older than the runner. The voice reader is
+// PAN's own and has no Ollama parent: this ended two test copies on 2026-11-05.
 const _OLLAMA_REAP_INTERVAL_MS = 5 * 60 * 1000;
 let _ollamaReapLastRun = 0;
 
@@ -1458,6 +1619,7 @@ async function reapOrphanOllamaRunners() {
     const ps = `$out = @()
 Get-CimInstance Win32_Process -Filter "Name='llama-server.exe' OR Name='ollama_llama_server.exe' OR (Name='ollama.exe' AND CommandLine LIKE '%runner%')" | ForEach-Object {
   $r = $_
+  if ($r.CommandLine -like '*--port ${READER_PORT} *') { return }
   $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($r.ParentProcessId)"
   if (-not $p -or $p.Name -ne 'ollama.exe' -or $p.CreationDate -gt $r.CreationDate) {
     $out += [pscustomobject]@{ pid = $r.ProcessId; ppid = $r.ParentProcessId; parent = $(if ($p) { $p.Name } else { '' }); started = $r.CreationDate.ToString('yyyy-MM-dd HH:mm'); mb = [math]::Round($r.PageFileUsage / 1KB) }

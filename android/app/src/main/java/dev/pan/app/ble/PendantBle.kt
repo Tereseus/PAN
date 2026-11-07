@@ -59,6 +59,7 @@ class PendantBle @Inject constructor(
         val SVC_UUID: UUID = UUID.fromString("6e2a0001-b5a3-f393-e0a9-e50e24dcca9e")
         val IMG_UUID: UUID = UUID.fromString("6e2a0002-b5a3-f393-e0a9-e50e24dcca9e")
         val CTL_UUID: UUID = UUID.fromString("6e2a0003-b5a3-f393-e0a9-e50e24dcca9e")
+        val AUD_UUID: UUID = UUID.fromString("6e2a0004-b5a3-f393-e0a9-e50e24dcca9e")
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         private const val DEVICE_NAME = "PAN-CAM"
@@ -377,6 +378,23 @@ class PendantBle @Inject constructor(
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, statusCode: Int) {
+            // One descriptor write at a time: the mic's goes after the image's. Older firmware
+            // has no mic characteristic and carries straight on.
+            if (d.characteristic.uuid == IMG_UUID) {
+                val aud = g.getService(SVC_UUID)?.getCharacteristic(AUD_UUID)
+                val cccd = aud?.getDescriptor(CCCD_UUID)
+                if (cccd != null) {
+                    g.setCharacteristicNotification(aud, true)
+                    @Suppress("DEPRECATION")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    } else {
+                        cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        g.writeDescriptor(cccd)
+                    }
+                    return
+                }
+            }
             Log.i(TAG, "notifications enabled (status=$statusCode); pacing then starting capture")
             _status.value = "Streaming"
             // PACING MUST BE SET BEFORE STREAMING, and it is not optional.
@@ -404,12 +422,14 @@ class PendantBle @Inject constructor(
             g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray
         ) {
             if (ch.uuid == IMG_UUID) onPacket(value)
+            else if (ch.uuid == AUD_UUID) PendantMic.onPacket(value)
         }
 
         @Deprecated("Deprecated in API 33")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
             if (ch.uuid == IMG_UUID) ch.value?.let { onPacket(it) }
+            else if (ch.uuid == AUD_UUID) ch.value?.let { PendantMic.onPacket(it) }
         }
     }
 

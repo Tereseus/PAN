@@ -134,19 +134,25 @@ const GREEK = { 'α': 'a', 'β': 'v', 'γ': 'g', 'δ': 'd', 'ε': 'e', 'ζ': 'z'
   'λ': 'l', 'μ': 'm', 'ν': 'n', 'ξ': 'x', 'ο': 'o', 'π': 'p', 'ρ': 'r', 'σ': 's', 'ς': 's', 'τ': 't', 'υ': 'y',
   'φ': 'f', 'χ': 'ch', 'ψ': 'ps', 'ω': 'o', 'ά': 'a', 'έ': 'e', 'ή': 'i', 'ί': 'i', 'ό': 'o', 'ύ': 'y', 'ώ': 'o' };
 
-// Spoken forms STT produces for words that appear in titles. Per-install
-// extras (project names STT mangles) live in thread-aliases.json next to the
-// database, as { "heard": "title word" }, so personal titles stay out of git.
-const BASE_ALIASES = { pam: 'pan', pann: 'pan' };
-let _aliases = null, _aliasesAt = 0;
-function spokenAliases() {
-  if (_aliases && Date.now() - _aliasesAt < 60_000) return _aliases;
-  let extra = {};
-  try { extra = JSON.parse(readFileSync(join(dirname(DB_PATH), 'thread-aliases.json'), 'utf8')); } catch {}
-  _aliases = { ...BASE_ALIASES, ...extra };
-  _aliasesAt = Date.now();
-  return _aliases;
+// Per-install settings live next to the database, so personal names stay out of git.
+const _installFiles = new Map();
+function installJson(name) {
+  const cached = _installFiles.get(name);
+  if (cached && Date.now() - cached.at < 60_000) return cached.value;
+  let value = {};
+  try { value = JSON.parse(readFileSync(join(dirname(DB_PATH), name), 'utf8')); } catch {}
+  _installFiles.set(name, { at: Date.now(), value });
+  return value;
 }
+
+// Spoken forms STT produces for words that appear in titles. Per-install
+// extras (project names STT mangles) are in thread-aliases.json, as { "heard": "title word" }.
+const BASE_ALIASES = { pam: 'pan', pann: 'pan' };
+function spokenAliases() { return { ...BASE_ALIASES, ...installJson('thread-aliases.json') }; }
+
+// Threads are named for their machine ("Mint PC Stuff", "G16 PC Stuff"). thread-machines.json says
+// which relay host each of those words means, as { "mint": "<host>" }.
+function spokenMachines() { return installJson('thread-machines.json'); }
 
 const FILLER = new Set(['the', 'a', 'an', 'my', 'our', 'that', 'this', 'thread', 'threads', 'session', 'sessions',
   'chat', 'claude', 'tab', 'one', 'please', 'and']);
@@ -183,11 +189,22 @@ function tokenSim(a, b) {
 
 function spokenTokens(name) {
   const aliases = spokenAliases();
-  const t = tokens(name).map(w => aliases[w] || w).filter(w => !FILLER.has(w));
-  // "service now" must find "servicenow"
+  const raw = tokens(name).filter(w => !FILLER.has(w));
+  const t = raw.map(w => aliases[w] || w);
+  // "service now" must find "servicenow", and "service" alone is an alias for it, so join both.
   const joined = [];
-  for (let i = 0; i + 1 < t.length; i++) joined.push(t[i] + t[i + 1]);
+  for (const list of [t, raw]) for (let i = 0; i + 1 < list.length; i++) joined.push(list[i] + list[i + 1]);
   return { t, joined };
+}
+
+// "mint music" or "g 16 pc stuff": the machine word, and the words left once it is taken out.
+function machineSaid(words, joined, machines) {
+  const whole = words.find(w => machines[w]);
+  if (whole) return { machine: whole, rest: words.filter(w => w !== whole) };
+  const pair = joined.find(j => machines[j]);
+  if (!pair) return { machine: null, rest: words };
+  const at = words.findIndex((w, i) => w + words[i + 1] === pair);
+  return { machine: pair, rest: at < 0 ? words : words.filter((_, i) => i !== at && i !== at + 1) };
 }
 
 // Newest row per title: scheduled-task runs share a title and only the latest matters.
@@ -204,11 +221,23 @@ function distinctThreads(threads) {
 }
 
 export function matchThread(spokenName, threads = listThreads()) {
-  const pool = distinctThreads(threads);
-  const { t: words, joined } = spokenTokens(spokenName);
-  if (!words.length || !pool.length) return { ok: false, reason: words.length ? 'no_threads' : 'no_name', candidates: [] };
+  const machines = spokenMachines();
+  const { t: said, joined } = spokenTokens(spokenName);
+  const { machine, rest: words } = machineSaid(said, joined, machines);
+  // A machine said out loud is a hard limit: "mint music" must never reach the G16's Music thread.
+  const pool = distinctThreads(threads).filter(th => !machine || th.host === machines[machine]);
+  if (!said.length || !pool.length) return { ok: false, reason: said.length ? 'no_threads' : 'no_name', candidates: [] };
+  if (!words.length) {
+    const candidates = pool.slice(0, 3).map(th => ({ title: th.title, score: 1 }));
+    return pool.length === 1 ? { ok: true, thread: pool[0], score: 1, candidates } : { ok: false, reason: 'ambiguous', candidates };
+  }
 
-  const titleTokens = pool.map(th => tokens(th.title));
+  // Not said, the machine is no part of the name: "music" fits "Music" and "Mint Music" alike, and PAN asks.
+  const titleTokens = pool.map(th => {
+    const all = tokens(th.title);
+    const named = all.filter(w => !machines[w]);
+    return named.length ? named : all;
+  });
   const df = new Map();
   for (const tt of titleTokens) for (const w of new Set(tt)) df.set(w, (df.get(w) || 0) + 1);
   const idf = (w) => Math.log(1 + pool.length / (df.get(w) || 0.5));
@@ -434,7 +463,8 @@ export function spokenOutcome(job) {
 
 // "send a new message to the X thread"; the phone often clips the first word, leaving "a new message the X thread".
 const VERB = '(?:tell|ask|(?:send\\s+)?(?:a\\s+)?(?:new\\s+)?message(?:\\s+to)?|ping|text|say to|send to|check with)';
-const LEAD = '^(?:(?:hey|ok|okay)\\s+)?(?:(?:pan|pam|pann)[,.]?\\s+)?(?:(?:can|could|would) you\\s+)?(?:please\\s+)?';
+// "Pen, I need you to send a message to the Elipsis thread" fell through to the voice model, which said it couldn't (2026-11-05).
+const LEAD = '^(?:(?:hey|ok|okay)\\s+)?(?:(?:pan|pam|pann|pen)[,.]?\\s+)?(?:(?:can|could|would) you\\s+|i (?:need|want) you to\\s+)?(?:please\\s+)?';
 const ANCHORED = new RegExp(`${LEAD}${VERB}\\s+(?:the\\s+|my\\s+)?(.{1,48}?)\\s+(?:thread|session|chat)\\b[\\s,:.-]*(.*)$`, 'i');
 const IN_THREAD = new RegExp(`${LEAD}(?:in|on|to|over in)\\s+(?:the\\s+|my\\s+)?(.{1,48}?)\\s+(?:thread|session|chat)\\b[\\s,:.-]+(.+)$`, 'i');
 const LOOSE = new RegExp(`${LEAD}${VERB}\\s+(?:the\\s+)?(.+)$`, 'i');
@@ -451,6 +481,38 @@ const STATUS = [
 
 function cleanBody(s) {
   return String(s || '').replace(/^(?:that|to|saying)\s+/i, '').trim();
+}
+
+// One thread per machine does that machine's jobs: "on the mint open firefox", "play this video
+// on the g16", "tell the mint to check my messages". It is the thread on that host with "PC" or
+// "Computer" in its title. A machine name can be an everyday word ("mint"), so the line has to read
+// as a command: an action word or a question must follow, or come first.
+const ACTION = '(?:open|close|start|stop|restart|reboot|run|launch|install|uninstall|update|turn|switch|change|set|show|find|check|clean|kill|shut|download|upload|play|pause|resume|skip|mute|unmute|watch|read|write|send|reply|answer|post|search|look|see|go|get|pull|put|add|remove|fix|build|save|print|record|sign|log|connect|join|move|copy|delete|make|take)';
+const ASKING = '(?:what|which|why|how|where|is|are|does|do)';
+const MACHINE_NOUN = '(?:\\s+(?:computer|pc|desktop|laptop|machine|box))?';
+
+function computerRequest(text, machines) {
+  const keys = Object.keys(machines);
+  if (!keys.length) return null;
+  const name = `(?:the\\s+|my\\s+)?(${keys.map(k => k.replace(/([a-z])(\d)/g, '$1\\s*$2')).join('|')})${MACHINE_NOUN}`;
+  const front = new RegExp(`${LEAD}(?:on|over on)\\s+${name}[\\s,:.-]+((?:please\\s+)?(?:${ACTION}|${ASKING})\\b.*)$`, 'i').exec(text);
+  if (front) return { machine: front[1], body: front[2] };
+  const back = new RegExp(`${LEAD}((?:${ACTION}|${ASKING})\\b.+?)\\s+(?:on|in)\\s+${name}\\s*[.!?]*$`, 'i').exec(text);
+  if (back) return { machine: back[2], body: back[1] };
+  const told = new RegExp(`${LEAD}(?:tell|ask|have|get)\\s+${name}(?:\\s+to\\s+|\\s*[,:]\\s*|\\s+(?=${ASKING}\\b))(.+)$`, 'i').exec(text);
+  if (told) return { machine: told[1], body: told[2] };
+  return null;
+}
+
+function computerCommand(text, threads) {
+  const machines = spokenMachines();
+  const req = computerRequest(text, machines);
+  if (!req) return null;
+  if (!threads.length) return { kind: 'no_relay' };
+  const key = req.machine.toLowerCase().replace(/\s+/g, '');
+  const thread = distinctThreads(threads).find(t => t.host === machines[key] && /\b(?:computer|pc)\b/i.test(t.title));
+  const body = cleanBody(req.body).replace(/[.!?]+$/, '');
+  return thread ? { kind: 'send', thread, text: body } : { kind: 'no_computer', machine: req.machine };
 }
 
 // "tell the PAN thread about what we just talked about": the words point at the voice
@@ -481,7 +543,7 @@ function lastJob() {
 // Returns null when the utterance is not about threads, else one of:
 //   { kind: 'send', thread, text }  { kind: 'ambiguous', candidates }
 //   { kind: 'unknown', name }       { kind: 'list' }  { kind: 'last', job }
-//   { kind: 'no_relay' }
+//   { kind: 'no_relay' }            { kind: 'no_computer', machine }
 export function parseThreadCommand(utterance) {
   ensureThreadRelaySchema();
   const text = String(utterance || '').trim();
@@ -559,6 +621,9 @@ export function parseThreadCommand(utterance) {
     return { kind: 'unknown', name: m[1] };
   }
 
+  const computer = computerCommand(text, threads);
+  if (computer) return computer;
+
   // No "thread" anchor: "ask map creation what it's doing". Only take it when
   // the words right after the verb are a confident, unambiguous title match,
   // so ordinary "tell me a joke" never lands here.
@@ -602,6 +667,10 @@ export async function* handleThreadCommand(cmd, utterance, context = {}, inlineW
   }
   if (cmd.kind === 'unknown') {
     const say = `I couldn't find a thread called ${cmd.name}.`;
+    yield { type: 'chunk', text: say }; yield done(say); return;
+  }
+  if (cmd.kind === 'no_computer') {
+    const say = `There's no computer thread on the ${cmd.machine} yet.`;
     yield { type: 'chunk', text: say }; yield done(say); return;
   }
   if (cmd.kind === 'empty') {

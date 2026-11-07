@@ -34,7 +34,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = join(__dirname, '.state');
 const LOCK = join(STATE_DIR, 'wait.lock');
 const OFFSETS = join(STATE_DIR, 'offsets.json');
-const RELAY_TITLE_RE = /^PAN Voice Relay\b/i;   // the relay thread itself
+const RELAY_TITLE_RE = /(?:^|\s)(?:PAN|ΠΑΝ) Voice Relay\b/i;   // the relay thread itself, also "Mint ΠΑΝ Voice Relay"
 
 function loadConfig() {
   let cfg = {};
@@ -72,14 +72,18 @@ function sessionRoots() {
 }
 
 // local_<id>.json files live two levels down: <account>/<org>/local_*.json
+// Only the signed-in account's threads can be messaged, and that is the account with the newest
+// session: the app keeps the folders of accounts it used before, and the Mint changed account.
 function sessionFiles() {
-  const out = [];
+  let out = [], newest = -1;
   for (const root of sessionRoots()) {
     for (const a of safeDir(root)) {
       const ap = join(root, a);
       for (const b of safeDir(ap)) {
         const bp = join(ap, b);
-        for (const f of safeDir(bp)) if (/^local_.*\.json$/.test(f)) out.push(join(bp, f));
+        const files = safeDir(bp).filter(f => /^local_.*\.json$/.test(f)).map(f => join(bp, f));
+        const at = Math.max(-1, ...files.map(f => { try { return statSync(f).mtimeMs; } catch { return -1; } }));
+        if (at > newest) { newest = at; out = files; }
       }
     }
   }

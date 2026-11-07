@@ -5,6 +5,9 @@
 inventory (7-agent sweep of the whole codebase). This is the KEEP / TURN-OFF /
 MAYBE ledger against the new north star, plus the roadmap.*
 
+> **2026-11-04:** how the kept parts are built, and what to rebuild, is in
+> [REBUILD-REVIEW.md](./REBUILD-REVIEW.md).
+
 ## 0. North star + the core principle
 
 **PAN is a wearable, voice-first situational-awareness layer.** Four jobs:

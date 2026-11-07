@@ -16,16 +16,22 @@ import {
   setLastAction, getLastAction, intentToActionType,
   setDialogState, getDialogState,
 } from './smart-router.js';
-import { searchMemory, searchMemoryByDate, parseWhen, isReadablePreview } from './memory-search.js';
+import { searchMemory, warmVectors, searchMemoryByDate, parseWhen, isReadablePreview } from './memory-search.js';
 import { writeThought } from './thoughts.js';
 import { isBench } from './bench-context.js';
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
 import { getCurrentSnapshot } from './intuition/index.js';
-import { getConversationState, getConversationBuffer } from './conv-state-watcher.js';
+import { getConversationState, getConversationBuffer, dictatingToClaude, panSpokeWithin, overheardWithin } from './conv-state-watcher.js';
 import { recentThoughts } from './intuition/mind.js';
+import { loadModes, saveMode, dropMode } from './intuition/world.js';
+import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
 import { planFromResult as planProsody } from './tts-prosody.js';
+import { warmForLanguage, languageNamed, languageName } from './hub-asr.js';
+import { translateLocal, translatorUp, pairInstalled } from './translate-local.js';
+import { studentChain } from './llm.js';
+import { warmReader } from './voice-reader.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
@@ -99,16 +105,48 @@ function _historyMentions(text, history) {
   return [...new Set(terms)].filter((w) => !_RECALL_STOP.has(w)).some((w) => hay.includes(w));
 }
 
+// Stricter: EVERY word that names the subject is in that conversation.
+function _historyNames(text, history) {
+  const hay = String(history || '').toLowerCase();
+  const terms = [...new Set(String(text || '').toLowerCase().match(/[a-z]{4,}/g) || [])].filter((w) => !_RECALL_STOP.has(w));
+  return !!hay.trim() && terms.length > 0 && terms.every((w) => hay.includes(w));
+}
+
 // Build the situation block from the live intuition snapshot. Returns '' when
 // no snapshot is available (boot-up, isolated tests). See task #745 (#NEW-2).
 // Date and time on every voice turn. Without it the model could not answer "what time is it
 // in Tokyo", so the phone answered time questions itself with a hard-coded shortcut, which
-// also swallowed "what time is it over there". The hub's clock is the one he lives by.
+// also swallowed "what time is it over there". His clock, not the hub's: the hub keeps his
+// job's time zone, so "what time is it" got New York time wherever he was (intuition/time.js).
+const voiceHistoryBlock = (history) => (history ? `\nRecent conversation:\n${history}\n` : '');
+
+// The voice student and, when a voice box serves it, the same model on the hub for when the box is off.
+function studentModels() {
+  const read = (key) => {
+    try { return String(get(`SELECT value FROM settings WHERE key = '${key}'`)?.value || '').replace(/^"|"$/g, '').trim(); } catch { return ''; }
+  };
+  return [read('voice_student_model'), read('voice_student_backup')];
+}
+
+/**
+ * His turn is coming: reads the conversation into the voice reader before his words arrive, when
+ * the reader is what will answer (a GPU reads it in 0.03 s). Must build what studentPrompt builds
+ * on a plain turn, or the turn shares nothing with it.
+ */
+export function warmStudent(history) {
+  const [model, backup] = studentModels();
+  if (!studentChain(model, backup)[0]?.startsWith('reader:')) return;
+  const block = voiceHistoryBlock(history).trim();
+  warmReader(block, `${block ? '\n\n' : ''}${nowLine()}\n\nMic heard: "`);
+}
+
 function nowLine() {
   const d = new Date();
-  const when = d.toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
-  const off = -d.getTimezoneOffset() / 60;
+  const tz = hisTimeZone();
+  let when;
+  try { when = d.toLocaleString('en-GB', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }); }
+  catch { when = d.toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }); }
+  const off = utcOffsetHours(d.getTime(), tz);
   return `Now: ${when} (${tz}, UTC${off >= 0 ? '+' : ''}${off}).`;
 }
 
@@ -143,9 +181,10 @@ function buildSituationLine(context = {}) {
     const place = context.sensors?.phone?.gps?.address;
     if (place) parts.push(`his phone is at ${String(place).slice(0, 60)}`);
     // Device names stay home: a hostname is a label, not something a cloud model needs.
-    const screens = all(`SELECT device_id, activity, screen_title FROM device_presence WHERE as_of > :since ORDER BY as_of DESC LIMIT 4`,
+    // The phone's own row (recordVoiceTurn) is its place, which is already above.
+    const screens = all(`SELECT device_id, activity, screen_title, platform FROM device_presence WHERE as_of > :since ORDER BY as_of DESC LIMIT 5`,
       { ':since': now - 2 * 60_000 })
-      .filter(p => p.screen_title && !/^idle$/i.test(p.activity || '') && !/minipc|hub/i.test(p.device_id || ''))
+      .filter(p => p.screen_title && !/^idle$/i.test(p.activity || '') && !/minipc|hub/i.test(p.device_id || '') && !/android|ios/i.test(p.platform || ''))
       .slice(0, 2)
       .map(p => `his ${/mint|desktop/i.test(p.device_id || '') ? 'desktop' : 'laptop'} shows "${String(p.screen_title).slice(0, 40)}"`);
     parts.push(...screens);
@@ -155,8 +194,8 @@ function buildSituationLine(context = {}) {
     }
     const cs = getConversationState(org);
     if (cs?.topic && cs.distilled_at && now - cs.distilled_at < 10 * 60_000) parts.push(`the talk is about ${String(cs.topic).slice(0, 50)}`);
-    const room = getConversationBuffer(org).filter(u => u.source === 'room' && now - u.at < 2 * 60_000).length;
-    if (room >= 2) parts.push('other voices nearby (TV or people)');
+    if (dictatingToClaude()) parts.push('he has been dictating to Claude on his computer');
+    if (overheardWithin(2 * 60_000, org) >= 2) parts.push('other voices nearby (TV or people)');
     return parts.length ? `Situation (background only, never read it out): ${parts.join('; ')}.` : '';
   } catch { return ''; }
 }
@@ -438,6 +477,32 @@ function looksDirectedAtPan(text) {
   return opener.test(body);
 }
 
+// He called PAN by name: "hey Pan, ...", "Pan, ...", "..., Pan?". Not "Pan replies and I can't
+// see it" or "the PAN app": that is him talking ABOUT PAN, usually to Claude.
+function saysPanName(text) {
+  const t = String(text || '').trim();
+  if (/^(?:hey|hi|hello|ok|okay|yo)[,\s]+(?:pan|pam)\b/i.test(t)) return true;
+  if (/\b(?:pan|pam)[\s?.!]*$/i.test(t)) return true;
+  return /^(?:pan|pam)\b/i.test(t) && !/^(?:pan|pam)(?:['’]s\b|\s+(?:is|was|isn't|wasn't|replies|replied|says|said|should|shouldn't|does|doesn't|did|didn't|has|hasn't|had|can't|cannot|could|couldn't|keeps|kept|answers|answered|needs|thinks|knows|will|won't|would|wouldn't|seems|seemed|gets|got|just|still|always|never|app|thread|project|dashboard|hub|phone|voice)\b)/i.test(t);
+}
+
+// He TELLS PAN something without asking anything: how he is ("I'm so tired today"), what
+// happened, a fact to keep ("the neighbour's dog is called Biscuit"). Syrinx files those as
+// room talk and he got silence (2026-11-03). Short first-person lines only: a long one is
+// dictation or a story told to someone else.
+const TELLS_PAN = /^(?:(?:oh|ah|man|ugh|well|so|honestly|god|okay|ok|yeah|hey|pan|pam)[,\s]+)*(?:i'?m|i am|i'?ve|i have|i feel|i felt|i just|i had|i got|i finally|i was|i can'?t|i don'?t|i really|my \w+(?:['’]s)? (?:is|are|was|were|just|finally|has|had)\b|we (?:just|finally|had|got)\b|(?:the|our|my) [\w'’ ]{1,30} (?:is|was|are) (?:called|named)\b|today (?:was|is)\b)/i;
+function tellsPan(text) {
+  const t = String(text || '').trim();
+  return TELLS_PAN.test(t) && t.split(/\s+/).length <= 20 && !t.endsWith('?');
+}
+
+// He asks about his own chances or worth: "do you think I'm going to get that job as a fellow
+// at Anthropic?" got "Hardly. ... you're just a tool" from Syrinx (2026-11-03): round 9's data
+// carries put-downs. Until a retrain filters them, these go to the cloud model, told to be
+// honest and kind. Round 10 (rewritten put-downs) still told "was it stupid to build my own
+// pendant" "you're just wasting your time", so past tense and "am I wasting my time" count too.
+const REASSURANCE = /\b(?:(?:do|did) you (?:think|reckon)|you think|what are (?:the|my) chances)\b.*\b(?:i|i'm|i'll|i will|i can|i could|i am|i'd|me|my)\b|\b(?:am i|will i) (?:ever |really |actually |just )?(?:good|smart|ready|able|going to|gonna|get|make|be|pass|win|land|qualified|enough|too old|too late|stupid|an idiot|wasting my time)\b|\b(?:is|was) it (?:too late|stupid|dumb|crazy|silly|a mistake|a waste of time) (?:for me|to)\b|\bwhat are my chances\b/i;
+
 // Second opinion before OmniΠ's camera flag takes a photo. Its false alarms in testing were
 // "skip this song", "which server should we use", "no I don't think that's right", "let's see
 // if you can send a message to the terminal": a pointing word about something you can't
@@ -463,20 +528,279 @@ const WORD_SEARCH = /\b(?:the|a|an|that|this|his|her|their|my|your|with|called|n
 
 // Standing instructions: "translate everything I say into Japanese from now on". Before this,
 // the request only lived in the history lines, and the next turn answered in English. Kept
-// per device until he cancels it or STANDING_TTL_MS passes, and repeated on every turn.
-const _standing = new Map();   // device key -> { text, at }
-const STANDING_SET_RE = /\b(from now on|from this moment on|from here on|until i say otherwise|until i tell you (to stop|otherwise)|for the rest of (the|this) (conversation|chat|session))\b/i;
-const STANDING_CLEAR_RE = /\b(stop translating|back to normal|normal mode|cancel (that|the) instruction|forget (that|the) instruction|stop doing that)\b/i;
+// per device until he cancels it or STANDING_TTL_MS passes after its last use, and repeated
+// on every turn. Saved in the world (intuition/world.js): in memory only, every Craft swap
+// silently ended interpreting. Read back on the first use after a start.
+const _standing = new Map();   // device key -> { text, at, last?, lang? }
+let _standingLoaded = false;
+function standing() {
+  if (!_standingLoaded) {
+    _standingLoaded = true;
+    for (const [k, s] of loadModes(inForce)) _standing.set(k, s);
+  }
+  return _standing;
+}
+// From its last use, not from when he gave it: a day of interpreting outlasts two hours.
+function inForce(s) {
+  return !!s && Date.now() - (s.last || s.at) <= STANDING_TTL_MS;
+}
+// The interpreting ones also as he says them, with no "from now on": "translate everything I say
+// into Greek" set nothing, the local model answered "Got it, I'll translate everything you say
+// into Greek", and every line after it was answered as chat (2026-11-03, his first real try).
+const STANDING_SET_RE = /\b(from now on|from this moment on|from here on|until i say otherwise|until i tell you (to stop|otherwise)|for the rest of (the|this) (conversation|chat|session)|be (my|our) (\w+ )?(interpreter|translator)|(interpret|translate) for (me|us|her|him|them)|(translate|interpret) between|(interpreter|translator|translation) mode|(translat\w*|interpret\w*) (all|everything)|(translat\w*|interpret\w*) (what|whatever) (i|we|he|she|they)|(keep|start|begin|go on) (translating|interpreting))\b/i;
+const STANDING_CLEAR_RE = /\b(stop translating|stop interpreting|interpreter off|translation off|back to normal|normal mode|cancel (that|the) instruction|forget (that|the) instruction|stop doing that)\b/i;
+// A standing instruction that is a translation: the interpreting path in routeStream.
+const INTERPRET_RE = /\b(translat\w*|interpret\w*)\b/i;
+// Greek, Cyrillic, Hebrew, Arabic, Indic, Thai, Japanese, Chinese and Korean scripts: not English.
+const NON_LATIN_RE = /[Ͱ-ϿЀ-ӿ֐-ۿऀ-෿฀-๿぀-ヿ㐀-鿿가-힯]/;
+// Plainly English: two of these words, or one in a line of four words or fewer. Words that are
+// also Spanish, Italian, French or German ("a", "no", "in", "on", "do", "me") are not counted.
+const ENGLISH_WORDS_RE = /\b(?:the|and|is|are|was|were|you|he|she|it|we|they|my|your|of|for|with|this|that|what|where|when|how|why|who|does|did|can|could|would|will|please|thank|thanks|hello|yes|not|okay|have|has|there|here|from|want|need|like|much|many)\b/gi;
+function looksEnglish(text) {
+  const t = String(text || '');
+  const hits = (t.match(ENGLISH_WORDS_RE) || []).length;
+  return hits >= 2 || (hits === 1 && t.trim().split(/\s+/).length <= 4);
+}
 const STANDING_TTL_MS = 2 * 60 * 60 * 1000;
+// How long the cloud model gets for its first words on an interpreting line before the hub's own
+// translator, when one is installed, answers instead. Healthy, gemini-3.5-flash-lite starts in
+// 0.5-0.9 s.
+const INTERPRET_FIRST_TOKEN_MS = 2500;
+// After this many interpreting lines in a row with nothing from the cloud, the cloud is skipped
+// for INTERPRET_CLOUD_PAUSE_MS and the hub's translator answers at once (~0.3 s), not after the
+// 2.5 s wait: with one model out of quota and the other stalling, every line took ~2.8 s
+// (2026-11-03). The first line after the pause tries the cloud again.
+const INTERPRET_CLOUD_TRIES = 2;
+const INTERPRET_CLOUD_PAUSE_MS = 2 * 60_000;
+const _interpretCloud = { fails: 0, pausedUntil: 0 };
+// Lines coming out in these languages go to the cloud first; every other line goes to the hub's
+// translator first. On 100 held-out lines per direction it scored chrF 76 overall and 77-87 for
+// most directions, but 48.6 into Japanese and 35.7 into Chinese (2026-11-04). So the free daily
+// quota is spent only there, and running out of it no longer adds a 2.5 s wait to every line.
+// Those numbers are MADLAD's. A language with a quickmt model is not cloud first any more: 0.04 s
+// against the cloud's 0.9 s, and on everyday lines every fact into Japanese right (pairInstalled).
+const INTERPRET_CLOUD_FIRST = new Set(['ja', 'zh', 'yue']);
+
+// Whether a device is interpreting now, read only: /query/stream picks the speech model by the
+// language it names ({ code: "ja", name: "Japanese" }; code null when none was named) before the
+// turn reaches routeStream. null when not interpreting.
+export function interpretingFor(key) {
+  const s = standing().get(key || 'default');
+  if (!inForce(s) || !INTERPRET_RE.test(s.text)) return null;
+  return interpretingLanguage(s);
+}
+
+// After a Craft swap or a restart, the speech model for a language he is still interpreting is
+// loaded again before the other person's next line, not by it (~4 s on a busy hub).
+setTimeout(() => {
+  try {
+    for (const s of standing().values()) {
+      if (inForce(s) && INTERPRET_RE.test(s.text)) warmForLanguage(interpretingLanguage(s).code);
+    }
+  } catch {}
+}, 10_000).unref?.();
+
+// The language an interpreting instruction is for: the one he named, else the one Whisper heard
+// the other person speak (learnInterpretingLanguage), else { code: null } and Whisper hears all.
+function interpretingLanguage(s) {
+  return languageNamed(s.text) || (s.lang ? { code: s.lang, name: languageName(s.lang) } : { code: null, name: null });
+}
+
+/**
+ * "Be our interpreter" with no language: the first clear line Whisper hears from the other person
+ * says which, and the lines after it go to that language's faster model (hub-asr.js). Whisper
+ * names what it heard; a wrong name on a scrap of speech would stick, so only a full line counts.
+ */
+export function learnInterpretingLanguage(key, code, heard) {
+  const s = standing().get(key || 'default');
+  if (!s || s.lang || !code || code === 'en' || String(heard || '').trim().length < 12) return;
+  if (!INTERPRET_RE.test(s.text) || languageNamed(s.text)) return;
+  s.lang = code;
+  saveMode(key || 'default', s);
+  console.log(`[interpreting] no language named; heard ${code} (${languageName(code) || '?'}), using it`);
+  warmForLanguage(code);
+}
+
+// The words around an instruction that say nothing else: "from now on translate EVERYTHING I
+// SAY INTO Japanese", "SHE SPEAKS Spanish", "OKAY stop translating". A line that is only these,
+// the instruction and a language name is the instruction and nothing more.
+const INSTRUCTION_FILLER = /\b(she|he|they|we|i'?m|i'?ve|i|you|me|us|her|him|them|it|it'?s|speaks?|speaking|in|into|to|is|are|please|the|a|an|language|only|our|my|his|their|friend|other|person|people|and|so|be|for|from|now|right|no|yes|yeah|on|everything|all|that|what|say|says|saying|said|told|between|can|could|would|will|mode|okay|ok|alright|hey|pan|then|just|of|both)\b/gi;
+const INTERPRET_ALL_RE = new RegExp(INTERPRET_RE.source, 'gi');
+
+function onlyInstruction(rest, named) {
+  const r = named ? rest.replace(new RegExp(`\\b${named.name}\\b`, 'i'), '') : rest;
+  return !r.replace(INTERPRET_ALL_RE, '').replace(INSTRUCTION_FILLER, '').replace(/[^a-z]+/gi, '');
+}
+
+function interpretAck(name) {
+  return name ? `Okay, I'll interpret. ${name} and English.` : "Okay, I'll interpret.";
+}
+
+// "Translate that" / "say that again" while interpreting means PAN's last line, said again: the
+// model translated the request itself ("Λοιπόν, μετάφρασέ το αυτό στα ελληνικά", 2026-11-03).
+const SAY_AGAIN_RE = /^\s*(?:(?:so|okay|ok|now|please|and|just|can you|could you)\s+)*(?:translate|say|repeat)\s+(?:that|it|this)(?:\s+(?:again|one more time))?(?:\s+(?:in|into|to)\s+\w+)?(?:\s+(?:please|again|now))?[\s.!?]*$/i;
+
+// The script a reply in another language has to be written in. The phone picks the voice by the
+// script (TtsManager.scriptLocale), so a romanized line ("kalimera", "Arigatou") was read out
+// by the English voice, and asking for "its own script" was not enough (2026-11-03).
+const SCRIPTS = {
+  el: 'the Greek alphabet', ja: 'Japanese kana and kanji', zh: 'Chinese characters', yue: 'Chinese characters',
+  ko: 'Hangul', ru: 'Cyrillic', uk: 'Cyrillic', bg: 'Cyrillic', sr: 'Cyrillic', ar: 'Arabic script',
+  fa: 'Arabic script', ur: 'Arabic script', he: 'the Hebrew alphabet', hi: 'Devanagari', th: 'Thai script',
+  ka: 'the Georgian alphabet', hy: 'the Armenian alphabet', bn: 'Bengali script',
+};
+function inScript(code) {
+  return SCRIPTS[code] ? `, written in ${SCRIPTS[code]}, never in Latin letters` : '';
+}
+
+// "Ask them how much this costs" is said to them as "How much does this cost?". A translator
+// only translates, and NLLB said "Ρώτα τους πόσο κοστίζει αυτό" to the shopkeeper (2026-11-03).
+// The common shapes of "ask them ..." and "tell her ...", for the hub's translator (the cloud
+// model is told the same in its prompt); null for any other line. He also leads in with words for
+// PAN ("I need you to ask them ...", "No, I said tell her ...") and repeats himself as "I asked
+// them how much this costs", which the hub said word for word (2026-11-04).
+const SPOKEN_LEAD = /^\s*(?:(?:so|and|okay|ok|alright|all right|no|well|look|hey|pan|um|uh|now|please|just|then|can you|could you|would you|i said(?: to)?|i(?:['’]d like| (?:need|want|wanted|would like|asked|told)) you to)[\s,]+)*/i;
+const TO_YOU = [
+  [/\b(?:they|she|he)'re\b/gi, "you're"], [/\b(?:she|he)'s\b/gi, "you're"], [/\b(?:they|she|he)'ve\b/gi, "you've"],
+  [/\b(?:they|she|he)'ll\b/gi, "you'll"], [/\b(?:they|she|he)'d\b/gi, "you'd"], [/\b(?:themselves|himself|herself)\b/gi, 'yourself'],
+  [/\b(?:their|his)\b/gi, 'your'], [/\bher\b(?=\s*$|\s*[,.!?]|\s+(?:to|for|with|about|and|if|that|now|please|again)\b)/gi, 'you'],
+  [/\bher\b/gi, 'your'], [/\b(?:they|she|he|them|him)\b/gi, 'you'],
+  [/\byou (is|was|has|does|doesn't|isn't|wasn't|hasn't)\b/gi, (m, v) => `you ${{ is: 'are', was: 'were', has: 'have', does: 'do', "doesn't": "don't", "isn't": "aren't", "wasn't": "weren't", "hasn't": "haven't" }[v.toLowerCase()]}`],
+  [/\byou (wants|needs|likes|knows|speaks|takes|accepts|sells|serves|goes|sees|makes|gets|thinks|works|lives|comes|understands|prefers|recommends|delivers)\b/gi, (m, v) => `you ${verbBase(v)}`],
+];
+function toYou(s) {
+  return TO_YOU.reduce((t, [re, w]) => t.replace(re, w), String(s));
+}
+function verbBase(v) {
+  const w = v.toLowerCase();
+  return { has: 'have', does: 'do', goes: 'go' }[w] || w.replace(/(ss|sh|ch|x|o)es$/, '$1').replace(/ies$/, 'y').replace(/s$/, '');
+}
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+function askedAs(body) {
+  // A closing "please" was for PAN; "for the bill" already says it.
+  const b = body.trim().replace(/[\s,]+please$/i, '');
+  let m;
+  if ((m = b.match(/^for (.+)$/i))) return `${cap(toYou(m[1]))}, please.`;
+  if ((m = b.match(/^to (.+)$/i))) return `Please ${toYou(m[1])}.`;
+  if ((m = b.match(/^(?:if|whether) (?:they|she|he|you) (can|could|will|would) (.+)$/i))) return `${cap(m[1].toLowerCase())} you ${toYou(m[2])}?`;
+  if ((m = b.match(/^(?:if|whether) (?:they|she|he|you) (?:are|is) (.+)$/i))) return `Are you ${toYou(m[1])}?`;
+  if ((m = b.match(/^(?:if|whether) (?:they|she|he|you) (?:have|has) (.+)$/i))) return `Do you have ${toYou(m[1])}?`;
+  if ((m = b.match(/^(?:if|whether) (?:they|she|he|you) (\w+) (.+)$/i))) return `Do you ${verbBase(m[1])} ${toYou(m[2])}?`;
+  if ((m = b.match(/^(?:if|whether) (there|it|this|that|these|those|the \w+) (is|are|was|were) (.+)$/i))) return `${cap(m[2].toLowerCase())} ${m[1]} ${toYou(m[3])}?`;
+  if ((m = b.match(/^(?:if|whether) (it|this|that|the \w+) (\w+?s) (.+)$/i))) return `Does ${m[1]} ${verbBase(m[2])} ${toYou(m[3])}?`;
+  if ((m = b.match(/^(how much|how many|how long|how far|how|where|when|what time|what|which|who|why) (.+)$/i))) {
+    const wh = cap(m[1].toLowerCase());
+    const rest = m[2];
+    let r;
+    if ((r = rest.match(/^(this|it|that|these|those|the \w+(?: \w+)?) (is|are|was|were)$/i))) return `${wh} ${r[2]} ${r[1]}?`;
+    if ((r = rest.match(/^(?:they|she|he|you) (?:are|is) (.+)$/i))) return `${wh} are you ${toYou(r[1])}?`;
+    if ((r = rest.match(/^(?:they|she|he|you) (\w+)(.*)$/i))) return `${wh} do you ${verbBase(r[1])}${toYou(r[2])}?`;
+    if ((r = rest.match(/^(this|it|that|the \w+(?: \w+)?) (\w+s)\b(.*)$/i))) return `${wh} does ${r[1]} ${verbBase(r[2])}${toYou(r[3])}?`;
+    return `${wh} ${toYou(rest)}?`;
+  }
+  return `${cap(toYou(b))}?`;
+}
+function toDirectSpeech(line) {
+  const t = String(line || '').trim().replace(SPOKEN_LEAD, '');
+  let m = t.match(/^(?:ask|i asked) (?:them|her|him|the \w+)\s+(.+?)[\s.?!]*$/i)
+    || t.match(/^ask\s+((?:if|whether|for|how|where|when|what|which|who|why)\b.+?)[\s.?!]*$/i);
+  if (m) return askedAs(m[1]);
+  m = t.match(/^(?:tell (?:them|her|him|the \w+)|let (?:them|her|him|the \w+) know)\s+(?:that\s+)?(.+?)[\s.!]*$/i);
+  if (m) return `${cap(toYou(m[1]))}.`;
+  return null;
+}
+
+// The language a line is written in, by its script; null for Latin. Kanji alone reads as
+// Chinese, so a caller that expects Japanese says so.
+function scriptLang(text) {
+  const t = String(text || '');
+  if (/[぀-ヿ]/.test(t)) return 'ja';
+  if (/[가-힯]/.test(t)) return 'ko';
+  if (/[㐀-鿿]/.test(t)) return 'zh';
+  if (/[Ͱ-Ͽ]/.test(t)) return 'el';
+  if (/[Ѐ-ӿ]/.test(t)) return 'ru';
+  if (/[֐-׿]/.test(t)) return 'he';
+  if (/[؀-ۿ]/.test(t)) return 'ar';
+  if (/[ऀ-ॿ]/.test(t)) return 'hi';
+  if (/[฀-๿]/.test(t)) return 'th';
+  return null;
+}
+
+// His last line in the history ("translate that" points at it).
+function lastUserLine(history) {
+  for (const line of String(history || '').split('\n').reverse()) {
+    const m = line.match(/^User:\s*(.+)$/);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
+function lastTranslation(history) {
+  const lines = String(history || '').split('\n').reverse();
+  for (const line of lines) {
+    const m = line.match(/^PAN:\s*(.+)$/);
+    if (m && !/^Okay, (I'll interpret|I've stopped)/.test(m[1]) && !/^Okay, \w+\.$/.test(m[1])) return m[1].trim();
+  }
+  return null;
+}
+
+// The lines that only switch interpreting on, say its language or switch it off get a fixed
+// reply, at once: the local model took 2-3 s to answer them and said "I'm not a native speaker,
+// you'll have to teach me the nuance first" to "be my Turkish interpreter", and "She speaks
+// Spanish?" to "she speaks Spanish", over the first words of the person he was talking to
+// (2026-11-03). Only a line that is the instruction and nothing else: "translate for her: how
+// much is this?" still goes on whole. Read before standingInstruction() changes anything.
+function interpreterAck(key, text) {
+  const t = String(text || '');
+  const s = standing().get(key);
+  const on = inForce(s) && INTERPRET_RE.test(s.text);
+  if (STANDING_CLEAR_RE.test(t)) {
+    return on && onlyInstruction(t.replace(new RegExp(STANDING_CLEAR_RE.source, 'gi'), '')) ? "Okay, I've stopped." : null;
+  }
+  const named = languageNamed(t);
+  if (STANDING_SET_RE.test(t) && INTERPRET_RE.test(t)) {
+    if (!onlyInstruction(t.replace(new RegExp(STANDING_SET_RE.source, 'gi'), ''), named)) return null;
+    return interpretAck(named?.name);
+  }
+  if (named && on && !languageNamed(s.text) && !s.lang && onlyInstruction(t, named)) return `Okay, ${named.name}.`;
+  // A repeat of the instruction while it is in force ("everything I say into Greek", the phone
+  // having sent the start of it as a turn of its own): confirm it, do not translate it.
+  if (on && /\b(everything|all)\b/i.test(t) && onlyInstruction(t, named)) return interpretAck(interpretingLanguage(s).name);
+  return null;
+}
 
 /** The instruction in force for this turn, or null. The turn that sets one returns null. */
 function standingInstruction(key, text) {
   const t = String(text || '');
-  if (STANDING_CLEAR_RE.test(t)) { _standing.delete(key); return null; }
-  if (STANDING_SET_RE.test(t)) { _standing.set(key, { text: t.trim(), at: Date.now() }); return null; }
-  const s = _standing.get(key);
+  if (STANDING_CLEAR_RE.test(t)) { standing().delete(key); dropMode(key); return null; }
+  if (STANDING_SET_RE.test(t)) {
+    const entry = { text: t.trim(), at: Date.now() };
+    standing().set(key, entry);
+    saveMode(key, entry);
+    if (!INTERPRET_RE.test(t)) return null;
+    // The other person's first line should not wait for its speech model to load.
+    warmForLanguage(languageNamed(t)?.code);
+    // The interpreter answers this turn too (standingPrompt, `setting`): "I told you to translate
+    // everything in Greek, so I said, ask them how much this costs" has words for the other
+    // person in it, and the local model called that line room talk (2026-11-03). A line that is
+    // only the instruction never gets here (interpreterAck).
+    return { ...entry, setting: true };
+  }
+  const s = standing().get(key);
   if (!s) return null;
-  if (Date.now() - s.at > STANDING_TTL_MS) { _standing.delete(key); return null; }
+  if (!inForce(s)) { standing().delete(key); dropMode(key); return null; }
+  // "Be our interpreter" [pause] "she speaks Spanish": the phone sends the pause as two turns.
+  // The second only says the language the first left out, so it is the rest of the instruction,
+  // not a line to translate.
+  const named = languageNamed(t);
+  if (named && INTERPRET_RE.test(s.text) && !languageNamed(s.text) && !s.lang && onlyInstruction(t, named)) {
+    s.text = `${s.text} ${t.trim()}`;
+    saveMode(key, s);
+    warmForLanguage(named.code);
+    return null;
+  }
+  s.last = Date.now();
+  saveMode(key, s);
   return s;
 }
 
@@ -1733,6 +2057,8 @@ function isTestTurn(context) {
 }
 
 async function* _threadRelayFastPath(text, context) {
+  // "Ask them where the station is" is a line to translate, not a job for a thread.
+  if (interpretingFor(context?.device_id)) return;
   let tr;
   try { tr = await import('./thread-relay.js'); } catch (e) { console.warn('[PAN Router] thread-relay unavailable:', e.message); return; }
   let cmd;
@@ -1947,6 +2273,15 @@ User said: "${text}"`,
 const ADDRESSED_SPEAK = 0.50;    // >= this: answer immediately
 const ADDRESSED_HOLD = 0.15;     // >= this: hold it, speak only if he stops talking
 const ADDRESSED_HOLD_MS = 1200;  // how long the phone sits on a held reply
+// In a talk: PAN spoke this recently. He does not name it on every line, so the student's "who is
+// this for" needs far less evidence (minPan, voice-reader.js).
+const TALK_MS = 45_000;
+const MIN_PAN_IN_TALK = 0.2;
+const ASKS_BACK = /\bdid i (?:say|tell|mention)\b/i;
+// How long the one cloud model in cloudFirst gets to start. Real first tokens: gemini-3.5-flash-lite
+// p50 0.33 s, p90 2.5 s, worst 43 s; the next model down p50 2.5 s, p90 7 s, and a word search
+// took 12 s through the two (conversation test, 2026-11-05). After this the student answers.
+const CLOUD_FIRST_MS = 2000;
 
 // Index just past the end of the first complete top-level JSON object, or -1.
 //
@@ -2131,6 +2466,8 @@ export async function* routeStream(text, context = {}) {
   // and guarantees consumers always see a `prosody` field.
   const withProsody = (result) => ({ ...result, prosody: planProsody(result) });
   const _turnStart = Date.now();   // for the [routeStream] timing line
+  warmVectors();
+  const talking = Number.isFinite(context.since_pan_ms) ? context.since_pan_ms < TALK_MS : panSpokeWithin(TALK_MS, context.org_id);
 
   // Fast local intents — no LLM, return immediately
   const serverIntent = serverClassify(text);
@@ -2159,19 +2496,53 @@ export async function* routeStream(text, context = {}) {
     if (handled) return;
   }
 
+  // INTERPRETING. "From now on translate everything I say in Japanese" is a standing
+  // instruction, and every line after it took the whole voice path: the local model, a
+  // memory search on any "where was...", 2.8 s and then 7 s a line (2026-11-03, he timed
+  // it). A line to translate needs none of that. It skips the room-talk and dictation
+  // filters too ("hey Kenji, nice to meet you" is his to say), the memory search and the
+  // tools, and goes to the cloud model first with a short prompt (standingPrompt below).
+  const ack = interpreterAck(context.device_id || 'default', text);
+  const standing = standingInstruction(context.device_id || 'default', text);
+  const interpreting = !!standing && INTERPRET_RE.test(standing.text);
+  if (ack) {
+    yield { type: 'chunk', text: ack };
+    yield { type: 'done', result: withProsody({ intent: 'translate', response: ack, addressed: 0.9, importance: 0.3 }) };
+    return;
+  }
+  const again = interpreting && !standing.setting && SAY_AGAIN_RE.test(String(text || '')) ? lastTranslation(context.conversation_history) : null;
+  if (again) {
+    yield { type: 'chunk', text: again };
+    yield { type: 'done', result: withProsody({ intent: 'translate', response: again, addressed: 0.9, importance: 0.3 }) };
+    return;
+  }
+
   // Ambient pre-filter — emit dedicated 'ambient' chunk (not [AMBIENT] literal)
   // so phone client can silently drop without TTS, no embed/LLM round-trip needed.
   const isVoice = context.source === 'voice' || context.source === 'mic' || context.source === 'phone';
-  if (isVoice && quickAmbientCheck(text)) {
+  if (isVoice && !interpreting && quickAmbientCheck(text)) {
     yield { type: 'chunk', text: '' };
     yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', importance: 0.1 }) };
     return;
   }
 
+  // He is dictating to Claude on his computer (dictatingToClaude, conv-state-watcher.js), and
+  // the phone hears that too: PAN answered what he was telling Claude (2026-11-03). While it
+  // lasts, PAN only answers when he says its name or is mid-exchange with it.
+  if (context.source !== 'dashboard' && !isTestTurn(context) && !interpreting) {
+    const dictation = dictatingToClaude();
+    if (dictation && !saysPanName(text) && !panSpokeWithin(45_000, context.org_id)) {
+      console.log(`[routeStream] dictating to Claude (matched ${Math.round((Date.now() - dictation.at) / 1000)}s ago), not for PAN: ${JSON.stringify(String(text).slice(0, 60))}`);
+      yield { type: 'chunk', text: '' };
+      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.05, to_claude: true, importance: 0.1 }) };
+      return;
+    }
+  }
+
   // #NEW-1: intent-gated memory lookup (mirror of handleUnified). Pure
   // conversation never touches FTS5/vector; only explicit recall sniff does.
   let memoryContext = '';
-  if (RECALL_RE.test(text)) {
+  if (!interpreting && RECALL_RE.test(text)) {
     // #461: bound the recall search on the streaming voice path — a degraded /
     // stalled ollama (e.g. the embedding backfill loading the Mini PC) makes
     // searchMemory hang, which freezes the whole voice turn BEFORE the first
@@ -2188,8 +2559,19 @@ export async function* routeStream(text, context = {}) {
     const when = parseWhen(text);
     let memResults = [];
     let subjectTerms = [];
+    // THE TALK FIRST. "where did I say the wifi password is", with "the wifi password is on
+    // the fridge" two turns up, pulled his real notes about other passwords in here, and
+    // Syrinx (never trained with a memory block) answered "I don't have that" twice (hub
+    // recall bench, 2026-11-03). When every word naming the subject is in the conversation
+    // it is given, a memory block is only noise. In a talk "what did I say" means this talk,
+    // however he words it: "what did I say went wrong last time" named nothing in it, and got
+    // his notes instead of the salt (conversation test, 2026-11-05).
+    const inTalk = !when && (_historyNames(text, context.conversation_history)
+      || (talking && ASKS_BACK.test(String(text))));
     try {
-      if (when) {
+      if (inTalk) {
+        console.log(`[routeStream] recall subject is in the conversation - no memory search: ${JSON.stringify(text.slice(0, 50))}`);
+      } else if (when) {
         // Small on purpose. At limit 20 with 280-char previews this block was
         // ~5.6k chars, the prompt hit 17,942 (~4,486 tokens), and gemma4:e2b
         // stopped emitting JSON - it replied in prose, extractResponseField found
@@ -2282,10 +2664,8 @@ export async function* routeStream(text, context = {}) {
   // recentMind is PAN's own interior monologue ('Holding - no reason to
   // interrupt'). It is useful for deciding whether to speak UNPROMPTED; it is
   // noise when answering a direct question, and it was 404 chars of it.
-  const historyBlock = context.conversation_history
-    ? `\nRecent conversation:\n${context.conversation_history}\n` : '';
+  const historyBlock = voiceHistoryBlock(context.conversation_history);
 
-  const standing = standingInstruction(context.device_id || 'default', text);
   // He stopped mid-sentence reaching for a word (see WORD_SEARCH).
   const wordSearch = !!context.unfinished && !standing && WORD_SEARCH.test(String(text).trim());
   let interject = 'stuck';
@@ -2319,11 +2699,10 @@ export async function* routeStream(text, context = {}) {
   // The voice student (see below), read before the tools: with it on, only live tools run.
   // It never sees the others, and a Wikipedia lookup it could not use cost ~1 s on "tell me
   // about the history of the Roman empire" (hub voicebench, 2026-11-03).
-  let studentModel = '';
-  try { studentModel = String(get("SELECT value FROM settings WHERE key = 'voice_student_model'")?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
+  const [studentModel, studentBackup] = studentModels();
   let weatherBlock = '';
   let liveData = false;   // a block holds data that changes (weather, prices, news, a clock)
-  try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel })); } catch {}
+  if (!interpreting) try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel })); } catch {}
   // selfBlock is 1030 chars describing which model is running, what is
   // local, what leaves the house. It is the right answer to "how do you
   // work" / "is this private" and dead weight on every other turn, which
@@ -2540,7 +2919,41 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // OmniΠ does not follow standing instructions even when handed one (tested: still answered
   // in English). gemma4:e2b does, but only in a SHORT prompt: inside the ~3,000-token voice
   // prompt it answered in English, after 37s on the hub CPU. 1.2s and correct like this.
-  const standingPrompt = standing ? [
+  // Interpreting: both ways, and intent "translate" so no closing question of the speaker's
+  // is cut as if it were PAN's own (trailingQuestionCut only cuts "query" replies). The way is
+  // decided here, not by the model: told "translate everything I say into Japanese", it put
+  // Korean and Chinese into Japanese too. Not English (the language the hub heard, else a
+  // non-Latin script) goes into English for him; his English (heard as English, or plainly
+  // English words) into his language; a short Latin line nobody can tell is left to the model.
+  const heardLang = String(context.heard_lang || '').toLowerCase();
+  const targetLang = interpreting ? interpretingLanguage(standing) : null;
+  const target = interpreting ? targetLang.name || 'the language his instruction names' : '';
+  const way = !interpreting ? ''
+    : heardLang ? (heardLang === 'en' ? 'from_english' : 'to_english')
+    : NON_LATIN_RE.test(String(text || '')) ? 'to_english'
+    : looksEnglish(text) ? 'from_english' : 'either';
+  // "Ask them how much this costs" is turned into the words for them in code (toDirectSpeech),
+  // for the cloud model too: the fallback model translated the request itself, "Ρωτήστε τους
+  // πόσο κοστίζει αυτό" (gemini-3.1-flash-lite, 2026-11-03).
+  const directLine = interpreting && !standing.setting && way !== 'to_english' ? toDirectSpeech(text) : null;
+  const standingPrompt = interpreting ? [
+    'You are PAN, interpreting out loud between him and the person he is talking to. Reply ONLY as JSON: {"intent":"translate","addressed":0.9,"response":"..."}',
+    `His instruction: "${standing.text}"`,
+    context.conversation_history ? `Last few lines, for context only:\n${String(context.conversation_history).trim().split('\n').slice(-4).join('\n')}` : '',
+    ...(standing.setting ? [
+      `He just said this to you, asking you to interpret: "${safeText}"`,
+      `If it also has words for the other person ("so ask them how much this costs"), "response" is only those words, said to them directly in ${target} (in ${target}: "How much does this cost?"). If it has none, "response" is exactly: ${interpretAck(interpretingLanguage(standing).name)}`,
+    ] : directLine ? [
+      `He wants this said to the other person: "${directLine}"`,
+      `"response" is only that, in ${target}, the way a person would say it out loud. No notes, no quotes.`,
+    ] : [
+      `Just said${way === 'to_english' ? ' by the other person' : way === 'from_english' ? ' by him' : ''}: "${safeText}"`,
+      `"response" is only its translation ${way === 'to_english' ? 'into English, for him' : way === 'from_english' ? `into ${target}` : `into English if it is not English, into ${target} if it is`}, the way a person would say it out loud. Keep names, numbers and tone. No notes, no quotes, no answer of your own.`,
+      // An interpreter does not say "ask them how much this costs" to the person he is asking.
+      way === 'to_english' ? '' : `When he asks you to ask or tell them something ("ask them how much this costs"), say that to them directly ("How much does this cost?"), in ${target}. When he talks to you about the interpreting ("translate that", "say that again"), do it: "response" is the line he means, in ${target}.`,
+    ]),
+    way === 'to_english' || !SCRIPTS[targetLang.code] ? '' : `Write ${target} in ${SCRIPTS[targetLang.code]}, never in Latin letters.`,
+  ].filter(Boolean).join('\n\n') : standing ? [
     'You are PAN, his voice assistant. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
     historyBlock.trim(), String(memoryContext || '').trim(), nowLine(),
     `Standing instruction he gave at ${new Date(standing.at).toTimeString().slice(0, 5)}: "${standing.text}". Apply it to what he says now: "response" is exactly what that instruction asks for (for "translate what I say", only the translation of his words).`,
@@ -2583,24 +2996,131 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
     'Answer in one or two short spoken sentences, talking to him as "you". If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.',
   ].filter(Boolean).join('\n\n') : '';
-  const cloudFirst = () => {
-    const chain = readChain('voice');
-    return [...chain.filter((m) => !m.startsWith('ollama:')), ...chain.filter((m) => m.startsWith('ollama:'))];
-  };
+  // His own chances or worth (REASSURANCE): Syrinx answered one with a put-down, so these go
+  // to the cloud model, asked to be honest and kind.
+  const kindPrompt = studentModel && !selfPrompt && REASSURANCE.test(String(text || '')) ? [
+    'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+    historyBlock.trim(), nowLine(), situationLine,
+    `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
+    'He is asking about his own chances or abilities. Answer like a good friend who believes in him: warm and encouraging but honest, in one or two short spoken sentences. Never promise an outcome you cannot know, never a put-down, never sarcasm. If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.',
+  ].filter(Boolean).join('\n\n') : '';
+  // One line to translate, no instruction in force: "so translate that in Greek", "how do you say
+  // thank you in Japanese". The local model answered "I can't find the specific line you're
+  // talking about" (2026-11-03). The voice chain's cloud model, with the last few lines.
+  const oneOffLang = !standing && !wordSearch && (INTERPRET_RE.test(String(text || '')) || /\bhow (?:do|would|can) (?:you|i|we) say\b/i.test(String(text || ''))) ? languageNamed(text) : null;
+  const translatePrompt = oneOffLang ? [
+    'You are PAN, his voice assistant. Reply ONLY as JSON: {"intent":"translate","addressed":0.9,"response":"..."}',
+    context.conversation_history ? `Last few lines:\n${String(context.conversation_history).trim().split('\n').slice(-4).join('\n')}` : '',
+    `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
+    `He wants something said in ${oneOffLang.name}. "response" is only that, in ${oneOffLang.name}${inScript(oneOffLang.code)}, the way a person would say it out loud: the words in his line, or, if he points back ("translate that"), the last thing said before it. If he asks you to ask or tell someone something, say it to them directly. No notes, no quotes.`,
+  ].filter(Boolean).join('\n\n') : '';
+  const isLocal = (m) => /^(ollama|reader):/.test(m);
+  const cloud = () => readChain('voice').filter((m) => !isLocal(m));
+  const cloudFirst = () => [...cloud().slice(0, 1), ...(studentModel ? studentChain(studentModel, studentBackup) : readChain('voice').filter(isLocal))];
+  const cloudOpts = () => ({ ...streamOpts, chain: cloudFirst(), firstTokenMs: CLOUD_FIRST_MS });
   // Asked how PAN works or what model it runs, OmniΠ gets one line of live facts (buildSelfLine);
   // without them it asked back "what hub do you mean?", and the full block confused it.
   const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(), situationForStudent ? situationLine : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
-  const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null };
-  async function* voiceStream() {
-    if (standing) { yield* askAIStreamWithFallback(standingPrompt, streamOpts); return; }
-    if (wordSearch) { yield* askAIStreamWithFallback(wordSearchPrompt, { ...streamOpts, chain: cloudFirst() }); return; }
-    if (toolPrompt) {
-      console.log(`[routeStream] live data (${weatherBlock.length} chars) - short prompt instead of ${studentModel}`);
-      yield* askAIStreamWithFallback(toolPrompt, { ...streamOpts, chain: cloudFirst() });
+  const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null, readerOpts: { minPan: talking ? MIN_PAN_IN_TALK : undefined, copy: ASKS_BACK.test(String(text)) } };
+  const studentOpts = { ...streamOpts, chain: studentChain(studentModel, studentBackup), watchFirstToken: !!studentBackup, firstTokenMs: 1500 };
+  // Interpreting goes to the hub's own translator (translate-local.js) first, unless the line comes
+  // out in an INTERPRET_CLOUD_FIRST language or nobody can tell its language (outLang null). Those
+  // go to the cloud models while one starts within INTERPRET_FIRST_TOKEN_MS, else to the hub's
+  // translator. Never the local chat model: gemma4:e2b garbled Greek, and a stalled free-tier
+  // model held turns 7-81 s (2026-11-03).
+  async function* interpretStream(prompt, local, outLang) {
+    const chain = cloud();
+    // With no translator on the hub, the cloud gets its usual time: cutting it short would only
+    // turn a slow answer into none.
+    if (!(await translatorUp())) { yield* askAIStreamWithFallback(prompt, { ...streamOpts, chain }); return; }
+    if (outLang && (!INTERPRET_CLOUD_FIRST.has(outLang) || pairInstalled('en', outLang))) {
+      const t0 = Date.now();
+      const out = await local();
+      if (out) {
+        console.log(`[interpreting] hub translator first ${Date.now() - t0}ms (into ${outLang})`);
+        yield JSON.stringify({ intent: 'translate', addressed: 0.9, response: out });
+        return;
+      }
+      // The translator failed or does not know the language: the cloud, with its usual time.
+      yield* askAIStreamWithFallback(prompt, { ...streamOpts, chain });
       return;
     }
-    if (selfPrompt) { yield* askAIStreamWithFallback(selfPrompt, { ...streamOpts, chain: cloudFirst() }); return; }
+    const skipCloud = Date.now() < _interpretCloud.pausedUntil;
+    if (!skipCloud) {
+      let any = false;
+      try {
+        for await (const c of askAIStreamWithFallback(prompt, { ...streamOpts, chain, firstTokenMs: INTERPRET_FIRST_TOKEN_MS })) { any = true; yield c; }
+        _interpretCloud.fails = 0;
+        return;
+      } catch (e) {
+        if (any || context.signal?.aborted) throw e;
+        if (++_interpretCloud.fails >= INTERPRET_CLOUD_TRIES) _interpretCloud.pausedUntil = Date.now() + INTERPRET_CLOUD_PAUSE_MS;
+        const paused = Date.now() < _interpretCloud.pausedUntil ? `, skipping it for ${INTERPRET_CLOUD_PAUSE_MS / 60_000} min` : '';
+        console.log(`[interpreting] cloud gave nothing (${String(e?.message || e).slice(0, 80)})${paused}; hub translator`);
+      }
+    }
+    const t0 = Date.now();
+    const out = await local();
+    if (out) {
+      console.log(`[interpreting] hub translator ${Date.now() - t0}ms${skipCloud ? ' (cloud paused)' : ''}`);
+      yield JSON.stringify({ intent: 'translate', addressed: 0.9, response: out });
+      return;
+    }
+    // The hub's translator is not running or does not know the language: the cloud after all, if
+    // it was skipped, with its usual time.
+    if (skipCloud) { yield* askAIStreamWithFallback(prompt, { ...streamOpts, chain }); return; }
+    throw new Error('interpreting: no translation from the cloud or the hub');
+  }
+  // The same line for the hub's translator: which way, from what language, and "ask them X"
+  // as said to them.
+  const localInterpretation = async () => {
+    const lang = targetLang?.code;
+    if (!lang) return null;
+    const t = String(text || '');
+    if (standing.setting) {
+      const m = t.match(/\b(?:ask|tell) (?:them|her|him|the \w+)\b[^.!?]*/i);
+      const direct = m ? toDirectSpeech(m[0]) : null;
+      return direct ? translateLocal(direct, 'en', lang) : interpretAck(targetLang.name);
+    }
+    if (way === 'to_english' || way === 'either') {
+      const s = scriptLang(t);
+      const src = heardLang && heardLang !== 'en' ? heardLang : (s === 'zh' && (lang === 'ja' || lang === 'yue') ? lang : s) || lang;
+      return translateLocal(t, src, 'en');
+    }
+    return translateLocal(toDirectSpeech(t) || t, 'en', lang);
+  };
+  const localOneOff = async () => {
+    const t = String(text || '');
+    const m = t.match(/\bhow (?:do|would|can) (?:you|i|we) say\s+(.+?)\s+(?:in|into)\s+\w+/i)
+      || t.match(/\b(?:translate|say)\s+(.+?)\s+(?:in|into|to)\s+\w+/i);
+    let phrase = m ? m[1].replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim() : '';
+    if (!phrase || /^(?:that|it|this)$/i.test(phrase)) phrase = lastUserLine(context.conversation_history) || '';
+    if (!phrase) return null;
+    return translateLocal(toDirectSpeech(phrase) || phrase, scriptLang(phrase) || 'en', oneOffLang.code);
+  };
+  // The language this line comes out in, the way localInterpretation sends it. null leaves it to the
+  // cloud model first: the line that sets interpreting up (it may carry words for the other person
+  // in any shape) and a line nobody can tell the language of ('either').
+  const interpretOut = () => standing.setting ? null
+    : way === 'from_english' ? targetLang?.code || null
+    : way === 'to_english' ? 'en' : null;
+  async function* voiceStream() {
+    if (standing && interpreting) { yield* interpretStream(standingPrompt, localInterpretation, interpretOut()); return; }
+    if (standing) { yield* askAIStreamWithFallback(standingPrompt, streamOpts); return; }
+    if (translatePrompt) { yield* interpretStream(translatePrompt, localOneOff, oneOffLang?.code || null); return; }
+    if (wordSearch) { yield* askAIStreamWithFallback(wordSearchPrompt, cloudOpts()); return; }
+    if (toolPrompt) {
+      console.log(`[routeStream] live data (${weatherBlock.length} chars) - short prompt instead of ${studentModel}`);
+      yield* askAIStreamWithFallback(toolPrompt, cloudOpts());
+      return;
+    }
+    if (selfPrompt) { yield* askAIStreamWithFallback(selfPrompt, cloudOpts()); return; }
+    if (kindPrompt) {
+      console.log(`[routeStream] about his own chances - kind prompt instead of ${studentModel}`);
+      yield* askAIStreamWithFallback(kindPrompt, cloudOpts());
+      return;
+    }
     if (studentModel) {
       // Where a turn's time goes, before and after the model: setup is everything above
       // (prompt blocks, memory), first is the model's first chunk.
@@ -2613,7 +3133,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       let head = '';        // held until the reply's first characters show whether it is [CAMERA]
       let camera = false;
       try {
-        for await (const c of askAIStreamWithFallback(studentPrompt, { ...streamOpts, chain: [studentModel] })) {
+        for await (const c of askAIStreamWithFallback(studentPrompt, studentOpts)) {
           got = true;
           if (!_firstLogged) {
             _firstLogged = true;
@@ -2633,16 +3153,22 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           if (head) yield head;
           return;
         }
-        if (context.canCamera && looksVisual(text)) { cameraAsk = true; return; }
+        if (looksVisual(text)) {
+          if (context.canCamera) { cameraAsk = true; return; }
+          // Nothing to look with, so that is the answer. Asked twice and then sent to the full
+          // prompt, this was 15-17 s of silence (conversation test, 2026-11-05).
+          yield JSON.stringify({ intent: 'query', addressed: 0.9, response: "I can't see it, my camera's off." });
+          return;
+        }
         // A [CAMERA] on a line that needs no look ("should I bring a jacket if it is
         // windy", "is it better to water plants in the morning") used to drop straight
         // to the full prompt: 34-36 s of silence on the hub CPU (voicebench,
-        // 2026-11-02). Ask OmniΠ once more with the camera ruled out; only a second
-        // [CAMERA] pays for the full prompt.
+        // 2026-11-02). Ask OmniΠ once more with the camera ruled out; a second [CAMERA]
+        // goes to the cloud model on a short prompt, which has no camera to ask for.
         console.log(`[routeStream] ${studentModel} asked for the camera - asking again without it`);
         let head2 = '';
         let camera2 = false;
-        for await (const c of askAIStreamWithFallback(`${studentPrompt}\n\n(No camera for this one: answer from his words alone.)`, { ...streamOpts, chain: [studentModel] })) {
+        for await (const c of askAIStreamWithFallback(`${studentPrompt}\n\n(No camera for this one: answer from his words alone.)`, studentOpts)) {
           if (head2 === null) { yield c; continue; }
           head2 += c;
           const r = head2.match(/"response"\s*:\s*"([\s\S]*)/)?.[1] || '';
@@ -2655,7 +3181,14 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           if (head2) yield head2;
           return;
         }
-        console.log(`[routeStream] ${studentModel} asked for the camera twice - full prompt instead`);
+        console.log(`[routeStream] ${studentModel} asked for the camera twice - short prompt instead`);
+        yield* askAIStreamWithFallback([
+          'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+          historyBlock.trim(), nowLine(), situationLine,
+          `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
+          'Answer from his words alone, in one or two short spoken sentences. If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.',
+        ].filter(Boolean).join('\n\n'), cloudOpts());
+        return;
       } catch (e) {
         if (got && head === null) throw e;
         console.warn(`[routeStream] ${studentModel} unavailable (${e.message}) - full prompt instead`);
@@ -2682,11 +3215,29 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let addressed = null;
   let spokenReply = null; // the reply minus a dropped trailing question, when one was dropped
 
+  // A cloud stream can die after it starts ("Failed to parse stream", 2026-11-05). With nothing
+  // spoken yet there is no sequence to corrupt, so the student answers, not "Sorry, I ran into a
+  // problem".
+  async function* replyStream() {
+    try {
+      yield* voiceStream();
+    } catch (e) {
+      if (lastLen > 0 || !studentModel || context.signal?.aborted) throw e;
+      console.warn(`[routeStream] reply failed before a word was spoken (${e.message}) - student instead`);
+      fullBuf = '';
+      held = '';
+      gate = null;
+      sawEnd = false;
+      addressed = null;
+      yield* askAIStreamWithFallback(studentPrompt, studentOpts);
+    }
+  }
+
   try {
     // #996: streaming fallback wrapper. Connect-time failures cascade through
     // chain (cerebras → claude → ollama); mid-stream failures propagate as
     // truncation (no mid-stream switching — would corrupt the chunk sequence).
-    for await (const chunk of voiceStream()) {
+    for await (const chunk of replyStream()) {
       fullBuf += chunk;
       if (gate === null) {
         const d = readAddressGate(fullBuf);
@@ -2797,7 +3348,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // used its name, since a question on the TV ends in "?" too: look if it is about
         // something in view, else let the cloud model answer.
         const said = speakable(String(held || parsed.response || '')).trim();
-        const named = /^(?:hey|hi|hello|ok|okay|yo)?[,\s]*(?:pan|pam)\b|\b(?:pan|pam)[\s?.!]*$/i.test(String(text || '').trim());
+        const named = saysPanName(text);
         if ((!said || said.startsWith('[')) && named) {
           if (context.canCamera && looksVisual(text)) {
             console.log(`[routeStream] override -> camera: ${JSON.stringify(String(text).slice(0, 60))}`);
@@ -2811,10 +3362,37 @@ answer an earlier question, and do not narrate what the context blocks mention.`
             'He said your name, so he is talking to you: answer him briefly, the way you would say it out loud.',
           ].filter(Boolean).join('\n\n');
           let again = '';
-          for await (const c of askAIStreamWithFallback(directPrompt, { ...streamOpts, chain: cloudFirst() })) again += c;
+          for await (const c of askAIStreamWithFallback(directPrompt, cloudOpts())) again += c;
           const r = (again.match(/"response"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] || '').replace(/\\"/g, '"').trim();
           console.log(`[routeStream] override re-asked the cloud model: ${JSON.stringify(r.slice(0, 80))}`);
           if (r && !r.startsWith('[')) parsed.response = r;
+        }
+      } else if ((parsed.intent === 'ambient' || gate === 'mute') && !context.unfinished && !isDash
+        && (tellsPan(text) || (talking && String(text).trim().split(/\s+/).length <= 15))
+        && overheardWithin(90_000, context.org_id) < 2) {
+        // He told PAN something (tellsPan), or reacted right after PAN spoke ("that had
+        // nothing to do with the camera" got silence, 2026-11-03), and nobody else seems to
+        // be talking. A friend answers that, so the cloud model does, as a hold: spoken if he
+        // stops there, dropped if he carries on talking (the phone's hold_ms).
+        const tellPrompt = [
+          'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+          historyBlock.trim(), nowLine(), situationLine,
+          `Mic heard: "${safeText}"`,
+          'He told you this without asking anything, or reacted to what you last said. Answer the way a friend in the room would: one short spoken sentence that fits (sympathy, a light comment, or a quick useful tip; for a fact to remember, a brief acknowledgement). No question unless it is the natural reply, never an offer or a menu. If it plainly was not said to you (he is talking to someone else, reading something out, or dictating), reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.',
+        ].filter(Boolean).join('\n\n');
+        let again = '';
+        try {
+          for await (const c of askAIStreamWithFallback(tellPrompt, cloudOpts())) again += c;
+        } catch (e) { console.warn(`[routeStream] statement re-ask failed: ${e.message}`); }
+        const r = (again.match(/"response"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] || '').replace(/\\"/g, '"').trim();
+        console.log(`[routeStream] statement to PAN, re-asked the cloud model: ${JSON.stringify(r.slice(0, 80))}`);
+        if (r && !r.startsWith('[')) {
+          const c = trailingQuestionCut(r, 'query');
+          const reply = speakable(c >= 0 ? r.slice(0, c) : r).trim();
+          if (reply) {
+            yield { type: 'done', result: withProsody({ ...parsed, intent: 'query', response: reply, addressed: 0.5, hold_ms: ADDRESSED_HOLD_MS, importance: 0.3 }) };
+            return;
+          }
         }
       }
       // If Claude classified this as a memory recall, execute the real DB search —
@@ -2833,20 +3411,31 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // total confidence. When the question names a time, answer from that
         // day's actual record instead of searching.
         const when = parseWhen(text);
+        // ANSWERED FROM THE TALK. Syrinx answers "what did I say the dog is called" from the
+        // conversation it was shown, and the answer is out of the speaker before the intent
+        // arrives (answer-first: the gate opens on "to"). Round 10 tags some of these as
+        // memory, and the search below ignores the conversation: the turn stayed open 12-26 s
+        // and kept "the provided messages do not contain an answer" as PAN's line (hub bench,
+        // 2026-11-03). Nothing it finds is heard once the reply has streamed, so a reply already
+        // out stands, whatever it came from. A named day still searches.
+        const spoken = String(spokenReply ?? parsed.response ?? '').trim();
+        if (!when && lastLen > 0) {
+          console.log(`[routeStream] recall already answered: ${JSON.stringify(spoken.slice(0, 80))}`);
+          yield { type: 'done', result: withProsody({ ...parsed, addressed, response: spoken }) };
+          return;
+        }
         let hits = [];
         try {
           if (when) {
             hits = searchMemoryByDate({ from: when.from, to: when.to, limit: 25 });
             console.log(`[routeStream] recall scoped to ${when.label} (${when.from} .. ${when.to}) — ${hits.length} readable events`);
           } else {
-            // VECTORS STAY ON for an explicit recall. skipVector was applied to
-            // every caller to stop the 4-6s synchronous vec0 scan freezing the
-            // hub; right for the per-turn pre-gate, wrong here. FTS alone returns
-            // the hook envelope ({"session_id":...}), the vector half returns what
-            // he actually said. This path only runs when he explicitly asked to
-            // remember something, so it is rare and worth the seconds.
+            // VECTORS STAY ON for an explicit recall. FTS alone returns the hook
+            // envelope ({"session_id":...}), the vector half returns what he actually
+            // said. The scan has its own thread now, and he is waiting for this answer
+            // out loud: what it has not found in 4 s, this turn does without.
             hits = await Promise.race([
-              searchMemory(searchTerm, { limit: 10, caller: 'routeStream' }),
+              searchMemory(searchTerm, { limit: 10, caller: 'routeStream', vecTimeoutMs: 4000 }),
               new Promise((_, reject) => setTimeout(() => reject(new Error('searchMemory timeout 8s')), 8000)),
             ]);
           }
@@ -2925,6 +3514,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         const c = trailingQuestionCut(reply, parsed.intent);
         if (c >= 0) reply = reply.slice(0, c).trim();
       }
+      if (reply.startsWith('[')) reply = '';   // a placeholder is never spoken
       yield { type: 'done', result: withProsody({ ...parsed, addressed, response: reply }) };
     } else {
       yield { type: 'done', result: withProsody({ intent: 'query', response: "I didn't catch that — could you try again?", importance: 0.4 }) };

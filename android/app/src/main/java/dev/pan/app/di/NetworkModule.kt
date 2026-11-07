@@ -110,7 +110,10 @@ object NetworkModule {
                 } catch (e: Exception) {
                     // Distinguish "nobody is there" from "they are slow".
                     val addressLooksWrong = when (e) {
-                        is java.net.SocketTimeoutException -> false  // slow hub, address fine
+                        // A read timeout is a slow hub. A connect timeout is nobody there: a
+                        // firewall drops packets rather than refusing them, and counting that as
+                        // slow kept the app on a closed address until it was restarted (2026-11-04).
+                        is java.net.SocketTimeoutException -> e.message?.contains("connect", ignoreCase = true) == true
                         is java.net.ConnectException,
                         is java.net.UnknownHostException,
                         is java.net.NoRouteToHostException -> true

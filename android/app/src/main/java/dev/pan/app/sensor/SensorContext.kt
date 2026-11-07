@@ -262,8 +262,11 @@ class SensorContext @Inject constructor(
         if (humidityEnabled && humidity != null) pendantSensors["humidity_pct"] = humidity
         if (spectrometerEnabled && spectrometerData != null) pendantSensors["spectrometer"] = spectrometerData?.toList()
 
+        // tz: the phone's own zone, which is his. His computers keep his job's zone, so the
+        // hub cannot know his day from its clock (service/src/intuition/time.js).
         val envelope = mutableMapOf<String, Any?>(
-            "timestamp" to System.currentTimeMillis()
+            "timestamp" to System.currentTimeMillis(),
+            "tz" to java.util.TimeZone.getDefault().id
         )
         if (phoneSensors.isNotEmpty()) envelope["phone"] = phoneSensors
         if (pendantSensors.isNotEmpty()) envelope["pendant"] = pendantSensors

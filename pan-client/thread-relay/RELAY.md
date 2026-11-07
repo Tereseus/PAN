@@ -24,8 +24,8 @@ leaves home. Check with:
 
 ## 2. The relay thread
 
-Start a new Claude Code desktop session in the repo folder, titled exactly
-**PAN Voice Relay** (that title is excluded from the reported list), on a small
+Start a new Claude Code desktop session in the repo folder, titled **PAN Voice Relay**
+(a machine name in front and ΠΑΝ for PAN are fine; that title is left out of the reported list), on a small
 model, in auto permission mode, with this as its first message (replace `<relay.js>`
 with the absolute path):
 
@@ -60,9 +60,42 @@ send_message it: "Relay keeper: the wait loop is not running. Run step 1 now."
 Then archive this run's own session (get_session "self", then archive_session).
 ```
 
+## 4. Jobs for a machine
+
+"on the mint open firefox", "play this video on the g16", "tell the mint to check my messages". The
+hub sends these to the thread already on that host with PC or Computer in its title, such as Mint PC
+Stuff. Nothing to set up, as long as the machine word is in `thread-machines.json`.
+
+Anything that restarts a thread's session, such as changing its model in the menu, ends the relay's
+wait loop. `node relay.js status` then prints DEAD, and "restart the relay" sent to the relay thread
+brings it back. A machine with no keeper stays down until then.
+
 ## Other machines
 
 Same files, same steps. On Linux the app keeps sessions under
 `~/.config/Claude/claude-code-sessions`, on macOS under
 `~/Library/Application Support/Claude/claude-code-sessions`; `relay.js` checks all three.
 Set `PAN_RELAY_HOST` if the pan-client config has no `device_id`.
+
+The folder goes beside that machine's `pan-client-config.json`. Only the account with the newest
+session is reported, because a thread of a signed-out account cannot be messaged.
+
+The hub sends each job to the host that reported the thread. Name threads for their machine and
+list those words in `thread-machines.json` next to the hub's database, as `{ "mint": "<relay host>" }`.
+A machine said out loud is a hard limit, so "mint music" never reaches another machine's Music
+thread. Not said, the word is no part of the name, so "PC Stuff" asks which one.
+
+An account without the app's `start_session` tool cannot start a thread from another thread.
+Open `claude://code/new?q=<first message, url-encoded>&source=pan` instead (`xdg-open` on Linux): the
+app fills in a draft and a person presses send. Leave `folder=` off that link, because a folder can
+raise the app's workspace trust prompt. The draft then shows the last folder used, which a person can
+change; the relay needs none, since its paths are absolute.
+
+An idle relay costs nothing: `wait` holds no Claude turn, and it answers status jobs itself. A turn
+is spent only when a message goes to a thread.
+
+A machine on a second account pays for its own relay. A first message can set the thread's title
+with the session tools, but the app refuses a session changing its own model or effort, so a person
+picks the small model and low effort in the thread's menus. Step 3 can wait: without a keeper the
+relay stops when the app restarts, PAN says it looks offline, and "restart the relay" sent to the
+thread brings it back.

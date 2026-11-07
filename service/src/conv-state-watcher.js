@@ -14,8 +14,8 @@
 //   • last complete utterance     timestamp + text
 //
 // Cadence: not on a fixed timer like intuition. Re-distills:
-//   1. ~500ms after each Final  (debounced — turn settled)
-//   2. Every 30s if any partial activity since last distill (idle fallback)
+//   1. on each Final, at once (rules, well under a millisecond)
+//   2. every 30s if partials arrived since the last distill (idle fallback)
 //
 // Why separate from intuition: intuition is ambient (where/who/mood, 30-60s
 // cadence). Conv-state is utterance-paced (sub-second on Finals). Different
@@ -27,19 +27,19 @@
 // nothing voice-related). Persistence to `conversation_states` table can
 // come later if we need replay/Atlas timeline.
 //
-// AI: cerebras qwen via askAI(caller='conv-state'). One small call,
-// ~200-400ms. Configurable via `job_models.conv-state` setting.
+// No AI (2026-11-03). The distill was a model call after every answered turn (gemma4:e2b on
+// the hub's CPU, the one the voice turn needs, with a summary that could invent things). It
+// is now intuition/conversation.js: rules over the lines themselves, same fields, plus the
+// last few topics, the things just named, and his tone.
 
-import { askAI } from './llm.js';
+import { readConversation } from './intuition/conversation.js';
 
-// orgId → { utterances: [...], state: {...}, distilling: bool, distillTimer, lastDistillAt }
+// orgId → { utterances: [...], state: {...}, lastDistillAt, lastUtteranceAt }
 const _orgs = new Map();
 
 const MAX_UTTERANCES = 20;          // ring buffer size per org
-const DEBOUNCE_AFTER_FINAL_MS = 500;
 const IDLE_REDISTILL_MS = 30_000;
-const DISTILL_MAX_TOKENS = 250;
-const DISTILL_TIMEOUT_MS = 8000;
+const IDLE_PHASE_MS = 5 * 60_000;   // read as idle after this long with nothing said
 
 let _idleTimer = null;
 let _started = false;
@@ -52,8 +52,6 @@ function _orgSlot(orgId) {
       orgId: key,
       utterances: [],
       state: null,            // distilled blob (see below)
-      distilling: false,
-      distillTimer: null,
       lastDistillAt: 0,
       lastUtteranceAt: 0,
     };
@@ -68,11 +66,12 @@ function _orgSlot(orgId) {
  *
  *   noteUtterance({ orgId, text, isFinal, source, deviceId })
  *
- * Triggers a debounced distill ~500ms after each Final. Partials just
- * append to the buffer (cheap) so the next distill has them.
+ * Every Final is distilled at once. Partials just append to the buffer so the next distill
+ * has them.
  */
-// distill: false files a final line without starting a distill (PAN's own reply, or speech
-// it overheard and let pass), so the next real turn's distill sees it at no extra cost.
+// `distill` is kept for the callers: when the distill was a model call, false filed PAN's
+// own reply or an overheard line without paying for one. Rules cost nothing, so every Final
+// is read; PAN's question is what makes a pending one.
 export function noteUtterance({ orgId = 'org_personal', text, isFinal = true, source = 'unknown', deviceId = null, distill = isFinal } = {}) {
   if (!text || typeof text !== 'string') return;
   const trimmed = text.trim();
@@ -93,121 +92,112 @@ export function noteUtterance({ orgId = 'org_personal', text, isFinal = true, so
   slot.lastUtteranceAt = Date.now();
 
   // Only Finals trigger a distill. Partials accumulate.
-  if (isFinal && distill) {
-    if (slot.distillTimer) clearTimeout(slot.distillTimer);
-    slot.distillTimer = setTimeout(() => {
-      slot.distillTimer = null;
-      _distill(orgId).catch(err => {
-        console.warn('[conv-state] distill failed:', err?.message || err);
-      });
-    }, DEBOUNCE_AFTER_FINAL_MS);
-  }
+  if (isFinal) _distill(orgId);
 }
 
 /**
- * Build the prompt and call cerebras. Returns the merged state on the slot.
- * Single-flight per org — if already distilling, skip this call (the
- * in-flight one will pick up the new utterances since it reads the buffer
- * after the call returns).
+ * Read the buffer into the conversation state (intuition/conversation.js). Synchronous: rules
+ * over at most 20 lines. The previous state carries the topic's start and the topic history.
  */
-async function _distill(orgId) {
+function _distill(orgId) {
   const slot = _orgSlot(orgId);
-  if (slot.distilling) return slot.state;
-  slot.distilling = true;
   const startedAt = Date.now();
-
-  // Lazy import to avoid pulling intuition into the module graph until
-  // first distill (cold-start hygiene — server boot stays light).
-  let snapshot = null;
-  try {
-    const intuition = await import('./intuition.js');
-    snapshot = intuition.getCurrentSnapshot ? intuition.getCurrentSnapshot(orgId) : null;
-  } catch {}
-
-  // Recent thoughts (mind context) — optional, best-effort.
-  let recentThoughts = [];
-  try {
-    const thoughts = await import('./thoughts.js');
-    if (thoughts.recentThoughts) {
-      recentThoughts = thoughts.recentThoughts({ orgId, limit: 6 }) || [];
-    }
-  } catch {}
-
-  // Build prompt
-  const recent = slot.utterances.slice(-12);
-  const partials = recent.filter(u => !u.isFinal).map(u => `(partial) ${u.text}`);
-  // Voice turns label who spoke: PAN's replies, and speech PAN overheard and let pass.
-  const finals = recent.filter(u => u.isFinal).map(u =>
-    u.source === 'pan' ? `PAN: ${u.text}` : u.source === 'room' ? `(overheard, not to PAN) ${u.text}` : u.text);
-
-  // The snapshot keeps these under `now`; read at the top level they were always '?'.
-  const sn = snapshot?.now || snapshot;
-  const situationLine = sn
-    ? `Where: ${sn.where || '?'} · Activity: ${sn.activity || '?'} · Focus: ${sn.focus || '?'} · Mood: ${sn.mood || '?'}`
-    : '(no intuition snapshot yet)';
-
-  const thoughtsLine = recentThoughts.length
-    ? recentThoughts.map(t => `[${t.source || '?'}] ${t.thought || t.text || ''}`.slice(0, 140)).join('\n')
-    : '(no recent thoughts)';
-
-  const prompt = `You are PAN's Conversation State distiller. Reading the recent voice/chat utterances plus ambient context, output a JSON object that captures the live state of the conversation. The router will read this on every turn — it must be terse and accurate.
-
-SITUATION
-${situationLine}
-
-RECENT THOUGHTS
-${thoughtsLine}
-
-RECENT UTTERANCES (oldest → newest, ${finals.length} final, ${partials.length} partial)
-${finals.map((t, i) => `${i + 1}. ${t}`).join('\n') || '(none)'}
-${partials.length ? '\nIN-FLIGHT PARTIALS:\n' + partials.join('\n') : ''}
-
-Output strict JSON (no prose, no markdown fences) with these fields:
-{
-  "topic": "one short noun phrase — what the conversation is about right now",
-  "phase": "one of: opening | discussing | deciding | command | wrapping_up | idle",
-  "pending_question": "if PAN (or commander) asked something not yet answered, the question — else null",
-  "user_pattern": "one short clause describing how the user is talking (verbose | terse | self-correcting | long-pauses-mid-thought | etc.)",
-  "likely_turn_complete": true/false (does the LAST utterance look like a complete thought, or mid-sentence?),
-  "summary": "one sentence — what just happened in this conversation, for the router to ground its reply"
-}`;
-
-  let parsed = null;
-  let raw = null;
+  let read = null;
   let err = null;
   try {
-    raw = await askAI(prompt, {
-      caller: 'conv-state',
-      maxTokens: DISTILL_MAX_TOKENS,
-      timeout: DISTILL_TIMEOUT_MS,
-      source: 'conv-state-watcher',
-    });
-    // Strip code fences if model added them
-    const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-    parsed = JSON.parse(cleaned);
+    read = readConversation({ utterances: slot.utterances, prev: slot.state, now: startedAt });
   } catch (e) {
     err = e?.message || String(e);
+    console.warn('[conv-state] distill failed:', err);
   }
 
+  // Voice turns label who spoke: PAN's replies, speech PAN overheard and let pass, and what
+  // he was dictating to Claude (noteClaudePrompt).
+  const recent = slot.utterances.slice(-12);
+  const partials = recent.filter(u => !u.isFinal).map(u => `(partial) ${u.text}`);
+  const finals = recent.filter(u => u.isFinal).map(u =>
+    u.toClaude ? `(to Claude on his computer, not to PAN) ${u.text}`
+      : u.source === 'pan' ? `PAN: ${u.text}` : u.source === 'room' ? `(overheard, not to PAN) ${u.text}` : u.text);
+
   const finishedAt = Date.now();
+  const kept = read || slot.state || {};
   slot.state = {
+    ...kept,
     org_id: orgId,
-    topic: parsed?.topic || null,
-    phase: parsed?.phase || null,
-    pending_question: parsed?.pending_question || null,
-    user_pattern: parsed?.user_pattern || null,
-    likely_turn_complete: typeof parsed?.likely_turn_complete === 'boolean' ? parsed.likely_turn_complete : null,
-    summary: parsed?.summary || null,
     recent_finals: finals.slice(-5),
     recent_partials: partials.slice(-3),
     last_utterance_at: slot.lastUtteranceAt,
     distilled_at: finishedAt,
     latency_ms: finishedAt - startedAt,
+    reader: 'rules',
     error: err,
   };
   slot.lastDistillAt = finishedAt;
-  slot.distilling = false;
   return slot.state;
+}
+
+// ── Speech meant for Claude ─────────────────────────────────────────────────
+// He dictates to Claude on the laptop with the phone in his pocket, so the phone hears
+// every word, and PAN answered what he was telling Claude (2026-11-03). Nothing in the
+// words says who they were for. The prompt that reaches Claude a moment later does: when
+// a UserPromptSubmit carries most of the words of a line the phone heard in the last few
+// minutes, he was talking to Claude, and for the next few minutes PAN stays quiet unless
+// he says its name (router.js). Each matching prompt extends the window.
+const CLAUDE_MATCH_WINDOW_MS = 4 * 60_000;
+const CLAUDE_DICTATION_HOLD_MS = 8 * 60_000;
+const STOPWORDS = new Set(('the and you that this for are was with have but not what can all just its '
+  + 'it\'s i\'m don\'t then there they them their about would could should will your from been were '
+  + 'when where which how why who also some like into than out get got one now yeah okay').split(' '));
+let _claudeDictation = { at: 0, until: 0, lines: 0 };
+
+function _contentWords(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/)
+    .filter(w => w.length > 2 && !STOPWORDS.has(w));
+}
+
+/** hooks.js calls this with every Claude prompt. Returns how many heard lines it matched. */
+export function noteClaudePrompt(text, orgId = 'org_personal') {
+  const prompt = new Set(_contentWords(text));
+  if (prompt.size < 3) return 0;
+  const slot = _orgs.get(orgId || 'org_personal');
+  if (!slot) return 0;
+  const since = Date.now() - CLAUDE_MATCH_WINDOW_MS;
+  let n = 0;
+  for (const u of slot.utterances) {
+    if (u.at < since || !u.isFinal || (u.source !== 'him' && u.source !== 'room')) continue;
+    const words = _contentWords(u.text);
+    if (words.length < 3) continue;
+    // Half the content words, not all: the phone and Claude's dictation mishear differently.
+    if (words.filter(w => prompt.has(w)).length / words.length >= 0.5) { u.toClaude = true; n++; }
+  }
+  if (n) {
+    _claudeDictation = { at: Date.now(), until: Date.now() + CLAUDE_DICTATION_HOLD_MS, lines: n };
+    console.log(`[conv-state] ${n} heard line(s) went to Claude: quiet unless named for ${CLAUDE_DICTATION_HOLD_MS / 60_000} min`);
+  }
+  return n;
+}
+
+/** Non-null while he is dictating to Claude: { at, until, lines }. */
+export function dictatingToClaude() {
+  return Date.now() < _claudeDictation.until ? _claudeDictation : null;
+}
+
+/** True if PAN said something to him in the last `ms`. Replies to lines that turned out to
+ *  be for Claude do not count: those were PAN talking over his dictation. */
+export function panSpokeWithin(ms, orgId = 'org_personal') {
+  const slot = _orgs.get(orgId || 'org_personal');
+  if (!slot) return false;
+  const now = Date.now();
+  return slot.utterances.some(u => u.source === 'pan' && now - u.at < ms && u.at > _claudeDictation.at);
+}
+
+/** Lines PAN let pass in the last `ms`, minus his dictation to Claude: other people talking,
+ *  the TV, or him talking to someone else. */
+export function overheardWithin(ms, orgId = 'org_personal') {
+  const slot = _orgs.get(orgId || 'org_personal');
+  if (!slot) return 0;
+  const now = Date.now();
+  return slot.utterances.filter(u => u.source === 'room' && !u.toClaude && now - u.at < ms).length;
 }
 
 /**
@@ -217,6 +207,10 @@ Output strict JSON (no prose, no markdown fences) with these fields:
 export function getConversationState(orgId = 'org_personal') {
   const slot = _orgs.get(orgId || 'org_personal');
   if (!slot) return null;
+  // Nothing new comes in to re-read a conversation that stopped, so idle is read here.
+  if (slot.state && Date.now() - slot.lastUtteranceAt > IDLE_PHASE_MS && slot.state.phase !== 'idle') {
+    return { ...slot.state, phase: 'idle', pending_question: null };
+  }
   return slot.state;
 }
 
@@ -246,24 +240,19 @@ export function startConvStateWatcher() {
   _idleTimer = setInterval(() => {
     const now = Date.now();
     for (const [orgId, slot] of _orgs.entries()) {
-      if (slot.distilling) continue;
       if (slot.lastUtteranceAt <= slot.lastDistillAt) continue; // nothing new
-      if ((now - slot.lastUtteranceAt) < IDLE_REDISTILL_MS) continue; // still hot, debounce handles it
-      _distill(orgId).catch(() => {});
+      if ((now - slot.lastUtteranceAt) < IDLE_REDISTILL_MS) continue; // still coming in
+      _distill(orgId);   // synchronous, catches its own errors
     }
   }, IDLE_REDISTILL_MS);
   if (_idleTimer.unref) _idleTimer.unref();
-  console.log('[conv-state] watcher started (idle redistill every 30s, debounce 500ms after Final)');
+  console.log('[conv-state] watcher started (rules, read on every Final; partials re-read every 30s)');
 }
 
 export function stopConvStateWatcher() {
   if (_idleTimer) clearInterval(_idleTimer);
   _idleTimer = null;
   _started = false;
-  for (const slot of _orgs.values()) {
-    if (slot.distillTimer) clearTimeout(slot.distillTimer);
-    slot.distillTimer = null;
-  }
 }
 
 export function getConvStateStatus() {
@@ -274,8 +263,8 @@ export function getConvStateStatus() {
       utterance_count: slot.utterances.length,
       last_utterance_at: slot.lastUtteranceAt,
       last_distill_at: slot.lastDistillAt,
-      distilling: slot.distilling,
-      state: slot.state,
+      distilling: false,
+      state: getConversationState(orgId),
     });
   }
   return { started: _started, orgs };

@@ -2,7 +2,8 @@
 // Supports Anthropic, Gemini, Cerebras, Ollama, and LM Studio.
 // Routes based on Settings > AI & Usage.
 
-import { insert, get, run, getOllamaUrl, getConfiguredOllamaUrl, getModelForPurpose, pickHealthyOllama, reportOllamaLatency } from './db.js';
+import { insert, get, run, getOllamaUrl, getConfiguredOllamaUrl, getModelForPurpose, pickHealthyOllama, reportOllamaLatency, isOllamaDegraded } from './db.js';
+import { readerStream } from './voice-reader.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
@@ -85,6 +86,9 @@ function getModelForCaller(caller) {
 
 function getCustomModelConfig(modelId) {
   try {
+    // model_hosts pins one model to one machine. custom_models can't do that: every boot rebuilds it.
+    const pin = JSON.parse(get("SELECT value FROM settings WHERE key = 'model_hosts'")?.value || '{}')[modelId];
+    if (pin) return { id: modelId, provider: 'ollama', url: pin, pinned: true };
     const row = get("SELECT value FROM settings WHERE key = 'custom_models'");
     if (row) {
       const models = JSON.parse(row.value);
@@ -131,10 +135,11 @@ async function callGemini(prompt, model, maxTokens, signal) {
   const genAI = new GoogleGenerativeAI(apiKey);
   const genModel = genAI.getGenerativeModel({ model: model.replace('gemini:', '') || 'gemini-1.5-flash' });
 
+  // The signal goes to the SDK's fetch (see callGeminiStream), or a timeout or cancel cannot cut it.
   const result = await genModel.generateContent({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { maxOutputTokens: maxTokens },
-  });
+  }, signal ? { signal } : {});
 
   const response = await result.response;
   return {
@@ -159,10 +164,15 @@ async function* callGeminiStream(prompt, model, maxTokens, signal, usageOut = nu
   if (!apiKey) throw new Error('No Gemini API key found in Settings.');
   const genAI = new GoogleGenerativeAI(apiKey);
   const genModel = genAI.getGenerativeModel({ model: model.replace('gemini:', '') || 'gemini-1.5-flash' });
+  // The signal has to reach the SDK's fetch. Checked only between chunks, a stream that never sent
+  // one could not be cut by the timeout or by a cancel: an overloaded free-tier model held a voice
+  // turn 81 s with nothing, then "Sorry, I ran into a problem" (2026-11-03).
   const result = await genModel.generateContentStream({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { maxOutputTokens: maxTokens },
-  });
+  }, signal ? { signal } : {});
+  // Rejects with the stream, and nothing awaits it if the stream throws first.
+  result.response.catch(() => {});
   for await (const chunk of result.stream) {
     if (signal && signal.aborted) break;
     let t = '';
@@ -215,6 +225,8 @@ const VRAM_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
 let _lastConfiguredUrl = null;
 let _lastVramCheck = 0;
 let _lastVramRepair = 0;
+// Hosts seen with a model in VRAM. On a box with no GPU everything sits at 0, and that is not a fault.
+const _gpuHosts = new Set();
 
 // Unload a model we pinned on a host we are no longer pointed at.
 async function releasePinnedModel(url, model) {
@@ -239,11 +251,15 @@ async function guardModelOnGpu(ollamaUrl, model, force = false) {
   // evidence arrives is backwards, and it is why this never fired in testing.
   if (!force && now - _lastVramCheck < VRAM_CHECK_EVERY_MS) return;
   _lastVramCheck = now;
+  // Ollama lists 'name:latest' even when PAN asked for plain 'name'.
+  const tagged = model.includes(':') ? model : `${model}:latest`;
   const ps = async () => {
     const r = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(4000) });
     if (!r.ok) return null;
     const j = await r.json();
-    return (j.models || []).find((x) => x.name === model || x.model === model) || null;
+    const loaded = j.models || [];
+    if (loaded.some((x) => x.size_vram > 0)) _gpuHosts.add(ollamaUrl);
+    return loaded.find((x) => x.name === tagged || x.model === tagged) || null;
   };
   try {
     const m = await ps();
@@ -251,6 +267,8 @@ async function guardModelOnGpu(ollamaUrl, model, force = false) {
     // pinned. Only a LOADED model sitting at zero VRAM is the broken state.
     if (!m) { console.log(`[ollama] guard: ${model} not loaded on ${ollamaUrl} — nothing to do`); return; }
     if (m.size_vram > 0) return;   // already on the GPU, the normal case
+    // Without a GPU a repair only throws the model out, and the next turn pays for the reload.
+    if (!_gpuHosts.has(ollamaUrl)) return;
 
     if (now - _lastVramRepair < VRAM_REPAIR_COOLDOWN_MS) {
       console.warn(`[ollama] ${model} is on CPU (size_vram=0) — repair on cooldown, not retrying yet`);
@@ -337,11 +355,14 @@ async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOu
   // The configured host changed since the last call (GAME MODE, or any
   // settings edit). Hand the old host its VRAM back immediately - not on a
   // timer, because the whole point is that he is waiting to start a game.
-  if (_lastConfiguredUrl && _lastConfiguredUrl !== configuredOllamaUrl) {
-    const stranded = _lastConfiguredUrl;
-    releasePinnedModel(stranded, ollamaModel).catch(() => {});
+  // A pinned model runs beside the others, so its host is not a change of host.
+  if (!perModelOllama?.pinned) {
+    if (_lastConfiguredUrl && _lastConfiguredUrl !== configuredOllamaUrl) {
+      const stranded = _lastConfiguredUrl;
+      releasePinnedModel(stranded, ollamaModel).catch(() => {});
+    }
+    _lastConfiguredUrl = configuredOllamaUrl;
   }
-  _lastConfiguredUrl = configuredOllamaUrl;
 
   setTimeout(() => {
     // A turn that took longer than the slow threshold is the strongest signal
@@ -376,6 +397,34 @@ async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOu
     reportOllamaLatency(ollamaUrl, Date.now() - t0, true);
   }
 }
+
+// "reader:<model>": the voice reader (voice-reader.js), else the same model on Ollama, which is
+// slower but always there.
+async function* callReaderStream(prompt, ollamaModel, maxTokens, signal, usageOut, readerOpts) {
+  let yielded = false;
+  try {
+    for await (const piece of readerStream(prompt, maxTokens, signal, usageOut, readerOpts)) {
+      yielded = true;
+      yield piece;
+    }
+    return;
+  } catch (e) {
+    if (yielded || signal?.aborted) throw e;
+    console.warn(`[voice-reader] not answering (${e.cause?.code || e.message}), using Ollama for this turn`);
+  }
+  yield* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOut);
+}
+
+/**
+ * Who answers a student turn. A voice box that stopped answering is routed to the hub's Ollama by
+ * pickHealthyOllama, so the voice reader has to go first by name or it is never reached.
+ */
+export function studentChain(model, backup) {
+  const pin = model.startsWith('ollama:') ? getCustomModelConfig(model.slice('ollama:'.length)) : null;
+  if (pin?.pinned && isOllamaDegraded(pin.url) && backup.startsWith('reader:')) return [backup];
+  return [model, backup].filter(Boolean);
+}
+
 // Classify a model ID into { tier, sizeB } from its name.
 //
 // Used by the resolver's substitution path: when an exact and prefix-family
@@ -815,7 +864,7 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
 // #986 batch 2: accept an external `signal` (AbortSignal) so callers (router /chat/stream,
 // /cancel endpoint) can abort the in-flight Cerebras fetch mid-stream. The internal
 // timeout controller still fires, and either abort source short-circuits the fetch.
-export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id, signal: externalSignal = null } = {}) {
+export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id, signal: externalSignal = null, readerOpts } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
   const startedAt = Date.now(); // #471: t0 for ai_usage.latency_ms
@@ -853,6 +902,11 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
     } else if (model.startsWith('ollama:')) {
       cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
       for await (const chunk of callOllamaStream(prompt, model.replace('ollama:', ''), maxTokens, controller.signal, cerebrasUsage)) {
+        yield chunk;
+      }
+    } else if (model.startsWith('reader:')) {
+      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
+      for await (const chunk of callReaderStream(prompt, model.replace('reader:', ''), maxTokens, controller.signal, cerebrasUsage, readerOpts)) {
         yield chunk;
       }
     } else {
@@ -1158,7 +1212,8 @@ async function _raiseVisionAlert(model, reason) {
   }
 }
 
-export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [] } = {}) {
+// `model` picks the Ollama vision model for this one call (default: model_selections.vision).
+export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [], model = null } = {}) {
   // referenceImages: optional array of base64 strings prepended before the main image.
   // Ollama /api/generate supports images[] — first image(s) are reference, last is live frame.
   const allImages = [...referenceImages, imageBase64];
@@ -1194,11 +1249,11 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   // Captured so the vision_failed alert (raised at the exhausted/throw exits
   // below) can name why the mini PC Ollama primary failed.
   let ollamaFailReason = null;
+  const visionModel = model || _getVisionModel();
 
   // Primary: mini PC Ollama (getOllamaUrl() returns the discovered address)
   try {
     const ollamaUrl = (getOllamaUrl() || 'http://localhost:11434').replace(/\/$/, '');
-    const visionModel = _getVisionModel();
     const res = await fetch(`${ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1233,90 +1288,19 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
     }
   } catch (e) {
     ollamaFailReason = e.message;
-    console.error(`[PAN Vision] Ollama ${_getVisionModel()} failed: ${e.message}`);
+    console.error(`[PAN Vision] Ollama ${visionModel} failed: ${e.message}`);
   }
 
-  // Fallback: Claude API with vision (requires API key)
-  const apiKey = getApiKey('anthropic');
-  if (apiKey) {
-    try {
-      const res = await fetch(ANTHROPIC_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 500,
-          messages: [{
-            role: 'user',
-            content: [
-              ...allImages.map(img => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } })),
-              { type: 'text', text: prompt },
-            ],
-          }],
-        }),
-        signal: AbortSignal.timeout(remaining()),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const text = data.content?.[0]?.text?.trim() || '';
-        logUsage(caller, 'claude-haiku-4-5-20251001', data.usage, prompt.slice(0, 100), { started_at: startedAt });
-        return text;
-      }
-    } catch (e) {
-      console.error(`[PAN Vision] Claude API fallback failed: ${e.message}`);
-    }
-  }
-
-  // If the overall budget already exhausted, bail before even calling Gemini.
-  if (Date.now() >= overallDeadline) {
-    console.warn('[PAN Vision] Overall budget exhausted before Gemini fallback — returning empty result');
-    // Surface user-facing failures in the Alerts panel (de-duped). Background
-    // watchers (screen/webcam) have their own backoff + the steward's
-    // service_down(ollama) alert — don't double-signal on those callers.
-    if (caller === 'vision') {
-      _raiseVisionAlert(_getVisionModel(),
-        ollamaFailReason
-          ? `Mini PC Ollama error: ${ollamaFailReason}. Overall time budget exhausted before a fallback could answer.`
-          : 'Overall time budget exhausted before any provider answered.');
-    }
-    return '';
-  }
-
-  // Fallback: Gemini (if key available)
-  const geminiKey = getApiKey('gemini');
-  if (geminiKey) {
-    try {
-      const genAI = new GoogleGenerativeAI(geminiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-      const result = await model.generateContent([
-        prompt,
-        { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
-      ]);
-      const text = result.response?.text()?.trim() || '';
-      if (text) {
-        const meta = result.response?.usageMetadata;
-        logUsage(caller, 'gemini-2.0-flash', {
-          input_tokens:  meta?.promptTokenCount     || 0,
-          output_tokens: meta?.candidatesTokenCount || 0,
-        }, prompt.slice(0, 100), { started_at: startedAt });
-        return text;
-      }
-    } catch (e) {
-      console.error(`[PAN Vision] Gemini fallback failed: ${e.message}`);
-    }
-  }
+  // No cloud fallback. Images stay on the mini PC: the owner's rule since 2026-07-15
+  // (no Gemini, no Claude API for photos). This used to fall back to Claude Haiku and
+  // then Gemini whenever the local model failed, so a down Ollama sent photos off box.
 
   // All providers exhausted — surface user-facing failures (de-duped).
   if (caller === 'vision') {
-    _raiseVisionAlert(_getVisionModel(),
+    _raiseVisionAlert(visionModel,
       ollamaFailReason ? `Mini PC Ollama error: ${ollamaFailReason}.` : 'No provider produced a result.');
   }
-  throw new Error(`No vision provider available — ${_getVisionModel()} unreachable on mini PC and no API keys configured`);
+  throw new Error(`No vision provider available — ${visionModel} unreachable on mini PC and no API keys configured`);
 }
 
 // #465: source = phone | dashboard | mcp | scout | dream | intuition | router | internal

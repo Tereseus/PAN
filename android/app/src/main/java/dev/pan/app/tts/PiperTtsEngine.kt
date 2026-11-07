@@ -54,6 +54,10 @@ class PiperTtsEngine(private val context: Context) {
          * volume. Normalise every utterance to a fixed peak instead.
          */
         private const val TARGET_PEAK = 0.95f
+        // Supertonic 3's own list. The sherpa-onnx in the AAR must be 2.0 or newer: older ones
+        // refuse all but en, ko, es, pt and fr, though the model reads them all.
+        private val SUPERTONIC3_LANGS = setOf("en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi",
+            "fr", "hi", "hr", "hu", "id", "it", "lt", "lv", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi")
 
         /** Cap so near-silence is not amplified into hiss. */
         private const val MAX_GAIN = 8f
@@ -116,10 +120,17 @@ class PiperTtsEngine(private val context: Context) {
             // v2 misheard 2.3-6.9% of words at every speed and step count tried; v3 0.7% at
             // 5 steps and 1.20, but 4-5% at 1.35 ("termination"). v3 talks faster on its own:
             // 1.20 is the pace v2 had at 1.35. Each step costs about twice v2's.
+            // The wait for the first sound is nearly all steps: 14 ms fixed + 50 ms a step on the
+            // laptop. PAN's own lines at 1.20, heard back by Parakeet, words wrong / dropped / last
+            // word lost: short lines 3 steps 16 / 25 / 45%, 4 steps 3 / 13 / 19%, 5 steps 6 / 10 / 19%;
+            // longer lines 3 / 0.5 / 12%, 0.5 / 0.3 / 3%, 0.7 / 0.2 / 4% (2026-11-05), so 4. Twelve
+            // written sentences said 3 was enough, and the owner heard it cut words off.
+            // Threads on the Pixel 10 Pro, screen on, 33 letters at 3 steps: 2 473 ms, 3 472, 4 554, 6 669;
+            // past 3 they wait on each other. Screen off they all take 550. xnnpack and nnapi were slower.
             "supertonic3" to VoiceModel("supertonic3", "Supertonic 3 (Clear)", "Clear",
                 "$REL/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
                 "sherpa-onnx-supertonic-3-tts-int8-2026-05-11", 129_000_000L, 44100,
-                kind = "supertonic", sid = 9, numThreads = 4, speed = 1.20f, steps = 5)
+                kind = "supertonic", sid = 9, numThreads = 3, speed = 1.20f, steps = 4)
         )
     }
 
@@ -346,7 +357,61 @@ class PiperTtsEngine(private val context: Context) {
         }
     }
 
-    fun speak(text: String) {
+    /**
+     * Interpreting plays on the normal audio path. The call path is what lets the phone cancel
+     * PAN's voice from the mic, but it is a VoIP call (AUDIO_OUTPUT_FLAG_VOIP_RX, 'speaker (VOICE)'
+     * in the HAL), and the owner said it sounds like one, from 2004. Between one voice on each path
+     * he picked this one (2026-11-06). Nothing cancels PAN from the mic here, so SherpaStreamingStt
+     * throws away what it heard during a line, and talking over PAN takes a voice louder than PAN.
+     */
+    @Volatile var plainPath = false
+        set(value) {
+            if (value && !field) runCatching {
+                (context.getSystemService(Context.AUDIO_SERVICE) as AudioManager).clearCommunicationDevice()
+            }
+            field = value
+        }
+
+    // A line built before anyone asked for it, for speak() to find.
+    private class Built(val text: String, val lang: String?, val sid: Int?, val audio: GeneratedAudio)
+    @Volatile private var built: Built? = null
+
+    /**
+     * Build a line that will probably be said. Interpreting has the translation up to 0.3 s before
+     * it knows the turn is over, and this voice takes 0.5 to 1 s to build a line. Nothing plays, and
+     * the mic stays open: if they talk on, the line is forgotten.
+     */
+    fun prepare(text: String, lang: String?, sid: Int? = null) {
+        val tts = offlineTts ?: return
+        // UNDISPATCHED: in the queue before speak() can be, as in speak().
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            genLock.lock()
+            try {
+                built = Built(text, lang, sid, withContext(Dispatchers.IO) { synthesize(tts, text, lang, sid) })
+            } finally {
+                genLock.unlock()
+            }
+        }
+    }
+
+    /** The first line takes far longer than the rest. Build one that nobody hears. */
+    fun warm() {
+        val tts = offlineTts ?: return
+        scope.launch {
+            genLock.lock()
+            try {
+                withContext(Dispatchers.IO) { synthesize(tts, "Hello, how are you today?", "en") }
+            } finally {
+                genLock.unlock()
+            }
+        }
+    }
+
+    /** Whether this voice can say a language. Supertonic 3 reads 31 with one model. */
+    fun speaks(lang: String) = currentVoice?.id == "supertonic3" && lang in SUPERTONIC3_LANGS
+
+    /** [sid] is a voice for this line, where the talk has one per person. */
+    fun speak(text: String, lang: String? = null, sid: Int? = null) {
         val tts = offlineTts
         if (text.isBlank() || tts == null) return
         // NO stop() here. That cancelled the sentence currently being spoken, and
@@ -361,13 +426,16 @@ class PiperTtsEngine(private val context: Context) {
             var play = false
             try {
                 genLock.lock(); gen = true
-                val audio = withContext(Dispatchers.IO) { synthesize(tts, text) }
+                val ready = built?.takeIf { it.text == text && it.lang == lang && it.sid == sid }
+                built = null
+                val audio = ready?.audio ?: withContext(Dispatchers.IO) { synthesize(tts, text, lang, sid) }
+                val samples = if (currentVoice?.kind == "supertonic") trimQuiet(audio.samples, audio.sampleRate) else audio.samples
                 // Queue for the speaker BEFORE the next sentence may synthesise, so sentences
                 // play in the order they were made. Waiting here is the one-sentence lookahead.
                 playLock.lock(); play = true
                 genLock.unlock(); gen = false
-                if (audio.samples.isNotEmpty() && isActive) {
-                    playAudio(audio.samples, audio.sampleRate)
+                if (samples.isNotEmpty() && isActive) {
+                    playAudio(samples, audio.sampleRate)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -384,7 +452,50 @@ class PiperTtsEngine(private val context: Context) {
         }
     }
 
-    private fun synthesize(tts: OfflineTts, text: String): GeneratedAudio {
+    /** Sound is starting, for the card's stop to voice time. */
+    var onPlayStart: (() -> Unit)? = null
+
+    /**
+     * Debug (TEST_TTS_BENCH): how long clauses take to build on this phone, by thread count, step
+     * count and provider. No sound. A second engine, so the real voice stays loaded.
+     */
+    fun benchSupertonic(threads: List<Int>, steps: List<Int>, provider: String, reps: Int) {
+        val voice = currentVoice ?: return
+        val dir = File(modelsDir, voice.id)
+        val texts = listOf("Paris.", "It depends on how you look at it,",
+            "The panel is 0.8 mm, so the cover glass decides how thick it gets.")
+        for (n in threads) {
+            val engine = try {
+                OfflineTts(assetManager = null, config = OfflineTtsConfig(model = OfflineTtsModelConfig(
+                    supertonic = OfflineTtsSupertonicModelConfig(
+                        textEncoder = File(dir, "text_encoder.int8.onnx").absolutePath,
+                        durationPredictor = File(dir, "duration_predictor.int8.onnx").absolutePath,
+                        vectorEstimator = File(dir, "vector_estimator.int8.onnx").absolutePath,
+                        vocoder = File(dir, "vocoder.int8.onnx").absolutePath,
+                        voiceStyle = File(dir, "voice.bin").absolutePath,
+                        ttsJson = File(dir, "tts.json").absolutePath,
+                        unicodeIndexer = File(dir, "unicode_indexer.bin").absolutePath
+                    ),
+                    numThreads = n, debug = false, provider = provider)))
+            } catch (e: Exception) {
+                Log.e(TAG, "BENCH provider=$provider threads=$n failed: ${e.message}")
+                continue
+            }
+            for (s in steps) for (t in texts) {
+                val ms = (0..reps).map {
+                    CpuBoost.burst(context)
+                    val t0 = SystemClock.elapsedRealtime()
+                    engine.generateWithConfig(t, GenerationConfig(silenceScale = silenceScale, speed = voice.speed, sid = voice.sid, numSteps = s))
+                    (SystemClock.elapsedRealtime() - t0).also { CpuBoost.done(it) }
+                }.drop(1).sorted()
+                Log.i(TAG, "BENCH provider=$provider threads=$n steps=$s chars=${t.length} median=${ms[ms.size / 2]} min=${ms.first()} max=${ms.last()}")
+            }
+            engine.release()
+        }
+        Log.i(TAG, "BENCH done")
+    }
+
+    private fun synthesize(tts: OfflineTts, text: String, lang: String? = null, lineSid: Int? = null): GeneratedAudio {
         val cleaned = text
             .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
             .replace(Regex("\\*(.+?)\\*"), "$1")
@@ -405,10 +516,24 @@ class PiperTtsEngine(private val context: Context) {
         val genStart = SystemClock.elapsedRealtime()
         VoiceEvents.emit("tts_gen_start", "chars" to spoken.length)
         val voice = currentVoice
-        val speed = if (speedOverride > 0f) speedOverride else voice?.speed ?: 1.0f
+        // A line of a few words has nothing around it to carry a rushed sound: at 1.20, 39 of 48
+        // came out whole; at 1.0, 47 (2026-11-05).
+        val short = voice?.kind == "supertonic" && spoken.split(Regex("\\s+")).size <= 3
+        // An interpreted line has to be understood by a stranger, in full. Read back by our ears,
+        // wrong sounds at 1.2 / 1.0: English 2.8% / 0.9%, Greek 2.2% / 1.1%, and Japanese 37% / 8%,
+        // because Supertonic rushes kanji: its 1.0 is 30% faster than the Android voice. At 0.8 it
+        // is that voice's pace, and 1% (Android voice 2.8%), for about 10% more time to build
+        // (evals/ears/voice_readback.py, 2026-11-06).
+        val speed = when {
+            speedOverride > 0f -> speedOverride
+            lang == "ja" -> 0.8f
+            lang != null || short -> 1.0f
+            else -> voice?.speed ?: 1.0f
+        }
         val audio: GeneratedAudio = if (voice?.kind == "supertonic") {
             tts.generateWithConfig(spoken, GenerationConfig(silenceScale = silenceScale, speed = speed,
-                sid = voice.sid, numSteps = if (supertonicSteps > 0) supertonicSteps else voice.steps))
+                sid = lineSid ?: voice.sid, numSteps = if (supertonicSteps > 0) supertonicSteps else voice.steps,
+                extra = if (lang != null) mapOf("lang" to lang) else emptyMap()))
         } else {
             tts.generate(text = spoken, sid = voice?.sid ?: 0, speed = speed)
         }
@@ -417,6 +542,45 @@ class PiperTtsEngine(private val context: Context) {
         VoiceEvents.emit("tts_gen_end", "ms" to genMs,
             "samples" to audio.samples.size, "rate" to audio.sampleRate)
         return audio
+    }
+
+    /**
+     * Supertonic leaves about 0.3 s of quiet before a line and 0.35 s after it. With the join,
+     * that was 0.8 s of nothing between two sentences, which is what the owner heard as choppy,
+     * and the first word of every reply came 0.3 s late (2026-11-05). Cut at 40 dB under the
+     * line's loudest moment, keeping a little either side for a soft first or last sound.
+     */
+    private fun trimQuiet(x: FloatArray, rate: Int): FloatArray {
+        val win = rate / 100
+        val frames = if (win > 0) x.size / win else 0
+        if (frames == 0) return x
+        val level = FloatArray(frames) { f ->
+            var sum = 0f
+            for (i in f * win until (f + 1) * win) sum += x[i] * x[i]
+            sum / win
+        }
+        val quiet = level.max() * 1e-4f   // power, so 40 dB
+        val first = level.indexOfFirst { it > quiet }
+        val last = level.indexOfLast { it > quiet }
+        if (first < 0) return x
+        return x.copyOfRange(maxOf(0, first * win - rate / 50), minOf(x.size, (last + 1) * win + rate * 8 / 100))
+    }
+
+    fun toLoudspeaker() {
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val current = am.communicationDevice?.type
+            if (current == null || current == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) {
+                val speaker = am.availableCommunicationDevices
+                    .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (speaker != null) {
+                    val ok = am.setCommunicationDevice(speaker)
+                    Log.i(TAG, "routed to loudspeaker: $ok (was $current)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "speaker routing failed: ${e.message}")
+        }
     }
 
     private suspend fun playAudio(samples: FloatArray, sampleRate: Int) = withContext(Dispatchers.IO) {
@@ -439,8 +603,10 @@ class PiperTtsEngine(private val context: Context) {
         val drive = 1.7f
         val norm = tanh(drive)
         val shortSamples = ShortArray(samples.size)
+        // Not on the normal path: what he chose there was played clean, and the call path's
+        // narrow sound was hiding what this does to a full one.
         for (i in samples.indices) {
-            val driven = tanh(samples[i] * gain * drive) / norm
+            val driven = if (plainPath) samples[i] * gain else tanh(samples[i] * gain * drive) / norm
             val clamped = driven.coerceIn(-1f, 1f)
             shortSamples[i] = (clamped * 32767f).toInt().toShort()
         }
@@ -457,20 +623,7 @@ class PiperTtsEngine(private val context: Context) {
         //
         // Only overridden when the current device IS the earpiece, so a connected
         // Bluetooth headset or wired headphones keep the audio they should get.
-        try {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val current = am.communicationDevice?.type
-            if (current == null || current == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) {
-                val speaker = am.availableCommunicationDevices
-                    .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                if (speaker != null) {
-                    val ok = am.setCommunicationDevice(speaker)
-                    Log.i(TAG, "routed to loudspeaker: $ok (was $current)")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "speaker routing failed: ${e.message}")
-        }
+        if (!plainPath) toLoudspeaker()
 
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val bufSize = maxOf(minBuf, shortSamples.size * 2)
@@ -481,7 +634,7 @@ class PiperTtsEngine(private val context: Context) {
                 // VOICE_COMMUNICATION routes through the telephony audio path.
                 // When AudioManager is in MODE_IN_COMMUNICATION, AEC can cancel this output
                 // from the mic signal — preventing Piper TTS bleed from triggering barge-in.
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setUsage(if (plainPath) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -494,6 +647,7 @@ class PiperTtsEngine(private val context: Context) {
         // The benchmark's "PAN started talking". Output latency after this is the
         // device's, and the acoustic run measures it.
         VoiceEvents.emit("tts_play_start", "frames" to shortSamples.size, "rate" to sampleRate)
+        onPlayStart?.invoke()
         val written = track.write(shortSamples, 0, shortSamples.size)
         Log.i(TAG, "Wrote $written/${shortSamples.size} samples, state=${track.playState}")
         // Wait for playback to ACTUALLY finish, not for a computed duration.

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -60,14 +61,28 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Self-update check — non-blocking, runs once per launch.
+        // Self-update check — non-blocking, runs once per launch (not on rotation),
+        // and says what it found so an update never goes unnoticed.
         // Delay 8s so Tailscale has time to come up (UpdateChecker prefers
         // the tailnet base URL and falls back to LAN if it isn't ready).
-        lifecycleScope.launch {
-            delay(8_000)
-            updateChecker.checkAndInstall(this@MainActivity, silent = true)
+        if (savedInstanceState == null) {
+            lifecycleScope.launch {
+                delay(8_000)
+                when (val found = updateChecker.check()) {
+                    is UpdateChecker.Result.UpdateAvailable -> {
+                        toast("Update ${found.versionName} found, downloading…")
+                        val done = updateChecker.checkAndInstall(this@MainActivity)
+                        if (done is UpdateChecker.Result.Error) toast("Update failed: ${done.message}")
+                    }
+                    is UpdateChecker.Result.UpToDate -> toast("PAN ${BuildConfig.VERSION_NAME} is up to date")
+                    is UpdateChecker.Result.Error -> toast("Couldn't check for updates: ${found.message}")
+                    else -> {}
+                }
+            }
         }
     }
+
+    private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
 
     /**
      * Only the power button silences TTS.

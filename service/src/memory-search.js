@@ -13,6 +13,7 @@
 // `phone-*`, etc. will plug in with zero changes here.
 
 import { createRequire } from 'module';
+import { Worker } from 'node:worker_threads';
 const require = createRequire(import.meta.url);
 const sqliteVec = require('sqlite-vec');
 
@@ -452,6 +453,55 @@ async function _backfillEmbeddings_mainThread(scope = 'main', concurrency = 1) {
   }
 }
 
+// The vector half of a search for the main database, off the main thread. On it, sqlite-vec's
+// scan froze the whole hub for its length, so the vectors live in memory on a thread of their own
+// (memory-vector-worker.js). The first search after a start waits for them to load.
+let _vectors = null;
+
+function vectorWorker(path) {
+  if (_vectors) return _vectors;
+  const worker = new Worker(new URL('./memory-vector-worker.js', import.meta.url), { workerData: { path, dim: EMBED_DIM } });
+  const pending = new Map();
+  const v = { worker, pending, next: 1 };
+  const fail = (err) => {
+    if (_vectors === v) _vectors = null;
+    for (const p of pending.values()) p.reject(err);
+    pending.clear();
+  };
+  worker.on('message', (msg) => {
+    if (msg.log) { console.log(`[PAN MemorySearch] ${msg.log}`); return; }
+    const p = pending.get(msg.id);
+    if (!p) return;   // already timed out
+    pending.delete(msg.id);
+    if (msg.error) p.reject(new Error(msg.error)); else p.resolve(msg.rows);
+  });
+  worker.on('error', fail);
+  worker.on('exit', () => fail(new Error('vector thread exited')));
+  worker.unref();
+  _vectors = v;
+  return v;
+}
+
+// A voice turn calls this first: the vectors take 8 s to load, and a recall that found them
+// missing would get FTS alone.
+function warmVectors() {
+  if (!_vectors) vectorWorker(getDb('main').name).worker.postMessage({});
+}
+
+function vectorSearch(path, blob, limit, timeoutMs) {
+  const v = vectorWorker(path);
+  const id = v.next++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      v.pending.delete(id);
+      reject(new Error(`vector search over ${timeoutMs}ms`));
+    }, timeoutMs);
+    const done = (fn) => (value) => { clearTimeout(timer); fn(value); };
+    v.pending.set(id, { resolve: done(resolve), reject: done(reject) });
+    v.worker.postMessage({ id, blob, limit });
+  });
+}
+
 /**
  * Hybrid search. Runs FTS5 and vector search in parallel, then fuses the
  * two ranked lists with reciprocal rank fusion.
@@ -467,6 +517,7 @@ async function _backfillEmbeddings_mainThread(scope = 'main', concurrency = 1) {
  * @param {string} opts.scope - DB scope tag (default 'main')
  * @param {number} opts.limit - max results returned (default 20)
  * @param {number} opts.candidates - per-method candidate pool size (default 60)
+ * @param {number} opts.vecTimeoutMs - how long to wait for the vector half (default 30 s)
  * @returns {Promise<Array>} merged + ranked results with event metadata
  */
 async function searchMemory(query, opts = {}) {
@@ -528,14 +579,12 @@ async function searchMemory(query, opts = {}) {
   // the cause of the [loop-block] 6000ms entries in hub.log, which appear
   // immediately after every turn classified intent=memory action=recall.
   //
-  // It also means a Promise.race timeout around searchMemory can NEVER bound
-  // it. A race cannot interrupt synchronous work, and while the scan runs the
-  // timer it is racing against cannot even be serviced. Any caller relying on
-  // one for latency is relying on nothing.
+  // So the main database's vectors live on their own thread (vectorSearch): by 2026-11-05 that
+  // scan took 8 to 21.7 s at 159k rows. opts.vecTimeoutMs is how long this search waits for it:
+  // past that it returns what FTS found. The other scopes are small and scan in place.
   //
-  // So the interactive paths skip it. Lexical recall at 2ms beats semantic
-  // recall that stops PAN answering for five seconds. Background and offline
-  // callers, which can afford the stall, still get the full hybrid search.
+  // The every-turn paths still skip it: lexical recall at 2ms beats semantic recall that holds
+  // up every reply.
   if (opts.skipVector) {
     if (opts.caller) console.log(`[PAN MemorySearch] FTS-only for caller=${opts.caller} (vec scan skipped)`);
   } else {
@@ -550,13 +599,15 @@ async function searchMemory(query, opts = {}) {
       ),
     ]);
     const blob = toBlob(qVec);
-    vecRows = db.prepare(`
-      SELECT rowid AS id, distance
-      FROM event_embeddings
-      WHERE embedding MATCH ?
-      ORDER BY distance
-      LIMIT ?
-    `).all(blob, candidates);
+    vecRows = scope === 'main'
+      ? await vectorSearch(db.name, blob, candidates, opts.vecTimeoutMs ?? 30_000)
+      : db.prepare(`
+        SELECT rowid AS id, distance
+        FROM event_embeddings
+        WHERE embedding MATCH ?
+        ORDER BY distance
+        LIMIT ?
+      `).all(blob, candidates);
   } catch (err) {
     // Fall through to FTS5-only ranking — the function still returns useful
     // results from lexical hits. Logged at warn level so the degradation is
@@ -848,6 +899,7 @@ function backfillStatus(scope = 'main') {
 export {
   ensureInitialized,
   searchMemory,
+  warmVectors,
   embedEvent,
   backfillEmbeddings,
   backfillStatus,

@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { run, get, all, insert, detectProject, indexEventFTS, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
 import { shouldStoreEvent } from '../event-filters.js';
-import { broadcastNotification, broadcastChatUpdate, addPendingPermission, getPendingPermissions, clearPermission, setInFlightTool, clearInFlightTool, findSessionByClaudeId } from '../terminal-bridge.js';
+import { broadcastNotification, broadcastChatUpdate, setInFlightTool, clearInFlightTool, findSessionByClaudeId } from '../terminal-bridge.js';
+import { askForAnswer, dropRequest, dropSessionRequests } from '../permission-requests.js';
 import { nudgeTranscript } from '../transcript-watcher.js';
 import { buildContext as buildMemoryContext } from '../memory/index.js';
 import { reconcileTasks } from '../memory/consolidation.js';
 import { buildSessionSummary, getSessionRecapText, getRecentProjectRecap } from '../session-summary.js';
 import { createAlert } from './dashboard.js';
+import { noteClaudePrompt } from '../conv-state-watcher.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -17,7 +19,14 @@ const INJECTED_CONTEXT_WARN = 6000; // ~1,500 tokens — #700 fix: raised thresh
 
 const router = Router();
 
-// PermissionRequest is handled separately — it's BLOCKING (Claude Code waits for the response)
+// Held under the hook's own 120 s timeout. Claude Code shows its prompt beside this call, so waiting
+// here delays nothing at the screen.
+const ANSWER_WAIT_MS = 110_000;
+// These need the person's own words, so a yes from the phone cannot answer them.
+const NEEDS_THE_PERSON = new Set(['AskUserQuestion', 'ExitPlanMode']);
+
+// BLOCKING: Claude Code waits on this call. No decision leaves its own prompt up. Answering deny here
+// cancelled that prompt, and any question Claude was asking, after 30 s (2026-11-06).
 router.post('/PermissionRequest', async (req, res) => {
   const payload = req.body;
 
@@ -37,26 +46,6 @@ router.post('/PermissionRequest', async (req, res) => {
       description = `${toolName}: ${JSON.stringify(toolInput).substring(0, 150)}`;
     }
 
-    // Store as pending permission with a unique ID
-    const permId = Date.now();
-    const permData = {
-      id: permId,
-      session_id: sessionId,
-      project: cwd,
-      prompt: description.substring(0, 300),
-      tool_name: toolName,
-      tool_input: toolInput,
-      timestamp: new Date().toISOString(),
-      response: null, // will be set by mobile user
-    };
-    addPendingPermission(permData);
-
-    // Notify dashboard clients
-    broadcastNotification('permission_prompt', permData);
-
-    console.log(`[PAN Hook] PermissionRequest: ${description.substring(0, 100)} — waiting for mobile response...`);
-
-    // Store the event
     const dataStr = JSON.stringify(payload);
     const eventId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, user_id, org_id) VALUES (:sid, :type, :data, :uid, :org_id)`, {
       ':sid': sessionId,
@@ -66,80 +55,33 @@ router.post('/PermissionRequest', async (req, res) => {
     });
     indexEventFTS(eventId, 'PermissionRequest', dataStr);
 
-    // Poll for mobile user's response — check every 1 second for up to 115 seconds
-    const MAX_WAIT = 115000;
-    const POLL_INTERVAL = 1000;
-    const startTime = Date.now();
+    if (NEEDS_THE_PERSON.has(toolName)) return res.status(200).end();
 
-    const result = await new Promise((resolve) => {
-      let isPolling = false; // prevent concurrent IPC calls from piling up
-      let resolved = false;  // guard: Promise.resolve is a no-op after first call but clearInterval isn't
-      function settle(value) {
-        if (resolved) return;
-        resolved = true;
-        clearInterval(timer);
-        resolve(value);
-      }
+    const permData = {
+      session_id: sessionId,
+      project: cwd,
+      prompt: description.substring(0, 300),
+      tool_name: toolName,
+      tool_input: toolInput,
+      timestamp: new Date().toISOString(),
+    };
+    const { id, answer } = askForAnswer(permData, ANSWER_WAIT_MS);
+    res.on('close', () => dropRequest(id));
+    broadcastNotification('permission_prompt', { ...permData, id });
+    console.log(`[PAN Hook] PermissionRequest: ${description.substring(0, 100)} — waiting for an answer...`);
 
-      // The setInterval callback is async — its returned Promise is discarded by setInterval.
-      // Attach an explicit .catch() so any unexpected throw becomes a logged deny, not an
-      // unhandled rejection that can escape to the process-level handler and (on Node <18) crash.
-      const timer = setInterval(() => {
-        if (isPolling || resolved) return;
-        isPolling = true;
-        (async () => {
-          try {
-            // getPendingPermissions() may return a Promise (Craft IPC mode) or an array
-            const pendingRaw = getPendingPermissions();
-            const pending = Array.isArray(pendingRaw)
-              ? pendingRaw
-              : await Promise.resolve(pendingRaw).catch(() => []);
-            const perm = Array.isArray(pending) ? pending.find(p => p.id === permId) : undefined;
-
-            if (perm && perm.response) {
-              // User responded!
-              console.log(`[PAN Hook] PermissionRequest response: ${perm.response} (${Date.now() - startTime}ms)`);
-              try { clearPermission(permId); } catch {}
-              settle(perm.response); // 'allow' or 'deny'
-            } else if (!perm) {
-              // Permission was removed (e.g. 30s auto-expiry in getPendingPermissions) — deny
-              console.log(`[PAN Hook] PermissionRequest expired (removed from queue)`);
-              settle('deny');
-            } else if (Date.now() - startTime > MAX_WAIT) {
-              // 115s hard timeout — deny
-              console.log(`[PAN Hook] PermissionRequest timed out after ${MAX_WAIT}ms — denying`);
-              try { clearPermission(permId); } catch {}
-              settle('deny');
-            }
-          } catch (pollErr) {
-            console.error(`[PAN Hook] PermissionRequest poll error (denying):`, pollErr?.message);
-            settle('deny');
-          } finally {
-            isPolling = false;
-          }
-        })().catch(escapeErr => {
-          // Belt-and-suspenders: if the async IIFE itself rejects past the inner catch,
-          // log it and deny rather than creating an unhandled rejection.
-          console.error(`[PAN Hook] PermissionRequest IIFE escaped catch:`, escapeErr?.message);
-          settle('deny');
-        });
-      }, POLL_INTERVAL);
-    });
-
+    const response = await answer;
+    console.log(`[PAN Hook] PermissionRequest ${id}: ${response || 'no answer, left to the prompt'}`);
+    if (!response) return res.status(200).end();
     res.status(200).json({
       hookSpecificOutput: {
         hookEventName: 'PermissionRequest',
-        decision: { behavior: result }
+        decision: response === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: 'Denied from PAN.' }
       }
     });
   } catch (err) {
     console.error(`[PAN Hook] Error handling PermissionRequest:`, err.message);
-    res.status(200).json({
-      hookSpecificOutput: {
-        hookEventName: 'PermissionRequest',
-        decision: { behavior: 'deny' }
-      }
-    });
+    res.status(200).end();
   }
 });
 
@@ -500,7 +442,7 @@ router.post('/internal/session-nudges', (req, res) => {
 // MIDDLE of a session, which is exactly the shape an outage leaves: the hub
 // died, came back, and the turns that resumed afterwards pushed MAX(created_at)
 // past the gap. Dedupe is done by content below instead.
-router.post('/internal/session-watermark', (req, res) => {
+router.post('/internal/session-watermark', async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.session_ids) ? req.body.session_ids : [];
     if (!ids.length) return res.status(400).json({ ok: false, error: 'missing session_ids' });
@@ -509,8 +451,13 @@ router.post('/internal/session-watermark', (req, res) => {
     const marks = {};
     for (const id of ids) {
       if (typeof id !== 'string' || !id) continue;
-      const row = get('SELECT MAX(created_at) AS last, COUNT(*) AS n FROM events WHERE session_id = :sid', { ':sid': id });
-      marks[id] = { last: row?.last || null, events: row?.n || 0 };
+      // Together, MAX(created_at) and COUNT(*) read every row of the session: 18 s on the longest
+      // thread, 32 s for a whole call, and voice stalled behind it (2026-11-05). The count alone
+      // stays in the index and the newest id is one row.
+      const n = get('SELECT COUNT(*) AS n FROM events WHERE session_id = :sid', { ':sid': id })?.n || 0;
+      const last = get('SELECT created_at FROM events WHERE session_id = :sid ORDER BY id DESC LIMIT 1', { ':sid': id });
+      marks[id] = { last: last?.created_at || null, events: n };
+      await new Promise(setImmediate);
     }
     const clock = get("SELECT datetime('now') AS utc, datetime('now','localtime') AS local");
     res.status(200).json({ ok: true, marks, hub_now: clock });
@@ -550,7 +497,7 @@ function _turnKey(role, text, localMinute) {
 // nudges, WS notifications and a transcript re-read on every Stop - all correct
 // for a turn happening now, all nonsense for a turn from three months ago, and
 // 56k of them would flatten the hub.
-router.post('/internal/transcript-sync', (req, res) => {
+router.post('/internal/transcript-sync', async (req, res) => {
   try {
     const { session_id: sessionId, cwd = '', transcript_path = null, model = null, entries } = req.body || {};
     if (!sessionId) return res.status(400).json({ ok: false, error: 'missing session_id' });
@@ -581,23 +528,31 @@ router.post('/internal/transcript-sync', (req, res) => {
 
     // Everything this session already holds, in both forms it can take:
     // transcript_uuid for rows a previous sync wrote, content hash for rows a
-    // live hook wrote (those have no uuid to match on).
+    // live hook wrote (those have no uuid to match on). In pages: a long thread's rows at once
+    // held the main thread for many seconds, and everything else waited on it.
     const seenUuid = new Set();
     const seenKey = new Set();
-    for (const r of all(
-      `SELECT event_type, data, substr(created_at, 1, 16) AS min FROM events
-       WHERE session_id = :sid AND event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage')`,
-      { ':sid': sessionId }
-    )) {
-      let d;
-      try { d = JSON.parse(r.data); } catch { continue; }
-      if (d.transcript_uuid) seenUuid.add(d.transcript_uuid);
-      if (d.prompt) seenKey.add(_turnKey('user', d.prompt, r.min));
-      // last_assistant_message (Stop) and text (AssistantMessage) are the same
-      // reply seen through two different capture paths; both key the same way.
-      const reply = d.last_assistant_message || d.text;
-      if (reply) seenKey.add(_turnKey('assistant', reply, r.min));
-    }
+    let after = 0, page;
+    do {
+      page = all(
+        `SELECT id, event_type, data, substr(created_at, 1, 16) AS min FROM events
+         WHERE session_id = :sid AND +event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage')
+           AND id > :after ORDER BY id LIMIT 200`,
+        { ':sid': sessionId, ':after': after }
+      );
+      for (const r of page) {
+        let d;
+        try { d = JSON.parse(r.data); } catch { continue; }
+        if (d.transcript_uuid) seenUuid.add(d.transcript_uuid);
+        if (d.prompt) seenKey.add(_turnKey('user', d.prompt, r.min));
+        // last_assistant_message (Stop) and text (AssistantMessage) are the same
+        // reply seen through two different capture paths; both key the same way.
+        const reply = d.last_assistant_message || d.text;
+        if (reply) seenKey.add(_turnKey('assistant', reply, r.min));
+      }
+      after = page.at(-1)?.id;
+      await new Promise(setImmediate);
+    } while (page.length === 200);
 
     let written = 0, skipped = 0;
     for (let i = 0; i < entries.length; i++) {
@@ -721,6 +676,9 @@ router.post('/:eventType', (req, res) => {
     if (!sessionId) {
       return res.status(400).json({ error: 'missing session_id' });
     }
+
+    // The proxies never pass on a dropped call, so these are how a prompt answered at the screen ends here.
+    if (eventType === 'PostToolUse' || eventType === 'Stop' || eventType === 'SessionEnd') dropSessionRequests(sessionId);
 
     // Ensure session exists — upsert on every event so we never miss a session
     // (SessionStart hook often fails because PAN server isn't running yet when Claude starts)
@@ -1097,6 +1055,15 @@ router.post('/:eventType', (req, res) => {
           timestamp: new Date().toISOString(),
         });
       } catch {}
+    }
+
+    // A prompt he dictated to Claude was heard by the phone too: PAN stays quiet for a while
+    // unless he says its name (noteClaudePrompt). Prompts the thread relay typed for him are
+    // skipped, because those words were said TO PAN.
+    if (eventType === 'UserPromptSubmit' && typeof payload.prompt === 'string') {
+      let relayed = false;
+      try { relayed = !!get(`SELECT 1 AS x FROM thread_relay_jobs WHERE created_at > :t LIMIT 1`, { ':t': Date.now() - 3 * 60_000 }); } catch {}
+      if (!relayed) { try { noteClaudePrompt(payload.prompt, req.org_id || 'org_personal'); } catch {} }
     }
 
     // Bug #769: on UserPromptSubmit, claim-and-consume any pending session_nudges

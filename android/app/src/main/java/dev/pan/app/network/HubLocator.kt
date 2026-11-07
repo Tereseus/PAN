@@ -51,6 +51,7 @@ class HubLocator @Inject constructor(
 
         /** Stable MagicDNS name. Rename the hub machine to this in Tailscale. */
         const val MAGIC_DNS_NAME = "pan-hub"
+        private const val TAILNET_NAME = "minipc-pan-hub"
         const val PORT = 7777
 
         /** Last-resort guesses. Deliberately short — discovery, not a subnet scan. */
@@ -184,9 +185,14 @@ class HubLocator @Inject constructor(
     /** Caller MUST hold probeLock. */
     private fun scan(proxyBase: String?): String? {
         val candidates = buildList {
-            prefs.getString(KEY_LAST_GOOD, null)?.let { add(it) }
+            // The live tunnel first: the hub's Wi-Fi port is closed, so a saved LAN address
+            // ahead of it cost a full probe timeout on every scan.
             proxyBase?.let { add(it) }
+            prefs.getString(KEY_LAST_GOOD, null)?.let { add(it) }
             add("http://$MAGIC_DNS_NAME:$PORT")
+            // What the hub is really called. With the regular Tailscale app holding the phone's
+            // one VPN slot there is no tunnel, and this name is the only way in.
+            add("http://$TAILNET_NAME:$PORT")
             addAll(LAN_FALLBACKS)
         }.distinct()
 

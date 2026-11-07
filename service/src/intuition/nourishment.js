@@ -16,7 +16,7 @@
 //   • Resolved via face-id lock from webcam-watcher. Falls back to 'owner'
 //     (the single-person default) until multi-user identity fusion lands.
 
-import { observe, satisfy } from './needs.js';
+import { observe, satisfy, canonicalUserId } from './needs.js';
 import { writeThought } from './mind.js';
 import { getWebcamContext } from '../webcam-watcher.js';
 
@@ -26,7 +26,7 @@ import { getWebcamContext } from '../webcam-watcher.js';
 export function currentUserId() {
   try {
     const ctx = getWebcamContext && getWebcamContext();
-    if (ctx?.identity && ctx.identity !== 'unknown') return ctx.identity;
+    if (ctx?.identity && ctx.identity !== 'unknown') return canonicalUserId(ctx.identity);
   } catch { /* fall through */ }
   return 'owner';
 }

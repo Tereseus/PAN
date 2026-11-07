@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.pan.app.BuildConfig
 import dev.pan.app.ai.LocalLlm
 import dev.pan.app.ai.MediaPipeLlm
 import dev.pan.app.data.DataRepository
@@ -391,28 +392,35 @@ class SettingsViewModel @Inject constructor(
     // --- Manual OTA update ---
     //
     // Pulls the same self-update flow MainActivity fires ~8s after launch, but
-    // on-demand from a Settings button. silent = false so any failure surfaces
-    // to the user via the snackbar instead of being swallowed. checkAndInstall
-    // already runs its network/IO on Dispatchers.IO internally, so launching
-    // from viewModelScope (Main) is safe.
+    // on-demand from a Settings button. Says "found, downloading" before the
+    // download starts, then how it ended, via the snackbar. If the launch check
+    // is still downloading, checkAndInstall waits for it instead of starting a
+    // second download. UpdateChecker runs its network/IO on Dispatchers.IO
+    // internally, so launching from viewModelScope (Main) is safe.
     fun checkForUpdate() {
         if (_updateChecking.value) return
         _updateChecking.value = true
         viewModelScope.launch {
             try {
-                when (val result = updateChecker.checkAndInstall(application, silent = false)) {
+                when (val found = updateChecker.check()) {
                     is UpdateChecker.Result.UpToDate ->
-                        _toastMessage.value = "You're on the latest version"
-                    is UpdateChecker.Result.UpdateAvailable ->
-                        _toastMessage.value = "Updating to ${result.versionName}…"
-                    is UpdateChecker.Result.UpdateInstalling ->
-                        _toastMessage.value = "Updating to ${result.versionName}…"
+                        _toastMessage.value = "You're on the latest version (${BuildConfig.VERSION_NAME})"
                     is UpdateChecker.Result.Error ->
-                        _toastMessage.value = "Update check failed: ${result.message}"
+                        _toastMessage.value = "Update check failed: ${found.message}"
+                    is UpdateChecker.Result.UpdateAvailable -> {
+                        _toastMessage.value = "Update ${found.versionName} found, downloading…"
+                        when (val result = updateChecker.checkAndInstall(application)) {
+                            is UpdateChecker.Result.UpdateInstalling ->
+                                _toastMessage.value = "Installing ${result.versionName}…"
+                            is UpdateChecker.Result.UpToDate ->
+                                _toastMessage.value = "You're on the latest version (${BuildConfig.VERSION_NAME})"
+                            is UpdateChecker.Result.Error ->
+                                _toastMessage.value = "Update failed: ${result.message}"
+                            else -> {}
+                        }
+                    }
+                    else -> {}
                 }
-            } catch (e: Exception) {
-                // silent = false re-throws instead of returning Result.Error
-                _toastMessage.value = "Update check failed: ${e.message}"
             } finally {
                 _updateChecking.value = false
             }

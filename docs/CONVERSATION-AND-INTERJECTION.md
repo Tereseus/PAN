@@ -48,7 +48,7 @@ The two loops barely talk to each other. That's the gap.
 │         ├──► reads events, presence, sensors, sessions, screen, webcam       │
 │         ├──► reads recent UserPromptSubmit (terminal traffic)                │
 │         ├──► reads recent wrap_messages (cross-app chat)                     │
-│         ├──► askAI({caller:'intuition-classifier'}, …)  ✅ Cerebras 148/day  │
+│         ├──► readHim() (intuition/reader.js): rules, no model  ✅            │
 │         │       → 6-axis verdict: Where, Activity, Focus, Mood, Urgency,     │
 │         │         Engagement (+ direction, need, complexity, recent_topics)  │
 │         ├──► persistSnapshot()                          ✅ intuition_snapshots│
@@ -116,7 +116,7 @@ The two loops barely talk to each other. That's the gap.
 |---|---|---|---|---|
 | I1 | Tick loop start | ✅ | `intuition/index.js:1300 startIntuition()` | Default cadence in INTUITION_TICK_MS |
 | I2 | Snapshot build | ✅ | `intuition/index.js:270 buildSnapshot()` | Reads 40 recent events + presence + sensors + sessions + 5 recent UserPromptSubmit |
-| I3 | Cerebras classifier call | ✅ | `intuition/index.js:986` (caller='intuition-classifier') | 148 calls today, $2.54 |
+| I3 | Reading him: mood, urgency, wellbeing, awake, need, complexity | ✅ | `intuition/reader.js readHim()`, called in `buildSnapshot()` | Rules over his lines, their pace and his clock, no model (2026-11-03). The cloud classifier it replaced made 433 calls that day |
 | I4 | Persist snapshot | ✅ | `intuition/index.js:841 persistSnapshot()` | `intuition_snapshots` table, indexed by org+user+as_of |
 | I5 | Mind write: writeThought('intuition', …) | ✅ | `intuition/index.js:1076` | Writes only when verdict changes (dedupe via _unchangedStreak) |
 | I6 | Deliberation: score candidates | ⚠️ **PARTIAL** | `intuition/index.js:1083+` | Inline scorer; smart-router action-scoring extension still planned (see PAN-ARCHITECTURE.md line 81) |
@@ -248,10 +248,33 @@ Intuition fed almost entirely by Claude Code prompts: "last heard" was never a v
   what he is doing, where he is or what to do (or with setting `voice_situation` `on`): given
   it every turn on the hub bench it answered "what am I working on?" from the line, but also
   called "How's it going?" room talk. Next retrain: put the line in its training data.
-- **Still open from the audit:** the proactive triggers look for event types nobody writes
-  (`voice_command`, `pan_utterance`) and never fire; the phone is not a presence row between
-  turns; the dashboard panel asks needs for user "Tereseus" while producers write "owner", and
-  compares assumption case-sensitively.
+- **Who he is talking to.** Conversation state now knows three more things
+  (`conv-state-watcher.js`): lines he was dictating to Claude (`noteClaudePrompt`, from every
+  `UserPromptSubmit`; PAN stays quiet unless named for 8 minutes, see FEATURES.md "Dictating
+  to Claude"), whether PAN spoke to him recently (`panSpokeWithin`), and how many lines it
+  overheard from others (`overheardWithin`, dictation excluded). Intuition's `social` gets
+  "PAN", "Claude" and "people nearby" from them, and `engagement` becomes
+  `active_conversation_with_pan` or `dictating_to_claude`; the situation line says when he
+  has been dictating. A real prompt to any Claude session in the last 5 minutes (the desktop
+  app reports here too) adds "Claude" and reads as `working_with_claude`. It used to add
+  "PAN" and read as a conversation with PAN whenever a PAN terminal session was open.
+- **Camera turns.** The phone answers camera lines itself and posts the photo, question and
+  answer to `/api/v1/capture`, which now records them like any answered voice turn. The
+  hub's camera hand-off (`camera:true`, empty reply) is no longer recorded twice.
+- **Phone presence.** Every answered voice turn upserts a `device_presence` row for the phone
+  (platform `android`, activity "talking to PAN", the place as its title). The situation line
+  skips it for "his computer shows", since the place is already there.
+- **Proactive (PAN → him), fixed 2026-11-03.** The deliberation read event types nobody
+  writes (`voice_command`, `dashboard_message`, `router_response`, `pan_utterance`), so its
+  "last input" was always unknown and every quiet/idle rule was dead; it now reads
+  `RouterCommand` and `UserPromptSubmit`. `conv:tangent` compared epoch ms with a datetime
+  string and never matched. The assumption check compared title-cased values ("Not Ok") with
+  `not_ok` and never matched. `state:not_ok` (0.72) and mood (0.70) now clear the 0.7 bar.
+  Delivery: Channel 3 (pan-clients) never reached the phone, so `dispatchAction` adds a
+  Channel 4: a check-in about him (`state:*`, `need:safety`) is queued as a `speak` note,
+  which the phone reads aloud on its 5 s poll, only while PAN answered him by voice in the
+  last 20 minutes and he is not dictating to Claude. The 30 minute dedupe and the 3-ignored
+  snooze still apply. `conv:*` stays text only (Π thread and dashboard).
 
 ## See also
 

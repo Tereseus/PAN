@@ -22,15 +22,16 @@
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
-import { db, get, all, getOllamaUrl, getModelForPurpose } from '../db.js';
-import { askAI } from '../llm.js';
+import { db, get, all } from '../db.js';
 import { getLatestScreenContext, getLatestScreenContextFromDB } from '../screen-watcher.js';
 import { getWebcamContext } from '../webcam-watcher.js';
 import { writeThought, lastThoughtFor } from './mind.js';
 import * as needs from './needs.js';
 import { currentUserId } from './nourishment.js';
 import { dispatchAction } from './action.js';
-import { getConversationState } from '../conv-state-watcher.js';
+import { getConversationState, panSpokeWithin, dictatingToClaude, overheardWithin } from '../conv-state-watcher.js';
+import { readHim } from './reader.js';
+import { hisZone, localHour } from './time.js';
 
 // In-memory snapshot of last intuition verdict — used to compute deltas and
 // avoid restating the same conclusion every 60s. The intuition panel above
@@ -240,6 +241,10 @@ const TOPIC_KEYWORDS = {
   'installer': 'installer / distribution',
 };
 
+// A keyword counts at the start of a word only: as a plain substring, "qr" or "craft" inside
+// another word made the focus jump to "QR onboarding" between two ticks (2026-11-03).
+const TOPIC_KEYWORD_RES = Object.fromEntries(Object.keys(TOPIC_KEYWORDS).map((k) => [k, new RegExp(`\\b${k}`)]));
+
 // Extract a clean topic from conversation messages.
 // Uses keyword matching against known PAN concepts, falls back to project context.
 function extractTopic(messages, projectName) {
@@ -254,7 +259,7 @@ function extractTopic(messages, projectName) {
   // Check for known PAN feature keywords (most specific wins)
   const hits = [];
   for (const [keyword, topic] of Object.entries(TOPIC_KEYWORDS)) {
-    if (blob.includes(keyword)) hits.push(topic);
+    if (TOPIC_KEYWORD_RES[keyword].test(blob)) hits.push(topic);
   }
 
   // Deduplicate and take top 2
@@ -271,7 +276,9 @@ function extractTopic(messages, projectName) {
 function buildSnapshot(trigger = 'heartbeat') {
   const now = Date.now();
   const commander = getCommanderIdentity();
-  const hour = new Date(now).getHours();
+  // His hour, not the hub's: the hub keeps his job's time zone (time.js).
+  const zone = hisZone();
+  const hour = localHour(now, zone.tz);
   const FIVE_MIN = 5 * 60 * 1000;
   const ONE_HOUR = 60 * 60 * 1000;
 
@@ -596,19 +603,29 @@ function buildSnapshot(trigger = 'heartbeat') {
     const age = now - (new Date(m.received_at).getTime() || 0);
     if (age < FIVE_MIN && m.author) social.add(m.author);
   }
-  // If actively in terminal with PAN, that counts
-  if (activeSessions.length > 0) social.add('PAN');
+  // A prompt he gave Claude in the last 5 min. Every Claude session reports UserPromptSubmit
+  // here, the desktop app's included, so this is Claude, not PAN. Session notices don't count.
+  const lastPrompt = recentTerminalMsgs.find(m => isRealMessage(m.content));
+  const lastPromptAge = lastPrompt ? now - (new Date(lastPrompt.created_at).getTime() || 0) : Infinity;
+  if (lastPromptAge < FIVE_MIN) social.add('Claude');
+  // Voice (conv-state-watcher.js): talking with PAN on the phone, dictating to Claude, and
+  // voices the phone heard and let pass. It cannot tell who those are, only that he is not
+  // alone.
+  let voiceWithPan = false, dictating = false;
+  try {
+    voiceWithPan = panSpokeWithin(FIVE_MIN);
+    dictating = !!dictatingToClaude();
+    if (voiceWithPan) social.add('PAN');
+    if (dictating) social.add('Claude');
+    if (overheardWithin(FIVE_MIN) >= 2) social.add('people nearby');
+  } catch {}
 
   // ─── ENGAGEMENT ───
   let engagement = 'alone';
-  if (activeSessions.length > 0) {
-    if (recentTerminalMsgs.length > 0) {
-      const lastMsgAge = now - (new Date(recentTerminalMsgs[0].created_at).getTime() || 0);
-      engagement = lastMsgAge < FIVE_MIN ? 'active_conversation_with_pan' : 'session_open';
-    } else {
-      engagement = 'session_open';
-    }
-  }
+  if (activeSessions.length > 0) engagement = 'session_open';
+  if (lastPromptAge < FIVE_MIN) engagement = 'working_with_claude';
+  if (voiceWithPan) engagement = 'active_conversation_with_pan';
+  if (dictating) engagement = 'dictating_to_claude';
   if (social.size > 1) engagement = 'multi_conversation';   // PAN + others
 
   // ─── DIRECTION — what Commander is heading toward ───
@@ -620,25 +637,24 @@ function buildSnapshot(trigger = 'heartbeat') {
     direction = `developing ${(activeProject.project || '').toLowerCase()}`;
   }
 
-  // ─── MOOD — Commander's emotional state (assumption, NOT medical) ───
-  // v1: infer from interaction patterns. v2: Cerebras reads conversation tone.
-  // NOT a medical device. These are PAN's assumptions about Commander's state.
-  let mood = inferMood(recentTerminalMsgs, recentEvents, hour, now);
-
-  // ─── WELLBEING — simple 3-state: ok / not_ok / emergency ───
-  // NOT medical advice. PAN's assumption based on activity patterns and conversation.
-  // Disclaimer: This is not a medical device. These are automated assumptions only.
-  let wellbeing = inferWellbeing(recentTerminalMsgs, recentEvents, hour, now);
-
-  // ─── URGENCY ───
-  let urgency = 'normal';
-  // If Commander sent multiple messages in quick succession → elevated
-  if (recentTerminalMsgs.length >= 3) {
-    const times = recentTerminalMsgs.slice(0, 3).map(m => new Date(m.created_at).getTime());
-    const span = times[0] - times[2];
-    if (span < 60000) urgency = 'high';       // 3 messages in under a minute
-    else if (span < 180000) urgency = 'elevated';
-  }
+  // ─── MOOD, WELLBEING, URGENCY, NEED, COMPLEXITY, AWAKE ───
+  // Read locally from his own lines, their pace, his clock and how long he has been up
+  // (reader.js). NOT a medical device: these are PAN's assumptions about him.
+  const lastPromptAt = recentTerminalMsgs[0] ? (new Date(recentTerminalMsgs[0].created_at).getTime() || 0) : 0;
+  const read = readHim({
+    now,
+    hour,
+    lines: [
+      ...recentVoiceMsgs.map((m) => ({ text: m.content, at: new Date(m.created_at).getTime() || 0, channel: 'voice' })),
+      ...recentTerminalMsgs.filter((m) => isRealMessage(m.content))
+        .map((m) => ({ text: m.content, at: new Date(m.created_at).getTime() || 0, channel: 'claude' })),
+    ],
+    lastInputAt: Math.max(voiceTime, lastPromptAt) || null,
+    awakeSince: awakeSince(now),
+    activity,
+    focus,
+    dictating,
+  });
 
   // ─── Recent topics (keyword-extracted from terminal + wrap messages) ───
   const recentTopics = [];
@@ -651,7 +667,7 @@ function buildSnapshot(trigger = 'heartbeat') {
   const topicBlob = allRecentText.join(' ').toLowerCase();
   for (const [keyword, topic] of Object.entries(TOPIC_KEYWORDS)) {
     const t = titleCase(topic);
-    if (topicBlob.includes(keyword) && !recentTopics.includes(t)) {
+    if (TOPIC_KEYWORD_RES[keyword].test(topicBlob) && !recentTopics.includes(t)) {
       recentTopics.push(t);
     }
     if (recentTopics.length >= 5) break;
@@ -751,15 +767,16 @@ function buildSnapshot(trigger = 'heartbeat') {
       activity: titleCase(activity),
       social: [...social],
       focus: titleCase(focus),
-      mood: titleCase(mood.state),
-      mood_detail: mood.detail ? mood.detail.charAt(0).toUpperCase() + mood.detail.slice(1) : null,
-      assumption: titleCase(wellbeing.state?.replace(/_/g, ' ')),
-      assumption_detail: wellbeing.detail ? wellbeing.detail.charAt(0).toUpperCase() + wellbeing.detail.slice(1) : null,
-      urgency: titleCase(urgency),
+      mood: titleCase(read.mood.replace(/_/g, ' ')),
+      mood_detail: read.mood_detail,
+      assumption: titleCase(read.assumption.replace(/_/g, ' ')),
+      assumption_detail: read.assumption_detail,
+      urgency: titleCase(read.urgency),
       direction: titleCase(direction),
-      need: null,                               // needs deeper classifier
+      need: read.need ? titleCase(read.need) : null,
       engagement: titleCase(engagement?.replace(/_/g, ' ')),
-      complexity: null,                         // needs classifier
+      complexity: read.complexity ? titleCase(read.complexity) : null,
+      awake: titleCase(read.awake),
       recent_topics: recentTopics.slice(0, 5),
       last_heard: lastHeard || null,
       last_seen: (() => {
@@ -816,9 +833,15 @@ function buildSnapshot(trigger = 'heartbeat') {
       last_update_ms: now,
       confidence,
     },
+    // The reading with its confidences, plus his clock (tz_source: phone, setting or hub).
+    read: { ...read, hour, tz: zone.tz, tz_source: zone.source },
     meta: {
       schema_version: 3,
-      generator: 'intuition-daemon-v1.5-smart',
+      generator: 'intuition-daemon-v1.6-local',
+      reader: 'local',
+      // The dashboard's "Mood read" row shows these.
+      classifier: 'local reader',
+      classified_at: now,
       disclaimer: 'NOT a medical device. Mood and wellbeing are automated assumptions only.',
     },
   };
@@ -826,100 +849,33 @@ function buildSnapshot(trigger = 'heartbeat') {
   return snap;
 }
 
-// ─── Mood inference (NOT medical — PAN's assumptions) ───
-// Reads conversation tone, activity patterns, time of day.
-// Returns { state: string, detail: string }
-function inferMood(terminalMsgs, events, hour, now) {
-  // Defaults
-  let state = 'neutral';
-  let detail = 'no strong signals';
-
-  if (terminalMsgs.length === 0) {
-    // No conversation → infer from time of day only
-    if (hour >= 22 || hour < 6) return { state: 'winding_down', detail: 'late hours, minimal activity' };
-    if (hour >= 6 && hour < 10) return { state: 'starting_up', detail: 'morning hours' };
-    return { state: 'neutral', detail: 'no recent interaction to read' };
-  }
-
-  // Look at message content for tone signals
-  const recentText = terminalMsgs.slice(0, 3).map(m => (m.content || '').toLowerCase()).join(' ');
-  const msgCount = terminalMsgs.length;
-
-  // Excitement / energy markers
-  const excitedWords = ['crazy', 'awesome', 'amazing', 'works', 'fucking', 'dude', 'incredible', 'ridiculous', 'perfect', 'holy', 'wow', 'yes', 'hell yeah', 'jarvis'];
-  const frustratedWords = ['broken', 'wrong', 'fail', 'error', 'stuck', 'doesn\'t work', 'why', 'wtf', 'damn', 'shit broke', 'still broken'];
-  const calmWords = ['ok', 'fine', 'sure', 'alright', 'cool', 'makes sense', 'good'];
-
-  const excitedHits = excitedWords.filter(w => recentText.includes(w)).length;
-  const frustratedHits = frustratedWords.filter(w => recentText.includes(w)).length;
-  const calmHits = calmWords.filter(w => recentText.includes(w)).length;
-
-  if (excitedHits >= 2) {
-    state = 'energized';
-    detail = `high energy — excited about current work`;
-  } else if (frustratedHits >= 2) {
-    state = 'frustrated';
-    detail = `hitting roadblocks — may need clearer answers`;
-  } else if (excitedHits === 1) {
-    state = 'engaged';
-    detail = 'actively invested in the conversation';
-  } else if (frustratedHits === 1) {
-    state = 'impatient';
-    detail = 'something isn\'t going smoothly';
-  } else if (calmHits >= 1) {
-    state = 'calm';
-    detail = 'steady pace, normal flow';
-  }
-
-  // Message velocity — rapid-fire means urgency/excitement
-  if (msgCount >= 3) {
-    const times = terminalMsgs.slice(0, 3).map(m => new Date(m.created_at).getTime());
-    const span = times[0] - times[2];
-    if (span < 60000 && state === 'neutral') {
-      state = 'focused';
-      detail = 'rapid messages — deep in thought';
+// ─── His waking stretch ───
+// When it began: his first voice turn or Claude prompt after the last break of 4 hours or more,
+// within the last 30 hours. Null when there is no such break in the window: a prompt fired by
+// a schedule at night can hide one, and "up 30 hours" from that would be worse than no answer.
+// Runs at most every 10 minutes. Each type's newest rows come off idx_events_type: 2,000 of them
+// reach back days, and it takes 0.07 s. `+event_type` with a created_at bound scanned the whole
+// table instead, 5.7 s on the main thread, so a voice turn stalled every 10 minutes (2026-11-05).
+const SLEEP_GAP_MS = 4 * 60 * 60_000;
+const AWAKE_WINDOW_MS = 30 * 60 * 60_000;
+let _awake = { at: 0, since: null };
+function awakeSince(now = Date.now()) {
+  if (now - _awake.at < 10 * 60_000) return _awake.since;
+  let since = null;
+  try {
+    const times = ['RouterCommand', 'UserPromptSubmit'].flatMap((type) => all(
+      `SELECT created_at FROM events WHERE event_type = :type ORDER BY id DESC LIMIT 2000`,
+      { ':type': type }
+    )).map((r) => new Date(r.created_at).getTime()).filter((t) => t > now - AWAKE_WINDOW_MS);
+    let prev = null;
+    for (const t of times.sort((a, b) => b - a)) {
+      if (prev != null && prev - t >= SLEEP_GAP_MS) { since = prev; break; }
+      prev = t;
     }
-  }
-
-  return { state, detail };
-}
-
-// ─── Assumption inference (NOT medical — PAN's guesses ONLY) ───
-// 3 states: ok, not_ok, emergency
-// This is NOT a medical device. These are PAN's pattern-based guesses.
-function inferWellbeing(terminalMsgs, events, hour, now) {
-  // Default: ok
-  let state = 'ok';
-  let detail = 'normal activity patterns';
-
-  // Check for explicit distress signals in conversation
-  if (terminalMsgs.length > 0) {
-    const recentText = terminalMsgs.slice(0, 5).map(m => (m.content || '').toLowerCase()).join(' ');
-
-    // Only match FIRST-PERSON distress, not discussion about concepts.
-    // Phrases like "I'm hurt" vs "people suing you" — very different.
-    const emergencyWords = ['i need help', 'call 911', 'ambulance', 'can\'t breathe', 'chest pain', 'i\'m hurt', 'i fell', 'i\'m bleeding'];
-    const notOkWords = ['i\'m tired', 'i\'m exhausted', 'i have a headache', 'i\'m sick', 'not feeling well', 'i need a break', 'i\'m stressed', 'i feel like shit'];
-
-    const emergencyHits = emergencyWords.filter(w => recentText.includes(w)).length;
-    const notOkHits = notOkWords.filter(w => recentText.includes(w)).length;
-
-    if (emergencyHits >= 1) {
-      state = 'emergency';
-      detail = 'Commander may need help — first-person distress detected';
-    } else if (notOkHits >= 1) {
-      state = 'not_ok';
-      detail = 'Commander mentioned not feeling well';
-    }
-  }
-
-  // Time-based heuristic: very late + still active = possible fatigue
-  if (state === 'ok' && (hour >= 2 && hour < 6) && terminalMsgs.length > 0) {
-    state = 'not_ok';
-    detail = 'active at unusual hours — possible fatigue';
-  }
-
-  return { state, detail };
+    if (since == null && prev != null && prev - (now - AWAKE_WINDOW_MS) >= SLEEP_GAP_MS) since = prev;
+  } catch {}
+  _awake = { at: now, since };
+  return since;
 }
 
 // ─── Persist ───
@@ -954,203 +910,35 @@ function persistSnapshot(snap, trigger) {
   getBroadcast().then(fn => fn('widget_update', { widget: 'intuition' })).catch(() => {});
 }
 
-// ─── Cerebras axis classification (async, non-blocking) ───
-// Fires after each tick to fill in axes that the aggregator can't determine.
-// Model selection now reads from model_selections via getModelForPurpose
-// so swapping the cloud model is a one-row DB edit, not a code change.
-// Local fallback uses chat_local (currently qwen3:4b on the the local Ollama box).
-let _classifyPending = false;
-function _classifyModels() {
-  const refs = [];
-  try {
-    const cloud = getModelForPurpose('reasoning_cloud');
-    const local = getModelForPurpose('chat_local');
-    // Cloud (Cerebras reasoning_cloud) FIRST — it's the smart model and intuition
-    // classification wants that quality. Local Ollama is only the fallback if the
-    // cloud call fails. Strip the @device suffix from provider names
-    // ("ollama@minipc" → "ollama") so the dispatcher in llm.js routes via
-    // getOllamaUrl() for any local Ollama instance.
-    if (cloud) refs.push(`${cloud.provider.split('@')[0]}:${cloud.model}`);
-    if (local) refs.push(`ollama:${local.model}`);
-  } catch {}
-  // Last-resort backstop only if the registry table isn't initialised yet.
-  // cerebras:zai-glm-4.7 (cloud) tried first, qwen3:4b (local) as fallback.
-  // Previously hardcoded `cerebras:qwen-3-235b` which was retired by Cerebras
-  // on 2026-05-27 — every fresh Craft that hit this backstop before db.js
-  // seeded the rows would 404 forever.
-  if (refs.length === 0) return ['cerebras:zai-glm-4.7', 'ollama:qwen3:4b'];
-  return refs;
-}
-// IMPORTANT: don't freeze this at module load. The user can change the
-// reasoning_cloud / chat_local rows in model_selections via the admin
-// endpoint at runtime; if we cache the value here, the running Craft will
-// keep using the old model until next swap. Wrap as a getter so each
-// classify call sees the current DB state.
-function getClassifyModels() { return _classifyModels(); }
-const CLASSIFY_COOLDOWN_MS = 15000;         // min gap between classify calls
-const CLASSIFY_FORCE_MS = 5 * 60_000;      // force classify at least every 5min even if unchanged
-let _lastClassifyTime = 0;
-let _lastSignalFingerprint = '';            // hash of key signals — skip classify if unchanged
+// ─── Deliberation: what PAN makes of the reading ───
+// Mood, urgency, wellbeing and the rest are read in buildSnapshot by reader.js, locally and at
+// once. Until 2026-11-03 a cloud model filled them in here after each tick (433 calls that
+// day, the free Gemini quota the interpreter needed). What is left is PAN's side: the thought
+// about what changed, and whether to speak up.
+const DELIBERATE_COOLDOWN_MS = 10_000;
+let _deliberating = false;
+let _lastDeliberateTime = 0;
+// The same debug line every minute says nothing new: write a line again only once it has
+// changed (numbers aside) since the run before.
+let _prevDbgKeys = new Set();
 
-function buildClassifyPrompt(snap) {
-  const n = snap.now;
-  const signals = [
-    `Commander: ${snap.commander}`,
-    `Time: ${new Date(snap.as_of).toLocaleTimeString()}`,
-    n.where ? `Location: ${n.where}` : null,
-    n.activity ? `Activity: ${n.activity}` : null,
-    n.focus ? `Focus: ${n.focus}` : null,
-    n.engagement ? `Engagement: ${n.engagement}` : null,
-    (n.social || []).length > 0 ? `Social: ${n.social.join(', ')}` : null,
-    n.recent_topics?.length > 0 ? `Recent topics: ${n.recent_topics.slice(0, 3).join('; ')}` : null,
-    n.last_heard ? `Last said: "${n.last_heard.slice(0, 100)}"` : null,
-    snap.pan?.active_tasks?.length > 0 ? `Tasks: ${snap.pan.active_tasks.slice(0, 3).map(t => t.title).join(', ')}` : null,
-    snap.data?.events || null,
-  ].filter(Boolean).join('\n');
-
-  return `You are Intuition, PAN's situational awareness daemon. Given the following signals about Commander's current state, classify these axes. Reply ONLY with a JSON object, no explanation.
-
-SIGNALS:
-${signals}
-
-Classify:
-{
-  "focus": "short phrase: what Commander is focused on right now",
-  "direction": "short phrase: what Commander is working toward",
-  "mood": "one of: calm, engaged, energized, focused, frustrated, impatient, relaxed, winding_down, starting_up",
-  "mood_detail": "one sentence explaining why",
-  "urgency": "one of: low, normal, elevated, high, critical",
-  "need": "short phrase: what Commander needs from PAN right now, or null",
-  "complexity": "one of: simple, moderate, complex, deep",
-  "assumption": "one of: ok, not_ok, emergency",
-  "assumption_detail": "one sentence: PAN's guess about Commander's wellbeing (NOT medical advice)"
-}`;
-}
-
-// Call Ollama directly (bypass askAI for local models)
-//
-// BUDGET, and it matters more than it looks. There is one local GPU and
-// ollama serialises per model, so this background mood classifier and the
-// voice path are the same queue. At a 10s budget these were measured taking
-// 11.6s, 11.7s and 12.2s, and a turn spoken during one of those windows waits
-// behind it - which reads as PAN going silent and then answering late.
-//
-// Intuition is background and already handles an empty result by skipping the
-// cycle; voice is the foreground. So the budget is deliberately shorter than
-// a person is willing to wait for a reply. Aborting the fetch cancels the
-// generation on ollama's side, which is what actually frees the slot.
-const INTUITION_LOCAL_BUDGET_MS = 4000;
-
-async function callOllama(prompt, model = 'qwen3:4b') {
-  const resp = await fetch(`${getOllamaUrl()}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: false,
-      options: { temperature: 0.3, num_predict: 300 },
-    }),
-    signal: AbortSignal.timeout(INTUITION_LOCAL_BUDGET_MS),
-  });
-  if (!resp.ok) throw new Error(`Ollama ${resp.status}`);
-  const data = await resp.json();
-  return data.message?.content || '';
-}
-
-function buildSignalFingerprint(snap) {
-  const n = snap.now || {};
-  return [
-    n.activity || '',
-    n.focus || '',
-    n.where || '',
-    n.engagement || '',
-    (n.social || []).join(','),
-    n.last_heard?.slice(0, 60) || '',
-    snap.data?.webcam_context?.identity || '',
-    snap.data?.webcam_context?.presence || '',
-  ].join('|');
-}
-
-async function classifyAxes(snap) {
-  if (_classifyPending) { console.log('[Intuition] classify skipped: pending'); return; }
+function deliberate(snap) {
+  if (_deliberating) return;
   const now = Date.now();
-  if (now - _lastClassifyTime < CLASSIFY_COOLDOWN_MS) { console.log('[Intuition] classify skipped: cooldown'); return; }
-
-  // Skip if signals haven't changed AND we classified recently (within CLASSIFY_FORCE_MS)
-  const fingerprint = buildSignalFingerprint(snap);
-  const unchanged = fingerprint === _lastSignalFingerprint;
-  const forceDue  = (now - _lastClassifyTime) >= CLASSIFY_FORCE_MS;
-  if (unchanged && !forceDue) {
-    console.log('[Intuition] classify skipped: signals unchanged');
-    return;
-  }
-  _lastSignalFingerprint = fingerprint;
-
-  _classifyPending = true;
-  _lastClassifyTime = now;
+  if (now - _lastDeliberateTime < DELIBERATE_COOLDOWN_MS) return;
+  _deliberating = true;
+  _lastDeliberateTime = now;
   const debugFile = path.join(path.dirname(INTUITION_FILE), 'intuition-debug.log');
-  const dbg = (msg) => { console.log(msg); try { fs.appendFileSync(debugFile, new Date().toISOString() + ' ' + msg + '\n'); } catch {} };
-  dbg('[Intuition] classify starting...');
+  const dbgKeys = new Set();
+  const dbg = (msg) => {
+    const key = msg.replace(/\d+/g, '#');
+    dbgKeys.add(key);
+    if (_prevDbgKeys.has(key)) return;
+    console.log(msg);
+    try { fs.appendFileSync(debugFile, new Date().toISOString() + ' ' + msg + '\n'); } catch {}
+  };
 
   try {
-    const prompt = buildClassifyPrompt(snap);
-    let raw = null;
-    let usedModel = null;
-
-    // Try Cerebras first, fall back to local Ollama
-    // NOTE: getClassifyModels() reads model_selections from DB at call time —
-    // do NOT cache this in a module-level const, or DB changes won't propagate
-    // to the running Craft and we'll keep hitting retired/billing-blocked models.
-    for (const model of getClassifyModels()) {
-      try {
-        if (model.startsWith('ollama:')) {
-          raw = await callOllama(prompt, model.replace('ollama:', ''));
-          usedModel = model;
-        } else {
-          raw = await askAI(prompt, {
-            model,
-            timeout: 5000,
-            maxTokens: 250,
-            caller: 'intuition-classifier',
-            _skipAnonymize: true,
-          });
-          usedModel = model;
-        }
-        if (raw) break;
-      } catch (e) {
-        dbg(`[Intuition] ${model} failed: ${e.message}, trying next...`);
-      }
-    }
-
-    if (!raw) { _classifyPending = false; return; }
-
-    // Parse response
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) { _classifyPending = false; return; }
-
-    const classified = JSON.parse(jsonMatch[0]);
-
-    // Merge classified values into the live snapshot (Title Case)
-    if (classified.focus) snap.now.focus = titleCase(classified.focus);
-    if (classified.direction) snap.now.direction = titleCase(classified.direction);
-    if (classified.mood) snap.now.mood = titleCase(classified.mood.replace(/_/g, ' '));
-    if (classified.mood_detail) snap.now.mood_detail = classified.mood_detail.charAt(0).toUpperCase() + classified.mood_detail.slice(1);
-    if (classified.urgency) snap.now.urgency = titleCase(classified.urgency);
-    if (classified.need && classified.need !== 'null') snap.now.need = titleCase(classified.need);
-    if (classified.complexity) snap.now.complexity = titleCase(classified.complexity);
-    if (classified.assumption) snap.now.assumption = titleCase(classified.assumption.replace(/_/g, ' '));
-    if (classified.assumption_detail) snap.now.assumption_detail = classified.assumption_detail.charAt(0).toUpperCase() + classified.assumption_detail.slice(1);
-
-    // Mark as AI-classified
-    snap.meta.classifier = usedModel;
-    snap.meta.classified_at = Date.now();
-    snap.signals.confidence = Math.min((snap.signals.confidence || 0) + 0.25, 1.0);
-
-    // Re-persist with classified values
-    persistSnapshot(snap, snap.trigger + '+classified');
-    _lastSnapshot = snap;
-
     // PAN's-Mind thought — describe PAN's *decision*, not Commander's state.
     // The intuition panel already shows Commander's focus/mood/urgency; this
     // stream is supposed to be the agency loop: what changed since last tick,
@@ -1164,10 +952,10 @@ async function classifyAxes(snap) {
     //   • The interjection deliberation gets its own `source:'interjection'`
     //     thought below — keep the intuition thought to the observation+verdict.
     try {
-      const focus = classified.focus || snap.now.focus || null;
-      const mood = classified.mood ? String(classified.mood).replace(/_/g, ' ') : null;
-      const urgency = classified.urgency || snap.now.urgency || null;
-      const assumption = classified.assumption ? String(classified.assumption).replace(/_/g, ' ') : null;
+      const focus = snap.now.focus || null;
+      const mood = snap.now.mood ? String(snap.now.mood).toLowerCase() : null;
+      const urgency = snap.now.urgency ? String(snap.now.urgency).toLowerCase() : null;
+      const assumption = snap.now.assumption ? String(snap.now.assumption).toLowerCase() : null;
       const current = { focus, mood, urgency, assumption };
 
       const prev = _lastVerdict;
@@ -1202,7 +990,7 @@ async function classifyAxes(snap) {
       }
 
       if (body) {
-        writeThought('intuition', body, { classifier: usedModel, streak: _unchangedStreak }, 0.4);
+        writeThought('intuition', body, { reader: 'local', streak: _unchangedStreak }, 0.4);
       }
       _lastVerdict = { ...current, ts: Date.now() };
     } catch (e) {
@@ -1222,8 +1010,13 @@ async function classifyAxes(snap) {
     // time-based cooldown.
     try {
       const userId = currentUserId();
+      // His last input: a voice turn PAN answered (RouterCommand) or a prompt to Claude.
+      // These read 'voice_command', 'dashboard_message', 'router_response' and
+      // 'pan_utterance', none of which is ever written, so sinceMin was always null and
+      // every quiet/idle/stale rule below was dead (audit, 2026-11-03). `+event_type`
+      // walks back from the newest id instead of the whole type index.
       const last = get(
-        `SELECT created_at FROM events WHERE event_type IN ('voice_command','dashboard_message','router_response','pan_utterance')
+        `SELECT created_at FROM events WHERE +event_type IN ('RouterCommand','UserPromptSubmit')
          ORDER BY id DESC LIMIT 1`
       );
       const lastMs = last?.created_at ? Date.parse(last.created_at.replace(' ', 'T')) : null;
@@ -1351,13 +1144,17 @@ async function classifyAxes(snap) {
         if (!_isIgnoredStreak(`act:${cand.id}`)) candidates.push(cand);
         else dbg(`[Intuition] ${cand.id} suppressed — ignored streak`);
       };
-      if (snap.now.assumption === 'emergency' && !sensorsStale) {
+      // The classifier's values are title-cased ("Not Ok", "Emergency"), so compared as
+      // written ('not_ok', 'emergency') these never matched.
+      const assumption = String(snap.now.assumption || '').toLowerCase().replace(/_/g, ' ');
+      if (assumption === 'emergency' && !sensorsStale) {
         _pushIfNotIgnored({ id: 'state:emergency', kind: 'state', score: 1.5, reason: 'assumption=emergency' });
-      } else if (snap.now.assumption === 'not_ok' || snap.now.assumption === 'not ok') {
-        _pushIfNotIgnored({ id: 'state:not_ok', kind: 'state', score: 0.6, reason: 'assumption=not_ok' });
+      } else if (assumption === 'not ok') {
+        // 0.72 and 0.70 clear the 0.7 bar: at 0.6 and 0.55 a check-in could never be said.
+        _pushIfNotIgnored({ id: 'state:not_ok', kind: 'state', score: 0.72, reason: 'assumption=not_ok' });
       }
       if (snap.now.mood && /frustrated|anxious|sad|angry/i.test(snap.now.mood)) {
-        _pushIfNotIgnored({ id: `state:mood_${snap.now.mood.toLowerCase()}`, kind: 'state', score: 0.55, reason: `mood=${snap.now.mood}` });
+        _pushIfNotIgnored({ id: `state:mood_${snap.now.mood.toLowerCase()}`, kind: 'state', score: 0.7, reason: `mood=${snap.now.mood}` });
       }
       if (sinceMin != null && sinceMin > 60) {
         _pushIfNotIgnored({ id: 'state:quiet', kind: 'state', score: 0.45, reason: `quiet ${sinceMin}m` });
@@ -1376,7 +1173,7 @@ async function classifyAxes(snap) {
         // 1.5s event-loop block on every classify. With the `+`: 1ms each.
         const confusedCount = get(
           `SELECT COUNT(*) AS n FROM events
-           WHERE +event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
+           WHERE +event_type IN ('RouterCommand','UserPromptSubmit')
              AND created_at > datetime('now','localtime','-5 minutes')
              AND data LIKE '%?%'`
         )?.n || 0;
@@ -1392,7 +1189,7 @@ async function classifyAxes(snap) {
         // conv:stuck — ≥2 stuck-phrase prompts in 10 min
         const stuckRows = all(
           `SELECT data FROM events
-           WHERE +event_type IN ('voice_command','dashboard_message','UserPromptSubmit')
+           WHERE +event_type IN ('RouterCommand','UserPromptSubmit')
              AND created_at > datetime('now','localtime','-10 minutes')`
         );
         const STUCK_RE = /stuck|don'?t know|not working|why isn'?t|why does(?:n'?t)?|broken|doesn'?t work|won'?t work/i;
@@ -1410,10 +1207,12 @@ async function classifyAxes(snap) {
         }
 
         // conv:tangent — focus changed in last 5 min
+        // as_of is epoch ms; compared with a datetime() string it was never greater, so
+        // this never found a snapshot.
         const recentFoci = all(
           `SELECT snapshot FROM intuition_snapshots
-           WHERE as_of > datetime('now','localtime','-5 minutes')
-           ORDER BY as_of DESC LIMIT 10`
+           WHERE as_of > :since
+           ORDER BY as_of DESC LIMIT 10`, { ':since': Date.now() - 5 * 60_000 }
         );
         const currentFocus = snap?.now?.focus || null;
         if (currentFocus && recentFoci.length >= 2) {
@@ -1523,11 +1322,12 @@ async function classifyAxes(snap) {
       dbg(`[Intuition] interjection-thought failed: ${e.message}`);
     }
 
-    dbg(`[Intuition] classified via ${usedModel}: mood=${classified.mood} focus="${classified.focus}" complexity=${classified.complexity} (${Date.now() - now}ms)`);
+    dbg(`[Intuition] read locally: mood=${snap.now.mood} wellbeing=${snap.now.assumption} urgency=${snap.now.urgency} need=${snap.now.need || '-'} focus="${snap.now.focus || ''}"`);
   } catch (e) {
-    dbg(`[Intuition] classify OUTER failed: ${e.message}\n${e.stack}`);
+    dbg(`[Intuition] deliberation failed: ${e.message}\n${e.stack}`);
   } finally {
-    _classifyPending = false;
+    _prevDbgKeys = dbgKeys;
+    _deliberating = false;
   }
 }
 
@@ -1535,27 +1335,15 @@ async function classifyAxes(snap) {
 export function tickIntuition(trigger = 'heartbeat') {
   if (!_running) return null;
   try {
+    // The reading is held inside reader.js, so a tick no longer flips the panel between
+    // keyword guesses and a cloud reading every minute (audit, 2026-11-03).
     const snap = buildSnapshot(trigger);
-    // Keep the classifier's reading until it runs again (on a signal change, or every 5 min).
-    // Each 60 s tick rebuilt the keyword guesses over it, so the panel flipped every minute,
-    // "Energized / Not Ok / Normal" then "Winding Down / Ok / Low" (audit, 2026-11-03).
-    const prev = _lastSnapshot;
-    if (prev?.meta?.classified_at && Date.now() - prev.meta.classified_at < 10 * 60_000) {
-      for (const k of ['mood', 'mood_detail', 'urgency', 'need', 'complexity', 'assumption', 'assumption_detail']) {
-        if (prev.now?.[k] != null) snap.now[k] = prev.now[k];
-      }
-      snap.meta.classifier = prev.meta.classifier;
-      snap.meta.classified_at = prev.meta.classified_at;
-    }
     persistSnapshot(snap, trigger);
     _lastSnapshot = snap;
 
-    // Fire async classification (non-blocking, updates snapshot later).
-    // Double-wrapped: inner try/catch in classifyAxes + outer .catch here.
-    // This ensures no rejection escapes to the process level even if classifyAxes
-    // has a bug that slips past its own outer try/catch.
-    Promise.resolve().then(() => classifyAxes(snap)).catch(e =>
-      console.warn('[Intuition] classifyAxes escaped catch:', e?.message)
+    // Off the tick's own stack, so a bug in it cannot fail the tick.
+    Promise.resolve().then(() => deliberate(snap)).catch(e =>
+      console.warn('[Intuition] deliberate escaped catch:', e?.message)
     );
 
     // Fire org tick alongside individual tick (non-blocking)

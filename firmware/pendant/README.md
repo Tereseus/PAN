@@ -25,6 +25,12 @@ this board. `PSRAM=opi` is required or an SVGA framebuffer will not allocate.
 Per frame at these settings: ~5.2KB, 12 packets, `tx_ms` 165, `total_ms` 366,
 so roughly a 7% radio duty cycle at one frame every 5s.
 
+## Mic over BLE (2026-11-06)
+
+20 ms packets of IMA ADPCM on the AUD characteristic, `a` on, `z` off, `g<n>` gain. Phone side: `ble/PendantMic.kt`. First run, Pixel 10 Pro: 397 packets, 0 lost, worst gap 52 ms. The first half second is a loud thump while the mic settles. Words not yet checked through an ear. Frames wait while the mic is on.
+
+Opening the serial port with plain `cat` on Linux can reset the board and drop the link.
+
 ## Traps
 
 - A GATT characteristic value maxes at **512 bytes** regardless of MTU. At MTU

@@ -84,7 +84,8 @@ import { createHash } from 'crypto';
 import https from 'https';
 import http from 'node:http';
 import { execFileSync, execSync, execFile, exec, spawn as spawnChild } from 'child_process';
-import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getPendingPermissions, clearPermission, respondToPermission, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, pipeResetAdapter, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
+import { startTerminalServer, startDevTerminalServer, listSessions, killSession, killAllSessions, getActivePtyPids, getTerminalProjects, sendToSession, broadcastToSession, broadcastNotification, getProcessRegistry, pipeSend, pipeInterrupt, pipeSetModel, pipeResetAdapter, getSessionMessages, createPipeSession, getSessionBufferSize } from './terminal-bridge.js';
+import { openRequests, answerRequest, dropRequest } from './permission-requests.js';
 import { startClientServer, sendToClient as sendToClientDevice, getConnectedClients, checkInviteToken } from './client-manager.js';
 import { WebSocketServer as WsServer } from 'ws';
 import clientRouter from './routes/client.js';
@@ -1910,12 +1911,13 @@ app.post('/api/v1/thoughts', express.json(), (req, res) => {
 
 // ==================== LIFE NEEDS ====================
 // Sims-style motive bars. See service/src/intuition/needs.js for the model.
-// User identity defaults to face-id lock; override with ?user=<id>.
+// User identity defaults to face-id lock; override with ?user=<id>. An org owner's
+// display name reads as 'owner', the id every producer writes (needs.canonicalUserId).
 
 // GET /api/v1/needs?user=owner  → all needs with current decayed levels
 app.get('/api/v1/needs', (req, res) => {
   try {
-    const user = (req.query.user || '').trim() || needsCurrentUser();
+    const user = needs.canonicalUserId(req.query.user) || needsCurrentUser();
     const rows = needs.evaluate(user);
     res.json({ ok: true, user, needs: rows });
   } catch (e) {
@@ -1932,7 +1934,7 @@ app.get('/api/v1/needs/definitions', (_req, res) => {
 // GET /api/v1/needs/events?user=owner&need=nourishment&limit=20  → audit log
 app.get('/api/v1/needs/events', (req, res) => {
   try {
-    const user = (req.query.user || '').trim() || needsCurrentUser();
+    const user = needs.canonicalUserId(req.query.user) || needsCurrentUser();
     const needId = (req.query.need || '').trim() || null;
     const limit = Math.min(parseInt(req.query.limit) || 20, 200);
     const events = needs.recentEvents(user, { needId, limit });
@@ -1948,7 +1950,7 @@ app.get('/api/v1/needs/events', (req, res) => {
 // (task #494). Cached 3 min per user — pass force=1 to bypass.
 app.get('/api/v1/pan/synthesis', async (req, res) => {
   try {
-    const user = (req.query.user || '').trim() || needsCurrentUser();
+    const user = needs.canonicalUserId(req.query.user) || needsCurrentUser();
     const force = req.query.force === '1';
     const { generate } = await import('./intuition/synthesis.js');
     const result = await generate(user, { force, trigger: force ? 'manual' : 'tick' });
@@ -2017,7 +2019,7 @@ app.get('/api/v1/pan/reasoning/why/:stepId', async (req, res) => {
 // POST /api/v1/pan/reasoning/cycle  { user?, trigger? } → force a new cycle.
 app.post('/api/v1/pan/reasoning/cycle', express.json(), async (req, res) => {
   try {
-    const user = (req.body?.user || req.query.user || '').trim() || needsCurrentUser();
+    const user = needs.canonicalUserId(req.body?.user || req.query.user) || needsCurrentUser();
     const trigger = req.body?.trigger || 'manual';
     const { runCycle } = await import('./intuition/reasoning.js');
     const result = await runCycle({ userId: user, trigger });
@@ -2034,7 +2036,7 @@ app.post('/api/v1/needs/satisfy', express.json(), (req, res) => {
   try {
     const { user, need, delta, toLevel, source, note, refs } = req.body || {};
     if (!need) return res.status(400).json({ ok: false, error: 'need required' });
-    const userId = (user || '').trim() || needsCurrentUser();
+    const userId = needs.canonicalUserId(user) || needsCurrentUser();
     const result = needs.satisfy(userId, need, { delta, toLevel, source: source || 'api', note, refs });
     if (!result) return res.status(400).json({ ok: false, error: `unknown need: ${need}` });
     res.json({ ok: true, user: userId, need, ...result });
@@ -2050,7 +2052,7 @@ app.post('/api/v1/needs/set', express.json(), (req, res) => {
     if (!need || typeof level !== 'number') {
       return res.status(400).json({ ok: false, error: 'need and numeric level required' });
     }
-    const userId = (user || '').trim() || needsCurrentUser();
+    const userId = needs.canonicalUserId(user) || needsCurrentUser();
     const result = needs.manualSet(userId, need, level, { note });
     if (!result) return res.status(400).json({ ok: false, error: `unknown need: ${need}` });
     res.json({ ok: true, user: userId, need, ...result });
@@ -2096,7 +2098,7 @@ app.post('/api/v1/needs/weight', express.json(), (req, res) => {
     if (!need || typeof delta !== 'number') {
       return res.status(400).json({ ok: false, error: 'need and numeric delta required' });
     }
-    const userId = (user || '').trim() || needsCurrentUser();
+    const userId = needs.canonicalUserId(user) || needsCurrentUser();
     const next = needs.adjustWeight(userId, need, delta);
     if (next == null) return res.status(400).json({ ok: false, error: `unknown need: ${need}` });
     res.json({ ok: true, user: userId, need, weight: next });
@@ -3575,6 +3577,30 @@ app.use('/photos', express.static(join(__dirname, 'data', 'photos')));
 // Serve clipboard images (pasted screenshots from dashboard)
 app.use('/clipboard', express.static(join(process.env.TEMP || '%USERPROFILE%\\AppData\\Local\\Temp', 'pan-clipboard')));
 
+// PAN Models (scripts/push-pan-models.ps1 writes public/pan-models.html): what runs where, and its
+// limits. Rebuilt when opened and older than 5 minutes, so it follows the live settings with no
+// scheduled task. A slow or failed build serves the last good page.
+const MODELS_PAGE = join(__dirname, '..', 'public', 'pan-models.html');
+const MODELS_SCRIPT = join(__dirname, '..', 'scripts', 'push-pan-models.ps1');
+let modelsPageBuild = null;
+app.get('/pan-models.html', async (req, res, next) => {
+  let age = Infinity;
+  try { age = Date.now() - statSync(MODELS_PAGE).mtimeMs; } catch {}
+  if (process.platform === 'win32' && age > 5 * 60_000 && existsSync(MODELS_SCRIPT)) {
+    if (!modelsPageBuild) {
+      modelsPageBuild = new Promise((resolve) => {
+        execFile('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', MODELS_SCRIPT],
+          { windowsHide: true, timeout: 30_000 }, (err) => {
+            if (err) console.warn('[models-page] rebuild failed:', err.message);
+            resolve();
+          });
+      }).finally(() => { modelsPageBuild = null; });
+    }
+    await Promise.race([modelsPageBuild, new Promise((r) => setTimeout(r, 12_000))]);
+  }
+  next();
+});
+
 // Serve root-level static assets (icons, images referenced by the dashboard)
 app.use(express.static(join(__dirname, '..', 'public'), { etag: false }));
 
@@ -3807,10 +3833,10 @@ app.get('/api/v1/processes', async (req, res) => {
 
 // Permission prompts — mobile polls this to show Allow/Deny buttons
 app.get('/api/v1/terminal/permissions', (req, res) => {
-  res.json({ permissions: getPendingPermissions() });
+  res.json({ permissions: openRequests() });
 });
 app.delete('/api/v1/terminal/permissions/:id', (req, res) => {
-  clearPermission(parseInt(req.params.id));
+  dropRequest(parseInt(req.params.id));
   res.json({ ok: true });
 });
 // Send text to active terminal (phone voice commands → terminal, or
@@ -4053,9 +4079,7 @@ app.post('/api/v1/terminal/permissions/respond', (req, res) => {
   const normalized = (response === '1' || response === 'allow' || response === 'yes' || response === true)
     ? 'allow' : 'deny';
 
-  const allPerms = getPendingPermissions();
-  console.log(`[PAN Perm] Trying to respond: perm_id=${perm_id} (type=${typeof perm_id}), pending=${allPerms.length}, ids=${allPerms.map(p=>p.id).join(',')}`);
-  const found = respondToPermission(parseInt(perm_id), normalized);
+  const found = answerRequest(parseInt(perm_id), normalized);
   console.log(`[PAN Perm] Response: ${normalized} for perm ${perm_id} (found=${found})`);
 
   res.json({ ok: found, response: normalized, method: 'hook' });

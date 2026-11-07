@@ -191,6 +191,40 @@ Rules:
 
 ---
 
+## PAN Models page (what runs where)
+
+- **Purpose:** One page listing every model and service PAN uses, on the phone,
+  the mini PC hub, Mint and the cloud: the job, the model, where it runs, local or
+  cloud, and its limit (Gemini's free 500 a day per model with today's status).
+  Also what is loaded in Ollama right now and what actually ran in the last 7 days.
+- **URL:** `/pan-models.html` on the hub. Registered in the dashboard registry
+  (id 7, "PAN Models"), so it shows in the phone's `/mobile` Dashboards tab.
+- **Source:** `service/scripts/push-pan-models.ps1` writes
+  `service/public/pan-models.html`. Hub and cloud rows come from
+  `/api/v1/settings`, `/api/v1/usage/llm-routing`, `ai_fallback_attempt` events,
+  the translator on :7784 and each Ollama host's `/api/ps`, so they follow any
+  settings change. **Phone rows are fixed in `$PhoneRows`**: update them when an
+  app release changes how the phone hears, speaks or sees.
+- **Speed against a real conversation (2026-11-04):** each job in the 7-day table
+  shows what it is in a person (`$CallerMind`: "Talking back to you", "Reading the
+  room", "Sleep: filing the day into memory") and the seconds it should take, or
+  "background". Secs turns green at or under the target, amber up to 3 times over,
+  red past that. Three hand-written cards sit under "Right now": **Where we are**
+  (`$WhereWeAre`), **Talking like a person** (`$Stages`: one voice turn step by
+  step, a person vs PAN's target vs now vs the fix, from voicebench) and **What it
+  would take to run it all locally** (`$Hardware`, `$GpuPrices` from Skroutz). Two
+  more cards follow: **Or pay the cloud by the word** (`$CloudPrices`, OpenRouter's
+  table for gpt-oss-120b, monthly cost worked out by `MonthCost` from
+  `$TurnsNormal` and `$TurnsHeavy`) and **From Japan** (`$Japan`). Update them after
+  a new voicebench run, or when prices, hardware or the plan change.
+- **Refresh:** `server.js` rebuilds it when it is opened and older than 5 minutes
+  (route just before the root static mount, waits up to 12 s, a failed build
+  serves the last good page). No scheduled task.
+- **Pre-gate:** if `/api/v1/settings` does not answer, the script throws and the
+  last page stays.
+
+---
+
 ## Steward (server-side)
 
 - **Purpose:** Health-check every configured service every 60s, auto-restart
@@ -233,6 +267,17 @@ around a query does not change that.
   - Evolution window (`evolution/engine.js`): 1.26 s -> about 1 ms.
   - Recap watermark Stop count (`routes/hooks.js`): 670 ms -> under 1 ms.
   - SessionStart resume preamble: now an id lookup on the session index.
+- **Idle loops off, 2026-11-04 (Craft 53).** `feature_toggles` has dream, evolution, scout and
+  orchestrator false (Forge/autodev was already off). Dream's state-doc prompt had been a literal
+  "..." since April, evolution's pan-config/*.md files are read by nothing, and orchestrator and
+  scout fed the dashboard the north star turned off (docs/REBUILD-REVIEW.md). Turn one back on with
+  `POST /api/automation/toggle {feature, enabled:true}` (scout, dream, evolution) or
+  `feature_toggles.orchestrator`, then a Craft swap. Consolidation stays on, and it is the part
+  that files events into episodic, semantic and procedural memory. Its window now starts where the
+  last run's events ended (`until` in the ConsolidationRun event) instead of at the run's own time.
+  A run still takes 200 events, but it used to drop the rest of a busy window for good. While a run
+  comes back full, the steward runs it again 20 minutes later until the backlog is filed. Runs
+  that overlap return at once (`_consolidating`).
   - Parakeet model load at boot: now off the main thread (see Hub re-transcription).
   - Stack scanner (`stack-scanner.js`), 15 s after every boot and every 6 h: the language
     walk is async. The hub has a project at the home folder (778 dirs, 17k files), about
@@ -565,7 +610,15 @@ scorer = `(100 - level) / 100 × weight`.
 
 **Identity**: Currently resolved via face-id lock from webcam-watcher (falls
 back to `'owner'` for single-user). Will be replaced by identity-fusion cluster
-once `intuition/identity.js` lands.
+once `intuition/identity.js` lands. One id per person: `needs.canonicalUserId()`
+reads an org owner's display name as `'owner'`, in `currentUserId()` and in every
+needs/synthesis/reasoning-cycle route, so the face-id path and the other producers
+write and read the same bars (2026-11-03: the panel asked by display name and showed
+a meal seen 148 days earlier).
+
+**Test turns never count**: `satisfy()` and `observe()` skip benchmark and
+regression turns (`isBench()`, or `refs.source` matching bench/regression). Until
+2026-11-03 every benchmark "call mom" topped up Social.
 
 **Endpoints**:
 - `GET /api/v1/needs?user=owner` → all needs, sorted by urgency desc
@@ -577,7 +630,49 @@ once `intuition/identity.js` lands.
 
 **Dashboard widget**: Compact horizontal bars in the Intuition panel, sorted
 by urgency (most pressing motive on top). Bar color: green ≥70, yellow 30-69,
-red <30. Tooltip shows weight, decay rate, hours-since-satisfied.
+red <30. Tooltip shows weight, decay rate, hours-since-satisfied. The panel asks
+for the owner-role member as `?user=owner` (anyone else by display name), and the
+same id for the PAN's Mind synthesis.
+
+**Rest of the Intuition panel (State section)**: the badge next to the name is the
+freshness of the read (`● live` under 5 min, else `○ stale · Nm ago`), not his
+activity. Rows: Where, Device (`signals.device_source`), Activity, Focus, Mood,
+Urgency, Engagement, Assumption (coloured case-insensitively: the reader writes
+"Ok" / "Not ok"), Last heard, Topics, Confidence, Mood read (age of
+`meta.classified_at`, "local reader" in the tooltip).
+
+**How the State rows are read** (`intuition/reader.js`, 2026-11-03): rules, no model.
+Inputs are his last voice turns and Claude prompts from the last 20 minutes (only the
+part he wrote: pasted logs, code and tagged notices are dropped), their pace, his own
+clock (`intuition/time.js`) and his waking stretch (the first input after a break of
+4 hours or more in the last 30). A line counts in full for 2 minutes, then halves every
+6. Each cue is a phrase with a weight ("why does it fail" frustrated, "let's do it"
+energized, "I'm so tired" tired). A reading holds until a clearly stronger one comes or
+it fades (mood 20 min, wellbeing 1 h), so a mild "ok" does not undo a frustrated minute.
+- **Mood:** frustrated, impatient, stressed, upset, tired, energized, engaged, focused,
+  calm, relaxed, winding down, starting up, neutral. With nothing to read, his clock and
+  hours up decide (winding down from 23:00 his time).
+- **Wellbeing:** emergency only from first person, present distress ("call an ambulance,
+  I can't breathe"), never a hypothetical, a quote or a song; not ok from his own words
+  ("I'm sick"), 20 or more hours up, or 2 to 6 AM his time after 16 or more hours. The
+  hour alone no longer counts: "active at 2 to 6 AM" read the hub's clock and fired in
+  his morning.
+- **Urgency, need, complexity, awake:** from pace (3 lines inside a minute is high),
+  urgent words, a repeated ask, his mood and the technical words in his lines.
+- `snap.read` carries every value with its confidence and detail, plus `hour`, `tz` and
+  `tz_source`.
+
+**His clock** (`intuition/time.js`): his computers run on his job's time zone and he
+lives in another, so everything about his body and day (and the voice prompt's `Now:`
+line, router.js `nowLine`) goes by, in order: the zone the phone sends with a turn (not
+sent yet, next app build), the `home_timezone` setting (an IANA name, set once per PAN),
+then the hub's zone. Snapshots are fetched with
+`noCache` (the api() 30 s cache made the panel run one tick behind). Camera and
+Screen say "off (watcher not running)" when `/api/v1/webcam-watcher/status` or
+`/api/v1/screen-watcher/status` report `running:false`, and the face-enroll prompt
+only shows while the webcam watcher runs. A failed synthesis cycle (200 with
+`ok:false`) shows "Couldn't reason it through" with a rethink button instead of
+"thinking…" forever; a good paragraph is kept over a later failure.
 
 **Pre-gate**: Producers must not satisfy needs from inferred state alone — a
 food image on screen is `observe()` (capped delta), only an explicit "I ate"
@@ -750,6 +845,13 @@ children can have adult-sounding voices and vice versa).
 - **Purpose:** Talk by voice from the phone to any Claude Code thread in the Claude
   desktop app on any machine ("tell the billing thread to run the tests", "ask map
   editor what it's doing") and hear the thread's answer back.
+- **Jobs for a machine:** "on the mint open firefox", "play this video on the g16" and "tell
+  the mint to check my messages" go to the thread on that host with PC or Computer in its
+  title, such as Mint PC Stuff (`computerCommand` in `thread-relay.js`). The line needs an
+  action word or question, so everyday uses of a machine word stay out. No such thread:
+  "There's no computer thread on the mint yet."
+- **Interpreting:** the relay is skipped while the device is interpreting, so "ask them..."
+  is translated, not sent to a thread.
 - **Voice path:** `routeStream` / `route` in `router.js` call `_threadRelayFastPath`
   BEFORE the ambient filter and the LLM. `parseThreadCommand` (in
   `src/thread-relay.js`) is deterministic: verb + name + "thread/session/chat", "in
@@ -791,6 +893,31 @@ children can have adult-sounding voices and vice versa).
 
 ---
 
+- **More than one machine** (2026-11-06): each machine runs its own relay, and a job goes to the host
+  that reported the thread. `thread-machines.json` next to the database maps spoken words to hosts,
+  as `{ "mint": "<host>" }`. A machine said out loud is a hard limit: "Mint Music" scored 0.625 for the
+  G16's Music thread and would have gone there. Not said, the word is no part of the name, so "PC
+  Stuff" and "music" ask which one. "g sixteen" is an alias for "g 16", and "service now" now finds
+  ServiceNow. `relay.js` reports only the account with the newest session, because a thread of a
+  signed-out account cannot be messaged. A relay on the Mint uses that machine's own Claude account.
+
+## Claude Code approvals (permission prompts on the phone)
+
+- **Purpose:** Answer a Claude Code permission prompt from the phone when nobody is at the screen.
+- **Hook:** a machine's `~/.claude/settings.json` points `PermissionRequest` at the hub's
+  `/hooks/PermissionRequest` (http, timeout 120). The G16 has it, the Mint does not. Claude Code's own
+  prompt is up beside the hook the whole time, and whichever is answered first wins.
+- **Queue:** `src/permission-requests.js`, in the Craft, one entry per open hook call. A request shows
+  in `GET /api/v1/terminal/permissions` after 30 s unanswered, so someone at the screen is left alone.
+  The hub waits 110 s. No answer returns no decision, which leaves the prompt up. It never denies on
+  its own.
+- **Answering:** `POST /api/v1/terminal/permissions/respond` with `perm_id` and `response` (`allow`,
+  `yes`, `1`, anything else is deny). Used by the Android notification (polls every 5 s), `/mobile` and
+  the dashboard's ApprovalsPanel.
+- **Skipped:** `AskUserQuestion` and `ExitPlanMode` never go to the phone, because they need the person's words.
+- **Cleared:** the proxies do not pass on a dropped hook call, so `PostToolUse`, `Stop` and `SessionEnd`
+  for that session end its open requests.
+
 ## Voice student model (Syrinx, formerly OmniΠ)
 
 - **Purpose:** answer voice turns with a small fine-tuned model that already knows the
@@ -802,9 +929,56 @@ children can have adult-sounding voices and vice versa).
   rather than ask: about 1 reply in 10 ends with a question, against 9 in 10 for OmniΠ r7.
   Ollama names keep the base model: `syrinx-lfm` (Liquid LFM3-Omni-2B), `syrinx-gemma`
   (Google Gemma 4 E2B); `self.js` reads its name and base off that name. OmniΠ (`omnipi`)
-  was rounds 5-8 on LFM3-Omni-2B, labels before the reply (first words 1.3-1.6 s).
+  was rounds 5-8 on LFM3-Omni-2B, labels before the reply (first words 1.3-1.6 s). Round 10
+  (`syrinx-lfm-r10`, live 2026-11-03) is round 9 retrained with the put-downs in its data
+  rewritten, kind answers added and most closing "why" questions and menus cut; round 9
+  (`syrinx-lfm`) stays installed for a revert.
 - **Switch:** setting `voice_student_model` (e.g. `"ollama:syrinx-lfm"`). Empty or absent =
   off, every turn uses the full prompt as before.
+- **Voice box (2026-11-04):** the student can run on a GPU machine. Setting `model_hosts`
+  (`{"syrinx-lfm-r10": "http://127.0.0.1:11435"}`) pins that model name to a host; `custom_models`
+  can't, because every boot rebuilds it. `voice_student_backup` (`"ollama:syrinx-lfm-r10:latest"`)
+  is the same model on the hub: the box gets 1.5 s to start (`watchFirstToken`), then the backup
+  answers. After 3 failures the box is skipped for 3 minutes. Clear both settings to go back to
+  the hub. `service/scripts/voice-box-tunnel.ps1` runs on the box and forwards the hub's port
+  11435 to its Ollama over ssh, so no firewall change is needed. It does not survive a reboot.
+  Bench through the hub, same 16 lines: first words 1.31 s to 0.16 s, whole reply 3.87 s to 0.68 s.
+  The GPU guard (`guardModelOnGpu`) only repairs hosts it has seen using VRAM, so the CPU-only hub
+  is left alone and a box that drops to CPU gets reloaded.
+- **Voice reader (2026-11-05):** `"reader:<ollama model>"` in `voice_student_model` or
+  `voice_student_backup` runs that model on this machine's CPU: steward service `voice-reader`
+  (:7786), the llama-server Ollama ships, on the file Ollama already holds, with `--swa-full`
+  (without it nothing a prompt shares with the last one is reused). `service/src/voice-reader.js`.
+  The phone calls `POST /api/v1/voice/warm` with its history when a reply ends and when he starts
+  talking (app 0.4.71+), so the conversation is read before his words arrive, and the model is
+  handed the fixed start of its reply after writing the one token that says who the line is for.
+  Hub bench, 12 turns, up to 10 lines of history, first spoken chunk: Ollama on the CPU 1.17 s,
+  reader without warm 0.76 s, reader with warm 0.30 s, G16 0.19 s. Reader down: that turn uses
+  Ollama. Warm does nothing while a healthy voice box answers. The steward's runner reaper knows
+  the reader by its port. A new model only loads once the running reader is ended.
+  The real conversation test (voicebench family `conversation`, 52 lines) put it level with the
+  laptop GPU at the median, gap 1.74 s against 1.75 s, so the reader is the student now and
+  `voice_student_backup` and `model_hosts` are empty.
+- **Not copying itself:** the reader writes with `repeat_penalty` 1.15 over the last 192 tokens.
+  With forty lines of its own replies to read, Syrinx said "if you're going to spend an hour in
+  traffic" four times in one talk. Three test talks replayed: repeated four word runs 26 to 3,
+  replies 22 words to 14, the JSON closed 52 times of 52. Only the last few lines count: over 512
+  tokens it also pushed the model off what he had said earlier. A line asking for his own words
+  back ("what did I say...", `ASKS_BACK`) is written without it, and in a talk gets no memory
+  search either. The token that says who a line is for is read without it.
+- **In a talk (2026-11-05):** PAN spoke in the last 45 s (`since_pan_ms` from app 0.4.73, else
+  `panSpokeWithin`; bench turns record nothing, so only the phone's number works there). The
+  one token that says who a line is for is then read as odds: "pan" at 0.2 or more gets a reply
+  (`minPan`). Without this, one missed reply left no `PAN:` line in the history, the next line
+  looked like room talk too, and the talk went silent. Offline replay with the replies in the
+  history: real lines to PAN 0.25 and up, "can you pass me the big pot" 0.00. A line for the room
+  right after PAN spoke can still score high ("dinner's in about twenty minutes, okay" 0.54).
+- **Cloud first, but not for long:** `cloudFirst` is the voice chain's first cloud model and
+  then the student, and the cloud model gets 2 s to start (`CLOUD_FIRST_MS`). Before, two cloud
+  models took turns for 7 s each and a word search took 12 s. Interpreting keeps all the cloud
+  models and never goes to the student. A cloud stream that dies before a word is spoken
+  ("Failed to parse stream") hands the turn to the student (`replyStream`) instead of "Sorry, I
+  ran into a problem".
 - **Live data:** the student never sees tool output. With it on, `buildToolBlocks` runs only
   the live tools (weather, prices, air, search, a page, the world clock), and a turn that got
   live data is answered from a short prompt holding that data, on the voice chain's cloud
@@ -831,33 +1005,391 @@ children can have adult-sounding voices and vice versa).
   (app 0.4.42+, camera on in sensor settings) AND the line passes `looksVisual` (a
   pointing word, and not about a song, server, page, message...). The hub then sends
   `done` with `camera:true` and an empty reply; the phone runs `handleCameraCommand`
-  (same as "what is this": ack, photo, Nano or server vision, speak).
+  (same as "what is this": ack, photo, hub vision, speak).
+- **Photo answers (`POST /api/v1/vision`, 2026-11-03):** the phone asks the hub first and
+  falls back to on-device Gemini Nano only when the hub gives nothing (app 0.4.64; Nano is
+  caption-only, ignores the question, and kept failing its policy check after ~3 s). The
+  hub asks the photo what was actually asked: its own transcript of the camera turn
+  (`recordVoiceTurn` stashes it), and for a bare "use the camera and look at it" the turn
+  before it when that one points at something ("what kind of dog is that?"). Two looks, then
+  an answer (`lookAndAnswer`): moondream describes the photo (it reads writing: "the word
+  SHADHAVAR"), the local text model (`ollama:gemma4:e2b`) answers his question from that in
+  one or two spoken sentences, and a thing the description left out gets a second look of its
+  own ("Describe the dog in this image" found his dog behind the desk). About 5-7 s per new
+  photo, about 15 s with a second look. llava-phi3 (still `model_selections.vision`, the
+  other callers' model) said "a pony in a computer image" with "Shadhavar" written over it;
+  gemma4:e2b and e4b return nonsense for images on Ollama 0.40.13 (a desk photo came back "a
+  brick", a black dog "reddish-brown"); qwen2.5vl:3b takes ~35 s and missed the label too.
+  `spokenVision()` strips markdown and lists and turns capitals read off the photo into
+  words. A follow-up within 3 minutes that points at it ("yeah, what kind of pony?") gets
+  what the photo showed added to the history (`_lastLook`). `bench: true` runs the same
+  looks and saves nothing. `analyzeImage` (llm.js, `model` option per call) has no cloud
+  fallback: photos and what is in them never leave the mini PC.
 - **Phone shortcut:** the phone takes some camera lines itself before the hub sees them
   (`isCameraCommand` in `PanForegroundService.kt`). Fixed phrases ("what am i looking at",
   "take a photo") count anywhere in the line; "what is that / look at this" counts only when
   nothing but filler follows it (app 0.4.58), so "what is that movie called, it has to do
   with a" reaches the word search instead of "the camera is turned off".
-- **Falls back to the full prompt when:** the model cannot be reached, or its reply is
-  `[CAMERA]` and the camera rule above does not hold (OmniΠ still over-reads some
-  "this/that" lines as needing a look).
+- **`[CAMERA]` when no photo can be taken:** a line that passes `looksVisual` with the camera
+  off gets "I can't see it, my camera's off." Any other line is asked once more with the camera
+  ruled out, and a second `[CAMERA]` goes to the cloud model on a short prompt. Both used to end
+  in the full prompt: 15-17 s of silence.
+- **Falls back to the full prompt when:** the model cannot be reached.
+- **Dictating to Claude:** the phone hears him dictate to Claude on his computer, and PAN
+  answered those lines (2026-11-03). Every Claude prompt (hooks.js `UserPromptSubmit`) is
+  matched against what the phone heard in the last 4 minutes (`noteClaudePrompt` in
+  `conv-state-watcher.js`: half a line's content words or more). A match means he is
+  dictating: for 8 minutes from the last matching prompt PAN only answers when he says its
+  name (`saysPanName`; "Pan replies and..." is talk ABOUT PAN and does not count) or is in
+  the middle of an exchange with it (PAN spoke in the last 45 s). Prompts typed by the thread
+  relay are skipped. Bench turns never get this check.
+- **Told, not asked:** a short first-person line ("I'm so tired today", "the neighbour's dog
+  is called Biscuit", `tellsPan`) or a reaction right after PAN spoke ("that had nothing to do
+  with the camera") that Syrinx files as room talk is re-asked on the cloud model, which
+  answers like a friend would or still says ambient. The reply goes out as a hold
+  (`hold_ms`): spoken if he stops there, dropped if he carries on (still talking when the hold
+  ends counts, app 0.4.73). Not while other voices were heard in the last 90 s.
+- **His own chances:** "do you think I'll get that job?", "am I too old to learn piano?"
+  (`REASSURANCE`) go to the cloud model with a prompt to be warm and honest. Syrinx answered
+  one with "Hardly... you're just a tool" (round 9 data carries put-downs). Round 10 still
+  told "was it stupid to build my own pendant" "you're just wasting your time", so "was it
+  stupid/a mistake to" and "am I wasting my time" go there too.
+- **"What did I say...":** answered from the conversation the phone sent. The per-turn memory
+  search is skipped when every word naming the subject is in that conversation
+  (`_historyNames`): Syrinx was never trained with a memory block, and his real notes about
+  other passwords made it say "I don't have that" to "where did I say the wifi password is".
+  When Syrinx tags the turn a memory recall, its answer is already spoken (answer-first), so
+  unless he named a day the turn ends there: nothing a search finds could be heard. Before, the
+  explicit memory search ran anyway: 12-37 s that could not be heard, then "the provided
+  messages do not contain an answer" kept as PAN's line (round 10, hub recall bench 2026-11-03:
+  31 of 32 right, slowest turn 6 s).
+- **How much of the talk it sees:** the phone sends the last 40 lines (app 0.4.73), dropped ten
+  at a time so the hub's read of the start stays good. At ten lines Syrinx answered 0 of 4
+  questions about the start of a talk; at forty, 4 of 4, with no retraining.
+- **Vector search:** on its own thread with the main database's vectors in memory
+  (`memory-vector-worker.js`, about 650 MB, loaded on the first voice turn, topped up at each
+  search). sqlite-vec has no index, so its scan read every vector through SQLCipher: 8 s on a
+  quiet hub, 21.7 s on a busy one, and because better-sqlite3 is synchronous it froze every
+  request in the hub for that long. In memory: 0.5 s, same top 20 in the same order. A voice
+  recall waits 4 s for it (`vecTimeoutMs`), then goes on with what FTS found.
+- **Interpreting:** a standing instruction that translates ("from now on translate everything
+  I say into Japanese", or "be our interpreter", "translate for us", "translation mode";
+  `INTERPRET_RE`) sends every line after it to the hub's translator, or, into Japanese and
+  Chinese, to the voice chain's cloud model first (see below), which gets a
+  short prompt (`standingPrompt`): only the translation, English into his language and a line
+  already in that language into English, intent `translate` so a speaker's closing question
+  is never cut as PAN's own. Those lines skip the room-talk and dictation filters, the memory
+  search and the tools. Hub bench 2026-11-03: 0.6-0.7 s a line both ways, against 2.8 and 7 s
+  on the local model. "Stop translating" / "stop interpreting" ends it. While interpreting, the
+  hub hears the other person too, with the speech model for the language his instruction
+  names (`languageNamed`, ~50 language names; see Hub re-transcription): SenseVoice for
+  Japanese, Chinese, Cantonese and Korean, Parakeet v3 for 24 European languages (Greek,
+  Spanish, French, German, Russian...), Whisper for everything else, and Whisper too when he
+  names none. The model loads the moment he gives the instruction. The way each line goes is
+  set in code, not by the model (told "translate everything I say into Japanese", it put
+  Korean into Japanese too): a line the model heard as not English (`heard_lang`), or written
+  in a non-Latin script, goes into English for him; a line heard as English, or plainly English
+  words (`looksEnglish`), goes into the language he named; a short Latin line nobody can tell
+  is left to the model. Hub audio bench 2026-11-03, from the clip arriving to the first
+  translated words: Japanese, Korean 0.8-1.3 s; Spanish, German, French 0.8-1.3 s; through
+  Whisper (named Turkish) 2-3.2 s. Known limit: a third language under a Spanish instruction
+  (French) went into Spanish, not English. Replies in another script are spoken by the phone's
+  Android voice for that language (TtsManager `scriptLocale`), sentence by sentence at 。！？
+  (app 0.4.65).
+  - **The instruction lines get a fixed reply at once** (`interpreterAck`, router.js): a line
+    that only turns interpreting on ("Okay, I'll interpret. Japanese and English."), only names
+    its language ("Okay, Spanish.") or only turns it off ("Okay, I've stopped."), checked by
+    taking out the instruction, the language name and `INSTRUCTION_FILLER`. A line with
+    anything else in it ("translate for her: how much is this?") still goes on whole. The
+    local model took 2-3 s for these and said things like "I'm not a native speaker, you'll
+    have to teach me the nuance first", over the other person's first words.
+  - **A language can come late.** "Be our interpreter" [pause] "she speaks Spanish" reaches
+    the hub as two turns; the second completes the instruction (`standingInstruction`). With
+    no language named at all, the first full line Whisper hears from the other person sets it
+    (`learnInterpretingLanguage`, logged `[interpreting] no language named; heard es`), and
+    the lines after it go to that language's faster model: Spanish 2.2 s, then 0.35 s.
+  - **Whisper repeats itself on a short line** ("Stop translating. Stop translating..." for a
+    1.4 s clip): `dropRepeats` in hub-asr.js removes a sentence that only repeats the one before
+    and a line that is one phrase over and over, and English Whisper heard goes on to
+    Parakeet v2 like SenseVoice's.
+  - **Phone bench** (voicebench `--only interpret`, app 0.4.68, Craft 32): every line into the
+    right language; end of speech to PAN's voice ~2-3.5 s (turn decision ~0.35 s, upload and
+    hub speech-to-text ~0.4-0.7 s, translation ~0.7-1.2 s and up to 2.9 s on a slow cloud
+    call, then the voice: Android's Japanese starts in ~0.15-0.6 s, Supertonic English needs
+    0.5-1.4 s to synthesize a long line before it plays).
+  - **Said the way he says it** (his first real try, Greek, 2026-11-03): "translate everything
+    I say into Greek", "interpret what they say", "keep translating" are instructions too
+    (`STANDING_SET_RE`), with no "from now on". The instruction turn itself goes to the
+    interpreter (`setting`): "I told you to translate everything, so ask them how much this
+    costs" says "Πόσο κοστίζει αυτό;" to them. "Ask them X" / "tell her X" is said to them
+    directly, not translated as an order. "Translate that" / "say that again" repeats PAN's
+    last translation at once (`SAY_AGAIN_RE`, `lastTranslation`), with no model call.
+  - **One line, no instruction:** "how do you say thank you in Japanese", "translate good
+    morning into Greek" go to the voice chain's cloud model with a short prompt
+    (`translatePrompt`), ~1.2-1.9 s. Before, the local model answered "I can't find the line
+    you're talking about".
+  - **Own script:** a reply in Greek, Japanese, Chinese, Korean, Cyrillic, Arabic, Hebrew,
+    Hindi, Thai and a few more is asked for in that script, never Latin letters (`SCRIPTS`,
+    `inScript`). The phone picks the voice by the script, and "kalimera" / "Arigatou" were read
+    out by the English voice.
+  - **Survives a reload:** the mode is saved in the world (`intuition/world.js`, table
+    `world_modes`), so a Craft swap or a restart keeps it; before, it lived in router.js memory
+    and every swap ended it. It lasts 2 hours after its last use, not after he gave it. 10 s
+    after a start, the speech model for its language is loaded again. Hub bench 2026-11-03:
+    on, swap, "Thank you very much" still came out "Ευχαριστώ πολύ".
+  - **The voice while interpreting** (app 0.4.69, changed in 0.4.75): the hub sends
+    `{"type":"interpreting"}` before an interpreting reply, which sets `TtsManager.interpreting`
+    for it. See "Supertonic on the normal audio path" below.
+  - **Cloud quota:** interpreting needs the cloud model (the local gemma4:e2b turned "how much
+    does this cost" into broken Greek). Gemini's free tier is 500 requests a day per model,
+    reset at midnight Pacific, and Intuition's classifier alone made 414 on 2026-11-03, so
+    the interpreter ran out at 9 PM ET. Intuition no longer calls a model at all (rules in
+    `intuition/reader.js` since Craft 45), background jobs never fall back to the cloud
+    (`ai_fallback_chain_background` is local only), voice keeps gemini-3.5-flash-lite, and
+    the voice chain has 3.1-flash-lite third. A Gemini stream that sends nothing is cut at 7 s (the first-token
+    watchdog in llm-fallback.js, Cerebras only before; `firstTokenMs` sets it per call) and
+    the SDK now gets the abort signal (llm.js): an overloaded free-tier model held one turn
+    81 s.
+  - **On the phone, no hub and no language model** (`interpret/InterpreterLoop.kt`, app 0.4.74,
+    2026-11-05): a live test through the hub took 3.0 s from his last word to the voice (end of
+    turn 0.86, upload and two speech models 0.75, Gemini 1.23, voice 0.15). After every reply
+    the hub sends `{"type":"interpreter","lang":"ja"}` (empty when off, `?` with no language
+    named yet). If the phone has that language's models it hears, translates and speaks by
+    itself (`sttEngine.ear`): SenseVoice for ja, zh, ko, yue (`interp/sensevoice`, about 80 ms a
+    line), the Greek ear for el (`interp/parakeetel`, below) and two quickmt
+    models (`interp/quickmt-<src>-<tgt>`, about 130 ms a line, CTranslate2 and SentencePiece in
+    `libpanmt.so`, built by `android/panmt/build.ps1`, `translate/QuickMt.kt`). Models live in
+    the app's external files and for now go on by adb; a phone without them stays on the hub.
+    **It starts at the first silence** (`TurnEar.onPause`, 96 ms after his last word), while end
+    of turn is still being decided, so at the commit the translation is usually ready. If he
+    goes on it is thrown away and nobody has heard anything. Stop to first audio on the bench
+    (`interp_talk_ja`, `interp_talk_el`, `interp_ja`, screen off, with the Android voices, app
+    0.4.74): Japanese both ways 0.28 to 0.45
+    s, a 7 s Japanese sentence 0.86 s, English into Greek 0.38 to 0.63 s, Greek into English 0.69
+    to 0.74 s. The bench says the same lines every run, and Google's voice keeps what it has
+    said: a known line starts in 3 to 60 ms, a new one in 70 to 150, so a real talk runs up to
+    0.1 s slower. Not yet tried with real people talking into the microphone. **The language
+    heard picks the direction** on every line: English goes into the other language, the other
+    language into English, with no setting. SenseVoice names the language. The Greek ear can only
+    write Greek, so there Whisper tiny (`interp/lid`, 93 ms, always reads 30 s) says whether a
+    line was English, and English goes to SenseVoice: it said "en" for 11 of 11 English lines and
+    for none of 30 real Greek ones. One after the other: side by side they took 340 to 610 ms on
+    this phone's few fast cores. A third
+    language (3.2 s for Korean), "stop translating", "ask them...", and anything starting with PAN's name go to the
+    hub as a normal turn (`onHandOver`). In Greek mode a third language is not caught: it is read
+    as Greek. "Say that again" repeats the last line. PAN's own line
+    coming back within 8 s is dropped, and so is anything under 0.4 s of audio: 0.22 s of the
+    end of a clip came back as "Yeah." and PAN said it. While it runs, each line still goes to
+    the history (`speakInterpreted`).
+  - **The Greek ear** (`interp/parakeetel`, 912 MB): myned-ai's fine-tune of Parakeet v3, CC-BY-4.0.
+    Parakeet v3 itself has no final sigma in its vocabulary, so it drops the letter from every
+    word that ends in one, and on real speech it wrote Latin or Cyrillic letters often enough to
+    say nonsense to someone's face ("Ven eхме trapezi"). On 40 real speakers' clips (FLEURS test,
+    on the phone) it got 45.1% of words wrong and the fine-tune 10.8%, with every line in Greek.
+    FLEURS's training half was in the fine-tune's data, so these clips are separate but familiar;
+    its card gives 8.9 to 13.1% on everyday Common Voice speakers.
+    Phone voices reading test lines had hidden this. The fine-tune's published int8 does not load
+    (ConvInteger with int8 weights crashes the app) and loses accuracy (18.7% on the card): ours
+    is quantized from the float encoder, MatMul only, per channel, decoder and joiner left in
+    float (`evals/ears/`, with the FLEURS scoring). 170 ms a line alone, about 330 ms in the live
+    loop with Smart Turn running. It is trained on 2,003 h of podcasts that were not licensed to
+    its author, which matters before PAN is sold. It writes questions with a Latin question mark,
+    changed to `;`. SenseVoice on real Japanese the same way: 7.3% of characters wrong, 40 of 40
+    clips named as Japanese. Masking Parakeet v3's joiner to Greek letters did not help: it
+    writes nothing instead.
+  - **One voice engine per language while interpreting** (`TtsManager.prepareLanguage`): a two way
+    talk changes language every line, and one engine changing voice took 230 to 930 ms to start.
+    An engine that keeps its voice took 60 to 110 ms on a line it had never said (InterpretBench
+    `fresh`). Set up when the mode starts, then warmed with quiet numbers, back and forth: the
+    first new line after the other voice had been used took 0.47 s once, and a word Google's
+    voice already knows comes from its cache and warms nothing. All engines share one player, so
+    a real line drops whatever warming is left (`dropWarming`): four quiet lines held the first
+    line back 4 s. Voices stayed ready after 10 lines of the other language and after 60 s quiet.
+  - **Supertonic on the normal audio path** (`TtsManager.interpreting`, app 0.4.75, 2026-11-06):
+    the owner said the voice sounded like voice over IP from 2004, and it was: every line ran on
+    the call path (AUDIO_OUTPUT_FLAG_VOIP_RX, HAL route `speaker (VOICE)`, Google's voice at
+    24 kHz), the one that lets the phone cancel PAN from the mic. He heard one line five ways
+    and chose Supertonic voice 9 in English, Japanese and Greek, with voice 6 a good second. So
+    a line in any language it reads goes to Supertonic with `USAGE_MEDIA` in MODE_NORMAL
+    (`PiperTtsEngine.plainPath`), clean, without the call path's tanh drive. A language it cannot
+    read (Chinese) stays on the Android voice, on the same media path (`TtsManager.androidOnMedia`).
+    Media volume goes to full while the mode is on and is put back after. On 2026-11-06 Chinese was
+    going out of the earpiece (HAL `speaker-earpiece (VOICE)`): measured on the phone's two mics with
+    `TEST_LOUD` and `scrcpy --audio-source=mic`, the media path is about 12 dB louder.
+
+    The app has no MODIFY_AUDIO_SETTINGS, so `audioManager.mode` and `isSpeakerphoneOn` have always
+    been denied (logcat `Audio Settings Permission Denial`). Only `setCommunicationDevice` works, so
+    an Android voice line outside interpreting calls `PiperTtsEngine.toLoudspeaker()`. Adding the
+    permission turns on call mode for all of PAN's speech: the speaker then came about a second late,
+    and Android resets the mode after 6 s because Google's TTS process plays the line, not PAN. The Android
+    voice engines above are only set up for those languages now.
+    - **Library:** needs sherpa-onnx 2.0 (1.12.34 refused all but en, ko, es, pt, fr). The AAR is
+      the static link build of 2.0.1: the plain one brings a libonnxruntime.so that clashes with
+      onnxruntime-android. Old against new on the hub: 119 of 119 streaming clips the same, 24
+      of 24 language checks the same, SenseVoice on real Japanese 2.9% to 2.4% of sounds wrong.
+    - **Speed by language:** every test line said, then read back by our own ears
+      (`evals/ears/voice_readback.py`, no phone). Sounds wrong at speed 1.2 / 1.0: English 2.8% /
+      0.9%, Greek 2.2% / 1.1%, Japanese 37% / 8%, with whole words gone. Supertonic rushes kanji:
+      its Japanese at 1.0 is 30% faster than the Android voice, and at 0.8 it is that voice's
+      pace. So interpreted lines go at 1.0, Japanese at 0.8. As shipped, through the trim and
+      level: English 1.1%, Greek 0.3%, Japanese 1.5% (the Android voice 2.8%). Feeding it kana
+      gave 3.5% at 1.0: slowing down did more, with no reader to ship. 3 steps are worse in
+      English (5.0%) and Greek (9.2%), but 2.2% in Japanese at 0.8, which would save about 0.1 s
+      if it sounds the same. 2 steps are about 10% everywhere.
+    - **Numbers as words** (`tts/SpokenNumbers.kt`, English and Greek): the translator writes
+      digits, and "1,200 yen" came back "1 to 00 yen", "στις 15" as "στις 5". On lines that are
+      mostly numbers: English 24% to 11%, and what is left there is SenseVoice losing "euros", which
+      Parakeet read fine from the same audio. Greek 8% to 1%. Japanese reads digits well, 0.8%.
+    - **What it costs:** Supertonic builds the whole line before any sound, 0.5 to 1 s on the
+      Pixel where the Android voice takes 0.1 s, about 0.7 s of the wait. Worked out from the
+      parts, not yet measured end to end: 1.0 to 1.4 s from stop to sound, where the Android
+      voices were 0.3 to 0.75 s and the hub 3.0 s. Each step of the 4 is 120 to 170 ms, and more
+      threads than 3 or the float model are slower (InterpretBench `supertime`).
+    - **Built early** (`PiperTtsEngine.prepare`, `InterpreterLoop.onDraft`): the line starts
+      building when the translation is ready, not at the commit, and `speak()` finds it. An
+      unsure pause commits at 0.6 s, so this hides up to 0.35 s of it. Nothing plays and the
+      mic stays open, so a line nobody commits is just forgotten.
+    - **Echo:** nothing is known to cancel PAN on this path, and how much reaches the mic needs
+      the real phone: `tts_echo` logs the loudest echo of each line. Until then
+      `evals/ears/sim_mic.py` runs a port of the read loop with the real voice, Silero and ears
+      and a simulated room, with no cancelling at all. Three things came out of it or of reading
+      the code for it. The room ringing after PAN stops opened a turn for the ear after 11 to 14
+      of 18 lines, so speech does not count for `ECHO_TAIL_MS` after a line, and none did then.
+      What the mic heard during the line is dropped when it ends, so the pre-roll cannot feed PAN
+      to the ear. The barge-in level is learned from the first sound (`onTtsSound`), not from
+      when the line was asked for, which is up to a second earlier. Talking over PAN needs a voice
+      louder than PAN: nobody at -26 dB stopped it at any echo level tried, down to -36 dB.
+  - **The card shows stop to first audio** (`tts_audio`, `onPlayStart`): the later of the voice's
+    onStart and its first audio, because either can come first. Green to 1.0 s, yellow to 2.5 s.
+  - **Turns end sooner while interpreting** (`SttEngine.interpreting`, phone or hub path): only
+    a Smart Turn verdict of 0.9 ends a turn at once, a second look comes at 380 ms, and an
+    unsure pause ends at 0.6 s, not 1.4 s. The English recogniser's words are not used: they
+    mean nothing when the other person talks. Under 0.9 still waits, because at 0.67 "Thank you,
+    that is very kind of you" went out at the comma.
+  - **quickmt, one small model per direction** (Craft 66): every `quickmt-<src>-<tgt>` folder
+    beside the main model answers its own direction first (`Pairs` in translate-server.py, `GET /`
+    lists them as `pairs`, `pairInstalled` in translate-local.js). 185M parameters, 8 encoder and
+    2 decoder layers, CC-BY-4.0 (quickmt must be credited). Installed: en-ja, ja-en, en-el,
+    el-en. 40 ms a line on 4 hub threads where MADLAD takes 1.2 to 2.7 s. A language with a pair
+    no longer goes to the cloud first. On 104 everyday lines (`evals/translate`, facts such as
+    prices, times and places) it kept 99, ML Kit's text translator 88; M2M changed the country in
+    "from <country>" to "from Japan" and 7 in the evening to 7 a.m. On the held-out set (`translate-eval.py`,
+    100 lines a direction) en-el 83.4, el-en 75.7, en-ja 48.1 (MADLAD 48.6), ja-en 67.4. Known
+    slips: kanji numbers ("千二百円" came out 1,000 yen; SenseVoice writes digits, so speech is
+    safer than the test), and words with two readings ("十分", "辛い"). A translator that hands
+    the words straight back counts as no translation (`sameWords`, translate-local.js): MADLAD
+    did that for five English lines in a row when the cloud was paused.
+  - **Google's translators, tested and not used:** ML Kit text (`com.google.mlkit:translate`):
+    free in a commercial app, Google may stop it at any time and gets usage metrics, 88 of 104
+    facts, at about quickmt's speed on the phone (122 to 168 ms a line). Android's own translator (`TranslationManager`): gave our app no
+    translator. ML Kit GenAI Speech Translation: alpha, and its terms bar preview features in
+    production, apps under-18s may use, and products that compete with Gemini Nano; it also
+    pulls Kotlin 2.4 into this build. Not measured.
+  - **The hub's own translator first, the cloud first only into Japanese and Chinese**
+    (`interpretStream`, router.js): since 2026-11-04 (Craft 51) an interpreting line goes to the
+    hub's translator (steward service "translate", port 7784, `translate-local.js`) and to
+    Gemini only if it has nothing, except into Japanese, Chinese and Cantonese
+    (`INTERPRET_CLOUD_FIRST`), where MADLAD scores lowest (chrF 48.6 into Japanese, 35.7 into
+    Chinese, 77 to 87 into the European languages). It's free, and no Gemini quota goes on the
+    languages the translator does well. Bench (Craft 51): into Greek 1.1 to 1.8 s a line warm,
+    Greek or Japanese into English 0.6 to 1.1 s, Japanese out from Gemini with its first words
+    at 1.9 s. Never the local chat model. On the cloud-first path each Gemini model gets 2.5 s
+    for its first words and the translator answers if neither does; after 2 lines in a row with nothing from the cloud, the cloud is
+    skipped for 2 minutes. With none installed the cloud gets its usual time; MADLAD has been
+    installed since 2026-11-04, and that night it answered every line of his Greek session
+    while gemini-3.5-flash-lite was out of quota and 3.1-flash-lite sent nothing. "Ask them
+    X", "tell her X" and "let them know X" are turned into the words for them in code
+    (`toDirectSpeech`): the fallback model translated the request itself, as an order to the
+    shopkeeper. Also handled: words for PAN in front ("I need you to", "I'd like you to", "No,
+    I said"), "ask if/how/where ..." with no "them", and "I asked them how much this costs",
+    him repeating what he wanted said, which the translator gave word for word ("Τους ρώτησα
+    ...") until 2026-11-04 (Craft 48).
+    NLLB-200 was tried as the translator on 2026-11-03 (0.2 s a line; Greek usable, Japanese
+    weak) and removed the same night: its licence is non-commercial, and PAN takes nothing
+    non-commercial. The next one must allow commercial use (INTUITION-STATE-ENGINE.md step 1).
+  - **The translator server** (`translate-server.py`, steward service "translate"): one
+    CTranslate2 model on the CPU, `GET /` (503 while loading) and `POST /translate {text,
+    src, tgt, beam?}` with ISO 639-1 codes. Two engines, both licensed for commercial use:
+    MADLAD-400 3B (Apache 2.0, the int8 build Nextcloud ships, folder
+    `<PAN local>/models/madlad400-3b-mt-ct2-int8`, target tag `<2xx>` before the source) and
+    M2M-100 418M (MIT, `models/m2m100-418m-ct2-int8`, `__xx__` tags); the kind is read from
+    the folder's tokenizer file. Lines are split into sentences (CJK on their own full stops)
+    and translated as one batch. The steward runs the folder named by the `translate_model`
+    setting ("none" turns it off), else the first complete install in `TRANSLATE_MODELS`
+    (steward.js), so switching engines is a setting and a Craft swap. The NLLB lessons hold:
+    the port is bound exclusively before the model loads (Windows let two copies share it),
+    and CT2_USE_MKL is never set (50x slower on this CPU).
+    - **Live: MADLAD, 8 threads, beam 4, no length bonus, M2M as its referee** (0.6-1.3 s
+      a line on the hub). On the 81 line bench (chrF, 4 threads, beam 2) MADLAD scored 69.3
+      at a median 1.3 s against M2M's 53.9 at 0.22 s: Greek out 84 vs 68, Japanese out 61 vs
+      27, Greek in 67 vs 46, Spanish out 87 vs 72. M2M was better only at French out (69 vs
+      58). On 2,400 held-out everyday lines in 12 languages (Tatoeba, `translate-eval.py`)
+      MADLAD scored 75.1 to M2M's 65.2.
+    - **MADLAD makes things up after short lines:** 9.5% of those held-out lines came back
+      with an extra clause ("Good evening." -> "Καλησπέρα, καλημέρα."; "Με λένε Αντρέα." ->
+      "My name is Andrea, I'm 18 years old."), M2M 0.9%. Beam 4 with `length_penalty` 0
+      (`DEFAULT_BEAM`/`DEFAULT_LP`) cut that by a third on the worst languages and was faster.
+      Then M2M, loaded in the same server (`--referee auto`, the M2M folder beside the model),
+      judges each sentence: when MADLAD's line runs well past both M2M's and the length the
+      source would make (`LEN_VS_EN`), it is cut at the comma, dash or "and" nearest M2M's
+      length (`referee_check`). Replayed on the 2,400 lines that left 2.2% overruns and raised
+      chrF to 76.5. M2M drops words itself ("please", "excuse me"), so it never replaces
+      MADLAD's line, and a referee line far too short for the source is ignored.
+      `GET /` shows the referee. Live result on the deployed service (`translate-eval.py`,
+      100 held-out lines per direction, 12 languages): chrF 76.2 average, 77 to 87 for
+      most directions. Weakest: into Chinese 35.7, into Japanese 48.6 (both partly a
+      reference mismatch), into Arabic 65.7, Russian to English 71.2. Median 0.8 to 2.1 s a line.
+    - **MADLAD's input trap:** the `<2xx>` tag is encoded together with the text,
+      `sp.encode("<2el> " + text)`, which puts a lone "▁" piece before the tag, and no
+      `</s>` goes on the end (as Nextcloud's app does it). With the tag as its own token the
+      model babbled ("Πό, Π , Π. Π.", chrF 23). It also keeps writing like a web page ("We'll
+      get back to you shortly."), so an output keeps only as many sentences as its source
+      had (`keep_sentences`), with a repetition penalty of 1.3.
+- **World clock:** places only he says live in the `zone_aliases` setting (JSON, name to IANA
+  zone), merged over the public table in `tools.js`.
 - **Preserves:** the gate, ambient veto and action handling downstream are unchanged.
 
 ---
 
 ## Phone voice (text to speech)
 
+- **Interpreting volume:** media goes up to 4/5 of the top while interpreting (20 of 25 on the Pixel, `interpreterVolume`, app 0.4.79), then back. Above that the phone gets harsher, not louder.
+
+- **Pendant mic (test only so far):** the XIAO streams 16 kHz speech over Bluetooth as IMA ADPCM, and `ble/PendantMic.kt` decodes it. `TEST_PENDANT_MIC --es sec 10` records it to `voicebench/pendant_mic.wav`; `--es live 1` makes PAN hear the pendant instead of the phone's mic, `--es live 0` undoes it; `--es cmd x` sends the board one command. Firmware notes in `firmware/pendant/README.md`.
+
+- **A voice per person while interpreting:** `interpret/VoiceBook.kt` (app 0.4.78). Each line heard is matched to a voice print, likeness 0.4 or more is the same person, anyone else on a line of 1.5 s or more is a new person, up to 4. No sign-up. The first person out gets Supertonic voice 9, then 6, 3, 1 (`InterpreterLoop.VOICES`). `pick()` only looks, because a line can be read at a pause and run on; `keep()` runs once the line is really said. Prints stay in memory and go when interpreting ends. Needs `interp/spk/model.onnx` (CAM++ zh_en, 27 MB); a phone without it interprets in one voice. A language Supertonic cannot read stays on the Android voice, so it gets no per-person voice. Test with no mic or sound: `TEST_INTERP_BENCH --es what people --es clips a.wav,b.wav`; hear a voice with `TEST_LOUD --es sid 6`.
+
+- **Everyday Japanese (app 0.4.86):** `interpret/JaSentences.kt` puts back sentence breaks the ear drops, and `interpret/JaPhrases.kt` translates set phrases by table. Giving the translator the previous line as context was tried and left out: it fixed some lines, broke others, and doubled the time. Test: `TEST_INTERP_BENCH --es what mtlines`, lines in `voicebench/mt_lines.tsv`, output `mt_out.txt`.
+
+- **Pieces while talking (test only, app 0.4.88):** with a PAN linked, at each pause in his English the part not sent yet goes across if it has at least 4 words and does not end on a word like "the" or "to". The rest goes when the line ends.
+
+- **PAN to PAN (test only, app 0.4.84):** with `TEST_PEER --es url ...` the phone sends its owner's translated line to the other person's device as text and says nothing itself, and lines that arrive are translated and spoken to the owner (`interpret/PeerLink.kt`). The far end for testing is `voicebench/peer_person.py`. Plain HTTP over a tunnel, no sign in, not for use outside the owner's machines.
+
+- **Language per person and longer waits (app 0.4.83):** a line under 3 s in a language its speaker has not been using is dropped as the ear's mistake. While interpreting, a pause Smart Turn scores under 0.5 waits 1.0 s instead of 0.6 s before PAN speaks.
+
+- **Wrong language guards (app 0.4.82):** a third language from someone already heard speaking English is dropped, not sent to the hub, because the ear sometimes calls mumbled English Chinese and the hub answers in English. A translation that comes back mostly in English letters goes to the hub instead of being spoken.
+
+- **Short first piece (app 0.4.81):** a line with no early comma is cut at a joint, after a particle that follows a noun in Japanese, before a joining word in English (`LineClauses`). Greek is not cut this way yet. A comma later than about 8 kana loses to a joint. Build time follows length, so this is the main saving on long lines.
+
+- **Interpreted lines in pieces:** `tts/LineClauses.kt` splits a line at its first clause (at least about 10 letters each side, never inside "1,200"). `prepareLine` builds only that piece early, and the rest builds in whole sentences while it plays (app 0.4.76).
+
 - **Where:** on the phone, never the hub (`tts/TtsManager.kt`, `tts/PiperTtsEngine.kt`,
   sherpa-onnx). Settings → Voice picks it (`voice_quality` in `pan_tts_prefs`).
-- **Default:** Supertonic 3 (`supertonic3`, app 0.4.59; sid 9, speed 1.20 and 5 refinement
-  steps since 0.4.61, per voice in `VOICES`). Supertonic 2 (`supertonic`) slurred and mangled
+- **Default:** Supertonic 3 (`supertonic3`, app 0.4.59; sid 9, speed 1.20 and 4 refinement
+  steps, per voice in `VOICES`). 3 steps lost the last word of 12% of real lines and 45% of
+  short ones; 4 is as good as 5 (3% and 19%). Lines of three words or fewer go at speed 1.0:
+  39 of 48 came out whole at 1.20, 47 at 1.0. The quiet the model leaves at each end, about
+  0.3 s before and 0.35 s after, is cut (`trimQuiet`), so two sentences are 0.26 s apart, not
+  0.8 s, and the first word comes 0.3 s sooner. Supertonic 2 (`supertonic`) slurred and mangled
   words at every speed and step count tried ("documentimentation", dropped "stay" and
   "depends on"; Parakeet misheard 2-7% of its words). Supertonic 3 misheard 0.7% at 1.20 and
   4-5% at 1.35 ("termination"), and at 1.20 it talks as fast as v2 did at 1.35. Model files are staged into
   `files/piper-models/<id>/` (over adb, or downloaded from the sherpa-onnx `tts-models`
   release).
 - **Other scripts:** a reply mostly in another script (Japanese, Greek, Cyrillic) goes to
-  Android's own voice for that language; a few Greek letters in English ("ΠΑΝ") are spelled
-  in Latin for the English voice (app 0.4.57).
+  Android's own voice for that language, except while interpreting, when Supertonic reads the
+  languages it can (see "Supertonic on the normal audio path"); a few Greek letters in English
+  ("ΠΑΝ") are spelled in Latin for the English voice (app 0.4.57).
 - **Debug tuning:** `adb shell am startservice -n dev.pan.app/.service.PanForegroundService
   -a TEST_TTS --es voice supertonic3 --es steps 8 --es speed 1.35 --es silence 0.2` (debug
   builds; `voice` is saved like the Settings choice, the rest last until the app restarts).
@@ -916,7 +1448,31 @@ children can have adult-sounding voices and vice versa).
 - **Runner:** `service/src/evals/voicebench/` (Python, laptop or Mint with adb):
   `make_clips.py` (SAPI voice, exact pauses) then `run.py [--only family]`, which unmutes
   PAN for the run if needed and mutes it again, then `score.py` writes `summary.md` and
-  `scores.json` under `runs/<stamp>/` with the scorecard M1-M8 and M11.
+  `scores.json` under `runs/<stamp>/` with the scorecard M1-M8 and M11. `run.py` moves to
+  the next clip only when every query has its `reply_done` and PAN has gone quiet.
+- **Real conversation** (`--only conversation`, the number to quote): three unbroken talks, 52
+  turns, every job on the PAN Models page in them (telling, stories, views, follow-ups,
+  remembering, looking up, thinking it over, glancing, talking to someone else, "mm hmm",
+  cutting in). Each step has a `move`; `summary.md` ends with the moves slowest first, each with
+  its target (`MOVES` in `score.py`) and its end of turn, hearing, thinking and voice. A
+  scenario's `quiet_s` starts his next line right after PAN stops, as a person would.
+- **Interpreting** (`--only interpret`): he asks PAN to interpret, then she speaks recorded
+  speech in her language (`{"wav": ..., "text": ...}` phrases from `sources/`, not in git:
+  16 kHz mono clips, today the sherpa-onnx model test clips for ja, ko, zh, es, de, fr) and he
+  answers in English. `expect_lang` is the language each reply must come out in, scored as
+  I1 (right language), I2 (gap p50/p90) and I3 (no voice within 5 s), apart from the
+  conversation scorecard. Each scenario ends "stop translating", and `run.py` says it too
+  when a run dies inside one: the instruction would last 2 hours on the bench key. The
+  Android voice logs `tts_play_start/end` with `engine: android` (app 0.4.66), so Japanese
+  replies are timed and waited for like Supertonic's.
+- **Live session** (`live.py`, app 0.4.66+ `TEST_LIVE`): a session on his own microphone,
+  for what a recording cannot test, e.g. a second speaker (a person, or a voice chat on
+  another device) speaking Japanese at the phone while PAN interprets, real echo, people
+  talking over PAN. Nothing said is kept, and the interpreting instruction has to be given
+  inside the session (bench key). Prints a timeline per turn (phone heard, hub heard, PAN
+  said, seconds from the speech stopping to PAN's voice) and writes
+  `runs/<stamp>-live/events.jsonl` and `timeline.txt`. Ends on Ctrl+C, `--minutes` (20), a
+  `stop` file in its run folder, or by itself on the phone after 30 minutes.
 - **Preserves:** release builds are untouched (all actions and events are
   `BuildConfig.DEBUG`-gated); a normal turn's hub path is unchanged apart from timing lines.
 
@@ -1379,6 +1935,12 @@ The phone's streaming zipformer decides WHEN a turn ends; the hub decides WHAT w
 - On commit, `SherpaStreamingStt` keeps the whole turn's audio (up to 20 s) keyed by its text. `PanForegroundService.onSpeech` takes it (`takeTurnAudio(text)`) and `askPanStream` sends it as `audio` (16kHz PCM16 LE, base64) with the text.
 - `/api/v1/query/stream` passes it to `transcribePcm16` in `service/src/hub-asr.js`: NVIDIA Parakeet TDT 0.6B v2 int8 through `sherpa-onnx-node` (optional dependency), about 0.5 s per sentence on the hub CPU. The result replaces the phone's text for routing, is logged as `[hub-asr] phone=... hub=...`, and goes back to the phone as an SSE `{type:'heard'}` event (logged `Hub heard:`).
 - The model (~660 MB) loads 5 s after Craft boot with `OfflineRecognizer.createAsync`, on the libuv threadpool, logged `[hub-asr] parakeet loaded in Nms`. Decoding is `decodeAsync`. Neither runs on the main thread (the sync constructor used to freeze it for 2-3.6 s on every boot).
+- Interpreting (a translate standing instruction; `interpretingFor` in router.js returns the language it names): `transcribeAnyLanguage(audio, code)` first, with the model for that language from the `SPEECH` table in hub-asr.js. Each lives in `<PAN data>/../models/<dir>/`, int8 from huggingface.co/csukuangfj, and loads the first time a language needs it (`warmForLanguage` when he gives the instruction; ~4 s on a busy hub):
+  - `sensevoice`: SenseVoice-Small (sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17): ja, zh, yue, ko. Names the language it heard.
+  - `parakeet3`: Parakeet TDT 0.6B v3 (sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8): 24 European languages including el. No language tag.
+  - `whisper`: Whisper large-v3-turbo (sherpa-onnx-whisper-turbo): everything else, and the default when no language is named. Names the language. 8 threads and `tailPaddings: 500` (the default 1000 silent frames was 40% slower with the same words; 300 made it say the German test line twice).
+  - Speed on the hub CPU (Ryzen 7 5800H, 4 threads unless noted), for 3-7 s test lines, 2026-11-03: SenseVoice 0.1-0.15 s, Parakeet v3 0.15-0.37 s, Parakeet v2 0.2-0.35 s, Whisper turbo 2.8-4.7 s by default, 1.1-2.6 s as configured. All four loaded, the Craft is ~2.35 GB.
+  - A line the model heard as not English (or with no tag) is used as heard and its language goes to routeStream as `heard_lang`; English heard by SenseVoice is used as is too (6 of his 7 live lines as good as Parakeet v2, 0.2 to 0.35 s sooner); English heard by Whisper goes on to Parakeet v2 (it says short lines again and again). Logged `[hub-asr] interpreting ja: sensevoice heard ja "..."`.
 
 ### Why
 - The zipformer learned English from audiobooks (LibriSpeech). On real speech it heard "what model is it using" as "what motto", "mot", "modo". Nemotron 0.6B streaming on the phone was tried and is about 7x heavier than the zipformer, too slow for the phone CPU.
@@ -1388,6 +1950,40 @@ The phone's streaming zipformer decides WHEN a turn ends; the hub decides WHAT w
 - A turn that arrives while the model is still loading also keeps the phone's text (it does not wait out the load).
 - Turns where `stripEcho` removed any of PAN's own words are NOT sent (a fresh transcript would bring the echo back), nor are turns longer than 20 s.
 - Old apps send no audio, so nothing changes for them.
+
+## Phone mic (LIVE)
+
+- **One switch:** the LIVE card on the main screen (`TOGGLE_MIC`) starts and stops
+  listening, and this phone's own Microphone row under Sensors is the same switch
+  (`MainViewModel.isOwnMic`, app 0.4.65). Before, that row was a separate permission that
+  could sit off while PAN listened. Other devices' sensor rows are unchanged.
+- **Unmute listens at once:** `SherpaStreamingStt` loads its recognizer while muted
+  (`warmUp`) and keeps it between loops (freed only by `destroy`), and a start while a loop
+  is starting or running only swaps the callback. Before, unmuting started two loops: the
+  second cancelled the first just as its model had loaded, and his first words fell into
+  a ~5 s gap (2026-11-03). Now 0.2 s from tap to listening.
+- **The Android voice counts as PAN talking** (app 0.4.66): with Supertonic active,
+  `TtsManager.isSpeaking` only asked Supertonic, so all through a Japanese reply (Android voice)
+  the recogniser, which stops transcribing while PAN talks so it cannot hear itself,
+  transcribed PAN's own voice. Now it includes the Android voice while it has a line, and a
+  line stopped short (barge-in, mute) ends in `onStop`, which also reports PAN quiet again.
+- **Words he said before PAN started are never thrown away as echo** (app 0.4.67): the
+  recogniser makes no turn decisions while PAN talks, so a turn he finished just as PAN began
+  was decided once PAN stopped, always inside the 300 ms post-TTS cooldown, and dropped
+  ("thank you, [pause] that is very kind of you" lost its second half). `turnHeardBeforePan`
+  exempts a turn whose last word came before PAN last started talking.
+- **PAN waits for him to finish** (app 0.4.68): a reply's first sentence waits while the VAD
+  heard him in the last 300 ms (`stillTalking`) or he has spoken since the last commit
+  (`turnOpen`, app 0.4.73), at most 6 s, so a noisy room cannot keep PAN quiet. It used to start
+  on top of the rest of his sentence, and what he says while PAN talks is not transcribed.
+  Waiting keeps `pendingTurn`, so the rest of his sentence joins the turn (`carry_on`) and the
+  reply to the first half is superseded. `turnOpen` is there for "hey pan" said on its own: the
+  reply to it started on his first pause, just before the real line committed, and the line was
+  dropped. Logged `reply_wait` / `reply_go`.
+- **Cutting in** (app 0.4.73): 700 ms of him over PAN's own bleed stops PAN. The run ends only
+  after 160 ms with nothing over the threshold (`BARGE_IN_GAP_MS`): when one quiet 32 ms window
+  ended it, a real sentence took 3.3 s to stop PAN. The recogniser then gets the last 1.2 s of
+  audio, so the start of what he said is not lost.
 
 ## Android self-update
 
@@ -1410,14 +2006,17 @@ PAN's Android app updates itself from the user's own PAN server — no Play Stor
   Returns 404 if the APK hasn't been built yet.
 
 ### Client side (`UpdateChecker.kt`)
-1. On `MainActivity.onCreate`, after an 8-second delay (lets Tailscale come up), call `UpdateChecker.checkAndInstall()`.
+1. On a fresh `MainActivity.onCreate` (not a rotation), after an 8-second delay (lets Tailscale come up), call `UpdateChecker.check()` and show a toast with what it found: "Update X found, downloading…", "PAN X is up to date", or "Couldn't check for updates: …". If there is an update, call `UpdateChecker.checkAndInstall()`; a failure shows "Update failed: …".
 2. GET `${baseUrl}/api/v1/apk/version` via the same Hilt `OkHttpClient` everything else uses (Tailscale-aware, falls back to LAN).
 3. Bail if `applicationId != BuildConfig.APPLICATION_ID` — never let the server replace this app with a different one.
 4. If `versionCode > BuildConfig.VERSION_CODE`:
-   - Download to `cacheDir/updates/pan-${versionCode}.apk` (older APKs in that dir are deleted first).
+   - Download to `cacheDir/updates/pan-${versionCode}.apk.part` (other versions' APKs in that dir are deleted first). Up to 3 attempts; each one resumes with a `Range` request where the last stopped (`/apk/latest` uses `res.sendFile`, which answers 206). Once the size matches, rename to `pan-${versionCode}.apk`. A finished file from an earlier try (installer dismissed) is reused.
    - Verify size + sha256 against the manifest. Mismatch → delete + abort.
    - Hand to system installer via `FileProvider` + `Intent.ACTION_VIEW` with `application/vnd.android.package-archive`.
 5. The system shows "Update this app?" — user taps once, install completes, app data + signing key preserved.
+6. **One check at a time.** `checkAndInstall()` runs in the singleton's own scope; a second caller (the Settings "Check for updates" button while the launch check is still downloading) waits for the running check and gets its result. Before 0.4.62 both ran at once, wrote the same file, and each one's cleanup deleted the other's half-written APK, so both said "download failed".
+
+The Settings button (`SettingsViewModel.checkForUpdate`) runs the same two steps and reports them in the snackbar: "Update X found, downloading…", then "Installing X…" or "Update failed: …".
 
 ### Permissions
 - `REQUEST_INSTALL_PACKAGES` (manifest) — required on Android 8+.
@@ -1452,21 +2051,33 @@ the router reads on every turn so it doesn't have to think about the full
 dialogue itself.
 
 ### What it tracks
-Per `org_id`, a distilled blob produced by Cerebras Qwen 235B (caller
-`conv-state`):
-- **topic** — what's being discussed right now
-- **phase** — opening · discussing · deciding · command · wrapping_up · idle
-- **pending_question** — what PAN (or commander) asked that's still unanswered
-- **user_pattern** — how the user is talking (verbose · self-correcting · long-pauses-mid-thought · …)
-- **likely_turn_complete** — whether the last utterance looks like a complete thought or mid-sentence
-- **summary** — one sentence grounding the router's reply
+Per `org_id`, a state read by rules in `intuition/conversation.js` (no model since
+2026-11-03; it was a model call after every answered turn, Cerebras, then gemma4:e2b on
+the hub CPU, with a summary that could say things nobody said):
+- **topic** — his words that keep coming back, stemmed ("translating", "translations"
+  are one), names first, a word pair when it is a name or recurs ("Eiffel Tower",
+  "phrase list"). Verbs, number and time words, and opinion words are never a topic.
+  PAN's words name it only when his have nothing ("how tall is it").
+- **topics**, **topic_start**, **topic_shift** — a new line of his with two or more topic
+  words and none in common with the topic so far (or after 10 minutes) starts a new
+  one; the old one goes into `topics` (last 5, with times). Lines in another script and
+  overheard lines never move it.
+- **phase** — opening · discussing · deciding · command · wrapping_up · idle (idle is
+  read at `getConversationState` after 5 minutes of nothing)
+- **pending_question** — PAN's question when it is the last line said
+- **user_pattern** — terse · verbose · self-correcting · thinking aloud · asking questions
+- **likely_turn_complete** — ends in . ! ? (true), in "and", "the", a comma (false)
+- **summary** — one line made of the lines themselves ("He asked PAN to set a timer…",
+  "PAN asked him: …, and is waiting for his answer", "Talking about …")
+- **mentioned** — names in the last lines, his and PAN's, for "it" and "that one"
+- **tone** — calm · joking · heated · upset (`reader.js toneOf`)
 
 Also exposes the last 5 finals + last 3 partials raw for debugging.
 
 ### Cadence
 Not on a fixed timer. Two triggers:
-1. **~500ms after each Final** (debounced — gives STT a beat to deliver more partials)
-2. **Every 30s if utterances arrived since last distill** (idle fallback)
+1. **Each Final, at once** (well under a millisecond)
+2. **Every 30s if partials arrived since last distill** (idle fallback)
 
 Pure in-memory ring buffer (20 utterances/org). No DB writes in v1.
 
@@ -1493,8 +2104,8 @@ sub-second on Finals. Different clocks. Mechanically separate watcher,
 conceptually still "what PAN knows right now."
 
 ### Pre-gate
-- Cerebras (`cerebras:qwen-3-235b`) reachable — falls back gracefully (state
-  stays null, router proceeds without the block).
+- None for a model: there is none. A rules error keeps the previous state and is
+  logged (`[conv-state] distill failed`).
 - `startConvStateWatcher()` called from `server.js` boot block alongside
   `startScreenWatcher` / `startWebcamWatcher`. Safe in dev (no DB writes).
 

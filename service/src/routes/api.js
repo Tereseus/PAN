@@ -8,9 +8,10 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { transcribePcm16, warmHubAsr } from '../hub-asr.js';
+import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.js';
 import { benchContext } from '../bench-context.js';
 import { recordTiming } from '../voice-timing.js';
+import { setPhoneTimeZone } from '../intuition/time.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -357,6 +358,10 @@ function recordVoiceTurn(req, { text, result, deviceId, turnId, sensors }) {
   try {
     const intent = result?.intent || 'query';
     const response = String(result?.response || '').trim();
+    // A camera hand-off has no reply yet: the phone takes the photo, answers, and posts
+    // both to /capture, which records the finished turn. Keep the hub's words for it
+    // (Parakeet, not the phone's text) for the /vision call that follows.
+    if (result?.camera && !response) { _cameraAsk = { text, at: Date.now() }; return; }
     const answered = intent !== 'ambient' && intent !== 'cancelled' && (!!response && response !== '[AMBIENT]' || !!result?.camera);
     const orgId = req.org_id || 'org_personal';
     if (answered) {
@@ -370,6 +375,14 @@ function recordVoiceTurn(req, { text, result, deviceId, turnId, sensors }) {
       noteUtterance({ orgId, text, isFinal: true, source: answered ? 'him' : 'room', deviceId, distill: answered });
       if (answered && response) noteUtterance({ orgId, text: response, isFinal: true, source: 'pan', deviceId, distill: false });
     }).catch(() => {});
+    // The phone had no presence row, so Intuition and the situation line only ever saw his
+    // computers. A turn PAN answered means he is talking to it on the phone.
+    if (deviceId && answered) {
+      import('../intuition/index.js').then(({ upsertDevicePresence }) => upsertDevicePresence({
+        device_id: deviceId, user_id: 'owner', activity: 'talking to PAN',
+        screen_title: sensors?.phone?.gps?.address || null, confidence: 80, platform: 'android',
+      })).catch(() => {});
+    }
   } catch (e) { console.warn('[query/stream] recording the voice turn failed:', e.message); }
 }
 
@@ -555,20 +568,120 @@ router.post('/photo', async (req, res) => {
   }
 });
 
+// The camera hand-off turn as the hub heard it (set in recordVoiceTurn).
+let _cameraAsk = null;
+
+// "Use the camera and look at it" asks nothing: the question was the turn before
+// ("what kind of dog is that?"). Handed the bare command, the vision model described the floor.
+const BARE_LOOK = /^(?:(?:what|so|ok|okay|well|now|just|then|hey|pan|and|um|uh|please|can you|could you|would you)[\s,]+)*(?:(?:use|open|turn on) (?:the|your) camera(?: and)?(?:\s+(?:look|check)(?: at)? (?:it|this|that))?|(?:look|check)(?: at)? (?:it|this|that)|take a (?:look|picture|photo|pic)(?: (?:at|of) (?:it|this|that))?|have a look(?: at (?:it|this|that))?|check (?:it|this|that) out)(?:\s+(?:now|again|please))?[\s.!?]*$/i;
+
+// The turn before only counts if it points at something to see; otherwise "take a
+// picture" after "where do you exist at?" would ask the photo that.
+const POINTS_AT = /\b(?:this|that|these|those|it|here|there)\b|\bwhat (?:kind|color|colour|breed|type|brand|make)\b|\bhow many\b|\bread\b/i;
+
+function visionQuestion(phoneText, buffer = [], now = Date.now()) {
+  const fresh = _cameraAsk && now - _cameraAsk.at < 60_000;
+  let q = String((fresh ? _cameraAsk.text : phoneText) || '').trim();
+  _cameraAsk = null;
+  if (!q || BARE_LOOK.test(q)) {
+    const prev = buffer
+      .filter(u => u.source === 'him' && now - u.at < 120_000 && !BARE_LOOK.test(u.text))
+      .pop();
+    q = prev && POINTS_AT.test(prev.text) ? prev.text : 'What is in this photo?';
+  }
+  return q;
+}
+
+// The phone reads the answer aloud: no markdown, no lists, two sentences at most, and a word
+// read off the photo in capitals ("SHADHAVAR") as a word, not spelled out.
+function spokenVision(text) {
+  const flat = String(text || '')
+    .replace(/[*_`#]+/g, '')
+    .replace(/^\s*(?:[-•]|\d+[.)])\s+/gm, '')
+    .replace(/^\s*answer:\s*/i, '')
+    .replace(/\b([A-Z])([A-Z]{3,})\b/g, (_, a, b) => a + b.toLowerCase())
+    .replace(/\s+/g, ' ')
+    .trim();
+  const sentences = flat.match(/[^.!?]+(?:[.!?]+|$)/g) || [];
+  return sentences.slice(0, 2).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+// TWO LOOKS, THEN AN ANSWER. Asked "what kind of horse is this" with "Shadhavar" written over
+// it, llava-phi3 said "a pony in a computer image", and asked again, "I don't have a specific
+// one" (2026-11-03). moondream reads writing and names what it sees ("a 3D rendering of a white
+// unicorn ... the word SHADHAVAR") but answers a question with nothing, so it describes and the
+// local text model answers his question from that. A thing the description left out (his dog
+// lying behind the desk) gets a second look of its own. Both run on the mini PC: neither the
+// photo nor what is in it leaves it.
+const PHOTO_DESCRIBER = 'moondream';
+const PHOTO_ANSWERER = 'ollama:gemma4:e2b';   // must stay local (ollama:)
+const DESCRIBE_PHOTO = 'Describe this image in detail, including any people or animals and any words written in it.';
+const CANT_SPOT = /\b(?:can(?:no|')?t|unable to|don'?t|do not|couldn'?t) (?:spot|see|make out|find)\b|\bno \w+ (?:in|visible)\b/i;
+let _lastLook = null;   // { look, at }: what the last photo showed, for a follow-up about it
+
+// "what kind of dog is that" -> "dog": what to look for when the description missed it.
+function photoSubject(q) {
+  const m = String(q || '').toLowerCase().match(/\b(?:kind|type|breed|sort|colou?r|make|brand|model) of (?:a |an |the )?([a-z]+)|\bwhat (?:breed|colou?r|kind|type) is (?:that|this|the|it) ([a-z]+)|\b(?:is|was) (?:that|this|it) (?:a|an) ([a-z]+)/);
+  return m ? (m[1] || m[2] || m[3]) : '';
+}
+
+async function answerFromLook(look, asked, askAI) {
+  const prompt = [
+    'You are PAN, his voice assistant. He just took this photo with his phone camera.',
+    `What the photo shows: ${look}`,
+    `He asked: "${asked}"`,
+    'Answer him in one or two short spoken sentences, no lists, as specifically as the description allows: what it is and what it looks like (colour, kind, what it is doing). If words are written in the photo, add in a few words what they say: they are often its name. Never invent a breed, a name or a brand that is not in the description. Only if the description does not mention the thing at all, say you cannot spot it.',
+  ].join('\n\n');
+  try {
+    return String(await askAI(prompt, { model: PHOTO_ANSWERER, maxTokens: 90, timeout: 20000, caller: 'vision-answer', _skipAnonymize: true }) || '').trim();
+  } catch (e) {
+    console.warn(`[PAN Vision] answer step failed (${e.message}) - speaking the description`);
+    return '';
+  }
+}
+
+async function lookAndAnswer(image, asked, remember = true) {
+  const { analyzeImage, askAI } = await import('../llm.js');
+  let look = '';
+  try {
+    look = String(await analyzeImage(DESCRIBE_PHOTO, image, { caller: 'vision', model: PHOTO_DESCRIBER }) || '').trim();
+  } catch (e) {
+    console.warn(`[PAN Vision] ${PHOTO_DESCRIBER} failed (${e.message}) - asking the vision model the question directly`);
+  }
+  // No description at all: the one-model path, asked the question itself.
+  if (!look) return analyzeImage(`Answer the question about this photo in one or two short sentences of plain speech, no lists. Question: ${asked}`, image, { caller: 'vision' });
+  let answer = await answerFromLook(look, asked, askAI);
+  const subject = photoSubject(asked);
+  if (subject && CANT_SPOT.test(answer)) {
+    const closer = String(await analyzeImage(`Describe the ${subject} in this image.`, image, { caller: 'vision', model: PHOTO_DESCRIBER }).catch(() => '') || '').trim();
+    console.log(`[PAN Vision] second look for "${subject}": ${closer.slice(0, 100)}`);
+    if (closer) {
+      look = `${look} ${closer}`;
+      answer = await answerFromLook(look, asked, askAI);
+    }
+  }
+  if (remember) _lastLook = { look, at: Date.now() };
+  return answer || look;
+}
+
 router.post('/vision', async (req, res) => {
-  const { image_base64, question } = req.body;
+  // bench: a test photo (hub bench, 2026-11-03). Same looks and answer; the question is used
+  // as sent, and nothing is saved: no photo file, no VisionAnalysis memory, no follow-up context.
+  const { image_base64, question, bench } = req.body;
 
   if (!image_base64) {
     return res.status(400).json({ error: 'missing image_base64' });
   }
 
   try {
-    const { analyzeImage } = await import('../claude.js');
-    const prompt = question || 'What is in this image? Describe it concisely in 1-3 sentences.';
-    console.log(`[PAN Vision] Analyzing image (${image_base64.length} chars), question: "${prompt.slice(0, 80)}"`);
+    const { getConversationBuffer } = await import('../conv-state-watcher.js');
+    const asked = bench ? String(question || 'What is in this photo?') : visionQuestion(question, getConversationBuffer(req.org_id || 'org_personal'));
+    console.log(`[PAN Vision] Analyzing image (${image_base64.length} chars)${bench ? ' [bench]' : ''}, question: "${asked.slice(0, 80)}"${asked !== question ? ` (phone heard "${String(question || '').slice(0, 60)}")` : ''}`);
 
-    const description = await analyzeImage(prompt, image_base64, { caller: 'vision' });
-    console.log(`[PAN Vision] Result: ${description.slice(0, 100)}`);
+    const t0 = Date.now();
+    const description = spokenVision(await lookAndAnswer(image_base64, asked, !bench));
+    console.log(`[PAN Vision] Result (${Date.now() - t0}ms): ${description.slice(0, 100)}`);
+    if (bench) return res.json({ description, bench: true });
 
     // Save the image to disk
     const photoId = `vision-${Date.now()}`;
@@ -582,7 +695,7 @@ router.post('/vision', async (req, res) => {
 
     // Log the vision event with photo path
     insertEvent(photoId, 'VisionAnalysis', JSON.stringify({
-        question: prompt,
+        question: asked,
         description: description.slice(0, 500),
         image_file: photoFilename,
         image_size: image_base64.length,
@@ -663,6 +776,16 @@ router.post('/capture', async (req, res) => {
       } catch (e) {
         console.warn('[/api/v1/capture] VisionAnalysis event failed:', e.message);
       }
+    }
+
+    // The finished camera turn joins his voice history like any other answered turn. The
+    // phone answers "what is this" itself, so the hub never saw the question or the reply,
+    // and "that had nothing to do with the camera" got silence (2026-11-03).
+    if (question && caption) {
+      recordVoiceTurn(req, {
+        text: String(question), result: { intent: 'query', response: String(caption), camera: true },
+        deviceId: device_id || req.headers['x-device-id'] || null, turnId: null, sensors: null,
+      });
     }
 
     console.log(`[PAN Capture] Saved ${filename} (${image_base64.length} b64 chars)`);
@@ -1229,6 +1352,8 @@ router.post('/query', async (req, res) => {
     if (typeof sensors === 'string') {
       try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; }
     }
+    // The phone's zone is his clock (intuition/time.js); a bench turn's is not.
+    if (parsedSensors?.tz && !req.body?.bench) setPhoneTimeZone(parsedSensors.tz);
 
     // Conversation-memory guarantee (server-side). The phone SHOULD send `context`,
     // but the plain voice path sends null → cold prompt: PAN forgets its own last
@@ -1486,6 +1611,38 @@ router.post('/query', async (req, res) => {
   }
 });
 
+// Same server-side conversation-memory guarantee as /query (see there): rebuild the thread from
+// the Π thread when the client sends no usable history, so the streaming voice path is never a
+// cold prompt either.
+function voiceHistory(context) {
+  if (context && String(context).trim().length >= 10) return context;
+  try {
+    const since = Date.now() - 30 * 60 * 1000;
+    const rows = db.prepare(`
+      SELECT sender_id, body FROM chat_messages
+      WHERE thread_id = 'thread-pan-system' AND body_type = 'text' AND created_at > ?
+      ORDER BY created_at DESC LIMIT 16
+    `).all(since);
+    if (rows.length > 0) {
+      return rows.reverse().map(r => {
+        const who = r.sender_id === 'self' ? 'You' : 'PAN';
+        return `${who}: ${String(r.body || '').slice(0, 400)}`;
+      }).join('\n');
+    }
+  } catch (e) { console.warn('[/query/stream] conversation-history fallback failed:', e?.message); }
+  return context;
+}
+
+// POST /api/v1/voice/warm — his turn is coming: PAN's reply just ended, or he started talking.
+// Nobody waits on it. The phone sends the history it will send with the turn.
+router.post('/voice/warm', async (req, res) => {
+  res.json({ ok: true });
+  try {
+    const { warmStudent } = await import('../router.js');
+    warmStudent(req.body.bench ? req.body.context : voiceHistory(req.body.context));
+  } catch (e) { console.warn('[/voice/warm]', e?.message); }
+});
+
 // POST /api/v1/query/stream — SSE streaming voice query
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
@@ -1557,9 +1714,29 @@ router.post('/query/stream', async (req, res) => {
   // App 0.4.43+ sends the turn's audio (16kHz PCM16, base64). The phone's streaming model
   // decided when the turn ended; Parakeet on the hub decides what was said (hub-asr.js).
   // 'heard' tells the phone the corrected words for its own history.
+  let heardLang = null;   // the language the interpreting model heard, when it says
+  // The device's standing-instruction key: the deviceId routeStream gets, below.
+  const { interpretingFor, learnInterpretingLanguage } = await import('../router.js');
+  const realId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
+  const key = bench ? `${realId || 'phone'}-bench` : realId;
+  const interp = interpretingFor(key);
+  // Interpreting: the phone speaks this reply's English in its Android voice, which starts in
+  // ~0.2 s, not Supertonic, which synthesizes the whole line first (app 0.4.69+; older apps
+  // ignore the event).
+  if (interp) send({ type: 'interpreting' });
   if (audio) {
     const t0 = Date.now();
-    const better = await transcribePcm16(audio);
+    // Interpreting, the other person speaks another language: the model for that language
+    // (hub-asr.js) hears it, and says which language when it can. His own English from Whisper
+    // still goes to Parakeet v2: on a short line Whisper says it again and again ("Stop
+    // translating. Stop translating. Stop translating...", 2026-11-03). SenseVoice's stands: it
+    // heard 6 of his 7 live lines as well as Parakeet (one stray "you"), and running Parakeet
+    // after it cost 0.2 to 0.35 s on every line (2026-11-05).
+    const any = interp ? await transcribeAnyLanguage(audio, interp.code) : null;
+    heardLang = any?.lang || null;
+    if (any && !interp.code) learnInterpretingLanguage(key, any.lang, any.text);
+    const better = any && (any.lang !== 'en' || any.model === 'sensevoice') ? any.text : await transcribePcm16(audio);
+    if (any) console.log(`[hub-asr] interpreting ${interp.code || '?'}: ${any.model} heard ${any.lang || '(no tag)'} ${JSON.stringify(any.text.slice(0, 60))}`);
     if (better) {
       console.log(`[hub-asr] ${Date.now() - t0}ms phone=${JSON.stringify(String(phoneText).slice(0, 80))} hub=${JSON.stringify(better.slice(0, 80))}`);
       text = better;
@@ -1570,6 +1747,7 @@ router.post('/query/stream', async (req, res) => {
 
   let parsedSensors = sensors;
   if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }
+  if (parsedSensors?.tz && !bench) setPhoneTimeZone(parsedSensors.tz);
 
   try {
     const { routeStream } = await import('../router.js');
@@ -1578,27 +1756,13 @@ router.post('/query/stream', async (req, res) => {
     const realDeviceId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
     const deviceId = bench ? `${realDeviceId || 'phone'}-bench` : realDeviceId;
 
-    // Same server-side conversation-memory guarantee as /query (see there): rebuild
-    // the thread from the Π thread when the client sends no usable history, so the
-    // streaming voice path is never a cold prompt either.
-    let convoHistory = context;
     // Not for a benchmark turn: its scenario starts with an empty history on purpose,
     // and pulling his real thread in would make the run depend on his day.
-    if (!bench && (!convoHistory || String(convoHistory).trim().length < 10)) {
-      try {
-        const since = Date.now() - 30 * 60 * 1000;
-        const rows = db.prepare(`
-          SELECT sender_id, body FROM chat_messages
-          WHERE thread_id = 'thread-pan-system' AND body_type = 'text' AND created_at > ?
-          ORDER BY created_at DESC LIMIT 16
-        `).all(since);
-        if (rows.length > 0) {
-          convoHistory = rows.reverse().map(r => {
-            const who = r.sender_id === 'self' ? 'You' : 'PAN';
-            return `${who}: ${String(r.body || '').slice(0, 400)}`;
-          }).join('\n');
-        }
-      } catch (e) { console.warn('[/query/stream] conversation-history fallback failed:', e?.message); }
+    let convoHistory = bench ? context : voiceHistory(context);
+    // A follow-up about the photo just taken ("yeah, what kind of pony?"): the phone's history
+    // has only the one or two sentences PAN said, so the student also gets what the photo showed.
+    if (!bench && _lastLook && Date.now() - _lastLook.at < 180_000 && POINTS_AT.test(String(text || ''))) {
+      convoHistory = `${convoHistory ? `${String(convoHistory).trim()}\n` : ''}PAN (what the photo showed): ${_lastLook.look.slice(0, 600)}`;
     }
 
     const runTurn = async () => {
@@ -1615,11 +1779,21 @@ router.post('/query/stream', async (req, res) => {
         canCamera: !!can_camera,
         // App 0.4.55+: he stopped mid-sentence and the phone's wait for the rest ran out.
         unfinished: !!req.body.unfinished,
+        // App 0.4.73+: how long ago PAN last stopped talking. The bench records no turns, so
+        // this is the only thing that tells a talk from a stray line there.
+        since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : undefined,
         turn_id: turnId,
+        heard_lang: heardLang,
       })) {
         if (event.type === 'chunk' && !firstChunkSent) {
           firstChunkSent = true;
           recordTiming({ turn: turnId, stage: 'first_chunk_sent', ms: Date.now() - turnStart });
+        }
+        // After the reply, so the line that sets interpreting up counts: the phone takes it over
+        // when it has the models (InterpreterLoop.kt). '?' is on, with no language named yet.
+        if (event.type === 'done') {
+          const now = interpretingFor(key);
+          send({ type: 'interpreter', lang: now ? (now.code || '?') : '' });
         }
         send(event);
         if (event.type === 'done') {

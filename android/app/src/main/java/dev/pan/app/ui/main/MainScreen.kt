@@ -357,7 +357,8 @@ fun SensorSection(
         // All sensors for this device — simple ON/OFF toggle each
         sensors.forEach { sensor ->
             val deviceId = selectedDeviceId ?: return@forEach
-            val isOn = sensor.enabled
+            val ownMic = viewModel.isOwnMic(deviceId, sensor.id)
+            val isOn = if (ownMic) isMicEnabled else sensor.enabled
             val isLocked = sensor.locked
             val isExpanded = expandedSensor == sensor.id
 
@@ -396,7 +397,7 @@ fun SensorSection(
                         Switch(
                             checked = isOn,
                             enabled = !isLocked,
-                            onCheckedChange = { viewModel.toggleSensorEnabled(deviceId, sensor.id, it) }
+                            onCheckedChange = { if (ownMic) onToggleMic() else viewModel.toggleSensorEnabled(deviceId, sensor.id, it) }
                         )
                     }
 
@@ -487,12 +488,12 @@ fun StatusCard(
         else -> "\uD83D\uDD35"
     }
 
-    // Response time: green < 2s, yellow < 5s, red beyond.
+    // From his last word to PAN's voice: green to 1 s, yellow to 2.5 s, red beyond.
     val rtSeconds = lastResponseMs / 1000.0
     val rtColor = when {
         lastResponseMs <= 0 -> MaterialTheme.colorScheme.onSurfaceVariant
-        rtSeconds < 2.0 -> MaterialTheme.colorScheme.primary
-        rtSeconds < 5.0 -> MaterialTheme.colorScheme.tertiary
+        rtSeconds <= 1.0 -> MaterialTheme.colorScheme.primary
+        rtSeconds <= 2.5 -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.error
     }
 

@@ -22,6 +22,36 @@
 // and turns urgency × weight × precondition into candidate interjections.
 
 import { run, get, all } from '../db.js';
+import { isBench } from '../bench-context.js';
+
+// ONE id per person. The webcam names the owner by display name and every other
+// producer writes 'owner' (nourishment.currentUserId), so the owner's bars were split
+// across two ids, and the dashboard, asking by display name, showed a meal seen 148
+// days ago next to an empty Social bar (2026-11-03). An org owner's display name reads
+// as 'owner'; anyone else keeps their name.
+export function canonicalUserId(name) {
+  const n = String(name || '').trim();
+  if (!n || n === 'owner') return n;
+  try {
+    const isOwner = get(
+      `SELECT 1 AS x FROM memberships m
+       JOIN users u ON u.id = m.user_id
+       JOIN roles r ON r.id = m.role_id
+       WHERE r.name = 'owner' AND m.left_at IS NULL AND lower(u.display_name) = lower(:n)
+       LIMIT 1`,
+      { ':n': n }
+    );
+    if (isOwner) return 'owner';
+  } catch { /* fall through */ }
+  return n;
+}
+
+// Test turns are not his life. The benchmark and regression runs ask for timers, calls
+// and meetings by the dozen, and every one topped up Social: on 2026-11-03 all of the
+// owner's recent Social events came from benchmark runs.
+function fromTestTurn(opts) {
+  return isBench() || /bench|regression/i.test(String(opts?.refs?.source || ''));
+}
 
 // === Static Need definitions ===
 // decay_rate is points lost per hour from a "satisfied" peak.
@@ -261,6 +291,7 @@ export function evaluate(userId) {
  */
 export function satisfy(userId, needId, opts = {}) {
   if (!userId || !NEED_DEFS[needId]) return null;
+  if (fromTestTurn(opts)) return { level: null, delta: 0, skipped: 'test turn' };
   const row = ensureRow(userId, needId);
   const ts = nowIso();
   const before = decayedLevel(row, ts);
@@ -296,6 +327,7 @@ export function satisfy(userId, needId, opts = {}) {
  */
 export function observe(userId, needId, opts = {}) {
   if (!userId || !NEED_DEFS[needId]) return null;
+  if (fromTestTurn(opts)) return { level: null, delta: 0, skipped: 'test turn' };
   const row = ensureRow(userId, needId);
   const ts = nowIso();
   const before = decayedLevel(row, ts);

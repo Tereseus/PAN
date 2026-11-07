@@ -43,8 +43,10 @@ import { askAI, askAIStream, getModelForCaller } from './llm.js';
 
 // Build a default chain by reading model_selections. Strict order:
 //   voice       → reasoning_cloud → chat_cloud_fallback → chat_local
-//   background  → chat_local first (free), then reasoning_cloud as backup
-//                 (no chat_cloud_fallback: Augur/Scout would burn Claude budget)
+//   background  → chat_local only. No cloud in the background (INTUITION-STATE-ENGINE.md
+//                 step 3): a background job that fell back to the cloud spent the free
+//                 quota the voice path lives on. A background job with no local model
+//                 waits for one; it is background.
 // Each entry is collapsed back into the provider-prefixed name format
 // the rest of the LLM dispatch path expects (e.g. "cerebras:qwen-3-235b",
 // "ollama:qwen3:4b", "claude-haiku-4-5-20251001").
@@ -70,7 +72,7 @@ function _buildDefaultChain(kind) {
   const local     = _formatModelRef(getModelForPurpose('chat_local'));
   const dedupe = (arr) => [...new Set(arr.filter(Boolean))];
   if (kind === 'background') {
-    return dedupe([local, reasoning]);
+    return dedupe([local]);
   }
   return dedupe([reasoning, fallback, local]);
 }
@@ -85,8 +87,8 @@ const MAX_ATTEMPTS = 3;
 // rate-limiting starving the account — we abort the attempt after this many ms
 // and fall through to the next tier. Sized so a stall + one backup attempt still
 // fit inside the phone's 30s stream cap (a healthy Cerebras first token lands in
-// <1s). Applied to cerebras attempts ONLY (see askAIStreamWithFallback): for the
-// non-streaming backends the first `yield` is the COMPLETE answer and legitimately
+// <1s). Applied to the streaming cloud attempts only, cerebras and gemini (see
+// askAIStreamWithFallback): for the non-streaming backends the first `yield` is the COMPLETE answer and legitimately
 // takes longer than this window (CPU Ollama inference / SDK subprocess spin-up).
 const FIRST_TOKEN_TIMEOUT_MS = 7000;
 
@@ -380,6 +382,12 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
     callerClass = 'voice',
     chain: chainOverride,
     signal: externalSignal = null,
+    // A caller with a better fallback than waiting sets a shorter one: the interpreter has the
+    // hub's own translator (router.js interpretStream).
+    firstTokenMs = FIRST_TOKEN_TIMEOUT_MS,
+    // Holds local models to firstTokenMs too, all but the last in the chain: a sleeping voice box
+    // would otherwise hold the turn for the full local budget.
+    watchFirstToken = false,
     ...passthrough
   } = opts;
 
@@ -419,8 +427,11 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
     // FIRST_TOKEN_TIMEOUT_MS comment: a 429 already fails over on its own (the
     // fetch rejects fast, before the watchdog fires), so this only rescues the
     // "200 then stall" case that used to hang the phone the full 30s.
-    const firstTokenWatchdog = String(model).startsWith('cerebras:');
-    const firstTokenDeadline = Date.now() + FIRST_TOKEN_TIMEOUT_MS;
+    // Gemini streams too (generateContentStream), and its free tier stalls the same way under
+    // load: gemini-3.1-flash-lite answered 503 after 2-8 s, then once sent nothing for 81 s
+    // (2026-11-03, 9 PM ET).
+    const firstTokenWatchdog = /^(cerebras|gemini):/.test(String(model)) || (watchFirstToken && i < chain.length - 1);
+    const firstTokenDeadline = Date.now() + firstTokenMs;
 
     let yieldedAny = false;
     try {
@@ -438,7 +449,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
       // NOTE: the sibling askAIWithFallback has its own timeoutForModel/
       // attemptTimeout — those are NOT in scope here. This is a separate
       // function and previously had no per-attempt budget at all.
-      const attemptTimeoutMs = String(model).startsWith('ollama:')
+      const attemptTimeoutMs = /^(ollama|reader):/.test(String(model))
         ? 75_000
         : (passthrough.timeout ?? 20_000);
 
@@ -454,7 +465,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
       //     num_predict 1200 -> eval_count 419, done_reason stop,   valid JSON
       // This is almost certainly what made qwen3:4b look like it "returned
       // empty" too — same ceiling, not a <think> problem.
-      const maxTokensForModel = String(model).startsWith('ollama:')
+      const maxTokensForModel = /^(ollama|reader):/.test(String(model))
         ? Math.max(passthrough.maxTokens ?? 300, 1200)
         : passthrough.maxTokens;
 
@@ -479,7 +490,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
             const watchP = new Promise((_, reject) => {
               wdTimer = setTimeout(() => {
                 try { attemptController.abort(); } catch {}
-                const e = new Error(`Cerebras first-token timeout ${FIRST_TOKEN_TIMEOUT_MS}ms`);
+                const e = new Error(`${model} first-token timeout ${firstTokenMs}ms`);
                 e.name = 'AbortError';
                 reject(e);
               }, Math.max(0, firstTokenDeadline - Date.now()));

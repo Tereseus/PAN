@@ -74,13 +74,17 @@ Cross-cutting (not a section, but shows up everywhere):
 The dominant section. About half of PAN. Intuition perceives Commander's
 state, holds an opinion about that state, and decides whether to act.
 
+> **Plan (2026-11-03):** Intuition becomes a local state engine: one persisted world updated
+> by events with rules and small local models, no LLM keeping state, and every model reads
+> it. See [INTUITION-STATE-ENGINE.md](./INTUITION-STATE-ENGINE.md).
+
 ### Sub-systems
 
 | Subsystem | Role | Today | Status |
 |---|---|---|---|
 | **Sensors** | Multi-modal input — eyes, ears, presence | `screen-watcher.js`, `webcam-watcher.js`, `activity-tracker.js`, `transcript-watcher.js`, pendant (in dev), mic via `dictate-vad.py` / `whisper-server.py` | Live |
-| **State** | The 6-axis snapshot of Commander right now: Where, Activity, Focus, Mood, Urgency, Engagement, Assumption | `intuition.js` snapshot builder + Cerebras classifier | Live |
-| **Life Needs** | Sims-style motive bars (0–100) — Nourishment, Hydration, Rest, Social, Connection, Health-Physical, Health-Mental, Fun, Environment, Admin, Curiosity, Safety. Per-user weights so things the user never registers don't dominate. | — | **Planned** (next build) |
+| **State** | The 6-axis snapshot of Commander right now: Where, Activity, Focus, Mood, Urgency, Engagement, Assumption | `intuition/index.js` snapshot builder; mood, urgency, wellbeing and the rest read by rules in `intuition/reader.js`, the conversation in `intuition/conversation.js` (no model since 2026-11-03, plan in INTUITION-STATE-ENGINE.md) | Live |
+| **Life Needs** | Sims-style motive bars (0–100) — Nourishment, Hydration, Rest, Social, Connection, Health-Physical, Health-Mental, Fun, Environment, Admin, Curiosity, Safety. Per-user weights so things the user never registers don't dominate. | `intuition/needs.js`, fed by regex scanners (`signals.js`) | Partial (only Social had events, 2026-11-03) |
 | **Identity** | Who is the person in front of PAN? Face + voice + body + behavior fusion into a single cluster. | `webcam-watcher.js` (face), voice enrollment, identity events. Fragments only. | Partial — fusion missing |
 | **Mind** | First-person reasoning trace — modeled on Claude's extended thinking. Every reasoning event writes one short sentence describing what PAN concluded. | `thoughts.js` + `pan_thoughts` table + MCP tool + dashboard panel | Live |
 | **Scorer** | Utility AI — ranks candidate actions by how well they satisfy current needs/signals given device, channel, and context | `smart-router.js` (currently scores devices/apps; will extend to actions) | Live for devices, **needs extension** for actions |

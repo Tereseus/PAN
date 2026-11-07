@@ -323,6 +323,12 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    // This phone's own Microphone row is the LIVE switch, not a separate permission: it could
+    // sit off while PAN listened, because only LIVE starts and stops the mic (2026-11-03).
+    private val ownHost = android.os.Build.MODEL.lowercase().replace(" ", "-")
+    fun isOwnMic(deviceId: Int, sensorId: String): Boolean =
+        sensorId == "microphone" && _devices.value.any { it.id == deviceId && it.hostname.endsWith(ownHost) }
+
     fun toggleSensorEnabled(deviceId: Int, sensorId: String, enabled: Boolean) {
         // Sensor toggles control what PAN is ALLOWED to use (permissions)
         // They do NOT control Quick Mute — that's phone-only

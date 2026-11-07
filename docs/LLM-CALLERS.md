@@ -1,5 +1,9 @@
 # LLM Callers — what each one does and what it should be routed to
 
+> **What runs where TODAY is on the hub's `/pan-models.html`** (built from the live
+> settings, see docs/FEATURES.md "PAN Models page"). The "Current routing" lines
+> below are history: Cerebras is dead (402) and most callers now run local.
+
 This doc maps every `caller:` string in PAN to its purpose, prompt shape, and
 the routing decision behind which model handles it. It exists because the
 LLM Routing widget shows raw caller names — without this doc you'd have to
@@ -51,7 +55,10 @@ heavy prompts).
 **Optimization lever:** If you ever hit the daily token cap, trimming
 Scout's context is the highest-leverage fix.
 
-### `intuition-classifier` — utterance classifier
+### `intuition-classifier` — utterance classifier (retired 2026-11-03)
+**Retired:** replaced by rules in `src/intuition/reader.js`, no model. It had moved to
+Gemini and made 433 calls on 2026-11-03, the free quota the interpreter needed. The
+notes below are history.
 **File:** `src/intuition/index.js` (line 1011)
 **What it does:** Classifies events flowing through PAN into intent
 categories (e.g. "user is requesting help", "user is reflecting",
@@ -81,7 +88,9 @@ disclosure under each chat bubble.
 human-readable prose for the trace panel.
 **Current routing:** default `cerebras:zai-glm-4.7`.
 
-### `conv-state` — conversation-state distillation
+### `conv-state` — conversation-state distillation (retired 2026-11-03)
+**Retired:** replaced by rules in `src/intuition/conversation.js`, no model. It ran on
+gemma4:e2b on the hub CPU after every answered turn. The notes below are history.
 **File:** `src/conv-state-watcher.js` (line 174)
 **What it does:** Watches every utterance and ~500ms after a "final"
 turn distills the conversation state: `{topic, phase, pending_question,

@@ -22,6 +22,16 @@
 //   'x'  stop periodic capture
 //   '0'-'9'      period in seconds (0 means as fast as it will go)
 //   'q'/'m'/'h'  frame size QVGA / SVGA / HD, applied on the next capture
+//   'a' / 'z'    mic streaming on / off. Frames wait while the mic is on.
+//   'g'<n>       mic gain, whole number, default 4
+//
+// MIC (AUD characteristic, notify): one packet is 20 ms of 16 kHz speech:
+//   [uint16 seq big-endian][int16 predictor big-endian][uint8 step index][uint8 0]
+//   then 160 bytes of IMA ADPCM, two samples a byte, low nibble first
+// Why ADPCM: the link has measured 31 to 63 KB/s, and raw 16 kHz speech is 32 KB/s,
+// so raw would leave little or nothing spare. ADPCM is 8 KB/s and adds
+// no delay of its own. Each packet carries the decoder's state, so a lost packet
+// costs 20 ms and nothing after it.
 
 #include "esp_camera.h"
 #include "mbedtls/base64.h"
@@ -29,6 +39,7 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include "ESP_I2S.h"
 
 // Seeed XIAO ESP32-S3 Sense camera pinout.
 #define PWDN_GPIO_NUM  -1
@@ -52,8 +63,18 @@
 #define SVC_UUID "6e2a0001-b5a3-f393-e0a9-e50e24dcca9e"
 #define IMG_UUID "6e2a0002-b5a3-f393-e0a9-e50e24dcca9e"
 #define CTL_UUID "6e2a0003-b5a3-f393-e0a9-e50e24dcca9e"
+#define AUD_UUID "6e2a0004-b5a3-f393-e0a9-e50e24dcca9e"
+
+// Seeed XIAO ESP32-S3 Sense PDM mic.
+#define MIC_CLK_PIN  42
+#define MIC_DATA_PIN 41
+#define MIC_RATE     16000
+#define MIC_FRAME    320   // 20 ms
 
 static BLECharacteristic *imgChar = nullptr;
+static BLECharacteristic *audChar = nullptr;
+static volatile bool audioOn = false;
+static volatile int micGain = 4;
 static BLEServer *server = nullptr;
 static volatile bool connected = false;
 static volatile uint16_t negotiatedMtu = 23;   // BLE default until the host raises it
@@ -112,6 +133,7 @@ class SrvCB : public BLEServerCallbacks {
   void onDisconnect(BLEServer *s) override {
     connected = false;
     periodic = false;
+    audioOn = false;
     negotiatedMtu = 23;
     Serial.println("BLE_DISCONNECTED");
     s->startAdvertising();
@@ -136,15 +158,18 @@ class CtlCB : public BLECharacteristicCallbacks {
       if (ch == 'c') { captureNow = true; }
       else if (ch == 's') { periodic = true; }
       else if (ch == 'x') { periodic = false; }
+      else if (ch == 'a') { audioOn = true; }
+      else if (ch == 'z') { audioOn = false; }
       else if (ch == 'q') { wantSize = FRAMESIZE_QVGA; }
       else if (ch == 'm') { wantSize = FRAMESIZE_SVGA; }
       else if (ch == 'h') { wantSize = FRAMESIZE_HD; }
-      else if (ch == 'd' || ch == 'p' || ch == 'j') {
+      else if (ch == 'd' || ch == 'p' || ch == 'j' || ch == 'g') {
         uint32_t n = 0; size_t k = i + 1; bool any = false;
         while (k < v.length() && v[k] >= '0' && v[k] <= '9') { n = n * 10 + (v[k] - '0'); k++; any = true; }
         if (any) {
           if (ch == 'd') gapMs = n;
           else if (ch == 'p') periodMs = n * 1000UL;
+          else if (ch == 'g') micGain = (int)n;
           else { wantQuality = (int)n; }
           i = k - 1;
         }
@@ -155,6 +180,84 @@ class CtlCB : public BLECharacteristicCallbacks {
                   (int)wantSize, wantQuality);
   }
 };
+
+static const int16_t ADPCM_STEPS[89] = {
+  7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73,
+  80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494,
+  544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499,
+  2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487,
+  12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767 };
+static const int8_t ADPCM_NEXT[8] = { -1, -1, -1, -1, 2, 4, 6, 8 };
+
+static uint8_t adpcmOne(int sample, int &pred, int &idx) {
+  int step = ADPCM_STEPS[idx];
+  int diff = sample - pred;
+  uint8_t code = 0;
+  if (diff < 0) { code = 8; diff = -diff; }
+  int delta = step >> 3;
+  if (diff >= step) { code |= 4; diff -= step; delta += step; }
+  step >>= 1;
+  if (diff >= step) { code |= 2; diff -= step; delta += step; }
+  step >>= 1;
+  if (diff >= step) { code |= 1; delta += step; }
+  pred += (code & 8) ? -delta : delta;
+  if (pred > 32767) pred = 32767; else if (pred < -32768) pred = -32768;
+  idx += ADPCM_NEXT[code & 7];
+  if (idx < 0) idx = 0; else if (idx > 88) idx = 88;
+  return code;
+}
+
+// Own task, so a frame or the 20 ms loop delay can never hold the mic up.
+static void micTask(void *) {
+  static I2SClass mic;
+  static int16_t pcm[MIC_FRAME];
+  static uint8_t pkt[6 + MIC_FRAME / 2];
+  bool running = false;
+  uint16_t seq = 0;
+  int pred = 0, idx = 0;
+  int32_t dc = 0;
+  uint32_t sent = 0, shortReads = 0, clipped = 0, lastLog = 0;
+  for (;;) {
+    bool want = audioOn && connected;
+    if (want != running) {
+      if (want) {
+        mic.setPinsPdmRx(MIC_CLK_PIN, MIC_DATA_PIN);
+        running = mic.begin(I2S_MODE_PDM_RX, MIC_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+        Serial.printf("MIC_%s\n", running ? "ON" : "FAILED");
+        if (!running) audioOn = false;
+        seq = 0; pred = 0; idx = 0; sent = 0;
+      } else {
+        mic.end();
+        running = false;
+        Serial.println("MIC_OFF");
+      }
+    }
+    if (!running) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+    size_t got = mic.readBytes((char *)pcm, sizeof(pcm));
+    if (got != sizeof(pcm)) { shortReads++; continue; }
+    pkt[0] = seq >> 8; pkt[1] = seq & 0xFF;
+    pkt[2] = ((uint16_t)pred) >> 8; pkt[3] = pred & 0xFF;
+    pkt[4] = idx; pkt[5] = 0;
+    for (int i = 0; i < MIC_FRAME; i += 2) {
+      uint8_t both = 0;
+      for (int k = 0; k < 2; k++) {
+        // The PDM mic sits off centre: take the slow average away before the gain.
+        dc += ((int32_t)pcm[i + k] * 256 - dc) >> 10;
+        int v = (pcm[i + k] - (dc >> 8)) * micGain;
+        if (v > 32767) { v = 32767; clipped++; } else if (v < -32768) { v = -32768; clipped++; }
+        both |= adpcmOne(v, pred, idx) << (k * 4);
+      }
+      pkt[6 + i / 2] = both;
+    }
+    audChar->setValue(pkt, sizeof(pkt));
+    audChar->notify();
+    seq++; sent++;
+    if (millis() - lastLog >= 5000) {
+      lastLog = millis();
+      Serial.printf("MIC sent=%u short=%u clipped=%u gain=%d\n", (unsigned)sent, (unsigned)shortReads, (unsigned)clipped, micGain);
+    }
+  }
+}
 
 static bool startCamera() {
   camera_config_t c = {};
@@ -411,7 +514,9 @@ void setup() {
       svc->createCharacteristic(CTL_UUID, BLECharacteristic::PROPERTY_WRITE |
                                           BLECharacteristic::PROPERTY_WRITE_NR);
   ctl->setCallbacks(new CtlCB());
+  audChar = svc->createCharacteristic(AUD_UUID, BLECharacteristic::PROPERTY_NOTIFY);
   svc->start();
+  xTaskCreatePinnedToCore(micTask, "mic", 6144, nullptr, 3, nullptr, 1);
 
   BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(SVC_UUID);
@@ -472,7 +577,7 @@ void loop() {
     if (ch == 'c' || ch == 'C') sendFrameSerial();
   }
 
-  if (connected) {
+  if (connected && !audioOn) {
     if (captureNow) { captureNow = false; sendFrame(); }
     else if (periodic && (millis() - last >= periodMs)) { last = millis(); sendFrame(); }
   }

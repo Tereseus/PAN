@@ -297,6 +297,22 @@ class PanServerClient @Inject constructor(
         }
     }
 
+    /** His turn is coming: the hub reads this history now, and the turn only reads his words. */
+    fun warm(conversationHistory: String, bench: Boolean) {
+        val body = JSONObject().apply {
+            if (bench) put("bench", true)
+            if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
+        }.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/voice/warm")
+            .post(body)
+            .build()
+        okHttpClient.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {}
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.close() }
+        })
+    }
+
     suspend fun askPanStream(
         text: String,
         conversationHistory: String = "",
@@ -305,8 +321,11 @@ class PanServerClient @Inject constructor(
         audio: ShortArray? = null,
         bench: Boolean = false,
         unfinished: Boolean = false,
+        sincePanMs: Long? = null,
         onCall: ((okhttp3.Call) -> Unit)? = null,
         onHeard: ((String) -> Unit)? = null,
+        onInterpreting: (() -> Unit)? = null,
+        onInterpreter: ((String?) -> Unit)? = null,
         onChunk: (String) -> Unit
     ): QueryResponse? = withContext(Dispatchers.IO) {
         try {
@@ -317,6 +336,8 @@ class PanServerClient @Inject constructor(
                 if (bench) put("bench", true)
                 // He stopped mid-sentence (SttEngine.turnUnfinished): maybe searching for a word.
                 if (unfinished) put("unfinished", true)
+                // How long ago PAN last stopped talking: inside 45 s this line is part of a talk.
+                if (sincePanMs != null) put("since_pan_ms", sincePanMs)
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
                 if (sensorJson != null) put("sensors", sensorJson)
                 if (canCamera) put("can_camera", true)
@@ -364,6 +385,10 @@ class PanServerClient @Inject constructor(
                             val heard = json.optString("text", "")
                             if (heard.isNotEmpty()) onHeard?.invoke(heard)
                         }
+                        // Sent before any chunk while he has PAN interpreting.
+                        "interpreting" -> onInterpreting?.invoke()
+                        // After the reply: whether he has PAN interpreting now, and into what.
+                        "interpreter" -> onInterpreter?.invoke(json.optString("lang", "").ifBlank { null })
                         "ambient" -> {
                             // #462: server flagged this as ambient — silently drop, no TTS.
                             // Final 'done' will follow with empty response; we tag intent=ambient
