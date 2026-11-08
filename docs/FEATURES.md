@@ -179,6 +179,69 @@ Rules:
 
 ---
 
+## pan-link device identity (`service/src/pan-link-auth.js`)
+
+- **Calls:** an `/api` middleware in `server.js`, registered before every other
+  `/api` route (the `/api/v1/auth` routes included). Reads `<data dir>/link.json`,
+  which the pan-link hub (`pan-link/`) writes.
+- **Semantics:** pan-link adds `X-PAN-Device`, `X-PAN-Device-Name` and
+  `X-PAN-Link-Secret` to every request a paired device makes through the tunnel.
+  With the right secret, `req.panLinkDevice = { id, name }` and the caller is the
+  owner. Link headers with a wrong or missing secret get 403 `bad device identity`.
+  The three headers are always removed before any route sees them.
+  `GET /api/v1/auth/me` returns `link_device` (`{ id, name }`, or null) so a device
+  can confirm PAN sees it as itself.
+- **Preserves:** callers that send no link headers (today's Tailscale and LAN
+  callers) are untouched. With no `link.json` nothing is trusted. `PAN_LINK=0`
+  turns it off.
+- **Replaces:** nothing yet. Trust by address stays until port 7777 moves to
+  127.0.0.1 (`docs/INSTALL-PLAN.md`, step 1).
+- **Pre-gate:** the secret is cached for a minute; a mismatch re-checks
+  `link.json` at once, so a new `link.json` or a new secret works immediately.
+
+---
+
+## Device push WebSocket (`/api/v1/device/push`, `server.js`)
+
+- **Calls:** an `upgrade` listener in `server.js` (the Craft). The phone's
+  `DevicePushClient.kt` connects with `?device_id=X&device_type=phone`. On the hub
+  the path runs Super-Carrier → Carrier → Craft: `initCraftUpgradePassthrough()` in
+  `carrier.js` passes it through to the primary Craft byte for byte.
+- **Semantics:** answers `{type:'connected'}` on open and `pong` to `ping`;
+  `pushToDevice()` / `pushToDeviceType()` send spoken replies (`speak-router.js`),
+  mic routing (`mic-router.js`) and voice actions (`routes/api.js`) to the socket
+  registered for that device_id.
+- **Preserves:** the handlers mark their socket (`socket._panUpgradeHandled`) so
+  `terminal.js`, which answers unknown upgrade paths with a 404, leaves it alone.
+  After a Craft swap the Carrier closes sockets still joined to the old Craft
+  (checked every 5 s); the Super-Carrier reconnects them to the new one, and the
+  phone sees a second `connected`.
+- **Replaces:** before 2026-11-08 nothing reached the Craft: a single process PAN
+  wrote a 404 onto the socket after its handshake, and on the hub the Carrier
+  answered 404 while the Super-Carrier retried every 100 ms.
+- **Pre-gate:** none, no auth (any device_id is accepted). With pan-link the
+  device should come from the link instead (`docs/INSTALL-PLAN.md`).
+
+---
+
+## Screenshot and clipboard uploads (`/api/v1/screenshot/*`, `/api/v1/clipboard-image`)
+
+- **Calls:** routes in `server.js` registered before the general `/api` login, so
+  each runs `apiAuth` itself; names and paths go through `service/src/safe-files.js`.
+  The phone's mobile page uploads screenshots; the dashboard pastes clipboard images.
+- **Semantics:** `upload` saves to `%TEMP%\pan-screenshots\screenshot_<source>_<ms>.<ext>`
+  and remembers it as `last_screenshot`; `latest`, `list` and `view` read back;
+  `clipboard-image` saves to `%TEMP%\pan-clipboard` and deletes files older than 2 h.
+- **Preserves:** `source` must be letters, digits or dashes (else `phone`); the
+  extension comes from an image MIME type list (else `png`); `view` serves only
+  files inside the screenshot folder (403 otherwise).
+- **Replaces:** before 2026-11-08 these routes had no login, `view` let `..\`
+  read any file, and both uploads could write outside their folders.
+- **Pre-gate:** `apiAuth`, the same login as the rest of `/api`. `/api/setup-status`
+  and `/api/system-check` sit in the same block and run it too.
+
+---
+
 ## Phone dashboard (WebView)
 
 - **Purpose:** Phone-sized mirror of the desktop dashboard.

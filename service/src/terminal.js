@@ -860,6 +860,10 @@ async function startTerminalServer(httpServer) {
         try { socket.write('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n'); socket.destroy(); } catch {}
       });
     } else {
+      // Another upgrade listener on this server already took the socket (the
+      // device push channel in server.js). Writing a 404 onto it would end a
+      // working WebSocket right after its handshake.
+      if (socket._panUpgradeHandled) return;
       // Unknown paths: reject fast so misconfigured probes/clients don't
       // eat their timeout budget. Previously we let the socket hang which
       // silently burned the perf engine's ws.handshake 2s window.

@@ -23,6 +23,7 @@
 //   7 ✅ Crucible: variant comparison data collection + dashboard UI
 
 import http from 'http';
+import net from 'net';
 import { fork, execSync, execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
@@ -185,6 +186,72 @@ async function initClientServer(httpServer) {
   } catch (err) {
     console.error('[Carrier] Client server init failed:', err.message);
   }
+}
+
+// ==================== WebSockets that live in the Craft ====================
+// The device push channel (/api/v1/device/push) is served by the Craft:
+// server.js keeps the device_id → socket map that pushToDevice() uses for spoken
+// replies and voice actions. The Carrier owns the outside port, so pass these
+// upgrades through to the primary Craft byte for byte. Before 2026-11-08 nothing
+// did: terminal.js answered 404, the Super-Carrier retried every 100 ms for as
+// long as the phone stayed connected, and no push ever reached a device.
+//
+// MUST be registered before initTerminal: terminal.js rejects unclaimed paths,
+// and skips a socket only once it is marked _panUpgradeHandled.
+const CRAFT_UPGRADE_PATHS = new Set(['/api/v1/device/push']);
+const craftUpgradeLinks = new Set(); // { port, close() } per passed-through socket
+
+function initCraftUpgradePassthrough(httpServer) {
+  httpServer.on('upgrade', (req, socket, head) => {
+    let pathname;
+    try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { return; }
+    if (!CRAFT_UPGRADE_PATHS.has(pathname)) return;
+    socket._panUpgradeHandled = true;
+
+    const port = primaryCraft?.healthy ? primaryCraft.port : null;
+    if (!port) {
+      try { socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); } catch {}
+      return;
+    }
+    const upstream = net.connect(port, '127.0.0.1');
+    const link = {
+      port,
+      close() {
+        craftUpgradeLinks.delete(link);
+        try { socket.destroy(); } catch {}
+        try { upstream.destroy(); } catch {}
+      },
+    };
+    craftUpgradeLinks.add(link);
+    upstream.setTimeout(10_000, link.close); // connect timeout; cleared once connected
+    upstream.on('connect', () => {
+      upstream.setTimeout(0);
+      upstream.setNoDelay(true);
+      socket.setNoDelay(true);
+      // Send the upgrade request on as it came, then join the two sockets.
+      let lines = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
+      for (let i = 0; i < req.rawHeaders.length; i += 2) lines += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`;
+      upstream.write(lines + '\r\n');
+      if (head?.length) upstream.write(head);
+      socket.pipe(upstream);
+      upstream.pipe(socket);
+    });
+    upstream.on('error', link.close);
+    socket.on('error', link.close);
+    upstream.on('close', link.close);
+    socket.on('close', link.close);
+  });
+
+  // After a swap or a respawn the old Craft may live on for its rollback window.
+  // Close sockets still joined to a Craft that is no longer primary: the caller
+  // (the Super-Carrier, or a phone straight on this port) reconnects and lands on
+  // the new Craft, which re-registers the device.
+  setInterval(() => {
+    const current = primaryCraft?.port;
+    for (const link of craftUpgradeLinks) if (link.port !== current) link.close();
+  }, 5_000).unref();
+
+  console.log(`[Carrier] Craft WebSocket passthrough ready (${[...CRAFT_UPGRADE_PATHS].join(', ')})`);
 }
 
 // ==================== Terminal (Phase 4: Carrier owns PTY) ====================
@@ -2025,6 +2092,8 @@ function startCraftLivenessWatchdog() {
 async function boot() {
   // Client WS MUST be registered before terminal (terminal rejects unknown upgrade paths)
   await initClientServer(carrierServer);
+  // Same for the WebSockets served by the Craft (device push).
+  initCraftUpgradePassthrough(carrierServer);
 
   // Phase 4: Carrier owns terminal/PTY — but only when the profile serves the
   // browser xterm surface (full/core). In `wearable` the WS terminal server is

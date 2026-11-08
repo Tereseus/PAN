@@ -188,6 +188,10 @@ db.pragma('foreign_keys = OFF');
     ['sessions',        'source',    'TEXT'],
     ['device_logs',     'source',    "TEXT NOT NULL DEFAULT 'console'"],
     ['activity_events', 'source',    "TEXT DEFAULT 'desktop'"],
+    // 2026-09-01: episodic_memories gained project_name (the schema indexes it) and
+    // participants. A database from before then failed to start without these.
+    ['episodic_memories', 'project_name', 'TEXT'],
+    ['episodic_memories', 'participants', 'TEXT'],
   ];
   for (const [table, col, def] of preMig) {
     const cols = db.pragma(`table_info(${table})`).map(c => c.name);

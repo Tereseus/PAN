@@ -202,6 +202,9 @@ router.get('/me', (req, res) => {
       color_secondary: org.color_secondary,
       logo_url: org.logo_url,
     },
+    // The paired device this call came from over pan-link ({ id, name }), or null.
+    // A phone or PC calls this after pairing to confirm PAN sees it as itself.
+    link_device: req.panLinkDevice || null,
   });
 });
 

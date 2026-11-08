@@ -76,6 +76,8 @@ export { getTunnelURL }; // re-export so client.js can import it
 import { startDiscovery, stopDiscovery } from './discovery.js';
 import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir, raiseProcessPriority } from './platform.js';
+import { identify as panLinkIdentify } from './pan-link-auth.js';
+import { imageExt, safeTag, insideDir } from './safe-files.js';
 import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, invalidateOllamaUrlCache, logDecision } from './db.js';
 import { searchMemory, backfillEmbeddings, backfillStatus, abortBackfill } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
@@ -370,10 +372,27 @@ async function cleanupStaleTailscaleNode(staleHostname) {
   }
 }
 
+// pan-link: the device's identity comes from its own WireGuard key, carried by
+// pan-link with the link secret (src/pan-link-auth.js, docs/INSTALL-PLAN.md).
+// Runs before every other /api route, the auth routes included, so the link headers
+// are always checked and stripped. Inert until pan-link runs here (no link.json);
+// forged link headers are refused.
+app.use('/api', (req, res, next) => {
+  const link = panLinkIdentify(req, getDataDir());
+  if (link.forged) return res.status(403).json({ error: 'bad device identity' });
+  if (link.ok) req.panLinkDevice = { id: link.deviceId, name: link.deviceName };
+  next();
+});
+
 // Auth routes (some endpoints skip auth — login-related stuff)
 app.use('/api/v1/auth', (req, res, next) => {
   const publicPaths = ['/oauth', '/google-callback', '/github-callback', '/dev-token'];
   if (publicPaths.includes(req.path)) return next();
+  // A device paired through pan-link (identified above).
+  if (req.panLinkDevice) {
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
+    return next();
+  }
   // GET /users is public (list users for login chooser), mutations need auth
   if (req.path === '/users' && req.method === 'GET') return next();
   // GET /providers is public (login page needs it), POST needs auth
@@ -392,12 +411,13 @@ app.use('/api/v1/auth', (req, res, next) => {
 // Phone screenshot upload — saves image to temp file so Claude Code can view it
 // Phone sends base64 image data. Returns the local file path for Claude to read.
 // Also stores the latest screenshot path in settings so Claude can find it.
-app.post('/api/v1/screenshot/upload', async (req, res) => {
+app.post('/api/v1/screenshot/upload', apiAuth, async (req, res) => {
   try {
     const { data, mimeType, source } = req.body;
     if (!data) return res.status(400).json({ ok: false, error: 'No image data' });
-    const ext = (mimeType || 'image/png').split('/')[1] || 'png';
-    const filename = `screenshot_${source || 'phone'}_${Date.now()}.${ext}`;
+    // Both name parts come from the caller: keep them from steering the path.
+    const ext = imageExt(mimeType);
+    const filename = `screenshot_${safeTag(source, 'phone')}_${Date.now()}.${ext}`;
     const dir = join(process.env.TEMP || '/tmp', 'pan-screenshots');
     mkdirSync(dir, { recursive: true });
     const filePath = join(dir, filename);
@@ -413,7 +433,7 @@ app.post('/api/v1/screenshot/upload', async (req, res) => {
 });
 
 // GET /api/v1/screenshot/latest — returns path to most recent screenshot
-app.get('/api/v1/screenshot/latest', (req, res) => {
+app.get('/api/v1/screenshot/latest', apiAuth, (req, res) => {
   try {
     const row = get("SELECT value FROM settings WHERE key = 'last_screenshot'");
     if (!row) return res.json({ ok: false, error: 'No screenshots uploaded yet' });
@@ -426,12 +446,13 @@ app.get('/api/v1/screenshot/latest', (req, res) => {
 });
 
 // GET /api/v1/screenshot/view — serve the actual image file
-app.get('/api/v1/screenshot/view', (req, res) => {
+app.get('/api/v1/screenshot/view', apiAuth, (req, res) => {
   try {
-    const filePath = req.query.path;
-    if (!filePath || !existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
-    // Security: only serve from pan-screenshots dir
-    if (!filePath.includes('pan-screenshots')) return res.status(403).json({ error: 'Forbidden' });
+    // Security: only serve files inside the pan-screenshots folder. A name check
+    // let "..\" walk out of it to any file (found 2026-11-08).
+    const filePath = insideDir(join(process.env.TEMP || '/tmp', 'pan-screenshots'), req.query.path);
+    if (!filePath) return res.status(403).json({ error: 'Forbidden' });
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
     const ext = filePath.split('.').pop();
     const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
     res.setHeader('Content-Type', mimeMap[ext] || 'image/png');
@@ -442,7 +463,7 @@ app.get('/api/v1/screenshot/view', (req, res) => {
 });
 
 // List all screenshots
-app.get('/api/v1/screenshot/list', (req, res) => {
+app.get('/api/v1/screenshot/list', apiAuth, (req, res) => {
   try {
     const dir = join(process.env.TEMP || '/tmp', 'pan-screenshots');
     if (!existsSync(dir)) return res.json({ screenshots: [] });
@@ -458,11 +479,11 @@ app.get('/api/v1/screenshot/list', (req, res) => {
 });
 
 // Clipboard image upload — saves pasted image to temp file, returns path (no auth — local only)
-app.post('/api/v1/clipboard-image', async (req, res) => {
+app.post('/api/v1/clipboard-image', apiAuth, async (req, res) => {
   try {
     const { data, mimeType } = req.body;
     if (!data) return res.status(400).json({ ok: false, error: 'No image data' });
-    const ext = (mimeType || 'image/png').split('/')[1] || 'png';
+    const ext = imageExt(mimeType); // from the caller: no "..\" into the path
     const filename = `clipboard_${Date.now()}.${ext}`;
     const { join } = await import('path');
     const { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } = await import('fs');
@@ -489,7 +510,7 @@ app.post('/api/v1/clipboard-image', async (req, res) => {
 });
 
 // Setup status — no auth required (first-run needs this before they have a token)
-app.get('/api/setup-status', async (req, res) => {
+app.get('/api/setup-status', apiAuth, async (req, res) => {
   const result = { configured: false, model: null, provider: null, error: null };
 
   // Check if a Server API Model is set
@@ -553,7 +574,7 @@ app.get('/api/setup-status', async (req, res) => {
 });
 
 // System health check — tests every service, used by setup wizard and monitoring
-app.get('/api/system-check', async (req, res) => {
+app.get('/api/system-check', apiAuth, async (req, res) => {
   const checks = {};
 
   // 1. Database
@@ -653,11 +674,20 @@ app.get('/api/system-check', async (req, res) => {
 });
 
 // Auth middleware — all other /api routes get req.user
-// Tailscale or localhost requests with X-Device-Name header auto-authenticate
-app.use('/api', (req, res, next) => {
+// Tailscale or localhost requests with X-Device-Name header auto-authenticate.
+// A named function so the routes registered above it (screenshots, clipboard,
+// setup status, system check) run it too; they had no login before 2026-11-08.
+function apiAuth(req, res, next) {
   // Bootstrap endpoints skip auth
   if (req.path === '/v1/tailscale/auto-auth' || req.path === '/v1/tailscale/status') {
     req.user = { id: 1, email: 'bootstrap@localhost', display_name: 'Bootstrap', role: 'owner' };
+    return next();
+  }
+  // A device paired through pan-link (identified by the pan-link middleware above).
+  if (req.panLinkDevice) {
+    const imp = getImpersonation();
+    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner',
+      realPower: 100, power: imp !== null ? imp.power : 100, isImpersonating: imp !== null, impersonation: imp };
     return next();
   }
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
@@ -680,7 +710,8 @@ app.use('/api', (req, res, next) => {
     return next();
   }
   extractUser(req, res, next);
-});
+}
+app.use('/api', apiAuth);
 
 // Tier 0 — attach org context to every /api request (after auth sets req.user)
 app.use('/api', requireOrg);
@@ -5532,6 +5563,8 @@ function start() {
         server.on('upgrade', (req, socket, head) => {
           const pathname = new URL(req.url, 'http://localhost').pathname;
           if (pathname !== '/api/v1/device/push') return;
+          // terminal.js answers unclaimed upgrade paths with a 404; mark this one as taken.
+          socket._panUpgradeHandled = true;
           const params = new URL(req.url, 'http://localhost').searchParams;
           const device_id = params.get('device_id') || 'unknown';
           const org_id = params.get('org_id') || 'org_personal';

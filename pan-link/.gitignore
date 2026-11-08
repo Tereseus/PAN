@@ -1,0 +1,6 @@
+# Build output (about 12 MB each). Releases are built, never committed.
+/pan-link
+/pan-link.exe
+/pan-link-*
+/cmd/pan-link/pan-link
+/cmd/pan-link/pan-link.exe
