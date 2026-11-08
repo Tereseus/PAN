@@ -39,6 +39,16 @@ class MainViewModel @Inject constructor(
     val remoteAccessStatus: StateFlow<String> = remoteAccessManager.status
     val remoteAccessIp: StateFlow<String> = remoteAccessManager.ip
     val remoteAccessOrg: StateFlow<String> = remoteAccessManager.org
+
+    /**
+     * "PAN Link, over your home network" (or through Tailscale) while the app reaches PAN
+     * through PAN Link, else null. Asks the link, so call it off the main thread.
+     */
+    fun linkLine(): String? {
+        val link = remoteAccessManager.link
+        if (link.baseUrlIfConnected() == null) return null
+        return "PAN Link" + (link.pathWords()?.let { ", $it" } ?: "")
+    }
     val lastAction: StateFlow<String> = PanForegroundService.lastAction
     val sttStatus: StateFlow<String> = PanForegroundService.sttStatus
 

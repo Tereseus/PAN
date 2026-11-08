@@ -14,8 +14,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 97
-        versionName = "0.4.94"
+        versionCode = 98
+        versionName = "0.4.95"
         ndk {
             // Phones are arm64 â€” ship only that ABI. Drops the x86/x86_64/armeabi-v7a
             // copies of sherpa-onnx (Piper), onnxruntime, and gojni (Tailscale): ~100 MB.
@@ -97,6 +97,9 @@ dependencies {
     implementation("androidx.camera:camera-core:1.4.1")
     implementation("androidx.camera:camera-camera2:1.4.1")
     implementation("androidx.camera:camera-lifecycle:1.4.1")
+    // PAN Link pairing scanner (ScanPairActivity): camera preview, and ZXing to read the QR (Apache 2.0).
+    implementation("androidx.camera:camera-view:1.4.1")
+    implementation("com.google.zxing:core:3.5.3")
 
     // Vosk â€” offline speech recognition (no profanity filter, no audio focus steal)
     implementation("com.alphacephei:vosk-android:0.3.47")

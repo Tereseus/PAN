@@ -205,24 +205,32 @@ Rules:
 
 - **Calls:** pan-link's admin API on the hub (`http://127.0.0.1:7792`, or `PAN_LINK_ADMIN`)
   with the link secret from `<data dir>/link.json`: `POST /admin/pair`, `GET /admin/devices`,
-  `GET /admin/status`. Mounted after the login check in `server.js`.
+  `DELETE /admin/devices/{id}`, `GET /admin/status`. Mounted after the login check in
+  `server.js`. The pairing page `/pair/` (`service/public/pair/index.html`, static) uses them.
 - **Semantics:** `POST /api/v1/link/pair` (body `{ name?, ttl_minutes? }`, 1 to 60 minutes,
   pan-link's default 10) answers `{ uri, expires, svg }`: a `pan://pair` code and the same as
-  a QR (`qrcode`). `GET /api/v1/link/devices` lists the paired devices, `GET /api/v1/link/status`
-  is pan-link's own view (addresses, device count). The phone's Settings → "Pair this phone"
-  uses `/pair` over its Tailscale connection.
+  a QR (`qrcode`). `GET /api/v1/link/devices` lists the paired devices,
+  `DELETE /api/v1/link/devices/:id` removes one (a lost phone: it can't use the link until it
+  pairs again), `GET /api/v1/link/status` is pan-link's own view (addresses, device count).
+  The phone's Settings → "Pair this phone" uses `/pair` over its Tailscale connection.
+  The page `/pair/` has "Show a pairing code": the QR, a countdown, "Paired: <name>" once the
+  phone has used it (it watches the device list), and the paired devices, each with Remove.
 - **Preserves:** no `link.json` → 503 "PAN Link is not set up on this computer", and pan-link
   is never asked. pan-link not running → 503 with the reason. Unused codes live only in
-  pan-link's memory and expire.
+  pan-link's memory and expire. A device id that isn't letters and digits → 400, pan-link not
+  asked.
 - **Replaces:** running `pan-link code` on the hub by hand.
 - **Pre-gate:** owner only (`req.user.role === 'owner'`, 403 otherwise): a code lets a new
   device in as the owner. A paired device is the owner, so it can make codes too.
 
 ---
 
-## PAN Link on the phone (`vpn/LinkManager.kt`, `vpn/PairActivity.kt`, `android/pan-vpn/linkmode`)
+## PAN Link on the phone (`vpn/LinkManager.kt`, `vpn/PairActivity.kt`, `vpn/ScanPairActivity.kt`, `android/pan-vpn/linkmode`)
 
-- **Calls:** a `pan://pair?...` link (the hub's pairing QR text, printed by `pan-link code`)
+- **Calls:** Settings → "Scan a pairing code" opens `ScanPairActivity`: the back camera
+  (CameraX) and ZXing on the phone read the QR from the `/pair/` page; only a `pan://pair?`
+  link counts, and it goes to `PairActivity`. No picture is kept or sent. A `pan://pair?...`
+  link from anywhere else (the hub's pairing QR text, printed by `pan-link code`) also
   opens `PairActivity`. It asks "Pair with "<name>"?" and only on Pair starts
   `PanForegroundService` and runs `LinkManager.pair()` → `Panvpn.linkPair()` (Go).
   `PanForegroundService` calls `LinkManager.startIfPaired()` at start → `Panvpn.linkStart()`,
@@ -241,8 +249,14 @@ Rules:
   Copies of a handshake for the hub's Tailscale addresses go 150 ms after the others, so a
   direct path wins when it works, and a link on Tailscale checks every 2 minutes whether a
   direct path works again (`linkmode.Conn.preferDirect`).
-  Settings → Connection shows a "PAN Link" line (`LinkManager.summary()`: connected or not,
-  home network or Tailscale, last handshake) and "Forget this pairing" (asks first). Link
+  Settings → Connection starts with one plain line on the way the app reaches PAN now
+  ("Using PAN Link, over your home network", "Using Tailscale for now: PAN Link isn't
+  reaching your computer", "Using Tailscale"), and the main screen's Connection card says the
+  same ("Secure - PAN Link, over your home network", `MainViewModel.linkLine()`), both read off
+  the main thread every 2 to 3 s. Under it a "PAN Link" line (`LinkManager.summary()`:
+  connected or not, home network or Tailscale, last handshake), "Scan a pairing code", and
+  "Forget this pairing" (asks first). "Tailscale (backup)" says Tailscale stays on as the
+  fallback and the way in from outside. Link
   events go to the hub's log through `LogShipper` (source `pan-link`). When the phone isn't
   paired, Settings has "Pair this phone": it asks PAN for a code over the Tailscale proxy
   (`LinkManager.pairThroughPan`, see "PAN Link pairing codes") and pairs with it at once.

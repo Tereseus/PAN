@@ -27,6 +27,8 @@ const admin = http.createServer((req, res) => {
     if (req.headers['x-pan-link-secret'] !== SECRET) return send(403, { error: 'forbidden' });
     if (req.method === 'POST' && req.url === '/admin/pair') return send(200, { uri: URI, expires: '2033-05-18T03:33:19Z', device_ip: '10.77.0.9' });
     if (req.method === 'GET' && req.url === '/admin/devices') return send(200, [{ id: 'd1', name: 'Pixel test' }]);
+    if (req.method === 'DELETE' && req.url === '/admin/devices/d1') return send(200, { ok: true });
+    if (req.method === 'DELETE') return send(404, { error: 'no such device' });
     send(404, { error: 'not found' });
   });
 });
@@ -88,6 +90,29 @@ await test('paired devices come from pan-link', async () => {
   const r = await fetch(`${base}/devices`);
   const j = await r.json();
   ok(r.status === 200 && j[0]?.name === 'Pixel test', `${r.status} ${JSON.stringify(j)}`);
+});
+
+await test('removing a device asks pan-link to forget it', async () => {
+  const r = await fetch(`${base}/devices/d1`, { method: 'DELETE' });
+  const j = await r.json();
+  ok(r.status === 200 && j.ok === true, `${r.status} ${JSON.stringify(j)}`);
+  ok(calls.at(-1).method === 'DELETE' && calls.at(-1).url === '/admin/devices/d1', JSON.stringify(calls.at(-1)));
+  const gone = await fetch(`${base}/devices/nope`, { method: 'DELETE' });
+  ok(gone.status === 404, `unknown device: ${gone.status}`);
+});
+
+await test('a device id that is not an id never reaches pan-link', async () => {
+  const before = calls.length;
+  const r = await fetch(`${base}/devices/..%2Fpair`, { method: 'DELETE' });
+  ok(r.status === 400, `status ${r.status}`);
+  ok(calls.length === before, 'pan-link was asked anyway');
+});
+
+await test('only the owner removes devices', async () => {
+  role = 'viewer';
+  const before = calls.length;
+  const r = await fetch(`${base}/devices/d1`, { method: 'DELETE' });
+  ok(r.status === 403 && calls.length === before, `status ${r.status}`);
 });
 
 await test('no link.json here: 503, pan-link not asked', async () => {

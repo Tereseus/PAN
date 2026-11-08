@@ -106,75 +106,89 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Connection
+            // Connection: which way this phone reaches PAN right now, said first and plainly.
             Text("Connection", style = MaterialTheme.typography.titleMedium)
 
-            val activeUrl = viewModel.getRemoteProxyUrl() ?: serverUrl
+            val link = viewModel.remoteAccessManager.link
+            // The way in the app uses now (PAN Link's port while it works, else Tailscale's),
+            // and PAN Link's own state, read off the main thread every 2 s.
+            var conn by remember { mutableStateOf(ConnectionView()) }
+            var confirmForget by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    conn = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val proxy = viewModel.getRemoteProxyUrl()
+                        ConnectionView(
+                            loaded = true,
+                            proxyUrl = proxy,
+                            viaLink = proxy != null && proxy == link.baseUrlIfConnected(),
+                            linkSummary = link.summary(),
+                            linkPaired = link.isPaired(),
+                            linkWay = link.pathWords(),
+                        )
+                    }
+                    kotlinx.coroutines.delay(2_000)
+                }
+            }
+            val proxyUrl = conn.proxyUrl
+            val linkPaired = conn.linkPaired
+            Text(
+                when {
+                    !conn.loaded -> "Checking…"
+                    conn.viaLink -> "Using PAN Link" + (conn.linkWay?.let { ", $it" } ?: "")
+                    proxyUrl != null && linkPaired -> "Using Tailscale for now: PAN Link isn't reaching your computer"
+                    proxyUrl != null -> "Using Tailscale"
+                    else -> "Not connected to PAN yet, connecting…"
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (proxyUrl != null || !conn.loaded) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.error
+            )
             OutlinedTextField(
-                value = activeUrl,
+                value = proxyUrl ?: serverUrl,
                 onValueChange = { },
                 label = { Text("PAN Server") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 readOnly = true
             )
-            val proxyUrl = viewModel.getRemoteProxyUrl()
-            val link = viewModel.remoteAccessManager.link
-            val viaLink = proxyUrl != null && proxyUrl == link.baseUrlIfConnected()
-            Text(
-                when {
-                    viaLink -> "Connected through PAN Link"
-                    proxyUrl != null -> "Connected via Tailscale proxy"
-                    else -> "Tailscale proxy not ready — connecting..."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = if (proxyUrl != null) MaterialTheme.colorScheme.primary
-                       else MaterialTheme.colorScheme.error
-            )
 
-            // PAN Link: plain WireGuard to the hub, used while it works (LinkManager).
-            var linkSummary by remember { mutableStateOf("") }
-            var linkPaired by remember { mutableStateOf(false) }
-            var confirmForget by remember { mutableStateOf(false) }
-            LaunchedEffect(Unit) {
-                while (true) {
-                    linkSummary = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { link.summary() }
-                    linkPaired = link.isPaired()
-                    kotlinx.coroutines.delay(2_000)
-                }
-            }
             Text("PAN Link", style = MaterialTheme.typography.titleSmall)
-            Text(linkSummary,
+            Text(conn.linkSummary,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (linkPaired) {
-                TextButton(onClick = { confirmForget = true }) { Text("Forget this pairing") }
-            } else {
-                // A phone that already reaches PAN (over Tailscale) gets a code from PAN itself.
-                var pairing by remember { mutableStateOf(false) }
-                Button(
-                    enabled = proxyUrl != null && !pairing,
-                    onClick = {
-                        val base = proxyUrl ?: return@Button
-                        pairing = true
-                        scope.launch {
-                            val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                runCatching { link.pairThroughPan(base) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    context.startActivity(android.content.Intent(context, dev.pan.app.vpn.ScanPairActivity::class.java))
+                }) { Text("Scan a pairing code") }
+                if (linkPaired) {
+                    TextButton(onClick = { confirmForget = true }) { Text("Forget this pairing") }
+                } else {
+                    // A phone that already reaches PAN (over Tailscale) gets a code from PAN itself.
+                    var pairing by remember { mutableStateOf(false) }
+                    TextButton(
+                        enabled = proxyUrl != null && !pairing,
+                        onClick = {
+                            val base = proxyUrl ?: return@TextButton
+                            pairing = true
+                            scope.launch {
+                                val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    runCatching { link.pairThroughPan(base) }
+                                }
+                                pairing = false
+                                snackbarHostState.showSnackbar(r.fold(
+                                    { "Paired. This phone uses PAN Link now." },
+                                    { "Pairing failed: ${it.message}" }))
                             }
-                            pairing = false
-                            linkPaired = link.isPaired()
-                            snackbarHostState.showSnackbar(r.fold(
-                                { "Paired. This phone uses PAN Link now." },
-                                { "Pairing failed: ${it.message}" }))
                         }
-                    }
-                ) { Text(if (pairing) "Pairing…" else "Pair this phone") }
+                    ) { Text(if (pairing) "Pairing…" else "Pair this phone") }
+                }
             }
             if (confirmForget) {
                 AlertDialog(
                     onDismissRequest = { confirmForget = false },
                     title = { Text("Forget the pairing?") },
-                    text = { Text("This phone stops using PAN Link and goes back to Tailscale only. To use the link again, pair with a new code from PAN on your computer.") },
+                    text = { Text("This phone stops using PAN Link and goes back to Tailscale only. To use the link again, scan a new pairing code, or tap Pair this phone.") },
                     confirmButton = {
                         TextButton(onClick = {
                             confirmForget = false
@@ -185,13 +199,11 @@ fun SettingsScreen(
                 )
             }
 
-            HorizontalDivider()
-
-            // Secure Connection (always on — Tailscale/WireGuard)
-            Text("Secure Connection", style = MaterialTheme.typography.titleMedium)
+            // Tailscale stays on underneath: the fallback, and PAN Link's way in from outside.
+            Text("Tailscale (backup)", style = MaterialTheme.typography.titleSmall)
             Text(
                 if (remoteAccessEnabled && remoteAccessStatus == "Connected")
-                    "Connected via Tailscale${if (remoteAccessIp.isNotEmpty()) " — $remoteAccessIp" else ""}"
+                    "Connected${if (remoteAccessIp.isNotEmpty()) ", $remoteAccessIp" else ""}"
                 else if (remoteAccessEnabled)
                     remoteAccessStatus
                 else
@@ -200,7 +212,7 @@ fun SettingsScreen(
                 color = if (remoteAccessStatus == "Connected") MaterialTheme.colorScheme.primary
                        else MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Text("All traffic is encrypted via WireGuard tunnel. This connects automatically on startup.",
+            Text("Stays on as a backup. The app uses it when PAN Link can't reach your computer, and away from home PAN Link travels through it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
 
@@ -649,3 +661,13 @@ fun SettingToggle(
         )
     }
 }
+
+/** What the Connection section shows, read together off the main thread. */
+private data class ConnectionView(
+    val loaded: Boolean = false,
+    val proxyUrl: String? = null,
+    val viaLink: Boolean = false,
+    val linkSummary: String = "",
+    val linkPaired: Boolean = false,
+    val linkWay: String? = null,
+)

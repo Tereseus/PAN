@@ -62,6 +62,11 @@
         </activity>
 
         <!-- PAN Link pairing: the hub's pairing QR holds a pan://pair link. No screen of its own. -->
+        <!-- Reads the pairing QR from PAN's pairing page and hands it to PairActivity. -->
+        <activity
+            android:name=".vpn.ScanPairActivity"
+            android:exported="false"
+            android:excludeFromRecents="true" />
         <activity
             android:name=".vpn.PairActivity"
             android:exported="true"

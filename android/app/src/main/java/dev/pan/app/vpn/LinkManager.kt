@@ -165,6 +165,18 @@ class LinkManager @Inject constructor(
         return if (lastConnected) "http://127.0.0.1:$p" else null
     }
 
+    /** Which way the link goes while connected ("over your home network"...), else null. */
+    fun pathWords(): String? {
+        val s = runCatching { JSONObject(status()) }.getOrNull() ?: return null
+        if (!s.optBoolean("connected")) return null
+        return when (s.optString("path")) {
+            "local" -> "over your home network"
+            "tailscale" -> "through Tailscale"
+            "internet" -> "over the internet"
+            else -> null
+        }
+    }
+
     /** One plain line for the app's screens: whether the link works and which way it goes. */
     fun summary(): String {
         if (!isPaired()) return "Not paired. Open the pairing code from PAN on your computer on this phone."

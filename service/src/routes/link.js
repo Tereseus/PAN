@@ -69,6 +69,16 @@ router.get('/devices', async (req, res) => {
   res.status(status || 503).json(body);
 });
 
+// Removes a paired device (a lost phone, say): it can't reach PAN through the link until
+// it pairs again. The id is pan-link's, as GET /devices lists it.
+router.delete('/devices/:id', async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[a-z0-9]{1,64}$/i.test(id)) return res.status(400).json({ error: 'bad device id' });
+  const { status, body } = await callAdmin(`/admin/devices/${id}`, { method: 'DELETE' });
+  if (status === 200) console.log(`[PAN Link] device ${id} removed by the owner`);
+  res.status(status || 503).json(body);
+});
+
 // pan-link's own view: hub key, addresses it can be reached on, number of devices.
 router.get('/status', async (req, res) => {
   const { status, body } = await callAdmin('/admin/status');

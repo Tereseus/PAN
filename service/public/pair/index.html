@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PAN — Pair a phone</title>
+<!--
+  Pairing page for PAN Link (docs/INSTALL-PLAN.md step 1). Open it on the PAN computer:
+  it asks PAN for a one time pairing code (POST /api/v1/link/pair, owner only) and shows
+  it as a QR for the phone app's "Scan a pairing code". The code works once, for 10
+  minutes. Below it, the devices already paired, each with Remove.
+-->
+<style>
+  :root {
+    --bg: #1e1e2e; --panel: #181825; --line: #313244; --text: #cdd6f4;
+    --soft: #a6adc8; --faint: #6c7086; --accent: #cba6f7; --ok: #a6e3a1; --bad: #f38ba8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; display: flex; justify-content: center; align-items: flex-start;
+    padding: 40px 16px;
+  }
+  main {
+    max-width: 560px; width: 100%; padding: 32px;
+    background: var(--panel); border-radius: 16px; border: 1px solid var(--line);
+  }
+  h1 { font-size: 24px; color: var(--accent); margin-bottom: 6px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  p, li { font-size: 14px; line-height: 1.5; color: var(--soft); }
+  ol { margin: 14px 0 0 20px; }
+  #status { font-size: 13px; color: var(--faint); margin-bottom: 18px; }
+  #status.bad { color: var(--bad); }
+  button {
+    padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer;
+    background: var(--accent); color: var(--bg); font-size: 14px; font-weight: 600;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.quiet { background: none; border: 1px solid var(--line); color: var(--soft); padding: 6px 12px; font-weight: 500; }
+  #code { display: none; text-align: center; margin-top: 20px; }
+  #code img { width: 280px; max-width: 100%; height: auto; background: #fff; border-radius: 8px; padding: 8px; }
+  #left { font-size: 13px; color: var(--soft); margin-top: 10px; }
+  #onphone { display: none; margin-top: 12px; font-size: 14px; }
+  #onphone a { color: var(--accent); }
+  #done { display: none; margin-top: 20px; padding: 14px; border: 1px solid var(--ok); border-radius: 8px; color: var(--ok); font-size: 14px; }
+  #error { display: none; margin-top: 16px; color: var(--bad); font-size: 14px; }
+  #devices { list-style: none; margin: 0; }
+  #devices li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  #devices li:first-child { border-top: none; }
+  .dname { color: var(--text); }
+  .dmeta { font-size: 12px; color: var(--faint); }
+  #nodevices { font-size: 14px; color: var(--faint); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pair a phone</h1>
+  <div id="status">Checking PAN Link…</div>
+  <p>The phone then reaches PAN on your PAN computer directly: over your home network at home, and through Tailscale when you're away.</p>
+  <ol>
+    <li>On the phone, open the PAN app, then Settings, then <b>Scan a pairing code</b>.</li>
+    <li>Point the camera at the code that appears here.</li>
+    <li>Tap <b>Pair</b> on the phone.</li>
+  </ol>
+
+  <div style="margin-top: 20px"><button id="show">Show a pairing code</button></div>
+  <div id="code">
+    <img id="qr" alt="Pairing code">
+    <div id="left"></div>
+    <div id="onphone">On this phone already? <a id="applink" href="#">Pair in the PAN app</a></div>
+  </div>
+  <div id="done"></div>
+  <div id="error"></div>
+
+  <h2>Paired devices</h2>
+  <ul id="devices"></ul>
+  <div id="nodevices">None yet.</div>
+</main>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  let expires = 0, timer = null, known = null;
+
+  async function api(path, opts) {
+    const r = await fetch('/api/v1/link' + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+    let body = {};
+    try { body = await r.json(); } catch (_) {}
+    if (r.status === 403) throw new Error('Pairing codes are only given to PAN's owner. Open this page on your own computer or phone.');
+    if (!r.ok) throw new Error(body.error || ('PAN answered ' + r.status));
+    return body;
+  }
+
+  function showError(msg) { $('error').textContent = msg; $('error').style.display = msg ? 'block' : 'none'; }
+
+  async function loadStatus() {
+    try {
+      const s = await api('/status');
+      const n = s.devices || 0;
+      $('status').textContent = 'PAN Link is running on your PAN computer, with ' + n + (n === 1 ? ' paired device.' : ' paired devices.');
+      $('status').className = '';
+    } catch (e) {
+      $('status').textContent = e.message;
+      $('status').className = 'bad';
+    }
+  }
+
+  function when(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? '' : 'paired ' + d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  async function loadDevices() {
+    let list;
+    try { list = await api('/devices'); } catch (e) { return null; }
+    if (!Array.isArray(list)) return null;
+    const ul = $('devices');
+    ul.textContent = '';
+    for (const d of list) {
+      const li = document.createElement('li');
+      const left = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'dname';
+      name.textContent = d.name || d.id;
+      const meta = document.createElement('div');
+      meta.className = 'dmeta';
+      meta.textContent = [d.tunnel_ip, when(d.added)].filter(Boolean).join(' · ');
+      left.append(name, meta);
+      const rm = document.createElement('button');
+      rm.className = 'quiet';
+      rm.textContent = 'Remove';
+      rm.onclick = async () => {
+        if (!confirm('Remove "' + (d.name || d.id) + '"? It stops reaching PAN through PAN Link until it pairs again.')) return;
+        try { await api('/devices/' + encodeURIComponent(d.id), { method: 'DELETE' }); } catch (e) { showError(e.message); }
+        loadDevices(); loadStatus();
+      };
+      li.append(left, rm);
+      ul.append(li);
+    }
+    $('nodevices').style.display = list.length ? 'none' : 'block';
+    return list;
+  }
+
+  function tick() {
+    const s = Math.round((expires - Date.now()) / 1000);
+    if (s <= 0) {
+      stopCode();
+      $('left').textContent = '';
+      showError('That code expired. Show a new one.');
+      return;
+    }
+    $('left').textContent = 'Works once, for ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') + ' more.';
+    // A new device in the list means the phone used the code.
+    if (s % 3 === 0) loadDevices().then((list) => {
+      if (!list || !known) return;
+      const added = list.filter((d) => !known.has(d.id));
+      if (added.length) {
+        stopCode();
+        $('done').textContent = 'Paired: ' + added.map((d) => d.name || d.id).join(', ') + '. The phone uses PAN Link now.';
+        $('done').style.display = 'block';
+        loadStatus();
+      }
+    });
+  }
+
+  function stopCode() {
+    clearInterval(timer); timer = null;
+    $('code').style.display = 'none';
+    $('qr').removeAttribute('src');
+    $('applink').href = '#';
+    $('show').disabled = false;
+    $('show').textContent = 'Show a pairing code';
+  }
+
+  $('show').onclick = async () => {
+    showError('');
+    $('done').style.display = 'none';
+    $('show').disabled = true;
+    try {
+      const list = await loadDevices();
+      known = new Set((list || []).map((d) => d.id));
+      const c = await api('/pair', { method: 'POST', body: JSON.stringify({ ttl_minutes: 10 }) });
+      if (!c.svg) throw new Error('PAN made a code but not its picture. Use Pair this phone in the app instead.');
+      $('qr').src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(c.svg);
+      $('applink').href = c.uri;
+      $('onphone').style.display = /Android/i.test(navigator.userAgent) ? 'block' : 'none';
+      expires = Date.parse(c.expires) || (Date.now() + 10 * 60 * 1000);
+      $('code').style.display = 'block';
+      $('show').textContent = 'Show a new code';
+      $('show').disabled = false;
+      clearInterval(timer);
+      timer = setInterval(tick, 1000);
+      tick();
+    } catch (e) {
+      stopCode();
+      showError(e.message);
+    }
+  };
+
+  loadStatus();
+  loadDevices();
+})();
+</script>
+</body>
+</html>

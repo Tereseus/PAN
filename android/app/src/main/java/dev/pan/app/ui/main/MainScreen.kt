@@ -201,18 +201,28 @@ fun MainScreen(
                                    else MaterialTheme.colorScheme.error
                         )
                     }
-                    // Secure tunnel
+                    // Secure tunnel: the way the app reaches PAN right now. PAN Link when it
+                    // works (it says which path), else the Tailscale fallback.
+                    var linkLine by remember { mutableStateOf<String?>(null) }
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            linkLine = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { viewModel.linkLine() }
+                            kotlinx.coroutines.delay(3_000)
+                        }
+                    }
+                    val secure = linkLine != null || remoteAccessStatus == "Connected"
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusDot(isActive = remoteAccessStatus == "Connected")
+                        StatusDot(isActive = secure)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            when (remoteAccessStatus) {
-                                "Connected" -> "Secure - Tailscale Encrypted"
-                                "Connecting..." -> "Secure - Connecting..."
+                            when {
+                                linkLine != null -> "Secure - $linkLine"
+                                remoteAccessStatus == "Connected" -> "Secure - Tailscale"
+                                remoteAccessStatus == "Connecting..." -> "Secure - Connecting..."
                                 else -> "Secure - $remoteAccessStatus"
                             },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (remoteAccessStatus == "Connected") MaterialTheme.colorScheme.primary
+                            color = if (secure) MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
