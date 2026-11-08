@@ -51,6 +51,7 @@ class LinkManager @Inject constructor(
     @Volatile private var lastCheck = 0L
     @Volatile private var lastConnected = false
     @Volatile private var lastState = ""
+    @Volatile private var lastLookup = ""
     @Volatile private var callbackRegistered = false
 
     /**
@@ -160,6 +161,13 @@ class LinkManager @Inject constructor(
             if (state != lastState) {
                 lastState = state
                 note("link $state")
+            }
+            // When the hub can't be reached on any saved address, the link looks it up
+            // through its address record (pan-link record.go); say what that found.
+            val lookup = s?.optString("lookup").orEmpty()
+            if (lookup.isNotEmpty() && lookup != lastLookup) {
+                lastLookup = lookup
+                note("address record: $lookup")
             }
         }
         return if (lastConnected) "http://127.0.0.1:$p" else null

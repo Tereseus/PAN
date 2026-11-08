@@ -29,6 +29,11 @@ type HubState struct {
 	Secret     string     `json:"secret"` // shared with PAN only; proves a request came through pan-link
 	Name       string     `json:"name,omitempty"`
 	Devices    []Device   `json:"devices"`
+
+	// The address record (record.go): the Ed25519 seed that signs it and the key that
+	// encrypts it, both base64. NewHub makes them when they are missing.
+	RecordSeed   string `json:"record_seed,omitempty"`
+	RecordSecret string `json:"record_secret,omitempty"`
 }
 
 // DefaultHubIP is the hub's address inside the tunnel. The tunnel lives inside the

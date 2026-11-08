@@ -54,11 +54,15 @@ func Forget(dataDir string) error {
 
 // Conn is a running link and its local port.
 type Conn struct {
-	st   *link.ClientState
-	l    *link.Link
-	ln   net.Listener
-	stop chan struct{}
-	once sync.Once
+	st      *link.ClientState
+	l       *link.Link
+	ln      net.Listener
+	stop    chan struct{}
+	once    sync.Once
+	dataDir string
+
+	mu     sync.Mutex // guards st's record fields and endpoints while saving, and lookup
+	lookup string     // the last address record lookup, for Status
 }
 
 // Start brings the link up and opens the local port (127.0.0.1, any free port). It does
@@ -78,9 +82,9 @@ func Start(ctx context.Context, dataDir string, binds link.BindFactory) (*Conn, 
 		l.Close()
 		return nil, err
 	}
-	c := &Conn{st: st, l: l, ln: ln, stop: make(chan struct{})}
+	c := &Conn{st: st, l: l, ln: ln, stop: make(chan struct{}), dataDir: dataDir}
 	go l.ServeLocalProxy(ln, st.HubIP)
-	go c.preferDirect()
+	go c.watch()
 	return c, nil
 }
 
@@ -91,18 +95,104 @@ func Start(ctx context.Context, dataDir string, binds link.BindFactory) (*Conn, 
 // for Tailscale addresses go later, link.TailnetDelay).
 var directRetry = 2 * time.Minute
 
-func (c *Conn) preferDirect() {
-	t := time.NewTicker(directRetry)
+// The hub's address record (pan-link's record.go): while connected, the phone keeps the
+// record's keys current (they change when the hub removes a device); while the hub can't
+// be reached on any saved address, it looks the record up for new ones.
+var (
+	watchTick   = 15 * time.Second
+	infoRetry   = 6 * time.Hour    // how often a connected phone asks the hub for the record keys
+	lookupAfter = 2 * time.Minute  // no answer from the hub for this long: look it up
+	lookupRetry = 10 * time.Minute // at most one lookup per this long
+	Relays      []string           // nil: Pkarr's public relays (tests set their own)
+)
+
+// watch runs beside the link: back to a direct path when there is one again, and the
+// address record (keys while connected, a lookup when the hub is lost).
+func (c *Conn) watch() {
+	t := time.NewTicker(min(watchTick, directRetry))
 	defer t.Stop()
+	start := time.Now()
+	var lastDirect, lastInfo, lastLookup time.Time
 	for {
 		select {
 		case <-c.stop:
 			return
 		case <-t.C:
 		}
-		if pathOf(c.via()) == "tailscale" && c.hasDirect() {
-			c.l.Rehandshake(c.st.HubKey)
+		now := time.Now()
+		if now.Sub(lastDirect) >= directRetry {
+			lastDirect = now
+			if pathOf(c.via()) == "tailscale" && c.hasDirect() {
+				c.l.Rehandshake(c.st.HubKey)
+			}
 		}
+		s := c.Status()
+		c.mu.Lock()
+		hasKeys := c.st.RecordKey != ""
+		c.mu.Unlock()
+		switch {
+		case s.Connected:
+			if !hasKeys || now.Sub(lastInfo) >= infoRetry {
+				lastInfo = now
+				c.fetchRecordInfo()
+			}
+		case hasKeys && now.Sub(start) >= lookupAfter && now.Sub(lastLookup) >= lookupRetry:
+			lastLookup = now
+			c.findHub()
+		}
+	}
+}
+
+func (c *Conn) fetchRecordInfo() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c.mu.Lock()
+	st := *c.st
+	c.mu.Unlock()
+	changed, err := link.FetchRecordInfo(ctx, c.l, &st)
+	if err != nil || !changed {
+		return
+	}
+	c.mu.Lock()
+	c.st.RecordKey, c.st.RecordSecret, c.st.RecordSeq = st.RecordKey, st.RecordSecret, st.RecordSeq
+	c.saveLocked()
+	c.mu.Unlock()
+}
+
+// findHub looks the hub up through its address record and adds any new addresses to
+// the link (and the saved pairing).
+func (c *Conn) findHub() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c.mu.Lock()
+	st := *c.st
+	c.mu.Unlock()
+	addrs, seq, err := link.FindHub(ctx, &st, Relays, nil)
+	if err != nil {
+		c.setLookup("failed: " + err.Error())
+		return
+	}
+	n := c.l.AddHubAddresses(ctx, c.st.HubKey, addrs)
+	c.mu.Lock()
+	c.st.RecordSeq = seq
+	if n > 0 {
+		c.st.Endpoints = addrs
+	}
+	c.saveLocked()
+	c.lookup = fmt.Sprintf("%d addresses, %d new", len(addrs), n)
+	c.mu.Unlock()
+}
+
+func (c *Conn) setLookup(s string) {
+	c.mu.Lock()
+	c.lookup = s
+	c.mu.Unlock()
+}
+
+// saveLocked writes the pairing back (new record keys or hub addresses). Caller holds mu.
+func (c *Conn) saveLocked() {
+	if c.dataDir != "" {
+		c.st.Save(File(c.dataDir))
 	}
 }
 
@@ -114,6 +204,8 @@ func (c *Conn) via() string {
 // hasDirect reports a hub address that isn't Tailscale's (a name counts: it is a home
 // address looked up through DNS).
 func (c *Conn) hasDirect() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, e := range c.st.Endpoints {
 		if ap, err := netip.ParseAddrPort(e); err != nil || !IsTailnet(ap.Addr()) {
 			return true
@@ -156,10 +248,13 @@ type Status struct {
 	Path           string `json:"path,omitempty"`    // "local", "tailscale" or "internet"
 	SinceHandshake int64  `json:"since_handshake_s"` // -1 if no handshake yet
 	Connected      bool   `json:"connected"`         // a handshake in the last 3 minutes
+	Lookup         string `json:"lookup,omitempty"`  // the last address record lookup
 }
 
 func (c *Conn) Status() Status {
-	s := Status{DeviceID: c.st.DeviceID, HubName: c.st.HubName, Port: c.Port(), SinceHandshake: -1}
+	c.mu.Lock()
+	s := Status{DeviceID: c.st.DeviceID, HubName: c.st.HubName, Port: c.Port(), SinceHandshake: -1, Lookup: c.lookup}
+	c.mu.Unlock()
 	s.Via = c.via()
 	s.Path = pathOf(s.Via)
 	if t, err := c.l.LastHandshake(c.st.HubKey); err == nil && !t.IsZero() {

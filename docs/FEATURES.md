@@ -248,7 +248,11 @@ Rules:
   `LinkManager.tailscaleReady()` once its Tailscale proxy is up, for the same reason.
   Copies of a handshake for the hub's Tailscale addresses go 150 ms after the others, so a
   direct path wins when it works, and a link on Tailscale checks every 2 minutes whether a
-  direct path works again (`linkmode.Conn.preferDirect`).
+  direct path works again (`linkmode.Conn.watch`). The same loop keeps the hub's address
+  record keys current while connected (`GET /.pan-link/record` through the tunnel, every
+  6 h) and, after 2 minutes without the hub, looks the record up on Pkarr's relays (at most
+  every 10 minutes) and adds any new hub addresses to the link and the saved pairing
+  (`pan-link/record.go`). The result goes to the hub's log as "address record: ...".
   Settings → Connection starts with one plain line on the way the app reaches PAN now
   ("Using PAN Link, over your home network", "Using Tailscale for now: PAN Link isn't
   reaching your computer", "Using Tailscale"), and the main screen's Connection card says the

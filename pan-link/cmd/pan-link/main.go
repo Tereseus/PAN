@@ -1,6 +1,6 @@
 // pan-link: PAN's own WireGuard link. See docs/INSTALL-PLAN.md and pan-link/README.md.
 //
-//	pan-link hub    --data DIR [--port 41720] [--bind ADDR] [--backend URL] [--admin ADDR] [--name NAME] [--endpoint HOST:PORT]... [--open-router-port]
+//	pan-link hub    --data DIR [--port 41720] [--bind ADDR] [--backend URL] [--admin ADDR] [--name NAME] [--endpoint HOST:PORT]... [--open-router-port] [--address-record=false]
 //	pan-link code   --data DIR [--name "My Pixel"]       (asks the running hub for a pairing code)
 //	pan-link pair   --data DIR --code "pan://pair?..." [--name NAME] [--bind ADDR]
 //	pan-link client --data DIR [--listen 127.0.0.1:7779] [--bind ADDR]
@@ -10,6 +10,9 @@
 // PAN Setup adds that rule; nobody else should click it on someone's behalf.
 // --open-router-port changes the router's port forwarding, so it is off unless PAN Setup
 // turns it on after the person agrees. The mapping is dropped again when the hub stops.
+// The hub publishes its addresses on Pkarr's relays, encrypted and signed, once a device
+// is paired (record.go), so devices find it after an address change; --address-record=false
+// turns that off.
 package main
 
 import (
@@ -203,6 +206,7 @@ func runHub(args []string) error {
 	admin := fs.String("admin", "127.0.0.1:7792", "admin API address (this computer only)")
 	name := fs.String("name", "", "name shown on the phone when pairing")
 	openPort := fs.Bool("open-router-port", false, "ask the home router to forward the UDP port (UPnP, NAT-PMP or PCP); only after the person agreed in PAN Setup")
+	record := fs.Bool("address-record", true, "publish this computer's addresses, encrypted and signed, on Pkarr's relays so paired devices find it after an address change")
 	var extra multi
 	fs.Var(&extra, "endpoint", "extra address devices can use (repeatable)")
 	fs.Parse(args)
@@ -301,6 +305,9 @@ func runHub(args []string) error {
 			}
 		}
 	}()
+	if *record {
+		go publishAddresses(h)
+	}
 	adminLn, err := net.Listen("tcp", *admin)
 	if err != nil {
 		return err
@@ -310,6 +317,29 @@ func runHub(args []string) error {
 	log.Printf("hub up: key %s, udp %d, tunnel %s, admin %s, %d devices, reach me on %v",
 		pub, listen, st.HubIP, *admin, len(h.Devices()), h.Endpoints())
 	return h.Serve()
+}
+
+// publishAddresses keeps the hub's address record current: soon after the start (the
+// router's forward may take a few seconds to show up), then every minute. It publishes
+// only when the addresses or the record key changed, or hourly, and logs each change.
+func publishAddresses(h *link.Hub) {
+	time.Sleep(15 * time.Second)
+	lastErr := ""
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ok, err := h.PublishAddresses(ctx)
+		cancel()
+		switch {
+		case err != nil && err.Error() != lastErr:
+			lastErr = err.Error()
+			log.Printf("address record: %v", err)
+		case ok:
+			lastErr = ""
+			n, _ := h.PublishedAddresses()
+			log.Printf("address record published (%d addresses)", n)
+		}
+		time.Sleep(time.Minute)
+	}
 }
 
 // quietLog passes on the port mapper's own messages but drops its [v1]/[v2] chatter.
@@ -406,13 +436,45 @@ func runPair(args []string) error {
 	return nil
 }
 
+// findHub looks the hub up through its address record and saves new addresses into the
+// pairing. It reports whether it found any the device didn't have.
+func findHub(st *link.ClientState, statePath string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	addrs, seq, err := link.FindHub(ctx, st, nil, nil)
+	if err != nil {
+		log.Printf("address record: %v", err)
+		return false
+	}
+	known := map[string]bool{}
+	for _, e := range st.Endpoints {
+		known[e] = true
+	}
+	news := 0
+	for _, a := range addrs {
+		if !known[a] {
+			news++
+		}
+	}
+	st.RecordSeq = seq
+	if news > 0 {
+		st.Endpoints = addrs
+	}
+	if err := st.Save(statePath); err != nil {
+		log.Printf("saving the pairing: %v", err)
+	}
+	log.Printf("address record: %d addresses, %d new", len(addrs), news)
+	return news > 0
+}
+
 func runClient(args []string) error {
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
 	data := fs.String("data", "", "folder with client.json")
 	listen := fs.String("listen", "127.0.0.1:7779", "local port apps use to reach PAN")
 	bindAddr := fs.String("bind", "", "use this local address only")
 	fs.Parse(args)
-	st, err := link.LoadClientState(filepath.Join(*data, "client.json"))
+	statePath := filepath.Join(*data, "client.json")
+	st, err := link.LoadClientState(statePath)
 	if err != nil {
 		return err
 	}
@@ -424,14 +486,33 @@ func runClient(args []string) error {
 	if err != nil {
 		return err
 	}
+	var lastLookup time.Time
 	for {
 		l, ep, err := link.Connect(context.Background(), st, binds)
 		if err != nil {
-			log.Printf("hub not reachable (%v); trying again in 15 s", err)
+			log.Printf("hub not reachable (%v)", err)
+			// The saved addresses failed: the hub's address record may have new ones.
+			if st.RecordKey != "" && time.Since(lastLookup) > 5*time.Minute {
+				lastLookup = time.Now()
+				if findHub(st, statePath) {
+					continue
+				}
+			}
+			log.Print("trying again in 15 s")
 			time.Sleep(15 * time.Second)
 			continue
 		}
 		log.Printf("connected to the hub via %s; PAN is on http://%s", ep, ln.Addr())
+		// Keep the address record's keys current (they change when the hub removes a device).
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if changed, err := link.FetchRecordInfo(ctx, l, st); err != nil {
+			log.Printf("address record keys: %v", err)
+		} else if changed {
+			if err := st.Save(statePath); err != nil {
+				log.Printf("saving the pairing: %v", err)
+			}
+		}
+		cancel()
 		errc := make(chan error, 1)
 		go func() { errc <- l.ServeLocalProxy(ln, st.HubIP) }()
 		// Keep checking; reconnect (other addresses too) if the hub stops answering.

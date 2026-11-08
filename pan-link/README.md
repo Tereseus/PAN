@@ -4,7 +4,7 @@ PAN Link: plain WireGuard inside the program, so a phone or PC reaches PAN on th
 
 ## Status (2026-11-08)
 
-Step 1 of the install plan. Built and tested, including one test run on the real hub (removed afterwards). pan-link itself is not installed on the hub yet.
+Step 1 of the install plan. Built and tested, installed on the real hub (starts at boot), and the owner's phone app uses it.
 
 ### Files
 
@@ -15,6 +15,7 @@ Step 1 of the install plan. Built and tested, including one test run on the real
 - `hub.go`: the hub side. Serves HTTP inside the tunnel on port 7777 and forwards to PAN on the computer itself. It strips any `X-PAN-Device`, `X-PAN-Device-Name` or `X-PAN-Link-Secret` a device sends, then sets the real ones. A device still holding only its one time key can finish pairing and nothing else. Unknown keys get nothing. The admin API (make a code, list or remove devices) listens on 127.0.0.1 only and needs the link secret. The program saves each device's address every 10 s and on a clean stop. After a restart the hub starts the handshake to those addresses itself, so a device that stayed connected is back in about 1 s instead of WireGuard's own wait of about 15 s.
 - `client.go`: pairing (makes the device's own key and swaps it in through the tunnel), connecting, and a local port that apps on the device use to reach PAN.
 - `spray.go`: every handshake start goes to all of the hub's known addresses at once, and the first address the hub answers on wins; other packets go only to that address. Dead addresses cost nothing, which matters away from home. Because every new handshake goes everywhere again, a link whose path dies (a phone leaving home Wi-Fi) moves to one that works: about 1 s after `Rehandshake`, which the app calls on a network change, or about 16 s on WireGuard's own retry. Before this, a link stayed on a dead path. WireGuard makes at most one handshake every 5 s, so when it made one less than 5 s ago that went unanswered (a phone with no network for a while, WireGuard trying into nothing), `Rehandshake` sends that same one again on every path: the hub never saw it, so it accepts it, and the link is back in milliseconds instead of after WireGuard's wait. Copies for the hub's Tailscale addresses go `TailnetDelay` (150 ms) after the others, so a direct path (home Wi-Fi, an open router port) wins whenever it works and the link doesn't depend on Tailscale at home; Tailscale wins only when nothing else answers. It also stops "port unreachable" errors (which Windows reports on later reads) from halting a link, and looks up addresses given as names.
+- `record.go`: the hub's address record. Once a device is paired, the hub publishes its addresses on Pkarr (signed records on the public Mainline DHT, through Pkarr's free HTTP relays): encrypted with XChaCha20-Poly1305 under a key only paired devices get (through the tunnel, in the pairing answer and from `GET /.pan-link/record`), and signed with an Ed25519 key of the hub's own, so nobody can forge it or read it. It goes out when the addresses change, and hourly (the DHT forgets after about two hours). A device that can't reach the hub on any saved address looks the record up on all relays at once, takes the newest record that checks out (an older one than it last used is refused), and adds the new addresses to its link. Removing a device changes the encryption key, so a lost phone can't follow the hub's addresses; the other devices fetch the new key the next time they are connected. `link.json` gets `record_seed` and `record_secret`; a hub set up before records gets them on its next start.
 - `portmap.go`: asks the home router to forward the hub's UDP port (UPnP, NAT-PMP or PCP), using Tailscale's portmapper (BSD-3). Opens nothing until the hub is started with `--open-router-port`.
 - `netstack/`: the network stack glue, copied from tailscale/wireguard-go (MIT, licence in that folder) and adjusted to the gVisor version tailscale.com v1.96.4 uses, so it can live in the same `panvpn.aar` as the phone's Tailscale. Also fixes a crash when a link closes while packets are in flight.
 - `cmd/pan-link`: the program.
@@ -24,7 +25,7 @@ PAN side: `service/src/pan-link-auth.js`, checked in `server.js` before every ot
 ### The program
 
 ```
-pan-link hub    --data DIR [--port 41720] [--bind ADDR] [--backend URL] [--admin 127.0.0.1:7792] [--name NAME] [--endpoint HOST:PORT]... [--open-router-port]
+pan-link hub    --data DIR [--port 41720] [--bind ADDR] [--backend URL] [--admin 127.0.0.1:7792] [--name NAME] [--endpoint HOST:PORT]... [--open-router-port] [--address-record=false]
 pan-link code   --data DIR [--name "My Pixel"] [--minutes 10]    asks the running hub for a pairing code
 pan-link pair   --data DIR --code "pan://pair?..." [--name NAME] [--bind ADDR]
 pan-link client --data DIR [--listen 127.0.0.1:7779] [--bind ADDR]
@@ -33,11 +34,13 @@ pan-link probe  [--port 41720] [--seconds 5]                     which port open
 
 The hub puts its addresses in each pairing code in this order: home network IPv4 (the adapter with the default route first), global IPv6, a public IPv4 on the computer itself, the router's public address when it forwards the port, the Tailscale address, then any `--endpoint`. Adapters that only reach virtual machines or containers on the computer are left out: Hyper-V and WSL (vEthernet), Docker, VirtualBox, VMware, libvirt, LXC. On Windows the adapter's description counts too, since VirtualBox's adapter is just called "Ethernet 2". The adapter with the default route always stays, because a Hyper-V external switch puts the computer's own home address on a vEthernet adapter.
 
+The hub publishes its address record (see `record.go`) about 15 s after it starts and then checks every minute; `--address-record=false` turns that off. `pan-link client` looks the record up when the saved addresses fail (at most every 5 minutes) and saves new addresses into `client.json`.
+
 A hub listening on all addresses makes Windows ask about the firewall on its first run. PAN Setup adds that rule. Nobody should click it on someone else's behalf.
 
 ### Tests
 
-`go test ./...` (19 tests, all on 127.0.0.1 or in memory, so no firewall prompt):
+`go test ./...` (27 tests, all on 127.0.0.1 or in memory, so no firewall prompt; one more uses Pkarr's real relays when `PAN_LINK_LIVE=1` is set):
 
 - a phone pairs and reaches PAN, and PAN sees the real device id even when the phone forges the headers;
 - a stranger key that knows the hub's public key and address gets nothing, and PAN is never reached;
@@ -55,11 +58,16 @@ A hub listening on all addresses makes Windows ask about the firewall on its fir
 - no network at all for a while, then a different path comes up 1 s after WireGuard's last try: back in 5 ms after `Rehandshake` (4.3 s before it resent that try);
 - a handshake's copies for Tailscale addresses go 150 ms after the others, and at once when there is no other address or it can't be sent to;
 - a "port unreachable" error doesn't stop the link from reading;
-- names in the address list are looked up, and repeats dropped.
+- names in the address list are looked up, and repeats dropped;
+- the address record: it opens and checks out with the right keys only, and one flipped bit anywhere, another key, another secret or a record signed by another key under this one's name is refused; addresses that don't fit in 1000 bytes are cut from the end; z-base-32 matches its published examples;
+- a hub that moved (restarted on another port) is found through its record: the device's saved address gets nothing, the record has the new one, and the link answers 3 ms after adding it; an older record than the last one used is refused; a hub with no paired device publishes nothing;
+- a removed device can't open the next record; a kept device can't either until it fetches the new key through the tunnel, then can; the removed device can't connect to fetch it;
+- a `link.json` from before records gets their keys on the next start, its secret unchanged;
+- no relay answering is an error, not a hang, and an empty relay says there is no record.
 
 PAN side: `node service/src/__tests__/pan-link-auth.test.js` (10 tests) and `pan-link-routes.test.js` (9 tests: a code and its QR from `POST /api/v1/link/pair`, the time limit capped, owner only, devices, removing a device, a bad device id never reaching pan-link, only the owner removing, no `link.json`, pan-link not running). The app's QR reader: `PairCodeReaderTest` (4 tests, `gradlew :app:testDebugUnitTest`).
 
-Phone side: `go test ./linkmode/` in `android/pan-vpn` (6 tests: pair, start, use and forget; a phone that starts before the hub is reachable; the link carried by the app's own Tailscale, also when Tailscale comes up after the link; a link that started on Tailscale while the direct path was down moves back to it once it works (4.9 s, the next check plus WireGuard's 5 s limit); which addresses count as Tailscale's).
+Phone side: `go test ./linkmode/` in `android/pan-vpn` (7 tests: pair, start, use and forget; a phone that starts before the hub is reachable; the link carried by the app's own Tailscale, also when Tailscale comes up after the link; a link that started on Tailscale while the direct path was down moves back to it once it works (4.9 s, the next check plus WireGuard's 5 s limit); which addresses count as Tailscale's; a hub that moved while the phone was away is found through its address record by the link itself, and the pairing keeps the new address).
 
 Real network run on a Linux PC on the home network (2026-11-08), all passed:
 
@@ -134,6 +142,8 @@ Checked 2026-11-08 with `pan-link probe` on the owner's home network: the router
 
 A stdlib-only test program signed a record and stored it through the public Pkarr relays (`pkarr.pubky.org`, `relay.pkarr.org`, `pkarr.pubky.app`). All three answered. Publishing took 4.4 s (37 DHT nodes stored it). Lookups took 73 to 203 ms and returned the same record from each relay. A lookup for a record that doesn't exist took 2.6 to 4.5 s.
 
+With `record.go` (2026-11-08, `PAN_LINK_LIVE=1 go test -run LiveRelays`, a throwaway key and documentation addresses only): all three relays took the encrypted record (3.0 to 10.7 s each, as they store it on the DHT), each gave it back with the right addresses in 47 to 73 ms, and `FindHub` over all three took 72 ms. On the real hub, the new pan-link published its record (3 addresses) 18 s after it started.
+
 ### Building
 
 Offline from the module cache, on two cores to keep the load low:
@@ -147,7 +157,7 @@ GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod GOMAXPROCS=2 go build -p 2 -trimpath -l
 
 ## Next
 
-1. The Pkarr address record: the hub publishes its addresses, signed by its own key, and devices look it up when the saved ones fail. Encrypt the addresses with a key from the pairing code, so the DHT only ever stores an unreadable blob.
+1. Done: the Pkarr address record (`record.go`, above). The key that opens it comes through the tunnel, not in the pairing code, so the QR stays the same size. Still to see: a phone finding the hub after a real address change (needs a home whose router forwards the port, or IPv6).
 2. The reachability check PAN Setup runs (phone off Wi-Fi for a few seconds).
 3. Phone: done and tested on the owner's Pixel (above). In the app: `LinkManager` (start with the service, follow Android's network, use the link's port while it has a recent handshake, send link events to the hub's log, a status line), `PairActivity` for `pan://pair` links (asks first, naming the computer and any pairing it replaces), `RemoteAccessManager` and `HubLocator` prefer the link, and `PanVpnService` tells the link when its Tailscale is up. `ScanPairActivity` reads the pairing QR. Still to do: the scanner and the pairing dialog tried by eye on a real QR, a test on mobile data, and dropping `PanVpnService`'s VPN (the link needs no VPN permission; only Tailscale does).
 4. Done: pan-link runs on the real hub for good, started at boot beside PAN (see above). Next: move PAN's 7777 to 127.0.0.1 so the link is the only way in from outside, once the PCs use the link too.

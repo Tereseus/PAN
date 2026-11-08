@@ -28,6 +28,12 @@ type ClientState struct {
 	DeviceID   string     `json:"device_id"`
 	Name       string     `json:"name"`
 	HubName    string     `json:"hub_name,omitempty"`
+
+	// The hub's address record (record.go), from the hub through the tunnel: its public
+	// key, the key that opens it, and the newest record this device has used.
+	RecordKey    string `json:"record_key,omitempty"`
+	RecordSecret string `json:"record_secret,omitempty"`
+	RecordSeq    uint64 `json:"record_seq,omitempty"`
 }
 
 // KeepaliveSec keeps a phone's NAT mapping open so the hub can answer.
@@ -86,9 +92,10 @@ func Pair(ctx context.Context, uri, name string, binds BindFactory) (*ClientStat
 			strings.Join(info.Endpoints, ", "), err)
 	}
 	var out struct {
-		DeviceID string `json:"device_id"`
-		Name     string `json:"name"`
-		Error    string `json:"error"`
+		DeviceID string     `json:"device_id"`
+		Name     string     `json:"name"`
+		Record   RecordInfo `json:"record"`
+		Error    string     `json:"error"`
 	}
 	json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&out)
 	resp.Body.Close()
@@ -99,9 +106,11 @@ func Pair(ctx context.Context, uri, name string, binds BindFactory) (*ClientStat
 	// The hub swaps in the permanent key just after answering (pairCommitDelay).
 	// Waiting a moment saves the first Connect a 5 second handshake retry.
 	time.Sleep(700 * time.Millisecond)
-	return &ClientState{PrivateKey: priv, HubKey: info.HubKey, HubIP: info.HubIP,
+	st := &ClientState{PrivateKey: priv, HubKey: info.HubKey, HubIP: info.HubIP,
 		DeviceIP: info.DeviceIP, Endpoints: info.Endpoints, DeviceID: out.DeviceID,
-		Name: out.Name, HubName: info.HubName}, nil
+		Name: out.Name, HubName: info.HubName}
+	st.setRecordInfo(out.Record) // an older hub sends none; the device asks again later
+	return st, nil
 }
 
 // Connect starts the link with the device's permanent key. Its first packets go to all

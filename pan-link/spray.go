@@ -94,6 +94,26 @@ func (s *sprayBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	return fns, actual, nil
 }
 
+// add puts hub addresses the bind didn't have among the ones every handshake goes to,
+// and returns how many were new. In-flight sends keep the list they had.
+func (s *sprayBind) add(cands []string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	eps := s.eps[:len(s.eps):len(s.eps)]
+	n := 0
+	for _, c := range cands {
+		ep, err := s.Bind.ParseEndpoint(c)
+		if err != nil || hasEndpoint(eps, ep) {
+			continue
+		}
+		eps = append(eps, ep)
+		s.cands = append(s.cands[:len(s.cands):len(s.cands)], c)
+		n++
+	}
+	s.eps = eps
+	return n
+}
+
 func (s *sprayBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 	s.mu.Lock()
 	eps := s.eps

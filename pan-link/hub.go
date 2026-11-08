@@ -48,7 +48,11 @@ type Hub struct {
 	Endpoints func() []string
 	// OnError hears about failures that happen after an answer was sent (optional).
 	OnError func(error)
-	now     func() time.Time
+	// Relays and RelayClient are where PublishAddresses puts the address record
+	// (record.go). nil means DefaultRelays and a client with a 20 s limit.
+	Relays      []string
+	RelayClient *http.Client
+	now         func() time.Time
 
 	mu      sync.Mutex
 	devices map[netip.Addr]Device
@@ -57,6 +61,12 @@ type Hub struct {
 	endpointsPath string            // device addresses kept across restarts ("" = not kept)
 	remembered    map[string]string // device id -> address, as last written
 	kickKeys      []string          // devices to reach out to once Serve is listening
+
+	recMu    sync.Mutex // one PublishAddresses at a time; guards the fields below
+	recLast  string     // secret and addresses of the last published record
+	recAt    time.Time  // when it went out
+	recSeq   uint64     // its sequence number
+	recCount int        // how many addresses it held
 }
 
 // NewHub wraps a running link and loads the paired devices into it. backend is PAN on
@@ -79,6 +89,12 @@ func NewHub(l *Link, backend string, st *HubState, statePath string) (*Hub, erro
 		devices: map[netip.Addr]Device{}, pending: map[netip.Addr]pendingPair{}}
 	if statePath != "" {
 		h.endpointsPath = endpointsFile(statePath)
+	}
+	// A hub set up before address records gets their keys now.
+	if st.ensureRecordKeys() && statePath != "" {
+		if err := st.Save(statePath); err != nil {
+			return nil, err
+		}
 	}
 	h.remembered = loadEndpoints(h.endpointsPath)
 	for _, d := range st.Devices {
@@ -256,7 +272,9 @@ func (h *Hub) commitPairing(d Device, oneTimePub string) error {
 	return h.save()
 }
 
-// RemoveDevice unpairs a device. Its session ends at once.
+// RemoveDevice unpairs a device. Its session ends at once, and the address record gets
+// a new encryption key, so the device can't read where the hub is any more. The other
+// devices fetch the new key the next time they are connected.
 func (h *Hub) RemoveDevice(id string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -266,6 +284,7 @@ func (h *Hub) RemoveDevice(id string) error {
 				return err
 			}
 			delete(h.devices, ip)
+			h.state.RecordSecret = newRecordSecret()
 			return h.save()
 		}
 	}
@@ -330,6 +349,8 @@ func (h *Hub) TunnelHandler() http.Handler {
 		switch {
 		case r.URL.Path == "/.pan-link/ping" && (paired || pending):
 			writeJSON(w, 200, map[string]any{"ok": true, "paired": paired})
+		case r.URL.Path == "/.pan-link/record" && r.Method == http.MethodGet && paired:
+			writeJSON(w, 200, h.RecordInfo())
 		case r.URL.Path == "/.pan-link/finish" && r.Method == http.MethodPost && pending:
 			var body struct {
 				PublicKey string `json:"public_key"`
@@ -345,7 +366,7 @@ func (h *Hub) TunnelHandler() http.Handler {
 				return
 			}
 			w.Header().Set("Connection", "close")
-			writeJSON(w, 200, map[string]string{"device_id": d.ID, "name": d.Name})
+			writeJSON(w, 200, map[string]any{"device_id": d.ID, "name": d.Name, "record": h.RecordInfo()})
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
