@@ -26,6 +26,8 @@
  *   node pan-transcript-sync.mjs --fast             # only turns past the high-water mark
  *   node pan-transcript-sync.mjs --since 2026-09-01
  *   node pan-transcript-sync.mjs --hub http://minipc-pan-hub:7777
+ *   (default hub: PAN_HUB, else pan-client/pan-client-config.json's relay_hub_url or
+ *   hub_ws, else http://minipc-pan-hub:7777)
  *
  * Default is a FULL reconcile: send every turn and let the hub reject what it
  * already has. The hub dedupes on content, so this is the only mode that fills a
@@ -34,8 +36,9 @@
  * gap and hide it. --fast trusts the watermark and is for cron, not recovery.
  */
 import { readdirSync, statSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(`--${n}`);
@@ -44,7 +47,19 @@ const opt = (n, d) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
 };
 
-const HUB = (opt('hub', process.env.PAN_HUB || 'http://minipc-pan-hub:7777')).replace(/\/$/, '');
+// The hub: --hub, else PAN_HUB, else this computer's PAN client settings (the same
+// relay_hub_url or hub_ws the thread relay uses, so moving a computer onto PAN Link is one
+// file), else the hub's Tailscale name.
+function clientHub() {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const cfg = JSON.parse(readFileSync(join(here, '..', '..', 'pan-client', 'pan-client-config.json'), 'utf8'));
+    if (cfg.relay_hub_url) return cfg.relay_hub_url;
+    if (cfg.hub_ws) return cfg.hub_ws.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws.*$/, '');
+  } catch { /* no PAN client here */ }
+  return null;
+}
+const HUB = (opt('hub', process.env.PAN_HUB || clientHub() || 'http://minipc-pan-hub:7777')).replace(/\/$/, '');
 const ROOT = opt('root', join(homedir(), '.claude', 'projects'));
 const DRY = flag('dry-run');
 const FAST = flag('fast');
