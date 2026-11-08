@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -52,10 +53,15 @@ type Hub struct {
 	mu      sync.Mutex
 	devices map[netip.Addr]Device
 	pending map[netip.Addr]pendingPair
+
+	endpointsPath string            // device addresses kept across restarts ("" = not kept)
+	remembered    map[string]string // device id -> address, as last written
+	kickKeys      []string          // devices to reach out to once Serve is listening
 }
 
 // NewHub wraps a running link and loads the paired devices into it. backend is PAN on
-// this computer, for example "http://127.0.0.1:7777".
+// this computer, for example "http://127.0.0.1:7777". Devices with an address saved by
+// RememberEndpoints get it back, and Serve reaches out to them first.
 func NewHub(l *Link, backend string, st *HubState, statePath string) (*Hub, error) {
 	u, err := url.Parse(backend)
 	if err != nil {
@@ -71,13 +77,61 @@ func NewHub(l *Link, backend string, st *HubState, statePath string) (*Hub, erro
 	h := &Hub{link: l, backend: u, state: st, statePath: statePath, hubPub: pub,
 		Endpoints: func() []string { return nil }, now: time.Now,
 		devices: map[netip.Addr]Device{}, pending: map[netip.Addr]pendingPair{}}
+	if statePath != "" {
+		h.endpointsPath = endpointsFile(statePath)
+	}
+	h.remembered = loadEndpoints(h.endpointsPath)
 	for _, d := range st.Devices {
-		if err := l.AddPeer(Peer{PublicKey: d.PublicKey, TunnelIP: d.TunnelIP}); err != nil {
+		p := Peer{PublicKey: d.PublicKey, TunnelIP: d.TunnelIP}
+		if ep, err := netip.ParseAddrPort(h.remembered[d.ID]); err == nil {
+			p.Endpoint = ep.String()
+		}
+		err := l.AddPeer(p)
+		if err != nil && p.Endpoint != "" {
+			p.Endpoint = "" // a bad saved address must never keep the hub from starting
+			err = l.AddPeer(p)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("device %s: %w", d.ID, err)
+		}
+		if p.Endpoint != "" {
+			h.kickKeys = append(h.kickKeys, d.PublicKey)
 		}
 		h.devices[d.TunnelIP] = d
 	}
 	return h, nil
+}
+
+// RememberEndpoints saves the address each device last used (link-endpoints.json next to
+// link.json), so that after a restart the hub can reach out first. The program calls it
+// every few seconds and when it stops; it writes only when something changed.
+func (h *Hub) RememberEndpoints() error {
+	if h.endpointsPath == "" {
+		return nil
+	}
+	eps, err := h.link.peerEndpoints()
+	if err != nil {
+		return err
+	}
+	cur := map[string]string{}
+	h.mu.Lock()
+	for _, d := range h.devices {
+		if pub, err := keyHex(d.PublicKey); err == nil && eps[pub] != "" {
+			cur[d.ID] = eps[pub]
+		}
+	}
+	same := maps.Equal(cur, h.remembered)
+	h.mu.Unlock()
+	if same {
+		return nil
+	}
+	if err := saveEndpoints(h.endpointsPath, cur); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	h.remembered = cur
+	h.mu.Unlock()
+	return nil
 }
 
 func (h *Hub) save() error {
@@ -360,11 +414,19 @@ func (h *Hub) AdminHandler() http.Handler {
 }
 
 // Serve accepts connections on the hub's tunnel address and blocks until it fails.
-// WebSocket upgrades pass through (httputil.ReverseProxy handles them).
+// WebSocket upgrades pass through (httputil.ReverseProxy handles them). Once it is
+// listening, it reaches out to the devices whose last address it remembered.
 func (h *Hub) Serve() error {
 	ln, err := h.link.Net.ListenTCPAddrPort(netip.AddrPortFrom(h.link.TunnelIP, TunnelPort))
 	if err != nil {
 		return err
+	}
+	h.mu.Lock()
+	kick := h.kickKeys
+	h.kickKeys = nil
+	h.mu.Unlock()
+	for _, k := range kick {
+		h.link.Kick(k)
 	}
 	srv := &http.Server{Handler: h.TunnelHandler(), ReadHeaderTimeout: 15 * time.Second}
 	return srv.Serve(ln)

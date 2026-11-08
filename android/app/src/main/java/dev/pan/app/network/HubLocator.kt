@@ -81,6 +81,8 @@ class HubLocator @Inject constructor(
     @Volatile private var cached: String? = null
     private val consecutiveFailures = AtomicInteger(0)
     private var lastScanProxy: String? = null
+    /** The last tunnel base resolve() tried while another address was cached. */
+    @Volatile private var lastTriedTunnel: String? = null
 
     /** Serialises discovery so N concurrent callers cause ONE scan, not N. */
     private val probeLock = Any()
@@ -157,7 +159,18 @@ class HubLocator @Inject constructor(
      *                  dependency cycle (RemoteAccessManager -> OkHttp -> here).
      */
     fun resolve(proxyBase: String? = null): String? {
-        cached?.let { return it }
+        cached?.let { c ->
+            // A tunnel that came up or changed since c was picked (PAN Link connecting after
+            // the Tailscale proxy, say) is the better way in. Try it once; switch if it answers.
+            if (proxyBase == null || proxyBase == c || proxyBase == lastTriedTunnel) return c
+            lastTriedTunnel = proxyBase
+            if (probe(proxyBase)) {
+                Log.i(TAG, "switching to the new tunnel $proxyBase (was $c)")
+                remember(proxyBase)
+                return proxyBase
+            }
+            return c
+        }
 
         // Discovery is serialised. resolve() is called from an OkHttp
         // Interceptor, so every in-flight request arrives here at once; before

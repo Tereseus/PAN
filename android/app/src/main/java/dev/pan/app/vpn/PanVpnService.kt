@@ -257,6 +257,8 @@ class PanVpnService : VpnService() {
             } catch (e: Exception) {
                 Log.w(TAG, "Could not publish proxy port: ${e.message}")
             }
+            // PAN Link's packets for the hub's Tailscale addresses ride on this Tailscale.
+            remoteAccessManager.link.tailscaleReady()
             prefs.edit().putString("verified_server_ip", serverHost).apply()
             updateNotification("Connected")
         } catch (e: Exception) {

@@ -108,7 +108,7 @@ func Pair(ctx context.Context, uri, name string, binds BindFactory) (*ClientStat
 // known hub addresses at once; it returns once the hub answers, with the address that
 // won (home network, IPv6, router or Tailscale, whichever answered first).
 func Connect(ctx context.Context, st *ClientState, binds BindFactory) (*Link, string, error) {
-	l, sb, err := startSpray(ctx, st.PrivateKey, st.DeviceIP, st.HubKey, st.HubIP, st.Endpoints, binds)
+	l, _, err := startSpray(ctx, st.PrivateKey, st.DeviceIP, st.HubKey, st.HubIP, st.Endpoints, binds)
 	if err != nil {
 		return nil, "", err
 	}
@@ -124,12 +124,19 @@ func Connect(ctx context.Context, st *ClientState, binds BindFactory) (*Link, st
 		l.Close()
 		return nil, "", fmt.Errorf("hub not reachable on %s: %w", strings.Join(st.Endpoints, ", "), err)
 	}
-	sb.settle()
 	ep, err := l.PeerEndpoint(st.HubKey)
 	if err != nil {
 		ep = "an unknown address"
 	}
 	return l, ep, nil
+}
+
+// Open starts the link like Connect but does not wait for the hub. Its first handshake
+// goes to every hub address at once, and later requests (or Rehandshake) reach the hub
+// as soon as any path works. Phones use it, since they often start with no network.
+func Open(ctx context.Context, st *ClientState, binds BindFactory) (*Link, error) {
+	l, _, err := startSpray(ctx, st.PrivateKey, st.DeviceIP, st.HubKey, st.HubIP, st.Endpoints, binds)
+	return l, err
 }
 
 // ServeLocalProxy forwards every connection on ln (for example 127.0.0.1:0) to PAN on

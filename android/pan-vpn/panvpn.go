@@ -4,11 +4,13 @@ package panvpn
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"dev.pan/vpn/linkmode"
+	"github.com/tailscale/wireguard-go/conn"
 	"github.com/wlynxg/anet"
 	"tailscale.com/net/netmon"
 	"tailscale.com/tsnet"
@@ -467,6 +471,113 @@ func IsRunning() bool {
 	mu.Lock()
 	defer mu.Unlock()
 	return server != nil
+}
+
+// ---- PAN Link: plain WireGuard to the hub (pan-link), no Tailscale account ----
+//
+// The app pairs once with the text of the hub's pairing QR, then LinkStart gives it a
+// local port that forwards to PAN on the hub, used exactly like the Tailscale proxy
+// port. It needs only internet access, so it works without the VPN permission.
+// Packets for the hub's Tailscale address go through this file's tsnet when it runs
+// (linkmode.TailnetBind): home Wi-Fi that keeps devices apart, or a home router that
+// lets nothing in, leaves that as the only way to the hub.
+
+var (
+	linkMu   sync.Mutex
+	linkConn *linkmode.Conn
+)
+
+// tailnetSocket opens a UDP socket on this phone's Tailscale address through tsnet.
+func tailnetSocket(v6 bool) (net.PacketConn, error) {
+	mu.Lock()
+	s := server
+	mu.Unlock()
+	if s == nil {
+		return nil, fmt.Errorf("tailscale is off")
+	}
+	ip4, ip6 := s.TailscaleIPs()
+	ip, network := ip4, "udp4"
+	if v6 {
+		ip, network = ip6, "udp6"
+	}
+	if !ip.IsValid() {
+		return nil, fmt.Errorf("tailscale has no address yet")
+	}
+	return s.ListenPacket(network, netip.AddrPortFrom(ip, 0).String())
+}
+
+// linkBinds sends the link's packets through the phone's normal sockets, and through
+// tsnet for Tailscale addresses.
+func linkBinds() conn.Bind { return linkmode.TailnetBind(conn.NewDefaultBind(), tailnetSocket) }
+
+// LinkPair pairs this phone with a hub using the text of its pairing QR (pan://pair?...)
+// and returns the device id the hub gave it. name is shown on the hub (e.g. "Pixel 10").
+func LinkPair(dataDir, code, name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return linkmode.Pair(ctx, dataDir, strings.TrimSpace(code), name, linkBinds)
+}
+
+// LinkPaired reports whether this phone has a saved pairing.
+func LinkPaired(dataDir string) bool { return linkmode.Paired(dataDir) }
+
+// LinkStart brings the link up and returns the local port that forwards to PAN on the
+// hub. It does not wait for the hub. Calling it again returns the running port.
+func LinkStart(dataDir string) (int, error) {
+	linkMu.Lock()
+	defer linkMu.Unlock()
+	if linkConn != nil {
+		return linkConn.Port(), nil
+	}
+	c, err := linkmode.Start(context.Background(), dataDir, linkBinds)
+	if err != nil {
+		return 0, err
+	}
+	linkConn = c
+	log.Printf("panvpn: pan-link up, local port %d", c.Port())
+	return c.Port(), nil
+}
+
+// LinkNetworkChanged moves the link to whichever hub address works now. Call it when
+// Android reports a new default network; without it the link moves after about 15 s.
+func LinkNetworkChanged() {
+	linkMu.Lock()
+	c := linkConn
+	linkMu.Unlock()
+	if c != nil {
+		c.NetworkChanged()
+	}
+}
+
+// LinkStatus is a JSON object: paired, running, and while running device_id, hub_name,
+// port, via (the hub address in use), since_handshake_s and connected.
+func LinkStatus(dataDir string) string {
+	linkMu.Lock()
+	c := linkConn
+	linkMu.Unlock()
+	out := map[string]any{"paired": linkmode.Paired(dataDir), "running": c != nil}
+	if c != nil {
+		b, _ := json.Marshal(c.Status())
+		json.Unmarshal(b, &out)
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+// LinkStop shuts the link and its local port.
+func LinkStop() {
+	linkMu.Lock()
+	defer linkMu.Unlock()
+	if linkConn != nil {
+		linkConn.Close()
+		linkConn = nil
+	}
+}
+
+// LinkForget stops the link and deletes this phone's pairing.
+func LinkForget(dataDir string) error {
+	LinkStop()
+	return linkmode.Forget(dataDir)
 }
 
 // GetCrashLog reads the Go crash log from the last run.

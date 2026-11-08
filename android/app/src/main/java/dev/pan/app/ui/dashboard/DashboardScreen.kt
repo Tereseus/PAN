@@ -47,7 +47,12 @@ fun DashboardScreen(
     settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
     val proxyPort by settingsViewModel.remoteAccessManager.proxyPort.collectAsState()
-    val baseUrl = if (proxyPort > 0) "http://127.0.0.1:$proxyPort" else ""
+    val linkPort by settingsViewModel.remoteAccessManager.link.port.collectAsState()
+    // PAN Link's port while it is connected, else the Tailscale proxy as before.
+    val baseUrl = remember(proxyPort, linkPort) {
+        settingsViewModel.remoteAccessManager.link.baseUrlIfConnected()
+            ?: if (proxyPort > 0) "http://127.0.0.1:$proxyPort" else ""
+    }
     val context = LocalContext.current
 
     val webViewRef = remember { mutableStateOf<WebView?>(null) }

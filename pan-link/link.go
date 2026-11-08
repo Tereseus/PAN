@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	"dev.pan/link/netstack"
 	"github.com/tailscale/wireguard-go/conn"
@@ -47,6 +48,7 @@ type Link struct {
 	Net      *netstack.Net
 	TunnelIP netip.Addr
 	dev      *device.Device
+	spray    *sprayBind // a device's link to its hub; nil on the hub
 }
 
 // GenerateKey makes a WireGuard key pair, both halves base64.
@@ -226,6 +228,119 @@ func (l *Link) RemovePeer(publicKey string) error {
 		return err
 	}
 	return l.dev.IpcSet("public_key=" + pub + "\nremove=true\n")
+}
+
+// Kick starts a handshake with a peer now, at the address the link has for it, instead
+// of waiting for the peer to send first. The hub uses it after a restart, so a device
+// that stayed connected does not wait about 15 s for WireGuard to try again on its own.
+func (l *Link) Kick(publicKey string) error {
+	p, err := l.peer(publicKey)
+	if err != nil {
+		return err
+	}
+	p.SendKeepalive() // with no session yet, this sends a handshake first
+	return nil
+}
+
+// Rehandshake starts a new handshake with a peer now, even while a session exists. On a
+// device it goes to every known hub address (sprayBind), so after a network change the
+// link moves to whichever path answers instead of waiting for WireGuard's own timers.
+//
+// WireGuard makes at most one handshake every 5 s (device.RekeyTimeout). When it made one
+// less than 5 s ago that is still unanswered, as when a phone had no network for a while
+// and WireGuard kept trying into nothing, that same one goes out again on every path:
+// the hub never saw it, so it accepts it. When it was answered, a new one follows as soon
+// as WireGuard allows, since that session may be on the path the phone just left.
+func (l *Link) Rehandshake(publicKey string) error {
+	p, err := l.peer(publicKey)
+	if err != nil {
+		return err
+	}
+	if l.spray == nil {
+		return p.SendHandshakeInitiation(false)
+	}
+	before := l.spray.lastInitTime()
+	if err := p.SendHandshakeInitiation(false); err != nil {
+		return err
+	}
+	if !l.spray.lastInitTime().Equal(before) {
+		return nil // a new one went out, to every address
+	}
+	if hs, err := l.LastHandshake(publicKey); err == nil && hs.After(before) {
+		wait := time.Until(before.Add(device.RekeyTimeout)) + 50*time.Millisecond
+		time.AfterFunc(wait, func() { p.SendHandshakeInitiation(false) })
+		return nil
+	}
+	l.spray.respray()
+	return nil
+}
+
+func (l *Link) peer(publicKey string) (*device.Peer, error) {
+	k, err := keyBytes(publicKey)
+	if err != nil {
+		return nil, err
+	}
+	var pk device.NoisePublicKey
+	copy(pk[:], k)
+	p := l.dev.LookupPeer(pk)
+	if p == nil {
+		return nil, errors.New("no such peer")
+	}
+	return p, nil
+}
+
+// peerEndpoints maps each peer's public key (hex, as WireGuard's config text prints it)
+// to the address WireGuard currently uses for it.
+func (l *Link) peerEndpoints() (map[string]string, error) {
+	conf, err := l.dev.IpcGet()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	cur := ""
+	for _, line := range strings.Split(conf, "\n") {
+		if v, ok := strings.CutPrefix(line, "public_key="); ok {
+			cur = v
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "endpoint="); ok && cur != "" {
+			out[cur] = v
+		}
+	}
+	return out, nil
+}
+
+// LastHandshake is when the link last finished a handshake with a peer (zero if never).
+// While a link carries traffic or keepalives, WireGuard renews it every 2 minutes.
+func (l *Link) LastHandshake(publicKey string) (time.Time, error) {
+	pub, err := keyHex(publicKey)
+	if err != nil {
+		return time.Time{}, err
+	}
+	conf, err := l.dev.IpcGet()
+	if err != nil {
+		return time.Time{}, err
+	}
+	in := false
+	var sec, nsec int64
+	for _, line := range strings.Split(conf, "\n") {
+		if v, ok := strings.CutPrefix(line, "public_key="); ok {
+			in = v == pub
+			continue
+		}
+		if !in {
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
+			fmt.Sscanf(v, "%d", &sec)
+		} else if v, ok := strings.CutPrefix(line, "last_handshake_time_nsec="); ok {
+			fmt.Sscanf(v, "%d", &nsec)
+		}
+	}
+	if sec == 0 && nsec == 0 {
+		return time.Time{}, nil
+	}
+	return time.Unix(sec, nsec), nil
 }
 
 // ListenPort is the UDP port the link actually listens on (useful when started with 0).

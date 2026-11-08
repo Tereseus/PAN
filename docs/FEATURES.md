@@ -201,6 +201,36 @@ Rules:
 
 ---
 
+## PAN Link on the phone (`vpn/LinkManager.kt`, `vpn/PairActivity.kt`, `android/pan-vpn/linkmode`)
+
+- **Calls:** a `pan://pair?...` link (the hub's pairing QR text, printed by `pan-link code`)
+  opens `PairActivity`. It asks "Pair with "<name>"?" and only on Pair starts
+  `PanForegroundService` and runs `LinkManager.pair()` → `Panvpn.linkPair()` (Go).
+  `PanForegroundService` calls `LinkManager.startIfPaired()` at start → `Panvpn.linkStart()`,
+  which opens a local port (127.0.0.1, any free port) forwarding to PAN on the hub through
+  the link.
+- **Semantics:** `RemoteAccessManager.getTailscaleBaseUrl()` returns the link's port while the
+  link has had a handshake in the last 3 minutes, else the Tailscale proxy as before, so
+  `HubLocator`, `DashboardScreen` and the rest use the link without changes. PAN knows the
+  phone by its link key (see "pan-link device identity"). Packets for the hub's Tailscale
+  addresses go through the app's own Tailscale (`linkmode.TailnetBind`), the rest through
+  normal sockets. `LinkManager` follows the phone's best non-VPN network
+  (`registerBestMatchingNetworkCallback`) and, 0.5 s after the last change, calls
+  `Panvpn.linkNetworkChanged()`, which re-handshakes on every hub address (resending
+  WireGuard's unanswered handshake when it sent one under 5 s ago). `PanVpnService` calls
+  `LinkManager.tailscaleReady()` once its Tailscale proxy is up, for the same reason.
+- **Preserves:** with no pairing nothing changes: no port, no network callback, the Tailscale
+  proxy as before. The pairing, with the phone's private key, is `files/pan-link/client.json`
+  in app-private storage. The link itself needs no VPN permission.
+- **Replaces:** nothing yet. The Tailscale proxy stays underneath until the owner's devices
+  move off Tailscale (`docs/INSTALL-PLAN.md`, step 1).
+- **Pre-gate:** a pairing code works once and expires. `PairActivity` never pairs without a
+  tap on Pair, since any page or message can hold a `pan://pair` link; it names the computer
+  (the name comes from the code, so it vouches for nothing) and says when it replaces an
+  existing pairing.
+
+---
+
 ## Device push WebSocket (`/api/v1/device/push`, `server.js`)
 
 - **Calls:** an `upgrade` listener in `server.js` (the Craft). The phone's

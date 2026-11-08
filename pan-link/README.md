@@ -11,10 +11,10 @@ Step 1 of the install plan. Built and tested, including one test run on the real
 - `link.go`: starts a WireGuard device on its own network stack. Keys, peers, one tunnel address per peer (WireGuard drops packets from a key that use another address, so the tunnel address proves which device is calling). Peers can be added, removed or swapped while it runs.
 - `bind.go`: a UDP socket on one address only. Tests use 127.0.0.1, so Windows never asks about the firewall.
 - `pair.go`: the pairing code, `pan://pair?v=1&...` (the QR's text). It holds the hub's public key, the tunnel addresses, a one time key, the hub's addresses and the expiry.
-- `state.go`: `link.json` on the hub (its key, the link secret, the paired devices) and `client.json` on a device. Saved by writing a new file and renaming it, readable by the owner only.
-- `hub.go`: the hub side. Serves HTTP inside the tunnel on port 7777 and forwards to PAN on the computer itself. It strips any `X-PAN-Device`, `X-PAN-Device-Name` or `X-PAN-Link-Secret` a device sends, then sets the real ones. A device still holding only its one time key can finish pairing and nothing else. Unknown keys get nothing. The admin API (make a code, list or remove devices) listens on 127.0.0.1 only and needs the link secret.
+- `state.go`: `link.json` on the hub (its key, the link secret, the paired devices) and `client.json` on a device. Saved by writing a new file and renaming it, readable by the owner only. Also `link-endpoints.json` beside `link.json`: the address each device last used, kept apart so `link.json` (which PAN reads) isn't rewritten each time a phone changes networks.
+- `hub.go`: the hub side. Serves HTTP inside the tunnel on port 7777 and forwards to PAN on the computer itself. It strips any `X-PAN-Device`, `X-PAN-Device-Name` or `X-PAN-Link-Secret` a device sends, then sets the real ones. A device still holding only its one time key can finish pairing and nothing else. Unknown keys get nothing. The admin API (make a code, list or remove devices) listens on 127.0.0.1 only and needs the link secret. The program saves each device's address every 10 s and on a clean stop. After a restart the hub starts the handshake to those addresses itself, so a device that stayed connected is back in about 1 s instead of WireGuard's own wait of about 15 s.
 - `client.go`: pairing (makes the device's own key and swaps it in through the tunnel), connecting, and a local port that apps on the device use to reach PAN.
-- `spray.go`: while pairing or connecting, every packet goes to all of the hub's known addresses at once, and the first address the hub answers on wins. Dead addresses cost nothing, which matters away from home. It also stops "port unreachable" errors (which Windows reports on later reads) from halting a link, and looks up addresses given as names.
+- `spray.go`: every handshake start goes to all of the hub's known addresses at once, and the first address the hub answers on wins; other packets go only to that address. Dead addresses cost nothing, which matters away from home. Because every new handshake goes everywhere again, a link whose path dies (a phone leaving home Wi-Fi) moves to one that works: about 1 s after `Rehandshake`, which the app calls on a network change, or about 16 s on WireGuard's own retry. Before this, a link stayed on a dead path. WireGuard makes at most one handshake every 5 s, so when it made one less than 5 s ago that went unanswered (a phone with no network for a while, WireGuard trying into nothing), `Rehandshake` sends that same one again on every path: the hub never saw it, so it accepts it, and the link is back in milliseconds instead of after WireGuard's wait. It also stops "port unreachable" errors (which Windows reports on later reads) from halting a link, and looks up addresses given as names.
 - `portmap.go`: asks the home router to forward the hub's UDP port (UPnP, NAT-PMP or PCP), using Tailscale's portmapper (BSD-3). Opens nothing until the hub is started with `--open-router-port`.
 - `netstack/`: the network stack glue, copied from tailscale/wireguard-go (MIT, licence in that folder) and adjusted to the gVisor version tailscale.com v1.96.4 uses, so it can live in the same `panvpn.aar` as the phone's Tailscale. Also fixes a crash when a link closes while packets are in flight.
 - `cmd/pan-link`: the program.
@@ -31,13 +31,13 @@ pan-link client --data DIR [--listen 127.0.0.1:7779] [--bind ADDR]
 pan-link probe  [--port 41720] [--seconds 5]                     which port opening the router answers; opens nothing
 ```
 
-The hub puts its addresses in each pairing code in this order: home network IPv4, global IPv6, a public IPv4 on the computer itself, the router's public address when it forwards the port, the Tailscale address, then any `--endpoint`.
+The hub puts its addresses in each pairing code in this order: home network IPv4 (the adapter with the default route first), global IPv6, a public IPv4 on the computer itself, the router's public address when it forwards the port, the Tailscale address, then any `--endpoint`. Adapters that only reach virtual machines or containers on the computer are left out: Hyper-V and WSL (vEthernet), Docker, VirtualBox, VMware, libvirt, LXC. On Windows the adapter's description counts too, since VirtualBox's adapter is just called "Ethernet 2". The adapter with the default route always stays, because a Hyper-V external switch puts the computer's own home address on a vEthernet adapter.
 
 A hub listening on all addresses makes Windows ask about the firewall on its first run. PAN Setup adds that rule. Nobody should click it on someone else's behalf.
 
 ### Tests
 
-`go test ./...` (13 tests, all on 127.0.0.1 or in memory, so no firewall prompt):
+`go test ./...` (18 tests, all on 127.0.0.1 or in memory, so no firewall prompt):
 
 - a phone pairs and reaches PAN, and PAN sees the real device id even when the phone forges the headers;
 - a stranger key that knows the hub's public key and address gets nothing, and PAN is never reached;
@@ -45,13 +45,20 @@ A hub listening on all addresses makes Windows ask about the firewall on its fir
 - a used code is refused, and an expired code is refused quickly;
 - the admin API refuses calls without the secret;
 - real UDP: pair, use the local port, restart the hub from `link.json`, unpair;
+- real UDP: after a hub restart on the same port, the same device link works again in 1.0 s (16 s without the hub starting the handshake);
+- a damaged `link-endpoints.json` doesn't stop the hub from starting;
 - the port mapper sends nothing until asked;
 - the address order in pairing codes;
+- which adapters stay out of pairing codes (checked on the real hub too: its Hyper-V address is gone, the home and both Tailscale addresses stay);
 - with two dead addresses in front of the live one, pairing and connecting take as long as the live one alone (connect 1 to 2 ms);
+- three network paths through UDP relays: cut the one in use and the link moves in 1.0 s after `Rehandshake`, and in 16 s with nothing said (the old code never moved);
+- no network at all for a while, then a different path comes up 1 s after WireGuard's last try: back in 5 ms after `Rehandshake` (4.3 s before it resent that try);
 - a "port unreachable" error doesn't stop the link from reading;
 - names in the address list are looked up, and repeats dropped.
 
 PAN side: `node service/src/__tests__/pan-link-auth.test.js` (10 tests).
+
+Phone side: `go test ./linkmode/` in `android/pan-vpn` (5 tests: pair, start, use and forget; a phone that starts before the hub is reachable; the link carried by the app's own Tailscale, also when Tailscale comes up after the link; which addresses count as Tailscale's).
 
 Real network run on a Linux PC on the home network (2026-11-08), all passed:
 
@@ -92,6 +99,20 @@ The owner added a firewall rule for UDP 41720. A test copy of the hub then ran o
 - One address at a time: the home address, the Tailscale IPv4 address and the Tailscale IPv6 address all worked (107, 59 and 120 ms from client start). A Hyper-V virtual adapter address got no answer in 12 s.
 - After the hub unpaired the device through the admin API, the device's next call got no answer.
 
+### Phone run (owner's Pixel 10 Pro, Android 17, 2026-11-08)
+
+App 0.4.92 with `panvpn.aar` built from this code, against pan-link on the real hub (started by hand for the test, `link.json` in PAN's data folder). All passed except mobile data, which the phone's carrier didn't give.
+
+- Pairing from a `pan://pair` link: 2.4 s. PAN's `/api/v1/auth/me` named the phone (`link_device`), and the app's hub finder switched from the Tailscale proxy port to the link's port by itself.
+- Home Wi-Fi: `/health` median 22 to 54 ms through the link, against 23 to 46 ms through the app's Tailscale proxy in the same runs. The phone dashboard page (146 KB) loaded in 0.27 s. The hub saw the phone at its home address, so UDP 41720 gets through the hub's firewall rule even though ping and TCP 7777 don't.
+- Only the Tailscale path (the home address taken out of the phone's pairing for one run): the link went through the app's own Tailscale, and the hub saw the phone at its Tailscale address. 31 ms once Tailscale had a direct path, 99 ms while it went through Tailscale's relay. From a cold app start PAN answered through it after 5.0 s (about 8 s before the app told the link the moment its Tailscale was up).
+- Cold start on Wi-Fi: PAN answered through the link 1.15 s after the app started.
+- Wi-Fi off, then on: Android's network events reached the link at once. After 3.5 min off, the 0.4.91 build took about 3 s after Wi-Fi came back, because WireGuard had tried less than 5 s before and skipped the app's request (fixed in 0.4.92, see `spray.go`). With 0.4.92 and 1 min off, the old session was still valid and the link answered as soon as Wi-Fi was back.
+- Mobile data: not tested. The phone's mobile data kept failing to connect, and when it did connect, Tailscale's own TCP connections timed out for over a minute (its relay took 40 s, its control server never answered), so neither the old Tailscale proxy nor the link could work. The link can only be as good as the app's Tailscale there.
+- Also seen: the app's VPN (`PanVpnService`, kept for Tailscale) sets no IPv6 route, so Android blocks IPv6 for every app on the phone while it runs (`::/0 unreachable`). Another reason to drop that VPN once the link carries everything.
+
+Android 10 (Blackview BV9900 Pro): the app needs Android 12, so only the program was tested, as both hub and device on the phone, with PAN stood in by a small server on the laptop over USB. Pairing took 1.3 s, every request carried the device's id, name and the link secret, and a round trip took 50 ms (over USB both ways).
+
 ### What the home network allows
 
 Checked 2026-11-08 with `pan-link probe` on the owner's home network: the router answers none of UPnP, NAT-PMP or PCP. The connection is behind CGNAT and the router blocks incoming IPv6. So away from home only the Tailscale path works there. PCs on the same tailnet already get it from the Tailscale address in the pairing code. The phone needs its built in Tailscale to carry pan-link's packets.
@@ -115,8 +136,8 @@ GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod GOMAXPROCS=2 go build -p 2 -trimpath -l
 
 1. The Pkarr address record: the hub publishes its addresses, signed by its own key, and devices look it up when the saved ones fail. Encrypt the addresses with a key from the pairing code, so the DHT only ever stores an unreadable blob.
 2. The reachability check PAN Setup runs (phone off Wi-Fi for a few seconds).
-3. Phone: plain WireGuard mode in `panvpn.aar` using this package, with Tailscale carrying the packets when nothing else works.
+3. Phone: done and tested on the owner's Pixel (above). In the app: `LinkManager` (start with the service, follow Android's network, use the link's port while it has a recent handshake), `PairActivity` for `pan://pair` links (asks first, naming the computer and any pairing it replaces), `RemoteAccessManager` and `HubLocator` prefer the link, and `PanVpnService` tells the link when its Tailscale is up. Still to do: a QR scanner in the app and a link status line on its screens, the dialog checked by eye on a phone, mobile data once a carrier gives it, and dropping `PanVpnService`'s VPN (the link needs no VPN permission; only Tailscale does).
 4. Install pan-link on the real hub for good, started at boot beside PAN (the firewall rule for its UDP port is in place), then move PAN's 7777 to 127.0.0.1 so the link is the only way in from outside.
-5. After a hub restart, devices take about 12 s to come back: WireGuard waits that long before a new handshake. The hub could save each device's last address and start the handshake itself.
-6. Through the link a big download runs at about 107 Mbit/s on one computer. Plenty for PAN today; if big files go through, look at the network stack's buffer sizes.
-7. Leave virtual adapters (Hyper-V, WSL, Docker) out of the addresses in the pairing code. Only VMs on the hub itself can reach them, so they just make the code longer.
+5. Through the link a big download runs at about 107 Mbit/s on one computer. Plenty for PAN today; if big files go through, look at the network stack's buffer sizes.
+
+Done since the hub run (2026-11-08): the hub starts the handshake itself after a restart (devices back in about 1 s, was 12 to 16 s), pairing codes leave out virtual machine and container adapters, and links move off a dead path (see `spray.go`). Since the phone run: `Rehandshake` resends WireGuard's unanswered handshake when it can't make a new one yet (see `spray.go`).

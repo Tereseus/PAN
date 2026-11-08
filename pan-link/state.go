@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -71,6 +72,42 @@ func LoadOrCreateHubState(path string, listenPort int) (*HubState, error) {
 	}
 	st := &HubState{PrivateKey: priv, HubIP: DefaultHubIP, ListenPort: listenPort, Secret: randomHex(32)}
 	return st, st.Save(path)
+}
+
+// endpointsFile is where the hub keeps each device's last address: link-endpoints.json
+// next to link.json. It is a separate file so that link.json, which PAN reads, is not
+// rewritten every time a phone changes networks.
+func endpointsFile(statePath string) string {
+	return strings.TrimSuffix(statePath, filepath.Ext(statePath)) + "-endpoints.json"
+}
+
+// loadEndpoints reads device id -> address. A missing or damaged file only costs the
+// head start after a restart, so it reads as empty.
+func loadEndpoints(path string) map[string]string {
+	out := map[string]string{}
+	if path == "" {
+		return out
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	if json.Unmarshal(b, &out) != nil || out == nil {
+		return map[string]string{}
+	}
+	return out
+}
+
+func saveEndpoints(path string, m map[string]string) error {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Save writes the state atomically, readable by the owner only where the OS allows.

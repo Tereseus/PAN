@@ -359,6 +359,109 @@ func TestRealUDPOnLoopbackAndRestart(t *testing.T) {
 	}
 }
 
+// hubOnPort starts a hub from statePath on 127.0.0.1:port (0 picks a port).
+func hubOnPort(t *testing.T, pan, statePath string, port int) (*Hub, *Link, int) {
+	t.Helper()
+	st, err := LoadOrCreateHubState(statePath, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := Start(Config{PrivateKey: st.PrivateKey, TunnelIP: st.HubIP, ListenPort: port, Bind: NewAddrBind(loopback)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(l.Close)
+	h, err := NewHub(l, pan, st, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := l.ListenPort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Endpoints = func() []string { return []string{netip.AddrPortFrom(loopback, uint16(p)).String()} }
+	go h.Serve()
+	return h, l, p
+}
+
+// After a restart the hub reaches out to each device at the address it last used, so a
+// device that stayed connected is back at once instead of after WireGuard's own wait
+// (about 15 s, 12 s in the dev PAN run). Real UDP on 127.0.0.1, same port both times.
+func TestHubReachesOutAfterRestart(t *testing.T) {
+	var hits atomic.Int32
+	pan := fakePAN(t, &hits)
+	statePath := filepath.Join(t.TempDir(), "link.json")
+	phoneBinds := func() conn.Bind { return NewAddrBind(loopback) }
+
+	h1, l1, port := hubOnPort(t, pan.URL, statePath, 0)
+	info, _ := h1.StartPairing("Pixel", 0)
+	uri, _ := info.URI()
+	st, err := Pair(context.Background(), uri, "", phoneBinds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phone, _, err := Connect(context.Background(), st, phoneBinds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(phone.Close)
+	if _, err := get(t, phone, "/before", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h1.RememberEndpoints(); err != nil {
+		t.Fatal(err)
+	}
+	if saved := loadEndpoints(endpointsFile(statePath)); saved[st.DeviceID] == "" {
+		t.Fatalf("device address not saved: %v", saved)
+	}
+	l1.Close()
+
+	// Same phone link as before: nothing on the phone side reconnects or retries early.
+	start := time.Now()
+	hubOnPort(t, pan.URL, statePath, port)
+	for {
+		req, _ := http.NewRequest("GET", hubURL(DefaultHubIP, "/after"), nil)
+		resp, err := tunnelClient(phone, 1500*time.Millisecond).Do(req)
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == 200 && strings.HasPrefix(string(body), st.DeviceID) {
+				break
+			}
+		}
+		if time.Since(start) > 25*time.Second {
+			t.Fatal("device not back 25 s after the hub restarted")
+		}
+	}
+	took := time.Since(start)
+	t.Logf("device back %v after the hub restarted", took.Round(time.Millisecond))
+	if took > 5*time.Second {
+		t.Fatalf("device back only after %v; the hub should have reached out at once", took.Round(time.Millisecond))
+	}
+}
+
+// A damaged endpoints file must never keep the hub from starting.
+func TestBadSavedEndpointIsIgnored(t *testing.T) {
+	var hits atomic.Int32
+	pan := fakePAN(t, &hits)
+	statePath := filepath.Join(t.TempDir(), "link.json")
+	h1, l1, _ := hubOnPort(t, pan.URL, statePath, 0)
+	info, _ := h1.StartPairing("Pixel", 0)
+	uri, _ := info.URI()
+	st, err := Pair(context.Background(), uri, "", func() conn.Bind { return NewAddrBind(loopback) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	l1.Close()
+	if err := saveEndpoints(endpointsFile(statePath), map[string]string{st.DeviceID: "not an address"}); err != nil {
+		t.Fatal(err)
+	}
+	h2, _, _ := hubOnPort(t, pan.URL, statePath, 0)
+	if n := len(h2.Devices()); n != 1 {
+		t.Fatalf("after restart %d devices, want 1", n)
+	}
+}
+
 // The port mapper must not talk to the router until asked: making one and closing it
 // sends nothing (no Probe, no External), so this is safe on any network.
 func TestPortMapperIdleOpensNothing(t *testing.T) {

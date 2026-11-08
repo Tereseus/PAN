@@ -32,6 +32,7 @@ import (
 
 	link "dev.pan/link"
 	"github.com/tailscale/wireguard-go/conn"
+	"tailscale.com/net/netmon"
 )
 
 type multi []string
@@ -134,22 +135,63 @@ func orderEndpoints(addrs []netip.Addr, port uint16, public netip.AddrPort, extr
 	return append(out, extra...)
 }
 
-// interfaceAddrs lists the addresses on this computer's network interfaces that are up.
+// virtualAdapter reports adapters that only reach virtual machines or containers on this
+// computer: Hyper-V's switches and WSL (vEthernet), Docker, VirtualBox, VMware, libvirt,
+// LXC. A phone can never reach their addresses, so they only make the pairing code longer.
+// desc is the Windows adapter description ("" elsewhere).
+func virtualAdapter(name, desc string) bool {
+	n := strings.ToLower(name)
+	for _, p := range []string{"vethernet", "veth", "docker", "br-", "virbr", "vboxnet", "vmnet", "lxcbr", "lxdbr", "podman", "cni", "flannel"} {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	both := n + " " + strings.ToLower(desc)
+	return strings.Contains(both, "virtualbox") || strings.Contains(both, "vmware") || strings.Contains(both, "hyper-v")
+}
+
+// isDefaultRoute reports the adapter that carries the default route.
+func isDefaultRoute(name string, index int, def netmon.DefaultRouteDetails) bool {
+	return (def.InterfaceIndex != 0 && index == def.InterfaceIndex) || (def.InterfaceName != "" && name == def.InterfaceName)
+}
+
+// keepAdapter leaves out virtual adapters, except the one that carries the default route:
+// a Hyper-V external switch moves the computer's own home network address onto a
+// vEthernet adapter, and that one has to stay. If the default route is unknown, every
+// adapter stays, since a missing home address costs far more than an extra one.
+func keepAdapter(name, desc string, index int, def netmon.DefaultRouteDetails) bool {
+	if !virtualAdapter(name, desc) || def == (netmon.DefaultRouteDetails{}) {
+		return true
+	}
+	return isDefaultRoute(name, index, def)
+}
+
+// interfaceAddrs lists the addresses on this computer's network interfaces that are up,
+// leaving out virtual machine and container adapters (keepAdapter). The adapter with the
+// default route comes first, so its home address leads the pairing code.
 func interfaceAddrs() []netip.Addr {
-	var out []netip.Addr
+	var first, rest []netip.Addr
+	def, _ := netmon.DefaultRoute()
+	descs := adapterDescriptions()
 	ifaces, _ := net.Interfaces()
 	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || !keepAdapter(ifc.Name, descs[ifc.Index], ifc.Index, def) {
 			continue
 		}
 		addrs, _ := ifc.Addrs()
 		for _, a := range addrs {
-			if pfx, err := netip.ParsePrefix(a.String()); err == nil {
-				out = append(out, pfx.Addr())
+			pfx, err := netip.ParsePrefix(a.String())
+			if err != nil {
+				continue
+			}
+			if isDefaultRoute(ifc.Name, ifc.Index, def) {
+				first = append(first, pfx.Addr())
+			} else {
+				rest = append(rest, pfx.Addr())
 			}
 		}
 	}
-	return out
+	return append(first, rest...)
 }
 
 func runHub(args []string) error {
@@ -218,16 +260,27 @@ func runHub(args []string) error {
 			return err
 		}
 		pm.External() // starts asking the router in the background
-		stop := make(chan os.Signal, 1)
-		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			<-stop
+	}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-stop
+		h.RememberEndpoints()
+		if pm != nil {
 			log.Print("stopping: asking the router to drop the forward")
 			pm.Close()
-			l.Close()
-			os.Exit(0)
-		}()
-	}
+		}
+		l.Close()
+		os.Exit(0)
+	}()
+	// Each device's last address, so after a restart the hub reaches out at once.
+	go func() {
+		for range time.Tick(10 * time.Second) {
+			if err := h.RememberEndpoints(); err != nil {
+				log.Printf("saving device addresses: %v", err)
+			}
+		}
+	}()
 
 	h.Endpoints = func() []string {
 		if only.IsValid() {

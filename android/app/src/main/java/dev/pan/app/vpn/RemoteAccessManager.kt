@@ -12,7 +12,10 @@ import javax.inject.Singleton
  * Both MainViewModel and SettingsViewModel read from here.
  */
 @Singleton
-class RemoteAccessManager @Inject constructor() {
+class RemoteAccessManager @Inject constructor(
+    /** PAN Link: when it is connected, its local port is used instead of the Tailscale proxy. */
+    val link: LinkManager,
+) {
 
     companion object {
         private const val TAG = "RemoteAccess"
@@ -51,6 +54,9 @@ class RemoteAccessManager @Inject constructor() {
     @Volatile private var lastSelfHealAt = 0L
 
     fun getTailscaleBaseUrl(): String? {
+        // PAN Link first, while it has a live handshake with the hub: PAN then knows this
+        // phone by its key. When the link is down this falls through to the tsnet proxy.
+        link.baseUrlIfConnected()?.let { return it }
         if (!shouldUseTailscale || _proxyPort.value <= 0) {
             // SELF-HEAL. refreshFromVpn() is called exactly once, immediately
             // after startProxy(). If tsnet's netmap had not settled at that

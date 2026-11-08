@@ -6,13 +6,12 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/tailscale/wireguard-go/conn"
+	"github.com/tailscale/wireguard-go/device"
 )
 
 // quietBind keeps "port unreachable" style errors from stopping the link. On Windows a
@@ -54,17 +53,24 @@ func isICMPError(err error) bool {
 	return en == syscall.ECONNREFUSED
 }
 
-// sprayBind sends every packet to all of the hub's known addresses until the tunnel
-// works. Whichever address the hub answers on first wins, so a phone away from home
-// does not wait on each dead home address in turn. After settle, packets go only to
-// the address WireGuard learned from the hub's answers.
+// sprayBind sends every handshake start to all of the hub's known addresses, and every
+// other packet to the address WireGuard picked. Whichever address the hub answers on
+// first wins, so a phone away from home does not wait on each dead home address in
+// turn. Because each new handshake goes everywhere again, a link whose address died (a
+// phone leaving home Wi-Fi) moves to a working path at its next handshake: within about
+// 15 s on WireGuard's own timers, or at once after Rehandshake.
 type sprayBind struct {
 	conn.Bind
 	cands []string
 
-	mu      sync.Mutex
-	eps     []conn.Endpoint // cands, parsed by the inner bind when it opens
-	settled atomic.Bool
+	mu  sync.Mutex
+	eps []conn.Endpoint // cands, parsed by the inner bind when it opens
+
+	// The latest handshake start and when it went out, so respray can send it again on a
+	// network that just came up (Link.Rehandshake).
+	lastInit   [][]byte
+	lastOffset int
+	lastInitAt time.Time
 }
 
 func newSprayBind(inner conn.Bind, cands []string) *sprayBind {
@@ -91,19 +97,28 @@ func (s *sprayBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 func (s *sprayBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 	s.mu.Lock()
 	eps := s.eps
+	init := len(eps) > 0 && isInitiation(bufs, offset)
+	if init {
+		s.lastInit, s.lastOffset, s.lastInitAt = copyBufs(bufs), offset, time.Now()
+	}
 	s.mu.Unlock()
-	if s.settled.Load() || len(eps) == 0 {
+	if !init {
 		return s.Bind.Send(bufs, ep, offset)
+	}
+	return s.sendAll(bufs, eps, ep, offset)
+}
+
+// sendAll sends a batch to every hub address. WireGuard's own pick goes too when it isn't
+// one of the saved addresses (the hub answered from an address the code didn't list).
+func (s *sprayBind) sendAll(bufs [][]byte, eps []conn.Endpoint, ep conn.Endpoint, offset int) error {
+	if ep != nil && !hasEndpoint(eps, ep) {
+		eps = append(eps[:len(eps):len(eps)], ep)
 	}
 	var firstErr error
 	sent := false
 	for _, e := range eps {
 		// Each address gets its own copy: a batching bind may write into the buffers.
-		cp := make([][]byte, len(bufs))
-		for i, b := range bufs {
-			cp[i] = append([]byte(nil), b...)
-		}
-		if err := s.Bind.Send(cp, e, offset); err != nil {
+		if err := s.Bind.Send(copyBufs(bufs), e, offset); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -117,8 +132,56 @@ func (s *sprayBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 	return firstErr
 }
 
-// settle stops the spraying.
-func (s *sprayBind) settle() { s.settled.Store(true) }
+func copyBufs(bufs [][]byte) [][]byte {
+	cp := make([][]byte, len(bufs))
+	for i, b := range bufs {
+		cp[i] = append([]byte(nil), b...)
+	}
+	return cp
+}
+
+// lastInitTime is when the latest handshake start went out (zero if none yet).
+func (s *sprayBind) lastInitTime() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastInitAt
+}
+
+// respray sends the latest handshake start again, to every hub address, while WireGuard
+// would still accept its answer (it makes a new one after device.RekeyTimeout). The hub
+// takes it if the first copies never arrived, which is the case after a network change.
+func (s *sprayBind) respray() bool {
+	s.mu.Lock()
+	bufs, offset, at, eps := s.lastInit, s.lastOffset, s.lastInitAt, s.eps
+	s.mu.Unlock()
+	if bufs == nil || len(eps) == 0 || time.Since(at) >= device.RekeyTimeout {
+		return false
+	}
+	return s.sendAll(bufs, eps, nil, offset) == nil
+}
+
+// isInitiation reports a batch of WireGuard handshake initiations: message type 1, a
+// little-endian uint32 at the start of each packet.
+func isInitiation(bufs [][]byte, offset int) bool {
+	if len(bufs) == 0 {
+		return false
+	}
+	for _, b := range bufs {
+		if len(b) < offset+4 || b[offset] != 1 || b[offset+1] != 0 || b[offset+2] != 0 || b[offset+3] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func hasEndpoint(eps []conn.Endpoint, ep conn.Endpoint) bool {
+	for _, e := range eps {
+		if e.DstToString() == ep.DstToString() {
+			return true
+		}
+	}
+	return false
+}
 
 // resolveEndpoints turns the saved hub addresses into IP:port strings, looking up any
 // names (an --endpoint like home.example.net:41720), and drops repeats.
@@ -168,6 +231,7 @@ func startSpray(ctx context.Context, priv string, tunnelIP netip.Addr, hubKey st
 	if err != nil {
 		return nil, nil, err
 	}
+	l.spray = sb
 	return l, sb, nil
 }
 
@@ -178,19 +242,12 @@ func (l *Link) PeerEndpoint(publicKey string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	conf, err := l.dev.IpcGet()
+	eps, err := l.peerEndpoints()
 	if err != nil {
 		return "", err
 	}
-	in := false
-	for _, line := range strings.Split(conf, "\n") {
-		if v, ok := strings.CutPrefix(line, "public_key="); ok {
-			in = v == pub
-			continue
-		}
-		if v, ok := strings.CutPrefix(line, "endpoint="); ok && in {
-			return v, nil
-		}
+	if ep, ok := eps[pub]; ok {
+		return ep, nil
 	}
 	return "", errors.New("no address for that peer yet")
 }

@@ -138,6 +138,7 @@ class PanForegroundService : Service() {
     @Inject lateinit var nanoVision: dev.pan.app.ai.NanoVision
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
     @Inject lateinit var pendantBle: dev.pan.app.ble.PendantBle
+    @Inject lateinit var linkManager: dev.pan.app.vpn.LinkManager
 
     // Whether this service currently holds the MICROPHONE foreground-service
     // type. False when it started from the background (boot), where Android 14
@@ -810,6 +811,15 @@ class PanForegroundService : Service() {
             } catch (e: Exception) {
                 panLog("VPN auto-connect failed: ${e.message}")
             }
+        }
+
+        // PAN Link: when this phone is paired with the hub, bring the link up. It needs no
+        // VPN permission, and its packets for the hub's Tailscale address wait for the
+        // app's Tailscale above to come up. Requests prefer it once it has a handshake
+        // (RemoteAccessManager.getTailscaleBaseUrl).
+        serviceScope.launch(Dispatchers.IO) {
+            val port = linkManager.startIfPaired()
+            panLog(if (port > 0) "PAN Link up on local port $port" else "PAN Link: this phone is not paired")
         }
 
         // Camera pendant over BLE. Frames are STORED, not analysed: analyse=false
