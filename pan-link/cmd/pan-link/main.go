@@ -1,7 +1,8 @@
 // pan-link: PAN's own WireGuard link. See docs/INSTALL-PLAN.md and pan-link/README.md.
 //
 //	pan-link hub    --data DIR [--port 41720] [--bind ADDR] [--backend URL] [--admin ADDR] [--name NAME] [--endpoint HOST:PORT]... [--open-router-port] [--address-record=false]
-//	pan-link code   --data DIR [--name "My Pixel"]       (asks the running hub for a pairing code)
+//	pan-link code   --data DIR [--name "My Pixel"] [--allow "POST /path"]...  (asks the running hub for a pairing code;
+//	                --allow limits the device to those requests, see allow.go)
 //	pan-link pair   --data DIR --code "pan://pair?..." [--name NAME] [--bind ADDR]
 //	pan-link client --data DIR [--listen 127.0.0.1:7779] [--bind ADDR]
 //	pan-link probe  [--port 41720]                           (which port opening the router answers; opens nothing)
@@ -386,12 +387,17 @@ func runCode(args []string) error {
 	admin := fs.String("admin", "127.0.0.1:7792", "admin API address")
 	name := fs.String("name", "", "name for the new device")
 	ttl := fs.Int("minutes", 10, "how long the code works")
+	var allow stringList
+	fs.Var(&allow, "allow", `limit the device to this request, "METHOD /path" or "METHOD /path/*" (repeat for more; none: no limit)`)
 	fs.Parse(args)
+	if err := link.CheckAllow(allow); err != nil {
+		return err
+	}
 	st, err := link.LoadOrCreateHubState(filepath.Join(*data, "link.json"), 0)
 	if err != nil {
 		return err
 	}
-	body, _ := json.Marshal(map[string]any{"name": *name, "ttl_minutes": *ttl})
+	body, _ := json.Marshal(map[string]any{"name": *name, "ttl_minutes": *ttl, "allow": []string(allow)})
 	req, _ := http.NewRequest("POST", "http://"+*admin+"/admin/pair", bytes.NewReader(body))
 	req.Header.Set(link.HeaderSecret, st.Secret)
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
@@ -540,3 +546,9 @@ func runClient(args []string) error {
 		}
 	}
 }
+
+// stringList is a flag that can be given more than once.
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ", ") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }

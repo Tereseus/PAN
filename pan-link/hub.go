@@ -32,6 +32,7 @@ type pendingPair struct {
 	oneTimePub string
 	name       string
 	expires    time.Time
+	allow      []string // the device's limits from its first request (allow.go)
 }
 
 // Hub forwards tunnel traffic to PAN on the computer itself, says which device sent it,
@@ -61,6 +62,8 @@ type Hub struct {
 	endpointsPath string            // device addresses kept across restarts ("" = not kept)
 	remembered    map[string]string // device id -> address, as last written
 	kickKeys      []string          // devices to reach out to once Serve is listening
+
+	refused map[string]bool // limited requests already reported (device, method, path)
 
 	recMu    sync.Mutex // one PublishAddresses at a time; guards the fields below
 	recLast  string     // secret and addresses of the last published record
@@ -185,6 +188,15 @@ func (h *Hub) nextIP() (netip.Addr, error) {
 
 // StartPairing makes a one time key for a new device and returns what its QR shows.
 func (h *Hub) StartPairing(name string, ttl time.Duration) (PairInfo, error) {
+	return h.StartPairingLimited(name, ttl, nil)
+}
+
+// StartPairingLimited is StartPairing for a device that may send only the requests in
+// allow (allow.go), from its very first request. nil or empty: no limit.
+func (h *Hub) StartPairingLimited(name string, ttl time.Duration, allow []string) (PairInfo, error) {
+	if err := CheckAllow(allow); err != nil {
+		return PairInfo{}, err
+	}
 	if ttl <= 0 {
 		ttl = DefaultPairTTL
 	}
@@ -202,7 +214,7 @@ func (h *Hub) StartPairing(name string, ttl time.Duration) (PairInfo, error) {
 		return PairInfo{}, err
 	}
 	exp := h.now().Add(ttl)
-	h.pending[ip] = pendingPair{oneTimePub: pub, name: name, expires: exp}
+	h.pending[ip] = pendingPair{oneTimePub: pub, name: name, expires: exp, allow: append([]string(nil), allow...)}
 	return PairInfo{HubKey: h.hubPub, HubIP: h.state.HubIP, OneTime: priv, DeviceIP: ip,
 		Endpoints: h.Endpoints(), Expires: exp, HubName: h.state.Name}, nil
 }
@@ -254,7 +266,7 @@ func (h *Hub) claimPairing(from netip.Addr, permanentPub, name string) (Device, 
 	if name == "" {
 		name = p.name
 	}
-	d := Device{ID: NewDeviceID(), Name: name, PublicKey: permanentPub, TunnelIP: from, Added: h.now().UTC()}
+	d := Device{ID: NewDeviceID(), Name: name, PublicKey: permanentPub, TunnelIP: from, Added: h.now().UTC(), Allow: p.allow}
 	return d, p.oneTimePub, nil
 }
 
@@ -289,6 +301,46 @@ func (h *Hub) RemoveDevice(id string) error {
 		}
 	}
 	return errors.New("no such device")
+}
+
+// SetAllow changes what a paired device may send (allow.go); empty lifts the limit. It
+// holds from the device's next request.
+func (h *Hub) SetAllow(id string, allow []string) (Device, error) {
+	if err := CheckAllow(allow); err != nil {
+		return Device{}, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ip, d := range h.devices {
+		if d.ID == id {
+			if len(allow) == 0 {
+				d.Allow = nil
+			} else {
+				d.Allow = append([]string(nil), allow...)
+			}
+			h.devices[ip] = d
+			return d, h.save()
+		}
+	}
+	return Device{}, errNoSuchDevice
+}
+
+var errNoSuchDevice = errors.New("no such device")
+
+// noteRefused reports a limited device's refused request once per device, method and
+// path, so a device that keeps trying doesn't fill the log.
+func (h *Hub) noteRefused(d Device, r *http.Request) {
+	key := d.ID + " " + r.Method + " " + r.URL.EscapedPath() // as sent: notify%2Finbound stays escaped
+	h.mu.Lock()
+	if h.refused == nil || len(h.refused) >= 256 {
+		h.refused = map[string]bool{}
+	}
+	seen := h.refused[key]
+	h.refused[key] = true
+	h.mu.Unlock()
+	if !seen && h.OnError != nil {
+		h.OnError(fmt.Errorf("refused %q (%s), a limited device: %s %.100s", d.Name, d.ID, r.Method, r.URL.EscapedPath()))
+	}
 }
 
 // Devices lists the paired devices.
@@ -345,7 +397,7 @@ func (h *Hub) TunnelHandler() http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := remoteAddr(r)
-		_, paired, pending := h.lookup(ip)
+		dev, paired, pending := h.lookup(ip)
 		switch {
 		case r.URL.Path == "/.pan-link/ping" && (paired || pending):
 			writeJSON(w, 200, map[string]any{"ok": true, "paired": paired})
@@ -378,6 +430,10 @@ func (h *Hub) TunnelHandler() http.Handler {
 			}()
 		case strings.HasPrefix(r.URL.Path, "/.pan-link/"):
 			http.Error(w, "not allowed", http.StatusForbidden)
+		case paired && !allows(dev.Allow, r):
+			// A limited device (allow.go): this request never reaches PAN.
+			h.noteRefused(dev, r)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this device is limited and may not send " + r.Method + " " + r.URL.EscapedPath()})
 		case paired:
 			proxy.ServeHTTP(w, r)
 		default:
@@ -393,11 +449,16 @@ func (h *Hub) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admin/pair", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name       string `json:"name"`
-			TTLMinutes int    `json:"ttl_minutes"`
+			Name       string   `json:"name"`
+			TTLMinutes int      `json:"ttl_minutes"`
+			Allow      []string `json:"allow"` // a limited device (allow.go); empty: no limit
 		}
-		json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
-		info, err := h.StartPairing(body.Name, time.Duration(body.TTLMinutes)*time.Minute)
+		json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&body)
+		if err := CheckAllow(body.Allow); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		info, err := h.StartPairingLimited(body.Name, time.Duration(body.TTLMinutes)*time.Minute, body.Allow)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -411,6 +472,29 @@ func (h *Hub) AdminHandler() http.Handler {
 	})
 	mux.HandleFunc("GET /admin/devices", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, h.Devices())
+	})
+	mux.HandleFunc("PUT /admin/devices/{id}/allow", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Allow []string `json:"allow"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "bad request"})
+			return
+		}
+		if err := CheckAllow(body.Allow); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		d, err := h.SetAllow(r.PathValue("id"), body.Allow)
+		if errors.Is(err, errNoSuchDevice) {
+			writeJSON(w, 404, map[string]string{"error": err.Error()})
+			return
+		}
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, d)
 	})
 	mux.HandleFunc("DELETE /admin/devices/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := h.RemoveDevice(r.PathValue("id")); err != nil {

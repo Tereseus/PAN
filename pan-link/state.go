@@ -19,6 +19,8 @@ type Device struct {
 	PublicKey string     `json:"public_key"`
 	TunnelIP  netip.Addr `json:"tunnel_ip"`
 	Added     time.Time  `json:"added"`
+	// Allow limits the device to these requests (allow.go); empty means no limit.
+	Allow []string `json:"allow,omitempty"`
 }
 
 // HubState is what the hub keeps on disk (link.json in PAN's data folder).
