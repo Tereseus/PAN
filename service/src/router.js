@@ -27,6 +27,7 @@ import { getConversationState, getConversationBuffer, dictatingToClaude, panSpok
 import { recentThoughts } from './intuition/mind.js';
 import { loadModes, saveMode, dropMode } from './intuition/world.js';
 import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
+import { followUpOf, followUpLine } from './intuition/conversation.js';
 import { planFromResult as planProsody } from './tts-prosody.js';
 import { warmForLanguage, languageNamed, languageName } from './hub-asr.js';
 import { translateLocal, translatorUp, pairInstalled } from './translate-local.js';
@@ -2277,6 +2278,8 @@ const ADDRESSED_HOLD_MS = 1200;  // how long the phone sits on a held reply
 // In a talk: PAN spoke this recently. He does not name it on every line, so the student's "who is
 // this for" needs far less evidence (minPan, voice-reader.js).
 const TALK_MS = 45_000;
+// A question that leans on the last one is only read that way while PAN spoke this recently.
+const FOLLOW_UP_MS = 3 * 60_000;
 const MIN_PAN_IN_TALK = 0.2;
 const ASKS_BACK = /\bdid i (?:say|tell|mention)\b/i;
 // How long the one cloud model in cloudFirst gets to start. Real first tokens: gemini-3.5-flash-lite
@@ -3032,7 +3035,15 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   const cloudOpts = () => ({ ...streamOpts, chain: cloudFirst(), firstTokenMs: CLOUD_FIRST_MS });
   // Asked how PAN works or what model it runs, OmniΠ gets one line of live facts (buildSelfLine);
   // without them it asked back "what hub do you mean?", and the full block confused it.
-  const studentPrompt = [historyBlock.trim(), String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(), situationForStudent ? situationLine : '',
+  // A question that leans on the last one ("how long would it take to get there?" after the sun)
+  // gets one line under the history saying what it follows up on (followUpOf). Without it Syrinx
+  // lost the thread whenever an older exchange sat above the newest (2026-11-08). The line goes
+  // after the history so the reader's warmed read of the history still counts.
+  const recentTalk = Number.isFinite(context.since_pan_ms) ? context.since_pan_ms < FOLLOW_UP_MS : panSpokeWithin(FOLLOW_UP_MS, context.org_id);
+  const followUp = recentTalk ? followUpOf(context.conversation_history, text) : null;
+  if (followUp) console.log(`[routeStream] follows up on "${followUp.asked.slice(0, 60)}"${followUp.about ? ` about "${followUp.about.slice(0, 60)}"` : ''}`);
+  const studentHistory = followUp ? `${historyBlock.trim()}\n${followUpLine(followUp)}` : historyBlock.trim();
+  const studentPrompt = [studentHistory, String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(), situationForStudent ? situationLine : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null, readerOpts: { minPan: talking ? MIN_PAN_IN_TALK : undefined, copy: ASKS_BACK.test(String(text)) } };
   const studentOpts = { ...streamOpts, chain: studentChain(studentModel, studentBackup), watchFirstToken: !!studentBackup, firstTokenMs: 1500 };

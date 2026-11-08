@@ -1198,6 +1198,20 @@ children can have adult-sounding voices and vice versa).
 - **Closing questions:** a reply's last sentence is held until the reply ends; an offer or a
   menu ("want me to...", "A or B?") is dropped 9 times in 10 (`trailingQuestionCut`). Any
   other closing question stays: Syrinx's are follow-ups (`KEEP_OTHER_Q`).
+- **Follow-up questions (2026-11-08):** in a talk (PAN spoke in the last 3 minutes,
+  `FOLLOW_UP_MS`), a question that leans on the last thing he asked gets one line under the
+  student's history: "(He is following up on the last thing he asked: How far is the sun from
+  the earth.)" (`followUpOf` and `followUpLine` in `intuition/conversation.js`: rules, no
+  model). A question leans when it brings at most one new word of its own and points back ("how
+  long would it take to get there?", "who is he?") or carries on ("and Mars?", "why not
+  Sydney?"); after a run of follow-ups the line also names the question that started it. "What
+  time is it" and "is it going to rain" do not count. The line goes after the history, so the
+  voice reader's warmed read of the history still counts. Before this, "how long would it take
+  to get there?" after the sun got "I don't know where you're headed." Hub bench (8 talks,
+  Syrinx r10, `bench: true`): the line fixed the sun turn and changed nothing else; "how old is
+  he?" after "who is the CEO of Tesla?" still got "I don't know who 'he' is". gemma4:e2b got
+  those right on the same prompts, about 1 s later to first words. Tests: `node
+  service/src/__tests__/follow-up.test.js` (7).
 - **Stuck on a word:** when the phone flags the turn `unfinished` (app 0.4.55+) and the words
   end reaching for a name ("the one with the dreams inside dreams, the"), a short prompt on
   the cloud model offers just the word ("Inception?") or stays quiet if unsure. Setting
@@ -1233,7 +1247,10 @@ children can have adult-sounding voices and vice versa).
   brick", a black dog "reddish-brown"); qwen2.5vl:3b takes ~35 s and missed the label too.
   `spokenVision()` strips markdown and lists and turns capitals read off the photo into
   words. A follow-up within 3 minutes that points at it ("yeah, what kind of pony?") gets
-  what the photo showed added to the history (`_lastLook`). `bench: true` runs the same
+  what the photo showed added to the history (`_lastLook`), but only while the photo is still
+  what the talk is on (`photoInFocus` in routes/api.js: the photo was the last thing he asked,
+  or his questions since lean back on it). Added under "how far is the sun from the earth", it
+  made "how long would it take to get there?" about the photo (2026-11-08). `bench: true` runs the same
   looks and saves nothing. `analyzeImage` (llm.js, `model` option per call) has no cloud
   fallback: photos and what is in them never leave the mini PC.
 - **Phone shortcut:** the phone takes some camera lines itself before the hub sees them

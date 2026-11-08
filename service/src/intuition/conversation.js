@@ -276,3 +276,72 @@ export function readConversation({ utterances = [], prev = null, now = Date.now(
     last_his_at: hisNewest ? hisNewest.at : (prev?.last_his_at || 0),
   };
 }
+
+// ── A question that leans on the last one ──
+// "How long would it take to get there?" right after "How far is the sun from the earth?" means
+// the sun. The voice model read it on its own and said "I don't know where you're headed"
+// (2026-11-08): with an older exchange above the newest one it loses which one is current, and
+// it found the sun at once when one line said what he was following up on. The thing in focus
+// is the last thing he asked. A question that brings at most one new word of its own and
+// points back (there, it, he, that) or carries on ("and by car?", "why?", "how long?") leans
+// on it, and the focus stays there, through more such questions, until he asks something
+// with words of its own.
+
+const POINTER = /\b(?:there|it|its|that|this|those|these|they|them|their|he|him|his|she|her|then)\b/i;
+// Borrows the rest of the last question: "and Mars?", "what about by car?", "why not?", "how
+// long?". "How far is Mars?" and "why is the sky blue?" have their own and do not.
+const CARRIES_ON = /^(?:and|or|but|what about|how about|why not|compared to|such as|like what|which one)\b|^(?:why|how come|really|seriously|how (?:long|much|many|far|fast|big|old|often))\s*[?.!]*$/i;
+const ASKING = /^(?:what|how|why|who|whom|whose|where|when|which|is|are|was|were|can|could|would|will|do|does|did|should|has|have|had)\b/i;
+// "It" and "that" pointing at nothing: "what time is it", "is it going to rain", "never mind".
+const POINTS_AT_NOTHING = /\b(?:what (?:time|day|date|year|month) is it|is it (?:going to|gonna|supposed to) (?:rain|snow|be)\b[^?.!]*|it'?s (?:raining|snowing|cold|hot|warm|late|early|sunny|windy)|how'?s it going|how is it going|that'?s (?:it|all)|never ?mind|forget (?:about )?it|got it|get it)\b/gi;
+const OPENER = /^(?:(?:ok(?:ay)?|so|well|hey|pan|alright|all right|right|um+|uh+)[,.]?\s+)+/i;
+const PHOTO_TAG = /^\[photo\]\s*/i;
+
+/** His and PAN's lines from a history block. The phone writes "User:" and "PAN:", the hub's own
+ *  fallback "You:" for him (routes/api.js voiceHistory), and "PAN (what the photo showed):". */
+export function historyLines(history) {
+  const out = [];
+  for (const raw of String(history || '').split('\n')) {
+    const m = raw.match(/^\s*(User|You|He|PAN)(?: \([^)]{0,40}\))?: ?(.*)$/);
+    if (m) out.push({ his: m[1] !== 'PAN', text: m[2].trim() });
+    else if (out.length && raw.trim()) out[out.length - 1].text += ` ${raw.trim()}`;
+  }
+  return out;
+}
+
+function leansOn(text, exchange) {
+  const t = String(text || '').replace(PHOTO_TAG, '').replace(OPENER, '').trim();
+  const bare = t.replace(POINTS_AT_NOTHING, ' ').trim();
+  if (!CARRIES_ON.test(bare) && !(POINTER.test(bare) && (/\?\s*$/.test(t) || ASKING.test(bare)))) return false;
+  const known = stems([exchange.asked, ...exchange.said].join(' '));
+  return [...stems(bare)].filter((s) => !known.has(s)).length <= 1;
+}
+
+/**
+ * What a question leans on, or null when it stands on its own.
+ *   history  the history block the voice model gets ("User: ..." / "PAN: ..." lines, oldest first)
+ *   text     what he just said
+ * Returns { asked, about, photo }: the last thing he asked, the question that started this run
+ * of follow-ups when that was earlier (else null), and whether that start was a photo.
+ */
+export function followUpOf(history, text) {
+  const exchanges = [];
+  for (const l of historyLines(history)) {
+    if (l.his) exchanges.push({ asked: l.text.replace(PHOTO_TAG, ''), said: [], photo: PHOTO_TAG.test(l.text) });
+    else if (exchanges.length) exchanges[exchanges.length - 1].said.push(l.text);
+  }
+  const last = exchanges[exchanges.length - 1];
+  if (!last || !last.asked || !leansOn(text, last)) return null;
+  // Back through earlier follow-ups to the question that started them. A photo always starts:
+  // "hey what am I looking at" heard as "he what am I looking at?" would otherwise lean.
+  let k = exchanges.length - 1;
+  for (let hops = 0; k > 0 && hops < 3 && !exchanges[k].photo && leansOn(exchanges[k].asked, exchanges[k - 1]); hops++) k--;
+  return { asked: last.asked, about: k < exchanges.length - 1 ? exchanges[k].asked : null, photo: exchanges[k].photo };
+}
+
+/** The line the voice model gets under the history when a question leans on the last one. */
+export function followUpLine(fu) {
+  if (!fu) return '';
+  const clean = (s) => String(s).replace(/[\s.?!]+$/, '').slice(0, 160);
+  return `(He is following up on the last thing he asked: ${clean(fu.asked)}${fu.about ? `, which was about: ${clean(fu.about)}` : ''}.)`;
+}

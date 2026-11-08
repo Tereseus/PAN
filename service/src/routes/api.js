@@ -12,6 +12,7 @@ import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.j
 import { benchContext } from '../bench-context.js';
 import { recordTiming } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
+import { followUpOf, historyLines } from '../intuition/conversation.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -578,6 +579,13 @@ const BARE_LOOK = /^(?:(?:what|so|ok|okay|well|now|just|then|hey|pan|and|um|uh|p
 // The turn before only counts if it points at something to see; otherwise "take a
 // picture" after "where do you exist at?" would ask the photo that.
 const POINTS_AT = /\b(?:this|that|these|those|it|here|there)\b|\bwhat (?:kind|color|colour|breed|type|brand|make)\b|\bhow many\b|\bread\b/i;
+
+/** The photo is still what the talk is on: it was the last thing he asked, or his questions since
+ *  lean back on it ("what brand is it?", then "how much does it cost?"). */
+function photoInFocus(history, text) {
+  const lastHis = historyLines(history).filter((l) => l.his).pop();
+  return /^\[photo\]/i.test(lastHis?.text || '') || !!followUpOf(history, text)?.photo;
+}
 
 function visionQuestion(phoneText, buffer = [], now = Date.now()) {
   const fresh = _cameraAsk && now - _cameraAsk.at < 60_000;
@@ -1761,7 +1769,9 @@ router.post('/query/stream', async (req, res) => {
     let convoHistory = bench ? context : voiceHistory(context);
     // A follow-up about the photo just taken ("yeah, what kind of pony?"): the phone's history
     // has only the one or two sentences PAN said, so the student also gets what the photo showed.
-    if (!bench && _lastLook && Date.now() - _lastLook.at < 180_000 && POINTS_AT.test(String(text || ''))) {
+    // Only while the photo is still what the talk is on: added under "how far is the sun from the
+    // earth", it made "how long would it take to get there?" about the photo (2026-11-08).
+    if (!bench && _lastLook && Date.now() - _lastLook.at < 180_000 && POINTS_AT.test(String(text || '')) && photoInFocus(convoHistory, text)) {
       convoHistory = `${convoHistory ? `${String(convoHistory).trim()}\n` : ''}PAN (what the photo showed): ${_lastLook.look.slice(0, 600)}`;
     }
 
