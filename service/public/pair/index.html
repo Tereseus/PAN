@@ -8,7 +8,10 @@
   Pairing page for PAN Link (docs/INSTALL-PLAN.md step 1). Open it on the PAN computer:
   it asks PAN for a one time pairing code (POST /api/v1/link/pair, owner only) and shows
   it as a QR for the phone app's "Scan a pairing code". The code works once, for 10
-  minutes. Below it, the devices already paired, each with Remove.
+  minutes. "Pairing a computer instead?" shows it as text, and can make a limited code for a
+  work computer: that computer may only send alerts and messages to PAN (LIMITED_ALLOW in
+  service/src/routes/link.js; pan-link refuses the rest). Below, the devices already paired,
+  each with Limit / Give full access and Remove.
 -->
 <style>
   :root {
@@ -55,6 +58,9 @@
   #devices li:first-child { border-top: none; }
   .dname { color: var(--text); }
   .dmeta { font-size: 12px; color: var(--faint); }
+  .dbtns { display: flex; gap: 8px; flex-shrink: 0; }
+  .limited { color: var(--accent); }
+  #limnote { display: none; margin-top: 8px; color: var(--accent); }
   #nodevices { font-size: 14px; color: var(--faint); }
 </style>
 </head>
@@ -79,6 +85,9 @@
       <p style="margin-top: 8px">On that computer, run <code>pan-link pair --data &lt;folder&gt; --code "&lt;this code&gt;"</code>. The code works once, like the picture.</p>
       <textarea id="codetext" rows="4" readonly></textarea>
       <button class="quiet" id="copy" style="margin-top: 6px">Copy the code</button><span id="copied"></span>
+      <p style="margin-top: 10px">A work computer, or one someone else also controls? Give it a limited code: it can send alerts and messages to PAN, but it can't read PAN or change it.</p>
+      <button class="quiet" id="limitedcode" style="margin-top: 6px">Make a limited code</button>
+      <div id="limnote">This is a limited code. The computer that uses it can only send alerts and messages to PAN.</div>
     </details>
   </div>
   <div id="done"></div>
@@ -97,7 +106,7 @@
     const r = await fetch('/api/v1/link' + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
     let body = {};
     try { body = await r.json(); } catch (_) {}
-    if (r.status === 403) throw new Error('Pairing codes are only given to PAN's owner. Open this page on your own computer or phone.');
+    if (r.status === 403) throw new Error("Pairing codes are only given to PAN's owner. Open this page on your own computer or phone.");
     if (!r.ok) throw new Error(body.error || ('PAN answered ' + r.status));
     return body;
   }
@@ -135,8 +144,26 @@
       name.textContent = d.name || d.id;
       const meta = document.createElement('div');
       meta.className = 'dmeta';
+      const limited = Array.isArray(d.allow) && d.allow.length > 0;
       meta.textContent = [d.tunnel_ip, when(d.added)].filter(Boolean).join(' · ');
-      left.append(name, meta);
+      if (limited) {
+        const tag = document.createElement('div');
+        tag.className = 'dmeta limited';
+        tag.textContent = 'Limited: can only send alerts and messages';
+        left.append(name, tag, meta);
+      } else {
+        left.append(name, meta);
+      }
+      const lim = document.createElement('button');
+      lim.className = 'quiet';
+      lim.textContent = limited ? 'Give full access' : 'Limit';
+      lim.onclick = async () => {
+        if (limited && !confirm('Give "' + (d.name || d.id) + '" full access? It could then read and change everything in PAN, like your own phone.')) return;
+        try {
+          await api('/devices/' + encodeURIComponent(d.id) + '/limited', { method: 'PUT', body: JSON.stringify({ limited: !limited }) });
+        } catch (e) { showError(e.message); }
+        loadDevices();
+      };
       const rm = document.createElement('button');
       rm.className = 'quiet';
       rm.textContent = 'Remove';
@@ -145,7 +172,10 @@
         try { await api('/devices/' + encodeURIComponent(d.id), { method: 'DELETE' }); } catch (e) { showError(e.message); }
         loadDevices(); loadStatus();
       };
-      li.append(left, rm);
+      const btns = document.createElement('div');
+      btns.className = 'dbtns';
+      btns.append(lim, rm);
+      li.append(left, btns);
       ul.append(li);
     }
     $('nodevices').style.display = list.length ? 'none' : 'block';
@@ -167,7 +197,8 @@
       const added = list.filter((d) => !known.has(d.id));
       if (added.length) {
         stopCode();
-        $('done').textContent = 'Paired: ' + added.map((d) => d.name || d.id).join(', ') + '. The phone uses PAN Link now.';
+        const named = added.map((d) => (d.name || d.id) + (Array.isArray(d.allow) && d.allow.length ? ' (limited)' : ''));
+        $('done').textContent = 'Paired: ' + named.join(', ') + '. It uses PAN Link now.';
         $('done').style.display = 'block';
         loadStatus();
       }
@@ -180,19 +211,21 @@
     $('qr').removeAttribute('src');
     $('applink').href = '#';
     $('codetext').value = '';
+    $('limnote').style.display = 'none';
     $('forpc').open = false;
     $('show').disabled = false;
     $('show').textContent = 'Show a pairing code';
   }
 
-  $('show').onclick = async () => {
+  // limited: a code for a computer that may only send to PAN (see the comment at the top).
+  async function makeCode(limited) {
     showError('');
     $('done').style.display = 'none';
     $('show').disabled = true;
     try {
       const list = await loadDevices();
       known = new Set((list || []).map((d) => d.id));
-      const c = await api('/pair', { method: 'POST', body: JSON.stringify({ ttl_minutes: 10 }) });
+      const c = await api('/pair', { method: 'POST', body: JSON.stringify({ ttl_minutes: 10, limited }) });
       if (!c.svg) throw new Error('PAN made a code but not its picture. Use Pair this phone in the app instead.');
       $('qr').src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(c.svg);
       $('applink').href = c.uri;
@@ -203,6 +236,8 @@
       $('code').style.display = 'block';
       $('show').textContent = 'Show a new code';
       $('show').disabled = false;
+      $('limnote').style.display = limited ? 'block' : 'none';
+      if (limited) $('forpc').open = true;
       clearInterval(timer);
       timer = setInterval(tick, 1000);
       tick();
@@ -210,7 +245,9 @@
       stopCode();
       showError(e.message);
     }
-  };
+  }
+  $('show').onclick = () => makeCode(false);
+  $('limitedcode').onclick = () => makeCode(true);
 
   $('copy').onclick = async () => {
     try {

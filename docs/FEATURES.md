@@ -205,25 +205,35 @@ Rules:
 
 - **Calls:** pan-link's admin API on the hub (`http://127.0.0.1:7792`, or `PAN_LINK_ADMIN`)
   with the link secret from `<data dir>/link.json`: `POST /admin/pair`, `GET /admin/devices`,
-  `DELETE /admin/devices/{id}`, `GET /admin/status`. Mounted after the login check in
+  `PUT /admin/devices/{id}/allow`, `DELETE /admin/devices/{id}`, `GET /admin/status`. Mounted after the login check in
   `server.js`. The pairing page `/pair/` (`service/public/pair/index.html`, static) uses them.
-- **Semantics:** `POST /api/v1/link/pair` (body `{ name?, ttl_minutes? }`, 1 to 60 minutes,
-  pan-link's default 10) answers `{ uri, expires, svg }`: a `pan://pair` code and the same as
-  a QR (`qrcode`). `GET /api/v1/link/devices` lists the paired devices,
+- **Semantics:** `POST /api/v1/link/pair` (body `{ name?, ttl_minutes?, limited? }`, 1 to 60
+  minutes, pan-link's default 10) answers `{ uri, expires, svg }`: a `pan://pair` code and the
+  same as a QR (`qrcode`). `limited: true` makes a code for a limited device: pan-link lets it
+  send only `LIMITED_ALLOW` (alerts and Slack messages in, Slack reply drafts, its scoped PAN
+  client's WebSocket, `/health`) and answers 403 itself to everything else, so it can't read
+  PAN or change it (`pan-link/allow.go`). It is for a computer someone else also controls, such
+  as a work computer. `PUT /api/v1/link/devices/:id/limited` (`{ limited: true|false }`) limits
+  a paired device or lifts the limit, from its next request. `GET /api/v1/link/devices` lists the paired devices,
   `DELETE /api/v1/link/devices/:id` removes one (a lost phone: it can't use the link until it
   pairs again), `GET /api/v1/link/status` is pan-link's own view (addresses, device count).
   The phone's Settings → "Pair this phone" uses `/pair` over its Tailscale connection.
   The page `/pair/` has "Show a pairing code": the QR, a countdown, "Paired: <name>" once the
-  phone has used it (it watches the device list), and the paired devices, each with Remove.
-  "Pairing a computer instead?" shows the same code as text with Copy, for `pan-link pair`
-  on a PC (see `pan-link/README.md`, "A second computer").
+  phone has used it (it watches the device list), and the paired devices, each with Remove
+  and Limit / Give full access (with a confirm), limited ones marked "Limited: can only send
+  alerts and messages". "Pairing a computer instead?" shows the same code as text with Copy,
+  for `pan-link pair` on a PC (see `pan-link/README.md`, "A second computer"), and "Make a
+  limited code". Until 2026-11-08 the page's script never ran (an apostrophe in a quoted
+  string), so it stayed on "Checking PAN Link…".
 - **Preserves:** no `link.json` → 503 "PAN Link is not set up on this computer", and pan-link
   is never asked. pan-link not running → 503 with the reason. Unused codes live only in
   pan-link's memory and expire. A device id that isn't letters and digits → 400, pan-link not
   asked.
 - **Replaces:** running `pan-link code` on the hub by hand.
 - **Pre-gate:** owner only (`req.user.role === 'owner'`, 403 otherwise): a code lets a new
-  device in as the owner. A paired device is the owner, so it can make codes too.
+  device in as the owner. A paired device is the owner, so it can make codes too; a limited
+  one never reaches these routes. Tests: `node service/src/__tests__/pan-link-routes.test.js`
+  (11), and `go test` in `pan-link/` for the limit itself.
 
 ---
 

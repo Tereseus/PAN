@@ -14,6 +14,19 @@ import { linkSecret, HEADER_SECRET } from '../pan-link-auth.js';
 
 const router = Router();
 
+// What a limited device may send to PAN, for a computer someone else also controls (a
+// work computer, whose company has admin rights on it). pan-link refuses everything else
+// itself, before PAN sees it (pan-link/allow.go). These let it send alerts and Slack
+// messages in, ask for a Slack reply draft, and keep its scoped PAN client connected; none
+// of them reads PAN's memory or changes PAN.
+export const LIMITED_ALLOW = Object.freeze([
+  'POST /api/v1/notify/inbound',
+  'POST /api/v1/slack/inbound',
+  'POST /api/v1/sn-loop/draft',
+  'GET /ws/client',
+  'GET /health',
+]);
+
 /** Where pan-link's admin API listens (pan-link hub --admin, 127.0.0.1:7792 by default). */
 export function adminBase() {
   return process.env.PAN_LINK_ADMIN || 'http://127.0.0.1:7792';
@@ -46,12 +59,17 @@ function ownerOnly(req, res, next) {
 
 router.use(ownerOnly);
 
-// A new pairing code. Body: { name?, ttl_minutes? } (pan-link's default is 10 minutes).
+// A new pairing code. Body: { name?, ttl_minutes?, limited? } (pan-link's default is 10
+// minutes; limited: true pairs a device that may only send LIMITED_ALLOW).
 // Answers { uri, expires, svg }: the pan://pair link and the same as a QR image.
 router.post('/pair', async (req, res) => {
   const name = typeof req.body?.name === 'string' ? req.body.name.slice(0, 60) : '';
   const ttl = Number.isInteger(req.body?.ttl_minutes) ? Math.min(Math.max(req.body.ttl_minutes, 1), 60) : 0;
-  const { status, body } = await callAdmin('/admin/pair', { method: 'POST', body: { name, ttl_minutes: ttl } });
+  const limited = req.body?.limited === true;
+  const { status, body } = await callAdmin('/admin/pair', {
+    method: 'POST',
+    body: { name, ttl_minutes: ttl, ...(limited ? { allow: [...LIMITED_ALLOW] } : {}) },
+  });
   if (status !== 200 || typeof body?.uri !== 'string') return res.status(status || 503).json(body);
   let svg = null;
   try {
@@ -76,6 +94,18 @@ router.delete('/devices/:id', async (req, res) => {
   if (!/^[a-z0-9]{1,64}$/i.test(id)) return res.status(400).json({ error: 'bad device id' });
   const { status, body } = await callAdmin(`/admin/devices/${id}`, { method: 'DELETE' });
   if (status === 200) console.log(`[PAN Link] device ${id} removed by the owner`);
+  res.status(status || 503).json(body);
+});
+
+// Limits a paired device to LIMITED_ALLOW, or lifts the limit. Body: { limited: boolean }.
+// It holds from the device's next request. Answers the device as pan-link now has it.
+router.put('/devices/:id/limited', async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[a-z0-9]{1,64}$/i.test(id)) return res.status(400).json({ error: 'bad device id' });
+  if (typeof req.body?.limited !== 'boolean') return res.status(400).json({ error: 'limited must be true or false' });
+  const allow = req.body.limited ? [...LIMITED_ALLOW] : [];
+  const { status, body } = await callAdmin(`/admin/devices/${id}/allow`, { method: 'PUT', body: { allow } });
+  if (status === 200) console.log(`[PAN Link] device ${id} ${req.body.limited ? 'limited' : 'given full access'} by the owner`);
   res.status(status || 503).json(body);
 });
 

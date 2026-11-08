@@ -28,6 +28,11 @@ const admin = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/admin/pair') return send(200, { uri: URI, expires: '2033-05-18T03:33:19Z', device_ip: '10.77.0.9' });
     if (req.method === 'GET' && req.url === '/admin/devices') return send(200, [{ id: 'd1', name: 'Pixel test' }]);
     if (req.method === 'DELETE' && req.url === '/admin/devices/d1') return send(200, { ok: true });
+    if (req.method === 'PUT' && req.url === '/admin/devices/d1/allow') {
+      const allow = JSON.parse(body).allow;
+      return send(200, { id: 'd1', name: 'Work PC', ...(allow.length ? { allow } : {}) });
+    }
+    if (req.method === 'PUT') return send(404, { error: 'no such device' });
     if (req.method === 'DELETE') return send(404, { error: 'no such device' });
     send(404, { error: 'not found' });
   });
@@ -35,7 +40,7 @@ const admin = http.createServer((req, res) => {
 await new Promise((r) => admin.listen(0, '127.0.0.1', r));
 process.env.PAN_LINK_ADMIN = `http://127.0.0.1:${admin.address().port}`;
 
-const { default: linkRouter, callAdmin } = await import('../routes/link.js');
+const { default: linkRouter, callAdmin, LIMITED_ALLOW } = await import('../routes/link.js');
 
 // PAN in front of the routes, with whoever the test says is calling.
 let role = 'owner';
@@ -113,6 +118,34 @@ await test('only the owner removes devices', async () => {
   const before = calls.length;
   const r = await fetch(`${base}/devices/d1`, { method: 'DELETE' });
   ok(r.status === 403 && calls.length === before, `status ${r.status}`);
+});
+
+await test('a limited code asks pan-link for a device that may only send', async () => {
+  const r = await fetch(`${base}/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Work PC', limited: true }) });
+  ok(r.status === 200, `status ${r.status}`);
+  const sent = JSON.parse(calls.at(-1).body);
+  ok(JSON.stringify(sent.allow) === JSON.stringify(LIMITED_ALLOW), `sent ${calls.at(-1).body}`);
+  ok(!LIMITED_ALLOW.some((rule) => /memory|events|mcp|hooks|terminal|link|settings/.test(rule)), 'the preset reaches PAN data');
+  await fetch(`${base}/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Pixel', limited: 'yes' }) });
+  ok(!('allow' in JSON.parse(calls.at(-1).body)), 'only limited: true limits');
+});
+
+await test('limiting a paired device and lifting the limit', async () => {
+  const put = (id, body) => fetch(`${base}/devices/${id}/limited`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let r = await put('d1', { limited: true });
+  let j = await r.json();
+  ok(r.status === 200 && JSON.stringify(j.allow) === JSON.stringify(LIMITED_ALLOW), `limit: ${r.status} ${JSON.stringify(j)}`);
+  ok(calls.at(-1).method === 'PUT' && calls.at(-1).url === '/admin/devices/d1/allow', JSON.stringify(calls.at(-1)));
+  r = await put('d1', { limited: false });
+  j = await r.json();
+  ok(r.status === 200 && !j.allow && JSON.parse(calls.at(-1).body).allow.length === 0, `lift: ${r.status} ${JSON.stringify(j)}`);
+  ok((await put('nope', { limited: true })).status === 404, 'unknown device');
+  const before = calls.length;
+  ok((await put('d1', { limited: 'yes' })).status === 400, 'not a boolean');
+  ok((await put('..%2Fpair', { limited: true })).status === 400, 'not an id');
+  role = 'viewer';
+  ok((await put('d1', { limited: false })).status === 403, 'a viewer lifted a limit');
+  ok(calls.length === before, 'pan-link was asked anyway');
 });
 
 await test('no link.json here: 503, pan-link not asked', async () => {
