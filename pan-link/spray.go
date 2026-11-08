@@ -110,26 +110,74 @@ func (s *sprayBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 
 // sendAll sends a batch to every hub address. WireGuard's own pick goes too when it isn't
 // one of the saved addresses (the hub answered from an address the code didn't list).
+//
+// Copies for the hub's Tailscale addresses go TailnetDelay later when other addresses
+// were sent to, so a direct path (home Wi-Fi, an open router port) answers first whenever
+// it works and the link uses it. Tailscale then wins only when nothing else answers, as
+// away from a home that lets nothing in, at a cost of TailnetDelay per handshake.
 func (s *sprayBind) sendAll(bufs [][]byte, eps []conn.Endpoint, ep conn.Endpoint, offset int) error {
 	if ep != nil && !hasEndpoint(eps, ep) {
 		eps = append(eps[:len(eps):len(eps)], ep)
 	}
+	var direct, tailnet []conn.Endpoint
+	for _, e := range eps {
+		if endpointIsTailnet(e) {
+			tailnet = append(tailnet, e)
+		} else {
+			direct = append(direct, e)
+		}
+	}
 	var firstErr error
 	sent := false
-	for _, e := range eps {
-		// Each address gets its own copy: a batching bind may write into the buffers.
-		if err := s.Bind.Send(copyBufs(bufs), e, offset); err != nil {
-			if firstErr == nil {
-				firstErr = err
+	send := func(to []conn.Endpoint) {
+		for _, e := range to {
+			// Each address gets its own copy: a batching bind may write into the buffers.
+			if err := s.Bind.Send(copyBufs(bufs), e, offset); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
 			}
-			continue
+			sent = true
 		}
-		sent = true
+	}
+	send(direct)
+	switch {
+	case len(tailnet) == 0:
+	case !sent:
+		send(tailnet) // nothing else could even be sent to, so don't wait
+	default:
+		held := copyBufs(bufs)
+		time.AfterFunc(TailnetDelay, func() {
+			for _, e := range tailnet {
+				s.Bind.Send(copyBufs(held), e, offset)
+			}
+		})
 	}
 	if sent {
 		return nil // an address that can't be sent to (no IPv6 here, say) is not an error
 	}
 	return firstErr
+}
+
+// TailnetDelay is how much later a handshake's copies for Tailscale addresses go out
+// than those for the hub's other addresses (see sendAll).
+const TailnetDelay = 150 * time.Millisecond
+
+var (
+	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
+	tailnetV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+// IsTailnet reports a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48).
+func IsTailnet(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return tailnetV4.Contains(ip) || tailnetV6.Contains(ip)
+}
+
+func endpointIsTailnet(e conn.Endpoint) bool {
+	ap, err := netip.ParseAddrPort(e.DstToString())
+	return err == nil && IsTailnet(ap.Addr())
 }
 
 func copyBufs(bufs [][]byte) [][]byte {

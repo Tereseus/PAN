@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	link "dev.pan/link"
@@ -52,9 +54,11 @@ func Forget(dataDir string) error {
 
 // Conn is a running link and its local port.
 type Conn struct {
-	st *link.ClientState
-	l  *link.Link
-	ln net.Listener
+	st   *link.ClientState
+	l    *link.Link
+	ln   net.Listener
+	stop chan struct{}
+	once sync.Once
 }
 
 // Start brings the link up and opens the local port (127.0.0.1, any free port). It does
@@ -74,8 +78,66 @@ func Start(ctx context.Context, dataDir string, binds link.BindFactory) (*Conn, 
 		l.Close()
 		return nil, err
 	}
+	c := &Conn{st: st, l: l, ln: ln, stop: make(chan struct{})}
 	go l.ServeLocalProxy(ln, st.HubIP)
-	return &Conn{st: st, l: l, ln: ln}, nil
+	go c.preferDirect()
+	return c, nil
+}
+
+// directRetry is how often a link running over Tailscale checks whether a direct path to
+// the hub works again. It lands on Tailscale when the hub calls the phone back that way
+// after a restart, or while the direct path was down, and WireGuard keeps any path that
+// works. Each check is one handshake, and a direct path that answers wins it (the copies
+// for Tailscale addresses go later, link.TailnetDelay).
+var directRetry = 2 * time.Minute
+
+func (c *Conn) preferDirect() {
+	t := time.NewTicker(directRetry)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-t.C:
+		}
+		if pathOf(c.via()) == "tailscale" && c.hasDirect() {
+			c.l.Rehandshake(c.st.HubKey)
+		}
+	}
+}
+
+func (c *Conn) via() string {
+	v, _ := c.l.PeerEndpoint(c.st.HubKey)
+	return v
+}
+
+// hasDirect reports a hub address that isn't Tailscale's (a name counts: it is a home
+// address looked up through DNS).
+func (c *Conn) hasDirect() bool {
+	for _, e := range c.st.Endpoints {
+		if ap, err := netip.ParseAddrPort(e); err != nil || !IsTailnet(ap.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathOf says what kind of path a hub address is: "local" (the home network),
+// "tailscale" or "internet". Empty for no address.
+func pathOf(addr string) string {
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return ""
+	}
+	ip := ap.Addr().Unmap()
+	switch {
+	case IsTailnet(ip):
+		return "tailscale"
+	case ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback():
+		return "local"
+	default:
+		return "internet"
+	}
 }
 
 // Port is the local port that forwards to PAN on the hub.
@@ -91,13 +153,15 @@ type Status struct {
 	HubName        string `json:"hub_name,omitempty"`
 	Port           int    `json:"port"`
 	Via            string `json:"via,omitempty"`     // hub address in use
+	Path           string `json:"path,omitempty"`    // "local", "tailscale" or "internet"
 	SinceHandshake int64  `json:"since_handshake_s"` // -1 if no handshake yet
 	Connected      bool   `json:"connected"`         // a handshake in the last 3 minutes
 }
 
 func (c *Conn) Status() Status {
 	s := Status{DeviceID: c.st.DeviceID, HubName: c.st.HubName, Port: c.Port(), SinceHandshake: -1}
-	s.Via, _ = c.l.PeerEndpoint(c.st.HubKey)
+	s.Via = c.via()
+	s.Path = pathOf(s.Via)
 	if t, err := c.l.LastHandshake(c.st.HubKey); err == nil && !t.IsZero() {
 		age := time.Since(t)
 		s.SinceHandshake = int64(age / time.Second)
@@ -108,6 +172,7 @@ func (c *Conn) Status() Status {
 
 // Close shuts the local port and the link.
 func (c *Conn) Close() {
+	c.once.Do(func() { close(c.stop) })
 	c.ln.Close()
 	c.l.Close()
 }

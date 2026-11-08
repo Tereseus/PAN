@@ -148,3 +148,97 @@ func TestIsTailnet(t *testing.T) {
 		}
 	}
 }
+
+// relay is a direct path to the hub (home Wi-Fi) that can be down for a while.
+type relay struct {
+	front, back *net.UDPConn
+	down        atomic.Bool
+}
+
+func newRelay(t *testing.T, hub netip.AddrPort) *relay {
+	t.Helper()
+	front, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := net.DialUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}, net.UDPAddrFromAddrPort(hub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &relay{front: front, back: back}
+	var phone atomic.Pointer[net.UDPAddr]
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, from, err := front.ReadFromUDP(buf)
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if err == nil && !r.down.Load() {
+				phone.Store(from)
+				back.Write(buf[:n])
+			}
+		}
+	}()
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, err := back.Read(buf)
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if p := phone.Load(); err == nil && p != nil && !r.down.Load() {
+				front.WriteToUDP(buf[:n], p)
+			}
+		}
+	}()
+	t.Cleanup(func() { front.Close(); back.Close() })
+	return r
+}
+
+func (r *relay) addr() string { return r.front.LocalAddr().String() }
+
+// The direct path is down when the link starts, so it runs over Tailscale. Once the
+// direct path works again the link moves back to it on its own, at the next check.
+func TestBackToTheDirectPath(t *testing.T) {
+	old := directRetry
+	directRetry = 500 * time.Millisecond
+	defer func() { directRetry = old }()
+
+	h, _, tsHub, dial := tailnetOnly(t)
+	home := newRelay(t, netip.AddrPortFrom(loopback, tsHub.Port()))
+	home.down.Store(true)
+	binds := func() conn.Bind { return TailnetBind(link.NewAddrBind(loopback), dial(nil)) }
+	dataDir := t.TempDir()
+	id, err := Pair(context.Background(), dataDir, codeFor(t, h, home.addr(), tsHub.String()), "Pixel test", binds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Start(context.Background(), dataDir, binds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if body, err := get(c.Port(), "/first", 6*time.Second); err != nil || !strings.HasPrefix(body, id+"|") {
+		t.Fatalf("over Tailscale: %q %v", body, err)
+	}
+	if s := c.Status(); s.Via != tsHub.String() || s.Path != "tailscale" {
+		t.Fatalf("with the direct path down: %+v", s)
+	}
+
+	home.down.Store(false)
+	start := time.Now()
+	for c.Status().Via != home.addr() {
+		if time.Since(start) > 10*time.Second {
+			t.Fatalf("still on %s 10 s after the direct path came back", c.Status().Via)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Logf("back on the direct path %v after it came back", time.Since(start).Round(time.Millisecond))
+	if s := c.Status(); s.Path != "local" || !s.Connected {
+		t.Fatalf("status %+v", s)
+	}
+	if body, err := get(c.Port(), "/direct", 3*time.Second); err != nil || !strings.HasPrefix(body, id+"|") {
+		t.Fatalf("over the direct path: %q %v", body, err)
+	}
+}

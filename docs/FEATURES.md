@@ -219,6 +219,12 @@ Rules:
   `Panvpn.linkNetworkChanged()`, which re-handshakes on every hub address (resending
   WireGuard's unanswered handshake when it sent one under 5 s ago). `PanVpnService` calls
   `LinkManager.tailscaleReady()` once its Tailscale proxy is up, for the same reason.
+  Copies of a handshake for the hub's Tailscale addresses go 150 ms after the others, so a
+  direct path wins when it works, and a link on Tailscale checks every 2 minutes whether a
+  direct path works again (`linkmode.Conn.preferDirect`).
+  Settings → Connection shows a "PAN Link" line (`LinkManager.summary()`: connected or not,
+  home network or Tailscale, last handshake) and "Forget this pairing" (asks first). Link
+  events go to the hub's log through `LogShipper` (source `pan-link`).
 - **Preserves:** with no pairing nothing changes: no port, no network callback, the Tailscale
   proxy as before. The pairing, with the phone's private key, is `files/pan-link/client.json`
   in app-private storage. The link itself needs no VPN permission.

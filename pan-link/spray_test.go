@@ -5,10 +5,12 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -273,6 +275,81 @@ func TestRehandshakeRightAfterAFailedTry(t *testing.T) {
 	}
 	if body, err := get(t, l, "/back", nil); err != nil || !strings.HasPrefix(body, st.DeviceID) {
 		t.Fatalf("after the move: %q %v", body, err)
+	}
+}
+
+// addrEndpoint is a hub address for recordBind.
+type addrEndpoint string
+
+func (e addrEndpoint) ClearSrc()           {}
+func (e addrEndpoint) SrcToString() string { return "" }
+func (e addrEndpoint) DstToString() string { return string(e) }
+func (e addrEndpoint) DstToBytes() []byte  { return []byte(e) }
+func (e addrEndpoint) DstIP() netip.Addr   { return netip.MustParseAddrPort(string(e)).Addr() }
+func (e addrEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
+
+// recordBind notes when each packet went to which address; sends to fail[addr] fail.
+type recordBind struct {
+	stubBind
+	start time.Time
+	fail  map[string]bool
+	mu    sync.Mutex
+	sent  map[string]time.Duration
+}
+
+func (r *recordBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
+	if r.fail[ep.DstToString()] {
+		return errors.New("network is unreachable")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sent[ep.DstToString()] = time.Since(r.start)
+	return nil
+}
+
+func (r *recordBind) when(addr string) (time.Duration, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.sent[addr]
+	return d, ok
+}
+
+// A handshake start goes to the hub's Tailscale addresses TailnetDelay after its other
+// addresses, so a direct path wins whenever it works; with no other address to send to,
+// it goes at once.
+func TestTailscaleCopiesWaitForDirectPaths(t *testing.T) {
+	const home, ts4, ts6 = "192.168.50.20:41720", "100.101.102.103:41720", "[fd7a:115c:a1e0:1234::1]:41720"
+	init := [][]byte{{1, 0, 0, 0, 9, 9, 9, 9}}
+	for _, tc := range []struct {
+		name      string
+		eps       []string
+		fail      map[string]bool
+		tailnetAt time.Duration // earliest the Tailscale copies may go
+	}{
+		{"home and Tailscale", []string{home, ts6, ts4}, nil, TailnetDelay - 20*time.Millisecond},
+		{"only Tailscale", []string{ts6, ts4}, nil, 0},
+		{"home can't be sent to", []string{home, ts6, ts4}, map[string]bool{home: true}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rb := &recordBind{start: time.Now(), fail: tc.fail, sent: map[string]time.Duration{}}
+			sb := &sprayBind{Bind: rb}
+			for _, e := range tc.eps {
+				sb.eps = append(sb.eps, addrEndpoint(e))
+			}
+			if err := sb.Send(init, nil, 0); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(TailnetDelay + 100*time.Millisecond)
+			if d, ok := rb.when(home); !tc.fail[home] && slices.Contains(tc.eps, home) && (!ok || d > 50*time.Millisecond) {
+				t.Fatalf("home address sent at %v (%v), want at once", d, ok)
+			}
+			for _, ts := range []string{ts4, ts6} {
+				d, ok := rb.when(ts)
+				if !ok || d < tc.tailnetAt || (tc.tailnetAt == 0 && d > 50*time.Millisecond) {
+					t.Fatalf("%s sent at %v (%v), want from %v", ts, d, ok, tc.tailnetAt)
+				}
+			}
+		})
 	}
 }
 

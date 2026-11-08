@@ -6,19 +6,12 @@ import (
 	"net/netip"
 	"sync"
 
+	link "dev.pan/link"
 	"github.com/tailscale/wireguard-go/conn"
 )
 
-var (
-	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
-	tailnetV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
-)
-
 // IsTailnet reports a Tailscale address.
-func IsTailnet(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	return tailnetV4.Contains(ip) || tailnetV6.Contains(ip)
-}
+func IsTailnet(ip netip.Addr) bool { return link.IsTailnet(ip) }
 
 // TailnetDialer opens a UDP socket on this phone's own Tailscale address (IPv4, or IPv6
 // when v6 is set). It fails while Tailscale is off; the bind asks again on the next packet.

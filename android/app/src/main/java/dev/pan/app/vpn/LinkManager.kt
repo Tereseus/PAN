@@ -32,6 +32,8 @@ import javax.inject.Singleton
 @Singleton
 class LinkManager @Inject constructor(
     @ApplicationContext private val context: Context,
+    // Lazy: the log shipper sends through the HTTP client, whose hub finder asks this class.
+    private val logShipper: dagger.Lazy<dev.pan.app.network.LogShipper>,
 ) {
     companion object {
         private const val TAG = "PanLink"
@@ -48,7 +50,17 @@ class LinkManager @Inject constructor(
 
     @Volatile private var lastCheck = 0L
     @Volatile private var lastConnected = false
+    @Volatile private var lastState = ""
     @Volatile private var callbackRegistered = false
+
+    /**
+     * Logs a link event here and on the hub (PAN's /api/v1/logs, source "pan-link"), so a
+     * test away from home can be read back afterwards. Unsent lines wait for the hub.
+     */
+    private fun note(msg: String) {
+        Log.i(TAG, msg)
+        runCatching { logShipper.get().info("pan-link", msg) }
+    }
 
     fun isPaired(): Boolean = runCatching { Panvpn.linkPaired(dataDir) }.getOrDefault(false)
 
@@ -58,12 +70,12 @@ class LinkManager @Inject constructor(
         if (!isPaired()) return 0
         return try {
             val p = Panvpn.linkStart(dataDir).toInt()
-            if (_port.value != p) Log.i(TAG, "link up, local port $p")
+            if (_port.value != p) note("link up, local port $p")
             _port.value = p
             registerNetworkCallback()
             p
         } catch (e: Exception) {
-            Log.e(TAG, "link start failed: ${e.message}")
+            note("link start failed: ${e.message}")
             0
         }
     }
@@ -76,7 +88,7 @@ class LinkManager @Inject constructor(
         waitForTailscale()
         val name = android.os.Build.MODEL
         val id = Panvpn.linkPair(dataDir, code, name)
-        Log.i(TAG, "paired as $id ($name)")
+        note("paired as $id ($name)")
         startIfPaired()
         return id
     }
@@ -111,12 +123,38 @@ class LinkManager @Inject constructor(
         val now = SystemClock.elapsedRealtime()
         if (now - lastCheck > STATUS_TTL_MS) {
             lastCheck = now
-            val was = lastConnected
-            lastConnected = runCatching { JSONObject(status()).optBoolean("connected") }.getOrDefault(false)
-            if (was != lastConnected) Log.i(TAG, if (lastConnected) "link connected: ${status()}" else "link not connected")
+            val s = runCatching { JSONObject(status()) }.getOrNull()
+            lastConnected = s?.optBoolean("connected") ?: false
+            val state = if (lastConnected) "connected, ${s?.optString("path")} path ${s?.optString("via")}" else "not connected"
+            if (state != lastState) {
+                lastState = state
+                note("link $state")
+            }
         }
         return if (lastConnected) "http://127.0.0.1:$p" else null
     }
+
+    /** One plain line for the app's screens: whether the link works and which way it goes. */
+    fun summary(): String {
+        if (!isPaired()) return "Not paired. Open the pairing code from PAN on your computer on this phone."
+        val s = runCatching { JSONObject(status()) }.getOrNull() ?: return "Paired. Status unknown."
+        val hub = "\"" + s.optString("hub_name").ifBlank { "your PAN computer" } + "\""
+        if (!s.optBoolean("running")) return "Paired with $hub. Starting…"
+        val since = s.optLong("since_handshake_s", -1)
+        if (!s.optBoolean("connected")) {
+            val last = if (since >= 0) " Last contact ${ago(since)}." else ""
+            return "Paired with $hub, but not reaching it.$last The app uses Tailscale meanwhile."
+        }
+        val way = when (s.optString("path")) {
+            "local" -> " over your home network"
+            "tailscale" -> " through Tailscale"
+            "internet" -> " over the internet"
+            else -> ""
+        }
+        return "Connected to $hub$way. Last handshake ${ago(since)}."
+    }
+
+    private fun ago(s: Long): String = if (s < 90) "$s s ago" else "${s / 60} min ago"
 
     /** Stops the link and deletes this phone's pairing. */
     fun forget() {
@@ -186,7 +224,7 @@ class LinkManager @Inject constructor(
      * link moves once, half a second after the last of them, when the new routes are in.
      */
     private fun changed(why: String) {
-        Log.i(TAG, "network: $why")
+        note("network: $why")
         netHandler.removeCallbacks(moveLink)
         netHandler.postDelayed(moveLink, 500)
     }

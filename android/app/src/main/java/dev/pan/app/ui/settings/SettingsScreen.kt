@@ -113,19 +113,57 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = activeUrl,
                 onValueChange = { },
-                label = { Text("PAN Server (via Tailscale)") },
+                label = { Text("PAN Server") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 readOnly = true
             )
             val proxyUrl = viewModel.getRemoteProxyUrl()
+            val link = viewModel.remoteAccessManager.link
+            val viaLink = proxyUrl != null && proxyUrl == link.baseUrlIfConnected()
             Text(
-                if (proxyUrl != null) "Connected via Tailscale proxy"
-                else "Tailscale proxy not ready — connecting...",
+                when {
+                    viaLink -> "Connected through PAN Link"
+                    proxyUrl != null -> "Connected via Tailscale proxy"
+                    else -> "Tailscale proxy not ready — connecting..."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (proxyUrl != null) MaterialTheme.colorScheme.primary
                        else MaterialTheme.colorScheme.error
             )
+
+            // PAN Link: plain WireGuard to the hub, used while it works (LinkManager).
+            var linkSummary by remember { mutableStateOf("") }
+            var linkPaired by remember { mutableStateOf(false) }
+            var confirmForget by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    linkSummary = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { link.summary() }
+                    linkPaired = link.isPaired()
+                    kotlinx.coroutines.delay(2_000)
+                }
+            }
+            Text("PAN Link", style = MaterialTheme.typography.titleSmall)
+            Text(linkSummary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (linkPaired) {
+                TextButton(onClick = { confirmForget = true }) { Text("Forget this pairing") }
+            }
+            if (confirmForget) {
+                AlertDialog(
+                    onDismissRequest = { confirmForget = false },
+                    title = { Text("Forget the pairing?") },
+                    text = { Text("This phone stops using PAN Link and goes back to Tailscale only. To use the link again, pair with a new code from PAN on your computer.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            confirmForget = false
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) { link.forget() }
+                        }) { Text("Forget") }
+                    },
+                    dismissButton = { TextButton(onClick = { confirmForget = false }) { Text("Cancel") } },
+                )
+            }
 
             HorizontalDivider()
 
