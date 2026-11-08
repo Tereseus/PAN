@@ -40,7 +40,7 @@ A hub listening on all addresses makes Windows ask about the firewall on its fir
 
 ### Tests
 
-`go test ./...` (27 tests, all on 127.0.0.1 or in memory, so no firewall prompt; one more uses Pkarr's real relays when `PAN_LINK_LIVE=1` is set):
+`go test ./...` (28 tests, all on 127.0.0.1 or in memory, so no firewall prompt; one more uses Pkarr's real relays when `PAN_LINK_LIVE=1` is set):
 
 - a phone pairs and reaches PAN, and PAN sees the real device id even when the phone forges the headers;
 - a stranger key that knows the hub's public key and address gets nothing, and PAN is never reached;
@@ -63,7 +63,8 @@ A hub listening on all addresses makes Windows ask about the firewall on its fir
 - a hub that moved (restarted on another port) is found through its record: the device's saved address gets nothing, the record has the new one, and the link answers 3 ms after adding it; an older record than the last one used is refused; a hub with no paired device publishes nothing;
 - a removed device can't open the next record; a kept device can't either until it fetches the new key through the tunnel, then can; the removed device can't connect to fetch it;
 - a `link.json` from before records gets their keys on the next start, its secret unchanged;
-- no relay answering is an error, not a hang, and an empty relay says there is no record.
+- no relay answering is an error, not a hang, and an empty relay says there is no record;
+- a device whose program restarts 1 s later, or 2 s after a crash that left a connection open, is back in 2 to 3 ms (a restart within about 20 ms of the last handshake costs WireGuard's 5 s retry).
 
 PAN side: `node service/src/__tests__/pan-link-auth.test.js` (10 tests) and `pan-link-routes.test.js` (9 tests: a code and its QR from `POST /api/v1/link/pair`, the time limit capped, owner only, devices, removing a device, a bad device id never reaching pan-link, only the owner removing, no `link.json`, pan-link not running). `tailscale-key.test.js` (7 tests: a link device gets a single use tagged key and the key is never logged; the owner without the link is refused; no OAuth client or no tag stops before Tailscale is asked; Tailscale's refusal passed on; at most 3 keys per device in 10 minutes; Tailscale not reachable). The app's QR reader: `PairCodeReaderTest` (4 tests, `gradlew :app:testDebugUnitTest`).
 
@@ -143,6 +144,17 @@ Checked 2026-11-08 with `pan-link probe` on the owner's home network: the router
 A stdlib-only test program signed a record and stored it through the public Pkarr relays (`pkarr.pubky.org`, `relay.pkarr.org`, `pkarr.pubky.app`). All three answered. Publishing took 4.4 s (37 DHT nodes stored it). Lookups took 73 to 203 ms and returned the same record from each relay. A lookup for a record that doesn't exist took 2.6 to 4.5 s.
 
 With `record.go` (2026-11-08, `PAN_LINK_LIVE=1 go test -run LiveRelays`, a throwaway key and documentation addresses only): all three relays took the encrypted record (3.0 to 10.7 s each, as they store it on the DHT), each gave it back with the right addresses in 47 to 73 ms, and `FindHub` over all three took 72 ms. On the real hub, the new pan-link published its record (3 addresses) 18 s after it started.
+
+### A second computer
+
+A PC reaches PAN through the link the same way the phone does: `pan-link client` keeps the link up and serves PAN on a local port.
+
+1. On the PAN computer, open `/pair/`, "Show a pairing code", then "Pairing a computer instead?" and copy the code.
+2. On the second computer: `pan-link pair --data <PAN folder>\link-client --code "<the code>" --name "<its name>"`.
+3. Windows: put `pan-link.exe` and `windows/start-pan-link-client.bat` in `<PAN folder>\pan-link\` and run `windows/install-pan-link-client-task.ps1` in an elevated PowerShell: the task `PAN-Link-Client` starts it at boot as SYSTEM and its launcher restarts it after 5 s if it stops (log in `link-client\pan-link-client.log`). Linux: `linux/pan-link-client.service` as a systemd user service (steps at its top).
+4. Point the computer's PAN tools at `http://127.0.0.1:7779` (`PAN_BASE_URL` for the PAN MCP server, the PAN client's hub address). Tailscale can stay on underneath until it all works.
+
+Tried on one computer against the dev PAN (2026-11-08): the launcher refuses to start unpaired and says why; once paired, PAN answered through its port 594 ms after it started and named the computer; with the client killed (not the hub), the launcher brought it back and PAN answered again 5.2 s after the kill. Not installed on any of the owner's computers yet. Three computers reach the hub's 7777 over Tailscale today (seen in the hub's connections on 2026-11-08); all three have to move before 7777 can go to 127.0.0.1.
 
 ### Building
 

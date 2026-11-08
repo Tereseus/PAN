@@ -215,6 +215,8 @@ Rules:
   The phone's Settings → "Pair this phone" uses `/pair` over its Tailscale connection.
   The page `/pair/` has "Show a pairing code": the QR, a countdown, "Paired: <name>" once the
   phone has used it (it watches the device list), and the paired devices, each with Remove.
+  "Pairing a computer instead?" shows the same code as text with Copy, for `pan-link pair`
+  on a PC (see `pan-link/README.md`, "A second computer").
 - **Preserves:** no `link.json` → 503 "PAN Link is not set up on this computer", and pan-link
   is never asked. pan-link not running → 503 with the reason. Unused codes live only in
   pan-link's memory and expire. A device id that isn't letters and digits → 400, pan-link not

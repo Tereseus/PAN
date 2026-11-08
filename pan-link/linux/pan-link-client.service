@@ -1,0 +1,20 @@
+# PAN Link on a Linux computer (pan-link client), as a systemd user service.
+# Install:
+#   install -m 755 pan-link ~/.local/bin/pan-link
+#   ~/.local/bin/pan-link pair --data ~/.local/share/pan/link-client --code "pan://pair?..." --name "$(hostname)"
+#   cp pan-link-client.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now pan-link-client
+#   loginctl enable-linger "$USER"     (keeps it running when nobody is logged in)
+# PAN on the hub is then at http://127.0.0.1:7779 on this computer.
+[Unit]
+Description=PAN Link client: this computer's WireGuard way to PAN on the hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/pan-link client --data %h/.local/share/pan/link-client --listen 127.0.0.1:7779
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

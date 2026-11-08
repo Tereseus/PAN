@@ -43,6 +43,11 @@
   #left { font-size: 13px; color: var(--soft); margin-top: 10px; }
   #onphone { display: none; margin-top: 12px; font-size: 14px; }
   #onphone a { color: var(--accent); }
+  #forpc { margin-top: 14px; font-size: 13px; color: var(--soft); }
+  #forpc summary { cursor: pointer; color: var(--accent); }
+  #codetext { display: block; width: 100%; margin-top: 8px; padding: 8px; font: 12px ui-monospace, Consolas, monospace;
+    background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; resize: none; }
+  #copied { margin-left: 8px; color: var(--ok); }
   #done { display: none; margin-top: 20px; padding: 14px; border: 1px solid var(--ok); border-radius: 8px; color: var(--ok); font-size: 14px; }
   #error { display: none; margin-top: 16px; color: var(--bad); font-size: 14px; }
   #devices { list-style: none; margin: 0; }
@@ -69,6 +74,12 @@
     <img id="qr" alt="Pairing code">
     <div id="left"></div>
     <div id="onphone">On this phone already? <a id="applink" href="#">Pair in the PAN app</a></div>
+    <details id="forpc">
+      <summary>Pairing a computer instead?</summary>
+      <p style="margin-top: 8px">On that computer, run <code>pan-link pair --data &lt;folder&gt; --code "&lt;this code&gt;"</code>. The code works once, like the picture.</p>
+      <textarea id="codetext" rows="4" readonly></textarea>
+      <button class="quiet" id="copy" style="margin-top: 6px">Copy the code</button><span id="copied"></span>
+    </details>
   </div>
   <div id="done"></div>
   <div id="error"></div>
@@ -168,6 +179,8 @@
     $('code').style.display = 'none';
     $('qr').removeAttribute('src');
     $('applink').href = '#';
+    $('codetext').value = '';
+    $('forpc').open = false;
     $('show').disabled = false;
     $('show').textContent = 'Show a pairing code';
   }
@@ -183,6 +196,8 @@
       if (!c.svg) throw new Error('PAN made a code but not its picture. Use Pair this phone in the app instead.');
       $('qr').src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(c.svg);
       $('applink').href = c.uri;
+      $('codetext').value = c.uri;
+      $('copied').textContent = '';
       $('onphone').style.display = /Android/i.test(navigator.userAgent) ? 'block' : 'none';
       expires = Date.parse(c.expires) || (Date.now() + 10 * 60 * 1000);
       $('code').style.display = 'block';
@@ -194,6 +209,16 @@
     } catch (e) {
       stopCode();
       showError(e.message);
+    }
+  };
+
+  $('copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($('codetext').value);
+      $('copied').textContent = 'Copied';
+    } catch (_) {
+      $('codetext').select();
+      $('copied').textContent = 'Select it and copy';
     }
   };
 
