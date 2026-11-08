@@ -94,6 +94,37 @@ class LinkManager @Inject constructor(
     }
 
     /**
+     * Pairs through the app's current way to PAN (the Tailscale proxy at [baseUrl]): PAN
+     * asks pan-link on the hub for a code (POST /api/v1/link/pair, owner only) and this
+     * phone uses it at once, so a phone that already reaches PAN needs no QR. Blocking:
+     * call it off the main thread. Returns the device id the hub gave this phone.
+     */
+    fun pairThroughPan(baseUrl: String): String {
+        val name = android.os.Build.MODEL
+        val c = java.net.URL("$baseUrl/api/v1/link/pair").openConnection() as java.net.HttpURLConnection
+        try {
+            c.requestMethod = "POST"
+            c.doOutput = true
+            c.connectTimeout = 10_000
+            c.readTimeout = 20_000
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("X-Device-Name", name)
+            c.outputStream.use { it.write(JSONObject().put("name", name).toString().toByteArray()) }
+            val status = c.responseCode
+            val body = (if (status in 200..299) c.inputStream else c.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+            val json = runCatching { JSONObject(body) }.getOrNull()
+            if (status != 200 || json == null || !json.has("uri")) {
+                throw IllegalStateException(json?.optString("error")?.ifBlank { null } ?: "PAN answered $status")
+            }
+            note("pairing code from PAN, pairing")
+            return pair(json.getString("uri"))
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /**
      * The hub's Tailscale address may be the only way in, and the app's Tailscale starts
      * with the app. When remote access is on but not up yet, give it a moment first.
      */

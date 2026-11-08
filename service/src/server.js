@@ -21,6 +21,7 @@ import hooksRouter, { injectSessionContext } from './routes/hooks.js';
 import apiRouter from './routes/api.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
+import linkRouter from './routes/link.js';
 import dashboardRouter, { createAlert } from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
 import runnerRouter from './routes/runner.js';
@@ -956,6 +957,8 @@ app.use('/api/v1', apiRouter);
 
 // Device management
 app.use('/api/v1/devices', devicesRouter);
+// PAN Link pairing codes and paired devices, owner only (routes/link.js).
+app.use('/api/v1/link', linkRouter);
 
 // ── Profile-gated route groups (SHIP-PLAN.md Phase 1) ────────────────────────
 // In the `core` profile these mounts are skipped — endpoints 404 — while the

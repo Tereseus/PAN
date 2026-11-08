@@ -57,7 +57,7 @@ A hub listening on all addresses makes Windows ask about the firewall on its fir
 - a "port unreachable" error doesn't stop the link from reading;
 - names in the address list are looked up, and repeats dropped.
 
-PAN side: `node service/src/__tests__/pan-link-auth.test.js` (10 tests).
+PAN side: `node service/src/__tests__/pan-link-auth.test.js` (10 tests) and `pan-link-routes.test.js` (6 tests: a code and its QR from `POST /api/v1/link/pair`, the time limit capped, owner only, devices, no `link.json`, pan-link not running).
 
 Phone side: `go test ./linkmode/` in `android/pan-vpn` (6 tests: pair, start, use and forget; a phone that starts before the hub is reachable; the link carried by the app's own Tailscale, also when Tailscale comes up after the link; a link that started on Tailscale while the direct path was down moves back to it once it works (4.9 s, the next check plus WireGuard's 5 s limit); which addresses count as Tailscale's).
 
@@ -108,6 +108,7 @@ pan-link now runs on the real hub for good, in front of the real PAN, and starts
 - `windows/install-pan-link-task.ps1` registers the scheduled task `PAN-Link`: at startup, as SYSTEM, no time limit (`schtasks` would stop it after 3 days), restart on failure. It runs beside `PAN-Hub`.
 - To update: `schtasks /end /tn PAN-Link` (it ends the launcher and pan-link with it), replace the exe, `schtasks /run /tn PAN-Link`. Paired devices are back within about a second, since the hub calls each one back: after a restart this way, PAN answered through the phone's link 1.2 s after the task started again.
 - Not tried yet: a real reboot of the hub.
+- PAN makes pairing codes through pan-link's admin API: `POST /api/v1/link/pair` (owner only) answers the `pan://pair` code and its QR as SVG, and `GET /api/v1/link/devices` lists the paired devices (`service/src/routes/link.js`). The app's "Pair this phone" uses it.
 
 ### Phone run (owner's Pixel 10 Pro, Android 17, 2026-11-08)
 

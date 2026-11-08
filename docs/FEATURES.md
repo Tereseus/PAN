@@ -201,6 +201,25 @@ Rules:
 
 ---
 
+## PAN Link pairing codes (`/api/v1/link/*`, `service/src/routes/link.js`)
+
+- **Calls:** pan-link's admin API on the hub (`http://127.0.0.1:7792`, or `PAN_LINK_ADMIN`)
+  with the link secret from `<data dir>/link.json`: `POST /admin/pair`, `GET /admin/devices`,
+  `GET /admin/status`. Mounted after the login check in `server.js`.
+- **Semantics:** `POST /api/v1/link/pair` (body `{ name?, ttl_minutes? }`, 1 to 60 minutes,
+  pan-link's default 10) answers `{ uri, expires, svg }`: a `pan://pair` code and the same as
+  a QR (`qrcode`). `GET /api/v1/link/devices` lists the paired devices, `GET /api/v1/link/status`
+  is pan-link's own view (addresses, device count). The phone's Settings → "Pair this phone"
+  uses `/pair` over its Tailscale connection.
+- **Preserves:** no `link.json` → 503 "PAN Link is not set up on this computer", and pan-link
+  is never asked. pan-link not running → 503 with the reason. Unused codes live only in
+  pan-link's memory and expire.
+- **Replaces:** running `pan-link code` on the hub by hand.
+- **Pre-gate:** owner only (`req.user.role === 'owner'`, 403 otherwise): a code lets a new
+  device in as the owner. A paired device is the owner, so it can make codes too.
+
+---
+
 ## PAN Link on the phone (`vpn/LinkManager.kt`, `vpn/PairActivity.kt`, `android/pan-vpn/linkmode`)
 
 - **Calls:** a `pan://pair?...` link (the hub's pairing QR text, printed by `pan-link code`)
@@ -224,7 +243,9 @@ Rules:
   direct path works again (`linkmode.Conn.preferDirect`).
   Settings → Connection shows a "PAN Link" line (`LinkManager.summary()`: connected or not,
   home network or Tailscale, last handshake) and "Forget this pairing" (asks first). Link
-  events go to the hub's log through `LogShipper` (source `pan-link`).
+  events go to the hub's log through `LogShipper` (source `pan-link`). When the phone isn't
+  paired, Settings has "Pair this phone": it asks PAN for a code over the Tailscale proxy
+  (`LinkManager.pairThroughPan`, see "PAN Link pairing codes") and pairs with it at once.
 - **Preserves:** with no pairing nothing changes: no port, no network callback, the Tailscale
   proxy as before. The pairing, with the phone's private key, is `files/pan-link/client.json`
   in app-private storage. The link itself needs no VPN permission.

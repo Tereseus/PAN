@@ -149,6 +149,26 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (linkPaired) {
                 TextButton(onClick = { confirmForget = true }) { Text("Forget this pairing") }
+            } else {
+                // A phone that already reaches PAN (over Tailscale) gets a code from PAN itself.
+                var pairing by remember { mutableStateOf(false) }
+                Button(
+                    enabled = proxyUrl != null && !pairing,
+                    onClick = {
+                        val base = proxyUrl ?: return@Button
+                        pairing = true
+                        scope.launch {
+                            val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                runCatching { link.pairThroughPan(base) }
+                            }
+                            pairing = false
+                            linkPaired = link.isPaired()
+                            snackbarHostState.showSnackbar(r.fold(
+                                { "Paired. This phone uses PAN Link now." },
+                                { "Pairing failed: ${it.message}" }))
+                        }
+                    }
+                ) { Text(if (pairing) "Pairing…" else "Pair this phone") }
             }
             if (confirmForget) {
                 AlertDialog(
