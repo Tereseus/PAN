@@ -16,6 +16,7 @@
 
 import { get, all, run, insert, getOllamaUrl, getConfiguredOllamaUrl } from './db.js';
 import { READER_PORT } from './voice-reader.js';
+import { PHOTO_READER_PORT, modelFiles, photoReaderArgs } from './photo-reader.js';
 import { PROFILE } from './profiles.js';
 import { sendToClient } from './client-manager.js';
 import { startClassifier, stopClassifier } from './classifier.js';
@@ -136,6 +137,21 @@ function pickReaderModel() {
 const READER_MODEL = pickReaderModel();
 const READER_READY = !!READER_MODEL && existsSync(READER_EXE);
 
+// The photo reader (photo-reader.js): the Ollama model named in the photo_reader setting
+// ("moondream:latest" on the hub), run by the same llama-server on this machine's graphics chip
+// through the Vulkan backend Ollama ships beside it. No setting, no service. With no usable chip
+// the backend stays on the CPU: it still answers, just no sooner than Ollama.
+const VULKAN_BACKEND = join(dirname(READER_EXE), 'vulkan', 'ggml-vulkan.dll');
+function pickPhotoReaderModel() {
+  try {
+    return String(get(`SELECT value FROM settings WHERE key = 'photo_reader'`)?.value || '').replace(/^"|"$/g, '').trim() || null;
+  } catch {
+    return null;
+  }
+}
+const PHOTO_READER_MODEL = pickPhotoReaderModel();
+const PHOTO_READER_READY = !!PHOTO_READER_MODEL && existsSync(READER_EXE) && existsSync(VULKAN_BACKEND);
+
 // Detached and unref'd, like whisper-server.py, so it outlives Craft swaps; a running one is
 // reused. startFn ran twice in the same second after a swap and two copies loaded, so a launch
 // waits a minute for the last one to come up; a copy that still races fails to bind and exits.
@@ -198,6 +214,40 @@ function startVoiceReader() {
     try {
       if (JSON.parse(body || '{}').status === 'ok') {
         console.log(`[Steward] Voice reader already serving on :${READER_PORT} — reusing`);
+        return;
+      }
+    } catch {}
+    launch();
+  }).catch(() => launch());
+}
+
+// Like the voice reader: detached, reused when already running, one launch a minute.
+let _photoReaderLaunchedAt = 0;
+function startPhotoReader() {
+  const launch = async () => {
+    if (Date.now() - _photoReaderLaunchedAt < 60_000) return;
+    _photoReaderLaunchedAt = Date.now();
+    let log = 'ignore';
+    try { log = openSync(join(PAN_LOCAL, 'logs', 'photo-reader.log'), 'a'); } catch {}
+    try {
+      const r = await fetch(`${getConfiguredOllamaUrl()}/api/show`, { method: 'POST', body: JSON.stringify({ model: PHOTO_READER_MODEL }), signal: AbortSignal.timeout(5000) });
+      const files = modelFiles((await r.json()).modelfile);
+      if (!files || !existsSync(files.file) || !existsSync(files.projector)) throw new Error(`no model and image files for ${PHOTO_READER_MODEL}`);
+      spawn(READER_EXE, photoReaderArgs({ ...files, model: PHOTO_READER_MODEL }), {
+        detached: true,
+        stdio: ['ignore', log, log],
+        windowsHide: true,
+        env: { ...process.env, GGML_BACKEND_PATH: VULKAN_BACKEND },
+      }).unref();
+      console.log(`[Steward] Launched the photo reader (${PHOTO_READER_MODEL})`);
+    } catch (err) {
+      console.error('[Steward] Failed to launch the photo reader:', err.message);
+    }
+  };
+  httpGet(`http://127.0.0.1:${PHOTO_READER_PORT}/health`, { timeout: 2000 }).then((body) => {
+    try {
+      if (JSON.parse(body || '{}').status === 'ok') {
+        console.log(`[Steward] Photo reader already serving on :${PHOTO_READER_PORT} — reusing`);
         return;
       }
     } catch {}
@@ -750,6 +800,26 @@ const services = [
     dependsOn: [],
     interval: null, // always-on
     startFn: startVoiceReader,
+    stopFn: null,
+    _status: 'unknown',
+    _lastCheck: null,
+    _lastError: null,
+    _lastRun: null,
+  }] : []),
+  ...(PHOTO_READER_READY ? [{
+    id: 'photo-reader',
+    name: 'Photo reader',
+    technicalName: 'Photo Reader',
+    description: 'The camera\'s describing model on this machine\'s graphics chip',
+    modelTier: 'local',
+    modelMinSize: 'N/A',
+    modelCurrent: PHOTO_READER_MODEL,
+    port: PHOTO_READER_PORT,
+    healthCheck: 'port',
+    bootOrder: 3,
+    dependsOn: [],
+    interval: null, // always-on
+    startFn: startPhotoReader,
     stopFn: null,
     _status: 'unknown',
     _lastCheck: null,
@@ -1605,8 +1675,8 @@ $result | ConvertTo-Json -Compress -Depth 3`;
 // that was gone since 10-31 (started 09-22, 10-22, 10-31) still held 22.6 GB of commit
 // on 2026-11-03. Nothing can ever use a runner whose server is gone, so it is always
 // ended, no age threshold and no prompt (the owner asked for exactly that). A pid can be
-// reused, so the parent must also be ollama.exe and older than the runner. The voice reader is
-// PAN's own and has no Ollama parent: this ended two test copies on 2026-11-05.
+// reused, so the parent must also be ollama.exe and older than the runner. The voice and photo
+// readers are PAN's own and have no Ollama parent: this ended two test copies on 2026-11-05.
 const _OLLAMA_REAP_INTERVAL_MS = 5 * 60 * 1000;
 let _ollamaReapLastRun = 0;
 
@@ -1619,7 +1689,7 @@ async function reapOrphanOllamaRunners() {
     const ps = `$out = @()
 Get-CimInstance Win32_Process -Filter "Name='llama-server.exe' OR Name='ollama_llama_server.exe' OR (Name='ollama.exe' AND CommandLine LIKE '%runner%')" | ForEach-Object {
   $r = $_
-  if ($r.CommandLine -like '*--port ${READER_PORT} *') { return }
+  if ($r.CommandLine -like '*--port ${READER_PORT} *' -or $r.CommandLine -like '*--port ${PHOTO_READER_PORT} *') { return }
   $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($r.ParentProcessId)"
   if (-not $p -or $p.Name -ne 'ollama.exe' -or $p.CreationDate -gt $r.CreationDate) {
     $out += [pscustomobject]@{ pid = $r.ProcessId; ppid = $r.ParentProcessId; parent = $(if ($p) { $p.Name } else { '' }); started = $r.CreationDate.ToString('yyyy-MM-dd HH:mm'); mb = [math]::Round($r.PageFileUsage / 1KB) }

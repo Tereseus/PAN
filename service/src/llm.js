@@ -4,6 +4,7 @@
 
 import { insert, get, run, getOllamaUrl, getConfiguredOllamaUrl, getModelForPurpose, pickHealthyOllama, reportOllamaLatency, isOllamaDegraded } from './db.js';
 import { readerStream } from './voice-reader.js';
+import { describeWithPhotoReader } from './photo-reader.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
@@ -1250,6 +1251,23 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
   // below) can name why the mini PC Ollama primary failed.
   let ollamaFailReason = null;
   const visionModel = model || _getVisionModel();
+
+  // The photo reader (photo-reader.js): this same model on the hub's graphics chip, when the
+  // steward runs one for it (5.1 s a new photo against 7.5 to 8.3 s in Ollama on the CPU). Only
+  // one image a call. Not running, or running another model, costs one local request; a failure
+  // part way costs at most 20 s, then Ollama answers as before.
+  if (!referenceImages.length) {
+    try {
+      const r = await describeWithPhotoReader(prompt, imageBase64, { model: visionModel, maxTokens, timeoutMs: Math.min(remaining(), 20_000) });
+      if (r?.text) {
+        _lastVisionAlertAt = 0;
+        logUsage(caller, `photo-reader:${visionModel}`, { input_tokens: r.input_tokens, output_tokens: r.output_tokens }, prompt.slice(0, 100), { started_at: startedAt });
+        return r.text;
+      }
+    } catch (e) {
+      console.warn(`[PAN Vision] photo reader failed (${e.message}) - asking Ollama`);
+    }
+  }
 
   // Primary: mini PC Ollama (getOllamaUrl() returns the discovered address)
   try {

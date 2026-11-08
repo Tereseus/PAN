@@ -1260,6 +1260,22 @@ children can have adult-sounding voices and vice versa).
   made "how long would it take to get there?" about the photo (2026-11-08). `bench: true` runs the same
   looks and saves nothing. `analyzeImage` (llm.js, `model` option per call) has no cloud
   fallback: photos and what is in them never leave the mini PC.
+- **Photo reader (2026-11-08, off until the `photo_reader` setting names a model):** steward
+  service `photo-reader` (:7787) runs that Ollama model ("moondream:latest" on the hub) from the
+  files Ollama holds, in the llama-server Ollama ships, on this machine's graphics chip through
+  the Vulkan backend Ollama ships beside it (`GGML_BACKEND_PATH`, every layer on the chip).
+  `service/src/photo-reader.js`. `analyzeImage` asks it first for a one-photo call to the same
+  model and falls back to Ollama: nothing there or another model is one local request, a failure
+  part way at most 20 s. The image marker comes from `/props` on every call (llama-server picks a
+  random one at each start), and the prompt is Ollama's moondream template. Hub bench with new
+  photos (Ryzen 7 5800H, AMD iGPU): 5.1 s a photo against 7.5-8.3 s in Ollama on the CPU, the
+  same descriptions, 32 of 32 runs, about 1 GB more memory while it runs. The voice model got
+  nothing from the same chip (it read 271 and wrote 31 tokens a second either way), so only
+  photos use it. Tried and not used: SmolVLM2-500M (1.7 s on the chip with a 512 px photo, but it
+  missed his dog every time, repeated itself and made up names), and `--load-mode none` (the
+  server died after two photos). The runner reaper knows it by its port. Turning it on: the
+  setting, then a Craft swap; Ollama's own moondream copy can then be unloaded. Tests: `node
+  service/src/__tests__/photo-reader.test.js` (6).
 - **Phone shortcut:** the phone takes some camera lines itself before the hub sees them
   (`camera/CameraAsk.kt`, app 0.4.99; it was `isCameraCommand` in `PanForegroundService.kt`).
   Fixed phrases ("what am i looking at", "tell me what I'm looking at", "take a photo") count
