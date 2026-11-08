@@ -3,7 +3,8 @@ REM PAN Link on a second computer (pan-link client), started at boot by the
 REM PAN-Link-Client scheduled task as SYSTEM. It lives in <PAN folder>\pan-link\; the
 REM pairing (client.json, which holds this computer's private key) is in
 REM <PAN folder>\link-client\. PAN on the hub is then at http://127.0.0.1:7779 here: point
-REM this computer's PAN tools there (PAN_BASE_URL for the MCP server, the client's hub URL).
+REM this computer's PAN tools there (the PAN client's hub URL, Claude Code's MCP server and
+REM hooks); the repo's own MCP servers find it by themselves.
 REM If pan-link stops, it starts again after about 5 s. To stop it for good:
 REM   schtasks /end /tn PAN-Link-Client   (ends this launcher and pan-link with it)
 setlocal

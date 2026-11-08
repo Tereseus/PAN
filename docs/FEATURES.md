@@ -1918,6 +1918,16 @@ Three additional views on top of the existing Projects page:
 
 The MCP server (`service/src/mcp-server.js`) exposes tools to Claude Code.
 
+- **Where it finds PAN:** the repo's `.mcp.json` starts it (and `quality-log-mcp.js`) on
+  whatever computer Claude runs on, so it names no address. `service/src/mcp/pan-address.js`
+  picks one: `PAN_BASE_URL` when set; `http://127.0.0.1:7779` when this computer has a paired
+  PAN Link client (`%LOCALAPPDATA%\PAN\link-client\client.json` on Windows,
+  `~/.local/share/pan/link-client/client.json` on Linux); else `http://127.0.0.1:7777`, PAN on
+  this computer. It prints the one it chose on stderr at start.
+- **Replaces:** `PAN_BASE_URL` set to the hub's Tailscale name in `.mcp.json`, which went around
+  PAN Link and stops working once the hub's 7777 listens on 127.0.0.1 only.
+- **Pre-gate:** `node service/src/__tests__/pan-address.test.js` (5 tests).
+
 ### Core Tools
 
 | Tool | What it does |

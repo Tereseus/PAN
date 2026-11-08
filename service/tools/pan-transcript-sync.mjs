@@ -26,7 +26,7 @@
  *   node pan-transcript-sync.mjs --fast             # only turns past the high-water mark
  *   node pan-transcript-sync.mjs --since 2026-09-01
  *   node pan-transcript-sync.mjs --hub http://minipc-pan-hub:7777
- *   (default hub: PAN_HUB, else pan-client/pan-client-config.json's relay_hub_url or
+ *   (default hub: PAN_HUB, else this computer's pan-client-config.json relay_hub_url or
  *   hub_ws, else http://minipc-pan-hub:7777)
  *
  * Default is a FULL reconcile: send every turn and let the hub reject what it
@@ -49,14 +49,26 @@ const opt = (n, d) => {
 
 // The hub: --hub, else PAN_HUB, else this computer's PAN client settings (the same
 // relay_hub_url or hub_ws the thread relay uses, so moving a computer onto PAN Link is one
-// file), else the hub's Tailscale name.
+// file), else the hub's Tailscale name. The client's settings are looked for beside this
+// repo, where the client installer (service/installer/pan-installer.cjs) puts them, and in
+// ~/pan-client (a client installed by hand), so a copy of this script outside the repo
+// finds them too.
 function clientHub() {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const cfg = JSON.parse(readFileSync(join(here, '..', '..', 'pan-client', 'pan-client-config.json'), 'utf8'));
-    if (cfg.relay_hub_url) return cfg.relay_hub_url;
-    if (cfg.hub_ws) return cfg.hub_ws.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws.*$/, '');
-  } catch { /* no PAN client here */ }
+  const here = dirname(fileURLToPath(import.meta.url));
+  const places = [
+    join(here, '..', '..', 'pan-client'),
+    process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA || homedir(), 'PAN-Client')
+      : join(homedir(), '.local', 'share', 'pan-client'),
+    join(homedir(), 'pan-client'),
+  ];
+  for (const dir of places) {
+    try {
+      const cfg = JSON.parse(readFileSync(join(dir, 'pan-client-config.json'), 'utf8'));
+      if (cfg.relay_hub_url) return cfg.relay_hub_url;
+      if (cfg.hub_ws) return cfg.hub_ws.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws.*$/, '');
+    } catch { /* no PAN client there */ }
+  }
   return null;
 }
 const HUB = (opt('hub', process.env.PAN_HUB || clientHub() || 'http://minipc-pan-hub:7777')).replace(/\/$/, '');

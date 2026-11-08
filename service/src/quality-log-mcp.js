@@ -12,8 +12,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerQualityLogTools } from './mcp/quality-log-tools.js';
+import { panBaseUrl } from './mcp/pan-address.js';
 
-const PAN = process.env.PAN_BASE_URL || 'http://127.0.0.1:7777';
+// PAN_BASE_URL, else this computer's PAN Link, else PAN on this computer (mcp/pan-address.js).
+const PAN = panBaseUrl();
 
 const server = new McpServer({ name: 'quality-log', version: '0.1.0' });
 registerQualityLogTools(server, { panBaseUrl: PAN });

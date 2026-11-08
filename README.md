@@ -157,7 +157,7 @@ ollama pull qwen3-embedding:0.6b
 
 ### Connecting Claude Code
 
-The repo ships a `.mcp.json` pointing at `service/src/mcp-server.js`. Claude Code picks it up automatically when you open the project. Set `PAN_BASE_URL` if your hub runs on another machine.
+The repo ships a `.mcp.json` pointing at `service/src/mcp-server.js`. Claude Code picks it up automatically when you open the project. It finds PAN by itself: on the PAN computer at `http://127.0.0.1:7777`, and on a computer paired with PAN Link through the link's local port, `http://127.0.0.1:7779` (`pan-link/README.md`). Set `PAN_BASE_URL` to point it anywhere else.
 
 ### Dev server
 
