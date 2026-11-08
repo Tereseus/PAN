@@ -4,7 +4,7 @@
 import { mkdtempSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { identify, linkSecret, resetLinkCache, HEADER_DEVICE, HEADER_SECRET, HEADER_DEVICE_NAME } from '../pan-link-auth.js';
+import { identify, linkSecret, linkDevice, resetLinkCache, HEADER_DEVICE, HEADER_SECRET, HEADER_DEVICE_NAME } from '../pan-link-auth.js';
 
 let passed = 0;
 let failed = 0;
@@ -105,6 +105,44 @@ test('short secret in link.json is refused', () => {
   writeFileSync(join(d, 'link.json'), JSON.stringify({ secret: 'short' }));
   eq(linkSecret(d), null, 'secret');
   rmSync(d, { recursive: true, force: true });
+});
+
+test('linkDevice: limited, full, not listed, and no PAN Link here', () => {
+  const d = mkdtempSync(join(tmpdir(), 'panlink-devs-'));
+  try {
+    writeFileSync(join(d, 'link.json'), JSON.stringify({ secret: SECRET, devices: [
+      { id: 'd18cf2700479c', name: 'phone' },
+      { id: 'd0fb0b7942a0e', name: 'shared pc', allow: ['POST /api/v1/notify/inbound'] },
+      { id: 'd5555555555ee', name: 'old', allow: [] },
+    ] }));
+    eq(linkDevice(d, 'd18cf2700479c'), { limited: false }, 'full');
+    eq(linkDevice(d, 'd0fb0b7942a0e'), { limited: true }, 'limited');
+    eq(linkDevice(d, 'd5555555555ee'), { limited: false }, 'empty allow list is full');
+    eq(linkDevice(d, 'd9999999999ff'), null, 'not listed');
+    eq(linkDevice(noLink, 'd18cf2700479c'), undefined, 'no link.json');
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('linkDevice finds a device paired a moment ago, and loses a removed one', () => {
+  const d = mkdtempSync(join(tmpdir(), 'panlink-pair-'));
+  const file = join(d, 'link.json');
+  const old = new Date(Date.now() - 10_000);
+  try {
+    writeFileSync(file, JSON.stringify({ secret: SECRET, devices: [] }));
+    utimesSync(file, old, old);
+    eq(linkDevice(d, 'd18cf2700479c'), null, 'before pairing');
+    writeFileSync(file, JSON.stringify({ secret: SECRET, devices: [{ id: 'd18cf2700479c' }] }));
+    utimesSync(file, new Date(old.getTime() + 2000), new Date(old.getTime() + 2000));
+    eq(linkDevice(d, 'd18cf2700479c'), { limited: false }, 'right after pairing');
+    eq(linkDevice(d, 'd18cf2700479c', Date.now() + 120_000), { limited: false }, 'a while later');
+    writeFileSync(file, JSON.stringify({ secret: SECRET, devices: [] }));
+    utimesSync(file, new Date(old.getTime() + 4000), new Date(old.getTime() + 4000));
+    eq(linkDevice(d, 'd18cf2700479c', Date.now() + 240_000), null, 'after removal (next reload)');
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
 });
 
 rmSync(withLink, { recursive: true, force: true });

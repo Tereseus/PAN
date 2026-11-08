@@ -21,6 +21,7 @@ import { fileURLToPath } from 'url';
 import { request as httpRequest } from 'http';
 import { stripHopByHop } from './proxy-headers.js';
 import { raiseProcessPriority } from './platform.js';
+import { HEADER_DEVICE, HEADER_DEVICE_NAME, HEADER_SECRET } from './pan-link-auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -150,7 +151,17 @@ function proxyHttp(req, res) {
 // ── WebSocket proxy with buffering ───────────────────────────────────────────
 // Each browser WS gets a managed proxy that survives Carrier restarts.
 
-function proxyWs(browserWs, url) {
+// pan-link's identity headers go on to the Carrier with the socket, so the client
+// WebSocket (client-manager.js) knows which PAN Link device is calling. The Carrier
+// checks them against the link secret and refuses forged ones (pan-link-auth.js).
+const LINK_HEADERS = [HEADER_DEVICE, HEADER_DEVICE_NAME, HEADER_SECRET];
+function linkHeaders(req) {
+  const out = {};
+  for (const h of LINK_HEADERS) if (typeof req.headers[h] === 'string') out[h] = req.headers[h];
+  return out;
+}
+
+function proxyWs(browserWs, url, headers = {}) {
   const outBuffer = []; // browser→carrier frames buffered during restart (max 200)
   let   internal  = null;
   let   dead      = false;   // true once browser disconnects
@@ -166,7 +177,14 @@ function proxyWs(browserWs, url) {
   function connectInternal() {
     if (dead) return;
 
-    internal = new WebSocket(`ws://127.0.0.1:${CARRIER_PORT}${url}`);
+    try {
+      internal = new WebSocket(`ws://127.0.0.1:${CARRIER_PORT}${url}`, { headers });
+    } catch (err) { // a header or URL Node won't send on: drop this socket, never this process
+      console.error(`[SuperCarrier] Could not open the Carrier socket for ${url.split('?')[0]}: ${err.message}`);
+      dead = true;
+      try { browserWs.close(1011, 'proxy error'); } catch {}
+      return;
+    }
 
     internal.on('open', () => {
       // Pan-client reconnecting after Carrier restart: close so it re-registers fresh.
@@ -203,6 +221,20 @@ function proxyWs(browserWs, url) {
     });
 
     internal.on('error', () => {}); // handled by 'close'
+
+    // The Carrier refused the socket outright: 401 (bad invite token) or 403 (forged
+    // PAN Link identity). Retrying can't change that, so pass the refusal on and stop,
+    // instead of asking again every 100 ms for as long as the caller stays connected.
+    // Anything else (a Craft still starting) goes on to 'close' and is retried as before.
+    const sock = internal;
+    sock.on('unexpected-response', (_req, res) => {
+      const status = res.statusCode;
+      if (status === 401 || status === 403) {
+        dead = true;
+        try { browserWs.close(4000 + status, status === 403 ? 'forbidden' : 'unauthorized'); } catch {}
+      }
+      try { sock.terminate(); } catch {}
+    });
   }
 
   // Browser → carrier (buffer if carrier is mid-restart)
@@ -286,7 +318,8 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', async (req, socket, head) => {
   try {
     await waitForCarrier();
-    wss.handleUpgrade(req, socket, head, ws => proxyWs(ws, req.url));
+    const headers = linkHeaders(req);
+    wss.handleUpgrade(req, socket, head, ws => proxyWs(ws, req.url, headers));
   } catch {
     socket.destroy();
   }

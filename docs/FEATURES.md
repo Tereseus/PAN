@@ -198,6 +198,38 @@ Rules:
   127.0.0.1 (`docs/INSTALL-PLAN.md`, step 1).
 - **Pre-gate:** the secret is cached for a minute; a mismatch re-checks
   `link.json` at once, so a new `link.json` or a new secret works immediately.
+- **Also:** the PAN client WebSocket (`/ws/client`, below) checks the same headers. The
+  Super-Carrier passes them on with the socket (`super-carrier.js` `linkHeaders`).
+  `linkDevice(dataDir, id)` reads whether pan-link limits a device (its allow list in
+  `link.json`), or that it is no longer paired.
+
+---
+
+## PAN client names (`/ws/client`, `service/src/client-claim.js`)
+
+- **Calls:** `client-manager.js` (in the Carrier) on every `register` message, with
+  `decideClaim()` from `client-claim.js`; the holder is kept in `devices.link_device_id`.
+- **Semantics:** pan-client and the Slack client pick their own name (`device_id`), and PAN
+  sends that name's commands to whoever holds it. A name belongs to the computer that first
+  used it: a PAN Link device (by its key), or `local` for the hub itself. Any other computer
+  gets `{ type: 'name_taken' }` and is closed after 3 s (not `denied`, which makes pan-client
+  exit). A name moves only when its link device is removed from pan-link, or from `local` to
+  one of the owner's own link computers (moving a PC off Tailscale). A limited link device
+  can't inherit an approved name: it gets the name back as pending, and the dashboard asks
+  the owner again ("<name> now connects from <computer>, which is limited"). Forged link
+  headers are refused at the upgrade (403, which the Super-Carrier passes on as close code
+  4403 and does not retry). Until a socket holds its name, it may only send `register`, so a
+  refused socket can't send heartbeats in another computer's name or take it off line when it
+  closes. Approve and Deny in the dashboard take effect on a connected client at its next
+  command (the Carrier reads the database instead of the trust it had at registration).
+- **Preserves:** names that already exist and nobody holds go to the first computer that
+  uses them, keeping their approval (the owner's computers, at the first start with this);
+  a limited computer's come back pending. Without PAN Link every name is `local`, so nothing
+  changes. A restarted client from the same computer replaces its old socket.
+- **Replaces:** tokens starting with `dev-`, which skipped approval for any new name (also on
+  `/install/:token`), and the last socket under a name winning.
+- **Pre-gate:** tests: `node service/src/__tests__/client-claim.test.js` (7) and
+  `pan-link-auth.test.js` (12).
 
 ---
 

@@ -14,6 +14,9 @@ import { createAlert } from './routes/dashboard.js';
 import crypto from 'crypto';
 import { hostname } from 'os';
 import { broadcastNotification } from './terminal-bridge.js';
+import { getDataDir } from './platform.js';
+import { identify as panLinkIdentify, linkDevice } from './pan-link-auth.js';
+import { decideClaim, LOCAL } from './client-claim.js';
 
 // In-memory client registry: device_id → { ws, info }
 const clients = new Map();
@@ -57,21 +60,20 @@ function validateToken(token) {
   return !!entry;
 }
 
-// Dev mode: allow any token starting with 'dev-'
 // 'local' sentinel: connections from the same LAN/Tailscale network discovered
 // via UDP broadcast or Tailscale peer scan — no invite needed, but still goes
 // through the pending-approval gate so the hub owner must approve them.
+// (Tokens starting with 'dev-' used to pass here and skip approval too; anyone who
+// could reach /ws/client could make an approved client that way. Removed 2026-11-08.)
 function isTokenValid(token) {
   if (!token) return false;
   if (token === 'local') return true;        // local network discovery bypass
-  if (token.startsWith('dev-')) return true; // dev bypass
   return validateToken(token);
 }
 
-// Exported so install route can check tokens without the dev bypass
+// Exported so the install routes can check invite tokens (no 'local' sentinel there).
 export function checkInviteToken(token) {
   if (!token) return false;
-  if (token.startsWith('dev-')) return true;
   return validateToken(token);
 }
 
@@ -127,6 +129,9 @@ export function checkInviteToken(token) {
       endpoint TEXT,
       notes TEXT
     )`,
+    // The computer that holds this client name (client-claim.js): a PAN Link device id,
+    // 'local' for this computer, NULL while nobody holds it.
+    "ALTER TABLE devices ADD COLUMN link_device_id TEXT",
   ];
   for (const sql of migrations) {
     try { run(sql); } catch {} // Ignore duplicate column errors
@@ -141,11 +146,12 @@ function getDeviceTrust(device_id) {
 }
 
 function upsertDevice({ device_id, name, platform, capabilities, version, pending = false, tailscale_ip = null,
-                        service_state = null, service_manager = null }) {
+                        service_state = null, service_manager = null, reapprove = false }) {
   const existing = get("SELECT id, trusted FROM devices WHERE hostname = :h", { ':h': device_id });
   if (existing) {
-    // Never downgrade trust — if already approved (1) keep it; only set pending (0) on first-ever pan-client registration
-    const newTrust = existing.trusted !== null ? existing.trusted : (pending ? 0 : 1);
+    // Never downgrade trust — if already approved (1) keep it; only set pending (0) on first-ever pan-client registration.
+    // The one exception: reapprove, an approved name a limited link computer just took (client-claim.js).
+    const newTrust = reapprove ? 0 : existing.trusted !== null ? existing.trusted : (pending ? 0 : 1);
     // Don't let the client registration overwrite a human-set name (name column is set by the user via the dashboard).
     // Only set the name if there isn't one already, or if the existing name IS the device_id (never manually renamed).
     const existingRow = get("SELECT name FROM devices WHERE hostname = :h", { ':h': device_id });
@@ -238,13 +244,25 @@ export function startClientServer(httpServer) {
     const token = params.get('token');
     const deviceId = params.get('device_id');
 
+    // Which PAN Link device is calling, if any (the Super-Carrier passes pan-link's
+    // headers on). Forged link headers are refused, as on every /api route.
+    const link = panLinkIdentify(request, getDataDir());
+    if (link.forged) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      console.warn(`[PAN Clients] Rejected connection: bad PAN Link identity (device=${deviceId})`);
+      return;
+    }
+
     // Localhost connections (hub machine itself) always allowed — no invite token needed.
+    // So are PAN Link devices: both still pass the approval gate and the name check
+    // (handleRegister).
     const remoteIp = request.socket.remoteAddress || '';
     const isLocalhost = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
     // Already-approved devices can reconnect even if their invite token has expired.
     const deviceTrust = deviceId ? getDeviceTrust(deviceId) : null;
     const isApproved = deviceTrust === 1;
-    if (!isLocalhost && !isApproved && !isTokenValid(token)) {
+    if (!link.ok && !isLocalhost && !isApproved && !isTokenValid(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
       socket.destroy();
       console.warn(`[PAN Clients] Rejected connection: invalid token (device=${deviceId})`);
@@ -257,6 +275,7 @@ export function startClientServer(httpServer) {
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws._panDeviceId = deviceId;
       ws._panTailscaleIp = tailscaleIp;
+      ws._panLink = link.ok ? { id: link.deviceId, name: link.deviceName } : null;
       wss.emit('connection', ws, request);
     });
   });
@@ -264,11 +283,9 @@ export function startClientServer(httpServer) {
   wss.on('connection', (ws, req) => {
     const params = new URL(req.url, 'http://localhost').searchParams;
     const deviceId = params.get('device_id') || ws._panDeviceId || 'unknown';
-    const token = params.get('token') || '';
-    const isDevToken = token.startsWith('dev-');
-    ws._panToken = token;
-    ws._panDevMode = isDevToken;
-    console.log(`[PAN Clients] New connection: ${deviceId}`);
+    ws._panToken = params.get('token') || '';
+    const via = ws._panLink ? ` via PAN Link from ${ws._panLink.name || ws._panLink.id}` : '';
+    console.log(`[PAN Clients] New connection: ${deviceId}${via}`);
 
     ws.on('message', (data) => {
       let msg;
@@ -276,8 +293,11 @@ export function startClientServer(httpServer) {
       handleClientMessage(ws, deviceId, msg);
     });
 
+    // Only the socket that holds the name in `clients` speaks for it: a newer connection
+    // under the same name, or one refused the name, must not take the holder off line.
     ws.on('close', () => {
       console.log(`[PAN Clients] Disconnected: ${deviceId}`);
+      if (clients.get(deviceId)?.ws !== ws) return;
       clients.delete(deviceId);
       setDeviceOnline(deviceId, false);
       broadcastNotification('widget_update', { widget: 'devices' });
@@ -289,7 +309,7 @@ export function startClientServer(httpServer) {
 
     ws.on('pong', () => {
       const entry = clients.get(deviceId);
-      if (entry) entry.lastPong = Date.now();
+      if (entry?.ws === ws) entry.lastPong = Date.now();
     });
   });
 
@@ -311,6 +331,11 @@ export function startClientServer(httpServer) {
 
 // ── Message handlers ──────────────────────────────────────────────────────────
 function handleClientMessage(ws, deviceId, msg) {
+  if (!msg || typeof msg !== 'object') return;
+  // Until a socket registers and holds its name, it may only register: otherwise any
+  // socket could send heartbeats or results in another computer's name.
+  if (msg.type !== 'register' && clients.get(deviceId)?.ws !== ws) return;
+
   switch (msg.type) {
     case 'register':
       handleRegister(ws, deviceId, msg);
@@ -339,37 +364,61 @@ function handleClientMessage(ws, deviceId, msg) {
   }
 }
 
+// Logs a refusal at most once a minute per name, like the denied-device warning.
+function logRateLimited(key, line) {
+  const now = Date.now();
+  const rl = deniedRateLimit.get(key) || { lastLog: 0, count: 0 };
+  rl.count++;
+  if (now - rl.lastLog >= DENIED_LOG_INTERVAL_MS) {
+    console.warn(line + (rl.count > 1 ? ` (${rl.count}x in last minute)` : ''));
+    rl.lastLog = now;
+    rl.count = 0;
+  }
+  deniedRateLimit.set(key, rl);
+}
+
 function handleRegister(ws, deviceId, msg) {
-  // Dev tokens and previously-approved devices skip the approval gate
-  const isDevToken = ws._panDevMode;
-  const existingTrust = getDeviceTrust(deviceId);
-  const alreadyApproved = existingTrust === 1;
-  const wasDenied = existingTrust === -1;
+  const row = get("SELECT trusted, link_device_id FROM devices WHERE hostname = :h", { ':h': deviceId }) || null;
+  const wasDenied = row?.trusted === -1;
 
   if (wasDenied) {
     ws.send(JSON.stringify({ type: 'denied', device_id: deviceId, reason: 'This device was previously denied by the administrator' }));
     // Close with a longer delay (3s) to slow down rapid reconnect loops
     setTimeout(() => { try { ws.close(); } catch {} }, 3000);
-    // Rate-limit the log — only warn once per minute per device to avoid spam
-    const now = Date.now();
-    const rl = deniedRateLimit.get(deviceId) || { lastLog: 0, count: 0 };
-    rl.count++;
-    if (now - rl.lastLog >= DENIED_LOG_INTERVAL_MS) {
-      const suffix = rl.count > 1 ? ` (${rl.count}x in last minute)` : '';
-      console.warn(`[PAN Clients] Blocked previously-denied device: ${deviceId}${suffix}`);
-      rl.lastLog = now;
-      rl.count = 0;
-    }
-    deniedRateLimit.set(deviceId, rl);
+    logRateLimited(deviceId, `[PAN Clients] Blocked previously-denied device: ${deviceId}`);
     return;
   }
 
-  const pending = !isDevToken && !alreadyApproved;
+  // Which computer is asking, and may it use this name (client-claim.js)?
+  const dataDir = getDataDir();
+  const source = ws._panLink ? ws._panLink.id : LOCAL;
+  const from = ws._panLink ? `${ws._panLink.name || 'a PAN Link device'} (${ws._panLink.id})` : 'this computer';
+  const dev = ws._panLink ? linkDevice(dataDir, source) : null;
+  const holder = row?.link_device_id || null;
+  const claim = decideClaim(row, source, {
+    limited: ws._panLink ? dev?.limited !== false : false, // unknown counts as limited
+    holderGone: !!holder && holder !== LOCAL && linkDevice(dataDir, holder) === null,
+  });
+  if (!claim.ok) {
+    // Not 'denied': pan-client exits on that, and the name's real computer may be fine.
+    try { ws.send(JSON.stringify({ type: 'name_taken', device_id: deviceId, reason: 'Another computer uses this name' })); } catch {}
+    setTimeout(() => { try { ws.close(); } catch {} }, 3000); // slows a reconnect loop
+    logRateLimited(`taken:${deviceId}:${source}`,
+      `[PAN Clients] Refused name ${deviceId} to ${from}: it belongs to ${holder === LOCAL ? 'this computer' : holder}`);
+    return;
+  }
+  const pending = claim.pending;
+  const name = msg.name || deviceId;
+
+  // A restarted client from the same computer replaces its old socket; close that one
+  // so it can't linger in the name's place.
+  const previous = clients.get(deviceId);
+  if (previous && previous.ws !== ws) { try { previous.ws.close(1000, 'replaced by a newer connection'); } catch {} }
 
   clients.set(deviceId, {
     ws,
     device_id: deviceId,
-    name: msg.name || deviceId,
+    name,
     platform: msg.platform,
     version: msg.version,
     capabilities: msg.capabilities || [],
@@ -379,29 +428,36 @@ function handleRegister(ws, deviceId, msg) {
   });
   upsertDevice({
     device_id: deviceId,
-    name: msg.name || deviceId,
+    name,
     platform: msg.platform,
     capabilities: msg.capabilities,
     version: msg.version,
     pending,
+    reapprove: claim.reapprove,
     tailscale_ip: ws._panTailscaleIp || null,
     service_state: msg.service_state || null,
     service_manager: msg.service_manager || null,
   });
+  if (claim.bind) {
+    run("UPDATE devices SET link_device_id = :l WHERE hostname = :h", { ':l': claim.bind, ':h': deviceId });
+    console.log(`[PAN Clients] Name ${deviceId} now belongs to ${from}${holder ? ` (was ${holder})` : ''}`);
+  }
 
   if (pending) {
     ws.send(JSON.stringify({ type: 'pending_approval', device_id: deviceId, message: 'Waiting for administrator approval' }));
-    console.log(`[PAN Clients] Pending approval: ${msg.name || deviceId} (${msg.platform})`);
+    console.log(`[PAN Clients] Pending approval: ${name} (${msg.platform})${claim.reapprove ? `, now on limited ${from}` : ''}`);
     // Notify the dashboard so the hub owner sees an approve/deny prompt immediately
     broadcastNotification('device_pending', {
       device_id: deviceId,
-      name: msg.name || deviceId,
+      name,
       platform: msg.platform || 'unknown',
-      message: `New device wants to join: ${msg.name || deviceId} (${msg.platform || 'unknown'})`,
+      message: claim.reapprove
+        ? `${name} now connects from ${ws._panLink.name || 'a limited computer'}, which is limited. Approve it again if that's right.`
+        : `New device wants to join: ${name} (${msg.platform || 'unknown'})`,
     }).catch(() => {});
   } else {
     ws.send(JSON.stringify({ type: 'registered', device_id: deviceId, ok: true }));
-    console.log(`[PAN Clients] Registered: ${msg.name || deviceId} (${msg.platform}, v${msg.version})`);
+    console.log(`[PAN Clients] Registered: ${name} (${msg.platform}, v${msg.version}) from ${from}`);
     broadcastNotification('widget_update', { widget: 'devices' }).catch(() => {});
   }
 }
@@ -575,6 +631,14 @@ function handleShellOutput(deviceId, msg) {
  * @param {object} params - Command parameters
  * @param {number} timeoutMs - Timeout in ms (default 30s)
  */
+// Whether a connected client may get commands now. Approve and deny run in the Craft
+// (routes/client.js) and only write the database, so read it here rather than trust what
+// the client was when it registered.
+function stillTrusted(deviceId, entry) {
+  entry.trusted = getDeviceTrust(deviceId) === 1;
+  return entry.trusted;
+}
+
 export function sendToClient(deviceId, type, params = {}, timeoutMs = 30_000) {
   const entry = clients.get(deviceId);
   const wsOk = entry && entry.ws.readyState === WebSocket.OPEN;
@@ -583,7 +647,7 @@ export function sendToClient(deviceId, type, params = {}, timeoutMs = 30_000) {
   if (!wsOk && !httpOk) {
     return Promise.reject(new Error(`Client '${deviceId}' not connected`));
   }
-  if (entry && !entry.trusted) {
+  if (entry && !stillTrusted(deviceId, entry)) {
     return Promise.reject(new Error(`Client '${deviceId}' is pending approval`));
   }
 
@@ -620,7 +684,7 @@ export function sendToClient(deviceId, type, params = {}, timeoutMs = 30_000) {
  */
 export function fireToClient(deviceId, type, params = {}) {
   const entry = clients.get(deviceId);
-  if (!entry || entry.ws.readyState !== WebSocket.OPEN || !entry.trusted) return false;
+  if (!entry || entry.ws.readyState !== WebSocket.OPEN || !stillTrusted(deviceId, entry)) return false;
   entry.ws.send(JSON.stringify({ type, ...params }));
   return true;
 }
