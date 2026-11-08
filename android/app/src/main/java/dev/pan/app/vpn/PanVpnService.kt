@@ -2,10 +2,10 @@ package dev.pan.app.vpn
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.net.VpnService
-import android.os.ParcelFileDescriptor
+import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.pan.app.R
@@ -15,8 +15,18 @@ import javax.inject.Inject
 import kotlinx.coroutines.*
 import panvpn.Panvpn
 
+/**
+ * Runs the app's own Tailscale (tsnet, userspace) as a foreground service.
+ *
+ * It was an Android VpnService until 0.4.98, with a dummy interface (100.100.100.1,
+ * a route to 198.51.100.0/24 only) that carried nothing: tsnet keeps its own network
+ * stack and plain sockets, and never needed netlink (panvpn.go reads interfaces through
+ * anet). The dummy still cost a lot: Android blocked IPv6 for every app on the phone,
+ * PAN Link's own IPv6 path included (its table had only "unreachable default"), it took
+ * the phone's one VPN slot, and it needed a VPN consent dialog.
+ */
 @AndroidEntryPoint
-class PanVpnService : VpnService() {
+class PanVpnService : Service() {
 
     // The service is the ONLY thing that knows the proxy port, and it never told
     // anyone. Every caller of refreshFromVpn() lived in a ViewModel, so the port
@@ -37,11 +47,8 @@ class PanVpnService : VpnService() {
         var instance: PanVpnService? = null
             private set
 
-        fun prepare(context: Context): Intent? = VpnService.prepare(context)
-        fun isEstablished(): Boolean = instance?.vpnInterface != null
     }
 
-    private var vpnInterface: ParcelFileDescriptor? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loginUrl: String? = null
     /** PAN Link was told this Tailscale is up (once per start: each telling makes it handshake again). */
@@ -67,28 +74,10 @@ class PanVpnService : VpnService() {
         }
     }
 
+    override fun onBind(intent: Intent?): IBinder? = null
+
     private suspend fun connect() {
         try {
-            if (vpnInterface == null) {
-                vpnInterface = Builder()
-                    .setSession("PAN Remote Access")
-                    .addAddress("100.100.100.1", 32)
-                    .addRoute("198.51.100.0", 24)
-                    .addDnsServer("8.8.8.8")
-                    .addDnsServer("1.1.1.1")
-                    .setMtu(1280)
-                    .setBlocking(false)
-                    .establish()
-
-                if (vpnInterface == null) {
-                    Log.e(TAG, "VPN permission denied")
-                    updateNotification("VPN permission denied")
-                    stopSelf()
-                    return
-                }
-                Log.i(TAG, "VPN interface established")
-            }
-
             val prefs = getSharedPreferences("pan_vpn", Context.MODE_PRIVATE)
             // Human-readable hostname: "pan-pixel-10-pro" — recognizable in Tailscale admin
             // Uses device model name so you can identify every device at a glance
@@ -301,8 +290,6 @@ class PanVpnService : VpnService() {
             getSharedPreferences("pan_vpn", Context.MODE_PRIVATE)
                 .edit().putBoolean("enabled", false).apply()
         }
-        vpnInterface?.close()
-        vpnInterface = null
         loginUrl = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -313,15 +300,8 @@ class PanVpnService : VpnService() {
     override fun onDestroy() {
         serviceScope.cancel()
         try { Panvpn.stop() } catch (_: Exception) {}
-        vpnInterface?.close()
-        vpnInterface = null
         instance = null
         super.onDestroy()
-    }
-
-    override fun onRevoke() {
-        Log.w(TAG, "VPN revoked")
-        disconnect()
     }
 
     private fun createNotificationChannel() {

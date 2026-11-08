@@ -758,12 +758,10 @@ class PanForegroundService : Service() {
         // with voice working but silently OFF the tailnet until the app was
         // opened by hand.
         //
-        // The consent check is load bearing: VpnService consent can only be
-        // granted from an Activity. prepareVpn() returning non-null means it has
-        // not been granted, and there is no way to ask from here, so skip
-        // quietly and let MainScreen prompt on next open rather than fail in a
-        // loop. autoConnect() itself is a no-op unless the user previously had
-        // remote access connected.
+        // prepareVpn() asked for Android's VPN consent until 0.4.98, which only an
+        // Activity can show; it is always null now (no Android VPN, see PanVpnService).
+        // autoConnect() itself is a no-op unless the user previously had remote
+        // access connected.
         // Logged on every branch on purpose. The bug this replaces was invisible
         // precisely because nothing said the VPN had not been started.
         serviceScope.launch {
@@ -862,10 +860,16 @@ class PanForegroundService : Service() {
         serviceScope.launch { syncManager.start() }
         serviceScope.launch { loadHistory() }
         serviceScope.launch {
-            serverClient.registerDevice(
-                deviceId = getPanDeviceId(),
-                deviceName = android.os.Build.MODEL
-            )
+            // At start the link can still be coming up, and one try then fails ("PAN hub not
+            // reachable"), which left the phone unregistered for the whole run. Try until it works.
+            var wait = 2_000L
+            while (isActive && !serverClient.registerDevice(
+                    deviceId = getPanDeviceId(),
+                    deviceName = android.os.Build.MODEL
+                )) {
+                delay(wait)
+                wait = (wait * 2).coerceAtMost(60_000L)
+            }
         }
 
         // Notification updater

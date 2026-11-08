@@ -74,6 +74,16 @@ class HubLocator @Inject constructor(
          * powered off: five threads each scanning every ~5s, indefinitely.
          */
         private const val EMPTY_SCAN_BACKOFF_MS = 20_000L
+
+        /**
+         * After a scan with no tunnel came up empty. Requests that arrive before the tunnel
+         * (PAN Link is up about a second after start) wait in line for the scan lock, each
+         * holding the tunnel address it saw when it started: none. Each then scanned again,
+         * 2.5 s apiece, so the first request that knew the link waited for all of them (7 s
+         * after one start on 2026-11-08, and the device registration failed). For this long
+         * they fail at once instead; a request that brings a tunnel still scans at once.
+         */
+        private const val NO_TUNNEL_SCAN_BACKOFF_MS = 3_000L
     }
 
     private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
@@ -87,6 +97,7 @@ class HubLocator @Inject constructor(
     /** Serialises discovery so N concurrent callers cause ONE scan, not N. */
     private val probeLock = Any()
     @Volatile private var lastEmptyScanAt = 0L
+    @Volatile private var emptyScanBackoffMs = EMPTY_SCAN_BACKOFF_MS
 
     init {
         // Older builds persisted the per-session proxy port. Clear it once at
@@ -188,7 +199,7 @@ class HubLocator @Inject constructor(
             // timer - the whole reason the last scan failed is that this
             // candidate did not exist yet.
             val haveNewProxy = proxyBase != null && proxyBase != lastScanProxy
-            if (lastEmptyScanAt != 0L && sinceEmpty < EMPTY_SCAN_BACKOFF_MS && !haveNewProxy) {
+            if (lastEmptyScanAt != 0L && sinceEmpty < emptyScanBackoffMs && !haveNewProxy) {
                 return null
             }
             return scan(proxyBase)
@@ -228,11 +239,13 @@ class HubLocator @Inject constructor(
         lastScanProxy = proxyBase
         // Only arm the long backoff if the scan was actually complete. With the
         // proxy still starting up, the candidate most likely to work was not in
-        // the list, so going quiet for 20s punishes the VPN for being slow.
-        lastEmptyScanAt = if (proxyBase != null) SystemClock.elapsedRealtime() else 0L
+        // the list, so going quiet for 20s punishes the VPN for being slow. A short
+        // one still: see NO_TUNNEL_SCAN_BACKOFF_MS.
+        lastEmptyScanAt = SystemClock.elapsedRealtime()
+        emptyScanBackoffMs = if (proxyBase != null) EMPTY_SCAN_BACKOFF_MS else NO_TUNNEL_SCAN_BACKOFF_MS
         Log.w(TAG, "no hub found among ${candidates.size} candidates" +
             if (proxyBase != null) "; quiet for ${EMPTY_SCAN_BACKOFF_MS / 1000}s"
-            else " (proxy not up yet — will retry immediately)")
+            else " (no tunnel yet; quiet for ${NO_TUNNEL_SCAN_BACKOFF_MS / 1000}s unless one comes up)")
         return null
     }
 

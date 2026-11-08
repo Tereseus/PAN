@@ -42,24 +42,10 @@ fun MainScreen(
     val pendingCount by viewModel.pendingCount.collectAsState()
     val deviceTarget by viewModel.deviceTarget.collectAsState()
     val devices by viewModel.devices.collectAsState()
-    val context = androidx.compose.ui.platform.LocalContext.current
-
-    // Auto-launch VPN consent dialog on first load if not yet consented
-    val vpnLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            viewModel.connectTailscale()
-        }
-    }
-
+    // Start the app's own Tailscale on first load. It needed Android's VPN consent dialog
+    // first until 0.4.98; it isn't an Android VPN any more (see PanVpnService).
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        val vpnIntent = android.net.VpnService.prepare(context)
-        if (vpnIntent != null) {
-            vpnLauncher.launch(vpnIntent)
-        } else {
-            viewModel.connectTailscale()
-        }
+        viewModel.connectTailscale()
     }
     val intuition by viewModel.intuition.collectAsState()
     val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()

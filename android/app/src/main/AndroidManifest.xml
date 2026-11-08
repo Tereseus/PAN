@@ -98,15 +98,11 @@
                 android:resource="@xml/pan_accessibility_config" />
         </service>
 
+        <!-- The app's own Tailscale (tsnet). Not an Android VPN since 0.4.98: see PanVpnService. -->
         <service
             android:name=".vpn.PanVpnService"
-            android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-            </intent-filter>
-        </service>
+            android:exported="false" />
 
         <receiver
             android:name=".service.BootReceiver"

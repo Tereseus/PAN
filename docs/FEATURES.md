@@ -312,7 +312,7 @@ Rules:
   normal sockets. `LinkManager` follows the phone's best non-VPN network
   (`registerBestMatchingNetworkCallback`) and, 0.5 s after the last change, calls
   `Panvpn.linkNetworkChanged()`, which re-handshakes on every hub address (resending
-  WireGuard's unanswered handshake when it sent one under 5 s ago). `PanVpnService` calls
+  WireGuard's unanswered handshake when it sent one under 5 s ago). `PanVpnService` (a plain foreground service since 0.4.98, no longer an Android VPN) calls
   `LinkManager.tailscaleReady()` once its Tailscale has an address, for the same reason (once
   per start; before 0.4.97 only after it also found PAN on port 7777 over Tailscale, which a
   hub with `PAN_HOST=127.0.0.1` never answers). On a paired phone that port is only a backup:

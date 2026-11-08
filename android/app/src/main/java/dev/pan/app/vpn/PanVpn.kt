@@ -11,9 +11,8 @@ import kotlinx.coroutines.withContext
 import panvpn.Panvpn
 
 /**
- * PAN Remote Access — powered by Tailscale tsnet via Android VpnService.
- * All connect/disconnect calls go through PanVpnService to get the
- * elevated network permissions (netlink) that tsnet requires on Android.
+ * PAN Remote Access: the app's own Tailscale (tsnet, userspace), run by PanVpnService
+ * as a foreground service. No Android VPN since 0.4.98, so nothing to consent to.
  */
 object PanVpn {
 
@@ -37,15 +36,15 @@ object PanVpn {
     )
 
     /**
-     * Check if VPN permission has been granted by the user.
-     * Returns null if already granted, or an Intent for the consent dialog.
+     * The consent dialog to show first, or null. Always null since 0.4.98: the app no
+     * longer sets up an Android VPN (see PanVpnService).
      */
-    fun prepareVpn(context: Context): Intent? = PanVpnService.prepare(context)
+    @Suppress("UNUSED_PARAMETER")
+    fun prepareVpn(context: Context): Intent? = null
 
     /**
-     * Connect to the PAN tailnet via VpnService.
+     * Connect to the PAN tailnet (starts PanVpnService).
      * Returns a login URL if interactive Tailscale auth is needed, null if already authenticated.
-     * Throws if VPN permission not granted — call prepareVpn() first from an Activity.
      */
     suspend fun connect(context: Context): String? = withContext(Dispatchers.IO) {
         try {

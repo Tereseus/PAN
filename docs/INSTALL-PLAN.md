@@ -87,7 +87,7 @@ No PAN account, no API keys, no Tailscale login. Everything runs on the person's
 
 - Welcome, then permissions one at a time with a reason for each, then "Scan the code on your computer", then Medallion pairing, then done.
 - QR scanner in the app (ML Kit barcode, runs on the phone, no internet).
-- A plain WireGuard mode in `panvpn.aar`, with the same local proxy the app already uses, so the rest of the app barely changes. This mode needs no Android VPN, so no VPN consent dialog. Play Store rules restrict apps that use Android's VPN service, so check whether the current fake VPN (`PanVpnService.kt:71-79`) can go entirely.
+- A plain WireGuard mode in `panvpn.aar`, with the same local proxy the app already uses, so the rest of the app barely changes. This mode needs no Android VPN, so no VPN consent dialog. Play Store rules restrict apps that use Android's VPN service, so check whether the current fake VPN (`PanVpnService.kt:71-79`) can go entirely. Done 2026-11-08 (0.4.98): it carried nothing (a dummy interface; tsnet keeps its own network stack), so the app's Tailscale now runs as a plain foreground service. That also gave the phone its IPv6 back, which the dummy had blocked for every app.
 - Remove the owner constants (`HubLocator.kt:52-61`, `PanVpnService.kt:204-205`, `Constants.kt:34`, `PanVpn.kt:26,174`, `ResistanceClient.kt:27`).
 - Mobile page (`service/public/mobile/index.html`): cut 13 tabs down to Talk, Memory, Devices and Settings, with the developer tabs behind a switch. Fix "+ Add Device": it asks for 24 hours, but the server reads `ttl_minutes`, so the code lasts 30 minutes.
 - A release signed build on the Play Store internal test track first.

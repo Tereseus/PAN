@@ -2,7 +2,6 @@ package dev.pan.app.ui.settings
 
 import android.app.Application
 import android.content.Intent
-import android.net.VpnService
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -313,7 +312,7 @@ class SettingsViewModel @Inject constructor(
                 } catch (e: Exception) {
                     Log.d("Settings", "Auto-auth failed, falling back to browser: ${e.message}")
                 }
-                // Connect via VpnService — will use auth key if set, otherwise show login URL
+                // Start the app's own Tailscale: uses the auth key if set, otherwise shows the login URL
                 try {
                     val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
                     if (loginUrl != null) {
@@ -348,10 +347,6 @@ class SettingsViewModel @Inject constructor(
 
     fun getRemoteProxyUrl(): String? {
         return remoteAccessManager.getTailscaleBaseUrl()
-    }
-
-    fun getVpnIntent(): Intent? {
-        return VpnService.prepare(application)
     }
 
     // MediaPipe REMOVED — all AI via server
