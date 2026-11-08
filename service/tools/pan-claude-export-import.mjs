@@ -21,13 +21,15 @@
  * re-importing a newer export only adds what is new.
  */
 import { readFileSync } from 'fs';
+import { panBaseUrl } from '../src/mcp/pan-address.js';
 
 const argv = process.argv.slice(2);
 const FILE = argv.find((a) => !a.startsWith('--'));
 const DRY = argv.includes('--dry-run');
 const hubArg = argv.indexOf('--hub');
+// --hub, else PAN_HUB, else this computer's PAN Link or its own PAN (mcp/pan-address.js).
 const HUB = (hubArg >= 0 && argv[hubArg + 1] ? argv[hubArg + 1]
-  : process.env.PAN_HUB || 'http://minipc-pan-hub:7777').replace(/\/$/, '');
+  : process.env.PAN_HUB || panBaseUrl()).replace(/\/$/, '');
 
 if (!FILE) {
   console.error('usage: node pan-claude-export-import.mjs <conversations.json> [--dry-run] [--hub URL]');

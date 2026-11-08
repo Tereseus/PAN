@@ -25,9 +25,10 @@
  *   node pan-transcript-sync.mjs                    # full reconcile (default)
  *   node pan-transcript-sync.mjs --fast             # only turns past the high-water mark
  *   node pan-transcript-sync.mjs --since 2026-09-01
- *   node pan-transcript-sync.mjs --hub http://minipc-pan-hub:7777
+ *   node pan-transcript-sync.mjs --hub http://127.0.0.1:7779
  *   (default hub: PAN_HUB, else this computer's pan-client-config.json relay_hub_url or
- *   hub_ws, else http://minipc-pan-hub:7777)
+ *   hub_ws, else this computer's PAN Link on 127.0.0.1:7779 when it is paired, else PAN
+ *   on this computer, 127.0.0.1:7777)
  *
  * Default is a FULL reconcile: send every turn and let the hub reject what it
  * already has. The hub dedupes on content, so this is the only mode that fills a
@@ -35,7 +36,7 @@
  * because the turns that resumed afterwards push the high-water mark past the
  * gap and hide it. --fast trusts the watermark and is for cron, not recovery.
  */
-import { readdirSync, statSync, readFileSync } from 'fs';
+import { readdirSync, statSync, readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -49,7 +50,7 @@ const opt = (n, d) => {
 
 // The hub: --hub, else PAN_HUB, else this computer's PAN client settings (the same
 // relay_hub_url or hub_ws the thread relay uses, so moving a computer onto PAN Link is one
-// file), else the hub's Tailscale name. The client's settings are looked for beside this
+// file), else linkOrLocal() below. The client's settings are looked for beside this
 // repo, where the client installer (service/installer/pan-installer.cjs) puts them, and in
 // ~/pan-client (a client installed by hand), so a copy of this script outside the repo
 // finds them too.
@@ -71,7 +72,16 @@ function clientHub() {
   }
   return null;
 }
-const HUB = (opt('hub', process.env.PAN_HUB || clientHub() || 'http://minipc-pan-hub:7777')).replace(/\/$/, '');
+// This computer's PAN Link when it has a paired link client (it serves PAN on
+// 127.0.0.1:7779), else PAN on this computer. The rule of service/src/mcp/pan-address.js,
+// written out here so a copy of this file still works on its own.
+function linkOrLocal() {
+  const state = process.platform === 'win32'
+    ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'PAN', 'link-client', 'client.json')
+    : join(homedir(), '.local', 'share', 'pan', 'link-client', 'client.json');
+  return existsSync(state) ? 'http://127.0.0.1:7779' : 'http://127.0.0.1:7777';
+}
+const HUB = (opt('hub', process.env.PAN_HUB || clientHub() || linkOrLocal())).replace(/\/$/, '');
 const ROOT = opt('root', join(homedir(), '.claude', 'projects'));
 const DRY = flag('dry-run');
 const FAST = flag('fast');
