@@ -22,6 +22,7 @@ import apiRouter from './routes/api.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import linkRouter from './routes/link.js';
+import { tailscaleKeyRouter } from './routes/tailscale-key.js';
 import dashboardRouter, { createAlert } from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
 import runnerRouter from './routes/runner.js';
@@ -679,8 +680,9 @@ app.get('/api/system-check', apiAuth, async (req, res) => {
 // A named function so the routes registered above it (screenshots, clipboard,
 // setup status, system check) run it too; they had no login before 2026-11-08.
 function apiAuth(req, res, next) {
-  // Bootstrap endpoints skip auth
-  if (req.path === '/v1/tailscale/auto-auth' || req.path === '/v1/tailscale/status') {
+  // Bootstrap endpoints skip auth. /v1/tailscale/auto-auth no longer does: it hands out
+  // Tailscale keys, so only a device paired through PAN Link gets one (tailscale-key.js).
+  if (req.path === '/v1/tailscale/status') {
     req.user = { id: 1, email: 'bootstrap@localhost', display_name: 'Bootstrap', role: 'owner' };
     return next();
   }
@@ -959,6 +961,8 @@ app.use('/api/v1', apiRouter);
 app.use('/api/v1/devices', devicesRouter);
 // PAN Link pairing codes and paired devices, owner only (routes/link.js).
 app.use('/api/v1/link', linkRouter);
+// Tailscale keys for phones paired through PAN Link (the Tailscale fallback).
+app.use('/api/v1/tailscale', tailscaleKeyRouter(getSecret));
 
 // ── Profile-gated route groups (SHIP-PLAN.md Phase 1) ────────────────────────
 // In the `core` profile these mounts are skipped — endpoints 404 — while the

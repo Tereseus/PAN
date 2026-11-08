@@ -1,4 +1,6 @@
-// SAVED FOR REFERENCE, NOT MOUNTED. Recovered 2026-11-08 from the hub's backup
+// SAVED FOR REFERENCE, NOT MOUNTED. Replaced on 2026-11-08 by service/src/routes/tailscale-key.js,
+// which gives keys only to devices paired through PAN Link.
+// Recovered 2026-11-08 from the hub's backup
 // C:\PAN\service\src\routes\api.js.bak-statickey-2026-09-12T0025 (hand patch of 2026-09-11, never committed).
 // The hub's live api.js lost this handler when C:\PAN was updated on 2026-11-02, so the phone's
 // /api/v1/tailscale/auto-auth call gets a 404 again and only works because the phone remembers its

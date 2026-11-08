@@ -225,6 +225,30 @@ Rules:
 
 ---
 
+## Tailscale keys for PAN Link phones (`POST /api/v1/tailscale/auto-auth`, `service/src/routes/tailscale-key.js`)
+
+- **Calls:** Tailscale's API (`POST /api/v2/tailnet/-/keys`, `PAN_TAILSCALE_API` overrides the
+  address for tests) with the owner's OAuth client (`tailscale_oauth_client_id`,
+  `tailscale_oauth_client_secret`) and tag (`tailscale_tag`, e.g. `tag:pan-device`), each from
+  the environment (`PAN_<NAME>`) or settings. Mounted after the login check in `server.js`.
+- **Semantics:** answers `{ ok, auth_key, expires_in }`: a single use, preauthorized, tagged
+  key that works for 5 minutes. The phone already asks for one whenever its built in
+  Tailscale has no login (`PanServerApi.getTailscaleAuthKey`), so a phone paired through PAN
+  Link at home joins the tailnet without a Tailscale login, and PAN Link can use Tailscale
+  away from a home that lets nothing in.
+- **Preserves:** no OAuth client or no tag → 501, Tailscale not asked. Tailscale's refusal →
+  502 with its reason. The key's value is never logged, only its id.
+- **Replaces:** the hand patch that lived only on the hub (lost 2026-11-02, copy in
+  `docs/legacy/tailscale-auto-auth-2026-09.js`), which gave keys to any caller on a private
+  address and skipped the login check.
+- **Pre-gate:** only a device PAN Link vouches for (`req.panLinkDevice`), at most 3 keys per
+  device in 10 minutes; everyone else 403, the owner on Tailscale or the home network
+  included. Live on the hub but inert until the owner sets the tag and an OAuth client that
+  owns it (Tailscale admin console: the tag in the policy's tagOwners, an OAuth client with
+  the auth keys scope and that tag).
+
+---
+
 ## PAN Link on the phone (`vpn/LinkManager.kt`, `vpn/PairActivity.kt`, `vpn/ScanPairActivity.kt`, `android/pan-vpn/linkmode`)
 
 - **Calls:** Settings → "Scan a pairing code" opens `ScanPairActivity`: the back camera
