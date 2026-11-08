@@ -14,6 +14,10 @@ REM
 REM Entry point is pan.js start, NOT src\server.js. server.js is the Craft and
 REM binds 17700; the Super-Carrier is what owns 7777 and spawns Carrier->Craft.
 
+REM pan-secrets.env.bat may also set PAN_HOST=127.0.0.1: PAN's ports (7777 and the
+REM Carrier's and Craft's inner ones) then listen on this computer only, and PAN Link is
+REM the only way in from other devices (pan-link/README.md). Unset, they listen everywhere.
+REM
 REM Load credentials from environment rather than the settings database.
 REM secrets.js getSecret() prefers PAN_* env vars over db rows, so keys set in
 REM pan-secrets.env.bat are never stored in, or served from, the database.

@@ -30,7 +30,9 @@ raiseProcessPriority();
 
 const SC_PORT      = parseInt(process.env.PAN_PORT) || 7777;
 const CARRIER_PORT = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
-const HOST         = '0.0.0.0';
+// PAN_HOST=127.0.0.1 keeps PAN on this computer only, once PAN Link carries every
+// device (pan-link/README.md); the Carrier and the Craft inherit it. Unset: every address.
+const HOST         = process.env.PAN_HOST || '0.0.0.0';
 
 // ── Carrier readiness gate ───────────────────────────────────────────────────
 // Requests that arrive while Carrier is restarting wait here instead of failing.

@@ -103,7 +103,10 @@ import { redactSettings, getSecret } from './secrets.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = parseInt(process.env.PAN_PORT) || 7777;
-const HOST = '0.0.0.0'; // Listen on all interfaces (phone needs LAN access)
+// Every address by default. PAN_HOST=127.0.0.1 (set for the Super-Carrier, which passes
+// it down) keeps PAN on this computer only, once PAN Link carries every device: then this
+// Craft's own port can't be reached from the network either (pan-link/README.md).
+const HOST = process.env.PAN_HOST || '0.0.0.0';
 // Dev mode: PAN_DEV=1 runs server on a separate port with no side-effects.
 // Skips steward, device registration, service boots — just
 // Express + API + DB (read-safe via WAL) + test runner. Safe to run alongside prod.
