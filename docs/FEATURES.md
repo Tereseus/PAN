@@ -1240,8 +1240,15 @@ children can have adult-sounding voices and vice versa).
   an answer (`lookAndAnswer`): moondream describes the photo (it reads writing: "the word
   SHADHAVAR"), the local text model (`ollama:gemma4:e2b`) answers his question from that in
   one or two spoken sentences, and a thing the description left out gets a second look of its
-  own ("Describe the dog in this image" found his dog behind the desk). About 5-7 s per new
-  photo, about 15 s with a second look. llava-phi3 (still `model_selections.vision`, the
+  own ("Describe the dog in this image" found his dog behind the desk). A plain look ("what am
+  I looking at?", `plainLook` in camera-ask.js) skips the second model: the first sentence of a
+  64-token description is the answer (`spokenLook`: "The image shows X" becomes "You're looking at
+  X", and a sentence about writing in the photo is kept). Descriptions are capped
+  (`PLAIN_LOOK_TOKENS` 64, `LOOK_TOKENS` 120, `analyzeImage` `maxTokens`): past two sentences
+  moondream only repeated itself ("paste, paste mode, paste all"). Hub timings with a new photo
+  (2026-11-08): moondream reads any photo as ~750 tokens in 5.6-9 s (it resizes to 378 px, so a
+  smaller photo does not help), then writes ~32 tokens a second; the old full path took 12-19 s
+  (19 s live), a plain look now ~7-8 s. llava-phi3 (still `model_selections.vision`, the
   other callers' model) said "a pony in a computer image" with "Shadhavar" written over it;
   gemma4:e2b and e4b return nonsense for images on Ollama 0.40.13 (a desk photo came back "a
   brick", a black dog "reddish-brown"); qwen2.5vl:3b takes ~35 s and missed the label too.

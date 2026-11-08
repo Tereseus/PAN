@@ -13,6 +13,7 @@ import { benchContext } from '../bench-context.js';
 import { recordTiming } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
+import { plainLook, spokenLook } from '../camera-ask.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -648,11 +649,29 @@ async function answerFromLook(look, asked, askAI) {
   }
 }
 
+// A plain look ("what am I looking at?") is answered by a short description alone: the first
+// sentence or two of moondream's ~110 words (the rest was "paste, paste mode, paste all"), and no
+// second model. Measured on the hub 2026-11-08 with a new photo: moondream reads the image as ~750
+// tokens in 5.6-9 s whatever its size (it resizes to 378 px), then writes ~32 tokens a second;
+// the full path was 12-19 s (19 s live that day). Every description is capped: past the first
+// two sentences it only repeated itself.
+const PLAIN_LOOK_TOKENS = 64;
+const LOOK_TOKENS = 120;
+
 async function lookAndAnswer(image, asked, remember = true) {
   const { analyzeImage, askAI } = await import('../llm.js');
+  if (plainLook(asked)) {
+    const look = String(await analyzeImage(DESCRIBE_PHOTO, image, { caller: 'vision', model: PHOTO_DESCRIBER, maxTokens: PLAIN_LOOK_TOKENS })
+      .catch((e) => { console.warn(`[PAN Vision] plain look failed (${e.message})`); return ''; }) || '').trim();
+    const said = spokenLook(look);
+    if (said) {
+      if (remember) _lastLook = { look, at: Date.now() };
+      return said;
+    }
+  }
   let look = '';
   try {
-    look = String(await analyzeImage(DESCRIBE_PHOTO, image, { caller: 'vision', model: PHOTO_DESCRIBER }) || '').trim();
+    look = String(await analyzeImage(DESCRIBE_PHOTO, image, { caller: 'vision', model: PHOTO_DESCRIBER, maxTokens: LOOK_TOKENS }) || '').trim();
   } catch (e) {
     console.warn(`[PAN Vision] ${PHOTO_DESCRIBER} failed (${e.message}) - asking the vision model the question directly`);
   }
@@ -661,7 +680,7 @@ async function lookAndAnswer(image, asked, remember = true) {
   let answer = await answerFromLook(look, asked, askAI);
   const subject = photoSubject(asked);
   if (subject && CANT_SPOT.test(answer)) {
-    const closer = String(await analyzeImage(`Describe the ${subject} in this image.`, image, { caller: 'vision', model: PHOTO_DESCRIBER }).catch(() => '') || '').trim();
+    const closer = String(await analyzeImage(`Describe the ${subject} in this image.`, image, { caller: 'vision', model: PHOTO_DESCRIBER, maxTokens: LOOK_TOKENS }).catch(() => '') || '').trim();
     console.log(`[PAN Vision] second look for "${subject}": ${closer.slice(0, 100)}`);
     if (closer) {
       look = `${look} ${closer}`;

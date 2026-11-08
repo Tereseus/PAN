@@ -1213,7 +1213,7 @@ async function _raiseVisionAlert(model, reason) {
 }
 
 // `model` picks the Ollama vision model for this one call (default: model_selections.vision).
-export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [], model = null } = {}) {
+export async function analyzeImage(prompt, imageBase64, { caller = 'vision', timeout = 70000, referenceImages = [], model = null, maxTokens = 300 } = {}) {
   // referenceImages: optional array of base64 strings prepended before the main image.
   // Ollama /api/generate supports images[] — first image(s) are reference, last is live frame.
   const allImages = [...referenceImages, imageBase64];
@@ -1272,7 +1272,8 @@ export async function analyzeImage(prompt, imageBase64, { caller = 'vision', tim
         // Cap the reply too. A description needs a couple of sentences, and an
         // uncapped budget on a thinking model is how an 80 token probe once
         // returned an EMPTY string with done_reason "length".
-        options: { num_gpu: 0, num_predict: 300 }, // mini PC has AMD integrated GPU — force CPU inference
+        // num_predict is not a load option, so a shorter cap reuses the loaded model.
+        options: { num_gpu: 0, num_predict: maxTokens }, // mini PC has AMD integrated GPU — force CPU inference
       }),
       // Use the shared overall budget — each provider can take at most what's left.
       signal: AbortSignal.timeout(remaining()),

@@ -1,7 +1,7 @@
 // Which heard lines ask for the phone's camera (camera-ask.js). Runs standalone, no server needed.
 // Usage: node service/src/__tests__/camera-ask.test.js
 
-import { asksForCamera, normalizeHeard } from '../camera-ask.js';
+import { asksForCamera, normalizeHeard, plainLook, spokenLook } from '../camera-ask.js';
 
 let passed = 0;
 let failed = 0;
@@ -55,6 +55,22 @@ test('normalizeHeard fixes dropped g only on whole words', () => {
   eq(normalizeHeard("seein' it"), 'seeing it', 'seein');
   eq(normalizeHeard('looking good'), 'looking good', 'looking');
   eq(normalizeHeard('lookout'), 'lookout', 'lookout');
+});
+
+test('plain looks need no second model, questions about the thing do', () => {
+  for (const s of ['he what am i looking at', 'What am I looking at?', 'Alright, look through the camera of my phone and tell me what I\'m looking at.',
+    'what do you see', 'take a picture', 'what is this', '']) eq(plainLook(s), true, s);
+  for (const s of ['what kind of dog is that', 'How many fingers am I holding up?', 'what brand is it', 'can you read this label',
+    'is this ripe', 'what colour is my shirt']) eq(plainLook(s), false, s);
+});
+
+test('a description becomes one spoken answer', () => {
+  eq(spokenLook('The image shows a black computer game console with 16 colorful buttons arranged in a 4x4 grid. The buttons include options for game mode, paste, paste mode, paste all.'),
+    "You're looking at a black computer game console with 16 colorful buttons arranged in a 4x4 grid.", 'first sentence');
+  eq(spokenLook('In the image, there is a white unicorn on a hill. The sky is blue. The word "SHADHAVAR" is written across the top.'),
+    'You\'re looking at a white unicorn on a hill. The word "SHADHAVAR" is written across the top.', 'writing kept');
+  eq(spokenLook('A red kettle on a counter'), 'A red kettle on a counter', 'no opening');
+  eq(spokenLook(''), '', 'empty');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
