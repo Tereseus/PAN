@@ -32,6 +32,7 @@ import { warmForLanguage, languageNamed, languageName } from './hub-asr.js';
 import { translateLocal, translatorUp, pairInstalled } from './translate-local.js';
 import { studentChain } from './llm.js';
 import { warmReader } from './voice-reader.js';
+import { asksForCamera } from './camera-ask.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
@@ -2514,6 +2515,17 @@ export async function* routeStream(text, context = {}) {
   if (again) {
     yield { type: 'chunk', text: again };
     yield { type: 'done', result: withProsody({ intent: 'translate', response: again, addressed: 0.9, importance: 0.3 }) };
+    return;
+  }
+
+  // He asks PAN to look ("what am I looking at?", "look through the camera of my phone"): a
+  // photo, the same path as the phone's own camera phrases (camera-ask.js). The phone checks
+  // its own words first, but its recogniser drops letters ("what am i lookin at", 2026-11-08);
+  // the hub then answered from the computer's screen, twice, and said it had no camera when
+  // asked to use it. These words are the hub's, which are better.
+  if (context.canCamera && !interpreting && asksForCamera(text)) {
+    console.log(`[routeStream] asks for the camera: ${JSON.stringify(String(text).slice(0, 60))}`);
+    yield { type: 'done', result: withProsody({ intent: 'query', addressed: 0.95, camera: true, response: '', importance: 0.5 }) };
     return;
   }
 

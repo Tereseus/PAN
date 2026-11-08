@@ -1237,10 +1237,22 @@ children can have adult-sounding voices and vice versa).
   looks and saves nothing. `analyzeImage` (llm.js, `model` option per call) has no cloud
   fallback: photos and what is in them never leave the mini PC.
 - **Phone shortcut:** the phone takes some camera lines itself before the hub sees them
-  (`isCameraCommand` in `PanForegroundService.kt`). Fixed phrases ("what am i looking at",
-  "take a photo") count anywhere in the line; "what is that / look at this" counts only when
-  nothing but filler follows it (app 0.4.58), so "what is that movie called, it has to do
-  with a" reaches the word search instead of "the camera is turned off".
+  (`camera/CameraAsk.kt`, app 0.4.99; it was `isCameraCommand` in `PanForegroundService.kt`).
+  Fixed phrases ("what am i looking at", "tell me what I'm looking at", "take a photo") count
+  anywhere in the line; so does asking to look or use the phone's camera ("look through the
+  camera of my phone"), but not another camera ("look at the garage camera") or a complaint
+  ("what I was pointing at with the camera"). "What is that / look at this" counts only when
+  nothing but filler follows it (app 0.4.58), so "what is that movie called, it has to do with
+  a" reaches the word search instead of "the camera is turned off". Dropped letters count as
+  the word ("what am i lookin at"): on 2026-11-08 the phone's recogniser wrote that, nothing
+  matched, and the hub answered from the computer's screen ("You're looking at your browser").
+- **Hub check (`camera-ask.js`, same words):** the hub checks its own transcript, which is
+  better, before any model: with `can_camera` a match is `done` with `camera:true` at once
+  (about 150 ms on the dev copy). Before this, "what am I looking at?" went to the model with
+  the computer's screen in the prompt, and "look through the camera of my phone" got "I can't
+  do that. I don't have a camera feed from the phone." Tests: `node
+  service/src/__tests__/camera-ask.test.js` (4) and `CameraAskTest` (9, `gradlew
+  :app:testDebugUnitTest`).
 - **`[CAMERA]` when no photo can be taken:** a line that passes `looksVisual` with the camera
   off gets "I can't see it, my camera's off." Any other line is asked once more with the camera
   ruled out, and a second `[CAMERA]` goes to the cloud model on a short prompt. Both used to end

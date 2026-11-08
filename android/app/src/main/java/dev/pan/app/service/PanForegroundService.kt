@@ -27,6 +27,7 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import dev.pan.app.MainActivity
 import dev.pan.app.audio.FeedbackSounds
+import dev.pan.app.camera.CameraAsk
 import dev.pan.app.camera.CameraCapture
 import dev.pan.app.data.DataRepository
 import dev.pan.app.debug.TestAudio
@@ -2075,29 +2076,7 @@ class PanForegroundService : Service() {
         return result
     }
 
-    // Camera trigger phrases — "what is this?", "what am I looking at?", etc.
-    private val cameraPatterns = listOf(
-        "what am i looking at", "what am i seeing",
-        "take a photo", "take a picture", "take photo", "take picture",
-        "what do you see", "what can you see",
-        "what's in front of me", "what is in front of me",
-        "describe what you see",
-        "what's around me", "what is around me",
-        "snap a photo", "snap a picture"
-    )
-
-    // "What is that" means look only when nothing else follows it. "What is that movie
-    // called, the one with the..." is him reaching for a name, and answering it with "the
-    // camera is turned off" took the turn from the hub's word search (2026-11-03).
-    private val deicticCamera = Regex("\\b(what is|what's|look at|identify|describe|capture) (this|that)\\b(.*)$")
-    private val cameraTail = Regex("^\\s*((thing|things|one|here|there|right|over|called|pan|please|for me|real quick|now)\\b[\\s,.?!]*)*$")
-
-    private fun isCameraCommand(text: String): Boolean {
-        val lower = text.lowercase().trim()
-        if (cameraPatterns.any { lower.contains(it) }) return true
-        val m = deicticCamera.find(lower) ?: return false
-        return cameraTail.matches(m.groupValues[3])
-    }
+    // Which lines ask for a look: camera/CameraAsk.kt.
 
     private fun handleCameraCommand(userText: String) {
         val question = userText.ifBlank { "What is this?" }
@@ -2228,7 +2207,7 @@ class PanForegroundService : Service() {
         }
 
         // Camera / vision
-        if (isCameraCommand(lower)) {
+        if (CameraAsk.matches(lower)) {
             handleCameraCommand(text)
             return "CAMERA_ASYNC"
         }
@@ -2293,7 +2272,7 @@ class PanForegroundService : Service() {
         }
 
         // Camera / vision commands — handle async, return a placeholder
-        if (isCameraCommand(lower)) {
+        if (CameraAsk.matches(lower)) {
             handleCameraCommand(text)
             return "CAMERA_ASYNC" // signal that this was handled
         }
