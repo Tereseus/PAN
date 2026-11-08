@@ -313,7 +313,12 @@ Rules:
   (`registerBestMatchingNetworkCallback`) and, 0.5 s after the last change, calls
   `Panvpn.linkNetworkChanged()`, which re-handshakes on every hub address (resending
   WireGuard's unanswered handshake when it sent one under 5 s ago). `PanVpnService` calls
-  `LinkManager.tailscaleReady()` once its Tailscale proxy is up, for the same reason.
+  `LinkManager.tailscaleReady()` once its Tailscale has an address, for the same reason (once
+  per start; before 0.4.97 only after it also found PAN on port 7777 over Tailscale, which a
+  hub with `PAN_HOST=127.0.0.1` never answers). On a paired phone that port is only a backup:
+  when nothing answers there, the service says "Connected" and stops, instead of scanning
+  every Tailscale peer every 15 s. `GET /api/v1/hub-address` answers `base_url: null` to a
+  caller on the link, so `HubLocator` keeps the link instead of trying the Tailscale name.
   Copies of a handshake for the hub's Tailscale addresses go 150 ms after the others, so a
   direct path wins when it works, and a link on Tailscale checks every 2 minutes whether a
   direct path works again (`linkmode.Conn.watch`). The same loop keeps the hub's address

@@ -44,6 +44,8 @@ class PanVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loginUrl: String? = null
+    /** PAN Link was told this Tailscale is up (once per start: each telling makes it handshake again). */
+    @Volatile private var tailscaleAnnounced = false
 
     override fun onCreate() {
         super.onCreate()
@@ -113,7 +115,10 @@ class PanVpnService : VpnService() {
 
             Log.i(TAG, "Starting tsnet as '$hostname'...")
             TailscaleHostnameHolder.hostname = hostname
-            val result = Panvpn.start(dataDir, hostname, authKey)
+            // The retry below comes back here with Tailscale already running. Starting it
+            // again throws "already running", which ended the retries and left
+            // "Error: already running" on the notification.
+            val result = if (Panvpn.isRunning()) "" else Panvpn.start(dataDir, hostname, authKey)
             prefs.edit().putBoolean("enabled", true).apply()
 
             if (result.isNotEmpty()) {
@@ -179,6 +184,14 @@ class PanVpnService : VpnService() {
             }
             Log.i(TAG, "Connected. Self=$myIp port=$srvPort")
 
+            // PAN Link's packets for the hub's Tailscale addresses ride on this Tailscale and
+            // need nothing below: the hub's port $srvPort may not answer over Tailscale at all
+            // (PAN_HOST=127.0.0.1 on the hub). Tell the link now, not after finding that port.
+            if (!tailscaleAnnounced) {
+                tailscaleAnnounced = true
+                remoteAccessManager.link.tailscaleReady()
+            }
+
             var serverHost = ""
 
             // 1. Try saved verified IP first (instant)
@@ -234,6 +247,15 @@ class PanVpnService : VpnService() {
                 }
             }
 
+            if (serverHost.isEmpty() && remoteAccessManager.link.isPaired()) {
+                // PAN Link is the way in, and this port is only a backup that a hub with
+                // PAN_HOST=127.0.0.1 never answers. Retrying would scan every Tailscale
+                // peer every 15 s for nothing.
+                Log.i(TAG, "PAN doesn't answer on port $srvPort over Tailscale; PAN Link carries everything")
+                updateNotification("Connected")
+                return
+            }
+
             if (serverHost.isEmpty()) {
                 // Peers can take a while to populate even after the IP appears, and a
                 // hub that is briefly down should not disable remote access until the
@@ -257,8 +279,6 @@ class PanVpnService : VpnService() {
             } catch (e: Exception) {
                 Log.w(TAG, "Could not publish proxy port: ${e.message}")
             }
-            // PAN Link's packets for the hub's Tailscale addresses ride on this Tailscale.
-            remoteAccessManager.link.tailscaleReady()
             prefs.edit().putString("verified_server_ip", serverHost).apply()
             updateNotification("Connected")
         } catch (e: Exception) {
@@ -274,6 +294,7 @@ class PanVpnService : VpnService() {
     }
 
     private fun disconnect() {
+        tailscaleAnnounced = false
         serviceScope.launch {
             try { Panvpn.stopProxy() } catch (_: Exception) {}
             try { Panvpn.stop() } catch (e: Exception) { Log.e(TAG, "Stop failed", e) }

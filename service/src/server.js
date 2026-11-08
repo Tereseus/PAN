@@ -4297,12 +4297,18 @@ app.get('/api/v1/memory/wiki', async (req, res) => {
 // Set `hub_base_url` to a Tailscale MagicDNS name (http://pan-hub:7777) rather
 // than an IP: move the hub to another machine, rename that machine in the
 // Tailscale admin console, and every client follows with no rebuild.
+//
+// A caller that came through PAN Link gets null: pan-link runs beside the real
+// hub, so the link already is the right way in, and with PAN_HOST=127.0.0.1 the
+// Tailscale address doesn't answer at all (the phone would try it on every scan).
 app.get('/api/v1/hub-address', (req, res) => {
   let configured = null;
-  try {
-    const row = get(`SELECT value FROM settings WHERE key = 'hub_base_url'`);
-    configured = row?.value?.replace(/^"|"$/g, '').trim() || null;
-  } catch { /* db not ready — null is a valid answer */ }
+  if (!req.panLinkDevice) {
+    try {
+      const row = get(`SELECT value FROM settings WHERE key = 'hub_base_url'`);
+      configured = row?.value?.replace(/^"|"$/g, '').trim() || null;
+    } catch { /* db not ready — null is a valid answer */ }
+  }
   res.json({
     ok: true,
     base_url: configured,          // null = "I'm not authoritative, keep what works"
