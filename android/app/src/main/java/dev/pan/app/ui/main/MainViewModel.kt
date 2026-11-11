@@ -176,12 +176,11 @@ class MainViewModel @Inject constructor(
         // sensors and disables them; unmuting restores from the snapshot.
         // The snapshot is stored per phone device in SharedPreferences so each
         // phone remembers its own previous state independently.
-        val wasEnabled = PanForegroundService.micEnabled.value
-        if (wasEnabled) {
-            snapshotAndDisableAllSensors()
-        } else {
-            restoreSensorSnapshot()
-        }
+        // 2026-11-11: muting the mic no longer switches every sensor off. It turned GPS off
+        // with it, and the sensors came back only when he unmuted from this same button, so
+        // after a mute from anywhere else they stayed off for days (the hub had all six off,
+        // and PAN told him "your GPS is off"). Mute is the mic only. A snapshot left from the
+        // old behaviour is put back once, in loadSensorsForDevice.
 
         // Existing behavior: tell the foreground service to flip the mic.
         // Send TOGGLE_MIC intent — it handles STT start/stop, notification
@@ -299,6 +298,8 @@ class MainViewModel @Inject constructor(
                     _sensors.value = sensors
                     // Sync actual hardware state with server state
                     syncHardwareToServerState(sensors)
+                    // Heal: sensors the old bulk mute switched off come back once.
+                    restoreSensorSnapshot()
                 }
             } catch (_: Exception) {}
             _sensorsLoading.value = false

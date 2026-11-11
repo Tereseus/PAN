@@ -1,4 +1,7 @@
-# The Intuition state (definition v1, 2026-11-03)
+# The Intuition state (definition v2, 2026-11-11; v1 2026-11-03)
+
+Version 2 is at the end (sections 10 to 14): new fields, the shelf (background attention), the
+knowledge library, what was fixed on 2026-11-11, and the order of work from here.
 
 Everything PAN knows about what is going on right now lives here, in one place: the world
 (`intuition/world.js`, see [INTUITION-STATE-ENGINE.md](./INTUITION-STATE-ENGINE.md) for the
@@ -308,3 +311,150 @@ Place: home. Doing: game dev (Godot). Alone. Mood: focused. 23:40, usually windi
 Each situation file names its scenes. A scene is a list of events, each followed by the facts
 and situations expected after it. The state bench (plan step 8) runs every scene. A situation
 without a passing scene is not done.
+
+---
+
+# Version 2 (2026-11-11)
+
+Why: on 2026-11-10 he asked PAN eight times in ten minutes when the sun comes up where he is.
+Every answer was some form of "your GPS is off". Three things were wrong at once:
+
+- the world knew where he was, but the voice model only read the world when his words
+  matched a short phrase list (and the `voice_situation` setting was `off`);
+- the phone had switched its own GPS off: the app's mute switched every sensor off (section 13);
+- nothing in PAN knew the daylight, so there was nothing true to say.
+
+His direction: the world is one live object of everything a person awake in the room would
+know, nested, kept up to date in the background even while PAN is quiet, and read on every turn
+it has something for. No special per-question lookups: a fact a person just knows is a field of
+the world, and anything else is found in the background before he asks.
+
+## 10. What v2 adds to the fields
+
+New rows, on top of section 3. "Now" means built; "next" means a later step (section 14).
+
+### 10.1 Time and light (adds to 3.6)
+
+| Field | Values | Source | Status |
+|---|---|---|---|
+| `light` | daylight, dark | his place and the date, NOAA sun formula (`intuition/place.js`): no network, within about a minute | now |
+| `sunrise`, `sunset` | today's, and tomorrow's sunrise after dark, in his zone | same | now |
+| `weather` | now and the rest of the day, in a few words | open-meteo for his place, fetched in the background every 30 min, never on a turn | next |
+| `season`, `holiday` | season at his place; a public holiday there today | the date and the country | next |
+
+### 10.2 The place (adds to 3.2)
+
+| Field | Values | Source | Status |
+|---|---|---|---|
+| `last_fix` | the phone's last GPS place and its age | every turn that carries GPS (`notePhoneGps`), kept in memory and in the settings row `last_phone_place`, so a turn without a fix still knows where he was | now |
+| `home_or_away` | home, out nearby, away (another city), abroad | distance from his home place (taught once) and the country | next |
+| `network` | home Wi-Fi, other Wi-Fi, mobile data | the phone (app) | next |
+
+Coordinates stay on the hub. The line carries the place name, never the numbers.
+
+### 10.3 People (3.3, as a nested list of records)
+
+Each person in the room is an entry in `people[]`: `{ ref, who, role, language, talking_to,
+last_heard, confidence }`. `ref` points at a record in his people table: name, relation, how they
+know each other, the last time together, what they talked about last. The record is not copied
+into the world. It loads onto the shelf (section 11) in the background as soon as the person is
+named or their voice is recognised, so it is ready before anyone asks about them.
+
+### 10.4 Him and his devices (adds to 3.1)
+
+| Field | Values | Source | Status |
+|---|---|---|---|
+| `sensors` | which phone sensors are on (each a switch in the app) | the sensor rows on the hub | now |
+| `battery`, `charging` | phone battery level | the phone, with each turn | next (app) |
+| `on_call`, `media` | on a call; music or video playing | the phone | next (app) |
+| `phone_zone` | the phone's time zone | the phone, with each turn | next (app) |
+| `waiting_on` | what he asked for and has not had yet (a Claude thread answer, a reminder) | the relay, PAN's promises | next |
+
+### 10.5 Sensor switches decide what goes in
+
+A field fed by a sensor is read only while that sensor's switch is on in the app. With GPS off,
+`place`, `light` and `weather` read as unknown, and the voice says so once, plainly, instead of
+guessing. The last known place still counts, with its age said.
+
+## 11. The shelf: background attention
+
+What a person in the room does without being asked: they hear names, places and topics go by,
+and they already know, or quietly recall, what those are. When someone turns to them, they are
+ready. PAN does the same, all the time, on the hub, while it is not replying.
+
+1. **Every line heard**, addressed to PAN or not, goes through cheap extraction with no model:
+   names (his people table, capitalised words), places, things, the running topic.
+   `intuition/conversation.js` already keeps the topic and `mentioned`.
+2. **Each new item starts lookups in the background**, cheapest first, each with its own small
+   time limit, never on a voice turn:
+   - his PAN memory (the embedding index he already has),
+   - his people and places tables,
+   - the local knowledge library (section 12),
+   - the news feed for anything current (Google News RSS, the one search that works from the
+     hub).
+3. **Results go on the shelf**: an in-memory list of `{ item, fact, source, at, score }`, a few
+   dozen entries, each with its embedding, computed once when it lands. Entries fade over about
+   15 minutes unless the item comes up again.
+4. **On a turn**, his line is embedded once (about 20 to 50 ms on the hub) and the two or three
+   closest shelf entries above a score go into the prompt with the state line. Nothing is
+   fetched while he waits.
+
+The whole world lives in memory in the PAN process (the Craft) and is saved to the database on
+change, so a swap or restart keeps it:
+
+```
+world = {
+  him:    { awake, motion, mood, needs, devices, sensors, ... },
+  place:  { label, kind, address, last_fix, country, zone, home_or_away, noise },
+  time:   { local, day, light, sunrise, sunset, weather, routine, trip },
+  people: [ { ref, who, role, language, talking_to, last_heard } ],
+  talk:   { topic, topics[], mentioned[], open[], floor, tone, pan_last },
+  doing:  { activity, project, flow, since },
+  pan:    { mode, standing[], waiting_on[], health, allowed },
+  shelf:  [ { item, fact, source, at, score, vec } ],
+  line:   "the state line, rebuilt on every change"
+}
+```
+
+Speed: on a turn the voice reads `world.line` and the top shelf entries. That is a string copy
+and one embedding. The line is rebuilt when something changes, not when he speaks.
+
+## 12. The knowledge library
+
+So that facts do not depend on a search engine that blocks the hub or costs money:
+
+- **Offline Wikipedia** as Kiwix ZIM files. The text is CC BY-SA: commercial use is allowed, with
+  credit and share-alike for the text itself. English without pictures is tens of gigabytes:
+  check the current size and the hub's free disk before downloading, and ask him first.
+- Searched locally by title and full text; the shelf uses it for the names, places and things
+  it hears.
+- Facts a person works out rather than looks up (sunrise, the time somewhere else, distances,
+  units, arithmetic) are code in the world, never searches.
+
+## 13. Fixed on 2026-11-11
+
+- **The voice reads the state line on every turn the line has something in it** (router.js),
+  not only on a phrase list. The `voice_situation` setting is now `auto`; `off` restores the
+  old gate. The line goes first in the voice prompt, as background.
+- **Place and daylight are in the line** (`intuition/place.js`): this turn's place, else the last
+  known one with its age; dark or daylight, with today's sunrise and sunset.
+- **Mute no longer turns every sensor off** (app 0.4.100). The app's mic mute switched off all
+  sensors with it and turned them back on only from the same button, so a mute from anywhere
+  else left GPS off for days. Mute is the mic only now. The app puts back, once, the sensors the
+  old mute switched off.
+- **The phone's sensors list shows the phone's own parts**, not the pendant's (OV2640, L76K).
+
+## 14. Order of work, from here
+
+Steps 1 to 3 of INTUITION-STATE-ENGINE.md are done. Then:
+
+1. **(done 2026-11-11)** Place memory, daylight, the line on every turn, sensors fixed.
+2. **Event-driven world** (engine step 4): `applyEvent` updates the world on each turn and sensor
+   event and rebuilds the line; the 60 s tick becomes a decay sweep.
+3. **The shelf** (section 11), starting with his PAN memory and people table.
+4. **Weather in the background**, and the app fields of 10.4 (battery, call, zone, network).
+5. **The knowledge library** (section 12), after he OKs the download.
+6. **Syrinx trained with the line and the shelf** (engine step 5). Round 11 still answers some
+   lines worse with more context. Measure on the voicebench first; retrain only if it says so.
+7. **API, MCP tool and panel; speaking up from state changes; the state bench** (engine steps 6
+   to 8).

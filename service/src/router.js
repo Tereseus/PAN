@@ -27,6 +27,7 @@ import { getConversationState, getConversationBuffer, dictatingToClaude, panSpok
 import { recentThoughts } from './intuition/mind.js';
 import { loadModes, saveMode, dropMode } from './intuition/world.js';
 import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
+import { notePhoneGps, placeLine, daylightLine, weatherLine } from './intuition/place.js';
 import { followUpOf, followUpLine } from './intuition/conversation.js';
 import { planFromResult as planProsody } from './tts-prosody.js';
 import { warmForLanguage, languageNamed, languageName } from './hub-asr.js';
@@ -180,8 +181,14 @@ function buildSituationLine(context = {}) {
     const parts = [];
     const now = Date.now();
     const org = context.org_id || 'org_personal';
-    const place = context.sensors?.phone?.gps?.address;
-    if (place) parts.push(`his phone is at ${String(place).slice(0, 60)}`);
+    // Place: this turn's fix, else the last known one with its age (intuition/place.js).
+    // Daylight comes from that place and the date, computed, so "is it dark", "when does the
+    // sun come up" are known the way a person in the room knows them.
+    try { notePhoneGps(context.sensors?.phone?.gps); } catch {}
+    const placeBit = placeLine(context.sensors?.phone?.gps);
+    if (placeBit) parts.push(placeBit);
+    try { const light = daylightLine(hisTimeZone()); if (light) parts.push(light); } catch {}
+    try { const wx = weatherLine(); if (wx) parts.push(wx); } catch {}
     // Device names stay home: a hostname is a label, not something a cloud model needs.
     // The phone's own row (recordVoiceTurn) is its place, which is already above.
     const screens = all(`SELECT device_id, activity, screen_title, platform FROM device_presence WHERE as_of > :since ORDER BY as_of DESC LIMIT 5`,
@@ -2985,7 +2992,14 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // "How's it going?" room talk. So until a retrain includes the line: only when he asks about
   // what he is doing, where, or what to do, unless voice_situation is 'on'.
   let situationForStudent = /\b(?:what am i (?:doing|working on|up to|looking at)|what(?:'s| is) on my (?:screen|desktop|computer|laptop)|where am i|what should i (?:do|have|eat|work on|make)|what do you think i should|any (?:thoughts|ideas) on what|can you see what i|what (?:are|were) we talking about)\b/i.test(String(text || ''));
-  try { situationForStudent = situationForStudent || /^on$/i.test(String(get("SELECT value FROM settings WHERE key = 'voice_situation'")?.value || '').replace(/^"|"$/g, '').trim()); } catch {}
+  // 2026-11-11 (the owner): the world is read on every turn it has something for. The phrase list
+  // above left out "when does the sun come up where I am", and Syrinx answered "your GPS is
+  // off" eight times while the place was known. Default now: the line goes in whenever it is
+  // not empty; voice_situation 'off' restores the phrase-only gate.
+  try {
+    const vs = String(get("SELECT value FROM settings WHERE key = 'voice_situation'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
+    if (vs !== 'off') situationForStudent = situationForStudent || !!situationLine;
+  } catch { situationForStudent = situationForStudent || !!situationLine; }
   const wordSearchPrompt = wordSearch ? [
     'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
     context.conversation_history ? `Recent conversation:\n${String(context.conversation_history).trim().split('\n').slice(-6).join('\n')}` : '', nowLine(), situationLine,
@@ -3043,7 +3057,9 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   const followUp = recentTalk ? followUpOf(context.conversation_history, text) : null;
   if (followUp) console.log(`[routeStream] follows up on "${followUp.asked.slice(0, 60)}"${followUp.about ? ` about "${followUp.about.slice(0, 60)}"` : ''}`);
   const studentHistory = followUp ? `${historyBlock.trim()}\n${followUpLine(followUp)}` : historyBlock.trim();
-  const studentPrompt = [studentHistory, String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(), situationForStudent ? situationLine : '',
+  // The situation goes first, as background: placed next to his line it pulled "How's it
+  // going?" into room talk (hub bench, 2026-11-11, and 2026-11-03).
+  const studentPrompt = [situationForStudent ? situationLine : '', studentHistory, String(memoryContext || '').trim(), selfAsked ? buildSelfLine() : '', nowLine(),
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null, readerOpts: { minPan: talking ? MIN_PAN_IN_TALK : undefined, copy: ASKS_BACK.test(String(text)) } };
   const studentOpts = { ...streamOpts, chain: studentChain(studentModel, studentBackup), watchFirstToken: !!studentBackup, firstTokenMs: 1500 };

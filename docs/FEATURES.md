@@ -390,6 +390,31 @@ Rules:
 
 ---
 
+## Voice situation line: place, daylight, weather (`buildSituationLine`, router.js; `intuition/place.js`)
+
+- **What:** one line of what is going on around him, given to the voice model as background.
+  Since 2026-11-11 it carries his place (this turn's GPS, else the last known place with its
+  age), daylight with today's sunrise and sunset (computed from the place, no network), and the
+  weather (open-meteo, refreshed in the background at most every 30 min, never awaited by a
+  turn), plus what his computers show, the camera's last look, the topic, other voices nearby.
+- **When:** on every voice turn the line is not empty. Setting `voice_situation`: `auto`
+  (default, every turn), `off` (only on a phrase list such as "where am I", the old gate).
+- **Stores:** the last GPS fix in memory and the settings row `last_phone_place`. Coordinates
+  never go in the line; the place name does.
+- **Known trade:** with the line, Syrinx r11 took "how's it going" as room talk on the hub bench
+  (2026-11-11). Sunrise, sunset and "is it dark" now answer right.
+- Design: docs/INTUITION-STATE.md v2, sections 10 to 14.
+
+## Phone Sensors list (app main screen; `GET/PUT /api/sensors/devices/:id`)
+
+- Each row is a permission switch for what PAN may use from that device. The phone copies the
+  hub's state every 10 s.
+- **Mute (the mic button) is the mic only** since app 0.4.100. It used to switch every sensor off
+  and back on only from the same button, which left GPS off for days; the app puts back once
+  what the old mute switched off.
+- Phone and computer rows describe their own hardware (the catalog's descriptions are the
+  pendant's parts).
+
 ## Phone dashboard (WebView)
 
 - **Purpose:** Phone-sized mirror of the desktop dashboard.

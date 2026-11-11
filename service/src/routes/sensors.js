@@ -30,6 +30,24 @@ const SENSOR_DEFS = [
   { id: 'ph',            name: 'pH Sensor',             category: 'active',  icon: '🧪', description: 'Acidity/alkalinity of liquids (PH-4502C)' },
 ];
 
+// The catalog above describes the pendant's parts. A phone or a computer has its own hardware,
+// so its rows say what they really are (the phone's Sensors list showed "OV2640" and "L76K
+// GNSS", 2026-11-10).
+const DESCRIPTIONS_BY_TYPE = {
+  phone: {
+    microphone: "The phone's microphone (live listening)",
+    camera: "The phone's cameras",
+    gps: "The phone's location (GPS, Wi-Fi and cell)",
+    accel_gyro: "The phone's motion sensors: steps, movement, falls",
+    ambient_light: "The phone's light sensor",
+    barometer: "The phone's air pressure sensor",
+  },
+  pc: {
+    microphone: "This computer's microphone",
+    camera: "This computer's webcam",
+  },
+};
+
 // What sensors each device type actually has
 // These are the ONLY sensors that show up for each device type
 const DEVICE_SENSORS = {
@@ -114,7 +132,7 @@ router.get('/devices/:deviceId', (req, res) => {
       id: s.id,
       name: s.name,
       category: s.category,
-      description: s.description,
+      description: DESCRIPTIONS_BY_TYPE[device.device_type]?.[s.id] || s.description,
       icon: s.icon,
       enabled: s.policy === 'force_on' ? true : s.policy === 'force_off' ? false : s.muted === 0,
       muted: s.muted,
