@@ -1107,6 +1107,9 @@ children can have adult-sounding voices and vice versa).
 - **Matching:** fuzzy, IDF-weighted token match on titles the relays report;
   duplicate titles resolve to a live relay first, then the most recent. Extra STT
   aliases per install: `thread-aliases.json` next to the DB, `{ "heard": "title word" }`.
+  An exact title wins outright ("pan" is the ΠAN thread, not Mint ΠAN, which scored the
+  same because machine words are no part of a name). Words after "not" rule a thread out:
+  "pan, not mint pan" excludes the Mint host instead of limiting to it.
 - **Reply:** the voice turn holds up to 22 s (SSE keepalives) and speaks the answer
   inline. Later answers (and failures) go to the phone queue as `type:'speak'`
   (`enqueuePhoneNote` in `routes/api.js`); the app reads them aloud and leaves a

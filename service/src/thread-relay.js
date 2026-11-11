@@ -222,11 +222,30 @@ function distinctThreads(threads) {
 
 export function matchThread(spokenName, threads = listThreads()) {
   const machines = spokenMachines();
-  const { t: said, joined } = spokenTokens(spokenName);
+  let { t: said, joined } = spokenTokens(spokenName);
+  // "pan, not mint pan": what follows "not" is ruled out, never a target. A machine after "not"
+  // excludes that machine. Before this, "not mint pan" made Mint the hard limit (2026-11-11).
+  let excludeHost = null;
+  const notAt = said.indexOf('not');
+  if (notAt >= 0) {
+    const after = said.slice(notAt + 1);
+    const neg = after.find(w => machines[w]);
+    if (neg) excludeHost = machines[neg];
+    said = notAt > 0 ? said.slice(0, notAt) : after.filter(w => !machines[w]);
+    joined = said.slice(0, -1).map((w, i) => w + said[i + 1]);
+  }
   const { machine, rest: words } = machineSaid(said, joined, machines);
   // A machine said out loud is a hard limit: "mint music" must never reach the G16's Music thread.
-  const pool = distinctThreads(threads).filter(th => !machine || th.host === machines[machine]);
+  const pool = distinctThreads(threads).filter(th => (!machine || th.host === machines[machine]) && (!excludeHost || th.host !== excludeHost));
   if (!said.length || !pool.length) return { ok: false, reason: said.length ? 'no_threads' : 'no_name', candidates: [] };
+
+  // An exact title wins. "PAN" scored the same as "Mint PAN" (the machine word is no part of
+  // a name), so the relay asked "Which thread, PAN or Mint PAN?" forever (2026-11-11).
+  const exact = pool.filter(th => {
+    const tt = tokens(th.title).filter(w => !FILLER.has(w));
+    return tt.length === said.length && tt.every((w, i) => w === said[i]);
+  });
+  if (exact.length === 1) return { ok: true, thread: exact[0], score: 1, candidates: [{ title: exact[0].title, score: 1 }] };
   if (!words.length) {
     const candidates = pool.slice(0, 3).map(th => ({ title: th.title, score: 1 }));
     return pool.length === 1 ? { ok: true, thread: pool[0], score: 1, candidates } : { ok: false, reason: 'ambiguous', candidates };
