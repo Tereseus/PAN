@@ -2045,6 +2045,13 @@ Three additional views on top of the existing Projects page:
 
 The MCP server (`service/src/mcp-server.js`) exposes tools to Claude Code.
 
+- **MCP Apps (test, 2026-11-11):** `pan_jobs_view` (`service/src/mcp/pan-apps.js`) returns the
+  Scheduled Jobs data (`/jobs.json`) as `structuredContent` and points at `ui://pan/jobs-view.html`,
+  a self-contained page (the `@modelcontextprotocol/ext-apps` 1.x App bundle is inlined, no CDN)
+  that draws the jobs per machine. Registered on the stdio server only, and wrapped so a failure
+  never takes the core tools down. Open question: which surfaces draw it (Code tab, desktop chat,
+  phone). Hosts that do not draw apps still get the one-line text summary.
+
 - **Where it finds PAN:** the repo's `.mcp.json` starts it (and `quality-log-mcp.js`) on
   whatever computer Claude runs on, so it names no address. `service/src/mcp/pan-address.js`
   picks one: `PAN_BASE_URL` when set; `http://127.0.0.1:7779` when this computer has a paired

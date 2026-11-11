@@ -19,6 +19,9 @@ const PAN = panBaseUrl();
 
 const server = new McpServer({ name: 'pan', version: '2.1.0' }, { instructions: PAN_MCP_INSTRUCTIONS });
 registerPanTools(server, { panBaseUrl: PAN });
+// MCP Apps (pages drawn inside Claude). A failure here must never take the core tools down.
+try { (await import('./mcp/pan-apps.js')).registerPanApps(server, { panBaseUrl: PAN }); }
+catch (e) { console.error(`[PAN MCP] apps not registered: ${e.message}`); }
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
