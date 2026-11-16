@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlinx.coroutines.launch
@@ -26,6 +27,7 @@ fun SettingsScreen(
     val deviceName by viewModel.deviceName.collectAsState()
     val serverUrl by viewModel.serverUrl.collectAsState()
     val beepEnabled by viewModel.beepEnabled.collectAsState()
+    val backchannelEnabled by viewModel.backchannelEnabled.collectAsState()
     val vibrationEnabled by viewModel.vibrationEnabled.collectAsState()
     val voiceResponseEnabled by viewModel.voiceResponseEnabled.collectAsState()
     val deviceTarget by viewModel.deviceTarget.collectAsState()
@@ -48,6 +50,7 @@ fun SettingsScreen(
     val incognitoAllowed by viewModel.incognitoAllowed.collectAsState()
     val toastMessage by viewModel.toastMessage.collectAsState()
     val updateChecking by viewModel.updateChecking.collectAsState()
+    val updateProgress by viewModel.updateProgress.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -136,8 +139,8 @@ fun SettingsScreen(
                 when {
                     !conn.loaded -> "Checking…"
                     conn.viaLink -> "Using PAN Link" + (conn.linkWay?.let { ", $it" } ?: "")
-                    proxyUrl != null && linkPaired -> "Using Tailscale for now: PAN Link isn't reaching your computer"
-                    proxyUrl != null -> "Using Tailscale"
+                    proxyUrl != null && linkPaired -> "Using the backup route: PAN Link isn't reaching your computer"
+                    proxyUrl != null -> "Using the backup route"
                     else -> "Not connected to PAN yet, connecting…"
                 },
                 style = MaterialTheme.typography.bodyLarge,
@@ -145,7 +148,7 @@ fun SettingsScreen(
                        else MaterialTheme.colorScheme.error
             )
             OutlinedTextField(
-                value = proxyUrl ?: serverUrl,
+                value = proxyUrl ?: serverUrl.ifEmpty { "Not found yet" },
                 onValueChange = { },
                 label = { Text("PAN Server") },
                 modifier = Modifier.fillMaxWidth(),
@@ -200,6 +203,13 @@ fun SettingsScreen(
             }
 
             // Tailscale stays on underneath: the fallback, and PAN Link's way in from outside.
+            // Behind Advanced, closed: people never have to see or sign in to it (the owner, Nov 15).
+            // The hub hands the phone a key through PAN Link, so it joins by itself.
+            var advanced by remember { mutableStateOf(false) }
+            TextButton(onClick = { advanced = !advanced }) {
+                Text(if (advanced) "Advanced ▲" else "Advanced ▼")
+            }
+            if (advanced) {
             Text("Tailscale (backup)", style = MaterialTheme.typography.titleSmall)
             Text(
                 if (remoteAccessEnabled && remoteAccessStatus == "Connected")
@@ -215,6 +225,8 @@ fun SettingsScreen(
             Text("Stays on as a backup. The app uses it when PAN Link can't reach your computer, and away from home PAN Link travels through it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TailscaleSignIn(snackbarHostState)
+            }
 
             HorizontalDivider()
 
@@ -228,6 +240,13 @@ fun SettingsScreen(
                 onToggle = { viewModel.setVoiceResponse(it) }
             )
 
+            SettingToggle(
+                title = "Mm-hm while you think",
+                description = "A soft \"mm-hm\" when you pause in the middle of a long thought",
+                checked = backchannelEnabled,
+                onToggle = { viewModel.setBackchannel(it) }
+            )
+
             // Voice Quality dropdown
             var voiceExpanded by remember { mutableStateOf(false) }
             var currentVoice by remember { mutableStateOf(
@@ -236,10 +255,8 @@ fun SettingsScreen(
             ) }
             var voiceStatus by remember { mutableStateOf("") }
             val voiceOptions = listOf(
+                // The Piper voices (low, medium, high) speak nothing on sherpa-onnx 2.x (Nov 15).
                 "android" to "Default (Android)",
-                "low" to "Piper Low (15MB)",
-                "medium" to "Piper Medium (60MB)",
-                "high" to "Piper High (110MB)",
                 "kokoro" to "Kokoro Natural (140MB)",
                 "supertonic" to "Supertonic Fast (81MB)",
                 "supertonic3" to "Supertonic 3 Clear (129MB)"
@@ -334,6 +351,10 @@ fun SettingsScreen(
                     Text(label, modifier = Modifier.padding(start = 8.dp))
                 }
             }
+
+            HorizontalDivider()
+
+            AccessoriesSection(viewModel.accessoryHub)
 
             HorizontalDivider()
 
@@ -580,7 +601,14 @@ fun SettingsScreen(
                 enabled = !updateChecking,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (updateChecking) "Checking…" else "Check for updates")
+                Text(if (updateChecking) (if (updateProgress != null) "Downloading…" else "Checking…") else "Check for updates")
+            }
+            updateProgress?.let { p ->
+                LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth())
+                val total = viewModel.updateTotalMb()
+                Text("${(p * total).toLong()} of $total MB",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(
                 "Pulls the latest APK from the PAN server. If an update is found, " +
@@ -662,6 +690,60 @@ fun SettingToggle(
     }
 }
 
+/**
+ * Glasses, headphones, watch, Medallion, other: what is connected in each slot, and which one
+ * PAN listens and speaks through (AccessoryHub has the why).
+ */
+@Composable
+private fun AccessoriesSection(hub: dev.pan.app.accessory.AccessoryHub) {
+    LaunchedEffect(Unit) { hub.start(); hub.refresh() }
+    val all by hub.accessories.collectAsState()
+    val chosen by hub.micKey.collectAsState()
+    val routed by hub.routed.collectAsState()
+
+    Text("Accessories", style = MaterialTheme.typography.titleMedium)
+    Text("Glasses, headphones and earbuds that work with Android work with PAN. Pick one to talk to PAN through it.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+    dev.pan.app.accessory.AccessoryHub.Slot.entries.forEach { slot ->
+        val inSlot = all.filter { it.slot == slot }
+        Text(slot.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 4.dp))
+        if (inSlot.isEmpty()) {
+            Text(when (slot) {
+                    dev.pan.app.accessory.AccessoryHub.Slot.GLASSES -> "None connected. Android XR glasses pair in Bluetooth settings."
+                    dev.pan.app.accessory.AccessoryHub.Slot.WATCH -> "None paired."
+                    dev.pan.app.accessory.AccessoryHub.Slot.MEDALLION -> "Not connected."
+                    dev.pan.app.accessory.AccessoryHub.Slot.CAR -> "None connected. When the phone joins a car's Bluetooth, PAN talks through the car and listens on the phone."
+                    else -> "None connected."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        inSlot.forEach { a ->
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(a.name, style = MaterialTheme.typography.bodyMedium)
+                    val parts = listOfNotNull(a.how, "mic".takeIf { a.mic }, "speaker".takeIf { a.speaker },
+                        "PAN is using it".takeIf { routed == a.key })
+                    Text(parts.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // The Medallion has its own link; only call audio devices can be picked here.
+                if (a.mic && a.connected && a.slot != dev.pan.app.accessory.AccessoryHub.Slot.MEDALLION) {
+                    Switch(checked = chosen == a.key, onCheckedChange = { on -> hub.useForVoice(if (on) a.key else null) })
+                }
+            }
+        }
+    }
+    if (chosen != null && routed == null) {
+        Text("The one you picked is not connected. PAN is using the phone until it comes back.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 /** What the Connection section shows, read together off the main thread. */
 private data class ConnectionView(
     val loaded: Boolean = false,
@@ -671,3 +753,64 @@ private data class ConnectionView(
     val linkPaired: Boolean = false,
     val linkWay: String? = null,
 )
+
+
+/**
+ * Tailscale sign-in, shown only while the app's own Tailscale needs it.
+ *
+ * Before Nov 14 a never-signed-in device only said "Connecting...": the sign-in link went to
+ * logcat, and the browser it tried to open does not exist on a car head unit. Now the link is
+ * a button and a QR code (sign in on your phone), and a device waiting for the tailnet admin's
+ * approval says so instead of looking stuck.
+ */
+@Composable
+private fun TailscaleSignIn(snackbarHostState: SnackbarHostState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var st by remember { mutableStateOf(dev.pan.app.vpn.PanVpn.VpnStatus(connected = false)) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            st = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                if (dev.pan.app.vpn.PanVpn.isRunning()) dev.pan.app.vpn.PanVpn.getStatus()
+                else dev.pan.app.vpn.PanVpn.VpnStatus(connected = false)
+            }
+            kotlinx.coroutines.delay(2_000)
+        }
+    }
+    when {
+        st.authUrl.isNotEmpty() -> {
+            Text("Sign in to Tailscale so this device can reach PAN away from your home network.",
+                style = MaterialTheme.typography.bodyMedium)
+            Button(onClick = {
+                if (!dev.pan.app.vpn.PanVpn.openLoginUrl(context, st.authUrl)) scope.launch {
+                    snackbarHostState.showSnackbar("No browser here. Scan the code below with your phone.")
+                }
+            }) { Text("Sign in to Tailscale") }
+            val qr = remember(st.authUrl) { qrBitmap(st.authUrl, 512) }
+            if (qr != null) {
+                Text("Or scan this with your phone's camera and sign in there:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                androidx.compose.foundation.Image(
+                    bitmap = qr.asImageBitmap(),
+                    contentDescription = "Tailscale sign-in code",
+                    modifier = Modifier.size(200.dp),
+                )
+            }
+        }
+        st.waitingForApproval -> {
+            Text("Signed in. Waiting for approval: open login.tailscale.com/admin/machines on any computer and approve this device. It connects by itself after that.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error)
+        }
+    }
+}
+
+private fun qrBitmap(text: String, size: Int): android.graphics.Bitmap? = try {
+    val m = com.google.zxing.qrcode.QRCodeWriter()
+        .encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size)
+    val px = IntArray(size * size) { i ->
+        if (m.get(i % size, i / size)) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+    }
+    android.graphics.Bitmap.createBitmap(px, size, size, android.graphics.Bitmap.Config.ARGB_8888)
+} catch (_: Exception) { null }

@@ -151,6 +151,13 @@ class SherpaStreamingStt @Inject constructor(
             "tokens.txt"                                         to      5_048L,
             "silero_vad.onnx"                  to  1_807_522L,
         )
+        // Files that do not live in MODEL_REPO. silero_vad.onnx was never in the
+        // zipformer repo (404): the Pixel only had it from an old copy, so every
+        // fresh install (the car head unit, 2026-11-14) failed here and the mic
+        // never started. This copy is the same 1,807,522 bytes.
+        private val MODEL_URLS = mapOf(
+            "silero_vad.onnx" to "https://huggingface.co/csukuangfj/vad/resolve/main/silero_vad.onnx",
+        )
 
         // Silero speaks in 512-sample windows at 16kHz (32ms). Not a free choice.
         private const val VAD_WINDOW = 512
@@ -167,6 +174,76 @@ class SherpaStreamingStt @Inject constructor(
         // threshold: when one quiet 32 ms window ended it, "actually no, forget that, what about
         // a hybrid" took 3.3 s to stop PAN (conversation test, 2026-11-05).
         private const val BARGE_IN_GAP_MS = 160L
+        // WORDS over PAN (docs/TURN-TAKING.md, row 4). "Wait," and "stop," last a quarter of a
+        // second: the 0.7 s rule never saw them, PAN only stopped 0.7 s into the phrase after
+        // them, 1.5 to 1.8 s from the first sound, and the word itself was lost (voicebench on
+        // the OnePlus Pad, 2026-11-15). So a loud run this long is read on a stream of its own,
+        // again every BARGE_WORDS_EVERY_MS while it lasts and once when it ends, with this much
+        // audio from before it. A real word that PAN is not saying stops PAN; "mm hmm" and
+        // PAN's own words coming back do not.
+        private const val BARGE_WORDS_MIN_MS = 200L
+        /**
+         * Hold, then decide. On a real phone the call path's echo canceller eats a voice that
+         * talks over PAN: of a "stop" said across the room the Pixel's speech detector caught
+         * 0.1 to 0.2 s, and the reading was "WELL", "ONE", "NONE" (48 clips, 2026-11-15; 9 of 36
+         * stop lines stopped PAN, 7 of 12 "yeah"s did too, both by luck). So PAN's voice is held
+         * the moment a voice is heard over it, the canceller has nothing left to cancel, and
+         * what he says next is read clean. Then PAN stops for good or carries on.
+         */
+        private const val BARGE_PAUSE_MS = 96L
+        // Quiet after a sound that did not stop PAN, before it carries on.
+        private const val BARGE_RESUME_AFTER_MS = 900L
+        // Never held longer than this without a decision.
+        private const val BARGE_PAUSE_MAX_MS = 4000L
+        /**
+         * "Mm-hm" from PAN while he pauses in the middle of a thought (Settings, off unless he
+         * turns it on). Only on a pause Smart Turn hears as unfinished, in a turn already this
+         * many words long, once per pause and not more often than BACK_EVERY_MS. It is not a
+         * line: "PAN is talking" stays false, so the turn stays open and nothing is cut.
+         */
+        @Volatile var backchannelOn = false
+        private const val BACK_AFTER_MS = 450L
+        private const val BACK_EVERY_MS = 12_000L
+        private const val BACK_MIN_WORDS = 6
+        // Only when Smart Turn is this sure he is not done, and the words do not read as done
+        // either: at 0.48 it said "mm-hm" to "how long does it take to boil an egg" and then
+        // answered 0.2 s later (voicebench 2026-11-15).
+        private const val BACK_MAX_P = 0.2f
+        // Its own sound must not count as him talking again.
+        private const val BACK_TAIL_MS = 250L
+        /**
+         * Debug (TEST_READ_BELOW): while PAN talks, read the last second every 300 ms whatever
+         * the level and only report it (`below_words`), never act. For measuring what PAN's own
+         * echo reads as on a loudspeaker device, where nobody gets over the level gate.
+         */
+        @Volatile var readBelowGate = false
+        // A run that has ENDED is read from this length: "wait," and "stop," were 260 ms of
+        // speech by the VAD but under 200 ms over the level, and were never read.
+        private const val BARGE_WORDS_MIN_ENDED_MS = 64L
+        // Silence pushed after the audio so the recogniser gives up its last word. The same as
+        // FLUSH_PAD_S: at 0.3 s "wait" came back empty and "stop" as "STO" (Pad, 2026-11-15).
+        private const val BARGE_WORDS_PAD_S = 0.66f
+        private const val BARGE_WORDS_EVERY_MS = 250L
+        private const val BARGE_WORDS_LEAD_MS = 250L
+        // A run that ended longer ago than this is not read any more.
+        private const val BARGE_WORDS_LATE_MS = 600L
+        // Sound alone, with no word the recogniser could read, still stops PAN after this long:
+        // someone speaking a language the phone's ear does not know. Not while music plays.
+        private const val BARGE_IN_LEVEL_MS = 1500L
+        // Listening, not interrupting.
+        // With what the recogniser writes for "yeah" under PAN's voice ("yet", "year").
+        private val BACKCHANNEL = setOf("mm", "hmm", "hm", "mhm", "mmhmm", "uh", "huh", "um", "ah", "oh",
+            "yeah", "yea", "yah", "ya", "yet", "year", "yes", "yep", "yup", "right", "ok", "okay", "sure",
+            "i", "see", "cool", "nice", "wow", "true", "exactly", "got", "it", "a", "the", "and", "so")
+        // "mm hmm" comes out as "M M", "MC", "HM", "MHM": hums, not words.
+        private val HUM = Regex("^(m+c?|h+m+|m+h+m*|u+h+|a+h+|o+h+|e+h+|h+)$")
+        // These stop PAN even alone.
+        // With how the recogniser writes them under PAN's voice ("wait" came out as "WEIGHT").
+        private val STOP_LIKE = Regex("^s[tnmpkclwhq]")
+        private val STOP_WORDS = setOf("stop", "wait", "weight", "await", "no", "nope", "nah", "hey", "pan",
+            "don't", "dont", "shut", "silence", "shush",
+            "pam", "hold", "actually", "quiet", "enough", "pause", "sorry", "but", "what", "why", "how",
+            "when", "where", "who", "never", "listen", "excuse")
 
         // A VAD CANNOT TELL PAN'S VOICE FROM HIS. Both are speech, and Silero is
         // right to say so - the echo left after AEC is quieter, not less speechy.
@@ -207,6 +284,20 @@ class SherpaStreamingStt @Inject constructor(
         // then usually missed the judge timeout: commits landed at 1.15-1.4 s after his
         // last word, most with no verdict at all (voicebench, 2026-11-02).
         private const val EOT_VAD_SILENCE_MS = 200L
+        // JUDGING ALL THE WAY THROUGH A PAUSE (docs/TURN-TAKING.md, row 1). On the Pad
+        // (2026-11-15) a sure turn went out 380 to 460 ms after his last word: 200 ms of quiet,
+        // then 150 to 250 ms for Smart Turn, then 50 to 100 ms to flush the recogniser. And a
+        // whole sentence it misjudged at 0.2 s ("tell me a short joke", 0.15) waited for the one
+        // second look at 0.65 s and went out at 840 to 900 ms.
+        // So: a first look this soon after he goes quiet, which only counts when it is sure, with
+        // the usual look at EOT_VAD_SILENCE_MS running beside it if it has not answered by then.
+        private const val JUDGE_EARLY_MS = 96L
+        // Not on a chip where one look takes this long (the car's): two at once make both late.
+        private const val JUDGE_EARLY_MAX_COST_MS = 400L
+        // While a turn is held as unfinished, look again each time the pause has grown this much.
+        // These looks between the first and REJUDGE_MS, and after it, only count when sure:
+        // more looks must not mean more chances to cut him off at a pause for thought.
+        private const val REJUDGE_STEP_MS = 200L
         // Zeros pushed through the recogniser at decision time. A streaming zipformer
         // emits a word only after hearing ~0.5 s past it, so 0.2-0.7 s into a pause his
         // last word is often still inside it; this pushes it out now. The sherpa-onnx
@@ -287,6 +378,11 @@ class SherpaStreamingStt @Inject constructor(
 
     override var onLog: ((String) -> Unit)? = null
     override var isTtsSpeaking: (() -> Boolean)? = null
+    /** Hold PAN's voice where it is (true when it could), and let it carry on. */
+    var onPauseTts: (() -> Boolean)? = null
+    var onResumeTts: (() -> Unit)? = null
+    /** Plays the soft "mm-hm" and says how long it is in ms, or 0 when it did not play. */
+    var onBackchannel: (() -> Long)? = null
     // When the sound of the current reply began. 0 until it does.
     @Volatile private var soundAt = 0L
     override fun onTtsSound() {
@@ -386,13 +482,71 @@ class SherpaStreamingStt @Inject constructor(
     private val recentTtsOutput = mutableListOf<String>()
     private val ttsTimestamps = mutableListOf<Long>()
 
+    /** What a stretch of audio says, on a stream of its own. Runs off the audio thread. */
+    private fun wordsOver(rec: OnlineRecognizer, frames: List<FloatArray>, pad: FloatArray): String {
+        val s = rec.createStream("")
+        try {
+            for (w in frames) s.acceptWaveform(w, SAMPLE_RATE)
+            s.acceptWaveform(pad, SAMPLE_RATE)
+            s.inputFinished()
+            while (rec.isReady(s)) rec.decode(s)
+            return rec.getResult(s).text.trim()
+        } finally {
+            runCatching { s.release() }
+        }
+    }
+
+    /**
+     * Whether words heard while PAN talks are him cutting in. PAN's own words (its voice comes
+     * back through the microphone) and "mm hmm" are not. A stop word or two real words count at
+     * once. One other word counts only when the sound has [ended]: read half way through,
+     * "mm hmm" came out as "IMMIT" and stopped PAN (voicebench on the Pad, 2026-11-15).
+     */
+    internal fun interrupts(heard: String, ended: Boolean, held: Boolean = false): Boolean {
+        val now = System.currentTimeMillis()
+        val pan = HashSet<String>()
+        for (i in recentTtsOutput.indices) {
+            if (now - ttsTimestamps[i] > TTS_ECHO_WINDOW_MS) continue
+            pan.addAll(recentTtsOutput[i].split(' '))
+        }
+        val words = heard.lowercase().replace(Regex("[^\\p{L}' ]+"), " ").split(' ').filter { it.isNotBlank() }
+        val his = words.filter { w ->
+            w !in pan && !(w.length > 3 && pan.any { it.length > 3 && (it.contains(w) || w.contains(it)) })
+        }
+        // Also the start of one: "stop" under PAN's voice came out as "STO".
+        if (his.any { w -> STOP_WORDS.any { it == w || (w.length >= 3 && it.startsWith(w)) } }) return true
+        // One-letter pieces and hums are not words.
+        val said = his.filter { it.length >= 2 && it !in BACKCHANNEL && !HUM.matches(it) }
+        // PAN's voice is held. On a real phone the first word said over PAN reads as anything
+        // ("stop" came out "WELL", "STUD", "AND"; "yeah" as "EVEN", "RUNNING"). The owner, 2026-11-15:
+        // "yeah" and humming must not stop it, that makes no sense. So only what is safe to
+        // act on: a stop word (above), a word that starts the way "stop" and "shut" do, which
+        // is how half the chewed "stop"s still read ("SNAPPED", "SMOKE", "STUD", "SHE"), or
+        // three real words, which is someone talking. Replayed on the Pixel recordings:
+        // listening sounds stop PAN 1 of 22 (was 18), one "stop" alone 2 of 24 (was 18): he
+        // says it twice, and the second one lands while PAN is held and reads clean.
+        if (held) return said.any { STOP_LIKE.containsMatchIn(it) } || said.size >= 3
+        return (said.size >= 2 && said.any { it.length >= 3 }) || (ended && said.any { it.length >= 4 })
+    }
+
     override fun registerTtsOutput(text: String) {
-        val lower = text.lowercase().trim()
+        // Without punctuation: the recognizer never writes "sunny," or "night.".
+        val lower = text.lowercase().replace(Regex("[^\\p{L}\\p{N}' ]+"), " ").trim()
         recentTtsOutput.add(lower)
-        ttsTimestamps.add(System.currentTimeMillis() + lower.split("\\s+".toRegex()).size * 80L)
+        // About 0.4 s a spoken word; onTtsDone moves this to when PAN really stopped. At 80 ms a
+        // word the window had closed before a long line even finished, and on a Bluetooth
+        // speaker PAN heard its own sentence and answered it (OnePlus Pad test, Nov 15).
+        ttsTimestamps.add(System.currentTimeMillis() + lower.split("\\s+".toRegex()).size * 400L)
         while (recentTtsOutput.size > 10) {
             recentTtsOutput.removeAt(0)
             ttsTimestamps.removeAt(0)
+        }
+    }
+
+    override fun onTtsDone() {
+        val now = System.currentTimeMillis()
+        for (i in ttsTimestamps.indices) {
+            if (now - ttsTimestamps[i] < 120_000L && ttsTimestamps[i] < now) ttsTimestamps[i] = now
         }
     }
 
@@ -418,6 +572,18 @@ class SherpaStreamingStt @Inject constructor(
             if (matched.size > ttsWords.size * 0.8) {
                 result = resultWords.filterIndexed { k, _ -> k !in matched }.joinToString(" ").trim()
                 removed = true
+            }
+        }
+        // A piece made only of words PAN just said is its tail coming back on its own: "night",
+        // after the rest of "...rain late at night" had been taken out (OnePlus Pad test, Nov 15).
+        if (!removed) {
+            val heard = result.split("\\s+".toRegex()).filter { it.isNotBlank() }
+            if (heard.isNotEmpty() && heard.size <= 6) {
+                for (i in recentTtsOutput.indices) {
+                    if (now - ttsTimestamps[i] > TTS_ECHO_WINDOW_MS) continue
+                    val said = recentTtsOutput[i].split("\\s+".toRegex()).toSet()
+                    if (heard.all { w -> w in said || (w.length > 3 && said.any { it.length > 3 && (it.contains(w) || w.contains(it)) }) }) return ""
+                }
             }
         }
         val remaining = result.split("\\s+".toRegex()).filter { it.length > 1 }
@@ -449,7 +615,7 @@ class SherpaStreamingStt @Inject constructor(
                 log("downloading $name (${size / 1_048_576}MB)")
                 try {
                     val tmp = File(modelDir, "$name.tmp")
-                    URL("$MODEL_REPO/$name").openConnection().apply {
+                    URL(MODEL_URLS[name] ?: "$MODEL_REPO/$name").openConnection().apply {
                         connectTimeout = 15000; readTimeout = 60000
                     }.getInputStream().use { input ->
                         FileOutputStream(tmp).use { output ->
@@ -641,6 +807,9 @@ class SherpaStreamingStt @Inject constructor(
             // more than the model does.
 
             recorder.startRecording()
+            // The call path above strips music out before anything here hears it, so YAMNet
+            // listens on a second, raw stream when the phone allows one (MusicDetector).
+            MusicDetector.get(context).startRaw()
             isListening = true
             log("streaming (continuous, endpoint ${ENDPOINT_SILENCE_S}s)")
 
@@ -674,6 +843,16 @@ class SherpaStreamingStt @Inject constructor(
             var speechRunStart = 0L    // start of the current run of him talking over PAN
             var lastLoudAt = 0L        // last window of that run
             var barged = false         // already interrupted this TTS turn
+            var pausedAt = 0L          // PAN's voice is held since then, waiting for a decision
+            var loudStart = 0L; var loudLast = 0L; var loudPeak = 0f; var loudVad = 0   // loud_run
+            // Words over PAN: one reading at a time, off this thread (wordsOver).
+            var wordsCheck: Deferred<String>? = null
+            var wordsCheckAt = 0L      // when the last reading started
+            var wordsCheckedEnd = 0L   // the lastLoudAt it covered
+            var wordsCheckEnded = false // the run was over when it started
+            var wordsRun = 0L          // the run (speechRunStart) the readings belong to
+            var overWords: String? = null // what the last reading of this run heard
+            val wordsPad = FloatArray((BARGE_WORDS_PAD_S * SAMPLE_RATE).toInt())
             var gateOpen = false       // was the recogniser being fed last window
             var heldIncomplete = false // logged the hold once for this utterance
             var lastCommitAt = 0L      // when a turn was last handed to the service
@@ -732,6 +911,16 @@ class SherpaStreamingStt @Inject constructor(
             var slowLoggedFor = -1L    // pause we already reported a slow verdict for
             var flushedFor = -1L       // pause the recogniser was already flushed for
             var rejudgedFor = -1L      // pause that already had its second verdict
+            var backFor = -1L          // pause that already had its "mm-hm" (or was refused one)
+            var lastBackAt = 0L
+            var backWords = -1         // words he had said when it played; -1 = none this turn
+            var judgeWaited = 0L       // how long the pause was when the look in flight started
+            var judgeMid = false       // that look only counts when sure (REJUDGE_STEP_MS)
+            var lastJudgeMs = 0L       // how long the last look took
+            var early: Deferred<Float>? = null // the first look, at JUDGE_EARLY_MS
+            var earlyFor = -1L
+            var earlyStarted = 0L
+            var earlyTriedFor = -1L
             var decidedFor = 0L        // pause that already committed; only new speech reopens it
             val flushPad = FloatArray((FLUSH_PAD_S * SAMPLE_RATE).toInt())
 
@@ -752,6 +941,8 @@ class SherpaStreamingStt @Inject constructor(
                     carried -= VAD_WINDOW
                     if (carried > 0) System.arraycopy(carry, VAD_WINDOW, carry, 0, carried)
                     val frame = window.copyOf()
+                    // Music in the room (YAMNet, its own thread): the bar case.
+                    MusicDetector.get(context).feed(frame)
 
                     // The VAD runs on EVERY window, always. It is the thing that
                     // decides whether any of this is speech at all. Feeding the
@@ -766,6 +957,7 @@ class SherpaStreamingStt @Inject constructor(
                         true
                     }
                     val now = System.currentTimeMillis()
+                    dev.pan.app.debug.AecDump.proc(frame)
                     val isSpeech = detected && now >= echoGoneAt
                     if (isSpeech) lastSpeechAt = now
 
@@ -800,6 +992,7 @@ class SherpaStreamingStt @Inject constructor(
                             }
                         }
                         barged = false
+                        pausedAt = 0L
                         ttsStartedAt = 0L
                         residualPeak = 0f
                         soundAt = 0L
@@ -829,20 +1022,142 @@ class SherpaStreamingStt @Inject constructor(
                             continue
                         }
                         val threshold = maxOf(residualPeak * BARGE_IN_HEADROOM, BARGE_IN_MIN_RMS)
+                        // Recording both voices at once (TEST_AEC_DUMP): PAN talks on.
+                        if (dev.pan.app.debug.AecDump.active) continue
+                        if (readBelowGate) {
+                            wordsCheck?.let { c ->
+                                if (c.isCompleted) {
+                                    val heard = runCatching { c.getCompleted() }.getOrDefault("")
+                                    wordsCheck = null
+                                    VoiceEvents.emit("below_words", "text" to heard, "ms" to (now - wordsCheckAt),
+                                        "rms" to rms, "residual" to residualPeak, "his" to interrupts(heard, false))
+                                }
+                            }
+                            if (wordsCheck == null && now - wordsCheckAt >= 300L) {
+                                val snap = preroll.toList().takeLast(31)
+                                wordsCheckAt = now
+                                wordsCheck = scope.async(Dispatchers.Default) { wordsOver(rec, snap, wordsPad) }
+                            }
+                            continue
+                        }
+                        // Measuring only: sound over the gate while PAN talks, whatever the speech
+                        // detector thinks of it (`loud_run`: how long, how loud, how much of it
+                        // the detector called speech).
+                        if (rms >= threshold) {
+                            if (loudStart == 0L) { loudStart = now; loudPeak = 0f; loudVad = 0 }
+                            loudLast = now
+                            if (rms > loudPeak) loudPeak = rms
+                            if (isSpeech) loudVad++
+                        } else if (loudStart != 0L && now - loudLast > 64L) {
+                            if (loudLast - loudStart >= 64L) VoiceEvents.emit("loud_run", "ms" to (loudLast - loudStart + 32),
+                                "peak" to loudPeak, "vad" to loudVad, "threshold" to threshold, "held" to (pausedAt != 0L))
+                            loudStart = 0L
+                        }
                         // Speech no louder than the echo already is, is PAN, not him.
-                        if (isSpeech && rms >= threshold) {
+                        // Where PAN's voice can be held, sound over the gate counts whatever the
+                        // speech detector says: it missed 25 of 36 short "stop"s on the Pixel
+                        // one run and 3 of 30 the next, and every one of them was over the gate.
+                        // Holding costs a second if it was nothing.
+                        val canHold = onPauseTts != null && !interpreting
+                        if ((isSpeech || canHold) && rms >= threshold) {
                             if (now - lastLoudAt > BARGE_IN_GAP_MS) speechRunStart = now
                             lastLoudAt = now
                         }
-                        if (now - lastLoudAt <= BARGE_IN_GAP_MS && now - speechRunStart >= BARGE_IN_SPEECH_MS) {
-                            barged = true
-                            log("barge-in: ${now - speechRunStart}ms of speech at rms " +
-                                "%.4f over threshold %.4f (residual %.4f)".format(rms, threshold, residualPeak))
-                            VoiceEvents.emit("barge_in", "speech_ms" to (now - speechRunStart),
+                        val alive = now - lastLoudAt <= BARGE_IN_GAP_MS
+                        if (wordsRun != speechRunStart) {
+                            wordsRun = speechRunStart
+                            overWords = null
+                            wordsCheckedEnd = 0L
+                        }
+                        if (pausedAt == 0L && !interpreting && alive && speechRunStart != 0L &&
+                            lastLoudAt - speechRunStart >= BARGE_PAUSE_MS &&
+                            !MusicDetector.get(context).heardMusic() && onPauseTts?.invoke() == true) {
+                            pausedAt = now
+                            log("held: a voice over PAN, %d ms at rms %.4f over %.4f".format(
+                                now - speechRunStart, rms, threshold))
+                            VoiceEvents.emit("barge_pause", "speech_ms" to (now - speechRunStart),
                                 "rms" to rms, "threshold" to threshold)
+                        }
+                        var bargeBy: String? = null
+                        var bargeWords = ""
+                        wordsCheck?.let { c ->
+                            if (c.isCompleted) {
+                                val heard = runCatching { c.getCompleted() }.getOrDefault("")
+                                wordsCheck = null
+                                overWords = heard
+                                val his = interrupts(heard, wordsCheckEnded, pausedAt != 0L)
+                                VoiceEvents.emit("over_words", "text" to heard, "ms" to (now - wordsCheckAt), "his" to his,
+                                    "ended" to wordsCheckEnded, "held" to (pausedAt != 0L))
+                                if (his) { bargeBy = "words"; bargeWords = heard }
+                            }
+                        }
+                        // Interpreting, the other person speaks a language this recogniser cannot
+                        // read, so there the level rule stays as it was.
+                        if (bargeBy == null && wordsCheck == null && !interpreting && speechRunStart != 0L &&
+                            lastLoudAt - speechRunStart >= (if (alive) BARGE_WORDS_MIN_MS else BARGE_WORDS_MIN_ENDED_MS) &&
+                            now - lastLoudAt < BARGE_WORDS_LATE_MS &&
+                            lastLoudAt != wordsCheckedEnd && (!alive || now - wordsCheckAt >= BARGE_WORDS_EVERY_MS)) {
+                            val back = ((now - speechRunStart + BARGE_WORDS_LEAD_MS) / 32).toInt().coerceIn(1, preroll.size)
+                            val snap = preroll.toList().takeLast(back)
+                            wordsCheckAt = now
+                            wordsCheckedEnd = lastLoudAt
+                            wordsCheckEnded = !alive
+                            CpuBoost.burst(context)
+                            wordsCheck = scope.async(Dispatchers.Default) { wordsOver(rec, snap, wordsPad) }
+                        }
+                        // Sound with no words in it. Words that were not his (PAN's own, "mm hmm")
+                        // never count here, however long they go on.
+                        val levelMs = if (interpreting) BARGE_IN_SPEECH_MS else BARGE_IN_LEVEL_MS
+                        if (bargeBy == null && wordsCheck == null && alive && now - speechRunStart >= levelMs &&
+                            (interpreting || (overWords.isNullOrBlank() && !MusicDetector.get(context).heardMusic()))) {
+                            bargeBy = "level"
+                        }
+                        // Held, the sound is over, and its last reading was taken while it was
+                        // still going: judge that reading as the finished sound it now is.
+                        var loneStop = false
+                        if (pausedAt != 0L && bargeBy == null && wordsCheck == null && !alive &&
+                            lastLoudAt == wordsCheckedEnd && interrupts(overWords ?: "", true, true)) {
+                            bargeBy = "words"
+                            bargeWords = overWords ?: ""
+                        }
+                        // One short sound and then quiet stopped a held PAN. What it read as is
+                        // not what he said ("stop" read "WRONG", "SNAPPED"), so it is a stop and
+                        // not a turn: nothing of it goes to the recogniser or the hub.
+                        if (pausedAt != 0L && bargeBy == "words" && !alive) loneStop = true
+                        // Held, and what was heard did not stop PAN ("mm hmm", a cough, nothing
+                        // readable) and nothing followed: carry on from where it was.
+                        if (pausedAt != 0L && bargeBy == null && wordsCheck == null &&
+                            ((!alive && now - lastLoudAt >= BARGE_RESUME_AFTER_MS) ||
+                                now - pausedAt >= BARGE_PAUSE_MAX_MS)) {
+                            log("carrying on after ${now - pausedAt} ms: \"${overWords ?: ""}\"")
+                            VoiceEvents.emit("barge_resume", "held_ms" to (now - pausedAt), "words" to (overWords ?: ""))
+                            pausedAt = 0L
+                            speechRunStart = 0L
+                            lastLoudAt = 0L
+                            onResumeTts?.invoke()
+                        }
+                        if (bargeBy != null) {
+                            barged = true
+                            val heldSince = pausedAt
+                            pausedAt = 0L
+                            log("barge-in by $bargeBy: ${now - speechRunStart}ms of speech at rms " +
+                                "%.4f over threshold %.4f (residual %.4f) $bargeWords".format(rms, threshold, residualPeak))
+                            VoiceEvents.emit("barge_in", "speech_ms" to (now - speechRunStart),
+                                "rms" to rms, "threshold" to threshold, "by" to bargeBy, "words" to bargeWords,
+                                "lone" to loneStop)
                             onInterrupt?.invoke()
-                            for (w in preroll) feed(w)
-                            gateOpen = true   // or the gate feeds these windows a second time
+                            if (loneStop) {
+                                preroll.clear()
+                                lastSpeechAt = 0L
+                            } else {
+                                // After a hold, only what he said once PAN was quiet: the part
+                                // before it is what the echo canceller chewed ("okay, stop" went
+                                // to the hub as "snog").
+                                val clean = if (heldSince == 0L) preroll.size
+                                    else ((now - heldSince - 64L) / 32).toInt().coerceIn(0, preroll.size)
+                                for (w in preroll.toList().takeLast(clean)) feed(w)
+                                gateOpen = true   // or the gate feeds these windows a second time
+                            }
                         }
                         continue
                     }
@@ -851,6 +1166,9 @@ class SherpaStreamingStt @Inject constructor(
                     // still sees the trailing silence that fires its endpoint, and
                     // until his last pause is decided, so one slow window near the end
                     // of the hangover cannot strand a turn that never committed.
+                    // A reading of words over PAN may still be running (PAN just stopped): the
+                    // recogniser decodes one stream at a time.
+                    wordsCheck?.let { c -> runCatching { c.join() }; wordsCheck = null }
                     val open = now - lastSpeechAt <= VAD_HANGOVER_MS || heardAt != decidedFor
                     if (!open) { gateOpen = false; continue }
 
@@ -884,13 +1202,35 @@ class SherpaStreamingStt @Inject constructor(
                             // Leaving it unjudged would relaunch the model on every
                             // 32 ms window of the same pause, forever.
                             CpuBoost.done(now - judgeStarted)
+                            lastJudgeMs = now - judgeStarted
                             if (judgeFor == heardAt) {
-                                verdict = p
-                                judgedFor = judgeFor
-                                if (p >= 0f) log("smart-turn p=%.2f in %dms".format(p, now - judgeStarted))
-                                VoiceEvents.emit("turn_p", "p" to p, "ms" to (now - judgeStarted))
+                                // A look between the scheduled ones only counts when it is sure.
+                                val counts = !judgeMid || p >= STRONG_TURN_P
+                                if (counts) {
+                                    verdict = p
+                                    judgedFor = judgeFor
+                                }
+                                if (p >= 0f) log("smart-turn p=%.2f in %dms%s".format(p, now - judgeStarted,
+                                    if (judgeMid) " (between looks, ${judgeWaited}ms quiet)" else ""))
+                                VoiceEvents.emit("turn_p", "p" to p, "ms" to (now - judgeStarted),
+                                    "quiet_ms" to judgeWaited, "mid" to judgeMid, "counts" to counts)
                             }
                             judge = null
+                        }
+                    }
+                    early?.let { j ->
+                        if (j.isCompleted) {
+                            val p = runCatching { j.getCompleted() }.getOrDefault(-1f)
+                            lastJudgeMs = now - earlyStarted
+                            val counts = earlyFor == heardAt && judgedFor != heardAt && p >= STRONG_TURN_P
+                            if (counts) {
+                                verdict = p
+                                judgedFor = earlyFor
+                                log("smart-turn p=%.2f in %dms (early)".format(p, now - earlyStarted))
+                            }
+                            if (earlyFor == heardAt) VoiceEvents.emit("turn_p", "p" to p, "ms" to (now - earlyStarted),
+                                "quiet_ms" to JUDGE_EARLY_MS, "early" to true, "counts" to counts)
+                            early = null
                         }
                     }
 
@@ -907,6 +1247,18 @@ class SherpaStreamingStt @Inject constructor(
                         earFor = heardAt
                         listener.onPause(turnAudio.copyOf(turnLen), heardAt)
                     }
+                    // The first look, as soon as he goes quiet. Not while interpreting: that has
+                    // its own waits, tuned on its own bench.
+                    if (!interpreting && model != null && early == null && judge == null && turnLen > 0 &&
+                        heardAt != decidedFor && judgedFor != heardAt && earlyTriedFor != heardAt &&
+                        waited >= JUDGE_EARLY_MS && waited < EOT_VAD_SILENCE_MS && lastJudgeMs <= JUDGE_EARLY_MAX_COST_MS) {
+                        earlyTriedFor = heardAt
+                        earlyFor = heardAt
+                        earlyStarted = now
+                        val snap = turnAudio.copyOfRange(maxOf(0, turnLen - TURN_AUDIO_MAX), turnLen)
+                        CpuBoost.burst(context)
+                        early = scope.async(Dispatchers.Default) { model.probability(snap) }
+                    }
                     val candidate = heardAt != decidedFor &&
                         (if (model != null) waited >= EOT_VAD_SILENCE_MS else endpoint)
 
@@ -916,8 +1268,24 @@ class SherpaStreamingStt @Inject constructor(
                             val snap = turnAudio.copyOfRange(maxOf(0, turnLen - TURN_AUDIO_MAX), turnLen)
                             judgeFor = heardAt
                             judgeStarted = now
+                            judgeWaited = waited
+                            judgeMid = false
                             CpuBoost.burst(context)
                             judge = scope.async(Dispatchers.Default) { model.probability(snap) }
+                        }
+                        // The words are made whole WHILE the verdict is on its way, not after it:
+                        // the flush is 50 to 100 ms on this thread, and it used to come after the
+                        // verdict. Zeros go to the recogniser only, never to Smart Turn's buffer,
+                        // so a pause he talks on through just looks a little longer to it.
+                        if (flushedFor != heardAt && listener == null) {
+                            flushedFor = heardAt
+                            val before = text
+                            val t0 = SystemClock.elapsedRealtime()
+                            st.acceptWaveform(flushPad, SAMPLE_RATE)
+                            while (rec.isReady(st)) rec.decode(st)
+                            text = rec.getResult(st).text.trim()
+                            VoiceEvents.emit("flush", "ms" to (SystemClock.elapsedRealtime() - t0),
+                                "grew" to (text != before), "text" to text)
                         }
                         val awaiting = model != null && judgedFor != heardAt
                         // Measured from the PAUSE, not from judgeStarted: a stale call
@@ -932,19 +1300,6 @@ class SherpaStreamingStt @Inject constructor(
                         if (awaiting && !timedOut) {
                             // Verdict not in yet. Keep listening; the next window decides.
                         } else {
-                            // The words have to be whole before they are judged or sent.
-                            // Zeros go to the recogniser only, never to Smart Turn's buffer,
-                            // so a pause he talks on through just looks a little longer to it.
-                            if (flushedFor != heardAt && listener == null) {
-                                flushedFor = heardAt
-                                val before = text
-                                val t0 = SystemClock.elapsedRealtime()
-                                st.acceptWaveform(flushPad, SAMPLE_RATE)
-                                while (rec.isReady(st)) rec.decode(st)
-                                text = rec.getResult(st).text.trim()
-                                VoiceEvents.emit("flush", "ms" to (SystemClock.elapsedRealtime() - t0),
-                                    "grew" to (text != before), "text" to text)
-                            }
                             val modelDone = when {
                                 model == null -> true            // not downloaded yet
                                 judgedFor == heardAt -> verdict < 0f || verdict >= SmartTurn.THRESHOLD
@@ -988,16 +1343,39 @@ class SherpaStreamingStt @Inject constructor(
                                     VoiceEvents.emit("hold", "complete" to complete, "in_flow" to inFlow,
                                         "needed_ms" to needed, "text" to text)
                                 }
+                                if (backchannelOn && !complete && !interpreting && backFor != heardAt &&
+                                    waited >= BACK_AFTER_MS && now - lastBackAt >= BACK_EVERY_MS &&
+                                    judgedFor == heardAt && verdict >= 0f && verdict < BACK_MAX_P && !isTurnComplete(text)) {
+                                    backFor = heardAt
+                                    val words = text.split(Regex("\\s+")).count { it.isNotBlank() }
+                                    if (words >= BACK_MIN_WORDS && !MusicDetector.get(context).heardMusic()) {
+                                        val ms = onBackchannel?.invoke() ?: 0L
+                                        if (ms > 0L) {
+                                            lastBackAt = now
+                                            backWords = words
+                                            echoGoneAt = now + ms + BACK_TAIL_MS
+                                            VoiceEvents.emit("backchannel", "waited_ms" to waited, "ms" to ms,
+                                                "p" to verdict, "words" to words)
+                                        }
+                                    }
+                                }
                                 // One more look once the pause has grown. Smart Turn hears the
                                 // silence too, and 0.2 s of it is not much: "tell me a short joke"
                                 // scored 0.11 at 0.2 s and 0.99 at ~0.9 s (voicebench, 2026-11-02),
                                 // and was held the full INCOMPLETE_MAX_WAIT_MS for it.
-                                if (!complete && model != null && judge == null && rejudgedFor != heardAt &&
-                                    judgedFor == heardAt && waited >= (if (interpreting) INTERPRETING_REJUDGE_MS else REJUDGE_MS)) {
-                                    rejudgedFor = heardAt
+                                // And now also in between and after, each time the pause has grown by
+                                // REJUDGE_STEP_MS; those looks only count when sure (judgeMid).
+                                val lateDue = rejudgedFor != heardAt &&
+                                    waited >= (if (interpreting) INTERPRETING_REJUDGE_MS else REJUDGE_MS)
+                                val midDue = !interpreting && !lateDue && waited - judgeWaited >= REJUDGE_STEP_MS
+                                if (!complete && model != null && judge == null && early == null &&
+                                    judgedFor == heardAt && (lateDue || midDue)) {
+                                    if (lateDue) rejudgedFor = heardAt
                                     val snap = turnAudio.copyOfRange(maxOf(0, turnLen - TURN_AUDIO_MAX), turnLen)
                                     judgeFor = heardAt
                                     judgeStarted = now
+                                    judgeWaited = waited
+                                    judgeMid = !lateDue
                                     CpuBoost.burst(context)
                                     judge = scope.async(Dispatchers.Default) { model.probability(snap) }
                                 }
@@ -1010,7 +1388,17 @@ class SherpaStreamingStt @Inject constructor(
                                 lastCommitAt = now
                                 spokeSinceCommit = false
                                 rec.reset(st)
-                                val pcm = if (turnClipped) null else toPcm16(turnAudio, turnLen)
+                                // PAN's own "mm-hm" is in this turn's sound. Take it out of the
+                                // words if the ear wrote it down, and send words only: a fresh
+                                // transcript of the audio on the hub would bring it back.
+                                val backed = backWords >= 0
+                                if (backed) {
+                                    val w = text.split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()
+                                    while (w.size > backWords && HUM.matches(w[backWords].lowercase())) w.removeAt(backWords)
+                                    text = w.joinToString(" ")
+                                    backWords = -1
+                                }
+                                val pcm = if (turnClipped || backed) null else toPcm16(turnAudio, turnLen)
                                 val heardBy = listener?.onCommit(turnAudio.copyOf(turnLen), heardAt) == true
                                 stopAt = heardAt
                                 turnLen = 0
@@ -1067,10 +1455,15 @@ class SherpaStreamingStt @Inject constructor(
                 // left compute(). Whoever uses a native handle owns its lifetime.
                 // The model may still be mid-inference on another thread. Wait for
                 // that call to return before closing the session it is using.
-                withContext(NonCancellable) { runCatching { judge?.join() } }
+                withContext(NonCancellable) {
+                    runCatching { judge?.join() }
+                    runCatching { early?.join() }
+                    runCatching { wordsCheck?.join() }
+                }
                 runCatching { turnModel?.close() }
                 runCatching { recorder.stop() }
                 runCatching { recorder.release() }
+                MusicDetector.get(context).stopRaw()
                 runCatching { aec?.release() }
                 runCatching { st.release() }
                 runCatching { vad.release() }

@@ -32,8 +32,15 @@ object PanVpn {
         val hostname: String = "",
         val ip: String = "",
         val org: String = "",
-        val error: String = ""
-    )
+        val error: String = "",
+        /** Tailscale's own state: NeedsLogin, NeedsMachineAuth, Starting, Running. */
+        val state: String = "",
+        /** Sign-in link while state is NeedsLogin, else empty. */
+        val authUrl: String = "",
+    ) {
+        /** Signed in, but the tailnet admin has to approve this device first. */
+        val waitingForApproval: Boolean get() = state == "NeedsMachineAuth"
+    }
 
     /**
      * The consent dialog to show first, or null. Always null since 0.4.98: the app no
@@ -139,15 +146,19 @@ object PanVpn {
     fun getStatus(): VpnStatus {
         return try {
             val status = Panvpn.getStatus()
-            val org = try {
-                status.javaClass.getMethod("getOrg").invoke(status) as? String ?: ""
+            // By reflection so an older panvpn.aar without these fields still runs.
+            fun field(getter: String) = try {
+                status.javaClass.getMethod(getter).invoke(status) as? String ?: ""
             } catch (_: Throwable) { "" }
+            val org = field("getOrg")
             VpnStatus(
                 connected = status.connected,
                 hostname = status.hostname,
                 ip = status.ip,
                 org = org,
-                error = status.error
+                error = status.error,
+                state = field("getState"),
+                authUrl = field("getAuthURL"),
             )
         } catch (e: Exception) {
             VpnStatus(connected = false, error = e.message ?: "Unknown error")
@@ -229,9 +240,18 @@ object PanVpn {
         }
     }
 
-    fun openLoginUrl(context: Context, url: String) {
+    /**
+     * Opens the Tailscale sign-in page. False when nothing could open it: car head units
+     * often have no browser, and Android blocks activity starts from the background. The
+     * Settings screen then shows the link as a QR code to sign in from a phone instead.
+     */
+    fun openLoginUrl(context: Context, url: String): Boolean = try {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "Couldn't open the sign-in page: ${e.message}")
+        false
     }
 }

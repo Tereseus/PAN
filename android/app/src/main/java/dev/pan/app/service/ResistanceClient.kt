@@ -24,8 +24,10 @@ import java.net.URL
  */
 class ResistanceClient(
     private val context: Context,
-    private val serverUrl: String = "http://192.168.1.248:7777"
 ) {
+    // Was hardcoded to the hub's old Dell address. Now the hub HubLocator found;
+    // until then calls fail fast into their existing catch blocks.
+    private val serverUrl: String get() = dev.pan.app.network.HubLocator.current ?: "http://hub-not-found.invalid"
     private val TAG = "PAN-Resistance"
     private val prefs: SharedPreferences = context.getSharedPreferences("pan_resistance", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())

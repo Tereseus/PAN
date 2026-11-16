@@ -29,7 +29,8 @@ class SettingsViewModel @Inject constructor(
     private val localLlm: LocalLlm,
     private val application: Application,
     private val updateChecker: UpdateChecker,
-    val remoteAccessManager: RemoteAccessManager
+    val remoteAccessManager: RemoteAccessManager,
+    val accessoryHub: dev.pan.app.accessory.AccessoryHub,
 ) : ViewModel() {
 
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
@@ -40,6 +41,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _deviceName = MutableStateFlow(android.os.Build.MODEL)
     val deviceName: StateFlow<String> = _deviceName
+
+    private val _backchannelEnabled = MutableStateFlow(false)
+    val backchannelEnabled: StateFlow<Boolean> = _backchannelEnabled
 
     private val _beepEnabled = MutableStateFlow(true)
     val beepEnabled: StateFlow<Boolean> = _beepEnabled
@@ -119,6 +123,9 @@ class SettingsViewModel @Inject constructor(
     // button can show a "Checking…" state and prevent double-taps.
     private val _updateChecking = MutableStateFlow(false)
     val updateChecking: StateFlow<Boolean> = _updateChecking
+    /** 0..1 while an update downloads (UpdateChecker.progress), else null. */
+    val updateProgress: StateFlow<Float?> get() = updateChecker.progress
+    fun updateTotalMb(): Long = updateChecker.progressTotal / 1_000_000
 
     // Incognito mode — when on, the X-PAN-Scope header flips to "incognito"
     // and the server routes ALL phone-originated event writes to a sibling
@@ -143,6 +150,7 @@ class SettingsViewModel @Inject constructor(
             dataRepository.getSetting("server_url")?.let { _serverUrl.value = it }
             dataRepository.getSetting("trigger_word")?.let { _triggerWord.value = it }
             dataRepository.getSetting("beep_enabled")?.let { _beepEnabled.value = it == "true" }
+            dataRepository.getSetting("backchannel_enabled")?.let { _backchannelEnabled.value = it == "true" }
             dataRepository.getSetting("vibration_enabled")?.let { _vibrationEnabled.value = it == "true" }
             dataRepository.getSetting("voice_response_enabled")?.let { _voiceResponseEnabled.value = it == "true" }
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
@@ -250,6 +258,12 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { dataRepository.setSetting("trigger_word", word.lowercase()) }
     }
 
+    fun setBackchannel(enabled: Boolean) {
+        _backchannelEnabled.value = enabled
+        dev.pan.app.stt.SherpaStreamingStt.backchannelOn = enabled
+        viewModelScope.launch { dataRepository.setSetting("backchannel_enabled", enabled.toString()) }
+    }
+
     fun setBeep(enabled: Boolean) {
         _beepEnabled.value = enabled
         viewModelScope.launch { dataRepository.setSetting("beep_enabled", enabled.toString()) }
@@ -316,13 +330,8 @@ class SettingsViewModel @Inject constructor(
                 try {
                     val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
                     if (loginUrl != null) {
-                        dev.pan.app.vpn.PanVpn.openLoginUrl(application, loginUrl)
-                        // Poll until connected after browser login
-                        for (i in 0 until 120) {
-                            kotlinx.coroutines.delay(2000)
-                            remoteAccessManager.refreshFromVpn()
-                            if (remoteAccessManager.status.value == "Connected") break
-                        }
+                        // No browser (Nov 15): the sign-in button is under Settings > Advanced.
+                        Log.i("Settings", "Tailscale wants a sign-in; no key from the hub")
                     } else {
                         // Connected silently — poll until proxy ready
                         for (i in 0 until 15) {

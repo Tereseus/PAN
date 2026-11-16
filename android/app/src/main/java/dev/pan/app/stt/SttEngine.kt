@@ -18,6 +18,9 @@ interface SttEngine {
     var isTtsSpeaking: (() -> Boolean)?
     /** PAN's voice just reached the speaker. isTtsSpeaking is true a second before that on a long line. */
     fun onTtsSound() {}
+
+    /** PAN just stopped talking: its own words can still come back through the mic from here. */
+    fun onTtsDone() {}
     var onInterrupt: (() -> Unit)?
     /** True while a server query is in flight, so STT does not treat TTS as input. */
     var queryPending: Boolean

@@ -68,6 +68,7 @@ class TtsManager @Inject constructor(
         }
         if (piper.isFullyReady(quality) && piper.setVoice(quality)) {
             piperActive = true
+            piper.plainPath = carMode || interpreting
             Log.i(TAG, "Piper active: $quality")
         } else {
             piperActive = false
@@ -354,9 +355,22 @@ class TtsManager @Inject constructor(
     @Volatile var interpreting = false
         set(value) {
             field = value
-            piper.plainPath = value && piperActive
-            androidOnMedia = value
+            piper.plainPath = (value || carMode) && piperActive
+            androidOnMedia = value || carMode
             lineVoice = null
+        }
+
+    /**
+     * The phone is on a car's Bluetooth (AccessoryHub.car). PAN's voice goes on the media path, so
+     * it plays through the car's speakers in full sound like a navigation prompt, instead of the
+     * call path, which would put the car in a phone call and cut the music (Nov 15).
+     */
+    @Volatile var carMode = false
+        set(value) {
+            if (field == value) return
+            field = value
+            piper.plainPath = (value || interpreting) && piperActive
+            androidOnMedia = value || interpreting
         }
 
     /** Whose voice the interpreted line goes out in, set after [interpreting]. Null is PAN's own. */
@@ -402,10 +416,15 @@ class TtsManager @Inject constructor(
         if (text.isBlank()) return
 
         val foreign = scriptLocale(text)
-        if (interpreting && piperActive) {
+        // Also any reply in another script outside interpreting: the line that STARTS interpreting
+        // ("translate what I say to Japanese") is not marked as interpreted yet, and its Japanese
+        // "understood" went to the Android voice, a woman's, before PAN's own voice took over
+        // (owner, 2026-11-15). One voice everywhere; the Android voice is only for a language
+        // Supertonic cannot read.
+        if (piperActive && (interpreting || foreign != null)) {
             val lang = lineLanguage(foreign)
             if (piper.speaks(lang)) {
-                val voice = lineVoice
+                val voice = if (interpreting) lineVoice else null
                 LineClauses.split(lineText(text, foreign, lang)).forEach { piper.speak(it, lang, voice) }
                 return
             }
@@ -446,6 +465,10 @@ class TtsManager @Inject constructor(
             .trim()
         return if (cleaned.length > 500) cleaned.take(500) + "... see full response in the app." else cleaned
     }
+
+    /** Hold the line being spoken (only the built in voice can), and carry on. */
+    fun pause(): Boolean = piperActive && piper.pause()
+    fun resume() = piper.resume()
 
     fun stop() {
         piper.stop()

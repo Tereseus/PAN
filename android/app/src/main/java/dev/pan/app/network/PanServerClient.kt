@@ -298,6 +298,17 @@ class PanServerClient @Inject constructor(
     }
 
     /** His turn is coming: the hub reads this history now, and the turn only reads his words. */
+    /** G.711 mu-law: one byte for a 16-bit sample. */
+    private fun ulaw(sample: Int): Byte {
+        val sign = if (sample < 0) 0x80 else 0
+        var x = minOf(kotlin.math.abs(sample), 32635) + 0x84
+        var exp = 7
+        var mask = 0x4000
+        while ((x and mask) == 0 && exp > 0) { exp--; mask = mask shr 1 }
+        val man = (x shr (exp + 3)) and 0x0f
+        return ((sign or (exp shl 4) or man).inv() and 0xff).toByte()
+    }
+
     fun warm(conversationHistory: String, bench: Boolean) {
         val body = JSONObject().apply {
             if (bench) put("bench", true)
@@ -322,6 +333,8 @@ class PanServerClient @Inject constructor(
         bench: Boolean = false,
         unfinished: Boolean = false,
         sincePanMs: Long? = null,
+        addressed: Boolean = false,
+        musicPlaying: Boolean = false,
         onCall: ((okhttp3.Call) -> Unit)? = null,
         onHeard: ((String) -> Unit)? = null,
         onInterpreting: (() -> Unit)? = null,
@@ -336,6 +349,10 @@ class PanServerClient @Inject constructor(
                 if (bench) put("bench", true)
                 // He stopped mid-sentence (SttEngine.turnUnfinished): maybe searching for a word.
                 if (unfinished) put("unfinished", true)
+                // The assistant button was pressed: this line is for ΠAN (router.js addressed_now).
+                if (addressed) put("addressed_now", true)
+                // Music is playing on this device: the hub answers only lines that name PAN.
+                if (musicPlaying) put("media_playing", true)
                 // How long ago PAN last stopped talking: inside 45 s this line is part of a talk.
                 if (sincePanMs != null) put("since_pan_ms", sincePanMs)
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
@@ -343,10 +360,12 @@ class PanServerClient @Inject constructor(
                 if (canCamera) put("can_camera", true)
                 // The turn's audio: the hub transcribes it again with a bigger model and
                 // answers what that heard (hub-asr.js). 16kHz PCM16 little-endian.
+                // Sent as G.711 mu-law, half the bytes (Nov 14: on his 4G hotspot the upload was most
+                // of the wait). The hub turns it back into PCM16; its speech model heard 28 of 30 test
+                // lines the same both ways (the two that differed were Spanish and Japanese, garbled both ways).
                 if (audio != null && audio.isNotEmpty()) {
-                    val bytes = java.nio.ByteBuffer.allocate(audio.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    bytes.asShortBuffer().put(audio)
-                    put("audio", android.util.Base64.encodeToString(bytes.array(), android.util.Base64.NO_WRAP))
+                    val u = ByteArray(audio.size) { i -> ulaw(audio[i].toInt()) }
+                    put("audio_ulaw", android.util.Base64.encodeToString(u, android.util.Base64.NO_WRAP))
                 }
             }.toString().toRequestBody("application/json".toMediaType())
 

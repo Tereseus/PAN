@@ -31,7 +31,7 @@ object Constants {
         "Hardcoded addresses break when the hub moves. Use HubLocator.resolve().",
         ReplaceWith("HubLocator.resolve()")
     )
-    const val DEFAULT_SERVER_URL = "http://192.168.1.248:7777"
+    const val DEFAULT_SERVER_URL = ""   // was the hub's old Dell LAN address; Settings showed it to every new install
     const val SYNC_INTERVAL_MS = 5000L
 
     // Notification

@@ -107,26 +107,38 @@ class PanVpnService : Service() {
             // The retry below comes back here with Tailscale already running. Starting it
             // again throws "already running", which ended the retries and left
             // "Error: already running" on the notification.
-            val result = if (Panvpn.isRunning()) "" else Panvpn.start(dataDir, hostname, authKey)
+            var result = if (Panvpn.isRunning()) "" else Panvpn.start(dataDir, hostname, authKey)
             prefs.edit().putBoolean("enabled", true).apply()
 
-            if (result.isNotEmpty()) {
-                loginUrl = result
-                Log.i(TAG, "Login required: $result")
-                updateNotification("Login required - opening browser...")
-
-                // Open login URL in browser
-                try {
-                    val loginIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(result))
-                    loginIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(loginIntent)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Couldn't open login URL: ${e.message}")
+            // A key from the hub (PAN Link hands one out) but Tailscale is stuck on an old login:
+            // waiting for a sign-in, or signed in and waiting for the admin's approval. Tailscale
+            // ignores a key then, so start it fresh with the key. The owner, Nov 15: people must never
+            // see Tailscale; the OnePlus Pad sat in NeedsMachineAuth with a fresh key unused.
+            if (authKey.isNotEmpty()) {
+                var state = ""
+                for (i in 1..10) {
+                    state = try { PanVpn.getStatus().state } catch (_: Exception) { "" }
+                    if (state == "Running" || state == "NeedsLogin" || state == "NeedsMachineAuth") break
+                    delay(500)
                 }
+                if (state == "NeedsLogin" || state == "NeedsMachineAuth") {
+                    Log.i(TAG, "Tailscale $state with a key from the hub: starting fresh with the key")
+                    runCatching { Panvpn.stop() }
+                    java.io.File(dataDir, "tailscale/tailscaled.state").delete()
+                    delay(500)
+                    result = Panvpn.start(dataDir, hostname, authKey)
+                }
+                // Single use: never try it again after this start.
+                prefs.edit().remove("auth_key").apply()
+            }
 
-                // Poll for login completion — check every 3 seconds for up to 2 minutes
-                Log.i(TAG, "Waiting for login to complete...")
-                updateNotification("Waiting for login...")
+            if (result.isNotEmpty()) {
+                // No key and Tailscale wants a sign-in. Nobody is asked: PAN Link is the way in,
+                // and Tailscale stays off until the hub can hand this device a key. The link is
+                // only for Settings > Advanced.
+                loginUrl = result
+                Log.i(TAG, "Tailscale needs a sign-in; waiting for a key from the hub instead")
+                updateNotification("PAN Link only")
                 var loggedIn = false
                 for (attempt in 1..40) {
                     delay(3000)
@@ -134,19 +146,17 @@ class PanVpnService : Service() {
                         val status = Panvpn.getStatus()
                         if (status.connected && status.ip.isNotEmpty()) {
                             loggedIn = true
-                            Log.i(TAG, "Login succeeded after ${attempt * 3}s, IP=${status.ip}")
+                            Log.i(TAG, "Tailscale signed in after ${attempt * 3}s, IP=${status.ip}")
                             loginUrl = null
                             break
                         }
                     } catch (_: Exception) {}
                 }
                 if (!loggedIn) {
-                    Log.e(TAG, "Login timed out after 120s")
-                    updateNotification("Login timed out")
+                    Log.i(TAG, "Tailscale still not signed in; PAN Link only")
                     return
                 }
             }
-
             // Now connected (either no login needed, or login completed) — find the PAN server
             loginUrl = null
             val srvPort = getServerPort()

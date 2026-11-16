@@ -337,6 +337,9 @@ class MainViewModel @Inject constructor(
     // This phone's own Microphone row is the LIVE switch, not a separate permission: it could
     // sit off while PAN listened, because only LIVE starts and stops the mic (2026-11-03).
     private val ownHost = android.os.Build.MODEL.lowercase().replace(" ", "-")
+    fun isThisDevice(deviceId: Int): Boolean =
+        _devices.value.any { it.id == deviceId && it.hostname.endsWith(ownHost) }
+
     fun isOwnMic(deviceId: Int, sensorId: String): Boolean =
         sensorId == "microphone" && _devices.value.any { it.id == deviceId && it.hostname.endsWith(ownHost) }
 
@@ -393,8 +396,10 @@ class MainViewModel @Inject constructor(
             remoteAccessManager.setEnabled(true)
             remoteAccessManager.setStatus("Connecting...")
             try {
-                // Try auto-auth from server first
-                try {
+                // Try auto-auth from server first, only when Tailscale is not connected already:
+                // each call mints a key on the owner's tailnet (Nov 15, the Pad asked after joining).
+                val alreadyIn = runCatching { dev.pan.app.vpn.PanVpn.isRunning() && dev.pan.app.vpn.PanVpn.getStatus().connected }.getOrDefault(false)
+                if (!alreadyIn) try {
                     val deviceName = android.os.Build.MODEL
                     val resp = api.getTailscaleAuthKey(mapOf("device_name" to deviceName, "device_id" to deviceName.lowercase().replace(" ", "-")))
                     if (resp.isSuccessful) {
@@ -407,12 +412,9 @@ class MainViewModel @Inject constructor(
 
                 val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
                 if (loginUrl != null) {
-                    dev.pan.app.vpn.PanVpn.openLoginUrl(application, loginUrl)
-                    for (i in 0 until 60) {
-                        kotlinx.coroutines.delay(2000)
-                        remoteAccessManager.refreshFromVpn()
-                        if (remoteAccessManager.status.value == "Connected") break
-                    }
+                    // Never a browser on its own (the owner, Nov 15: people must never see Tailscale).
+                    // PAN Link carries the app; Settings > Advanced has the sign-in for a developer.
+                    android.util.Log.i("PAN-VPN", "Tailscale wants a sign-in and the hub gave no key: PAN Link only")
                 } else {
                     for (i in 0 until 15) {
                         remoteAccessManager.refreshFromVpn()
@@ -447,10 +449,7 @@ class MainViewModel @Inject constructor(
                 remoteAccessManager.setEnabled(true)
                 remoteAccessManager.setStatus("Connecting...")
                 try {
-                    val loginUrl = dev.pan.app.vpn.PanVpn.connect(context)
-                    if (loginUrl != null) {
-                        dev.pan.app.vpn.PanVpn.openLoginUrl(context, loginUrl)
-                    }
+                    dev.pan.app.vpn.PanVpn.connect(context)   // no browser; see connectTailscale
                     remoteAccessManager.refreshFromVpn()
                 } catch (e: Exception) {
                     remoteAccessManager.setStatus("Failed: ${e.message}")

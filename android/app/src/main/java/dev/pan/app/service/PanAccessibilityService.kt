@@ -33,7 +33,9 @@ class PanAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "PanA11y"
-        private const val PAN_SERVER = "http://192.168.1.248:7777"
+        // Was hardcoded to the hub's old Dell address (192.168.1.248), dead since the hub
+        // moved to the mini PC. Now whatever HubLocator found; skip the poll until then.
+        private val PAN_SERVER: String? get() = dev.pan.app.network.HubLocator.current
         private const val POLL_INTERVAL = 2000L
 
         // Static reference so the foreground service can call methods directly
@@ -80,7 +82,9 @@ class PanAccessibilityService : AccessibilityService() {
     private suspend fun pollLoop() {
         while (true) {
             try {
-                val url = URL("$PAN_SERVER/api/v1/accessibility/commands")
+                val hub = PAN_SERVER
+                if (hub == null) { delay(POLL_INTERVAL); continue }
+                val url = URL("$hub/api/v1/accessibility/commands")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 5000
                 conn.readTimeout = 5000
@@ -106,7 +110,8 @@ class PanAccessibilityService : AccessibilityService() {
 
     private fun sendResult(id: String, result: JSONObject) {
         try {
-            val url = URL("$PAN_SERVER/api/v1/accessibility/result")
+            val hub = PAN_SERVER ?: return
+            val url = URL("$hub/api/v1/accessibility/result")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")

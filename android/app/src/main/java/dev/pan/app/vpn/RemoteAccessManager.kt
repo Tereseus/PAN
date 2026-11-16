@@ -53,6 +53,16 @@ class RemoteAccessManager @Inject constructor(
      */
     @Volatile private var lastSelfHealAt = 0L
 
+    /**
+     * The tsnet proxy alone, never PAN Link: for big downloads. PAN Link stalls after about
+     * 100 KB on a bulk transfer (the 85 MB update got 0 to 240 KB in 30 to 150 s through it,
+     * Nov 15), while the same file came over Tailscale before 0.4.99 put the link first.
+     */
+    fun getTailnetOnlyBaseUrl(): String? {
+        if (!shouldUseTailscale || _proxyPort.value <= 0) runCatching { refreshFromVpn() }
+        return if (shouldUseTailscale && _proxyPort.value > 0) "http://127.0.0.1:${_proxyPort.value}" else null
+    }
+
     fun getTailscaleBaseUrl(): String? {
         // PAN Link first, while it has a live handshake with the hub: PAN then knows this
         // phone by its key. When the link is down this falls through to the tsnet proxy.

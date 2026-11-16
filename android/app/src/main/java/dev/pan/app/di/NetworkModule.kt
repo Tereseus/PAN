@@ -45,6 +45,9 @@ object TailscaleHostnameHolder {
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
+    /** Request header: send this request to the URL as written, not to the resolved hub route. */
+    const val KEEP_URL = "X-PAN-Keep-Url"
+
     @Provides
     @Singleton
     fun provideOkHttpClient(ram: RemoteAccessManager, hub: HubLocator): OkHttpClient {
@@ -80,12 +83,18 @@ object NetworkModule {
                 // No hub found: fail now and say so. Falling through sent the request to the
                 // placeholder (localhost:7777), which refused it in milliseconds with an error
                 // that pointed at the wrong thing.
-                val base = hub.resolve(ram.getTailscaleBaseUrl())
-                    ?: throw java.io.IOException("PAN hub not reachable (no tunnel, no LAN route)")
-                val b = base.toHttpUrl()
-                val newUrl = request.url.newBuilder()
-                    .scheme(b.scheme).host(b.host).port(b.port).build()
-                request = request.newBuilder().url(newUrl).build()
+                // KEEP_URL: the caller picked the route on purpose (the update download goes over
+                // Tailscale, because PAN Link stalls on big transfers). Everything else is re-pointed.
+                if (request.header(KEEP_URL) != null) {
+                    request = request.newBuilder().removeHeader(KEEP_URL).build()
+                } else {
+                    val base = hub.resolve(ram.getTailscaleBaseUrl())
+                        ?: throw java.io.IOException("PAN hub not reachable (no tunnel, no LAN route)")
+                    val b = base.toHttpUrl()
+                    val newUrl = request.url.newBuilder()
+                        .scheme(b.scheme).host(b.host).port(b.port).build()
+                    request = request.newBuilder().url(newUrl).build()
+                }
 
                 val reqBuilder = request.newBuilder()
                     .addHeader("X-Device-Name", DeviceNameHolder.name)

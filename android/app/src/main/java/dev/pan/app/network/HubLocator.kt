@@ -57,8 +57,15 @@ class HubLocator @Inject constructor(
         /** Last-resort guesses. Deliberately short — discovery, not a subnet scan. */
         private val LAN_FALLBACKS = listOf(
             "http://192.168.1.83:$PORT",
-            "http://192.168.1.248:$PORT",
         )
+
+        /**
+         * The address that answered last, for the few callers that use plain URL()
+         * instead of the shared OkHttp client (accessibility poll, resistance sync).
+         * Null until the hub has been found once in this process.
+         */
+        @Volatile var current: String? = null
+            private set
 
         private const val PROBE_TIMEOUT_MS = 2500
 
@@ -109,6 +116,7 @@ class HubLocator @Inject constructor(
 
     private fun remember(baseUrl: String) {
         cached = baseUrl
+        current = baseUrl
         consecutiveFailures.set(0)
         lastEmptyScanAt = 0L
         // NEVER persist the tsnet proxy address. Its port is assigned fresh on

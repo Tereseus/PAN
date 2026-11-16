@@ -407,6 +407,102 @@ class PiperTtsEngine(private val context: Context) {
         }
     }
 
+    // The soft "mm-hm" (SherpaStreamingStt.backchannelOn). Built once, in PAN's own voice.
+    @Volatile private var hum: ShortArray? = null
+    private var humRate = 0
+    @Volatile private var humBuilding = false
+    private val humPeak = 0.22f
+
+    /** Build the "mm-hm" ahead of time. Nothing plays. */
+    fun prepareHum() {
+        val tts = offlineTts ?: return
+        if (hum != null || humBuilding || currentVoice?.kind != "supertonic") return
+        humBuilding = true
+        scope.launch {
+            genLock.lock()
+            try {
+                val a = withContext(Dispatchers.IO) { synthesize(tts, "Mm-hm.", "en") }
+                val x = trimQuiet(a.samples, a.sampleRate)
+                var peak = 0f
+                for (s in x) { val v = abs(s); if (v > peak) peak = v }
+                val g = if (peak > 0.01f) humPeak / peak else 0f
+                // A short fade each side, so it does not click in or out.
+                val fade = a.sampleRate / 50
+                hum = ShortArray(x.size) { i ->
+                    val edge = min(1f, min(i, x.size - 1 - i).toFloat() / fade)
+                    (x[i] * g * edge * 32767f).toInt().coerceIn(-32767, 32767).toShort()
+                }
+                humRate = a.sampleRate
+            } catch (e: Exception) {
+                Log.w(TAG, "mm-hm build failed: ${e.message}")
+            } finally {
+                humBuilding = false
+                genLock.unlock()
+            }
+        }
+    }
+
+    /**
+     * Play the soft "mm-hm" on its own track. Not a line: [isSpeaking] stays false, nothing
+     * queues behind it, and stop() does not need to know. Returns its length in ms, or 0 when
+     * it did not play (not built yet, PAN is talking, or the car and interpreting path).
+     */
+    fun hum(): Long {
+        val pcm = hum
+        if (pcm == null) { prepareHum(); return 0L }
+        if (isSpeaking || plainPath || pcm.isEmpty()) return 0L
+        val rate = humRate
+        scope.launch(Dispatchers.IO) {
+            var track: AudioTrack? = null
+            try {
+                toLoudspeaker()
+                track = AudioTrack.Builder()
+                    .setAudioAttributes(AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                    .setAudioFormat(AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(rate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                    .setBufferSizeInBytes(pcm.size * 2)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+                track.write(pcm, 0, pcm.size)
+                track.play()
+                delay(pcm.size * 1000L / rate + 150)
+            } catch (e: Exception) {
+                Log.w(TAG, "mm-hm failed: ${e.message}")
+            } finally {
+                try { track?.stop() } catch (_: Exception) {}
+                try { track?.release() } catch (_: Exception) {}
+            }
+        }
+        return pcm.size * 1000L / rate
+    }
+
+    // Held mid-line while the ear works out whether someone is interrupting (SherpaStreamingStt,
+    // BARGE_PAUSE_MS). The line stays queued and "PAN is talking" stays true.
+    @Volatile private var held = false
+
+    /** Hold the line being spoken where it is. False when nothing is playing right now. */
+    fun pause(): Boolean {
+        val t = audioTrack ?: return false
+        return try {
+            t.pause()
+            held = true
+            VoiceEvents.emit("tts_pause")
+            true
+        } catch (_: Exception) { false }
+    }
+
+    /** Carry on from where pause() held it. */
+    fun resume() {
+        if (!held) return
+        held = false
+        try { audioTrack?.play() } catch (_: Exception) {}
+        VoiceEvents.emit("tts_resume")
+    }
+
     /** Whether this voice can say a language. Supertonic 3 reads 31 with one model. */
     fun speaks(lang: String) = currentVoice?.id == "supertonic3" && lang in SUPERTONIC3_LANGS
 
@@ -643,6 +739,7 @@ class PiperTtsEngine(private val context: Context) {
             .setBufferSizeInBytes(bufSize)
             .build()
         audioTrack = track
+        dev.pan.app.debug.AecDump.ref(shortSamples, sampleRate)
         track.play()
         // The benchmark's "PAN started talking". Output latency after this is the
         // device's, and the acoustic run measures it.
@@ -662,12 +759,13 @@ class PiperTtsEngine(private val context: Context) {
         // playbackHeadPosition counts frames the hardware has actually played,
         // so waiting on it is exact regardless of startup latency or buffer size.
         val durationMs = (samples.size.toLong() * 1000) / sampleRate
-        val deadline = System.currentTimeMillis() + durationMs + 2000  // never hang
+        var deadline = System.currentTimeMillis() + durationMs + 2000  // never hang
         try {
             while (isActive &&
                    track.playbackHeadPosition < shortSamples.size &&
                    System.currentTimeMillis() < deadline) {
                 delay(20)
+                if (held) deadline += 20   // time spent held is not time spent playing
             }
             // A final grace period: the head position reaching the last frame means it
             // was handed to the mixer, not that it left the speaker.
@@ -703,6 +801,7 @@ class PiperTtsEngine(private val context: Context) {
         // ever held the last one, so a barge-in used to silence one sentence and
         // let the rest of the queue play on.
         VoiceEvents.emit("tts_stop")
+        held = false
         scope.coroutineContext.cancelChildren()
         speakJob = null
         pending.set(0)

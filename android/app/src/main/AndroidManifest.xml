@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Normal permission; it is what lets the connected-device foreground type start before
+         the mic or Bluetooth permission is granted (fresh install on Android 14+). -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -67,6 +70,23 @@
             android:name=".vpn.ScanPairActivity"
             android:exported="false"
             android:excludeFromRecents="true" />
+        <!-- The assistant button (a car's steering wheel voice button): the next line is for PAN. -->
+        <activity
+            android:name=".assist.VoiceAssistActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="PAN"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_ASSIST" />
+                <action android:name="android.intent.action.ASSIST" />
+                <!-- A car or headset's voice button over Bluetooth (hands-free "start voice
+                     recognition") opens this on the phone. -->
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".vpn.PairActivity"
             android:exported="true"

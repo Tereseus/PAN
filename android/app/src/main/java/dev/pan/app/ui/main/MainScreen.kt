@@ -313,7 +313,11 @@ fun SensorSection(
 
         LaunchedEffect(devices) {
             if (selectedDeviceId == null && devices.isNotEmpty()) {
-                val phone = devices.find { it.device_type == "phone" } ?: devices.first()
+                // This device first. "The first phone in the list" was the Pixel on every
+                // other device, so the car head unit showed the Pixel's sensors (its mic
+                // switched off) and its own microphone never appeared (2026-11-14).
+                val phone = devices.find { viewModel.isThisDevice(it.id) }
+                    ?: devices.find { it.device_type == "phone" } ?: devices.first()
                 selectedDeviceId = phone.id
                 viewModel.loadSensorsForDevice(phone.id)
             }

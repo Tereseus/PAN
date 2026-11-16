@@ -53,6 +53,8 @@ import javax.inject.Inject
 class PanForegroundService : Service() {
 
     companion object {
+        /** The assistant button (VoiceAssistActivity): the next line is for ΠAN. */
+        const val ACTION_ADDRESS_PAN = "ADDRESS_PAN"
         private const val TAG = "PanService"
         val lastAction = MutableStateFlow("")
         val micEnabled = MutableStateFlow(false) // Start muted — user unmutes when ready
@@ -140,6 +142,7 @@ class PanForegroundService : Service() {
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
     @Inject lateinit var pendantBle: dev.pan.app.ble.PendantBle
     @Inject lateinit var linkManager: dev.pan.app.vpn.LinkManager
+    @Inject lateinit var accessoryHub: dev.pan.app.accessory.AccessoryHub
 
     // Whether this service currently holds the MICROPHONE foreground-service
     // type. False when it started from the background (boot), where Android 14
@@ -187,7 +190,19 @@ class PanForegroundService : Service() {
     private val MAX_HISTORY = 40
     private val HISTORY_TRIM = 10
 
+    // A talk ends after half an hour of quiet. Before Nov 14 the history never ended: at 08:41 PAN
+    // answered "what is the meaning of life" with "I still can't tell you", copied from the same
+    // question at 04:03, four and a half hours earlier.
+    private val TALK_GAP_MS = 30 * 60_000L
+    private var lastHistoryAt = 0L
+
     private fun addToHistory(role: String, text: String) {
+        val now = System.currentTimeMillis()
+        if (lastHistoryAt > 0 && now - lastHistoryAt > TALK_GAP_MS && conversationHistory.isNotEmpty()) {
+            panLog("New talk after ${(now - lastHistoryAt) / 60_000} min: ${conversationHistory.size} old lines set aside")
+            conversationHistory.clear()
+        }
+        lastHistoryAt = now
         conversationHistory.add(role to text)
         if (conversationHistory.size > MAX_HISTORY) repeat(HISTORY_TRIM) { conversationHistory.removeAt(0) }
     }
@@ -221,6 +236,7 @@ class PanForegroundService : Service() {
 
     private fun getHistoryContext(): String {
         if (conversationHistory.isEmpty()) return ""
+        if (lastHistoryAt > 0 && System.currentTimeMillis() - lastHistoryAt > TALK_GAP_MS) return ""
         return conversationHistory.joinToString("\n") { (role, text) ->
             "$role: ${text.take(200)}"
         }
@@ -230,6 +246,41 @@ class PanForegroundService : Service() {
     // long read goes when a reply ends, while PAN is still talking; when he starts talking it only
     // picks up the time. Runs on the main thread, which owns conversationHistory.
     private var lastWarmAt = 0L
+    // Until then the next line is for ΠAN, whatever it sounds like (the assistant button).
+    @Volatile private var addressedUntil = 0L
+
+    // Music on this device's speakers (another app's): the mic hears the song, and in the car on
+    // Nov 14 PAN answered the lyrics. Not PAN's own voice, which can play on the media path while
+    // interpreting.
+    // PAN's one voice, and the Piper voices that speak nothing on sherpa-onnx 2.x.
+    private val MAIN_VOICE = "supertonic3"
+    private val DEAD_VOICES = setOf("low", "medium", "high")
+
+    // TEST_CAR (debug builds): car mode on any Bluetooth speaker, for testing without a car.
+    @Volatile private var carForced = false
+    private var testPlayer: android.media.MediaPlayer? = null
+
+    // Car mode: held while PAN talks, so the car's music ducks under it.
+    @Volatile private var carFocusHeld = false
+    private val carFocus by lazy {
+        android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            .setAudioAttributes(android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .build()
+    }
+
+    private fun musicPlaying(): Boolean = try {
+        (!tts.isSpeaking && (getSystemService(AUDIO_SERVICE) as AudioManager).isMusicActive) || musicInRoom()
+    } catch (_: Exception) { false }
+
+    // Music the phone does not play itself (a bar, a car radio): YAMNet on the mic (MusicDetector).
+    private fun musicInRoom(): Boolean {
+        val d = dev.pan.app.stt.MusicDetector.get(this)
+        val heard = d.heardMusic()
+        if (heard) panLog("Music in the room (YAMNet %.2f): only lines that name PAN".format(d.last))
+        return heard
+    }
     private fun warmHub() {
         val now = System.currentTimeMillis()
         if (sttEngine.queryPending || now - lastWarmAt < 2000L) return
@@ -451,6 +502,8 @@ class PanForegroundService : Service() {
                     conversationHistory.add(Pair(turn.role, turn.text))
                 }
                 if (conversationHistory.isNotEmpty()) {
+                    // The hub sends only the last half hour (GET /api/v1/history), so this talk goes on.
+                    lastHistoryAt = System.currentTimeMillis()
                     panLog("Loaded ${conversationHistory.size} history turns from server")
                 }
             }
@@ -519,6 +572,20 @@ class PanForegroundService : Service() {
         // Register screen off receiver for power button TTS stop
         registerReceiver(screenOffReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
 
+        // Glasses, headphones, watch: route PAN's voice to the one chosen in Settings.
+        runCatching { accessoryHub.start() }.onFailure { panLog("accessories: ${it.message}") }
+        // In the car the phone does the work and the car is its speakers (Nov 15): PAN talks on the
+        // media path through the car, music ducks under it, and the phone's own mic keeps listening.
+        serviceScope.launch {
+            accessoryHub.car.collect { car ->
+                val on = car != null || carForced
+                if (tts.carMode != on) {
+                    tts.carMode = on
+                    panLog(if (on) "Car mode on: $car" else "Car mode off")
+                }
+            }
+        }
+
         // Initialize resistance client for path-of-least-resistance routing
         resistanceClient = ResistanceClient(this)
         resistanceClient.syncFromServer()
@@ -579,6 +646,18 @@ class PanForegroundService : Service() {
 
             // When TTS finishes speaking, restart STT listening
             sttEngine.isTtsSpeaking = { tts.isSpeaking }
+            (sttEngine as? dev.pan.app.stt.SherpaStreamingStt)?.let { s ->
+                s.onPauseTts = { tts.pause() }
+                s.onResumeTts = { tts.resume() }
+            }
+            (sttEngine as? dev.pan.app.stt.SherpaStreamingStt)?.onBackchannel = {
+                if (tts.isSpeaking) 0L else tts.piper.hum()
+            }
+            serviceScope.launch {
+                val on = dataRepository.getSetting("backchannel_enabled") == "true"
+                dev.pan.app.stt.SherpaStreamingStt.backchannelOn = on
+                if (on) tts.piper.prepareHum()
+            }
             sttEngine.onSpeechStart { mainHandler.post { warmHub() } }
             // sttEngine.onInterrupt is the SECOND barge-in path — fires when
             // the SpeechRecognizer thinks the user spoke during TTS playback.
@@ -646,6 +725,11 @@ class PanForegroundService : Service() {
                         @Suppress("DEPRECATION")
                         audioManager.isSpeakerphoneOn = true
                     }
+                    // In the car, the music ducks under PAN like under a navigation prompt.
+                    if (tts.carMode && !carFocusHeld) {
+                        carFocusHeld = runCatching { audioManager.requestAudioFocus(carFocus) }.getOrNull() ==
+                            AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                    }
                     // MODE_IN_COMMUNICATION above stays either way: it is what
                     // gives the hardware AEC its speaker reference, and both
                     // engines depend on that. Only the energy monitor is
@@ -656,6 +740,11 @@ class PanForegroundService : Service() {
                 } else {
                     // TTS ended naturally — restore normal audio mode, stop monitor, restart STT
                     if (!sttEngine.listensThroughTts) bargeInMonitor.stop()
+                    sttEngine.onTtsDone()
+                    if (carFocusHeld) {
+                        runCatching { audioManager.abandonAudioFocusRequest(carFocus) }
+                        carFocusHeld = false
+                    }
                     audioManager.mode = AudioManager.MODE_NORMAL
                     lastTtsDoneTime = System.currentTimeMillis()
                     panStoppedAt = lastTtsDoneTime
@@ -686,24 +775,35 @@ class PanForegroundService : Service() {
             panLog("AI: all queries via server (Cerebras/Gemini through Tailscale)")
 
             // Auto-download Piper TTS voice in background (never blocks startup)
+            // One voice everywhere, the phone's (the owner, Nov 15): Supertonic 3. The Piper voices (low,
+            // medium, high) speak nothing on sherpa-onnx 2.x ("no frontend available", 0 samples),
+            // and this used to download Piper medium on every fresh install and switch to it, so a
+            // new install went mute (the car unit and the OnePlus Pad, Nov 15). Anyone still on one
+            // is moved to Supertonic 3, with the Android voice until it has downloaded.
             CoroutineScope(Dispatchers.IO).launch {
                 val piper = tts.piper
-                val preferred = tts.voiceQuality
+                var preferred = tts.voiceQuality
+                if (preferred in DEAD_VOICES) {
+                    panLog("Voice: $preferred speaks nothing on this sherpa-onnx, moving to $MAIN_VOICE")
+                    preferred = if (piper.isFullyReady(MAIN_VOICE)) MAIN_VOICE else "android"
+                    mainHandler.post { tts.voiceQuality = preferred }
+                }
                 if (preferred != "android" && piper.isFullyReady(preferred)) {
                     // Already downloaded — just activate
                     mainHandler.post { tts.activateVoice(preferred) }
                     panLog("Piper TTS: $preferred voice ready")
-                } else if (piper.getDownloadedVoices().isEmpty()) {
-                    panLog("Piper TTS: downloading medium voice (~60MB)...")
-                    val ok = piper.downloadVoice("medium")
+                } else if (!piper.isFullyReady(MAIN_VOICE)) {
+                    panLog("Voice: downloading $MAIN_VOICE (~129MB)...")
+                    val ok = piper.downloadVoice(MAIN_VOICE)
                     if (ok) {
                         mainHandler.post {
-                            tts.voiceQuality = "medium"
-                            panLog("Piper TTS: medium voice ready")
-                            panSpeak("Voice upgraded. Piper is ready.")
+                            if (tts.voiceQuality == "android") {
+                                tts.voiceQuality = MAIN_VOICE
+                                panLog("Voice: $MAIN_VOICE ready")
+                            }
                         }
                     } else {
-                        panLog("Piper TTS: download failed, using Android TTS")
+                        panLog("Voice: $MAIN_VOICE download failed, using the Android voice")
                     }
                 }
             }
@@ -735,8 +835,21 @@ class PanForegroundService : Service() {
                 (sttEngine as? dev.pan.app.stt.SherpaStreamingStt)?.warmUp()
             }
         } else {
-            startForeground(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = false))
-            panLog("No mic permission — running without audio")
+            // Not the manifest's default types: those include microphone, and on Android 14+ that
+            // throws without the mic permission, so a fresh install crashed on its first start
+            // before it could ask (OnePlus Pad, Android 15, Nov 15). CONNECTED_DEVICE is allowed by
+            // CHANGE_NETWORK_STATE, a normal permission. If Android still refuses (a start from the
+            // background), wait for the app to be opened instead of crashing.
+            try {
+                ServiceCompat.startForeground(this, Constants.NOTIFICATION_ID,
+                    buildNotification(listening = false, connected = false),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                panLog("No mic permission — running without audio")
+            } catch (e: Exception) {
+                Log.w(TAG, "cannot start in the foreground yet: ${e.message}")
+                stopSelf()
+                return
+            }
         }
 
         // Start sensor collection (GPS, compass, accelerometer, etc.)
@@ -1834,8 +1947,12 @@ class PanForegroundService : Service() {
                 // The quick English voice is for an interpreting reply only; the hub says so
                 // at the start of each one (onInterpreting).
                 tts.interpreting = false
+                val addressedNow = System.currentTimeMillis() < addressedUntil
+                if (addressedNow) addressedUntil = 0L
                 val response = serverClient.askPanStream(
                     text = text,
+                    addressed = addressedNow,
+                    musicPlaying = musicPlaying(),
                     conversationHistory = historyContext,
                     sensorJson = sensorJson,
                     canCamera = sensorContext.cameraEnabled,
@@ -2677,10 +2794,62 @@ class PanForegroundService : Service() {
         //     -a TEST_SAY --es text "what is the capital of peru"
         //
         // DEBUG-gated: a release build cannot be driven this way.
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_BACKCHANNEL") {
+            dev.pan.app.stt.SherpaStreamingStt.backchannelOn = intent.getBooleanExtra("on", false)
+            if (dev.pan.app.stt.SherpaStreamingStt.backchannelOn) tts.piper.prepareHum()
+            panLog("TEST_BACKCHANNEL: ${dev.pan.app.stt.SherpaStreamingStt.backchannelOn}")
+        }
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_AEC_DUMP") {
+            if (intent.getBooleanExtra("on", false)) {
+                dev.pan.app.stt.MusicDetector.get(this).startRaw()
+                dev.pan.app.debug.AecDump.start()
+                panLog("TEST_AEC_DUMP: recording")
+            } else {
+                val dir = java.io.File(getExternalFilesDir(null), "aecdump")
+                serviceScope.launch(Dispatchers.IO) { panLog("TEST_AEC_DUMP: " + dev.pan.app.debug.AecDump.stop(dir)) }
+            }
+        }
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_HUM") {
+            // The "mm-hm" on its own, for hearing it and for measuring what the mic makes of it.
+            val ms = tts.piper.hum()
+            panLog("TEST_HUM: $ms ms")
+            VoiceEvents.emit("test_hum", "ms" to ms)
+        }
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_READ_BELOW") {
+            dev.pan.app.stt.SherpaStreamingStt.readBelowGate = intent.getBooleanExtra("on", false)
+            panLog("TEST_READ_BELOW: ${dev.pan.app.stt.SherpaStreamingStt.readBelowGate}")
+        }
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_SPEAK") {
             val t = intent.getStringExtra("text") ?: "This is a test of the PAN voice system."
             panLog("TEST_SPEAK: $t")
             mainHandler.post { panSpeak(t) }
+        }
+
+        // TEST_PLAY --es path <file>: play a song as a music app would (USAGE_MEDIA), so music tests
+        // run with the screen locked. No path stops it. Files go in getExternalFilesDir (adb push).
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_PLAY") {
+            runCatching { testPlayer?.release() }
+            testPlayer = null
+            val path = intent.getStringExtra("path")
+            if (path != null) {
+                runCatching {
+                    testPlayer = android.media.MediaPlayer().apply {
+                        setAudioAttributes(android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                        setDataSource(path)
+                        prepare()
+                        start()
+                    }
+                    panLog("TEST_PLAY: $path")
+                }.onFailure { panLog("TEST_PLAY failed: ${it.message}") }
+            } else panLog("TEST_PLAY: stopped")
+        }
+
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_CAR") {
+            carForced = intent.getBooleanExtra("on", true)
+            tts.carMode = carForced || accessoryHub.car.value != null
+            panLog("TEST_CAR: car mode ${if (tts.carMode) "on" else "off"}")
         }
 
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_SAY") {
@@ -2902,12 +3071,33 @@ class PanForegroundService : Service() {
             }
         }
 
+        if (intent?.action == ACTION_ADDRESS_PAN) {
+            // The steering wheel's voice button, or any assistant button with ΠAN picked as the
+            // assistant (the owner's head unit, Nov 14): PAN stops talking, the mic opens if it was
+            // muted, a beep, and the next line is for ΠAN even if it sounds like room talk.
+            tts.stop()
+            if (!micEnabled.value) {
+                sttEngine.enabled = true
+                micEnabled.value = true
+                isMuted = false
+                sttEngine.startListening { t, f -> if (t.isNotBlank() && f) { voiceCollector.onTranscript(t); onSpeech(t) } }
+                notificationManager?.notify(
+                    Constants.NOTIFICATION_ID,
+                    buildNotification(listening = true, connected = serverClient.isConnected.value)
+                )
+            }
+            addressedUntil = System.currentTimeMillis() + 20_000L
+            feedbackSounds.onWakeWord()
+            panLog("Assistant button: the next line is for PAN")
+            return START_STICKY
+        }
         if (intent?.action == "TOGGLE_MIC") {
             // micEnabled is what the notification and the UI show, so it is the
             // state the user is actually toggling. Deriving this from the
             // engine's private flag is how the two drifted apart.
-            val newState = !micEnabled.value
-            if (!newState) {
+            // --ez on true/false sets it outright (tests, scripts); without it, it flips.
+            val newState = if (intent.hasExtra("on")) intent.getBooleanExtra("on", true) else !micEnabled.value
+            if (!newState && micEnabled.value) {
                 // Muting stopped the microphone but left PAN talking: it finished
                 // its sentence and then announced a server error for a query that
                 // was still in flight, eleven seconds after the mic was released.

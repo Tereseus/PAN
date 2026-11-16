@@ -14,8 +14,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 103
-        versionName = "0.4.100"
+        versionCode = 128
+        versionName = "0.4.125"
         ndk {
             // Phones are arm64 â€” ship only that ABI. Drops the x86/x86_64/armeabi-v7a
             // copies of sherpa-onnx (Piper), onnxruntime, and gojni (Tailscale): ~100 MB.
@@ -124,6 +124,8 @@ dependencies {
     // API for running other models, so a general ONNX runner has to come from here.
     // No .so name clash: sherpa ships no separate libonnxruntime.so for arm64.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")
+    // YAMNet music detection (stt/MusicDetector.kt). Apache 2.0, about 1 MB per ABI.
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
 
     // JVM unit tests: Kotlin Whisper features vs the Python reference, and the real
     // model through the desktop build of onnxruntime (same ai.onnxruntime API).

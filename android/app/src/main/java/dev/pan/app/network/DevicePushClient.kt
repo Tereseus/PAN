@@ -33,8 +33,10 @@ class DevicePushClient @Inject constructor(
         scope.launch {
             while (isActive) {
                 try {
+                    // Placeholder host only: the shared OkHttp client's interceptor rewrites
+                    // it to the hub HubLocator found (it used to read like a real address).
                     val base = remoteAccessManager.getTailscaleBaseUrl()
-                        ?: "http://192.168.1.248:7777"
+                        ?: "http://pan-hub:7777"
                     val wsUrl = base
                         .replace("https://", "wss://")
                         .replace("http://", "ws://") +

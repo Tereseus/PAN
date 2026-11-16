@@ -60,14 +60,22 @@ class UpdateChecker @Inject constructor(
     private val remoteAccessManager: RemoteAccessManager,
     private val logShipper: LogShipper,
 ) {
+    /** Download progress 0..1 while an update downloads, else null (Settings shows a bar; the owner, Nov 15). */
+    val progress = kotlinx.coroutines.flow.MutableStateFlow<Float?>(null)
+    /** The size being downloaded, for "42 of 85 MB". */
+    @Volatile var progressTotal = 0L
+        private set
+
     companion object {
         private const val TAG = "UpdateChecker"
         // FileProvider authority declared in AndroidManifest.xml
         private const val FILE_PROVIDER_AUTHORITY = "dev.pan.app.fileprovider"
         // LAN fallback if Tailscale isn't up yet
-        private const val LAN_FALLBACK = "http://192.168.1.248:7777"
+        // Placeholder host only: okHttpClient's interceptor sends every request to the hub
+        // HubLocator found. Was the hub's old Dell address, which read like a real fallback.
+        private const val LAN_FALLBACK = "http://pan-hub:7777"
         // Tries per download; each one resumes where the last stopped
-        private const val DOWNLOAD_ATTEMPTS = 3
+        private const val DOWNLOAD_ATTEMPTS = 40
     }
 
     sealed class Result {
@@ -153,7 +161,11 @@ class UpdateChecker @Inject constructor(
             logShipper.info("update", "Update available: ${BuildConfig.VERSION_CODE} → ${m.versionCode} (${m.versionName}), downloading...")
 
             // Download
-            val apkFile = downloadApk(context, m.base + m.apkPath, m.versionCode, m.apkSize)
+            // Over Tailscale when it is up: PAN Link stalls on big transfers (Nov 15), and the
+            // route the manifest came over is usually the link.
+            val bulkBase = remoteAccessManager.getTailnetOnlyBaseUrl()
+            if (bulkBase != null) logShipper.info("update", "Downloading over Tailscale")
+            val apkFile = downloadApk(context, (bulkBase ?: m.base) + m.apkPath, m.versionCode, m.apkSize, keepUrl = bulkBase != null)
             if (apkFile == null) {
                 logShipper.info("update", "Update check: download failed for version ${m.versionCode}")
                 return Result.Error("download failed")
@@ -183,7 +195,7 @@ class UpdateChecker @Inject constructor(
         }
     }
 
-    private fun downloadApk(context: Context, url: String, versionCode: Int, expectedSize: Long): File? {
+    private fun downloadApk(context: Context, url: String, versionCode: Int, expectedSize: Long, keepUrl: Boolean = false): File? {
         val dir = File(context.cacheDir, "updates").apply { mkdirs() }
         val file = File(dir, "pan-$versionCode.apk")
         val part = File(dir, "pan-$versionCode.apk.part")
@@ -203,12 +215,25 @@ class UpdateChecker @Inject constructor(
         file.delete()
 
         var done = false
+        // The in-app tailnet link stalls now and then mid-file; each stall costs a 30 s read
+        // timeout and the next try resumes. Three tries got 0.4.107 nowhere on the phone (Nov 15,
+        // the hub sends the whole 85 MB in 14 s), so keep resuming while each try gets further.
+        var stuck = 0
+        var lastLength = -1L
+        progressTotal = expectedSize
+        progress.value = if (expectedSize > 0) (part.length().toFloat() / expectedSize).coerceIn(0f, 1f) else 0f
+        try {
         for (attempt in 1..DOWNLOAD_ATTEMPTS) {
             if (expectedSize > 0 && part.length() > expectedSize) part.delete()
             if (expectedSize > 0 && part.length() == expectedSize) { done = true; break }
             val start = part.length()
+            if (attempt > 1) {
+                if (start <= lastLength) { if (++stuck >= 2) break } else stuck = 0
+            }
+            lastLength = start
             val req = Request.Builder().url(url)
                 .apply { if (start > 0) header("Range", "bytes=$start-") }
+                .apply { if (keepUrl) header(dev.pan.app.di.NetworkModule.KEEP_URL, "1") }
                 .build()
             try {
                 okHttpClient.newCall(req).execute().use { resp ->
@@ -218,16 +243,28 @@ class UpdateChecker @Inject constructor(
                         !resp.isSuccessful -> Log.w(TAG, "download HTTP ${resp.code}")
                         else -> resp.body?.byteStream()?.use { input ->
                             // 206 = resumed where we stopped; 200 = the whole file again
-                            FileOutputStream(part, resp.code == 206).use { out -> input.copyTo(out) }
+                            FileOutputStream(part, resp.code == 206).use { out ->
+                                val buf = ByteArray(64 * 1024)
+                                var have = if (resp.code == 206) start else 0L
+                                while (true) {
+                                    val n = input.read(buf)
+                                    if (n < 0) break
+                                    out.write(buf, 0, n)
+                                    have += n
+                                    if (expectedSize > 0) progress.value = (have.toFloat() / expectedSize).coerceIn(0f, 1f)
+                                }
+                            }
                             if (expectedSize <= 0) done = true
                         }
                     }
                 }
             } catch (e: IOException) {
                 Log.w(TAG, "download attempt $attempt stopped at ${part.length()} bytes: ${e.message}")
+                logShipper.info("update", "Download try $attempt stopped at ${part.length() / 1_000_000} of ${expectedSize / 1_000_000} MB: ${e.message}")
             }
             if (done || (expectedSize > 0 && part.length() == expectedSize)) { done = true; break }
         }
+        } finally { progress.value = null }
 
         if (!done) {
             Log.w(TAG, "download incomplete: expected=$expectedSize actual=${part.length()}")

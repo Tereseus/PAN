@@ -52,6 +52,7 @@ class LinkManager @Inject constructor(
     @Volatile private var lastConnected = false
     @Volatile private var lastState = ""
     @Volatile private var lastLookup = ""
+    @Volatile private var lastMeet = ""
     @Volatile private var callbackRegistered = false
 
     /**
@@ -169,6 +170,14 @@ class LinkManager @Inject constructor(
                 lastLookup = lookup
                 note("address record: $lookup")
             }
+            // Meeting in the middle (pan-link punch.go): this phone's outside address and
+            // what the link last did about it, so the hub's log shows it.
+            val meet = listOf(s?.optString("outside").orEmpty(), if (s?.optBoolean("hard") == true) "hard network" else "",
+                s?.optString("meet").orEmpty()).filter { it.isNotEmpty() }.joinToString("; ")
+            if (meet.isNotEmpty() && meet != lastMeet) {
+                lastMeet = meet
+                note("meet: $meet")
+            }
         }
         return if (lastConnected) "http://127.0.0.1:$p" else null
     }
@@ -179,7 +188,7 @@ class LinkManager @Inject constructor(
         if (!s.optBoolean("connected")) return null
         return when (s.optString("path")) {
             "local" -> "over your home network"
-            "tailscale" -> "through Tailscale"
+            "tailscale" -> "through the backup route"
             "internet" -> "over the internet"
             else -> null
         }
@@ -194,12 +203,15 @@ class LinkManager @Inject constructor(
         val since = s.optLong("since_handshake_s", -1)
         if (!s.optBoolean("connected")) {
             val last = if (since >= 0) " Last contact ${ago(since)}." else ""
-            return "Paired with $hub, but not reaching it.$last The app uses Tailscale meanwhile."
+            // "away": pan-link's own words for why (link.AwayWords): finding a direct way,
+            // or this network cannot reach the home at all.
+            val away = s.optString("away").ifBlank { "The app uses the backup route meanwhile." }
+            return "Paired with $hub, but not reaching it.$last $away"
         }
         val way = when (s.optString("path")) {
             "local" -> " over your home network"
-            "tailscale" -> " through Tailscale"
-            "internet" -> " over the internet"
+            "tailscale" -> " through the backup route"
+            "internet" -> " directly, from outside your home"
             else -> ""
         }
         return "Connected to $hub$way. Last handshake ${ago(since)}."
