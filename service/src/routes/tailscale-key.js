@@ -44,9 +44,31 @@ function allow(deviceId, now = Date.now()) {
   return true;
 }
 
-/** For tests: forget the rate limit's memory. */
+/** For tests: forget the rate limit's memory and the cached access token. */
 export function resetLimits() {
   recent.clear();
+  token = null;
+}
+
+// An OAuth client cannot call the API with its id and secret as a password: Tailscale
+// answered that with 404 "not found" (Nov 15). It trades them for an access token first
+// (client credentials grant, about an hour), and the key call carries that token.
+let token = null; // { value, until }
+async function accessToken(clientId, clientSecret) {
+  if (token && Date.now() < token.until) return token.value;
+  const r = await fetch(`${apiBase()}/api/v2/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret }).toString(),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`token refused (${r.status}): ${text.slice(0, 200)}`);
+  let j = null;
+  try { j = JSON.parse(text); } catch { /* checked below */ }
+  if (!j?.access_token) throw new Error('token answer had no access_token');
+  token = { value: j.access_token, until: Date.now() + Math.max(60, (Number(j.expires_in) || 3600) - 120) * 1000 };
+  return token.value;
 }
 
 /** The router; secret(name) reads a setting (environment first, then settings). */
@@ -75,10 +97,11 @@ export function tailscaleKeyRouter(secret) {
       description: `PAN Link ${device.id}`.slice(0, 50),
     };
     try {
+      const bearer = await accessToken(clientId, clientSecret);
       const r = await fetch(`${apiBase()}/api/v2/tailnet/-/keys`, {
         method: 'POST',
         headers: {
-          Authorization: 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+          Authorization: `Bearer ${bearer}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),

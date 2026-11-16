@@ -117,7 +117,8 @@
     try {
       const s = await api('/status');
       const n = s.devices || 0;
-      $('status').textContent = 'PAN Link is running on your PAN computer, with ' + n + (n === 1 ? ' paired device.' : ' paired devices.');
+      // s.reach: pan-link's own words on whether phones get in from outside the home.
+      $('status').textContent = 'PAN Link is running on your PAN computer, with ' + n + (n === 1 ? ' paired device.' : ' paired devices.') + (s.reach ? ' ' + s.reach : '');
       $('status').className = '';
     } catch (e) {
       $('status').textContent = e.message;

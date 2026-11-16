@@ -302,7 +302,14 @@ async function guardModelOnGpu(ollamaUrl, model, force = false) {
   }
 }
 
-async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOut = null) {
+// phi4-mini wraps a JSON answer in a ```json fence (Nov 16). Callers parse the text as JSON, and the
+// voice gate reads the first field of a stream, so the fence comes off here, for every Ollama model.
+function stripFence(text) {
+  const m = String(text || '').match(/^\s*```[a-zA-Z]*[ \t]*\r?\n([\s\S]*?)\r?\n?```\s*$/);
+  return m ? m[1] : text;
+}
+
+async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOut = null, temperature = null) {
   const perModelOllama = getCustomModelConfig(ollamaModel);
   // The CONFIGURED host, before any health rerouting. The guard has to repair
   // THIS one. getOllamaUrl() already ends in pickHealthyOllama(), so asking it
@@ -329,7 +336,8 @@ async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOu
         // only unpinned one and the only latency-critical one. It is not about
         // load time - see guardModelOnGpu below for what it actually prevents.
         keep_alive: -1,
-        options: { num_predict: maxTokens },
+        // temperature: only when the caller sets one (the hub's spoken answers, router.js HUB_TEMPERATURE).
+        options: { num_predict: maxTokens, ...(typeof temperature === 'number' ? { temperature } : {}) },
       }),
       signal,
     });
@@ -374,6 +382,9 @@ async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOu
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
+  // A reply that opens with a ``` line (see stripFence): that line is dropped, and the last few
+  // characters are held back so the closing ``` can be dropped too.
+  let head = '', headDone = false, fenced = false, held = '';
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -386,7 +397,22 @@ async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOu
         if (!line) continue;
         let obj;
         try { obj = JSON.parse(line); } catch { continue; }
-        const piece = obj.message?.content || '';
+        let piece = obj.message?.content || '';
+        if (piece && !headDone) {
+          head += piece;
+          const t = head.trimStart();
+          if (t.length < 3 && '```'.startsWith(t)) piece = '';            // may still become a fence
+          else if (t.startsWith('```')) {
+            const eol = t.indexOf('\n');
+            if (eol < 0 && t.length < 24) piece = '';                     // the fence line is not over yet
+            else { piece = eol < 0 ? t : t.slice(eol + 1); headDone = true; fenced = eol >= 0; }
+          } else { piece = head; headDone = true; }
+        }
+        if (piece && fenced) {
+          const out = held + piece;
+          held = out.slice(-6);
+          piece = out.slice(0, -6);
+        }
         if (piece) yield piece;
         if (obj.done && usageOut) {
           usageOut.input_tokens  = obj.prompt_eval_count || 0;
@@ -394,6 +420,9 @@ async function* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOu
         }
       }
     }
+    if (!headDone && head) yield head;
+    const last = held.replace(/\s*```\s*$/, '');
+    if (last) yield last;
   } finally {
     reportOllamaLatency(ollamaUrl, Date.now() - t0, true);
   }
@@ -411,9 +440,11 @@ async function* callReaderStream(prompt, ollamaModel, maxTokens, signal, usageOu
     return;
   } catch (e) {
     if (yielded || signal?.aborted) throw e;
-    console.warn(`[voice-reader] not answering (${e.cause?.code || e.message}), using Ollama for this turn`);
+    // Not Ollama: the same model there has read nothing and took 13 to 19 s a turn in the car
+    // (Nov 14). The router sends the turn to the cloud model instead (routeStream, full prompt).
+    console.warn(`[voice-reader] not answering (${e.cause?.code || e.message}), the cloud model takes this turn`);
+    throw e;
   }
-  yield* callOllamaStream(prompt, ollamaModel, maxTokens, signal, usageOut);
 }
 
 /**
@@ -865,7 +896,7 @@ async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, u
 // #986 batch 2: accept an external `signal` (AbortSignal) so callers (router /chat/stream,
 // /cancel endpoint) can abort the in-flight Cerebras fetch mid-stream. The internal
 // timeout controller still fires, and either abort source short-circuits the fetch.
-export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id, signal: externalSignal = null, readerOpts } = {}) {
+export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id, signal: externalSignal = null, readerOpts, temperature = null } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
   if (!model) model = getModelForCaller(caller);
   const startedAt = Date.now(); // #471: t0 for ai_usage.latency_ms
@@ -902,7 +933,7 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
       }
     } else if (model.startsWith('ollama:')) {
       cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
-      for await (const chunk of callOllamaStream(prompt, model.replace('ollama:', ''), maxTokens, controller.signal, cerebrasUsage)) {
+      for await (const chunk of callOllamaStream(prompt, model.replace('ollama:', ''), maxTokens, controller.signal, cerebrasUsage, temperature)) {
         yield chunk;
       }
     } else if (model.startsWith('reader:')) {
@@ -973,7 +1004,7 @@ async function callOpenAICompat(prompt, messages, config, maxTokens, signal) {
   const data = await response.json();
   
   if (isOllama) {
-    return { text: data.message?.content || '', usage: { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 } };
+    return { text: stripFence(data.message?.content || ''), usage: { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 } };
   }
   return { text: data.choices?.[0]?.message?.content || '', usage: { input_tokens: data.usage?.prompt_tokens || 0, output_tokens: data.usage?.completion_tokens || 0 } };
 }
@@ -1098,7 +1129,7 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       // and would mark the host degraded forever.
       reportOllamaLatency(ollamaUrl, Date.now() - _ollamaT0, true);
       result = {
-        text: data.message?.content || '',
+        text: stripFence(data.message?.content || ''),
         usage: { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 },
       };
     } else if (provider === 'api') {

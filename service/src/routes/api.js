@@ -623,7 +623,17 @@ function spokenVision(text) {
 // lying behind the desk) gets a second look of its own. Both run on the mini PC: neither the
 // photo nor what is in it leaves it.
 const PHOTO_DESCRIBER = 'moondream';
-const PHOTO_ANSWERER = 'ollama:gemma4:e2b';   // must stay local (ollama:)
+const PHOTO_ANSWERER = 'ollama:phi4-mini:3.8b';   // must stay local (ollama:); used when the hub's own model is not a local one
+// The hub's one text model (setting ai_model, or job_models['vision-answer']), so a model change is
+// one setting. Never a cloud model: what the photo shows stays on the hub.
+async function photoAnswerer() {
+  try {
+    const { getModelForCaller } = await import('../llm.js');
+    const m = String(getModelForCaller('vision-answer') || '');
+    if (m.startsWith('ollama:')) return m;
+  } catch {}
+  return PHOTO_ANSWERER;
+}
 const DESCRIBE_PHOTO = 'Describe this image in detail, including any people or animals and any words written in it.';
 const CANT_SPOT = /\b(?:can(?:no|')?t|unable to|don'?t|do not|couldn'?t) (?:spot|see|make out|find)\b|\bno \w+ (?:in|visible)\b/i;
 let _lastLook = null;   // { look, at }: what the last photo showed, for a follow-up about it
@@ -642,7 +652,7 @@ async function answerFromLook(look, asked, askAI) {
     'Answer him in one or two short spoken sentences, no lists, as specifically as the description allows: what it is and what it looks like (colour, kind, what it is doing). If words are written in the photo, add in a few words what they say: they are often its name. Never invent a breed, a name or a brand that is not in the description. Only if the description does not mention the thing at all, say you cannot spot it.',
   ].join('\n\n');
   try {
-    return String(await askAI(prompt, { model: PHOTO_ANSWERER, maxTokens: 90, timeout: 20000, caller: 'vision-answer', _skipAnonymize: true }) || '').trim();
+    return String(await askAI(prompt, { model: await photoAnswerer(), maxTokens: 90, timeout: 20000, caller: 'vision-answer', _skipAnonymize: true }) || '').trim();
   } catch (e) {
     console.warn(`[PAN Vision] answer step failed (${e.message}) - speaking the description`);
     return '';
@@ -1666,14 +1676,39 @@ router.post('/voice/warm', async (req, res) => {
   res.json({ ok: true });
   try {
     const { warmStudent } = await import('../router.js');
-    warmStudent(req.body.bench ? req.body.context : voiceHistory(req.body.context));
+    // org and sensors: the turn's situation line is built from them, and the read has to match it.
+    let sensors = req.body.sensors;
+    if (typeof sensors === 'string') { try { sensors = JSON.parse(sensors); } catch { sensors = undefined; } }
+    warmStudent(req.body.bench ? req.body.context : voiceHistory(req.body.context),
+      { org_id: req.org_id || 'org_personal', sensors });
   } catch (e) { console.warn('[/voice/warm]', e?.message); }
 });
 
 // POST /api/v1/query/stream — SSE streaming voice query
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
+// His voice profile for voice-id.js: how many lines it has learned, and a way to start again.
+router.get('/voice/profile', async (req, res) => {
+  try { res.json((await import('../voice-id.js')).profileState()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.delete('/voice/profile', async (req, res) => {
+  try { const v = await import('../voice-id.js'); v.resetProfile(); res.json(v.profileState()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/query/stream', async (req, res) => {
+  // App 0.4.106+: the turn's audio as G.711 mu-law (half the bytes of PCM16; on his 4G hotspot the
+  // upload was most of the wait, Nov 14). Back to PCM16 here, so everything after is unchanged.
+  if (req.body.audio_ulaw && !req.body.audio) {
+    try {
+      const u = Buffer.from(String(req.body.audio_ulaw), 'base64');
+      const pcm = Buffer.alloc(u.length * 2);
+      for (let i = 0; i < u.length; i++) {
+        const v = ~u[i] & 0xff, exp = (v >> 4) & 7, x = ((((v & 0x0f) << 3) + 0x84) << exp) - 0x84;
+        pcm.writeInt16LE(v & 0x80 ? -x : x, i * 2);
+      }
+      req.body.audio = pcm.toString('base64');
+    } catch (e) { console.warn('[/query/stream] mu-law audio unreadable:', e.message); }
+  }
   const { text: phoneText, context, intent_hint, sensors, can_camera, audio, bench } = req.body;
   if (!phoneText) return res.status(400).json({ error: 'missing text' });
   let text = phoneText;
@@ -1746,11 +1781,48 @@ router.post('/query/stream', async (req, res) => {
   const { interpretingFor, learnInterpretingLanguage } = await import('../router.js');
   const realId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
   const key = bench ? `${realId || 'phone'}-bench` : realId;
+  // Background model jobs (the nightly benchmark) wait while he is talking: on Nov 14 it fired a
+  // prompt every 10 to 30 s during his talk, the voice reader timed out and turns took 8 to 11 s.
+  if (!bench) globalThis.__panLastVoiceAt = Date.now();
   const interp = interpretingFor(key);
   // Interpreting: the phone speaks this reply's English in its Android voice, which starts in
   // ~0.2 s, not Supertonic, which synthesizes the whole line first (app 0.4.69+; older apps
   // ignore the event).
   if (interp) send({ type: 'interpreting' });
+  // Whose voice (voice-id.js): his, someone else's, or can't tell. Loaded here, not at the top,
+  // so a missing model or package can never stop the server from booting.
+  let voice = null;
+  let voiceWearer;
+  let voiceWho = null;
+  let voicePrintNow = null;
+  if (audio && !bench) {
+    try {
+      voice = await import('../voice-id.js');
+      const print = voice.voicePrint(audio);
+      const who = voice.whoseVoice(print);
+      voicePrintNow = print;   // a module namespace is not extensible: voice.print threw on every turn (Nov 14)
+      voiceWearer = who.wearer;
+      voiceWho = who;
+      if (who.likeness !== null) console.log(`[voice-id] likeness ${who.likeness.toFixed(2)} -> ${who.verdict === undefined ? 'unsure' : who.verdict ? 'his voice' : 'someone else'} (gate ${voice.gateMode()})`);
+    } catch (e) { console.warn('[voice-id] skipped:', e.message); voice = null; }
+  }
+  // PAN's own voice coming back through the mic (voice-id.js, Nov 15): drop the turn before
+  // transcription, unless it is clearly his voice too (he talked over PAN).
+  if (voice && voicePrintNow) {
+    const self = voice.panVoiceLikeness(voicePrintNow);
+    // A line that names PAN is his: PAN does not say its own name.
+    const drop = !!self && self.likeness >= voice.PAN_SELF && voiceWho?.verdict !== true && !/\b(pan|pam|pann)\b/i.test(String(phoneText)) && voice.panSelfGateOn();
+    // One line per turn: separate lines went missing from carrier.log (Nov 15).
+    if (self) console.log(`[voice-id] self ${self.likeness.toFixed(2)} his ${voiceWho?.likeness?.toFixed(2) ?? '-'} -> ${drop ? 'DROPPED, PAN heard itself' : 'kept'}: ${JSON.stringify(String(phoneText).slice(0, 60))}`);
+    if (drop) {
+      recordTiming({ turn: turnId, stage: 'pan_own_voice', ms: Date.now() - turnStart });
+      send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'pan_own_voice' } });
+      clearInterval(keepaliveInterval);
+      if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+      if (!res.writableEnded) res.end();
+      return;
+    }
+  }
   if (audio) {
     const t0 = Date.now();
     // Interpreting, the other person speaks another language: the model for that language
@@ -1799,6 +1871,8 @@ router.post('/query/stream', async (req, res) => {
       for await (const event of routeStream(text, {
         source: deviceId ? `phone-${deviceId}` : 'phone',
         device_id: deviceId,
+        // The turn came in through PAN Link (server.js, pan-link-auth.js): asked, PAN can say so.
+        via_link: !!req.panLinkDevice,
         intent_hint,
         conversation_history: convoHistory,
         sensors: parsedSensors,
@@ -1808,9 +1882,15 @@ router.post('/query/stream', async (req, res) => {
         canCamera: !!can_camera,
         // App 0.4.55+: he stopped mid-sentence and the phone's wait for the rest ran out.
         unfinished: !!req.body.unfinished,
+        // App 0.4.105+: the assistant button (car steering wheel) was pressed, this line is for PAN.
+        addressed_now: !!req.body.addressed_now,
+        // App 0.4.106+: music is playing on that device's speakers (the car, Nov 14: PAN answered the lyrics).
+        media_playing: !!req.body.media_playing,
         // App 0.4.73+: how long ago PAN last stopped talking. The bench records no turns, so
         // this is the only thing that tells a talk from a stray line there.
         since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : undefined,
+        // Voice ID (2026-11-12): true = his voice, false = someone else's; left out when unknown.
+        wearer: typeof req.body.wearer === 'boolean' ? req.body.wearer : voiceWearer,
         turn_id: turnId,
         heard_lang: heardLang,
       })) {
@@ -1827,6 +1907,26 @@ router.post('/query/stream', async (req, res) => {
         send(event);
         if (event.type === 'done') {
           if (!bench) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
+          // The situational state program's turn book: what it saw, what PAN did; the next
+          // turn labels this one (intuition/turn-book.js).
+          if (!bench) {
+            const r = event.result || {};
+            const said = String(r.response || '').trim();
+            import('../intuition/turn-book.js').then(({ noteTurn }) => noteTurn({
+              orgId: req.org_id || 'org_personal', text, history: convoHistory, lang: heardLang,
+              seen: { place: r.participation || null, since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : null,
+                voice: voiceWho?.verdict === true ? 'his' : voiceWho?.verdict === false ? 'other' : null,
+                likeness: voiceWho?.likeness ?? null, p_pan: r.p_pan ?? null, named_other: r.reason === 'named_other' },
+              did: { spoke: !['ambient', 'cancelled'].includes(r.intent) && !!said && said.toUpperCase() !== '[AMBIENT]',
+                reason: r.reason || null, held: !!r.hold_ms, response: said.slice(0, 300) },
+            })).catch(() => {});
+          }
+          // Not from a test bench device (setting voice_test_devices, default the OnePlus Pad):
+          // its speaker tests taught his voice profile other voices (Nov 15).
+          if (voicePrintNow && !voiceTestDevice(realId)) {
+            const r = event.result || {};
+            try { voice.learnWearer(voicePrintNow, text, r.intent !== 'ambient' && !!String(r.response || '').trim()); } catch {}
+          }
           break;
         }
       }
@@ -1858,6 +1958,14 @@ router.post('/query/stream', async (req, res) => {
 
   if (!res.writableEnded) res.end();
 });
+
+// Devices whose turns never teach his voice profile: test benches that play other voices.
+function voiceTestDevice(id) {
+  if (!id) return false;
+  let list = 'opd2403';
+  try { list = String(get("SELECT value FROM settings WHERE key = 'voice_test_devices'")?.value || list).replace(/^"|"$/g, ''); } catch {}
+  return list.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).includes(String(id).toLowerCase());
+}
 
 // POST /api/v1/devices/capabilities — phone/other devices self-report their capabilities
 router.post('/devices/capabilities', (req, res) => {
@@ -1927,6 +2035,7 @@ router.get('/history', (req, res) => {
       WHERE event_type = 'conversation_turn'
         AND session_id = :session_id
         AND org_id = :org_id
+        AND created_at > datetime('now', 'localtime', '-30 minutes')
       ORDER BY created_at DESC
       LIMIT :limit
     `, { ':session_id': session_id, ':org_id': req.org_id || 'org_personal', ':limit': parseInt(limit) });

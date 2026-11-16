@@ -140,6 +140,8 @@ export function placeLine(turnGps) {
   const p = lastPlace();
   if (!p?.address) return '';
   const mins = Math.round(p.age_ms / 60000);
+  // A fix this fresh reads the same as one sent with the turn, so the read ahead matches the turn.
+  if (mins < 5) return `his phone is at ${String(p.address).slice(0, 60)}`;
   const ago = mins < 5 ? 'just now' : mins < 90 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`;
   return `his phone was at ${String(p.address).slice(0, 60)} (${ago}; no fix with this turn)`;
 }

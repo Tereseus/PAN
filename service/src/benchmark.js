@@ -95,6 +95,15 @@ function isRateLimitResponse(res) {
 
 async function callRoute(text, context = {}, retries = 3) {
   const { route } = await import('./router.js');
+  // Stand aside while he is talking. The nightly run shares the hub's GPU with the voice reader;
+  // on Nov 14 it ran through his talk, the reader timed out and his turns took 8 to 11 s on the
+  // weaker fallback. Wait until 5 minutes after his last real voice turn (api.js sets the time).
+  const QUIET_MS = 5 * 60_000;
+  let waited = false;
+  while (Date.now() - (globalThis.__panLastVoiceAt || 0) < QUIET_MS) {
+    if (!waited) { bmLog('[PAN Benchmark] he is talking, pausing until 5 min after his last turn'); waited = true; }
+    await delay(30_000);
+  }
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
       // Cerebras rate limits reset after ~60s — give it real breathing room

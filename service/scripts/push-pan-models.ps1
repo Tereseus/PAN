@@ -331,6 +331,8 @@ $bgChain    = AsList (Setting 'ai_fallback_chain_background')
 $student    = [string](Setting 'voice_student_model')
 $gemModels  = @($voiceChain | Where-Object { ([string]$_).StartsWith('gemini:') })
 $gemList    = if ($gemModels.Count) { ($gemModels | ForEach-Object { Nice $_ }) -join ' then ' } else { 'no cloud model' }
+$gemLimit   = if ($gemModels.Count) { 'Gemini: 500 a day per model' } else { 'free' }
+$xlLimit    = if ($gemModels.Count) { 'Gemini: 500 a day per model. Translator: free' } else { 'free' }
 $xlateUp    = ($xlate -and $xlate.status -eq 'ok')
 $xlateName  = if ($xlateUp) { Pretty ([string]$xlate.model) } else { 'the hub translator' }
 $xlateText  = if ($xlateUp) { $xlateName + $(if ($xlate.referee) { ", with $(Pretty ([string]$xlate.referee)) checking it for invented words" } else { '' }) } else { 'NOT answering right now' }
@@ -365,11 +367,31 @@ if ($backup -like 'reader:*') {
 }
 $chainHtml = ($voiceChain | ForEach-Object { E (Describe $_) }) -join ' &rarr; '
 $handJob = if ($student) { 'Turns it hands back, and the backup when it is down' } else { 'Talks to you, in this order' }
-Add-Row $hub $handJob $chainHtml (Kind $voiceChain) 'Gemini: 500 a day per model' 'Camera lines and anything the voice model cannot take. The local model here reads the full PAN prompt on CPU, which is slow: see the last 7 days below'
+Add-Row $hub $handJob $chainHtml (Kind $voiceChain) $gemLimit 'Camera lines and anything the voice model cannot take. The local model here reads the full PAN prompt on CPU, which is slow: see the last 7 days below'
+# Who answers what the voice model hands up. Live from the settings, so a model swap shows here.
+$worldOn    = ([string](Setting 'voice_world_questions')) -replace '"', ''
+$worldMod   = ([string](Setting 'voice_world_model')) -replace '"', ''
+$worldHub   = if ($worldMod -and ($worldMod -notlike 'bench=*')) { $worldMod } else { '' }
+$cloudOne   = @($voiceChain | Where-Object { IsCloud $_ }) | Select-Object -First 1
+$hubPaths   = ([string](Setting 'voice_hub_paths')) -replace '"', ''
+$bigName    = if ($hubPaths -eq 'all' -and $worldHub) { "$(Nice $worldHub) on the hub" } elseif ($cloudOne) { Nice $cloudOne } else { 'the voice model itself, no cloud model is set' }
+$bigKind    = if ($hubPaths -eq 'all' -and $worldHub) { 'local' } elseif ($cloudOne) { 'cloud' } else { 'local' }
+if ($worldOn -ne 'cloud') {
+    $worldWho = 'The voice model answers them itself (setting voice_world_questions is off)'; $worldKind = 'local'
+} elseif ($worldHub) {
+    $worldWho = "<b>$(E (Nice $worldHub))</b> on the hub" + $(if ($cloudOne) { ", then $(E $bigName) if it has not started in 4 s" } else { '' })
+    $worldKind = if ($cloudOne) { 'mixed' } else { 'local' }
+} else {
+    $worldWho = "<b>$(E $bigName)</b>"; $worldKind = $bigKind
+}
+$worldNote = 'Settings voice_world_questions and voice_world_model. Measured Nov 16 on this CPU: Phi 4 mini gives its first word in 0.3 to 4 s, Gemini took about 1 s. Setting voice_hub_paths sends the other handed-up lines to the same hub model'
+if ($worldMod -like 'bench=*') { $worldNote += ". Test devices only: $($worldMod -replace '^bench=', '')" }
+Add-Row $hub 'Real questions: facts, how things work, advice' $worldWho $worldKind '' (E $worldNote)
+Add-Row $hub 'Web search results, tools, questions about PAN itself, rereads' "<b>$(E $bigName)</b> reads the result and answers" $bigKind '' (E 'The hub model when voice_hub_paths is all, else the first cloud model in the voice chain, else the voice model')
 
 $pairs = if ($xlate.pairs) { "quickmt for $(E ($xlate.pairs -join ', ')), then " } else { '' }
 $interp = "Only when the phone has no models for the language. The hub translator first: $pairs$(E $xlateText). Into $(E $cloudLangs), Gemini goes first ($(E $gemList)), each gets $($firstMs / 1000) s to start talking, then the translator. After 2 misses the cloud is skipped for $pauseMin minutes. If the translator is down, Gemini does every line"
-Add-Row $hub 'Interprets and translates' $interp 'mixed' 'Gemini: 500 a day per model. Translator: free' 'quickmt is CC-BY-4.0, MADLAD from Google and M2M from Meta are open licences, all run with CTranslate2'
+Add-Row $hub 'Interprets and translates' $interp 'mixed' $xlLimit 'quickmt is CC-BY-4.0, MADLAD from Google and M2M from Meta are open licences, all run with CTranslate2'
 
 Add-Row $hub 'Looks things up' (E 'Weather and air quality (Open-Meteo), Wikipedia, currency (ECB rates), crypto (CoinGecko), news search (Google News), any web page you name, world clock') 'mixed' 'free public data, no keys' (E 'The answer is worded by Gemini first, the local model behind it')
 
@@ -389,7 +411,7 @@ Add-Row $hub 'Sorting and safety checks' (E ($checks -join '. ')) (Kind @($byMod
 
 $emb = [string](Setting 'embedding_model'); $dim = [string](Setting 'embedding_dim')
 Add-Row $hub 'Memory search' (E ("$emb" + $(if ($dim) { ", $dim dimensions" } else { '' }))) (Kind @($emb)) 'free'
-Add-Row $hub 'Photos the phone cannot do' (E 'moondream describes the picture, gemma4:e2b answers about it') 'local' 'free' (E 'Never sent to the cloud')
+Add-Row $hub 'Photos the phone cannot do' (E "moondream describes the picture, $(Nice ([string](Setting 'ai_model'))) answers about it") 'local' 'free' (E 'Never sent to the cloud')
 Add-Row $hub 'Knows what you are doing (Intuition)' (E 'Rules only, no model, since Nov 3') 'rules' 'free'
 
 $mint = 'On Mint (RTX 3050)'
@@ -423,6 +445,8 @@ if ($modelHosts) {
 $nowLines = New-Object System.Collections.Generic.List[string]
 function Now-Line($cls, $html) { $nowLines.Add("<div class='nl'><span class='dot $cls'></span>$html</div>") }
 if ($student) { Now-Line 'good' "Talking to you: <b>$(E (StudentName $student))</b>, local" }
+Now-Line $(if ($worldKind -eq 'cloud') { 'muted' } else { 'good' }) "Real questions go to: $worldWho"
+Now-Line $(if ($bigKind -eq 'cloud') { 'muted' } else { 'good' }) "Search results and tools go to: <b>$(E $bigName)</b>"
 $ic = if ($xlateUp) { 'good' } else { 'bad' }
 if ($xlateUp) { Now-Line $ic "Interpreting: <b>$(E $xlateName)</b> on the hub, with <b>$(E $gemList)</b> first into $(E $cloudLangs)" }
 else { Now-Line $ic "Interpreting: <b>$(E $gemList)</b> only, the hub translator is not answering" }

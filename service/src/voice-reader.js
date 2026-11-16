@@ -84,17 +84,22 @@ async function* completion(prompt, maxTokens, signal, usageOut, copy) {
  * room talk, so one missed reply silenced the rest of the talk. Replayed with his replies in the
  * history, real lines to PAN scored 0.25 and up and "pass me the big pot" 0.00 (2026-11-05).
  */
-export async function* readerStream(prompt, maxTokens, signal, usageOut = null, { minPan = 1, copy = false } = {}) {
+export async function* readerStream(prompt, maxTokens, signal, usageOut = null, { minPan = 1, needPan = null, copy = false, probe = null, whoMs = 4000 } = {}) {
   const chat = OPEN + prompt + CLOSE;
   // Waits behind a read already running (1.6 s at worst), but a stuck server must not hold the turn.
+  // whoMs: a bench turn arrives cold (nothing read ahead), so it gets longer; at 4 s 272 of 872
+  // convbench turns fell back to Ollama and skipped this decision (hub, 2026-11-12).
   const r = await post('/completion', { prompt: chat + TO, n_predict: 1, n_probs: 8, cache_prompt: true, temperature: 0 },
-    AbortSignal.any([signal, AbortSignal.timeout(4000)].filter(Boolean)));
+    AbortSignal.any([signal, AbortSignal.timeout(whoMs)].filter(Boolean)));
   if (!r.ok) throw new Error(`voice reader ${r.status}`);
   const who = await r.json();
   if (usageOut) usageOut.input_tokens += who.timings?.prompt_n || 0;
   const odds = who.completion_probabilities?.[0]?.top_logprobs || [];
   const pPan = Math.exp(odds.find((t) => t.token === 'pan')?.logprob ?? -Infinity);
-  const head = who.content === 'pan' || pPan >= minPan ? HEAD : TO;
+  // probe: the caller's object gets the odds, so a bench can replay other thresholds (2026-11-12).
+  if (probe) { probe.pPan = Math.round(pPan * 1000) / 1000; probe.top = who.content; }
+  // needPan: a stricter bar than the top token (router.js, while he dictates to Claude).
+  const head = needPan != null ? (pPan >= needPan ? HEAD : TO) : who.content === 'pan' || pPan >= minPan ? HEAD : TO;
   yield head;
   yield* completion(chat + head, maxTokens, signal, usageOut, copy);
 }

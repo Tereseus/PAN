@@ -26,7 +26,12 @@ const WITH_CAMERA = /\b(look|use)\b[^.?!]{0,30}\b(my|the|your)\s+(phone'?s\s+)?c
 // "What is that" means look only when nothing else follows it: "what is that movie called,
 // the one with the..." is him reaching for a name.
 const DEICTIC = /\b(what is|what's|look at|identify|describe|capture) (this|that)\b(.*)$/;
-const TAIL = /^\s*((thing|things|one|here|there|right|over|called|pan|please|for me|real quick|now)\b[\s,.?!]*)*$/;
+// "in front of me": "what is this right here in front of me" got the computer screen, twice (Nov 14).
+const TAIL = /^\s*((thing|things|one|here|there|right|over|called|pan|please|for me|real quick|now|in front of (?:me|us|you)|on my (?:desk|table|hand))\b[\s,.?!]*)*$/;
+
+// Showing it something: "if you can see it", "I'm trying to show it to you", "why aren't you
+// looking at it" (Nov 12, one real object: three asks, no photo, "I don't know what you're showing me").
+const SHOWING = /\b(?:(?:i'?m|i am) (?:trying to )?show(?:ing)? (?:it|this|you)|why (?:aren'?t|are not|don'?t|do not|won'?t) you (?:look|see)(?:ing)?|(?:can|could) you see (?:it|this|that)\b|if you can see (?:it|this|that)|look at it\b)/;
 
 const DROPPED_G = /\b(look|see)in'?(?![a-z])/g;
 
@@ -39,6 +44,7 @@ export function asksForCamera(text) {
   const t = normalizeHeard(text);
   if (PHRASES.some((p) => t.includes(p))) return true;
   if (WITH_CAMERA.test(t)) return true;
+  if (SHOWING.test(t)) return true;
   const m = t.match(DEICTIC);
   return !!m && TAIL.test(m[3]);
 }

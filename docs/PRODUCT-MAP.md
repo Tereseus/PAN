@@ -26,6 +26,25 @@ Build order:
 
 Back burner: try alexei-led/claude-router and keep it if it is worth it.
 
+## While waiting for the Medallion (from 2026-11-07, about a month or more)
+
+The 5 units wait on screen and camera drawings and PCBWay's answer. Work that needs no device, in order. Size: small is hours, medium is a few days, big is a week or more.
+
+| # | Job | Why now | Size |
+|---|---|---|---|
+| 1 | Web search that works | It failed in use. Search sites block the hub (see the web search note), so only news and Wikipedia work. Fix: hard or web questions go to the owner's own AI, which has search built in. | Small to medium |
+| 2 | Hard questions and tasks go to a big model | Same handoff as 1. PAN keeps memory, translation and the fast replies; the big AI does long answers, web, ordering, computer use. | Medium |
+| 3 | Check Anthropic's terms for driving a customer's subscription | Can stop a launch (see below). Decides whether PAN drives the AI or the AI app connects to PAN over MCP. | Small |
+| 4 | Home Assistant on the hub, then the owner's Tapo devices | HA's TP-Link integration covers many Tapo devices; check his models. Gives smart home control without building it. | Medium |
+| 5 | Auto backup | Launch blocker: one copy of the database on one SSD. | Medium |
+| 6 | Older people features | Reminders for pills and appointments, "call my daughter", read a letter or label out loud with the camera, help signal, captions for hard of hearing. Fall detection waits for the device (the board has an IMU). | Medium each |
+| 7 | Translation into earbuds | You hear the other person privately in your ear, they hear you from the Medallion. Phone side only. | Small to medium |
+| 8 | Signup page with a link per site (Reddit, X, TikTok, YouTube) | Counts interest before the Kickstarter. No product photos until real units exist. | Small |
+| 9 | Diagrams: how translation works, how to use it | For the page, the campaign and the manual. Diagrams are fine; photo like renders are not allowed on Kickstarter. | Small |
+| 10 | Install path and pairing | Needed before anyone else can use PAN. Biggest job here. | Big |
+
+Later: users, groups and organisations (routes/orgs.js exists, not needed for one owner). Needs the device: Medallion audio path, sound tuning, firmware, the photo shoot (owner may hire a photographer) and the campaign video.
+
 ## What the product is
 
 | Thing | Status | Notes |
@@ -134,7 +153,7 @@ Same Sky's curve at full rating: about 1% distortion above 1.5 kHz, 3.5% at 1 kH
 
 **To do:**
 
-- Before ordering, ask for the Ole Wolff part, or Same Sky if it cannot be had. These have spring contacts or pads, so the maker has to add the GH1.25 lead. It plugs in, so this needs no board change.
+- Before ordering, ask for the Ole Wolff part, or Same Sky if it cannot be had. These have spring contacts or pads, so the maker has to add the GH1.25 lead. It plugs in, so this needs no board change. Update 2026-11-07: the v4 copy uses OWS-121733TA-8 instead (12 x 17 x 3.3, 99 dB, 600 Hz, solder pads), the biggest size that fits beside the battery, and runs the amp from the battery.
 - Before ordering, add a double sided foam gasket between the speaker and its ring. Nothing in the CAD holds the speaker, and the only seal is printed resin against the speaker face, which is likely to leak and buzz. The speaker has nothing behind it for 9.6 mm.
 - In firmware, cut under about 300 Hz and limit just below where the amp clips.
 - Second product version: a boosted smart amp is the bigger step. Maxim claims up to 2.5 times the loudness of a plain 5 V amp (vendor claim, 2019). A bigger speaker changes the case. (This is not the CAD's v2 or v3, which are case drafts.)
@@ -191,6 +210,19 @@ Others found: tzachbon/claude-model-router-hook (MIT) warns by default and only 
 | Pairing | Missing | Scan a QR on the hub: phone gets its own key and joins. REBUILD-REVIEW change 1 |
 | Medallion pairing and firmware updates | Missing | |
 
+**Full plan: docs/INSTALL-PLAN.md (2026-11-08).** Phone app cleanup (tabs, settings, one look): docs/MOBILE-APP-PLAN.md (2026-11-16).
+
+**Owner's install flow (2026-11-07):** out of the box, plug the Medallion into the computer; PAN downloads and installs; the Medallion screen shows a QR for the phone app; no login because everything is local; Tailscale and WireGuard set up on their own; the installer plays short videos on what PAN does while it works. Owner wants this as the spine of the work while waiting, with the phone app cleanup inside it.
+
+What has to change to make it real:
+1. A plugged in device cannot start an install on its own: Windows and macOS block that for safety. Closest real version: the Medallion shows up as a USB drive with one installer on it, and its screen says "open PAN Setup" (or shows a link). One double click.
+2. The installer needs a code signing certificate, or Windows and macOS warn that it is unsafe. Yearly cost.
+3. The phone app needs a Play Store listing for the QR to open it.
+4. No login means PAN cannot use Tailscale accounts: Tailscale needs one per user. Owner does not want PAN running a connection server (liability: whoever runs it decides which devices may join a network). Proposed instead: PAN Setup puts plain WireGuard on the person's own computer, opens the router port automatically (UPnP) and pairs the phone by QR. Homes whose internet blocks incoming connections (carrier grade NAT, some routers) cannot be reached that way; for those, fall back to the person's own Tailscale with one Google sign in. Not decided.
+5. The big AI is the one login left: the person signs in to their own Claude (or ChatGPT) once, and that app connects to PAN.
+
+Personality (owner, 2026-11-07): the small model is fast but sounds generic and not personable next to Claude. Tone can be trained into a small model (Syrinx fine tune data, persona prompt, using what memory knows about the person); depth cannot, so long answers go to the big AI.
+
 Check before selling: Tailscale's terms for a product built on customers' own free accounts, against self hosting Headscale.
 
 ## Ideas to add
@@ -205,6 +237,38 @@ Ordered by what they do for the product.
 6. **Remind me when:** tied to a place or a person, not a time.
 7. **Help signal:** docs/BLE-MESH.md already has an "I need help" message. Add fall detection from the IMU if the board has one.
 8. **Proactive pings:** PAN watches something and asks by voice (project voice work loop).
+9. **Flashlight (owner, 2026-11-07: necessary):** a good white light on the Medallion, hands free, on by voice. Designed on a copy, hardware/medallion_v4: LED and constant current driver on the board's screen side beside the camera, light through a tapered bezel hole. Board checks pass. Nothing built or sent to a vendor. Heat and brightness are estimates. Rule for adding parts: does it have to be on the chest, hands free? The light does. A better camera does not.
+10. **Aiming laser dropped for now (owner, 2026-11-07):** a dot only helps if the wearer can see it, and a visible one is not worth the safety and paperwork yet. To try instead, with no hardware: point a finger and let the camera see it.
+11. **Slang in the translator (owner, 2026-11-07):** train the ear and the translator on slang and African American English, and review bad lines after a talk so they feed the training. People speak naturally; they should not have to pick safer words. The Conversations page does not have this review yet; it was meant to.
+12. **Jewelry line (owner, 2026-11-07):** swappable covers and small pieces of jewelry that work with the Medallion. No lock-in: the open PAN protocol is the point, the brand earns repeat buyers by being the most reliable, and better ideas from others get copied.
+
+## Other people's devices (owner, 2026-11-13)
+
+ΠAN is the hub: the brain and memory things plug into. It is not a radio standard like Bluetooth; it uses Bluetooth, WireGuard and MCP. Already built: pan-link pairing with limited devices (allow lists), the app's own Tailscale with keys from the hub, the pendant over Bluetooth through the phone, client approval, orgs and roles, and Home Assistant on the hub (docs/HOME-ASSISTANT.md). New, in order:
+
+1. **xiaozhi boards (parked 2026-11-13, owner: it overlaps the phone and pendant path that already exists; see docs/FEATURES.md):** MIT licensed ESP32 voice firmware that runs on 70+ cheap boards (Waveshare and others) with a screen, mic and speaker. It already speaks MCP and lets the owner change its server. Add a door on the hub that speaks its format (Opus audio and JSON over a WebSocket, plus the setup call a board makes first) and feeds the same voice turn the phone gets. Each board pairs as a limited device. No ports opened and nothing public (owner, 2026-11-13: a regular person can't add firewall rules): boards join PAN Link as limited devices, like phones and PCs do, which needs WireGuard in the board's firmware (a PAN build of xiaozhi). Not built. Tailscale Funnel was looked at and dropped: each owner would have to switch it on in their own Tailscale account, and it makes the hub public. **Built 2026-11-13** (`service/src/xiaozhi-server.py`, details in docs/FEATURES.md "xiaozhi boards"): pairing by a code on the board's screen, owner or guest level, PAN's own ears and voice. Tested on the Mint with a fake board (`service/scripts/xiaozhi-fake-board.py`) against the hub's PAN in bench mode: PAN's voice starts about 1 s after the line ends. Owner calls moved to a port only the hub itself can reach, before any public address. Next: the PAN Link path for boards, tried first on the owner's own XIAO ESP32-S3.
+2. **Car OBD (owner's Toyota):** the phone reads the OBD plug over Bluetooth whenever it sees it (speed, rpm, fuel, temperatures, fault codes) and sends it to the hub, which keeps it and gives MCP tools. Test with an OBD simulator, then one drive. Needs the plug's make and model.
+3. **CAN for machines:** the Node's ESP32-S3 has CAN built in and only needs a transceiver chip. Prove it listen only on the Toyota's OBD port (an ESP32-S3 board, a CAN transceiver, an OBD cable); comma's opendbc says what Toyota's messages mean. Then an off the shelf mikroBUS CAN board in a Node slot. Trucks, tractors and diggers speak J1939 on the same wires. Later: AgOpenGPS (auto steer) and openpilot style bridges. Rule for anything that moves: the AI decides what, the machine's own controller decides how, and a safety chip with a STOP line decides if.
+4. **ΠAN Ready spec:** written after 1 and 2 work. How a device pairs and gets its level, the card it sends (what it senses, what it can do, its limits, like the mount and port ID chip record), and how that becomes MCP tools. Makers who follow it get listed, the Meshtastic way.
+
+5. **Accessory slots (owner, 2026-11-14): glasses, headphones, a watch, anything else.** Android's own standard is the one that wins, so ΠAN writes no driver per brand. Built in app 0.4.103 (`accessory/AccessoryHub.kt`, Settings > Accessories): anything Android calls an audio device lands in a slot (Glasses, Headphones, Watch, Medallion, Other), and a switch makes ΠAN listen and speak through it with Android's call routing. That covers Android XR glasses (they reach the phone as Bluetooth audio), Bluetooth and LE Audio earbuds, hearing aids, wired and USB headsets. Off by default: classic Bluetooth call audio makes music on the headset sound like a phone call; LE Audio does not. Later, in order: the glasses' camera and display through Jetpack Projected (`androidx.xr.projected`, still alpha), then a Wear OS app for the watch. Brand SDKs (MentraOS, Even Realities, Meta's toolkit) only if a buyer asks.
+6. **LC3 for the Medallion's mic (owner, 2026-11-14: "let's do that").** The Bluetooth LE Audio codec, liblc3 (Apache 2.0). Measured on the owner's XIAO ESP32-S3 on the Mint: 16 kHz, 10 ms frames, 40 bytes a frame (32 kbps) takes 13% of one core to encode (1.3 ms average, 1.8 ms worst per frame), decode 2.7%, about 3.6 KB of memory. Twice the quality per byte of the pendant's IMA ADPCM (64 kbps), and the same format as LE Audio earbuds and the Even G2. Phone side: liblc3 decoder in the app beside PendantMic. Still to measure: words heard right through LC3 at 16, 24 and 32 kbps against raw, on the hub's Parakeet.
+
+Looked at and not needed: Tailcat (Tailscale's data plane without an account, Aug 2026). The app's own Tailscale already works everywhere.
+
+## Pilot mode: hands and eyes busy (owner, 2026-11-14)
+
+Working with ΠAN and his Claude threads by voice alone, when the screen is off limits: driving, construction, plumbing, wiring, any manual job. Not only code: physical jobs too (wiring a power box, which wire goes where, a solar install), each job its own thread. The point is everyone's use, not his car: a worker on a site asks "what does this do", ΠAN sees it through the pendant camera and walks him through it step by step. Buttons are only the input: any button Android already knows (a car's steering wheel voice button, a headset button, the Medallion's button) does the same few things, so there is no work per car. The car is where it gets tested first. His ideas, in his order:
+
+1. **Device modes.** Pilot (driving, or hands busy on a job): voice only, nothing to read, never sent to a screen (rules like Android Auto, with a voice that actually works). Parked: touch, plus wheel buttons that scroll the page. Phone. Desk. The mode comes from the head unit's speed and ignition and the phone's motion.
+2. **Conductor.** One ongoing call with ΠAN that sends his words to the right thread, reads back a short spoken summary when a thread finishes, and reads out permission prompts so he can answer them by voice. Builds on the thread relay.
+3. **Drafts and send.** ΠAN builds the message, reads back one line, and sends on "send" or a wheel button. Simple things (status, yes, which thread is done) the local model answers fast.
+4. **Look at later.** Visual work (graphics; his game is 3D now) can't be judged by voice. Those go on a list for when he is parked or at a desk.
+5. **Physical jobs.** One step at a time, said by colour and position; "done" moves to the next step. The pendant or phone camera lets ΠAN see the box.
+6. **Which screen to show.** Start simple (the thread that last spoke) and log what he opens after each event, so ΠAN can learn to predict it.
+7. **Car speech is training data.** It is how people really describe problems, and older people who can't read or tap will use ΠAN the same way. On Nov 14 the head unit's speech to text got his words badly wrong ("ivan over so i want...") and ΠAN answered it anyway. So first: the wheel button and speech to text in road noise.
+
+**Built so far:** the wheel button (app 0.4.105, docs/FEATURES.md "Assistant button"): a press stops ΠAN talking, opens the mic and marks the next line as for ΠAN. The mic stays always on as before; the button only says "this one is for you" (owner, Nov 14: no push to talk). Round 16 of the voice model hands questions that need real thought to the bigger model.
 
 ## Things that can stop a launch
 

@@ -113,7 +113,11 @@ const UNWELL = [
 ];
 
 const URGENT = /\b(?:urgent|emergency|asap|right now|immediately|hurry|quick(?:ly)?)\b/;
-const CONFUSED = /\b(?:i don'?t (?:understand|get it)|what do you mean|makes no sense|i'?m (?:lost|confused))\b/;
+// He does not follow what was just said to him, or says it was off the point. The second half is
+// from his own talks of Nov 15 ("What does X have to do with Y?", "That has
+// nothing to do with what I was talking about", an angry "what are you talking about", "why did
+// you say X?"): six turns in a row like that, and the voice model kept inventing.
+const CONFUSED = /\b(?:i don'?t (?:understand|get it|follow)|what do you mean|makes? no sense|doesn'?t make (?:any |much )?sense|i'?m (?:lost|confused)|what (?:are|were) you (?:even )?(?:talking|on) about|what (?:does|do|did|has|have|would) (?!(?:i|we)\b)[^.?!]{1,60}\b(?:have|has|got) to do with|(?:has|have|had|got|having) nothing to do with|why (?:do|did|would) you say|(?:that'?s|that is|it'?s|this is) not what i (?:said|asked|meant|was (?:asking|saying|talking about)))\b/;
 const TECH = /\b[a-z]+\.(?:js|ts|py|kt|json|md|html|css|bat|ps1|sql|yaml|yml)\b|\b[a-z]+_[a-z_]+\b|\b[a-z]+[A-Z][A-Za-z]+\b|\b(?:api|db|sql|json|regex|server|deploy|commit|config|endpoint|function|script|query|cache|thread|process|port|token|model|build|bug|apk|ssh|repo|branch)\b/g;
 
 // ── Text helpers ────────────────────────────────────────────────────────────
@@ -198,6 +202,60 @@ export function toneOf(text) {
   if ((scores.upset || 0) >= 0.5 || (scores.stressed || 0) >= 0.5) return 'upset';
   if ((scores.frustrated || 0) >= 0.55 || (scores.impatient || 0) >= 0.5) return 'heated';
   return 'calm';
+}
+
+/**
+ * Whether this line says he is lost with the answer he just got, or angry at it: the same cues
+ * the mood and need readings use. The voice path asks this of his line as it arrives (router.js,
+ * routeStream), since the held reading only catches up a turn later.
+ */
+export function lostBy(text) {
+  return CONFUSED.test(norm(text)) || (cueScores(String(text || '')).scores.frustrated || 0) >= 0.55;
+}
+
+// ── A question about the world ──────────────────────────────────────────────
+// Whether his line asks something that needs knowledge or judgment (how, why, what is, how much,
+// is it bad to, should I, do you think X will, who would buy it), as opposed to small talk, a
+// reaction, a request to do something, or a question the turn's own facts answer (the clock, the
+// weather, a sum, his screens, his own notes). The 2B voice model answers the first kind from its
+// own head, fluently and wrong (a made-up dietary figure, a wrong legal
+// age, an invented rating for a household device; Nov 15 and the round 17 probe), and two
+// training rounds could not teach it to tell which ones it does not know. The reading is by form,
+// not by subject: a miss in either direction costs speed, never a wrong path (the bigger model can
+// also tell the time).
+const Q_FILLER = /^(?:(?:so|and|but|okay|ok|all right|alright|well|then|like|um+|uh+|er+|hey|yeah|yes|no|wait|now|right|hmm+|oh|pan|i mean|you know|tell me|i wonder|i was wondering|do you know|can you tell me|could you tell me|can you explain|could you explain|explain)\b[\s,]*)+/;
+const Q_START = /^(?:how|why|what|when|where|who|which|whose|whats|what's|hows|how's|whos|who's)\b|^(?:is|are|was|were|does|did|can|could|should|would|will|has|isn't|aren't|doesn't|didn't|won't|wouldn't|shouldn't|can't)\s+[a-z']+\b|^do(?:n't)?\s+(?:you (?:think|reckon|believe|know (?:how|why|what|when|where|who|if|whether))|people|they|we|i|most|all|some|[a-z]+s)\b|^have\s+(?:you|they|people|we|i)\b|^(?:how come|what if|what about)\b/;
+// Things the voice model is tested on, or that other parts of the turn answer.
+const Q_LIGHT = new RegExp([
+  String.raw`\bwhat(?:'s| is|s)? (?:the )?(?:time|date|day)\b|\bwhat (?:time|day|month|year) is it\b|\bis it (?:still )?(?:morning|night|late|early|dark|light)\b`,
+  String.raw`\b(?:weather|forecast|rain(?:ing|y)?|snow(?:ing)?|sunrise|sunset|sun (?:come|comes|go|goes|set|sets|rise|rises)|temperature|degrees|jacket|umbrella|(?:cold|hot|warm|dark|light|windy) (?:out|outside))\b`,
+  String.raw`\bwhere (?:am i|are we|were we)\b|\bwhat (?:am|was) i (?:doing|working on|looking at|up to|saying)\b|\bon my (?:screen|desktop|laptop|computer|phone|monitor)s?\b`,
+  String.raw`^how(?:'s|'| is| are|s)? (?:is )?(?:it going|you\b(?: (?:doing|feeling|holding up|today|tonight|this (?:morning|evening)))*|things|everything|your (?:day|night))(?:\s+[a-z']+){0,2}\s*$|^how(?:'s|'| is|s)? (?:is )?it going\b|\bwhat(?:'s| is|s) (?:up|new|going on|happening)\b|\bhow (?:was|is) your\b`,
+  String.raw`\b(?:can|could|do|did|will|would|are|were) you (?:hear|there|listening|awake|still|okay|ok|ready|with me|working|getting|recording|get that|catch)\b|\bis (?:this|it|that) (?:thing )?(?:on|working|recording)\b`,
+  String.raw`^(?:can|could|will|would|won't) you\b|^(?:can|could|should|shall|may) (?:i|we) (?:get|have|see|hear|ask|say|tell|try|go|start|stop)\b`,
+  String.raw`\bdo you (?:like|love|hate|enjoy|want|prefer|have a|remember|know (?:me|who i|my|what i)|mind|feel|get (?:it|me|that)|understand|see what)\b|\bwhat(?:'s| is| are)? your (?:favou?rite|name)\b|\bwhat do you (?:like|want|prefer|feel)\b|\b(?:are|were) you (?:a|an|real|alive|human|happy|sad|bored|tired|sure|serious|kidding|joking)\b`,
+  String.raw`\b\d+(?:\.\d+)?\s*(?:plus|minus|times|x|\*|\+|-|divided|over|percent|squared)\b|\b(?:plus|minus|times|divided by|percent of|squared|square root of)\b`,
+  String.raw`\b(?:did|have|had|was|were) (?:i|we)\b|\bwhat (?:did|have|was|were) (?:i|we|you)\b|\b(?:remember|remind me|last (?:time|night|week|month)|yesterday|earlier|this morning|a (?:minute|second|moment) ago)\b|\bmy (?:notes?|list|calendar|schedule|appointments?|e?mails?|messages?|tasks?|threads?|sessions?)\b`,
+  String.raw`\bwhat (?:do|did) you (?:mean|say)\b|^(?:what|how) about (?:it|that|this|you|me|now)\s*$|^(?:what|how|why) (?:now|so|then|else|next)\s*$|\b(?:what|who) (?:is|was|are) (?:that|this|it|he|she|they)\s*$|\bwhy (?:not|is that|was that|though)\s*$|\b(?:really|seriously|right|you sure|you think so|is that (?:right|true|so)|are you sure)\s*$`,
+].join('|'));
+
+/** His line is a whole question about the world (see above). */
+export function asksTheWorld(text) {
+  const raw = String(text || '').toLowerCase().replace(/[‘’]/g, "'");
+  // The question is the last clause that opens like one; "All right, let me think of another
+  // question here. Do you think X will..." asks in its second sentence.
+  const clauses = raw.split(/(?<=[.!?])\s+|;\s+/).map((c) => ({ asked: /\?\s*$/.test(c), c: c.replace(/[^a-z0-9'*+.\- ]+/g, ' ').replace(/\s+/g, ' ').trim().replace(Q_FILLER, '').trim() })).filter((x) => x.c);
+  for (let i = clauses.length - 1; i >= 0; i--) {
+    let c = clauses[i].c.replace(/[.\s]+$/, '');
+    // "At what point do you think...", and a sentence restarted on the way to its question
+    // ("Maybe let me when do you think X is going to happen?").
+    if (!Q_START.test(c)) c = c.replace(/^(?:at|in|on|for|to|by|from|with|about|of|around|after|before) (?=(?:what|which|who|whom|how)\b)/, '');
+    if (!Q_START.test(c) && clauses[i].asked) c = c.slice(Math.max(0, c.search(/\b(?:how|why|what|when|where|who|which)\b/)));
+    if (!Q_START.test(c)) continue;
+    if ((c.match(/[a-z0-9']+/g) || []).length < 3) return false;
+    return !Q_LIGHT.test(c);
+  }
+  return false;
 }
 
 // ── Held readings ───────────────────────────────────────────────────────────

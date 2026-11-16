@@ -155,10 +155,11 @@ function spokenAliases() { return { ...BASE_ALIASES, ...installJson('thread-alia
 function spokenMachines() { return installJson('thread-machines.json'); }
 
 const FILLER = new Set(['the', 'a', 'an', 'my', 'our', 'that', 'this', 'thread', 'threads', 'session', 'sessions',
-  'chat', 'claude', 'tab', 'one', 'please', 'and']);
+  'chat', 'claude', 'tab', 'one', 'please', 'and', 'uh', 'um', 'umm', 'er', 'erm', 'hmm']);
 
 function tokens(s) {
-  const lower = String(s || '').toLowerCase().replace(/[α-ωάέήίόύώς]/g, c => GREEK[c] || c);
+  const lower = String(s || '').toLowerCase().replace(/[α-ωάέήίόύώς]/g, c => GREEK[c] || c)
+    .replace(/\+/g, ' plus ').replace(/&/g, ' and ');   // "Bi + Anim" is said "bi plus anim" (Nov 14)
   return lower.replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
 }
 
@@ -177,6 +178,13 @@ function lev(a, b) {
   return prev[n];
 }
 
+// Rough sound of a word: first letter, then its consonants, y as a vowel, doubles collapsed.
+// "buy" and "bi" are both "b"; the speech model writes what it hears, not the title (Nov 14).
+function soundKey(w) {
+  const s = w.replace(/ph/g, 'f').replace(/ck/g, 'k');
+  return (s[0] + s.slice(1).replace(/[aeiouy]/g, '')).replace(/(.)\1+/g, '$1');
+}
+
 function tokenSim(a, b) {
   if (a === b) return 1;
   if (a.length >= 3 && b.length >= 3 && (a.startsWith(b) || b.startsWith(a))) return 0.85;
@@ -184,6 +192,9 @@ function tokenSim(a, b) {
   const len = Math.max(a.length, b.length);
   if (len >= 4 && d === 1) return 0.8;
   if (len >= 7 && d === 2) return 0.65;
+  if (/^[a-z]+$/.test(a) && /^[a-z]+$/.test(b) && soundKey(a) === soundKey(b)) return 0.7;
+  // A two letter title word is often short for a longer one: "Bi" for bipedal.
+  if (b.length === 2 && a.length >= 5 && a.startsWith(b)) return 0.6;
   return 0;
 }
 
@@ -220,7 +231,34 @@ function distinctThreads(threads) {
   return [...seen.values()];
 }
 
-export function matchThread(spokenName, threads = listThreads()) {
+// "thread two", "number 2", "the second one": a place in the last list ΠAN read out (Nov 15).
+// Titles are long and odd, so he can't be expected to know them; a number from the list he just heard works.
+const NUMBER_WORDS = { one: 1, first: 1, two: 2, second: 2, three: 3, third: 3, four: 4, fourth: 4, five: 5, fifth: 5,
+  six: 6, sixth: 6, seven: 7, seventh: 7, eight: 8, eighth: 8, nine: 9, ninth: 9, ten: 10, tenth: 10 };
+const NUMBER_RE = '(?:[1-9][0-9]?|one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)';
+const NUMBER_REF = new RegExp(`^(?:(?:the|number|no\\.?|thread|session|chat)\\s+)*(${NUMBER_RE})(?:\\s+(?:one|thread|session|chat))?$`, 'i');
+function numberRef(name) {
+  const m = NUMBER_REF.exec(String(name || '').trim().replace(/[.,!?#]+/g, ' ').replace(/\s+/g, ' ').trim());
+  if (!m) return null;
+  const w = m[1].toLowerCase();
+  return (NUMBER_WORDS[w] || Number(w)) - 1;
+}
+let _lastList = null;   // { threads, at }: the numbered list ΠAN last read out
+const LIST_WINDOW_MS = 15 * 60_000;
+// The order a number counts in: the list he heard, else the order a list would be read in now.
+function numberedThreads(threads) {
+  if (_lastList && Date.now() - _lastList.at < LIST_WINDOW_MS) return _lastList.threads;
+  return distinctThreads(threads);
+}
+
+export function matchThread(spokenName, threads = listThreads(), { ordered = false } = {}) {
+  const at = numberRef(spokenName);
+  if (at != null) {
+    const list = ordered ? threads : numberedThreads(threads);
+    const th = list[at];
+    return th ? { ok: true, thread: th, score: 1, by_number: at + 1, candidates: [{ title: th.title, score: 1 }] }
+      : { ok: false, reason: 'no_number', number: at + 1, candidates: [] };
+  }
   const machines = spokenMachines();
   let { t: said, joined } = spokenTokens(spokenName);
   // "pan, not mint pan": what follows "not" is ruled out, never a target. A machine after "not"
@@ -279,7 +317,12 @@ export function matchThread(spokenName, threads = listThreads()) {
     return { thread: th, score: +score.toFixed(3) };
   }).sort((a, b) => b.score - a.score || (b.thread.last_activity || 0) - (a.thread.last_activity || 0));
 
-  const [best, second] = scored;
+  // A copy whose title only adds words he did not say ("X (fork)") is no rival to X.
+  const tokOf = (s) => titleTokens[pool.indexOf(s.thread)] || [];
+  const bestTok = scored.length ? tokOf(scored[0]) : [];
+  const isCopy = (s) => { const t = tokOf(s); return t.length > bestTok.length && bestTok.every(w => t.includes(w)) && t.filter(w => !bestTok.includes(w)).every(w => !words.some(x => tokenSim(x, w) > 0)); };
+  const rivals = scored.filter((s, i) => i === 0 || !isCopy(s));
+  const [best, second] = rivals;
   const candidates = scored.slice(0, 3).map(s => ({ title: s.thread.title, score: s.score }));
   if (!best || best.score < 0.55) return { ok: false, reason: 'no_match', candidates };
   if (second && second.score >= best.score - 0.08) return { ok: false, reason: 'ambiguous', candidates };
@@ -555,6 +598,12 @@ export function recentConvo(history, utterance, body = '', maxLines = 10) {
 let _pendingChoice = null;   // { threads, text, at }
 const CHOICE_WINDOW_MS = 90_000;
 
+// The two names PAN offered, in the order it said them.
+function offered(candidates, threads) {
+  const pool = distinctThreads(threads);
+  return candidates.slice(0, 2).map(c => pool.find(t => t.title === c.title)).filter(Boolean);
+}
+
 function lastJob() {
   return get(`SELECT * FROM thread_relay_jobs ORDER BY created_at DESC LIMIT 1`);
 }
@@ -565,7 +614,9 @@ function lastJob() {
 //   { kind: 'no_relay' }            { kind: 'no_computer', machine }
 export function parseThreadCommand(utterance) {
   ensureThreadRelaySchema();
-  const text = String(utterance || '').trim();
+  const text = String(utterance || '').trim()
+    // Only after a word that can't be part of a name: "tell the PAN thread one more thing" stays as said.
+    .replace(new RegExp(`(?<=\\b(?:what's|whats|what is|did|on|in|to|tell|ask|is|about|from|with|of|check)\\s+)(thread|session|chat)\\s+(?:number\\s+|no\\.?\\s*|#\\s*)?(${NUMBER_RE})\\b`, 'gi'), 'number $2 $1');
   if (!text) return null;
   const threads = listThreads();
 
@@ -578,10 +629,10 @@ export function parseThreadCommand(utterance) {
     const r = matchThread(m[1], threads);
     if (r.ok) return { kind: 'send', status: true, thread: r.thread, text: 'What is this thread doing right now?' };
     if (r.reason === 'ambiguous') {
-      const names = new Set(r.candidates.slice(0, 2).map(c => c.title));
-      _pendingChoice = { threads: distinctThreads(threads).filter(t => names.has(t.title)), text: 'What is this thread doing right now?', status: true, utterance: text, at: Date.now() };
+      _pendingChoice = { threads: offered(r.candidates, threads), text: 'What is this thread doing right now?', status: true, utterance: text, at: Date.now() };
       return { kind: 'ambiguous', candidates: r.candidates };
     }
+    if (r.reason === 'no_number') return { kind: 'no_number', number: r.number };
     return { kind: 'unknown', name: m[1] };
   }
 
@@ -594,10 +645,23 @@ export function parseThreadCommand(utterance) {
     const name = last[1].trim();
     const pronoun = /^(?:it|that|they)$/i.test(name);
     const anchored = /\b(?:thread|session)\b/i.test(text);
-    const m = pronoun || /^(?:i|you|we|he|she)$/i.test(name) ? null : matchThread(name, threads);
+    // "Wait, what did you just say?" in the car was read as a thread called "you just" and got
+    // "I couldn't find a thread called you just." (Nov 16): the person may come with an adverb.
+    const person = /^(?:i|you|we|he|she)(?:\s+(?:just|even|actually|really|guys|two|all))*$/i.test(name);
+    const m = pronoun || person ? null : matchThread(name, threads);
     if (m?.ok) {
       const job = get(`SELECT * FROM thread_relay_jobs WHERE session_id = :s AND status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`, { ':s': m.thread.session_id });
-      return { kind: 'last', job: job || null };
+      // Never asked through the relay, or it has worked since: read where it is now (Nov 14).
+      if (!job || (m.thread.last_activity || 0) > (job.created_at || 0) + 60_000) return { kind: 'send', status: true, thread: m.thread, text: 'What is this thread doing right now?' };
+      return { kind: 'last', job };
+    }
+    // A real name that matched nothing: say so and name the closest, never another thread's reply.
+    // "what did the buy plus animation thread say" got the newest ΠAN reply (Nov 14).
+    const named = !pronoun && tokens(name).some(w => !FILLER.has(w));
+    if (named && m && !m.ok) {
+      if (m.reason === 'no_number') return { kind: 'no_number', number: m.number };
+      if (m.reason === 'ambiguous') return { kind: 'ambiguous', candidates: m.candidates };
+      return { kind: 'unknown', name, closest: m.candidates[0]?.score >= 0.2 ? m.candidates[0].title : null };
     }
     if (pronoun || anchored) {
       const job = get(`SELECT * FROM thread_relay_jobs WHERE status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`);
@@ -607,7 +671,10 @@ export function parseThreadCommand(utterance) {
   }
 
   if (_pendingChoice && Date.now() - _pendingChoice.at < CHOICE_WINDOW_MS && text.split(/\s+/).length <= 6) {
-    const r = matchThread(text.replace(/\b(?:one|the|thread)\b/gi, ' '), _pendingChoice.threads);
+    // "two", "number two", "what's number two doing", "the second one" pick by place.
+    const at = numberRef(text) ?? numberRef((/\bnumber\s+\S+|\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b/i.exec(text) || [])[0]);
+    const r = at != null ? matchThread(`number ${at + 1}`, _pendingChoice.threads, { ordered: true })
+      : matchThread(text.replace(/\b(?:one|the|thread)\b/gi, ' '), _pendingChoice.threads);
     if (r.ok) {
       const pending = _pendingChoice; _pendingChoice = null;
       return { kind: 'send', status: !!pending.status, thread: r.thread, text: pending.text, utterance: pending.utterance };
@@ -632,11 +699,11 @@ export function parseThreadCommand(utterance) {
     if (r.ok) return body ? { kind: 'send', thread: r.thread, text: body } : { kind: 'empty', thread: r.thread };
     if (r.reason === 'ambiguous') {
       if (body) {
-        const names = new Set(r.candidates.slice(0, 2).map(c => c.title));
-        _pendingChoice = { threads: distinctThreads(threads).filter(t => names.has(t.title)), text: body, utterance: text, at: Date.now() };
+        _pendingChoice = { threads: offered(r.candidates, threads), text: body, utterance: text, at: Date.now() };
       }
       return { kind: 'ambiguous', candidates: r.candidates };
     }
+    if (r.reason === 'no_number') return { kind: 'no_number', number: r.number };
     return { kind: 'unknown', name: m[1] };
   }
 
@@ -667,8 +734,19 @@ export async function* handleThreadCommand(cmd, utterance, context = {}, inlineW
   const done = (response, extra = {}) => ({ type: 'done', result: { intent: 'thread', speech_act: 'command', response, addressed: 1, importance: 0.5, ...extra } });
 
   if (cmd.kind === 'list') {
-    const names = distinctThreads(cmd.threads).slice(0, 8).map(t => shortTitle(t.title));
-    const say = names.length ? `Your most recent threads are ${names.join(', ')}.` : `No relay has reported any threads yet.`;
+    const listed = distinctThreads(cmd.threads).slice(0, 5);
+    const say = listed.length
+      ? `Your newest threads: ${listed.map((t, i) => `${['one', 'two', 'three', 'four', 'five'][i]}, ${shortTitle(t.title)}`).join('. ')}. Say a number to check on one.`
+      : `No relay has reported any threads yet.`;
+    if (listed.length) {
+      _lastList = { threads: listed, at: Date.now() };
+      _pendingChoice = { threads: listed, text: 'What is this thread doing right now?', status: true, utterance, at: Date.now() };
+    }
+    yield { type: 'chunk', text: say }; yield done(say); return;
+  }
+  if (cmd.kind === 'no_number') {
+    const n = _lastList && Date.now() - _lastList.at < LIST_WINDOW_MS ? _lastList.threads.length : 0;
+    const say = n ? `I only read out ${n}. Which one?` : `There's no thread number ${cmd.number}. Ask me to list your threads first.`;
     yield { type: 'chunk', text: say }; yield done(say); return;
   }
   if (cmd.kind === 'last') {
@@ -685,7 +763,7 @@ export async function* handleThreadCommand(cmd, utterance, context = {}, inlineW
     yield { type: 'chunk', text: say }; yield done(say, { thread_candidates: cmd.candidates }); return;
   }
   if (cmd.kind === 'unknown') {
-    const say = `I couldn't find a thread called ${cmd.name}.`;
+    const say = `I couldn't find a thread called ${cmd.name}.` + (cmd.closest ? ` The closest is ${shortTitle(cmd.closest)}.` : '');
     yield { type: 'chunk', text: say }; yield done(say); return;
   }
   if (cmd.kind === 'no_computer') {

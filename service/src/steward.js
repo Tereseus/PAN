@@ -645,6 +645,87 @@ const services = [
     _lastRun: null,
   },
   {
+    // The situational state program learns from his own turns (intuition/situation-learn.js,
+    // docs/INTUITION-STATE.md section 16): retunes its settings on what he did next, writes the
+    // dataset. Local arithmetic, no model. Checks hourly, runs once a day; a Craft swap restarts
+    // the timer but not the day (the last run's time is in situation_learn_runs).
+    id: 'situation-learner',   // no `profiles`: every profile runs it
+    name: 'Situation learner',
+    description: 'Retunes the situational state program from his labeled turns, writes the dataset',
+    modelTier: 'none',
+    modelCurrent: 'none',
+    port: null,
+    healthCheck: 'interval',
+    bootOrder: 9,
+    dependsOn: [],
+    interval: '24h',
+    intervalMs: 24 * 60 * 60 * 1000,
+    startFn: () => {
+      const svc = services.find(s => s.id === 'situation-learner');
+      const tick = async () => {
+        try {
+          const { learnOnce } = await import('./intuition/situation-learn.js');
+          const { get: dbGet } = await import('./db.js');
+          let last = 0;
+          try { last = dbGet('SELECT MAX(at) AS t FROM situation_learn_runs')?.t || 0; } catch {}
+          if (Date.now() - last < 20 * 60 * 60 * 1000) return;
+          learnOnce();
+          reportServiceRun('situation-learner');
+        } catch (e) { reportServiceRun('situation-learner', e.message); }
+      };
+      svc._first = setTimeout(tick, 10 * 60 * 1000);
+      svc._timer = setInterval(tick, 60 * 60 * 1000);
+    },
+    stopFn: () => {
+      const svc = services.find(s => s.id === 'situation-learner');
+      if (svc._timer) { clearInterval(svc._timer); svc._timer = null; }
+      if (svc._first) { clearTimeout(svc._first); svc._first = null; }
+    },
+    _status: 'unknown',
+    _lastCheck: null,
+    _lastError: null,
+    _lastRun: null,
+  },
+  {
+    // Nightly voice report (voice-report.js): yesterday's real voice turns, speed per stage and a
+    // judge's score per reply, in <data>/voice-reports. Checks hourly; runs once a day between
+    // 01:00 and 07:00 hub time when nobody has talked to PAN for 10 min.
+    id: 'voice-report',
+    name: 'Voice report',
+    description: 'Scores yesterday\'s voice turns: speed per stage, reply quality, missed lines',
+    modelTier: 'none',
+    modelCurrent: 'gemini:gemini-3.5-flash-lite',
+    port: null,
+    healthCheck: 'interval',
+    bootOrder: 9,
+    dependsOn: [],
+    interval: '24h',
+    intervalMs: 24 * 60 * 60 * 1000,
+    startFn: () => {
+      const svc = services.find(s => s.id === 'voice-report');
+      const tick = async () => {
+        if (svc._running) return;
+        svc._running = true;
+        try {
+          const { maybeRun } = await import('./voice-report.js');
+          if (await maybeRun()) reportServiceRun('voice-report');
+        } catch (e) { reportServiceRun('voice-report', e.message); }
+        finally { svc._running = false; }
+      };
+      svc._first = setTimeout(tick, 12 * 60 * 1000);
+      svc._timer = setInterval(tick, 60 * 60 * 1000);
+    },
+    stopFn: () => {
+      const svc = services.find(s => s.id === 'voice-report');
+      if (svc._timer) { clearInterval(svc._timer); svc._timer = null; }
+      if (svc._first) { clearTimeout(svc._first); svc._first = null; }
+    },
+    _status: 'unknown',
+    _lastCheck: null,
+    _lastError: null,
+    _lastRun: null,
+  },
+  {
     id: 'scout',
     profiles: ['full', 'wearable'],  // resilience: proactive provider-model refresh + tool discovery — keep the router self-healing in the lean profile
     name: 'Scout',

@@ -66,7 +66,7 @@ function studentIdentity(id) {
  * and given it, OmniΠ named the model from memory hits ("Gemma4 e4b") or skipped its own name.
  * Tested on the hub: this shape answers correctly.
  */
-export function buildSelfLine() {
+export function buildSelfLine({ viaLink } = {}) {
   const student = readSetting('voice_student_model');
   if (!student) return '';
   const { name, base } = studentIdentity(student);
@@ -78,7 +78,7 @@ export function buildSelfLine() {
   // Second person and only positive facts: given "his phone" it said "his phone" back to him,
   // and given "never call yourself LFM" it announced "I'm not LFM or Liquid".
   const you = owner ? `The person talking to you is ${owner}: asked his own name, the answer is ${owner}. ` : '';
-  return `About you (live, this is fact): your name is PAN, his personal AI. ${you}He talks to you through the PAN app on his phone (say "your phone" to him), and you run on the mini PC hub in his home. Your voice model is ${name}, PAN's own fine-tune of ${base}. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. PAN's thread relay carries his voice to his Claude Code threads on his computers and reads their answers back: he says "tell the <name> thread ..." or "what is the <name> thread doing". Answer questions about yourself and about him only from this line.`;
+  return `About you (live, this is fact): your name is PAN, short for Personal AI Network, his personal AI. ${you}He talks to you through the PAN app on his phone (say "your phone" to him), and you run on the mini PC hub in his home. ${viaLink === true ? "Right now his words reach you over PAN Link, PAN's own encrypted connection between his devices and the hub, and it is working. " : viaLink === false ? 'Right now his words reach you without PAN Link (his home network or Tailscale). ' : ''}Your voice model is ${name}, PAN's own fine-tune of ${base}. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. PAN's thread relay carries his voice to his Claude Code threads on his computers and reads their answers back: he says "tell the <name> thread ..." or "what is the <name> thread doing". Answer questions about yourself and about him only from this line.`;
 }
 
 export function buildSelfBlock() {
@@ -128,7 +128,7 @@ export function buildSelfBlock() {
   }
   if (local.length) {
     lines.push(`- Running LOCALLY on the mini PC, never leaving the house: ${local.join('; ')}.`);
-    lines.push(`- Image and camera recognition is also local (gemma4 on the mini PC).`);
+    lines.push(`- Image and camera recognition is also local (moondream on the mini PC).`);
   }
 
   lines.push('- Your speech is generated ON THE PHONE and never sent anywhere.');

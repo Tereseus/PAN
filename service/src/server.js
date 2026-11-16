@@ -97,6 +97,7 @@ import activityRouter from './routes/activity.js';
 import { startActivityTracker } from './activity-tracker.js';
 const IS_CRAFT = process.env.PAN_CRAFT === '1';
 import { hostname, homedir } from 'os';
+import { networkInterfaces as osNetworkInterfaces } from 'os';
 import { PROFILE, featureEnabled, profileSummary } from './profiles.js';
 import { redactSettings, getSecret } from './secrets.js';
 
@@ -3164,8 +3165,32 @@ app.get(['/status', '/privacy'], (req, res) => {
   res.sendFile(join(__dirname, '..', 'public', 'status.html'));
 });
 
+// This computer's Tailscale IPv4 (100.64.0.0/10), or null.
+function apkOverTailnet() {
+  for (const list of Object.values(osNetworkInterfaces())) {
+    for (const n of list || []) {
+      if (n.family !== 'IPv4' && n.family !== 4) continue;
+      const [x, y] = n.address.split('.').map(Number);
+      if (x === 100 && y >= 64 && y <= 127) return n.address;
+    }
+  }
+  return null;
+}
+
 // APK download — serves the latest debug build so the phone can sideload over Tailscale
 app.get('/apk/latest', (req, res) => {
+  // Over PAN Link the 85 MB download stalls after about 100 KB (Nov 15), and phones on
+  // 0.4.99 to 0.4.112 download over the link. Send those to this computer's Tailscale
+  // address instead: OkHttp follows the redirect after the app has rewritten the address,
+  // so the second hop goes through the phone's own Tailscale. 0.4.113 and later skip the
+  // link for this download themselves.
+  if (req.query.direct === undefined && req.headers['x-pan-link-secret'] !== undefined) {
+    const ip = apkOverTailnet();
+    if (ip) {
+      console.log(`[APK] link download sent to Tailscale ${ip}`);
+      return res.redirect(302, `http://${ip}:${process.env.PAN_PUBLIC_PORT || 7777}/apk/latest?direct=1`);
+    }
+  }
   const apkPath = join(__dirname, '..', '..', 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');
   res.setHeader('Content-Disposition', 'attachment; filename="pan-debug.apk"');

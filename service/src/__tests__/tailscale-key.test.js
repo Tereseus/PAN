@@ -7,11 +7,18 @@ import express from 'express';
 
 const KEY = 'tskey-auth-test-0000';
 const calls = [];
+const tokenCalls = [];
 let answer = { status: 200, body: { id: 'k123', key: KEY } };
 const api = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => { body += c; });
   req.on('end', () => {
+    // The OAuth token exchange answers on its own; tests count only the key calls.
+    if (req.url === '/api/v2/oauth/token') {
+      tokenCalls.push(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ access_token: 'tok-1', token_type: 'Bearer', expires_in: 3600 }));
+    }
     calls.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
     res.writeHead(answer.status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(answer.body));
@@ -47,6 +54,7 @@ let passed = 0;
 let failed = 0;
 async function test(name, fn) {
   calls.length = 0;
+  tokenCalls.length = 0;
   resetLimits();
   answer = { status: 200, body: { id: 'k123', key: KEY } };
   settings = { tailscale_oauth_client_id: 'cid', tailscale_oauth_client_secret: 'csecret', tailscale_tag: 'tag:pan-device' };
@@ -69,7 +77,8 @@ await test('a phone paired through PAN Link gets a single use key', async () => 
   const j = await r.json();
   ok(r.status === 200 && j.ok && j.auth_key === KEY && j.expires_in === KEY_TTL_SECONDS, `${r.status} ${JSON.stringify(j)}`);
   ok(calls.length === 1 && calls[0].method === 'POST' && calls[0].url === '/api/v2/tailnet/-/keys', JSON.stringify(calls));
-  ok(calls[0].auth === 'Basic ' + Buffer.from('cid:csecret').toString('base64'), 'wrong OAuth credentials sent');
+  ok(calls[0].auth === 'Bearer tok-1', `wrong auth sent: ${calls[0].auth}`);
+  ok(tokenCalls.length === 1 && tokenCalls[0].includes('client_id=cid') && tokenCalls[0].includes('client_secret=csecret'), `token call ${tokenCalls}`);
   const sent = JSON.parse(calls[0].body);
   const c = sent.capabilities.devices.create;
   ok(c.reusable === false && c.preauthorized === true && c.ephemeral === false, `capabilities ${JSON.stringify(c)}`);

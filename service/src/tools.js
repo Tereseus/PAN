@@ -17,6 +17,8 @@ import * as browser from './playwright-bridge.js';
 import { spawn } from 'child_process';
 import { askAI } from './llm.js';
 import { get } from './db.js';
+import { sunTimes } from './intuition/place.js';
+import { hisTimeZone } from './intuition/time.js';
 
 const TIMEOUT_MS = 2500;
 
@@ -218,7 +220,37 @@ async function googleNews(q) {
   return items;
 }
 
+// Sunrise and sunset are computed for where he is (intuition/place.js daylightLine, in the
+// situation line). The news feed has no such answer, so "do a web search, what time does the
+// sun come up" got "I couldn't run the search" (Nov 10, and again on the hub Nov 13).
+const SUN_RE = /\b(?:sun ?rise|sun ?set|sun ?up|sundown|dusk|dawn|daylight|sun (?:come|comes|coming|go|goes|going|rise|rises) (?:up|down))\b/i;
+
+// A named place ("when does the sun come up in Porto, Portugal"): its coordinates from the
+// Wikipedia summary, then the same sun maths as place.js, told in his own clock (the instant is
+// the same anywhere, so "07:12 his time" is right even for a far place). No place named: the
+// situation line already holds sunrise and sunset for where he is.
+async function sunForPlace(text) {
+  const m = String(text).match(/^.*\b(?:in|at|for|over)\s+((?:the\s+)?\p{L}[\p{L}'’ ,-]{1,60}?)\s*(?:\b(?:today|tomorrow|tonight|right now|now)\b)?\s*[?.!]*\s*$/iu);
+  if (!m) return '';
+  const place = m[1].replace(/[.,\s]+$/, '').trim();
+  if (place.length < 3 || /^(?:the )?(?:morning|evening|summer|winter|here|there|my place|where i am|where i'm at)$/i.test(place)) return '';
+  const s = await getJson('https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=1&format=json&srsearch=' + encodeURIComponent(place));
+  const title = s?.query?.search?.[0]?.title;
+  if (!title) return '';
+  const p = await getJson('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title.replace(/ /g, '_')));
+  const c = p?.coordinates;
+  if (typeof c?.lat !== 'number' || typeof c?.lon !== 'number') return '';
+  const now = new Date();
+  const sun = sunTimes(c.lat, c.lon, now);
+  if (!sun) return '';
+  const tz = hisTimeZone();
+  const fmt = (ms) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  return `\nSUN TIMES for ${title} today, computed from its coordinates (real data, state as fact): ` +
+    `sunrise ${fmt(sun.sunrise)}, sunset ${fmt(sun.sunset)}, both in his own time (${tz}).\n`;
+}
+
 async function webSearch(text) {
+  if (SUN_RE.test(text)) return '';
   const q = searchSubject(text);
   if (q.length < 3) return '';
 
@@ -497,6 +529,7 @@ const TOOLS = [
   { name: 'air',      live: true, match: (t) => AIR_RE.test(t),      run: (t, s) => airQuality(t, s) },
   { name: 'search',   live: (t) => SEARCH_ASK.test(t) || CURRENT_RE.test(t), match: (t) => SEARCH_RE.test(t) || CURRENT_RE.test(t), run: (t) => webSearch(t) },
   { name: 'page',     live: true, match: (t) => URL_RE.test(t),      run: (t) => readNamedUrl(t) },
+  { name: 'sun',      live: true, match: (t) => SUN_RE.test(t), run: (t) => sunForPlace(t) },
   { name: 'clock',    live: true, match: (t) => /\btime\b/i.test(t) && /\bin\b/i.test(t), run: (t) => worldClock(t) },
   // decide builds its ranges with gemma4:e4b on the hub CPU, 16-20 s. Inside the
   // deadline below it failed 919 times out of 919 (hub.log, Aug 7 to Nov 2), and

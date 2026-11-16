@@ -195,8 +195,8 @@ below 0.4, so it does not flicker between two.
 - **alone:** free.
 - **alone with media on:** ignores the TV.
 - **talking to PAN:** a conversation.
-- **talking to one person:** silent unless named.
-- **group:** silent unless named, never interrupts.
+- **talking to one person:** `on_call` (section 15), never interrupts.
+- **group:** `on_call` (section 15): helps when asked or when nobody else can, never interrupts.
 - **phone or video call:** silent.
 - **with someone in another language:** interpreter.
 - **someone asks about PAN or the recording:** answers honestly, offers to stop listening.
@@ -458,3 +458,240 @@ Steps 1 to 3 of INTUITION-STATE-ENGINE.md are done. Then:
    lines worse with more context. Measure on the voicebench first; retrain only if it says so.
 7. **API, MCP tool and panel; speaking up from state changes; the state bench** (engine steps 6
    to 8).
+
+# Version 3 (2026-11-13): am I part of this?
+
+The owner, 2026-11-13: PAN must not need its name to know it is being talked to. Its main job is to
+understand the conversation it is in and know whether it is part of it: am I in a situation where
+I should speak or not, do they need help, is there anyone else who can help, are they asking me or
+someone else. That has to be defined, with cultural and situational awareness, and it has to be
+part of the Intuition state. The name always works too, but it is the backup, not the main way.
+
+Section 4 so far answered "group: silent unless named". This section replaces that.
+
+## 15. Participation
+
+### 15.1 PAN's place in the talk (`participation`, one value at a time, in the world)
+
+| Place | What it means | How PAN speaks |
+|---|---|---|
+| `partner` | he is talking with PAN: alone with it, or PAN is one of the voices in a group talk | answers his lines; in a group, answers what is aimed at it |
+| `on_call` | people are talking among themselves and PAN is welcome but not in it: friends at dinner, a family at home | quiet, unless asked, or unless it can clearly help and nobody else is going to |
+| `observer` | PAN has no place in this talk: a meeting he runs, a phone call, someone else's private talk, a lecture, the TV | quiet; only the name or safety opens it |
+| `guardian` | something dangerous is happening (section 4 safety layer) | speaks whatever the place |
+
+The modes that already decide it (section 3.7) still do: interpreting speaks for the other
+person, dictation and muted stay quiet.
+
+The place is a fact like every other (section 2): it has sources, a confidence and a fade. It
+moves with the talk. A dinner is `on_call`; when he turns to PAN and asks something, it is
+`partner` for that exchange; when the others pick the talk back up, it fades back to `on_call`.
+
+### 15.2 What PAN weighs, line by line
+
+Each is a field with a source. "Have" means it runs today; "later" means it has to be built.
+
+**A. Who said it**
+- `speaker`: him, a known person, an unknown voice, the TV or radio, PAN's own voice coming back.
+  His voice: `voice-id.js` (have, observe mode; learns his voice by itself since 2026-11-13).
+  Other people told apart from each other: the interpreter's voice book (have, on the phone),
+  brought to the hub (later). TV and radio: later.
+- `distance`: close (him, on the mic) or across the room, from loudness (later).
+
+**B. Who it was said to**
+- PAN's name anywhere in the line, any language (`saysPanName`, have).
+- Another person's name: "Maria, can you pass..." is for Maria even if PAN knows the answer (later).
+- The shape of the line: a question, a request, "you" without a name (have, in the voice model).
+- It goes on from PAN's last line: a follow-up to what PAN said (`followUpOf`, have), in his
+  voice (have).
+- Turn order: it answers the person who just spoke, not PAN (have, in the voice model).
+- Which way he is facing: phone or earbud motion now, the Medallion's camera later (later).
+- How it was said: louder and slower toward the mic, softer and faster to the room (later).
+
+**C. The talk itself**
+- `kind`: him and PAN, a group talk, a meeting, a call (only his side heard), a lecture or TV,
+  interpreting, dictating (section 4; have in part).
+- `pan_last`: when PAN last spoke, and whether anyone took it up or talked over it (have in part).
+- `open_question`: a question was asked and nobody answered after a few seconds, the answers
+  disagree, or someone says "does anyone know" (later).
+- `stuck`: he is hunting for a word or a name ("what's it called", a long pause mid sentence)
+  (later; the phone's `unfinished` flag is a start).
+- `pan_knows`: whether PAN has something real to add here: the fact is in its memory or library,
+  or it was in the room for it (later).
+
+**D. Can someone else help**
+- How many people are here and who they are (3.3; voice prints, later).
+- Did someone already answer? An answer within about 2 seconds means the room has it.
+- Was it asked of one person by name? Then that person answers first.
+- Is the person who knows this in the room (his colleague on work, his mother on family)? (later)
+
+**E. Place and culture**
+- Setting: home, someone else's home, work, a restaurant, the street, the car, a formal event
+  (3.2, have).
+- Who might hear: with strangers present PAN never says his private things aloud.
+- How people talk here: in some places people talk over each other and a quick line is normal;
+  in others any interruption is rude. The language of the talk and the country (have) set PAN's
+  starting patience, and it learns from him (G).
+- Formality: a business meeting or a formal dinner raises the bar; friends at home lower it.
+
+**F. Him**
+- His standing wishes: "stay quiet at dinner", "always tell me if I get a fact wrong" (have:
+  standing instructions).
+- `interruptible` and mood (3.1, have).
+
+**G. What it learns**
+- He says "not now" or "shh", or talks over PAN: that kind of moment raises the bar.
+- He asks again after PAN stayed quiet, or turns to it with "well?": PAN missed one, the bar
+  goes down.
+- Kept per situation and per place, so it learns that the Tuesday team call is `observer` and
+  Sunday lunch is `on_call` with a low bar for facts.
+
+**H. What is at stake**
+- Speaking wrongly costs: talking over people, saying private things in front of others,
+  answering something meant for someone else.
+- Staying quiet wrongly costs: he waits for an answer that never comes, a wrong fact stands, he
+  misses something urgent.
+- Safety always speaks.
+
+### 15.3 The decision
+
+Firm rules first, in this order:
+1. Safety: speak (`guardian`).
+2. A mode decides: interpreting translates, dictating and muted stay quiet.
+3. His standing wishes ("quiet at dinner") hold.
+4. Said to someone else by name: quiet.
+5. PAN's name in the line: answer.
+
+Then the weighing, for everything else:
+- `partner`: the bar is low. His line after PAN spoke is for PAN unless it clearly goes to
+  someone else.
+- `on_call`: the bar is high. PAN speaks when it is asked without the name ("can you look that
+  up?", a question aimed at the device), or when an `open_question` stays unanswered for a few
+  seconds, PAN knows the answer well, and the place allows it. Then one short line, or an offer
+  ("I can check that"), never a lecture.
+- `observer`: only rules 1 and 5.
+
+When PAN is not sure, it uses the hold it already has (`hold_ms`): it gets the answer ready and
+says it only if the room goes quiet. A missed moment costs less than talking over people.
+
+### 15.4 How it is measured
+
+convbench's addressed test (`evals/convbench/addressed_bench.py`, 18 languages) is the score
+for this, not "would this person have spoken next". Live model on 2026-11-12, voice ID simulated:
+
+| Moment | Right |
+|---|---|
+| Quiet on room talk | 99% |
+| Quiet on others right after PAN answered him | 100% (50% without voice ID) |
+| Quiet on him talking to others right after PAN answered him | 52% |
+| Answers "PAN, ..." | 100% |
+| Answers his follow-up | 81% |
+
+The third row is the hard one now: his own voice, right after PAN spoke, turned to the others.
+The words alone do not tell it from a follow-up; moving the bar only trades one for the other
+(2026-11-12 replay). It needs B's facing and manner, and C's "did the others take it up".
+
+Kinds still to add to the test, each in every language: an open question nobody answers (PAN
+should help when `on_call`), a question to a named other person (quiet), him hunting for a word,
+TV lines, a phone call with one side heard, a private talk, a heated argument.
+
+### 15.5 Order of work
+
+1. **(done 2026-11-13)** His voice learned by itself, no name needed (`voice-id.js`). Observe mode
+   until his real turns show clean scores, then `voice_id_gate` = `on`.
+2. **(first part done 2026-11-13)** `intuition/participation.js`: the place for every turn
+   (partner, on_call, observer, interpreter) from PAN's last line, the other speakers in the
+   history and the mode, logged (`[participation]`) and returned with the turn (`participation`).
+   Plain rules, about 0.01 ms. Still to do: keep it in the world (`intuition/world.js`) with its
+   fade, and add the setting and the talk kind to it.
+3. **(done 2026-11-13)** Named-other detector: "Maria, ...", "hey Maria ...", "..., Maria?",
+   "Lan ơi, ...", "민수야, ...", "マリア、..." with the names taken from the people in the talk, in
+   any script. Such a line stays quiet before any model runs (`reason: 'named_other'`). Known
+   gaps: Thai has no comma after a name; a name at the start for someone not yet heard in the
+   talk is missed on purpose (speech-to-text capitalises every first word). A title counts as a
+   name ("Gracias, señor Martínez.", "Κύριε Υπουργέ, ..."): on all 630 bench lines it caught 40, none
+   meant for PAN (2026-11-13, Craft 19).
+4. `open_question` and "did anyone answer" from turn timing, and `pan_knows` from the shelf
+   (section 11): PAN helps when `on_call`.
+5. The other people's voices on the hub (the voice book), for the people count and who answered.
+6. **(first part done 2026-11-13)** Learning from "not now" and from repeated questions (G):
+   the turn book and the nightly learner, section 16.
+7. The new bench kinds (15.4), per language, before each step goes live.
+8. Later: facing and manner (phone and earbud motion, the Medallion), TV detection.
+
+## 16. The situational state program learns from his turns
+
+Written 2026-11-13. Built and live on the hub (Craft swap the same day); the rules it tunes are
+still in shadow.
+
+### 16.1 Why
+
+The rules in section 15 have numbers in them (how short is a short question, how long is a line
+for the room). The right numbers differ per person and per language, and a bench can only guess
+them. His own turns say what was right: if PAN stayed quiet and he asked again, it should have
+spoken; if PAN spoke and he said "not now", it should not have. So the program keeps every turn,
+labels it from what he did next, and retunes itself on a schedule. Local, plain arithmetic, no
+model, no cloud.
+
+### 16.2 The turn book (`intuition/turn-book.js`, table `situation_turns`)
+
+Every real voice turn (never a bench turn) is written after PAN answers: the line, the recent
+history, the language, what the program saw (place, ms since PAN last spoke, whose voice and the
+likeness, p_pan, named_other) and what PAN did (spoke or not, the reason, held, the first 300
+characters of the reply). The next turn labels the one before it:
+
+| Label | PAN did | Then he | Window |
+|---|---|---|---|
+| `missed` | stayed quiet | said it again (60% the same words) or called ("hello?", "PAN?") | 25 s |
+| `quiet_ok` | stayed quiet | went on with the talk | 25 s |
+| `intruded` | spoke | said "not now", "shh", "stop", "σώπα", "chut"... | 15 s |
+| `spoke_ok` | spoke | followed up on the answer | 45 s |
+
+A turn in someone else's voice never labels anything. Turns older than 180 days are dropped.
+
+### 16.3 The nightly learner (`intuition/situation-learn.js`, steward service `situation-learner`)
+
+Checks every hour, runs once a day. It:
+
+1. takes the labeled turns in time order, older 70% to tune on, newest 30% to check;
+2. tries the short question size (3 to 10 words) and the long line size (8 to 25 words, or off)
+   on the older turns;
+3. keeps the best setting (`situation_params`) only if it beats the current one on the newest
+   turns by 2 points, with at least 20 newest turns; otherwise nothing changes;
+4. writes every try, kept or not, to `situation_learn_runs`, with how PAN did as it was;
+5. writes all labeled turns to `<data dir>/situation-dataset/labeled.jsonl`.
+
+A pass takes about 5 ms on the hub. The rules it tunes (right after PAN answered, in a voice not
+known to be someone else's: short question = for PAN, long line = for the room) are scored in
+shadow either way. In the router they sit behind setting `situation_rules`: `off` (default),
+`bench` (bench turns only) or `on`. They earn their way in on his turns, not on a bench.
+Addressed bench, half the run, voice model alone vs program first: follow-ups 84% to 100%, his
+talk to others right after PAN 69% to 73% (sizes 6/15) or 83% (4/8), all kinds 93% to 95-97%.
+Full run (630 lines, 15 languages): all 91% to 95%, follow-ups 81% to 100%. Live through the
+router (`bench`): follow-ups 81% to 100%. His talk to others did not move (61% to 58%, the voice
+model's own run to run noise on the lines no rule touches), so a third rule went in: a bare
+acknowledgement ("yeah", "はいはい", "그렇지") right after PAN needs no answer unless PAN's last line
+was a question. Offline it fixed 4 to 8 more lines and broke none.
+
+### 16.4 The dataset
+
+`labeled.jsonl` is the same material the convbench rounds were built from, but real and his own:
+what was said, what was around it, what PAN did, and what he showed was right. It is the training
+and test set for the next voice model round on his conversations, and it grows every day.
+
+### 16.5 Per person first, everyone later
+
+Everything above is per person and stays on his hub. A voice print, a line he said, a reply, never
+leave it.
+
+The collective part is later and opt-in only. What could be shared is the shape of what was learned,
+never the words: for example "in Greek, a 7 word question right after PAN spoke was for PAN" with
+counts, or a setting and how much it helped. Many people's signals could set better starting
+numbers for a new user in their language. Whoever shares gets paid for it through the data dividend
+(project_data_staking). Not built.
+
+### 16.6 Next
+
+- Add more settings to the grid as more rules exist (open question timing, talk kind).
+- A page on the hub showing the book's counts and the learner's runs.
+- When the shadow score beats PAN as it was on 50+ newest turns, ask the owner to turn `situation_rules` on.

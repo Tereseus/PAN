@@ -46,6 +46,7 @@ function loadConfig() {
   return { hub: hub.replace(/\/$/, ''), host };
 }
 const { hub: HUB, host: HOST } = loadConfig();
+const WAITING_MIRROR = (() => { try { return JSON.parse(readFileSync(join(__dirname, '..', 'pan-client-config.json'), 'utf8')).waiting_mirror || ''; } catch { return ''; } })();
 
 async function api(method, path, body, timeoutMs = 15_000) {
   const r = await fetch(HUB + path, {
@@ -266,6 +267,67 @@ function threadStatus(sessionId) {
   return `It's idle, last active ${when}.` + (lastSaid ? ` Last it said: ${short(lastSaid)}` : '');
 }
 
+// ── Threads waiting on the owner (2026-11-13) ──────────────────────────────────────
+// The Status mod's "needs you" only knew WoE ATC rows, so a thread that simply ended its turn asking him something
+// ("Tell me which ones pass") never showed. Every report cycle this writes .state/waiting.json: idle threads whose
+// last reply asks him something, or that wait on a permission prompt. A mod cannot read multi GB transcripts; this can,
+// from the tail, once per turn.
+const WAITING = join(STATE_DIR, 'waiting.json');
+const ASK_RE = /\?|\b(tell me|let me know|want me to|should i|do you want|which (one|ones)|your call|ok them|approve|pick one|choose|confirm|say the word|say go|waiting (on|for) you)\b/i;
+const _waitCache = new Map();
+function lastReply(file) {
+  const { text } = readFrom(file, Math.max(0, statSync(file).size - 512 * 1024));
+  let said = '', ended = false;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type === 'assistant') {
+      const t = contentText(o.message?.content).trim();
+      if (t) said = t;
+      ended = false;
+    } else if (o.type === 'system' && (o.subtype === 'stop_hook_summary' || o.subtype === 'turn_duration')) {
+      ended = true;
+    } else if (o.type === 'user' && !isToolResult(o) && !o.isMeta) {
+      const t = contentText(o.message?.content).trim();
+      if (t && !t.startsWith('<')) { said = ''; ended = false; }
+    }
+  }
+  return { said, ended };
+}
+function waitingThreads() {
+  const now = Date.now(), out = [];
+  for (const f of metaIndex().values()) {
+    const m = readMeta(f);
+    if (!m || m.isArchived || !m.title || m.scheduledTaskId || RELAY_TITLE_RE.test(m.title)) continue;
+    const act = Number(m.lastActivityAt) || 0, edge = Number(m.lastTurnEdgeAt) || 0, user = Number(m.latestUserFrameAt) || 0;
+    if (now - act > 3 * 24 * 3600_000) continue;
+    if (m.interruptedAwaitingPerson) { out.push({ session_id: m.sessionId, title: m.title, since: act, ask: 'waiting on a permission prompt' }); continue; }
+    const working = now - act < 2 * 3600_000 && edge > 0 && (user === edge || act - edge > 5000);
+    if (working) continue;
+    let hit = _waitCache.get(m.sessionId);
+    if (!hit || hit.act !== act) {
+      const file = transcriptFor(m.sessionId);
+      let r = { said: '', ended: false };
+      try { if (file) r = lastReply(file); } catch {}
+      const tail = r.said.slice(-250); // only the closing lines: a "?" quoted further up is not a question to him
+      hit = { act, ask: r.ended && ASK_RE.test(tail) ? tail.replace(/\s+/g, ' ').trim().slice(-200) : '' };
+      _waitCache.set(m.sessionId, hit);
+    }
+    if (hit.ask) out.push({ session_id: m.sessionId, title: m.title, since: act, ask: hit.ask });
+  }
+  return out.sort((a, b) => b.since - a.since);
+}
+function writeWaiting() {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    const body = JSON.stringify({ host: HOST, at: Date.now(), threads: waitingThreads() });
+    writeFileSync(WAITING, body);
+    // Optional copy into a folder a local web server already serves, so the other PC can read it
+    // (config key waiting_mirror, a file path; kept in the local config so no personal path is in the code).
+    if (WAITING_MIRROR) { try { mkdirSync(dirname(WAITING_MIRROR), { recursive: true }); writeFileSync(WAITING_MIRROR, body); } catch {} }
+  } catch (e) { log(`waiting scan failed: ${e.message}`); }
+}
+
 async function checkReplies() {
   let jobs = [];
   try { jobs = (await api('GET', `/api/v1/threads/jobs?host=${encodeURIComponent(HOST)}&status=delivered`))?.jobs || []; } catch { return; }
@@ -318,6 +380,7 @@ async function waitLoop() {
     if (Date.now() - lastReport > 60_000) {
       try { await api('POST', '/api/v1/threads/report', { host: HOST, threads: listThreads() }); lastReport = Date.now(); }
       catch (e) { log(`report failed: ${e.message}`); }
+      writeWaiting();
     }
     let res = null;
     try { res = await api('GET', `/api/v1/threads/jobs/next?host=${encodeURIComponent(HOST)}&wait=25000`, null, 40_000); }
@@ -346,6 +409,7 @@ async function waitLoop() {
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 const [cmd, ...args] = process.argv.slice(2);
+if (cmd === 'waiting') { writeWaiting(); console.log(readFileSync(WAITING, 'utf8')); process.exit(0); }
 try {
   if (cmd === 'wait') await waitLoop();
   else if (cmd === 'ack') {
