@@ -24,14 +24,26 @@ to find out what works. Now the shape is known, so this is the pass that makes i
 
 ## The target
 
-Four tabs in a bottom bar, all drawn by the app itself. The web page stays, behind a developer switch.
+Three tabs in a bottom bar, all drawn by the app itself. The web page stays, behind a developer switch.
+
+The test for every item is what a person who bought PAN does with the app, not what helps build PAN.
+That person talks to it. They open the app to see that it is on, to read or type when they can't
+talk, to answer something PAN is waiting on, to look up what it remembers, and to control what it
+records. Devices are set up once and then left alone, so they live inside Settings and show up on
+Home only when one needs attention (a new one asking to join, one that went offline).
 
 | Tab | What is on it | Comes from |
 |---|---|---|
 | **Home** | Mic on or off, big. What PAN heard and what it said, as a conversation you can also type into. One line for the connection. A "Needs you" strip: things to allow or deny, open alerts, a new device asking to join, an update that is ready. | Main screen's status and mic cards; the unreachable Conversation screen; the phone page's approvals banner and Alerts tab |
-| **Memory** | Search what PAN remembers. Recent days. Photos. Delete a day or one item. | Phone page Library tab; desktop Data page (Memory, Photos, delete) |
-| **Devices** | This phone: what it captures (mic, camera, location, screen) with one switch each. Accessories. Other devices: online or not, rename, remove, approve a new one, add one with a code. | Main screen's Sensors section; Settings > Accessories; phone page Sensors and Devices tabs; desktop Devices widget |
-| **Settings** | Your name, PAN's voice and personality, privacy (incognito), pairing, updates, about. | See "Settings" below |
+| **Memory** | Not a log. What PAN remembers, the way a person would ask for it: a search box, recent days as short summaries, photos, and "What PAN knows about you" (your name, your favourites, facts you told it), each one editable. Delete one item or a whole day. | Phone page Library tab; desktop Data page (Memory, Photos, delete) |
+| **Settings** | Your name, PAN's voice and personality, privacy (incognito and what this phone captures: mic, camera, location, screen, one switch each), your devices (online or not, rename, remove, approve a new one, add one with a code, accessories), pairing, updates, about. | See "Settings" below; Main screen's Sensors section; phone page Sensors and Devices tabs; desktop Devices widget |
+
+**Favourites are not settings.** "Music App" and "Messaging App" were there so that "play music"
+opens the right app. Nothing ever read them. The same thing is one remembered fact: said once
+("use Spotify for music"), or learned the first time PAN has to ask, then kept, and shown under
+Memory > "What PAN knows about you" where it can be changed. The same goes for which device does
+what: PAN picks, you correct it by saying so, and Settings > Your devices has the manual choice for
+when it keeps picking wrong.
 
 **Developer switch** (Settings > About, off by default). Turns on: the web dashboard with all its tabs,
 the timing numbers on Home, the Tailscale backup section, Stop and Force Restart.
@@ -44,10 +56,10 @@ the timing numbers on Home, the Tailscale backup section, Stop and Force Restart
 |---|---|---|
 | Approvals (allow or deny what Claude wants to do) | PAN waits on these; today they show as a banner on the web page and as a notification | Home, "Needs you", plus the notification that already exists |
 | Alerts (acknowledge, dismiss) | The only way PAN tells you something is wrong | Home, "Needs you" |
-| A new device asking to join | Today only the desktop can approve it | Home, "Needs you", and Devices |
-| Capture and privacy switches | What PAN is allowed to record | Devices |
+| A new device asking to join | Today only the desktop can approve it | Home, "Needs you", and Settings > Your devices |
+| Capture and privacy switches | What PAN is allowed to record | Settings > Privacy |
 | Incognito | Privacy | Settings |
-| Devices list, rename, remove, add | Managing your own things | Devices |
+| Devices list, rename, remove, add | Managing your own things | Settings > Your devices |
 | Memory search, photos, delete | The product promise is "PAN remembers" and you can see and remove it | Memory |
 | Personality, your name | Small, personal, used | Settings |
 | One line of what PAN thinks is going on | Already on Main; keep it to one line | Home |
@@ -71,7 +83,7 @@ terminal colours.
 | Query Answers (Cloud / Local / Auto) | "Local" calls an empty stub, so every choice does the same thing. |
 | Local AI Model section: status pill, "AI Backend: Server (Cerebras)", Add Custom Model | The pill shows the raw word "server". The Cerebras line is false. The custom model is saved and never used. |
 | Gemini API Key | Nothing reads it, it is shown unmasked, and users never handle keys. |
-| Device Preference radios | A copy of the "Default Device" chip on Main, and picking a specific device does nothing. Keep one control, on the Devices tab, with only the choices that work. |
+| Device Preference radios | A copy of the "Default Device" chip on Main, and picking a specific device does nothing. Keep one control, under Settings > Your devices, with only the choices that work. |
 | Voice Quality picker | The app moves "Default" to Supertonic 3 by itself, so the choice does not stick, and one of the options is a voice that was rejected. One voice everywhere. Keep the picker for developers. |
 
 **Wire up or remove:** Sound Effects and Vibration. Sounds and vibration play no matter what the
@@ -83,8 +95,9 @@ Stop PAN Service and Force Restart.
 **Keep:** Device Name, connection status and pairing, "Mm-hm while you think", Accessories, Incognito,
 Personality, App Updates.
 
-**New order:** You (name) · Voice (personality, mm-hm, sounds, vibration) · Privacy (incognito) ·
-Connection (status, pair, forget) · Updates · About (version, developer switch).
+**New order:** You (name) · Voice (personality, mm-hm, sounds, vibration) · Privacy (incognito, what
+this phone captures) · Your devices (list, add, accessories, which one acts) · Connection (status,
+pair, forget) · Updates · About (version, developer switch).
 
 ## Main screen: what goes
 
@@ -93,7 +106,7 @@ Connection (status, pair, forget) · Updates · About (version, developer switch
 - "AI - Connected". Same flag as the line above it.
 - "Secure - Failed: <error text>". Say "Not connected, trying again" and keep the detail for developers.
 - Service chips ("name ✕"). Developer switch.
-- The "Default Device" chip. It moves to Devices.
+- The "Default Device" chip. It moves to Settings > Your devices.
 - The "PAN Dashboard" button. The tabs replace it.
 
 ## One look
@@ -144,7 +157,7 @@ sentence of why. This is the flow already in INSTALL-PLAN.md.
 |---|---|---|
 | 1 | Bugs 1 to 8. Hide the developer tabs on the phone page behind a switch (default: Chat, Alerts, Devices, Sensors, Library, Settings). | Only bug 1 |
 | 2 | Settings and Main cleanup: remove the dead items, the debug text and the word Tailscale; make Sound and Vibration work; one theme. | Yes |
-| 3 | Bottom bar with Home, Memory, Devices, Settings drawn by the app; "Needs you" on Home; the typed conversation screen brought back. | Yes |
+| 3 | Bottom bar with Home, Memory, Settings drawn by the app; "Needs you" on Home; the typed conversation screen brought back. | Yes |
 | 4 | First start flow. | Yes |
 | 5 | A signed release build in place of the debug build. Moving from the debug key to a release key means one reinstall and one new pairing per phone. | Yes |
 
