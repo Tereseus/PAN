@@ -81,6 +81,9 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 	if tcpipErr != nil {
 		return nil, nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
+	if err := setTCPOptions(dev.stack); err != nil { // PAN: see setTCPOptions
+		return nil, nil, err
+	}
 	dev.ep.AddNotify(dev)
 	tcpipErr = dev.stack.CreateNIC(1, dev.ep)
 	if tcpipErr != nil {
@@ -116,6 +119,42 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 
 	dev.events <- tun.EventUp
 	return dev, (*Net)(dev), nil
+}
+
+// PAN: setTCPOptions makes bulk transfers work. With gVisor's defaults an 85 MB download
+// from the hub crawled at a few KB/s on home Wi-Fi (Nov 15 2026), while Tailscale, which
+// runs the same gVisor, moved it in 15 s. The settings are Tailscale's
+// (tailscale.com/wgengine/netstack, Create and setTCPBufSizes):
+//
+//   - RACK loss detection off (tailscale/tailscale#9707). gVisor's RACK marks a segment
+//     lost when it shares its send time with the newest acknowledged one but comes after
+//     it, the opposite of RFC 8985's rule. Go's clock on Windows ticks coarsely, so the
+//     hub stamps whole bursts with one time, and RACK called segments lost that had
+//     arrived fine: about 600 needless recoveries in 20 s, the window cut to a few
+//     packets each time, with no SACK hole, drop or reordering anywhere on the path.
+//     Classic SACK recovery (RFC 6675) takes over.
+//   - Reno congestion control, named so a gVisor default change can't switch it.
+//     Tailscale avoids cubic for an overflow in its window arithmetic (google/gvisor#11632).
+//   - Buffers that may grow to 8 MB (receive) and 6 MB (send), so one connection can
+//     fill a fast path.
+func setTCPOptions(s *stack.Stack) error {
+	recovery := tcpip.TCPRecovery(0)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &recovery); err != nil {
+		return fmt.Errorf("could not turn off TCP RACK: %v", err)
+	}
+	reno := tcpip.CongestionControlOption("reno")
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &reno); err != nil {
+		return fmt.Errorf("could not set reno: %v", err)
+	}
+	rx := tcpip.TCPReceiveBufferSizeRangeOption{Min: tcp.MinBufferSize, Default: tcp.DefaultReceiveBufferSize, Max: 8 << 20}
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &rx); err != nil {
+		return fmt.Errorf("could not set the TCP receive buffer: %v", err)
+	}
+	tx := tcpip.TCPSendBufferSizeRangeOption{Min: tcp.MinBufferSize, Default: tcp.DefaultSendBufferSize, Max: 6 << 20}
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &tx); err != nil {
+		return fmt.Errorf("could not set the TCP send buffer: %v", err)
+	}
+	return nil
 }
 
 func (tun *netTun) Name() (string, error) {

@@ -31,6 +31,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -208,11 +209,16 @@ func runHub(args []string) error {
 	name := fs.String("name", "", "name shown on the phone when pairing")
 	openPort := fs.Bool("open-router-port", false, "ask the home router to forward the UDP port (UPnP, NAT-PMP or PCP); only after the person agreed in PAN Setup")
 	record := fs.Bool("address-record", true, "publish this computer's addresses, encrypted and signed, on Pkarr's relays so paired devices find it after an address change")
-	var extra multi
+	meet := fs.Bool("meet", true, "meet in the middle: learn this computer's outside address from public STUN servers and punch toward devices that are away, so they get in with no open port and no relay")
+	var extra, stunServers multi
 	fs.Var(&extra, "endpoint", "extra address devices can use (repeatable)")
+	fs.Var(&stunServers, "stun", "address-check (STUN) server host:port instead of the built in list (repeatable)")
 	fs.Parse(args)
 	if *data == "" {
 		return fmt.Errorf("--data is required")
+	}
+	if len(stunServers) > 0 {
+		link.STUNServers = stunServers
 	}
 	if *openPort && *bindAddr != "" {
 		return fmt.Errorf("--open-router-port needs the hub on all addresses (leave out --bind)")
@@ -295,7 +301,14 @@ func runHub(args []string) error {
 		if pm != nil {
 			public, _ = pm.External()
 		}
-		return orderEndpoints(interfaceAddrs(), uint16(listen), public, extra)
+		list := orderEndpoints(interfaceAddrs(), uint16(listen), public, extra)
+		if *meet {
+			list = withOutside(list, l.Outside())
+		}
+		return list
+	}
+	if *meet {
+		go meetInTheMiddle(h, l)
 	}
 
 	go func() {
@@ -318,6 +331,77 @@ func runHub(args []string) error {
 	log.Printf("hub up: key %s, udp %d, tunnel %s, admin %s, %d devices, reach me on %v",
 		pub, listen, st.HubIP, *admin, len(h.Devices()), h.Endpoints())
 	return h.Serve()
+}
+
+// withOutside adds the outside addresses the STUN servers saw to the hub's list, ahead of
+// its Tailscale addresses: a device away from home sends its handshakes there once the
+// hub has punched toward it (punch.go).
+func withOutside(list []string, o link.OutsideAddrs) []string {
+	var add []string
+	for _, a := range o.Strings() {
+		known := false
+		for _, e := range list {
+			known = known || e == a
+		}
+		if !known {
+			add = append(add, a)
+		}
+	}
+	if len(add) == 0 {
+		return list
+	}
+	at := len(list)
+	for i, e := range list {
+		if ap, err := netip.ParseAddrPort(e); err == nil && link.IsTailnet(ap.Addr()) {
+			at = i
+			break
+		}
+	}
+	out := append([]string{}, list[:at]...)
+	out = append(out, add...)
+	return append(out, list[at:]...)
+}
+
+// meetInTheMiddle is the hub's side of punch.go: ask the address-check servers every 20 s
+// (which also keeps the outside address alive), and every 2 s punch toward devices that
+// are away and look for the ones it lost.
+func meetInTheMiddle(h *link.Hub, l *link.Link) {
+	h.OnPunch = func(d link.Device, addrs []string) {
+		log.Printf("meeting %s (%s) at %s", d.Name, d.ID, strings.Join(addrs, ", "))
+	}
+	last := ""
+	probe := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := l.ProbeOutside(ctx)
+		cancel()
+		if err != nil && err.Error() != last {
+			last = err.Error()
+			log.Printf("address check: %v", err)
+		}
+	}
+	probe()
+	time.Sleep(2 * time.Second)
+	seen := ""
+	for i := 0; ; i++ {
+		if i%10 == 0 {
+			if i > 0 {
+				probe()
+			}
+			o := l.Outside()
+			if s := fmt.Sprintf("%v hard=%v", o.Strings(), o.Hard); o.Servers > 0 && s != seen {
+				seen = s
+				kind := "devices away from home can aim at it"
+				if o.Hard && !o.V6.IsValid() {
+					kind = "this network shows a different port to every destination and has no IPv6: devices away from home cannot get in directly"
+				} else if o.Hard {
+					kind = "IPv4 is the hard kind here, so devices away from home get in over IPv6 only"
+				}
+				log.Printf("outside address %v: %s", o.Strings(), kind)
+			}
+		}
+		h.PunchTick(context.Background())
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // publishAddresses keeps the hub's address record current: soon after the start (the
@@ -442,37 +526,6 @@ func runPair(args []string) error {
 	return nil
 }
 
-// findHub looks the hub up through its address record and saves new addresses into the
-// pairing. It reports whether it found any the device didn't have.
-func findHub(st *link.ClientState, statePath string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	addrs, seq, err := link.FindHub(ctx, st, nil, nil)
-	if err != nil {
-		log.Printf("address record: %v", err)
-		return false
-	}
-	known := map[string]bool{}
-	for _, e := range st.Endpoints {
-		known[e] = true
-	}
-	news := 0
-	for _, a := range addrs {
-		if !known[a] {
-			news++
-		}
-	}
-	st.RecordSeq = seq
-	if news > 0 {
-		st.Endpoints = addrs
-	}
-	if err := st.Save(statePath); err != nil {
-		log.Printf("saving the pairing: %v", err)
-	}
-	log.Printf("address record: %d addresses, %d new", len(addrs), news)
-	return news > 0
-}
-
 func runClient(args []string) error {
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
 	data := fs.String("data", "", "folder with client.json")
@@ -492,58 +545,93 @@ func runClient(args []string) error {
 	if err != nil {
 		return err
 	}
-	var lastLookup time.Time
+	// One link for as long as the program runs, as on the phone: its handshakes go to every
+	// known hub address, so it moves by itself when the network changes, and away from home
+	// it meets the hub in the middle (link.Meeter, punch.go).
+	l, err := link.Open(context.Background(), st, binds)
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+	errc := make(chan error, 1)
+	go func() { errc <- l.ServeLocalProxy(ln, st.HubIP) }()
+	var mu sync.Mutex // guards st
+	save := func() {
+		if err := st.Save(statePath); err != nil {
+			log.Printf("saving the pairing: %v", err)
+		}
+	}
+	m := &link.Meeter{Link: l, Log: func(s string) { log.Print(s) },
+		State: func() link.ClientState { mu.Lock(); defer mu.Unlock(); return *st }}
+	found := func(addrs []string, seq uint64, added int) {
+		mu.Lock()
+		st.RecordSeq = seq
+		if added > 0 {
+			st.Endpoints = addrs
+		}
+		save()
+		mu.Unlock()
+		if added > 0 {
+			log.Printf("address record: %d addresses, %d new", len(addrs), added)
+		}
+	}
+	log.Printf("link started; PAN is on http://%s as soon as the hub answers", ln.Addr())
+	state, words := "", ""
+	var lastInfo time.Time
+	wait := time.Second
 	for {
-		l, ep, err := link.Connect(context.Background(), st, binds)
-		if err != nil {
-			log.Printf("hub not reachable (%v)", err)
-			// The saved addresses failed: the hub's address record may have new ones.
-			if st.RecordKey != "" && time.Since(lastLookup) > 5*time.Minute {
-				lastLookup = time.Now()
-				if findHub(st, statePath) {
-					continue
-				}
-			}
-			log.Print("trying again in 15 s")
-			time.Sleep(15 * time.Second)
-			continue
-		}
-		log.Printf("connected to the hub via %s; PAN is on http://%s", ep, ln.Addr())
-		// Keep the address record's keys current (they change when the hub removes a device).
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if changed, err := link.FetchRecordInfo(ctx, l, st); err != nil {
-			log.Printf("address record keys: %v", err)
-		} else if changed {
-			if err := st.Save(statePath); err != nil {
-				log.Printf("saving the pairing: %v", err)
-			}
-		}
-		cancel()
-		errc := make(chan error, 1)
-		go func() { errc <- l.ServeLocalProxy(ln, st.HubIP) }()
-		// Keep checking; reconnect (other addresses too) if the hub stops answering.
-		for alive := true; alive; {
-			select {
-			case err := <-errc:
-				l.Close()
-				return err
-			case <-time.After(30 * time.Second):
-				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-				conn, err := l.Net.DialContext(ctx, "tcp", netip.AddrPortFrom(st.HubIP, link.TunnelPort).String())
-				cancel()
-				if err != nil {
-					log.Printf("lost the hub: %v", err)
-					alive = false
-					break
-				}
-				conn.Close()
-			}
-		}
-		ln.Close()
-		l.Close()
-		if ln, err = net.Listen("tcp", *listen); err != nil {
+		select {
+		case err := <-errc:
 			return err
+		case <-time.After(wait):
 		}
+		wait = 5 * time.Second
+		connected := false
+		if hs, err := l.LastHandshake(st.HubKey); err == nil && !hs.IsZero() && time.Since(hs) < 3*time.Minute {
+			connected = true
+		}
+		via, _ := l.PeerEndpoint(st.HubKey)
+		path := link.PathOf(via)
+		now := "not reaching the hub"
+		if connected {
+			now = fmt.Sprintf("connected to the hub via %s (%s)", via, path)
+		}
+		if now != state {
+			state = now
+			log.Print(now)
+		}
+		if connected {
+			words = ""
+		} else {
+			mu.Lock()
+			eps := append([]string(nil), st.Endpoints...)
+			mu.Unlock()
+			if w := link.AwayWords(false, path, l.Outside(), eps); w != words {
+				words = w
+				log.Print(w)
+			}
+		}
+		// Keep the address record's keys current (they change when the hub removes a device).
+		if connected && time.Since(lastInfo) > 6*time.Hour {
+			lastInfo = time.Now()
+			mu.Lock()
+			cp := *st
+			mu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			changed, err := link.FetchRecordInfo(ctx, l, &cp)
+			cancel()
+			if err != nil {
+				log.Printf("address record keys: %v", err)
+			} else if changed {
+				mu.Lock()
+				st.RecordKey, st.RecordSecret, st.RecordSeq = cp.RecordKey, cp.RecordSecret, cp.RecordSeq
+				save()
+				mu.Unlock()
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		m.Tick(ctx, connected, path, found)
+		time.AfterFunc(30*time.Second, cancel)
 	}
 }
 

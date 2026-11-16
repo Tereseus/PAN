@@ -6,6 +6,7 @@
 package link
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -41,6 +42,8 @@ type Config struct {
 	Peers      []Peer
 	Bind       conn.Bind // nil means real UDP sockets; tests pass an in-memory bind
 	Verbose    bool
+
+	stun *STUNBind // already inside Bind (startSpray); nil: Start wraps Bind in one
 }
 
 // Link is a running WireGuard device plus its private network stack.
@@ -49,6 +52,7 @@ type Link struct {
 	TunnelIP netip.Addr
 	dev      *device.Device
 	spray    *sprayBind // a device's link to its hub; nil on the hub
+	stun     *STUNBind  // the link's outside address (stun.go)
 }
 
 // GenerateKey makes a WireGuard key pair, both halves base64.
@@ -166,7 +170,12 @@ func Start(cfg Config) (*Link, error) {
 	}
 	bind := cfg.Bind
 	if bind == nil {
-		bind = conn.NewDefaultBind()
+		bind = NewDefaultBind()
+	}
+	stun := cfg.stun
+	if stun == nil {
+		stun = NewSTUNBind(bind, STUNServers)
+		bind = stun
 	}
 	bind = &quietBind{Bind: bind}
 	level := device.LogLevelError
@@ -193,8 +202,20 @@ func Start(cfg Config) (*Link, error) {
 		dev.Close()
 		return nil, err
 	}
-	return &Link{Net: tnet, TunnelIP: cfg.TunnelIP, dev: dev}, nil
+	return &Link{Net: tnet, TunnelIP: cfg.TunnelIP, dev: dev, stun: stun}, nil
 }
+
+// ProbeOutside asks the address-check servers what this link's socket looks like from
+// outside (stun.go). The answer is in Outside a moment later. About every 20 s keeps the
+// outside address alive.
+func (l *Link) ProbeOutside(ctx context.Context) error { return l.stun.Probe(ctx) }
+
+// Outside is the link's outside addresses as the servers last saw them.
+func (l *Link) Outside() OutsideAddrs { return l.stun.Outside() }
+
+// Punch sends a small packet toward each outside address of the other side, so that its
+// next packet from there gets in (stun.go, punchPacket).
+func (l *Link) Punch(addrs []string) int { return l.stun.Punch(addrs) }
 
 // SetPeers replaces the whole peer list. Every peer's session restarts, so prefer
 // AddPeer and RemovePeer for single changes.

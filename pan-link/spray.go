@@ -293,8 +293,9 @@ func startSpray(ctx context.Context, priv string, tunnelIP netip.Addr, hubKey st
 	if len(cands) == 0 {
 		return nil, nil, errors.New("no address to try")
 	}
-	sb := newSprayBind(defaultBinds(binds)(), cands)
-	l, err := Start(Config{PrivateKey: priv, TunnelIP: tunnelIP, Bind: sb,
+	stun := NewSTUNBind(defaultBinds(binds)(), STUNServers)
+	sb := newSprayBind(stun, cands)
+	l, err := Start(Config{PrivateKey: priv, TunnelIP: tunnelIP, Bind: sb, stun: stun,
 		Peers: []Peer{{PublicKey: hubKey, TunnelIP: hubIP, Endpoint: cands[0], KeepaliveSec: KeepaliveSec}}})
 	if err != nil {
 		return nil, nil, err

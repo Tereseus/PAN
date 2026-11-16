@@ -69,6 +69,13 @@ type Status struct {
 	IP        string
 	Org       string
 	Error     string
+	// State is Tailscale's backend state: NeedsLogin, NeedsMachineAuth (signed in, waiting for
+	// the tailnet admin to approve the device), Starting, Running.
+	State string
+	// AuthURL is the sign-in link while State is NeedsLogin. Start() only returned it if it
+	// showed up in its first 15 s; on a slow head unit (Nov 14) it came later and was only
+	// ever in logcat, so the app had nothing to show. Now the app can read it any time.
+	AuthURL string
 }
 
 // Start connects to the Tailscale network using the given parameters.
@@ -205,6 +212,8 @@ func GetStatus() *Status {
 	}
 
 	st.Connected = status.BackendState == "Running"
+	st.State = status.BackendState
+	st.AuthURL = status.AuthURL
 	st.Hostname = string(server.Hostname)
 	if status.CurrentTailnet != nil {
 		st.Org = status.CurrentTailnet.Name

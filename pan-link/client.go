@@ -46,7 +46,7 @@ func defaultBinds(f BindFactory) BindFactory {
 	if f != nil {
 		return f
 	}
-	return func() conn.Bind { return conn.NewDefaultBind() }
+	return func() conn.Bind { return NewDefaultBind() }
 }
 
 func tunnelClient(l *Link, timeout time.Duration) *http.Client {

@@ -49,6 +49,10 @@ type Hub struct {
 	Endpoints func() []string
 	// OnError hears about failures that happen after an answer was sent (optional).
 	OnError func(error)
+	// OnPunch hears when the hub starts punching toward a device's outside addresses
+	// (punch.go), for the log (optional).
+	OnPunch func(d Device, addrs []string)
+	punch   punchBook
 	// Relays and RelayClient are where PublishAddresses puts the address record
 	// (record.go). nil means DefaultRelays and a client with a 20 s limit.
 	Relays      []string
@@ -403,6 +407,27 @@ func (h *Hub) TunnelHandler() http.Handler {
 			writeJSON(w, 200, map[string]any{"ok": true, "paired": paired})
 		case r.URL.Path == "/.pan-link/record" && r.Method == http.MethodGet && paired:
 			writeJSON(w, 200, h.RecordInfo())
+		case r.URL.Path == "/.pan-link/outside" && r.Method == http.MethodPost && paired:
+			// The device's outside addresses, sent over whatever path is up (punch.go).
+			var body struct {
+				Addrs []string `json:"addrs"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&body); err != nil {
+				writeJSON(w, 400, map[string]string{"error": "bad request"})
+				return
+			}
+			n := h.NoteOutside(dev, body.Addrs)
+			if n > 0 && h.OnPunch != nil {
+				h.OnPunch(dev, cleanOutside(body.Addrs))
+			}
+			// The hub's own addresses go back with the answer: a device that has been on the
+			// backup route all along has never read the address record, and would send its
+			// handshakes to addresses the hub is no longer at while the hub opens the right one.
+			var hubAddrs []string
+			if h.Endpoints != nil {
+				hubAddrs = h.Endpoints()
+			}
+			writeJSON(w, 200, map[string]any{"ok": true, "punched": n, "hub": hubAddrs})
 		case r.URL.Path == "/.pan-link/finish" && r.Method == http.MethodPost && pending:
 			var body struct {
 				PublicKey string `json:"public_key"`
@@ -505,8 +530,11 @@ func (h *Hub) AdminHandler() http.Handler {
 	})
 	mux.HandleFunc("GET /admin/status", func(w http.ResponseWriter, r *http.Request) {
 		port, _ := h.link.ListenPort()
+		eps, o := h.Endpoints(), h.link.Outside()
 		writeJSON(w, 200, map[string]any{"hub_key": h.hubPub, "hub_ip": h.state.HubIP,
-			"listen_port": port, "endpoints": h.Endpoints(), "devices": len(h.Devices())})
+			"listen_port": port, "endpoints": eps, "devices": len(h.Devices()),
+			// Meeting in the middle (punch.go): what the STUN servers saw, and what it means.
+			"outside": o.Strings(), "hard": o.Hard, "reach": ReachWords(o, eps)})
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get(HeaderSecret)

@@ -22,8 +22,11 @@ type TailnetDialer func(v6 bool) (net.PacketConn, error)
 // system has no route to Tailscale addresses, only tsnet does, so without this a phone
 // whose only way to the hub is its in-app Tailscale can't use the link: home Wi-Fi that
 // keeps devices apart, or away from a home whose router lets nothing in.
+//
+// inner goes through link.AndroidSafe, which turns off UDP receive offload on its sockets:
+// wireguard-go mishandles it on Android and the phone lost every burst of packets.
 func TailnetBind(inner conn.Bind, dial TailnetDialer) conn.Bind {
-	return &tailnetBind{Bind: inner, dial: dial}
+	return &tailnetBind{Bind: link.AndroidSafe(inner), dial: dial}
 }
 
 type tailnetBind struct {
