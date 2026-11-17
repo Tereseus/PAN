@@ -34,19 +34,76 @@ Home only when one needs attention (a new one asking to join, one that went offl
 
 | Tab | What is on it | Comes from |
 |---|---|---|
-| **Home** | Mic on or off, big. What PAN heard and what it said, as a conversation you can also type into. One line for the connection. A "Needs you" strip: things to allow or deny, open alerts, a new device asking to join, an update that is ready. | Main screen's status and mic cards; the unreachable Conversation screen; the phone page's approvals banner and Alerts tab |
-| **Memory** | Not a log. What PAN remembers, the way a person would ask for it: a search box, recent days as short summaries, photos, and "What PAN knows about you" (your name, your favourites, facts you told it), each one editable. Delete one item or a whole day. | Phone page Library tab; desktop Data page (Memory, Photos, delete) |
-| **Settings** | Your name, PAN's voice and personality, privacy (incognito and what this phone captures: mic, camera, location, screen, one switch each), your devices (online or not, rename, remove, approve a new one, add one with a code, accessories), pairing, updates, about. | See "Settings" below; Main screen's Sensors section; phone page Sensors and Devices tabs; desktop Devices widget |
+| **Home** | Mic on or off, big. The talk: what PAN heard, who said it, what it answered, and any photo it took. A box at the bottom that fills with your words as you speak, so you see the line before it goes (see "Home: the line you can see"). One line for the connection and one for what PAN thinks is going on. A "Needs you" strip: things to allow or deny, open alerts, a new device asking to join, an update that is ready. | Main screen's status and mic cards; the unreachable Conversation screen; the phone page's approvals banner and Alerts tab |
+| **Memory** | Everything PAN has kept, found the way a person asks for it: one search box you can type or talk into (a word, a name, a date), a calendar to open any day, photos. Delete one thing, everything a search found, or a whole day. Behind the phone's fingerprint or face check. "Keep and erase": how long things are kept, and erasing on a schedule. See "Memory" below. | Phone page Library tab; desktop Data page (Memory, Photos, delete) |
+| **Settings** | Your name, PAN's voice and personality, privacy (incognito and what this phone captures: mic, camera, location, screen, one switch each), your devices (online or not, rename, remove, approve a new one, add one with a code, accessories), pairing, updates, data dividend, about. | See "Settings" below; Main screen's Sensors section; phone page Sensors and Devices tabs; desktop Devices widget |
 
 **Favourites are not settings.** "Music App" and "Messaging App" were there so that "play music"
 opens the right app. Nothing ever read them. The same thing is one remembered fact: said once
-("use Spotify for music"), or learned the first time PAN has to ask, then kept, and shown under
-Memory > "What PAN knows about you" where it can be changed. The same goes for which device does
+("use Spotify for music"), or learned the first time PAN has to ask, then kept like anything else
+he tells it. It is found in Memory by searching for it and changed by saying so. It is not a fixed
+list on a screen (the first mockup had one, and it read as a page of settings). The same goes for which device does
 what: PAN picks, you correct it by saying so, and Settings > Your devices has the manual choice for
 when it keeps picking wrong.
 
 **Developer switch** (Settings > About, off by default). Turns on: the web dashboard with all its tabs,
 the timing numbers on Home, the Tailscale backup section, Stop and Force Restart.
+
+## Home: the line you can see
+
+From the owner's notes on the first mockup (2026-11-17). The box at the bottom is not a "type here"
+box. It is where his line shows up while he is saying it.
+
+- **Words appear in the box as he speaks.** The app already hears them on the phone; today they are
+  only shown after the reply.
+- **The line goes when he stops, as it does now.** No waiting on a button: that would slow every turn.
+- **"No, wait, I meant ..." replaces it.** The hub already drops an older line when a newer one
+  arrives, so a correction said right away takes the place of the first one. The box shows the swap.
+- **Tap the box to fix a word or to type instead.** Then it waits for Send.
+- **Who said it.** Each line in the talk carries a name: him, PAN, or "someone else". The hub already
+  tells voices apart.
+- **What PAN thinks is going on,** one plain line under the connection line ("In the car, driving").
+  Tap it for the rest: who is here, where, what it is doing. The full read-out stays for developers.
+- **Photos in the talk.** When PAN looks through a camera (phone or pendant), the picture shows as a
+  small image in the talk, next to the answer about it.
+
+## Memory
+
+- **One search box, typed or spoken:** a word, a name or a date ("last Tuesday"). Results say who
+  said it and when. "Delete all of these" removes what the search found.
+- **Calendar:** open any day and see what was kept. Delete the day.
+- **Lock:** opening Memory asks for the phone's own fingerprint or face check. Deleting asks again.
+  On by default; can be turned off in Settings > Privacy.
+- **Keep and erase:** how long things are kept (always, a year, 90 days, 30 days, 7 days). "Erase
+  the last 7 days." Erasing can be set for a time ("today at 2 pm"); PAN says so beforehand and it
+  can be stopped until then.
+- **All of it by voice.** "Delete everything about X", "what did I say on Friday", "erase today":
+  the screen shows the same thing the voice did. Anything that deletes is confirmed on the phone.
+- **The same page on the computer,** in the dashboard.
+- What the hub can do today: delete one item, a list, a day, a photo, or everything. Not built:
+  delete by word, keeping time, timed erase, the lock.
+
+## Every feature and where it shows
+
+| Feature that exists | Where a buyer meets it |
+|---|---|
+| Talking to PAN, typing to PAN | Home |
+| Who is talking (voice ID) | Home, a name on each line; Memory results |
+| What PAN thinks is going on (Intuition) | Home, one line, more on tap |
+| Camera and pendant photos | Home, in the talk; Memory > photos |
+| Allow or deny, alerts, a new device, an update | Home, "Needs you" |
+| Interpreter | Home: a bar "Interpreting, Greek and English" with Stop |
+| Claude threads by voice | Home, as lines in the talk with the thread's name; the chat page stays behind the developer switch |
+| Music, directions | Voice; the result is a line in the talk |
+| Mute | Home, the mic button; by voice once the app can be told to mute |
+| Incognito | Settings > Privacy; a badge on Home while it is on |
+| Car and hands-busy mode | Automatic; Settings > Voice |
+| Places where PAN does not record (zones) | Settings > Privacy |
+| Devices, accessories, pairing | Settings > Your devices, Connection |
+| Search, delete, keeping time | Memory |
+| Data dividend | Settings. Not built; off until he turns it on |
+| Updates | Settings; "Needs you" when one is ready |
+| Usage, models, services, tasks, projects, tests | Developer switch |
 
 ## What to take from the dashboard pages
 
@@ -96,8 +153,9 @@ Stop PAN Service and Force Restart.
 Personality, App Updates.
 
 **New order:** You (name) · Voice (personality, mm-hm, sounds, vibration) · Privacy (incognito, what
-this phone captures) · Your devices (list, add, accessories, which one acts) · Connection (status,
-pair, forget) · Updates · About (version, developer switch).
+this phone captures, places where PAN does not record, the Memory lock) · Your devices (list, add,
+accessories, which one acts) · Connection (status, pair, forget) · Updates · Data dividend ·
+About (version, developer switch).
 
 ## Main screen: what goes
 
@@ -189,3 +247,7 @@ Every app build is tried on the test tablet first and goes out over the air like
    with only the voices that are good.
 3. **Colours.** This plan keeps today's dark look and makes it consistent. The other way is to take
    the colours from the website.
+4. **The Memory lock.** This plan asks for fingerprint or face every time Memory opens. The other
+   way is only when something is deleted.
+5. **Who said it, for buyers.** This plan shows a name on every line. The other way is to show it
+   only when more than one person is talking.
