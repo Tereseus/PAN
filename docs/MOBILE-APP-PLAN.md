@@ -72,7 +72,7 @@ box. It is where his line shows up while he is saying it.
 - **One search box, typed or spoken:** a word, a name or a date ("last Tuesday"). Results say who
   said it and when. "Delete all of these" removes what the search found.
 - **Calendar:** open any day and see what was kept. Delete the day.
-- **Lock:** opening Memory asks for the phone's own fingerprint or face check. Deleting asks again.
+- **Lock:** opening Memory asks for the fingerprint. Deleting asks again.
   On by default; can be turned off in Settings > Privacy.
 - **Keep and erase:** how long things are kept (always, a year, 90 days, 30 days, 7 days). "Erase
   the last 7 days." Erasing can be set for a time ("today at 2 pm"); PAN says so beforehand and it
@@ -89,9 +89,8 @@ From the owner (2026-11-17): nobody who picks up the phone should get into Memor
 be an emergency way to shut everything.
 
 The rule: **anyone can lock, only the owner can unlock.** Locking is always the safe direction, so
-it needs no proof. Unlocking after a lockdown needs the phone's PIN or password, not a fingerprint or
-face: a finger or a face can be put to the phone by someone else, and Android's own Lockdown works
-the same way. Opening Memory on a normal day stays fingerprint or face.
+it needs no proof. Unlocking is always the fingerprint, after a lockdown too (owner, 2026-11-17:
+"always do fingerprint", no PIN).
 
 - **By voice:** "PAN, lock down" (the words can be changed). **By hand:** a lock button on Home and
   in the notification.
