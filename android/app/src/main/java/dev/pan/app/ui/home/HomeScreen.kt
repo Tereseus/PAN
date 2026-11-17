@@ -306,6 +306,12 @@ private fun TalkLine(line: ConversationEntity) {
                 line.photo?.let { path -> TalkPhoto(path) }
                 Text(line.text, style = MaterialTheme.typography.bodyLarge,
                     color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                // A line in another script: how to say it, in Latin letters, right under it.
+                detail?.optString("romaji")?.takeIf { it.isNotBlank() }?.let { romaji ->
+                    Text(romaji, style = MaterialTheme.typography.bodyMedium, fontStyle = FontStyle.Italic,
+                        modifier = Modifier.padding(top = 3.dp),
+                        color = if (mine) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
         // PAN's lines also say how long he waited for the first word.
@@ -314,6 +320,19 @@ private fun TalkLine(line: ConversationEntity) {
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
         if (open && detail != null) {
             Column(modifier = Modifier.widthIn(max = 320.dp).padding(horizontal = 6.dp).padding(bottom = 4.dp)) {
+                // Word by word: how each one sounds, how it is written, what it means.
+                val words = remember(line.detail) { wordByWord(detail) }
+                words.forEach { (sound, written, meaning) ->
+                    Row(modifier = Modifier.padding(vertical = 1.dp)) {
+                        Text(sound, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.width(96.dp))
+                        Text(written, style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.width(72.dp))
+                        Text(meaning, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    }
+                }
+                if (words.isNotEmpty()) Spacer(Modifier.height(4.dp))
                 replyBreakdown(detail).forEach {
                     Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -323,6 +342,18 @@ private fun TalkLine(line: ConversationEntity) {
 }
 
 private fun secs(ms: Long): String = String.format(java.util.Locale.US, "%.1f s", ms / 1000.0)
+
+/** The words of a line in another script: (how it sounds, how it is written, what it means). */
+private fun wordByWord(d: org.json.JSONObject?): List<Triple<String, String, String>> {
+    val words = d?.optJSONArray("words") ?: return emptyList()
+    return (0 until words.length()).mapNotNull { i ->
+        val w = words.optJSONObject(i) ?: return@mapNotNull null
+        // A verb also says which word it is a form of: "to do (する, polite)".
+        val from = listOf(w.optString("b"), w.optString("f")).filter { it.isNotBlank() }.joinToString(", ")
+        val meaning = w.optString("m") + if (from.isNotBlank()) (if (w.optString("m").isBlank()) from else " ($from)") else ""
+        Triple(w.optString("r"), w.optString("s"), meaning)
+    }
+}
 
 /** A tapped reply, in plain lines: how long, where the time went, who answered, what PAN thought was going on. */
 private fun replyBreakdown(d: org.json.JSONObject): List<String> {

@@ -1686,6 +1686,24 @@ router.post('/voice/warm', async (req, res) => {
   } catch (e) { console.warn('[/voice/warm]', e?.message); }
 });
 
+// POST /api/v1/reading — how a line in another script is said, in Latin letters, word by word
+// with a short meaning for each (reading.js). The phone asks after it has spoken an interpreted
+// line, so nothing waits on this. { text, lang } -> { ok, romaji, words } or { ok: false } for a
+// language there is no reader for yet.
+router.post('/reading', async (req, res) => {
+  try {
+    const text = String(req.body?.text || '').slice(0, 600);
+    const lang = String(req.body?.lang || '').toLowerCase().slice(0, 5);
+    if (!text.trim()) return res.json({ ok: false });
+    const { readLine } = await import('../reading.js');
+    const r = await readLine(text, lang);
+    res.json(r ? { ok: true, lang, ...r } : { ok: false });
+  } catch (e) {
+    console.warn('[/reading]', e?.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // POST /api/v1/query/stream — SSE streaming voice query
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"

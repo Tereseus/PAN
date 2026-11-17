@@ -178,6 +178,26 @@ class PanServerClient @Inject constructor(
         }
     }
 
+    /**
+     * How a line in another script is said: Latin letters for the whole line and, word by word, the
+     * reading and a short meaning. The hub works it out (reading.js); null when it has no reader
+     * for the language or cannot be reached.
+     */
+    suspend fun reading(text: String, lang: String): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply { put("text", text); put("lang", lang) }
+                .toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/reading").post(body).build()
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                JSONObject(response.body?.string() ?: "{}").takeIf { it.optBoolean("ok") }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Reading failed: ${e.message}")
+            null
+        }
+    }
+
     suspend fun recall(text: String): String? {
         return try {
             val response = api.recall(QueryRequest(text))

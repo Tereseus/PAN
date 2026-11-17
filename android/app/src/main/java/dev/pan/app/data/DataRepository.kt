@@ -56,15 +56,18 @@ class DataRepository @Inject constructor(
     }
 
     // Conversations
-    suspend fun addUserMessage(text: String) {
-        if (TestAudio.active) return
-        conversationDao.insert(ConversationEntity(role = "user", text = text))
+    /** Both return the new row's id, or -1 when nothing was stored. */
+    suspend fun addUserMessage(text: String): Long {
+        if (TestAudio.active) return -1
+        return conversationDao.insert(ConversationEntity(role = "user", text = text))
     }
 
-    suspend fun addPanResponse(text: String, photo: String? = null, ms: Long? = null, detail: String? = null) {
-        if (TestAudio.active) return
-        conversationDao.insert(ConversationEntity(role = "pan", text = text, photo = photo, ms = ms, detail = detail))
+    suspend fun addPanResponse(text: String, photo: String? = null, ms: Long? = null, detail: String? = null): Long {
+        if (TestAudio.active) return -1
+        return conversationDao.insert(ConversationEntity(role = "pan", text = text, photo = photo, ms = ms, detail = detail))
     }
+
+    suspend fun setLineDetail(id: Long, detail: String) = conversationDao.setDetail(id, detail)
 
     suspend fun correctUserLine(rough: String, better: String) {
         if (rough != better && better.isNotBlank()) conversationDao.correctUserLine(rough, better)
@@ -76,7 +79,7 @@ class DataRepository @Inject constructor(
     }
 
     /** A small line on Home that nobody said: why PAN stayed out of the line above it. */
-    suspend fun addNote(text: String) = conversationDao.insert(ConversationEntity(role = "note", text = text))
+    suspend fun addNote(text: String) { conversationDao.insert(ConversationEntity(role = "note", text = text)) }
 
     suspend fun forgetTalkContaining(word: String) = conversationDao.deleteContaining(word)
     suspend fun forgetTalkBetween(from: Long, to: Long) = conversationDao.deleteBetween(from, to)

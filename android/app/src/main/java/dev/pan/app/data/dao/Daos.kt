@@ -25,7 +25,11 @@ interface PendingUploadDao {
 @Dao
 interface ConversationDao {
     @Insert
-    suspend fun insert(message: ConversationEntity)
+    suspend fun insert(message: ConversationEntity): Long
+
+    // Something learned about a line after it was stored (how it is read aloud, word by word).
+    @Query("UPDATE conversations SET detail = :detail WHERE id = :id")
+    suspend fun setDetail(id: Long, detail: String)
 
     @Query("SELECT * FROM conversations ORDER BY timestamp DESC LIMIT 100")
     fun getRecent(): Flow<List<ConversationEntity>>

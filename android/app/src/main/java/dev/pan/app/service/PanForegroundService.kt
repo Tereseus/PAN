@@ -1373,8 +1373,37 @@ class PanForegroundService : Service() {
             }.toString()
         }.getOrNull()
         serviceScope.launch {
-            dataRepository.addUserMessage(line.heard)
-            dataRepository.addPanResponse(line.say, ms = waited, detail = detail)
+            attachReading(dataRepository.addUserMessage(line.heard), line.heard, null)
+            attachReading(dataRepository.addPanResponse(line.say, ms = waited, detail = detail), line.say, detail)
+        }
+    }
+
+    /**
+     * A stored line in Japanese gets its reading afterwards: the line in Latin letters and each
+     * word with what it means, so he can sound it out and learn it. The hub works it out; the line
+     * is already on screen and spoken, so nothing waits on this.
+     */
+    private fun attachReading(id: Long, text: String, detail: String?) {
+        if (id <= 0 || text.none { it in '\u3041'..'\u30FF' }) return   // no kana: not Japanese
+        serviceScope.launch(Dispatchers.IO) {
+            val r = serverClient.reading(text, "ja") ?: return@launch
+            val d = runCatching { org.json.JSONObject(detail ?: "{}") }.getOrElse { org.json.JSONObject() }
+            d.put("romaji", r.optString("romaji"))
+            val words = org.json.JSONArray()
+            r.optJSONArray("words")?.let { all ->
+                for (i in 0 until all.length()) {
+                    val w = all.optJSONObject(i) ?: continue
+                    if (w.optString("pos") == "punct") continue
+                    words.put(org.json.JSONObject().apply {
+                        put("s", w.optString("surface")); put("r", w.optString("romaji"))
+                        w.optString("meaning").takeIf { it.isNotBlank() }?.let { put("m", it) }
+                        w.optString("base").takeIf { it.isNotBlank() }?.let { put("b", it) }
+                        w.optString("form").takeIf { it.isNotBlank() }?.let { put("f", it) }
+                    })
+                }
+            }
+            d.put("words", words)
+            dataRepository.setLineDetail(id, d.toString())
         }
     }
 
@@ -1563,7 +1592,7 @@ class PanForegroundService : Service() {
         // Always save transcript and user message for conversation screen
         persistHistoryTurn("user", text)
         serviceScope.launch {
-            dataRepository.addUserMessage(text)
+            attachReading(dataRepository.addUserMessage(text), text, null)
             dataRepository.queueAudioUpload(
                 AudioUpload(
                     transcript = text,
@@ -2110,7 +2139,7 @@ class PanForegroundService : Service() {
                                 intuitionSummary?.let { put("read", it) }
                             }.toString()
                         }.getOrNull()
-                        dataRepository.addPanResponse(responseText, ms = firstWordMs, detail = detail)
+                        attachReading(dataRepository.addPanResponse(responseText, ms = firstWordMs, detail = detail), responseText, detail)
                         // Surface to native PanThinkingCard — shows the reply text +
                         // ↳ X.Xs response-time badge, beside what the hub heard.
                         lastQueryText.value = heardText
