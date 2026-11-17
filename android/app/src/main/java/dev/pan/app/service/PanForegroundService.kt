@@ -1653,38 +1653,10 @@ class PanForegroundService : Service() {
             return
         }
 
-        // Location queries need sensor data — always route to server
-        if (lowerStripped.contains("where am i") || lowerStripped.contains("my location") ||
-            lowerStripped.contains("my gps") || lowerStripped.contains("my coordinates") ||
-            lowerStripped.contains("what city") || lowerStripped.contains("what address")) {
-            val gps = if (sensorContext.gpsEnabled) sensorContext.gps else null
-            val addr = if (sensorContext.gpsEnabled) sensorContext.address else null
-            panLog("Location query → server (GPS=${gps != null} addr=$addr gpsEnabled=${sensorContext.gpsEnabled})")
-            serviceScope.launch {
-                try {
-                    // Append sensor data directly to the query text so Claude sees it
-                    var queryWithSensors = stripped
-                    if (gps != null) {
-                        queryWithSensors += "\n[SENSOR DATA: GPS lat=${gps.lat}, lng=${gps.lng}"
-                        if (gps.altitude != null) queryWithSensors += ", alt=${gps.altitude}m"
-                        if (gps.speed != null) queryWithSensors += ", speed=${gps.speed}m/s"
-                        if (addr != null) queryWithSensors += ", address=$addr"
-                        queryWithSensors += "]"
-                    }
-                    val response = serverClient.askPanWithContext(queryWithSensors, "query", getHistoryContext())
-                    if (response != null) {
-                        mainHandler.post { panSpeak(response.response_text) }
-                        addToHistory("User", text)
-                        addToHistory("PAN", response.response_text)
-                    } else {
-                        mainHandler.post { panSpeak("I couldn't get your location right now.") }
-                    }
-                } catch (e: Exception) {
-                    mainHandler.post { panSpeak("Location lookup failed: ${e.message}") }
-                }
-            }
-            return
-        }
+        // "Where am I" used to be caught here by its words and sent down the old one-shot route with
+        // the GPS pasted into the text. That route could not read the hub model's plain answer, so in
+        // the car it said "PAN is having trouble thinking" three times (2026-11-17). It goes the
+        // normal way now: every turn already carries the sensors, and the hub knows where he is.
 
         // Hardware-only instant commands (no LLM needed, zero latency)
         val instantResponse = handleInstantHardware(stripped)

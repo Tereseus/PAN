@@ -129,6 +129,7 @@ from the 0.4 builds.
 - **0.5.4** (code 133): an empty reply is not kept as a blank line.
 - **0.5.5** (code 134): the unused voices, espeak, Vosk and Google's on-phone AI are out; a line ΠAN
   stays out of gets a small "Not for ΠAN" note with the reason.
+- **0.5.6** (code 135): "where am I" goes down the normal route (the old one answered "trouble thinking").
 
 ## Every feature and where it shows
 
