@@ -2902,6 +2902,14 @@ export async function* routeStream(text, context = {}) {
   let claudeQuiet = false;
   if (context.source !== 'dashboard' && !isTestTurn(context) && !interpreting) {
     const dictation = dictatingToClaude();
+    // The dictation hotkey is recording right now (or stopped seconds ago): he is talking to his
+    // computer. Not PAN's line, whatever the voice model would make of it, and even mid-exchange.
+    if (dictation?.live && !saysPanName(text)) {
+      console.log(`[routeStream] dictation hotkey is on, not for PAN: ${JSON.stringify(String(text).slice(0, 60))}`);
+      yield { type: 'chunk', text: '' };
+      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.02, to_claude: true, importance: 0.1 }) };
+      return;
+    }
     const [qModel, qBackup] = studentModels();
     if (dictation && !saysPanName(text) && !panSpokeWithin(45_000, context.org_id) && studentChain(qModel, qBackup)[0]?.startsWith('reader:')) {
       claudeQuiet = true;

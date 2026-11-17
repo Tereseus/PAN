@@ -347,6 +347,9 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
     ) {
         val shape = RoundedCornerShape(26.dp)
         val hearing = live.isNotBlank() && !typing
+        // The phone's quick first guess comes in capitals. Shown as a sentence; the line in the talk
+        // above is replaced by what the hub heard once it has listened to the sound.
+        val liveWords = live.lowercase().replaceFirstChar { it.uppercase() }
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -359,7 +362,7 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
                     shape
                 )
                 .clickable(enabled = !typing) {
-                    typed = live
+                    typed = liveWords
                     typing = true
                 }
                 .padding(horizontal = 18.dp, vertical = 10.dp),
@@ -394,7 +397,7 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
             } else {
                 Text(
                     when {
-                        hearing -> live
+                        hearing -> liveWords
                         micOn -> "Listening. Your words show here as you talk"
                         else -> "Muted. Tap here to type"
                     },

@@ -1412,6 +1412,11 @@ class PanForegroundService : Service() {
     private class PendingTurn(val text: String, val audio: ShortArray?, val at: Long, val seq: Int)
     private var pendingTurn: PendingTurn? = null
     private val CARRY_ON_MS = 5000L
+    // While the answer to the last turn is still on its way, or has arrived and is waiting for him to
+    // stop talking, his next words belong to that turn for this long. Without it a remark made 8 s
+    // after a question threw the question away: the answer was waiting for him to finish, the remark
+    // went out as a new turn and PAN answered only the remark (owner, 2026-11-17).
+    private val CARRY_ON_OPEN_MS = 20_000L
     // 30 s of 16 kHz audio; past that the hub hears the phone's words instead.
     private val CARRY_AUDIO_MAX = 30 * 16000
 
@@ -1510,7 +1515,9 @@ class PanForegroundService : Service() {
         // to the hub as three turns (voicebench, 2026-11-02). The words and the audio go
         // together, and the reply to the first part is cancelled below as superseded.
         val prev = pendingTurn
-        if (prev != null && prev.seq == replySeq.get() && now - prev.at < CARRY_ON_MS) {
+        val unanswered = prev != null && now - prev.at < CARRY_ON_OPEN_MS &&
+            (inFlightQuery?.isActive == true || replyWaiting.isNotEmpty())
+        if (prev != null && prev.seq == replySeq.get() && (now - prev.at < CARRY_ON_MS || unanswered)) {
             text = "${prev.text} $text"
             lower = text.lowercase().trim()
             val a = turnAudio
@@ -1518,6 +1525,9 @@ class PanForegroundService : Service() {
             // Its line is the last one: nothing was said back to it.
             if (conversationHistory.lastOrNull()?.first == "User") conversationHistory.removeAt(conversationHistory.size - 1)
             VoiceEvents.emit("carry_on", "text" to text, "audio" to (turnAudio != null))
+            // On Home the first piece is not a line of its own any more: the joined line replaces it.
+            val firstPiece = prev.text
+            serviceScope.launch { runCatching { dataRepository.dropUserLine(firstPiece) } }
         }
         pendingTurn = null
 

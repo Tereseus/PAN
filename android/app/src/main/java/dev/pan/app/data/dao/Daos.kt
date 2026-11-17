@@ -37,6 +37,9 @@ interface ConversationDao {
     @Query("UPDATE conversations SET text = :better WHERE id = (SELECT id FROM conversations WHERE role = 'user' AND text = :rough ORDER BY id DESC LIMIT 1)")
     suspend fun correctUserLine(rough: String, better: String)
 
+    @Query("DELETE FROM conversations WHERE id = (SELECT id FROM conversations WHERE role = 'user' AND text = :text ORDER BY id DESC LIMIT 1)")
+    suspend fun dropUserLine(text: String)
+
     // Forgetting in Memory also takes the phone's own copy of the talk.
     @Query("DELETE FROM conversations WHERE text LIKE '%' || :word || '%'")
     suspend fun deleteContaining(word: String)

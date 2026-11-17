@@ -124,6 +124,8 @@ from the 0.4 builds.
   listed at the end of its entry in docs/FEATURES.md.
 - **0.5.2** (code 131): the name written ΠAN, the Mm-hm switch out, Home follows the talk and shows
   the hub's words, the drop-down notification redone.
+- **0.5.3** (code 132): words said before ΠAN answers join the turn in place of cancelling it; the
+  live box reads as a sentence.
 
 ## Every feature and where it shows
 

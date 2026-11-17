@@ -59,7 +59,7 @@ import { currentUserId as needsCurrentUser } from './intuition/nourishment.js';
 import { recentInterjections, recordFeedback } from './intuition/action.js';
 import { startScreenWatcher, startBurst, resetBackoff, getScreenWatcherStatus } from './screen-watcher.js';
 import { startWebcamWatcher, getWebcamStatus, getWebcamContext } from './webcam-watcher.js';
-import { startConvStateWatcher, noteUtterance as noteConvUtterance, getConversationState, getConvStateStatus, getConversationBuffer } from './conv-state-watcher.js';
+import { startConvStateWatcher, noteUtterance as noteConvUtterance, getConversationState, getConvStateStatus, getConversationBuffer, noteDictation } from './conv-state-watcher.js';
 import { startWatchdog, notifyDashboardLoaded } from './dashboard-watchdog.js';
 import guardianRouter from './routes/guardian.js';
 import { guardianMiddleware } from './guardian.js';
@@ -2960,6 +2960,13 @@ async function getTTS() {
 }
 
 // List voice profiles
+// The dictation hotkey on his computer says when it starts and stops recording, so PAN does not
+// answer what he is telling another program (conv-state-watcher.js, noteDictation).
+app.post('/api/v1/voice/dictating', (req, res) => {
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
+  res.json({ ok: true, ...noteDictation(req.body?.on === true || req.body?.on === 'true') });
+});
+
 app.get('/api/v1/voice/profiles', async (req, res) => {
   try {
     const tts = await getTTS();

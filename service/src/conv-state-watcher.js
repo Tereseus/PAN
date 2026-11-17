@@ -177,9 +177,31 @@ export function noteClaudePrompt(text, orgId = 'org_personal') {
   return n;
 }
 
-/** Non-null while he is dictating to Claude: { at, until, lines }. */
+// ── Dictation that is happening right now ──────────────────────────────────
+// The match above only knows after the prompt is sent. For the whole time he was speaking a long
+// prompt, PAN took every sentence as said to it and answered ("My mistake."), and one of those
+// sentences cancelled a question he had just asked PAN (2026-11-17). His dictation hotkey runs on
+// his own computer (bin/Dictate.ahk), so it says when it starts and stops (POST
+// /api/v1/voice/dictating). While it records, and for a short tail after (the phone's copy of his
+// last sentence arrives after he stops), a line is not PAN's unless he says its name.
+const LIVE_DICTATION_MAX_MS = 3 * 60_000;   // a start with no stop ends by itself
+const LIVE_DICTATION_TAIL_MS = 20_000;
+let _liveDictation = { at: 0, until: 0 };
+
+export function noteDictation(on) {
+  const now = Date.now();
+  _liveDictation = on
+    ? { at: now, until: now + LIVE_DICTATION_MAX_MS }
+    : { at: _liveDictation.at || now, until: now + LIVE_DICTATION_TAIL_MS };
+  return { on: !!on, quiet_for_ms: _liveDictation.until - now };
+}
+
+/** Non-null while he is dictating to Claude: { at, until, lines }, with live: true while the
+ *  dictation hotkey is recording or just stopped. */
 export function dictatingToClaude() {
-  return Date.now() < _claudeDictation.until ? _claudeDictation : null;
+  const now = Date.now();
+  if (now < _liveDictation.until) return { at: _liveDictation.at, until: _liveDictation.until, lines: 0, live: true };
+  return now < _claudeDictation.until ? _claudeDictation : null;
 }
 
 /** True if PAN said something to him in the last `ms`. Replies to lines that turned out to
