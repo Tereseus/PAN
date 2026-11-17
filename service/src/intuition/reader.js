@@ -268,6 +268,27 @@ export function asksTheWorld(text) {
   return false;
 }
 
+// ── A request to come up with something ─────────────────────────────────────
+// A request for a question, a joke, an idea, "say something": he wants PAN to produce a thing of
+// its own. The 2B voice model answers these with two words of agreement
+// ("Fair enough." twice running, Nov 17). Read by form, like asksTheWorld; things that are an
+// action (music, a timer, a photo, a thread) or that the turn's own facts answer stay where they are.
+const A_LEAD = /^(?:(?:i want you to|i'd like you to|i would like you to|i need you to|can you|could you|would you|will you|why don't you|how about you|you should|you can|please|go ahead and|just|now|then|so|okay|ok|all right|alright|well|and|but|hey|yeah|yes|no|pan|come on)\b[\s,]*)+/;
+const A_VERB = /^(?:ask (?:me|us)\b|tell (?:me|us) (?:a|an|some|something|anything|more|about|what you think|your)\b|give (?:me|us) (?:a|an|some|your|one|two|three|another)\b|say something\b|(?:suggest|recommend|come up with|think of|make up|invent|pick|choose|name) (?:a|an|some|something|one|two|three|me)\b|surprise me\b|talk to me\b|entertain me\b)/;
+const A_NOT = /\b(?:give (?:me|us) (?:a|one) (?:sec|second|minute|moment|break|bit|hand|call|ring|shout)|ask (?:me|us) (?:later|again|tomorrow|next time)|thread|threads|song|songs|music|playlist|track|album|timer|alarm|reminder|directions|route|photo|picture|screenshot)\b/;
+
+/** His line asks PAN to come up with something of its own (see above). */
+export function asksForSomething(text) {
+  const raw = String(text || '').toLowerCase().replace(/[‘’]/g, "'");
+  const clauses = raw.split(/(?<=[.!?])\s+|;\s+/).map((c) => c.replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  for (let i = clauses.length - 1; i >= 0; i--) {
+    const c = clauses[i].replace(A_LEAD, '').trim();
+    if (!A_VERB.test(c)) continue;
+    return !A_NOT.test(c) && !Q_LIGHT.test(c);
+  }
+  return false;
+}
+
 // ── Held readings ───────────────────────────────────────────────────────────
 // A Sims need does not reset every tick; neither does this. A new reading replaces the held
 // one only when it is clearly stronger, or the held one has faded.

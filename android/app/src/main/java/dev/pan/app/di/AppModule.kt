@@ -27,6 +27,13 @@ object AppModule {
                     db.execSQL("ALTER TABLE conversations ADD COLUMN photo TEXT")
                 }
             })
+            // 2 -> 3 (0.5.7): how long a reply took and where the time went.
+            .addMigrations(object : androidx.room.migration.Migration(2, 3) {
+                override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE conversations ADD COLUMN ms INTEGER")
+                    db.execSQL("ALTER TABLE conversations ADD COLUMN detail TEXT")
+                }
+            })
             .fallbackToDestructiveMigration()
             .build()
     }

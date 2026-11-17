@@ -2091,7 +2091,16 @@ class PanForegroundService : Service() {
                         lastWarmAt = 0L
                         mainHandler.post { warmHub() }
                         persistHistoryTurn("assistant", responseText)
-                        dataRepository.addPanResponse(responseText)
+                        // With the reply: how long he waited for the first word, where the hub says
+                        // the time went, and what PAN thought was going on. Home shows it on a tap.
+                        val detail = runCatching {
+                            (response.timing?.let { org.json.JSONObject(it) } ?: org.json.JSONObject()).apply {
+                                put("first_ms", firstWordMs)
+                                put("done_ms", elapsed)
+                                intuitionSummary?.let { put("read", it) }
+                            }.toString()
+                        }.getOrNull()
+                        dataRepository.addPanResponse(responseText, ms = firstWordMs, detail = detail)
                         // Surface to native PanThinkingCard — shows the reply text +
                         // ↳ X.Xs response-time badge, beside what the hub heard.
                         lastQueryText.value = heardText

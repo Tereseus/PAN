@@ -434,7 +434,8 @@ class PanServerClient @Inject constructor(
                                     camera = result.optBoolean("camera", false),
                                     reason = result.optString("reason", "").ifBlank {
                                         if (result.optBoolean("to_claude", false)) "dictating" else null
-                                    }
+                                    },
+                                    timing = result.optJSONObject("timing")?.toString()
                                 )
                             }
                             break

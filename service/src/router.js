@@ -29,7 +29,7 @@ import { loadModes, saveMode, dropMode } from './intuition/world.js';
 import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
 import { notePhoneGps, placeLine, daylightLine, weatherLine } from './intuition/place.js';
 import { followUpOf, followUpLine, historyLines } from './intuition/conversation.js';
-import { asksTheWorld, lostBy } from './intuition/reader.js';
+import { asksTheWorld, asksForSomething, lostBy } from './intuition/reader.js';
 import { participationOf, shapeOf, panAskedLast } from './intuition/participation.js';
 import { currentParams as situationParams } from './intuition/situation-learn.js';
 import { planFromResult as planProsody } from './tts-prosody.js';
@@ -272,10 +272,12 @@ function hubPathsOn(deviceId) {
 // Asked "what's my name?" under a line that says "your name is PAN", phi4-mini answered "PAN" (Nov 16).
 const HUB_PRONOUNS = 'In his line, "I", "me" and "my" mean him, and "you" and "your" mean you, PAN.';
 const HUB_AMBIENT = 'reply with exactly [AMBIENT] and nothing else';
-const HUB_WORLD = 'He asked something that needs real knowledge or judgment. Answer it correctly and plainly, the way a smart friend would out loud, in one to three short spoken sentences, talking to him as "you". Give the real figure, step or reason when there is one. If you are not sure, say so in a few words and give what you do know; never make up a term, a number or a product. Stay on his question: nothing about his work, his projects or the background line unless he asked.';
+const HUB_WORLD = 'He asked something that needs real knowledge or judgment. Answer it correctly and plainly, the way a smart friend would out loud, in one to three short spoken sentences, talking to him as "you". Give the real figure, step or reason when there is one. If you are not sure, say so in a few words and give what you do know; never make up a term, a number or a product. Stay on his question: nothing about his work, his projects or the background line unless he asked. When the conversation above is already on this subject, answer as its next line: build on what was said and use its details, and never start over with a general overview.';
 const HUB_RULES = {
   WORLD: HUB_WORLD,
   WORLD_MAYBE: `The WORLD rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
+  ASKED: 'He asked you to come up with something yourself: a question for him, a joke, an idea, a story, your opinion. Do it now, in one to three short spoken sentences. If he wants a question, ask him one real, specific question about him or about what he is doing, and nothing else. Never just agree, and never ask what he would like.',
+  ASKED_MAYBE: `The ASKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   WORD: `He stopped mid-sentence, reaching for a word or a name. If you are confident which word or name he means, your reply is only that word or name with a question mark, the way a friend helps out ("Inception?"). If you are not sure, ${HUB_AMBIENT}.`,
   DATA: `Answer from the data given, briefly, the way you would say it out loud; if his words are not asking for it, answer what he did say. If he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   SELF: `He asks who he is or who you are. Answer from the facts about you, in one or two short spoken sentences, talking to him as "you". If he was not talking to you, ${HUB_AMBIENT}.`,
@@ -287,14 +289,26 @@ const HUB_RULES = {
   NAMED: 'He said your name, so he is talking to you: answer him briefly, the way you would say it out loud.',
   TOLD: `He told you this without asking anything, or reacted to what you last said. Answer the way a friend in the room would: one short spoken sentence that fits (sympathy, a light comment, or a quick useful tip; for a fact to remember, a brief acknowledgement). No question unless it is the natural reply, never an offer or a menu. If it plainly was not said to you (he is talking to someone else, reading something out, or dictating), ${HUB_AMBIENT}.`,
 };
-const HUB_FIXED = 'You are PAN, his voice assistant and a friend in the room. Reply with only the words you say out loud: no JSON, no lists, no asterisks. ' + HUB_PRONOUNS
+// His first talk on the new app (Nov 17): "How can I assist you today?" after small talk, the same
+// sentence word for word to two wordings of one question, and a survey of what cultures believe
+// for a question with no settled answer.
+const HUB_MANNER = 'Talk like a person, not a help desk: never offer help, never ask how you can assist, never say you are here for him. Never say a sentence you already said in this conversation: if he asks the same thing again your last answer missed, so answer it another way. When a question has no settled answer, give your own view in a sentence instead of listing what people think.';
+const HUB_FIXED = 'You are PAN, his voice assistant and a friend in the room. Reply with only the words you say out loud: no JSON, no lists, no asterisks. ' + HUB_PRONOUNS + ' ' + HUB_MANNER
   + '\n\nHow you answer depends on the kind of line. The kind is named on the last line of this prompt. Follow only the rule for that kind:\n'
   + Object.entries(HUB_RULES).map(([k, v]) => `${k}: ${v}`).join('\n');
 // middle: the talk, the clock, any data, his line, in that order. selfLine (self.js buildSelfLine) is
 // always there, right after the fixed block: it is the same every turn, so it costs nothing after the first.
 // A few words after the kind, for the kinds phi4-mini got wrong with the rule that far up (Nov 16:
 // "You asked me what you just asked me", and "Pan" for his name).
+// Tried and taken back (Nov 17, replay of his real lines): the manner rules again at the very end of
+// the prompt changed nothing (phi4-mini still offered help and repeated a sentence that was in the
+// talk), and a reminder to answer questions about itself from the self line made it say "I'm
+// running on NVIDIA Parakeet" to a line about solar panels. The manner is the model's, not the
+// prompt's. What did work at the end: telling it who "me" is when he asks to be asked something.
+const HUB_ASKED_HINT = 'In his line "me" is him. If he wants a question, ask him one about his day, his work or something from the conversation above.';
 const HUB_HINTS = {
+  ASKED: HUB_ASKED_HINT,
+  ASKED_MAYBE: HUB_ASKED_HINT,
   ABOUT_TALK: 'In the conversation above the "User" lines are his and the "PAN" lines are yours. Tell him what he asked or what was said: "You asked ...".',
   SELF: 'In his line "my" and "I" mean him, not you.',
 };
@@ -2892,7 +2906,7 @@ export async function* routeStream(text, context = {}) {
   const isVoice = context.source === 'voice' || context.source === 'mic' || context.source === 'phone';
   if (isVoice && !interpreting && quickAmbientCheck(text)) {
     yield { type: 'chunk', text: '' };
-    yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', importance: 0.1 }) };
+    yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', importance: 0.1, reason: 'not_addressed' }) };
     return;
   }
 
@@ -2907,7 +2921,7 @@ export async function* routeStream(text, context = {}) {
     if (dictation?.live && !saysPanName(text)) {
       console.log(`[routeStream] dictation hotkey is on, not for PAN: ${JSON.stringify(String(text).slice(0, 60))}`);
       yield { type: 'chunk', text: '' };
-      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.02, to_claude: true, importance: 0.1 }) };
+      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.02, to_claude: true, importance: 0.1, reason: 'dictating' }) };
       return;
     }
     const [qModel, qBackup] = studentModels();
@@ -2917,7 +2931,7 @@ export async function* routeStream(text, context = {}) {
     } else if (dictation && !saysPanName(text) && !panSpokeWithin(45_000, context.org_id)) {
       console.log(`[routeStream] dictating to Claude (matched ${Math.round((Date.now() - dictation.at) / 1000)}s ago), not for PAN: ${JSON.stringify(String(text).slice(0, 60))}`);
       yield { type: 'chunk', text: '' };
-      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.05, to_claude: true, importance: 0.1 }) };
+      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.05, to_claude: true, importance: 0.1, reason: 'dictating' }) };
       return;
     }
   }
@@ -3449,7 +3463,11 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // look through the camera, a line his own notes answer, or the paths above.
   const worldQ = !!studentModel && !standing && !wordSearch && !(context.canCamera && looksVisual(text))
     && !/Relevant memories:|His own notes from/.test(String(memoryContext || ''))
-    && worldQuestionsOn(context.device_id) && asksTheWorld(text);
+    && worldQuestionsOn(context.device_id) && (asksTheWorld(text) || asksForSomething(text));
+  // A request to come up with something (a question for him, a joke): the same road to the bigger
+  // model, its own rule there. The 2B voice model answered such a request with two words of
+  // agreement, twice running (Nov 17).
+  const askedFor = worldQ && !asksTheWorld(text);
   const worldRule = (gate) => 'He asked something that needs real knowledge or judgment. Answer it correctly and plainly, the way a smart friend would out loud, in one to three short spoken sentences, talking to him as "you". Give the real figure, step or reason when there is one. If you are not sure, say so in a few words and give what you do know; never make up a term, a number or a product. Stay on his question: nothing about his work, his projects or the background line unless he asked.'
       + (gate ? ' If he was not talking to you (the TV, someone else in the room), reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.' : '');
   const worldPrompt = (gate) => [
@@ -3474,7 +3492,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       return owner ? `Your name is PAN. The name of the person talking to you is ${owner}.` : '';
     } catch { return ''; }
   };
-  const worldPromptHub = (gate) => hubPrompt(gate ? 'WORLD_MAYBE' : 'WORLD', [studentHistory, nowLine(),
+  const worldPromptHub = (gate) => hubPrompt((askedFor ? 'ASKED' : 'WORLD') + (gate ? '_MAYBE' : ''), [studentHistory, nowLine(),
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`], hubSelf());
   const worldAsk = (gate) => worldHub
     ? plainAsReply(askAIStreamWithFallback(worldPromptHub(gate), { ...streamOpts, chain: [worldHub, ...cloudFirst()].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE }), HUB_SENTENCES)
@@ -3637,7 +3655,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           if (claudeQuiet && readerProbe.pPan === undefined) {
             console.log('[routeStream] dictating to Claude and the voice model did not decide: staying quiet');
             notePath('claude_quiet');
-            yield JSON.stringify({ intent: 'ambient', addressed: 0.05, response: '[AMBIENT]' });
+            yield JSON.stringify({ intent: 'ambient', addressed: 0.05, response: '[AMBIENT]', reason: 'dictating' });
             return;
           }
           if (!_firstLogged) {
@@ -3652,7 +3670,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           if (!r || (r.startsWith('[') && r.length < 3)) continue;
           if (r.startsWith('[CA')) { camera = true; break; }
           if (r.startsWith('[TH')) { think = true; break; }
-          if (worldQ && !claudeQuiet && !r.startsWith('[') && /^(?:query|question|chat|)$/.test(head.match(/"intent"\s*:\s*"([^"]*)"/)?.[1] || '')) { world = true; break; }
+          if (worldQ && !r.startsWith('[') && /^(?:query|question|chat|)$/.test(head.match(/"intent"\s*:\s*"([^"]*)"/)?.[1] || '')) { world = true; break; }
           yield head;
           head = null;
         }
@@ -3740,7 +3758,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     // He does not want help finding words: say nothing, and the phone joins the rest of his
     // sentence onto this piece (carry_on) because PAN never started talking.
     yield { type: 'chunk', text: '' };
-    yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.1, importance: 0.1 }) };
+    yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.1, importance: 0.1, reason: 'still_talking' }) };
     return;
   }
 
@@ -4027,7 +4045,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // Confidently not for us. Empty chunk keeps the phone from speaking
         // the "[AMBIENT]" literal.
         yield { type: 'chunk', text: '' };
-        yield { type: 'done', result: withProsody({ ...parsed, intent: 'ambient', response: '', addressed, importance: 0.1 }) };
+        yield { type: 'done', result: withProsody({ ...parsed, intent: 'ambient', response: '', addressed, importance: 0.1, reason: parsed.reason || (claudeQuiet ? 'dictating' : 'not_addressed') }) };
         return;
       }
       if (gate === 'hold') {
@@ -4044,7 +4062,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // holding a placeholder just delays silence - so treat that as a mute.
         if (!heldText || /^\[ambient\]$/i.test(heldText)) {
           yield { type: 'chunk', text: '' };
-          yield { type: 'done', result: withProsody({ ...parsed, intent: 'ambient', response: '', addressed, importance: 0.1 }) };
+          yield { type: 'done', result: withProsody({ ...parsed, intent: 'ambient', response: '', addressed, importance: 0.1, reason: parsed.reason || (claudeQuiet ? 'dictating' : 'not_addressed') }) };
           return;
         }
         console.log(`[routeStream] addressed=${addressed} — holding ${heldText.length} chars for ${ADDRESSED_HOLD_MS}ms`);

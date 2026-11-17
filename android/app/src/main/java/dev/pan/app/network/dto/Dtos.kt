@@ -84,7 +84,9 @@ data class QueryResponse(
     // The hub decided answering needs a look: take a photo and answer from it.
     val camera: Boolean = false,
     // When PAN stayed out of it (intent ambient): the hub's one word for why.
-    val reason: String? = null
+    val reason: String? = null,
+    // Where the hub's time went on this turn (hub of 2026-11-17 on), as the hub's own JSON.
+    val timing: String? = null
 )
 
 data class DeviceRegisterRequest(

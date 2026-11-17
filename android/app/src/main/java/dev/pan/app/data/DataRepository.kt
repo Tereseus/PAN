@@ -61,9 +61,9 @@ class DataRepository @Inject constructor(
         conversationDao.insert(ConversationEntity(role = "user", text = text))
     }
 
-    suspend fun addPanResponse(text: String, photo: String? = null) {
+    suspend fun addPanResponse(text: String, photo: String? = null, ms: Long? = null, detail: String? = null) {
         if (TestAudio.active) return
-        conversationDao.insert(ConversationEntity(role = "pan", text = text, photo = photo))
+        conversationDao.insert(ConversationEntity(role = "pan", text = text, photo = photo, ms = ms, detail = detail))
     }
 
     suspend fun correctUserLine(rough: String, better: String) {

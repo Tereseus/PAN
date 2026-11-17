@@ -201,7 +201,8 @@ fun HomeScreen(viewModel: MainViewModel) {
 @Composable
 private fun SituationLine(snapshot: IntuitionSnapshot?) {
     val now = snapshot?.now ?: return
-    val line = listOfNotNull(now.activity?.takeIf { it.isNotBlank() }, now.where?.takeIf { it.isNotBlank() })
+    // What he is doing, not where: his address sat here all day for no reason (owner, 2026-11-17).
+    val line = listOfNotNull(now.activity?.takeIf { it.isNotBlank() }, now.focus?.takeIf { it.isNotBlank() })
         .joinToString(", ")
     if (line.isBlank()) return
     var open by remember { mutableStateOf(false) }
@@ -220,7 +221,6 @@ private fun SituationLine(snapshot: IntuitionSnapshot?) {
             val who = now.social?.filter { it.isNotBlank() }.orEmpty()
             val more = listOfNotNull(
                 if (who.isNotEmpty()) "With: " + who.joinToString(", ") else null,
-                now.focus?.takeIf { it.isNotBlank() }?.let { "Doing: $it" },
                 now.mood?.takeIf { it.isNotBlank() }?.let { "Mood: $it" },
                 now.recent_topics?.takeIf { it.isNotEmpty() }?.let { "Lately: " + it.take(4).joinToString(", ") },
             )
@@ -279,6 +279,8 @@ private fun TalkLine(line: ConversationEntity) {
         if (android.text.format.DateUtils.isToday(line.timestamp)) clock
         else android.text.format.DateFormat.format("EEE, MMM d", at).toString() + ", " + clock
     }
+    val detail = remember(line.detail) { line.detail?.let { runCatching { org.json.JSONObject(it) }.getOrNull() } }
+    var open by remember(line.id) { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
         Surface(
             shape = RoundedCornerShape(
@@ -286,7 +288,8 @@ private fun TalkLine(line: ConversationEntity) {
                 bottomStart = if (mine) 18.dp else 4.dp, bottomEnd = if (mine) 4.dp else 18.dp
             ),
             color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.widthIn(max = 320.dp)
+            modifier = Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp))
+                .clickable(enabled = detail != null) { open = !open }
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
                 line.photo?.let { path -> TalkPhoto(path) }
@@ -294,9 +297,53 @@ private fun TalkLine(line: ConversationEntity) {
                     color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
             }
         }
-        Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // PAN's lines also say how long he waited for the first word.
+        val waited = line.ms?.takeIf { !mine && it > 0 }?.let { " · " + secs(it) }.orEmpty()
+        Text(time + waited, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+        if (open && detail != null) {
+            Column(modifier = Modifier.widthIn(max = 320.dp).padding(horizontal = 6.dp).padding(bottom = 4.dp)) {
+                replyBreakdown(detail).forEach {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
     }
+}
+
+private fun secs(ms: Long): String = String.format(java.util.Locale.US, "%.1f s", ms / 1000.0)
+
+/** A tapped reply, in plain lines: how long, where the time went, who answered, what PAN thought was going on. */
+private fun replyBreakdown(d: org.json.JSONObject): List<String> {
+    fun ms(key: String) = if (d.has(key)) d.optLong(key, -1L).takeIf { it >= 0 } else null
+    val out = mutableListOf<String>()
+    val first = ms("first_ms"); val done = ms("done_ms")
+    if (first != null) out += "First word after " + secs(first) + (done?.let { ", finished after " + secs(it) } ?: "")
+    // The hub's own clock. "The model started" is its first token; the first words he can hear come
+    // a little later (the model writes who the line is for before it writes the reply).
+    val hubFirst = ms("first_chunk_sent_ms")
+    val parts = listOfNotNull(
+        ms("asr_ms")?.let { "hearing you " + secs(it) },
+        ms("first_chunk_ms")?.let { "the model started after " + secs(it) },
+        hubFirst?.let { "first words out after " + secs(it) },
+    )
+    if (parts.isNotEmpty()) out += "On your computer: " + parts.joinToString(", ")
+    if (first != null && hubFirst != null && first > hubFirst) out += "On the way to and from this device: " + secs(first - hubFirst)
+    val who = when (d.optString("path", "")) {
+        "" -> if (d.has("model")) "Answered by the voice model" else null
+        "world" -> "Answered by the bigger model (a question that needs knowledge)"
+        "self" -> "Answered by the bigger model (a question about ΠAN or you)"
+        "reread" -> "Answered by the bigger model (it read the talk again)"
+        "tool" -> "Answered by the bigger model (from live data)"
+        "kind" -> "Answered by the bigger model"
+        "think" -> "Answered by the bigger model (handed up by the voice model)"
+        "search" -> "The bigger model, helping find a word"
+        "translate" -> "Translation"
+        else -> "Answered by the bigger model"
+    }
+    who?.let { out += it }
+    d.optString("read", "").takeIf { it.isNotBlank() }?.let { out += "ΠAN's read then: $it" }
+    return out
 }
 
 /** A picture PAN took, from the phone's own copy. Read small, off the main thread. */

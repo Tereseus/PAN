@@ -19,7 +19,11 @@ data class ConversationEntity(
     val text: String,
     val timestamp: Long = System.currentTimeMillis(),
     /** A picture PAN took for this answer (a file on the phone), or null. Added in database version 2. */
-    val photo: String? = null
+    val photo: String? = null,
+    /** How long his line waited for PAN's first word, ms. Added in database version 3. */
+    val ms: Long? = null,
+    /** Where the time went and who answered, as a small JSON object. Added in version 3. */
+    val detail: String? = null
 )
 
 @Entity(tableName = "settings")

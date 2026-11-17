@@ -10,7 +10,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.js';
 import { benchContext } from '../bench-context.js';
-import { recordTiming } from '../voice-timing.js';
+import { recordTiming, turnTimings } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
@@ -1920,6 +1920,13 @@ router.post('/query/stream', async (req, res) => {
         if (event.type === 'done') {
           const now = interpretingFor(key);
           send({ type: 'interpreter', lang: now ? (now.code || '?') : '' });
+        }
+        // Where this turn's time went, for the phone: hearing (asr), building the prompt (setup),
+        // the model's own first word, the first word leaving the hub, the whole turn, and which
+        // path and model answered. Times are ms; first_chunk_sent and total count from the
+        // moment his line arrived.
+        if (event.type === 'done' && event.result) {
+          try { event.result.timing = { ...turnTimings(turnId), total_ms: Date.now() - turnStart }; } catch {}
         }
         send(event);
         if (event.type === 'done') {

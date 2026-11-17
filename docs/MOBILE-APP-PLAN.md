@@ -130,6 +130,8 @@ from the 0.4 builds.
 - **0.5.5** (code 134): the unused voices, espeak, Vosk and Google's on-phone AI are out; a line ΠAN
   stays out of gets a small "Not for ΠAN" note with the reason.
 - **0.5.6** (code 135): "where am I" goes down the normal route (the old one answered "trouble thinking").
+- **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
+  what ΠAN thought was going on; the address is off Home's top line.
 
 ## Every feature and where it shows
 
