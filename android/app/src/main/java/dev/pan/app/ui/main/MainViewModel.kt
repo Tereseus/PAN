@@ -97,6 +97,52 @@ class MainViewModel @Inject constructor(
     val pendingCount: StateFlow<Int> = dataRepository.pendingCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), 0)
 
+    // ---- Home (0.5.1) ----
+    /** The talk: what PAN heard and what it answered, newest first. Kept on the phone. */
+    val talk: StateFlow<List<dev.pan.app.data.entity.ConversationEntity>> = dataRepository.getRecentConversations()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** His line while he is still saying it. */
+    val liveWords: StateFlow<String> = dev.pan.app.stt.LiveWords.text
+
+    // "Needs you": things waiting for allow or deny, and open alerts.
+    private val _approvals = MutableStateFlow<List<dev.pan.app.network.dto.PermissionPrompt>>(emptyList())
+    val approvals: StateFlow<List<dev.pan.app.network.dto.PermissionPrompt>> = _approvals
+    private val _alerts = MutableStateFlow<List<dev.pan.app.network.dto.AlertItem>>(emptyList())
+    val alerts: StateFlow<List<dev.pan.app.network.dto.AlertItem>> = _alerts
+
+    private suspend fun pollNeedsYou() {
+        try { api.getPermissions().body()?.permissions?.let { _approvals.value = it } } catch (_: Exception) {}
+        try { api.getAlerts().body()?.let { _alerts.value = it } } catch (_: Exception) {}
+    }
+
+    fun answerApproval(id: Long, allow: Boolean) {
+        _approvals.value = _approvals.value.filter { it.id != id }
+        viewModelScope.launch {
+            try {
+                api.respondPermission(dev.pan.app.network.dto.PermissionRespondRequest(if (allow) "1" else "3", id))
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun dismissAlert(id: Long) {
+        _alerts.value = _alerts.value.filter { it.id != id }
+        viewModelScope.launch {
+            try { api.updateAlert(id, dev.pan.app.network.dto.AlertUpdateRequest("dismissed")) } catch (_: Exception) {}
+        }
+    }
+
+    /** A line typed, or fixed by hand, in the box on Home. Goes the same way as a spoken one. */
+    fun sendTyped(text: String) {
+        val line = text.trim()
+        if (line.isEmpty()) return
+        val intent = android.content.Intent(application, PanForegroundService::class.java).apply {
+            action = PanForegroundService.ACTION_TYPED_LINE
+            putExtra("text", line)
+        }
+        application.startForegroundService(intent)
+    }
+
     // Track connection state for reconnection logic
     private var wasConnected = false
 
@@ -158,6 +204,15 @@ class MainViewModel @Inject constructor(
             while (true) {
                 pollSensorState()
                 delay(10000)
+            }
+        }
+
+        // "Needs you" on Home: approvals and alerts, every 5 s.
+        viewModelScope.launch {
+            delay(3000)
+            while (true) {
+                pollNeedsYou()
+                delay(5000)
             }
         }
 

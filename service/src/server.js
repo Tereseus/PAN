@@ -3084,6 +3084,9 @@ app.get('/api/v1/voice/pack/:name', async (req, res) => {
 });
 
 // Dashboard (web UI + API) — privacy middleware noises stats/counts on GET responses
+// The Memory page's routes forget things, so they need to know who is asking. The rest of
+// /dashboard never ran the login check (req.user was only a placeholder id).
+app.use('/dashboard/api/mem', apiAuth);
 app.use('/dashboard', privacyMiddleware({ caller: 'dashboard' }), dashboardRouter);
 // Benchmark dashboard API — no privacy middleware needed (benchmark data only)
 if (featureEnabled('routes_benchmark')) app.use('/dashboard/api', benchmarkDashRouter);

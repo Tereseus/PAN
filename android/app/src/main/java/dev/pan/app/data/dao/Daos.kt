@@ -32,6 +32,13 @@ interface ConversationDao {
 
     @Query("DELETE FROM conversations WHERE timestamp < :before")
     suspend fun cleanOld(before: Long)
+
+    // Forgetting in Memory also takes the phone's own copy of the talk.
+    @Query("DELETE FROM conversations WHERE text LIKE '%' || :word || '%'")
+    suspend fun deleteContaining(word: String)
+
+    @Query("DELETE FROM conversations WHERE timestamp >= :from AND timestamp < :to")
+    suspend fun deleteBetween(from: Long, to: Long)
 }
 
 @Dao

@@ -128,4 +128,25 @@ interface PanServerApi {
         @Query("device_id") deviceId: String,
         @Query("limit") limit: Int = 10
     ): Response<HistoryResponse>
+
+    // Memory tab: what PAN kept (the talk and the pictures), one day or one search at a time.
+    @GET("/dashboard/api/mem")
+    suspend fun getMemory(
+        @Query("date") date: String? = null,
+        @Query("tz") tz: Int? = null,
+        @Query("q") q: String? = null
+    ): Response<MemoryResponse>
+
+    @POST("/dashboard/api/mem/forget")
+    suspend fun forgetMemory(@Body request: ForgetRequest): Response<ForgetResponse>
+
+    // Home, "Needs you": open alerts.
+    @GET("/dashboard/api/alerts")
+    suspend fun getAlerts(
+        @Query("status") status: String = "open",
+        @Query("limit") limit: Int = 10
+    ): Response<List<AlertItem>>
+
+    @PATCH("/dashboard/api/alerts/{id}")
+    suspend fun updateAlert(@Path("id") id: Long, @Body request: AlertUpdateRequest): Response<Unit>
 }

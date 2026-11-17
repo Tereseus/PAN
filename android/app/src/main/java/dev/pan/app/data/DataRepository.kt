@@ -61,10 +61,13 @@ class DataRepository @Inject constructor(
         conversationDao.insert(ConversationEntity(role = "user", text = text))
     }
 
-    suspend fun addPanResponse(text: String) {
+    suspend fun addPanResponse(text: String, photo: String? = null) {
         if (TestAudio.active) return
-        conversationDao.insert(ConversationEntity(role = "pan", text = text))
+        conversationDao.insert(ConversationEntity(role = "pan", text = text, photo = photo))
     }
+
+    suspend fun forgetTalkContaining(word: String) = conversationDao.deleteContaining(word)
+    suspend fun forgetTalkBetween(from: Long, to: Long) = conversationDao.deleteBetween(from, to)
 
     fun getRecentConversations() = conversationDao.getRecent()
 

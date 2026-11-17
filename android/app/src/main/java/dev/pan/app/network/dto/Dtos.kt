@@ -298,3 +298,48 @@ data class IntuitionResponse(
     val snapshot: IntuitionSnapshot? = null,
     val as_of: Long? = null
 )
+
+// Memory tab
+data class MemoryItem(
+    val id: Long,
+    val kind: String,                       // "talk" or "photo"
+    @com.google.gson.annotations.SerializedName("when") val at: String = "",   // the hub's local time
+    val ms: Long = 0,                       // the same moment, for this phone's clock
+    val heard: String? = null,
+    val said: String? = null,
+    val photo: String? = null,              // a path on the hub, e.g. /photos/x.jpg
+    val device: String? = null
+)
+
+data class MemoryResponse(
+    val items: List<MemoryItem> = emptyList(),
+    val total: Int = 0,
+    val error: String? = null
+)
+
+/** One of ids, q or date. Nothing is forgotten without confirm = "yes". */
+data class ForgetRequest(
+    val ids: List<Long>? = null,
+    val q: String? = null,
+    val date: String? = null,
+    val tz: Int? = null,                    // with date: this phone's minutes east of UTC
+    val confirm: String = "yes"
+)
+
+data class ForgetResponse(
+    val ok: Boolean = false,
+    val forgotten: Int = 0,
+    val error: String? = null
+)
+
+// Home, "Needs you"
+data class AlertItem(
+    val id: Long,
+    val alert_type: String? = null,
+    val severity: String? = null,
+    val title: String = "",
+    val detail: String? = null,
+    val created_at: String? = null
+)
+
+data class AlertUpdateRequest(val status: String, val resolved_by: String = "phone")

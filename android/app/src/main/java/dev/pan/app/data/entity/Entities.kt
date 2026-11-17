@@ -17,7 +17,9 @@ data class ConversationEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val role: String, // "user" or "pan"
     val text: String,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    /** A picture PAN took for this answer (a file on the phone), or null. Added in database version 2. */
+    val photo: String? = null
 )
 
 @Entity(tableName = "settings")

@@ -1355,6 +1355,133 @@ router.get('/api/sessions', (req, res) => {
   res.json(sessions);
 });
 
+// ---------------------------------------------------------------------------
+// Memory page (docs/MOBILE-APP-PLAN.md, "Memory"). What a person means by "what PAN kept":
+// the talk (what was said to PAN and what it answered) and the pictures it took. Not the
+// developer's event log. One list for a day, one search, and "forget" for one thing, for
+// everything a search found, or for a day.
+//
+//   GET  /dashboard/api/mem?date=YYYY-MM-DD&tz=120 that day, newest first. tz = the asker's minutes
+//                                                  east of UTC, so "today" is the phone's today even
+//                                                  when the hub's clock is in another time zone
+//   GET  /dashboard/api/mem?q=words                search (the events_fts index, never LIKE)
+//   POST /dashboard/api/mem/forget  { ids:[..] } | { q } | { date }, with confirm:'yes'
+//
+// The day view reads one day's rows through idx_events_org_id_created (a range on created_at),
+// so it never scans the table.
+const MEM_TYPES = "('RouterCommand','VisionAnalysis','PandantPhoto')";
+
+function memItem(e) {
+  let d = {};
+  try { d = JSON.parse(e.data); } catch { return null; }
+  // created_at is the hub's local time; ms is the same moment for any clock.
+  const base = { id: e.id, when: e.created_at, ms: new Date(String(e.created_at).replace(' ', 'T')).getTime() || 0 };
+  if (e.event_type === 'RouterCommand') {
+    const dev = d.device_id || d.context?.device_id || '';
+    // Test turns are not his memories.
+    if (d.context?.source === 'benchmark' || d.source === 'benchmark' || /-bench$/.test(dev)) return null;
+    if (!d.text) return null;
+    return { ...base, kind: 'talk', heard: String(d.text).slice(0, 600), said: String(d.result || '').slice(0, 900), device: dev || null };
+  }
+  if (e.event_type === 'VisionAnalysis') {
+    const p = String(d.image_path || d.path || d.file || d.filename || '');
+    const m = p.match(/([^/\\]+\.(?:jpg|png))$/i);
+    const dir = /captures/i.test(p) ? 'captures' : 'photos';
+    return { ...base, kind: 'photo', heard: String(d.question || '').slice(0, 300), said: String(d.description || '').slice(0, 900), photo: m ? `/${dir}/${m[1]}` : null };
+  }
+  if (e.event_type === 'PandantPhoto') {
+    if (!d.image_file) return null;
+    return { ...base, kind: 'photo', heard: '', said: '', photo: `/photos/${String(d.image_file).replace(/[^a-zA-Z0-9._-]/g, '')}` };
+  }
+  return null;
+}
+
+function memDayRange(date, tz) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return null;
+  const off = parseInt(tz);
+  if (!Number.isFinite(off)) return { ':d0': `${date} 00:00:00`, ':d1': `${date} 23:59:59` };
+  // The asker's day, as two moments, written the way created_at is written (hub local time).
+  const start = Date.parse(`${date}T00:00:00Z`) - off * 60_000;
+  const hubLocal = (ms) => new Date(ms - new Date(ms).getTimezoneOffset() * 60_000).toISOString().slice(0, 19).replace('T', ' ');
+  return { ':d0': hubLocal(start), ':d1': hubLocal(start + 86_399_000) };
+}
+
+function memSearchIds(req, q, cap) {
+  const run = (fts, order) => fts ? allScoped(req,
+    `SELECT events.id AS id FROM (SELECT rowid AS fts_id FROM events_fts WHERE events_fts MATCH :fts ORDER BY ${order} LIMIT :cap) f
+     CROSS JOIN events ON events.id = f.fts_id
+     WHERE events.org_id = :org_id AND events.event_type IN ${MEM_TYPES}
+     ORDER BY events.id DESC`, { ':fts': fts, ':cap': cap }).map(r => r.id) : [];
+  const every = run(toFtsQuery(q, ' '), 'rowid DESC');
+  return every.length ? every : run(toFtsQuery(q, ' OR '), 'rank');
+}
+
+function memRows(req, ids) {
+  if (!ids.length) return [];
+  const list = ids.map(n => parseInt(n)).filter(Number.isFinite).join(',');
+  return allScoped(req, `SELECT id, event_type, data, created_at FROM events WHERE org_id = :org_id AND id IN (${list}) ORDER BY id DESC`);
+}
+
+router.get('/api/mem', (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      const ids = memSearchIds(req, q, 2000);
+      const items = memRows(req, ids.slice(0, 200)).map(memItem).filter(Boolean);
+      return res.json({ items, total: ids.length, q });
+    }
+    const date = String(req.query.date || '');
+    const range = memDayRange(date, req.query.tz);
+    if (!range) return res.status(400).json({ error: 'give q or date=YYYY-MM-DD', items: [] });
+    const rows = allScoped(req,
+      `SELECT id, event_type, data, created_at FROM events
+       WHERE org_id = :org_id AND created_at >= :d0 AND created_at <= :d1 AND event_type IN ${MEM_TYPES}
+       ORDER BY created_at DESC LIMIT 400`, range);
+    const items = rows.map(memItem).filter(Boolean);
+    res.json({ items, total: items.length, date });
+  } catch (err) {
+    res.status(500).json({ error: err.message, items: [] });
+  }
+});
+
+// Forgetting takes the event, its line in the search index, and the picture file if it had one.
+// Only the owner forgets. Nothing is deleted without confirm:'yes'.
+router.post('/api/mem/forget', (req, res) => {
+  const owner = req.user?.role === 'owner' || (req.user?.realPower ?? req.user?.power ?? 0) >= 100;
+  if (!owner) return res.status(403).json({ error: 'Owner only' });
+  const b = req.body || {};
+  if (b.confirm !== 'yes') return res.status(400).json({ error: 'missing confirm' });
+  try {
+    let ids = [];
+    if (Array.isArray(b.ids)) ids = b.ids.map(n => parseInt(n)).filter(Number.isFinite).slice(0, 2000);
+    else if (b.q && String(b.q).trim()) ids = memSearchIds(req, String(b.q).trim(), 2000);
+    else if (memDayRange(b.date, b.tz)) {
+      ids = allScoped(req,
+        `SELECT id FROM events WHERE org_id = :org_id AND created_at >= :d0 AND created_at <= :d1 AND event_type IN ${MEM_TYPES}`,
+        memDayRange(b.date, b.tz)).map(r => r.id);
+    } else return res.status(400).json({ error: 'give ids, q or date' });
+
+    const rows = memRows(req, ids).filter(r => MEM_TYPES.includes(`'${r.event_type}'`));
+    let files = 0;
+    for (const r of rows) {
+      const photo = memItem(r)?.photo;
+      if (!photo) continue;
+      const name = photo.split('/').pop();
+      const path = photo.startsWith('/captures/') ? join(__dirname2, '..', '..', 'public', 'captures', name) : join(PHOTOS_DIR, name);
+      try { if (existsSync(path)) { unlinkSync(path); files++; } } catch {}
+    }
+    const list = rows.map(r => r.id).join(',');
+    if (list) {
+      runScoped(req, `DELETE FROM events WHERE org_id = :org_id AND id IN (${list})`);
+      try { run(`DELETE FROM events_fts WHERE rowid IN (${list})`); } catch {}
+      _photosCache = { ts: 0, body: null };
+    }
+    res.json({ ok: true, forgotten: rows.length, files });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /dashboard/api/events/:id
 router.delete('/api/events/:id', (req, res, next) => {
   const id = parseInt(req.params.id);

@@ -55,6 +55,8 @@ class PanForegroundService : Service() {
     companion object {
         /** The assistant button (VoiceAssistActivity): the next line is for ΠAN. */
         const val ACTION_ADDRESS_PAN = "ADDRESS_PAN"
+        /** A line typed (or fixed by hand) in the box on Home. Extra "text". */
+        const val ACTION_TYPED_LINE = "TYPED_LINE"
         private const val TAG = "PanService"
         val lastAction = MutableStateFlow("")
         val micEnabled = MutableStateFlow(false) // Start muted — user unmutes when ready
@@ -2287,7 +2289,13 @@ class PanForegroundService : Service() {
                     // Kept on the hub too: after a restart the history is reloaded from there,
                     // and without it "what kind of dog was that?" had nothing (2026-11-03).
                     persistHistoryTurn("assistant", finalDescription)
-                    dataRepository.addPanResponse(finalDescription)
+                    // The picture is kept on the phone beside the answer, so the talk on Home shows it.
+                    val photoPath = runCatching {
+                        val dir = java.io.File(filesDir, "talk-photos").apply { mkdirs() }
+                        dir.listFiles()?.sortedBy { it.lastModified() }?.dropLast(60)?.forEach { it.delete() }
+                        java.io.File(dir, "${System.currentTimeMillis()}.jpg").apply { writeBytes(photoBytes) }.absolutePath
+                    }.getOrNull()
+                    dataRepository.addPanResponse(finalDescription, photoPath)
                     // Surface to PanThinkingCard before speaking.
                     lastResponseText.value = finalDescription
                     currentFiller.value = ""
@@ -3069,6 +3077,22 @@ class PanForegroundService : Service() {
                     }
                 }
             }
+        }
+
+        if (intent?.action == ACTION_TYPED_LINE) {
+            // Same path as a spoken line, and it is for PAN by definition. The dedup window and the
+            // after-speech cooldown would drop it without a word, so both are cleared first.
+            val typed = intent.getStringExtra("text")?.trim().orEmpty()
+            if (typed.isNotEmpty()) {
+                tts.stop()
+                lastProcessedText = ""
+                lastProcessedTime = 0L
+                lastTtsDoneTime = 0L
+                addressedUntil = System.currentTimeMillis() + 20_000L
+                panLog("Typed line (${typed.length} chars)")
+                mainHandler.post { onSpeech(typed) }
+            }
+            return START_STICKY
         }
 
         if (intent?.action == ACTION_ADDRESS_PAN) {

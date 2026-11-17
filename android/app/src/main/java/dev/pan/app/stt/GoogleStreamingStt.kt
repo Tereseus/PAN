@@ -261,6 +261,7 @@ class GoogleStreamingStt @Inject constructor(
             override fun onPartialResults(partialResults: Bundle?) {
                 val texts = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val partial = texts?.firstOrNull() ?: return
+                LiveWords.text.value = if (isTtsSpeaking?.invoke() == true) "" else partial
                 // If actual words are being recognized while TTS is playing,
                 // that's the user talking — interrupt TTS immediately
                 if (partial.isNotBlank() && isTtsSpeaking?.invoke() == true) {

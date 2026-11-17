@@ -20,6 +20,13 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): PanDatabase {
         return Room.databaseBuilder(context, PanDatabase::class.java, "pan.db")
+            // 1 -> 2 (0.5.1): a photo beside an answer. A real migration, so the phone's settings
+            // and its unsent queue survive the update (the fallback below would wipe them).
+            .addMigrations(object : androidx.room.migration.Migration(1, 2) {
+                override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE conversations ADD COLUMN photo TEXT")
+                }
+            })
             .fallbackToDestructiveMigration()
             .build()
     }

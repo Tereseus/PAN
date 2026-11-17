@@ -1404,6 +1404,7 @@ class SherpaStreamingStt @Inject constructor(
                                 turnLen = 0
                                 turnClipped = false
                                 lastPartial = ""
+                                LiveWords.text.value = ""
                                 if (text.isNotBlank() && !heardBy) {
                                     val clean = stripEcho(text)
                                     if (clean.isBlank()) {
@@ -1431,6 +1432,8 @@ class SherpaStreamingStt @Inject constructor(
                     } else if (text.isNotBlank() && text != lastPartial) {
                         heldIncomplete = false
                         lastPartial = text
+                        // The box on Home. Not while PAN talks: those words are mostly its own voice.
+                        LiveWords.text.value = if (isTtsSpeaking?.invoke() == true) "" else text
                         VoiceEvents.emit("partial", "text" to text)
                         withContext(Dispatchers.Main) { callback?.invoke(text, false) }
                     }
@@ -1493,6 +1496,7 @@ class SherpaStreamingStt @Inject constructor(
      * invalid-chunk-state abort inside Vad_compute.
      */
     override fun stopListening() {
+        LiveWords.text.value = ""
         isListening = false
         readJob?.cancel()
         readJob = null

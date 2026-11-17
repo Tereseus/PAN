@@ -118,6 +118,11 @@ person is in the talk.
 The first build of this redesign is 0.5.0 (owner, 2026-11-17). The version code keeps counting up
 from the 0.4 builds.
 
+- **0.5.0** (code 129): incognito survives a restart, Settings cleaned up, sound and vibration switches work.
+- **0.5.1** (code 130): the three tabs. Home with the talk, the live box and "Needs you"; Memory with
+  the fingerprint lock, search, days and delete; Settings as a tab. What it does not have yet is
+  listed at the end of its entry in docs/FEATURES.md.
+
 ## Every feature and where it shows
 
 | Feature that exists | Where a buyer meets it |
@@ -268,7 +273,8 @@ sentence of why. This is the flow already in INSTALL-PLAN.md.
 |---|---|---|
 | 1 | Bugs 1 to 8. Hide the developer tabs on the phone page behind a switch (default: Chat, Alerts, Devices, Sensors, Library, Settings). | Only bug 1 |
 | 2 | Settings and Main cleanup: remove the dead items, the debug text and the word Tailscale; make Sound and Vibration work; one theme. | Yes |
-| 3 | Bottom bar with Home, Memory, Settings drawn by the app; "Needs you" on Home; the typed conversation screen brought back. | Yes |
+| 3 | Bottom bar with Home, Memory, Settings drawn by the app; "Needs you" on Home; the typed conversation screen brought back. **Done in 0.5.1.** | Yes |
+| 3b | Memory: keeping time and timed erase, spoken search, the same page on the dashboard, forgetting the vector copy too. Lockdown. Memory answers by voice only to his voice. Names on lines when more than one person talks. | Yes, and the hub |
 | 4 | First start flow. | Yes |
 | 5 | A signed release build in place of the debug build. Moving from the debug key to a release key means one reinstall and one new pairing per phone. | Yes |
 

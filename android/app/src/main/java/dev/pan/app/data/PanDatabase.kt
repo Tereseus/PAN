@@ -7,7 +7,7 @@ import dev.pan.app.data.entity.*
 
 @Database(
     entities = [PendingUploadEntity::class, ConversationEntity::class, SettingEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class PanDatabase : RoomDatabase() {

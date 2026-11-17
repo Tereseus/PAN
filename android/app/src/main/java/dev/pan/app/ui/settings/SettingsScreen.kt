@@ -21,7 +21,10 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    onBack: () -> Unit,
+    onBack: (() -> Unit)? = null,            // null = shown as a tab (0.5.1), so no back arrow
+    mainViewModel: dev.pan.app.ui.main.MainViewModel? = null,
+    onOpenDashboard: () -> Unit = {},
+    onOpenCommands: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val deviceName by viewModel.deviceName.collectAsState()
@@ -81,8 +84,10 @@ fun SettingsScreen(
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 }
             )
@@ -355,6 +360,31 @@ fun SettingsScreen(
                     enabled = incognitoAllowed
                 )
             }
+            // The lock on the Memory tab. Turning it off takes the fingerprint too.
+            var memoryLock by remember { mutableStateOf(dev.pan.app.ui.memory.Fingerprint.lockOn(context)) }
+            val hasFingerprint = remember { dev.pan.app.ui.memory.Fingerprint.ready(context) }
+            SettingToggle(
+                title = "Lock Memory",
+                description = if (hasFingerprint) "Memory opens only with your fingerprint, and deleting asks for it again"
+                              else "Memory opens only with a fingerprint. This device has none set up, so Memory stays closed here",
+                checked = memoryLock,
+                onToggle = { on ->
+                    if (on) { memoryLock = true; dev.pan.app.ui.memory.Fingerprint.setLock(context, true) }
+                    else if (hasFingerprint) dev.pan.app.ui.memory.Fingerprint.ask(context, "Turn off the Memory lock", "Your fingerprint confirms it") { ok ->
+                        if (ok) { memoryLock = false; dev.pan.app.ui.memory.Fingerprint.setLock(context, false) }
+                    }
+                }
+            )
+            if (mainViewModel != null) {
+                val allDevices by mainViewModel.devices.collectAsState()
+                val micOn by mainViewModel.isMicEnabled.collectAsState()
+                dev.pan.app.ui.main.SensorSection(
+                    devices = allDevices,
+                    isMicEnabled = micOn,
+                    onToggleMic = { mainViewModel.toggleMic() },
+                    viewModel = mainViewModel
+                )
+            }
             if (developerMode) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -449,6 +479,16 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            Text("Data dividend", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Get paid when you choose to share parts of your data. Not ready yet. " +
+                "Nothing is shared, and it stays off until you turn it on here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            HorizontalDivider()
+
             Text("About", style = MaterialTheme.typography.titleMedium)
             SettingToggle(
                 title = "Developer options",
@@ -456,6 +496,12 @@ fun SettingsScreen(
                 checked = developerMode,
                 onToggle = { developerMode = it; uiPrefs.edit().putBoolean("developer", it).apply() }
             )
+            if (developerMode) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onOpenDashboard, modifier = Modifier.weight(1f)) { Text("Dashboard") }
+                    OutlinedButton(onClick = onOpenCommands, modifier = Modifier.weight(1f)) { Text("Command log") }
+                }
+            }
 
         }
     }
