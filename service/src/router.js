@@ -3375,7 +3375,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // "his phone" to him (2026-11-03). Rare turns, so the cloud model takes them, as above.
   const selfPrompt = studentModel && identityAsked ? [
     'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
-    historyBlock.trim(), buildSelfLine({ viaLink: context.via_link }), nowLine(), situationLine,
+    historyBlock.trim(), buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }), nowLine(), situationLine,
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
     'Answer in one or two short spoken sentences, talking to him as "you". If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.',
   ].filter(Boolean).join('\n\n') : '';
@@ -3446,7 +3446,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       + (gate ? ' If he was not talking to you (the TV, someone else in the room), reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.' : '');
   const worldPrompt = (gate) => [
     'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
-    studentHistory, buildSelfLine({ viaLink: context.via_link }), nowLine(), situationLine,
+    studentHistory, buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }), nowLine(), situationLine,
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
     worldRule(gate),
   ].filter(Boolean).join('\n\n');
@@ -3457,7 +3457,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // Plain words, no JSON: on a hub with no graphics card every token written before the first spoken
   // word costs about 60 ms, and phi4-mini wrapped its JSON in a ```json fence on top (Nov 16), which
   // also kept the gate shut until the reply was over. plainAsReply() puts the JSON around the words.
-  const hubSelf = () => buildSelfLine({ viaLink: context.via_link });
+  const hubSelf = () => buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id });
   // His name once more, next to his line: with the facts a whole block away phi4-mini answered
   // "PAN" to "what's my name?" (Nov 16). It ends on his name, the last thing the model reads.
   const hubOwnerLine = () => {
@@ -3488,7 +3488,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     : askAIStreamWithFallback(prompt, cloudOpts());
   // The situation goes first, as background: placed next to his line it pulled "How's it
   // going?" into room talk (hub bench, 2026-11-11, and 2026-11-03).
-  const studentPrompt = [situationForStudent ? situationLine : '', studentHistory, String(memoryContext || '').trim(), selfAsked ? buildSelfLine({ viaLink: context.via_link }) : '', nowLine(),
+  const studentPrompt = [situationForStudent ? situationLine : '', studentHistory, String(memoryContext || '').trim(), selfAsked ? buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }) : '', nowLine(),
     `${isDash ? 'User typed' : 'Mic heard'}: "${clipToTokens(safeText, HEARD_TOKENS)}"`].filter(Boolean).join('\n\n');
   const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null, readerOpts: { minPan: forcePan ? 0 : talking ? MIN_PAN_IN_TALK : undefined, copy: ASKS_BACK.test(String(text)), probe: readerProbe, ...(claudeQuiet ? { needPan: CLAUDE_QUIET_MIN_PAN } : {}), ...(/-bench$/.test(String(context.device_id || '')) ? { whoMs: 30_000 } : {}) } };
   // A bench turn arrives cold (nothing read ahead): give the reader the time it needs, so the bench
@@ -3663,7 +3663,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           notePath('think');
           yield* bigAsk([
             'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
-            historyBlock.trim(), buildSelfLine({ viaLink: context.via_link }), nowLine(), situationLine,
+            historyBlock.trim(), buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }), nowLine(), situationLine,
             `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
             'This one needs real thought. Answer it the way a smart friend would out loud: a real view and the reason for it, in two or three short spoken sentences, talking to him as "you". If he says you did not answer him, answer his last real question from the conversation now. Never dodge: no "I can\'t tell you", no "who\'s asking", no "I already did".',
           ].filter(Boolean).join('\n\n'), 'THINK');
@@ -3714,6 +3714,10 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         return;
       } catch (e) {
         if (got && head === null) throw e;
+        // Cancelled (he said something new, or the phone hung up) is not a voice model failure: stop here.
+        // It used to go on to the full prompt, which was cancelled too, and the turn ended on "Sorry, I ran
+        // into a problem thinking that through" spoken at him (car, 2026-11-17).
+        if (context.signal?.aborted) throw e;
         console.warn(`[routeStream] ${studentModel} unavailable (${e.message}) - full prompt instead`);
         notePath('reader_failed');
       }
@@ -3840,6 +3844,8 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       if (delta.trim()) yield { type: 'chunk', text: delta };
     }
   } catch (e) {
+    // A cancelled turn says nothing: the caller ends it as "cancelled" (routes/api.js). No alert either.
+    if (context.signal?.aborted) throw e;
     console.error('[routeStream] LLM error:', e.message);
     // Surface the broken voice path in the Alerts panel (de-duped, fire-and-forget).
     _raiseVoiceAlert(e.message, context.source);

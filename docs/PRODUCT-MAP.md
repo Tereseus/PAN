@@ -209,6 +209,7 @@ Others found: tzachbon/claude-model-router-hook (MIT) warns by default and only 
 | Hub network | Part | Tailscale is installed by hand. Option: embed tsnet in a small helper so the hub also needs no separate install |
 | Pairing | Missing | Scan a QR on the hub: phone gets its own key and joins. REBUILD-REVIEW change 1 |
 | Medallion pairing and firmware updates | Missing | |
+| App update from a nearby device | Idea (2026-11-17) | A car unit or tablet on the phone's hotspot takes the new app straight from the phone, which already holds the same file, in place of pulling 90 MB from the hub over mobile data. Both must be paired to the same hub and the file checked against the hub's hash. Came from the car failing to update on the old updater |
 
 **Full plan: docs/INSTALL-PLAN.md (2026-11-08).** Phone app cleanup (tabs, settings, one look): docs/MOBILE-APP-PLAN.md (2026-11-16).
 

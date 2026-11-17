@@ -161,6 +161,8 @@ router.post('/chat', async (req, res) => {
 // removed when the stream completes naturally OR after a 30s TTL safety net so
 // we never leak controllers if the client disconnects without /cancel firing.
 const streamControllers = new Map(); // stream_id → { controller, expiresAt }
+// The phone's own send time (sensors.timestamp) of the newest voice turn seen from each device.
+const newestTurnSentAt = new Map();
 const STREAM_TTL_MS = 60_000;
 function registerStream(streamId, controller) {
   streamControllers.set(streamId, { controller, expiresAt: Date.now() + STREAM_TTL_MS });
@@ -1751,6 +1753,21 @@ router.post('/query/stream', async (req, res) => {
   // streamControllers registry so /cancel and the TTL sweeper keep working
   // instead of needing a second parallel mechanism.
   const streamKey = `phone:${req.headers['x-device-id'] || req.headers['x-device-name'] || 'unknown'}`;
+  // Turns are ordered by when the phone SENT them, not by when they got here. On a slow link the upload
+  // of an older sentence can land after a newer one. The phone had already dropped that older turn, yet
+  // here it cancelled the newer one: the real question got "Sorry, I ran into a problem" and the answer
+  // to the line he had moved on from was spoken to nobody (car on a 4G hotspot, 2026-11-17). The gap is
+  // capped so a phone whose clock was set back is not shut out.
+  let sentAt = 0;
+  try { sentAt = Number((typeof sensors === 'string' ? JSON.parse(sensors) : sensors)?.timestamp) || 0; } catch {}
+  const newestSent = newestTurnSentAt.get(streamKey) || 0;
+  if (sentAt && sentAt < newestSent && newestSent - sentAt < 120_000) {
+    console.log(`[/query/stream] older turn for ${streamKey} arrived late (sent ${newestSent - sentAt} ms before the newest) - dropped`);
+    clearInterval(keepaliveInterval);
+    send({ type: 'done', result: { intent: 'cancelled', response: '' } });
+    return res.end();
+  }
+  if (sentAt) newestTurnSentAt.set(streamKey, sentAt);
   const superseded = streamControllers.get(streamKey);
   if (superseded) {
     try { superseded.controller.abort(); } catch {}

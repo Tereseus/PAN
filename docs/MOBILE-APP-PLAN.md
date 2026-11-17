@@ -129,6 +129,23 @@ button radiuses.
 - **All text in `strings.xml`.** Today every string is written in the Kotlin files, so nothing can be
   translated.
 
+## When the connection is bad
+
+Added 2026-11-17 after a drive through places with weak signal: the only sign was a late "server
+didn't respond", so there was no way to tell a dead link from a slow one.
+
+- **Home's connection line says which part is the problem,** in plain words: "Connected", "Weak
+  signal, answers will be slow", "No internet", "Can't reach your home computer".
+- **A failed reply says why,** out loud and on screen: no internet on this device, or the home
+  computer did not answer. Never the same sentence for both.
+- **The line turns to "weak" before a reply fails,** from what the app already measures: how long
+  the last upload took and how long the link takes to answer.
+- **A speed number (kB/s) is for developers only.** A buyer gets the words, not the number.
+- **The same line shows in the notification,** so it can be read without opening the app.
+- Related, and the bigger win: on a slow link a long sentence takes 9 to 14 s because its sound is
+  uploaded only after he stops talking (car, 2026-11-17). Sending the sound while he talks,
+  compressed, is the fix; it is voice work, not app design.
+
 ## First start
 
 Welcome, then one permission at a time with one sentence of why (mic first, the rest when the feature

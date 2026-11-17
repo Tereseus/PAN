@@ -15,6 +15,10 @@
 // the authority on itself.
 
 import { get } from './db.js';
+import { readFileSync, readdirSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+import { getDataDir } from './platform.js';
 
 const CACHE_MS = 60_000;
 let _cached = null;
@@ -61,12 +65,53 @@ function studentIdentity(id) {
   return /syrinx/i.test(id) ? { name: 'Syrinx', short: 'Syrinx', base } : { name: 'OmniPi (written OmniΠ)', short: 'OmniΠ', base };
 }
 
+// Asked its version and its own speed in the car, PAN said "I'm not sure about the latest version. Can you
+// check that for me?" three times (2026-11-17): the line below had neither. Both are read from what the hub
+// already holds. They change a few times a day at most, and the line sits right behind the hub model's fixed
+// block, so they go through a cache and sit at the end of the line.
+const _facts = new Map();
+function cachedFact(key, ms, read) {
+  const c = _facts.get(key);
+  if (c && Date.now() - c.at < ms) return c.value;
+  let value = '';
+  try { value = read() || ''; } catch {}
+  _facts.set(key, { at: Date.now(), value });
+  return value;
+}
+const HERE = dirname(fileURLToPath(import.meta.url));
+/** The app build on the device he is talking through (from its own start-up log line) and the newest one the hub holds. */
+function appVersionFact(deviceId) {
+  const newest = cachedFact('apk', 600_000, () => {
+    const meta = JSON.parse(readFileSync(join(HERE, '..', '..', 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'output-metadata.json'), 'utf8'));
+    return (meta.elements || [])[0]?.versionName;
+  });
+  const mine = deviceId ? cachedFact(`app:${deviceId}`, 600_000, () => {
+    const row = get("SELECT message FROM client_logs WHERE device_id = :d AND message LIKE 'Build: versionCode=%' ORDER BY id DESC LIMIT 1", { ':d': `phone-${deviceId}` });
+    return row?.message?.match(/versionName=(\S+)/)?.[1];
+  }) : '';
+  if (mine && newest) return mine === newest ? `The PAN app he is talking through is version ${mine}, which is the newest build. ` : `The PAN app he is talking through is version ${mine}; the newest build on the hub is ${newest}. `;
+  if (mine) return `The PAN app he is talking through is version ${mine}. `;
+  return newest ? `The newest PAN app build on the hub is version ${newest}. ` : '';
+}
+/** How fast replies were on the last day the nightly voice report covers (voice-report.js). */
+function speedFact() {
+  return cachedFact('speed', 3_600_000, () => {
+    const dir = join(getDataDir(), 'voice-reports');
+    const last = readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort().pop();
+    if (!last) return '';
+    const r = JSON.parse(readFileSync(join(dir, last), 'utf8'));
+    const w = r.speed_ms?.phone_first_words;
+    if (!w || !(w.n >= 5) || !(w.p50 > 0)) return '';
+    return `Your speed: on ${r.day} your replies started about ${(w.p50 / 1000).toFixed(1)} seconds after his words were sent, in the middle of ${w.n} replies. `;
+  });
+}
+
 /**
  * One sentence for the student's short prompt. It was never trained on the long block below,
  * and given it, OmniΠ named the model from memory hits ("Gemma4 e4b") or skipped its own name.
  * Tested on the hub: this shape answers correctly.
  */
-export function buildSelfLine({ viaLink } = {}) {
+export function buildSelfLine({ viaLink, deviceId } = {}) {
   const student = readSetting('voice_student_model');
   if (!student) return '';
   const { name, base } = studentIdentity(student);
@@ -78,7 +123,7 @@ export function buildSelfLine({ viaLink } = {}) {
   // Second person and only positive facts: given "his phone" it said "his phone" back to him,
   // and given "never call yourself LFM" it announced "I'm not LFM or Liquid".
   const you = owner ? `The person talking to you is ${owner}: asked his own name, the answer is ${owner}. ` : '';
-  return `About you (live, this is fact): your name is PAN, short for Personal AI Network, his personal AI. ${you}He talks to you through the PAN app on his phone (say "your phone" to him), and you run on the mini PC hub in his home. ${viaLink === true ? "Right now his words reach you over PAN Link, PAN's own encrypted connection between his devices and the hub, and it is working. " : viaLink === false ? 'Right now his words reach you without PAN Link (his home network or Tailscale). ' : ''}Your voice model is ${name}, PAN's own fine-tune of ${base}. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. PAN's thread relay carries his voice to his Claude Code threads on his computers and reads their answers back: he says "tell the <name> thread ..." or "what is the <name> thread doing". Answer questions about yourself and about him only from this line.`;
+  return `About you (live, this is fact): your name is PAN, short for Personal AI Network, his personal AI. ${you}He talks to you through the PAN app on his phone (say "your phone" to him), and you run on the mini PC hub in his home. ${viaLink === true ? "Right now his words reach you over PAN Link, PAN's own encrypted connection between his devices and the hub, and it is working. " : viaLink === false ? 'Right now his words reach you without PAN Link (his home network or Tailscale). ' : ''}Your voice model is ${name}, PAN's own fine-tune of ${base}. Turns you hand back go to ${back} ${where}. His speech is turned into text by NVIDIA Parakeet on the hub. PAN's thread relay carries his voice to his Claude Code threads on his computers and reads their answers back: he says "tell the <name> thread ..." or "what is the <name> thread doing". ${appVersionFact(deviceId)}${speedFact()}Answer questions about yourself and about him only from this line.`;
 }
 
 export function buildSelfBlock() {
