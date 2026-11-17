@@ -14,10 +14,8 @@ import dev.pan.app.debug.VoiceEvents
 import dev.pan.app.util.CpuBoost
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
-import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig
-import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.atomic.AtomicInteger
@@ -29,9 +27,11 @@ import java.io.FileOutputStream
 import java.net.URL
 
 /**
- * Piper TTS — high-quality on-device speech.
+ * ΠAN's voice on the device: Supertonic through sherpa-onnx. The class keeps its first name; the
+ * Piper and Kokoro voices and the espeak-ng data they needed were taken out in 0.5.5 (2026-11-17):
+ * Piper spoke nothing on sherpa-onnx 2.x, nobody used Kokoro, and espeak-ng is GPL.
  *
- * CRITICAL: OfflineTts must NEVER be created until model + espeak data are fully downloaded.
+ * CRITICAL: OfflineTts must NEVER be created until the model files are fully downloaded.
  * sherpa-onnx will SIGSEGV (native crash, uncatchable) if files are missing.
  */
 class PiperTtsEngine(private val context: Context) {
@@ -39,11 +39,7 @@ class PiperTtsEngine(private val context: Context) {
     companion object {
         private const val TAG = "PiperTTS"
 
-        // espeak-ng data is bundled in APK assets/espeak-ng-data/
-        // Copied to filesDir on first run (~18MB)
-
-        // Use sherpa-onnx repackaged models (have sample_rate in metadata)
-        // Raw Piper models from HuggingFace DON'T work with sherpa-onnx
+        // sherpa-onnx's own packaged models.
         private const val REL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
 
         /**
@@ -85,27 +81,10 @@ class PiperTtsEngine(private val context: Context) {
         )
 
         val VOICES = mapOf(
-            "low" to VoiceModel("low", "Amy (Low)", "Low",
-                "$REL/vits-piper-en_US-amy-low.tar.bz2",
-                "vits-piper-en_US-amy-low", 8_000_000L, 16000),
-            "medium" to VoiceModel("medium", "Amy (Medium)", "Medium",
-                "$REL/vits-piper-en_US-amy-medium.tar.bz2",
-                "vits-piper-en_US-amy-medium", 35_000_000L, 22050),
-            "high" to VoiceModel("high", "Lessac (High)", "High",
-                "$REL/vits-piper-en_US-lessac-high.tar.bz2",
-                "vits-piper-en_US-lessac-high", 65_000_000L, 22050),
-            // Kokoro 82M (StyleTTS2). Markedly less synthetic than Piper.
-            // int8 multi-lang is 140MB vs 305MB for the fp32 English-only build,
-            // and it is the newer v1.1 architecture, so it wins on both counts.
-            // sid picks the speaker out of voices.bin; 0 is af_alloy.
-            "kokoro" to VoiceModel("kokoro", "Kokoro (Natural)", "Natural",
-                "$REL/kokoro-int8-multi-lang-v1_1.tar.bz2",
-                "kokoro-int8-multi-lang-v1_1", 147_000_000L, 24000,
-                kind = "kokoro", sid = 0, numThreads = 4),
             // Supertonic: measured 7.3x realtime vs Kokoro's 0.9x on the same
             // sentence, at 44.1kHz and under half the size. MIT licensed. Four
-            // separate onnx graphs, and NO espeak-ng-data - it phonemises from
-            // unicode_indexer.bin, which is why nothing here points at espeakDir.
+            // separate onnx graphs; it phonemises from unicode_indexer.bin and needs no
+            // phoneme data beside it.
             "supertonic" to VoiceModel("supertonic", "Supertonic (Fast)", "Fast",
                 "$REL/sherpa-onnx-supertonic-tts-int8-2026-03-06.tar.bz2",
                 "sherpa-onnx-supertonic-tts-int8-2026-03-06", 85_000_000L, 44100,
@@ -148,7 +127,6 @@ class PiperTtsEngine(private val context: Context) {
     @Volatile var silenceScale = 0.2f           // the library default
 
     private val modelsDir = File(context.filesDir, "piper-models")
-    private val espeakDir = File(modelsDir, "espeak-ng-data")
     private var currentVoice: VoiceModel? = null
     // NEVER created until isFullyReady() == true
     private var offlineTts: OfflineTts? = null
@@ -200,38 +178,25 @@ class PiperTtsEngine(private val context: Context) {
     fun isVoiceDownloaded(quality: String): Boolean {
         val v = VOICES[quality] ?: return false
         val voiceDir = File(modelsDir, v.id)
-        // Look for any .onnx file in the voice directory
-        val hasModel = voiceDir.exists() &&
-            voiceDir.listFiles()?.any { it.name.endsWith(".onnx") && it.length() > 1000 } == true
-        // Kokoro carries its speakers in a separate voices.bin. Without it the
-        // native loader SIGSEGVs exactly like a missing model, so gate on it too.
-        if (v.kind == "kokoro") {
-            return hasModel && File(voiceDir, "voices.bin").length() > 1000
-        }
-        // Supertonic is four graphs plus three data files. A partial extract that
-        // still contains *an* .onnx would otherwise look ready and then SIGSEGV.
-        if (v.kind == "supertonic") {
-            return SUPERTONIC_FILES.all { File(voiceDir, it).length() > 1000 }
-        }
-        return hasModel
+        // Four graphs plus three data files. A partial extract would load and then SIGSEGV.
+        return SUPERTONIC_FILES.all { File(voiceDir, it).length() > 1000 }
     }
 
-    fun isEspeakReady(): Boolean {
-        return File(espeakDir, "phontab").exists() &&
-               File(espeakDir, "phonindex").exists() &&
-               File(espeakDir, "phondata").exists()
-    }
+    fun isFullyReady(quality: String): Boolean = isVoiceDownloaded(quality)
 
-    fun isFullyReady(quality: String): Boolean = isVoiceDownloaded(quality) && isEspeakReady()
+    /** Files of voices this app no longer carries (0.5.5), still on a device that had them. */
+    fun dropOldVoiceFiles() {
+        listOf("espeak-ng-data", "low", "medium", "high", "kokoro").forEach { name ->
+            val f = File(modelsDir, name)
+            if (f.exists()) runCatching { f.deleteRecursively() }
+        }
+    }
 
     suspend fun downloadVoice(quality: String, onProgress: ((Float) -> Unit)? = null): Boolean =
         withContext(Dispatchers.IO) {
             val voice = VOICES[quality] ?: return@withContext false
             modelsDir.mkdirs()
             try {
-                if (!isEspeakReady()) {
-                    copyEspeakFromAssets()
-                }
                 val voiceDir = File(modelsDir, voice.id)
                 if (!isVoiceDownloaded(quality)) {
                     voiceDir.mkdirs()
@@ -242,11 +207,8 @@ class PiperTtsEngine(private val context: Context) {
                     Log.i(TAG, "Extracting ${voice.name}...")
                     extractTarBz2(tarFile, modelsDir)
                     tarFile.delete()
-                    // The tar extracts to a directory like "vits-piper-en_US-amy-low"
-                    // Rename to our simple name
                     // The tar unpacks to its own upstream directory name, which is
-                    // recorded per voice. The previous matcher string-mangled the
-                    // piper voice ids and could never have matched a Kokoro archive.
+                    // recorded per voice; it is renamed to our short id.
                     val extracted = File(modelsDir, voice.archiveDir).takeIf { it.isDirectory }
                         ?: modelsDir.listFiles()?.firstOrNull {
                             it.isDirectory && it.name == voice.archiveDir
@@ -280,72 +242,22 @@ class PiperTtsEngine(private val context: Context) {
         offlineTts = null
 
         val voiceDir = File(modelsDir, voice.id)
-        val modelFile = voiceDir.listFiles()?.firstOrNull { it.name.endsWith(".onnx") }
-        val tokensFile = File(voiceDir, "tokens.txt").let { if (it.exists()) it else File(espeakDir, "tokens.txt") }
-
-        // Supertonic names its four graphs explicitly, so the "find any .onnx"
-        // probe is meaningless for it (it would pick an arbitrary one of four).
-        if (voice.kind != "supertonic" && (modelFile == null || !modelFile.exists())) {
-            Log.e(TAG, "No .onnx file found in ${voiceDir.absolutePath}")
-            return false
-        }
-
-        // Kokoro archives ship their own espeak-ng-data; prefer it over the shared
-        // copy so a model built against newer phoneme tables is not fed older ones.
-        val dataDir = File(voiceDir, "espeak-ng-data").let { if (it.isDirectory) it else espeakDir }
 
         return try {
-            val modelConfig = if (voice.kind == "supertonic") {
-                OfflineTtsModelConfig(
-                    supertonic = OfflineTtsSupertonicModelConfig(
-                        textEncoder = File(voiceDir, "text_encoder.int8.onnx").absolutePath,
-                        durationPredictor = File(voiceDir, "duration_predictor.int8.onnx").absolutePath,
-                        vectorEstimator = File(voiceDir, "vector_estimator.int8.onnx").absolutePath,
-                        vocoder = File(voiceDir, "vocoder.int8.onnx").absolutePath,
-                        voiceStyle = File(voiceDir, "voice.bin").absolutePath,
-                        ttsJson = File(voiceDir, "tts.json").absolutePath,
-                        unicodeIndexer = File(voiceDir, "unicode_indexer.bin").absolutePath
-                    ),
-                    numThreads = voice.numThreads,
-                    debug = false,
-                    provider = "cpu"
-                )
-            } else if (voice.kind == "kokoro") {
-                // English only. Measured: adding lexicon-zh.txt makes the loader spew
-                // "Unknown token" on characters it cannot map and costs load time
-                // parsing 2MB we never use. dict/ is jieba data for Chinese, likewise
-                // dead weight here, and "" is the documented "not set" value.
-                val lexicon = File(voiceDir, "lexicon-us-en.txt")
-                    .let { if (it.exists()) it.absolutePath else "" }
-                val dictDir = ""
-                OfflineTtsModelConfig(
-                    kokoro = OfflineTtsKokoroModelConfig(
-                        model = modelFile!!.absolutePath,
-                        voices = File(voiceDir, "voices.bin").absolutePath,
-                        tokens = tokensFile.absolutePath,
-                        dataDir = dataDir.absolutePath,
-                        lexicon = lexicon,
-                        lang = "en",
-                        dictDir = dictDir
-                    ),
-                    numThreads = voice.numThreads,
-                    debug = false,
-                    provider = "cpu"
-                )
-            } else {
-                OfflineTtsModelConfig(
-                    vits = OfflineTtsVitsModelConfig(
-                        model = modelFile!!.absolutePath,
-                        lexicon = "",
-                        tokens = tokensFile.absolutePath,
-                        dataDir = dataDir.absolutePath,
-                        dictDir = ""
-                    ),
-                    numThreads = voice.numThreads,
-                    debug = false,
-                    provider = "cpu"
-                )
-            }
+            val modelConfig = OfflineTtsModelConfig(
+                supertonic = OfflineTtsSupertonicModelConfig(
+                    textEncoder = File(voiceDir, "text_encoder.int8.onnx").absolutePath,
+                    durationPredictor = File(voiceDir, "duration_predictor.int8.onnx").absolutePath,
+                    vectorEstimator = File(voiceDir, "vector_estimator.int8.onnx").absolutePath,
+                    vocoder = File(voiceDir, "vocoder.int8.onnx").absolutePath,
+                    voiceStyle = File(voiceDir, "voice.bin").absolutePath,
+                    ttsJson = File(voiceDir, "tts.json").absolutePath,
+                    unicodeIndexer = File(voiceDir, "unicode_indexer.bin").absolutePath
+                ),
+                numThreads = voice.numThreads,
+                debug = false,
+                provider = "cpu"
+            )
             val config = OfflineTtsConfig(model = modelConfig)
             offlineTts = OfflineTts(assetManager = null, config = config)
             currentVoice = voice
@@ -840,32 +752,6 @@ class PiperTtsEngine(private val context: Context) {
             Log.e(TAG, "tar extract exception: ${e.message}")
             // Fallback: try bzip2 + tar separately via Java
         }
-    }
-
-    private fun copyEspeakFromAssets() {
-        espeakDir.mkdirs()
-        Log.i(TAG, "Copying espeak-ng data from assets...")
-        val assets = context.assets
-        fun copyDir(assetPath: String, destDir: File) {
-            destDir.mkdirs()
-            val files = assets.list(assetPath) ?: return
-            for (name in files) {
-                val dest = File(destDir, name)
-                val subPath = "$assetPath/$name"
-                val subFiles = assets.list(subPath)
-                if (subFiles != null && subFiles.isNotEmpty()) {
-                    copyDir(subPath, dest)
-                } else {
-                    if (!dest.exists()) {
-                        assets.open(subPath).use { input ->
-                            FileOutputStream(dest).use { output -> input.copyTo(output) }
-                        }
-                    }
-                }
-            }
-        }
-        copyDir("espeak-ng-data", espeakDir)
-        Log.i(TAG, "espeak-ng data ready")
     }
 
     private suspend fun downloadFile(url: String, dest: File, totalSize: Long, onProgress: ((Float) -> Unit)?) =

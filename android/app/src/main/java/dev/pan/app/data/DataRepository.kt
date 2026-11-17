@@ -70,7 +70,13 @@ class DataRepository @Inject constructor(
         if (rough != better && better.isNotBlank()) conversationDao.correctUserLine(rough, better)
     }
 
-    suspend fun dropUserLine(text: String) = conversationDao.dropUserLine(text)
+    suspend fun dropUserLine(text: String) {
+        conversationDao.dropNoteAfterUserLine(text)
+        conversationDao.dropUserLine(text)
+    }
+
+    /** A small line on Home that nobody said: why PAN stayed out of the line above it. */
+    suspend fun addNote(text: String) = conversationDao.insert(ConversationEntity(role = "note", text = text))
 
     suspend fun forgetTalkContaining(word: String) = conversationDao.deleteContaining(word)
     suspend fun forgetTalkBetween(from: Long, to: Long) = conversationDao.deleteBetween(from, to)

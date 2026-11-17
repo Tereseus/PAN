@@ -8,8 +8,6 @@ import { execSync, spawn } from 'child_process';
 import { resetOllamaStatus } from './embeddings.js';
 
 const EMBED_MODEL = 'qwen3-embedding';
-const INFERENCE_MODEL = 'qwen3:4b';
-const VISION_MODEL = 'qwen2.5vl:3b';
 const OLLAMA_URL = 'http://localhost:11434';
 
 async function isOllamaRunning() {

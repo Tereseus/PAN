@@ -140,7 +140,6 @@ class PanForegroundService : Service() {
     // GeminiBrain removed — server handles all AI
     @Inject lateinit var voiceCollector: VoiceCollector
     @Inject lateinit var cameraCapture: CameraCapture
-    @Inject lateinit var nanoVision: dev.pan.app.ai.NanoVision
     @Inject lateinit var sensorContext: dev.pan.app.sensor.SensorContext
     @Inject lateinit var pendantBle: dev.pan.app.ble.PendantBle
     @Inject lateinit var linkManager: dev.pan.app.vpn.LinkManager
@@ -254,9 +253,22 @@ class PanForegroundService : Service() {
     // Music on this device's speakers (another app's): the mic hears the song, and in the car on
     // Nov 14 PAN answered the lyrics. Not PAN's own voice, which can play on the media path while
     // interpreting.
-    // PAN's one voice, and the Piper voices that speak nothing on sherpa-onnx 2.x.
+    /** Why PAN stayed quiet, for the small line on Home. Null = no line (he is still mid sentence). */
+    private fun notForPanNote(reason: String?): String? = when (reason) {
+        "still_talking" -> null
+        "dictating" -> "Not for ΠAN: you were talking to Claude"
+        "named_other" -> "Not for ΠAN: you said someone else's name"
+        "other_voice" -> "Not for ΠAN: not your voice"
+        "music_playing" -> "Not for ΠAN: music was playing"
+        "long_line_room" -> "Not for ΠAN: sounded like talk in the room"
+        "not_addressed" -> "Not for ΠAN: sounded like you were talking to someone else"
+        "backchannel", "noise" -> "Not for ΠAN: nothing to answer"
+        else -> "Not for ΠAN"
+    }
+
+    // PAN's one voice, and the voices this app no longer carries.
     private val MAIN_VOICE = "supertonic3"
-    private val DEAD_VOICES = setOf("low", "medium", "high")
+    private val DEAD_VOICES = setOf("low", "medium", "high", "kokoro")
 
     // TEST_CAR (debug builds): car mode on any Bluetooth speaker, for testing without a car.
     @Volatile private var carForced = false
@@ -784,6 +796,7 @@ class PanForegroundService : Service() {
             // is moved to Supertonic 3, with the Android voice until it has downloaded.
             CoroutineScope(Dispatchers.IO).launch {
                 val piper = tts.piper
+                piper.dropOldVoiceFiles()
                 var preferred = tts.voiceQuality
                 if (preferred in DEAD_VOICES) {
                     panLog("Voice: $preferred speaks nothing on this sherpa-onnx, moving to $MAIN_VOICE")
@@ -2028,6 +2041,9 @@ class PanForegroundService : Service() {
                     // said near them, and "what did I say the dog is called" needs it. Dropping
                     // it also dropped every statement the hub misjudged as room talk, which is
                     // how recall went to 0% (voicebench, 2026-11-02).
+                    // On Home it gets one small line under his words saying why PAN stayed out of
+                    // it, so silence does not look like a fault (owner, 2026-11-17).
+                    notForPanNote(response?.reason)?.let { note -> runCatching { dataRepository.addNote(note) } }
                     return@launch
                 }
 
@@ -2256,31 +2272,13 @@ class PanForegroundService : Service() {
                 val photoBytes = cameraCapture.takePhoto()
                 panLog("Photo captured: ${photoBytes.size} bytes")
 
-                // Hub FIRST: its local model answers the actual question. On-device
-                // Gemini Nano is caption-only (it ignores the question) and often
-                // fails its own policy check after ~3 s, which every photo then waited
-                // through. So Nano is only the fallback for when the hub can't answer.
+                // The hub's own model answers the question. The phone's built-in Google model used
+                // to be the fallback; it only captioned, often refused, and its terms shut out
+                // anyone under 18, so it was taken out (0.5.5). No hub answer = say so, below.
                 val base64 = android.util.Base64.encodeToString(photoBytes, android.util.Base64.NO_WRAP)
                 panLog("Base64 encoded: ${base64.length} chars")
-                var description: String? = serverClient.analyzeImage(base64, question)
-                var analyzedOnDevice = false
-
-                if (description.isNullOrBlank()) {
-                    description = null
-                    try {
-                        val bitmap = android.graphics.BitmapFactory.decodeByteArray(photoBytes, 0, photoBytes.size)
-                        if (bitmap != null) {
-                            val nano = nanoVision.describe(bitmap, question)
-                            if (!nano.isNullOrBlank()) {
-                                description = nano
-                                analyzedOnDevice = true
-                                panLog("Image analyzed on-device (Nano): ${nano.take(100)}")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        panLog("Nano vision failed: ${e.message}")
-                    }
-                }
+                val description: String? = serverClient.analyzeImage(base64, question)?.takeIf { it.isNotBlank() }
+                val analyzedOnDevice = false
 
                 // Snapshot into a val so it smart-casts and can be captured by the
                 // panSpeak closure (description is a reassigned var above).

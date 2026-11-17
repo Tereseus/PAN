@@ -25,46 +25,56 @@ Test data and tools, not shipped: [FLEURS](https://huggingface.co/datasets/googl
 
 Every licence below was read that day from the model card, the LICENSE file or the vendor's page,
 not from memory. The rule for ΠAN: only licences that allow selling; MIT, BSD and Apache are the easy
-ones, and anything else is written out here with what it asks for. "Where" says what ΠAN does with it
-today, not what a buyer's install will ship: that list is still to be decided.
+ones, and anything else is written out here with what it asks for. The first table is what runs
+today. Whatever is not in it is not part of ΠAN, even if a copy still sits on the owner's hub.
 
-### Must change before anything is sold
+### What runs today
 
-| What | Where | Licence | Why it is a problem |
+| Job | What does it | Where | Licence |
 |---|---|---|---|
-| espeak-ng and `espeak-ng-data` | In the app: 18 MB in `assets/espeak-ng-data`, used only by the old Piper voices. The app's `sherpa-onnx.aar` still has espeak text in it, so it is probably a build from before 2.0.0 | GPL-3.0 or later | A closed app that links it has to be GPL-3 as a whole, with source and install information. sherpa-onnx 2.0.0 (2026-10-20) removed espeak and calls itself GPL-free |
-| Piper voice en_US-lessac | In the app's voice picker (developers only since 0.5.0), downloaded on pick | Repo says MIT; the voice was trained on the Blizzard 2013 Lessac data, "non-commercial use only" | Non-commercial data |
-| Piper voice en_US-amy (low, medium) | Same picker | Not stated; amy-low is tuned from a CC BY-NC-SA voice | Cannot be shown to be clean |
-| Qwen2.5-VL 3B | On the hub's disk since spring (`qwen2.5vl:3b`), named in `memory/ollama-boot.js` and `llm.js`, not the vision model in use | Qwen Research Licence | Non-commercial only. The 7B size is Apache 2.0 |
-
-The fix for the first three is one job: take the Piper voices and the espeak data out of the app (the
-voice is Supertonic, which needs neither) and move to sherpa-onnx 2.0.0 or newer.
+| Talks (the voice model) | Syrinx, a fine-tune of Liquid LFM2 | Hub | LFM Open License v1.0 (see conditions) |
+| Answers what the voice model hands up | Phi-4-mini | Hub | MIT |
+| Long prompts, background jobs, pictures and screens | Gemma 4 E2B | Hub | Apache 2.0 |
+| Memory search (embeddings) | Qwen3-Embedding 0.6B | Hub | Apache 2.0 |
+| Ears on the hub | NVIDIA Parakeet TDT 0.6B v2 | Hub | CC-BY-4.0 (see conditions) |
+| Ears on the phone, live words | Streaming zipformer (English) | Phone | Apache 2.0 on its card |
+| Has he finished talking | Smart Turn v3 | Phone | BSD-2 |
+| Is anyone talking | Silero VAD | Phone | MIT |
+| Whose voice | 3D-Speaker CAM++ | Hub | Apache 2.0 |
+| Is music playing | YAMNet | Phone | Apache 2.0 |
+| The voice | Supertonic 3 | Phone | OpenRAIL-M model, MIT code (see conditions) |
+| Interpreter: translation | MADLAD-400 | Hub | Apache 2.0 |
+| Interpreter: ears | Parakeet TDT 0.6B v3, SenseVoice Small for Japanese, Chinese, Korean | Hub | CC-BY-4.0; FunASR Model License 1.1 (see conditions) |
+| Speech library | sherpa-onnx 2.x | Phone, hub | Apache 2.0 (2.0.0 and later carry no GPL part) |
+| Model runners | ONNX Runtime, Ollama | Phone, hub | MIT |
+| The link | Tailscale's Go module, wireguard-go | Phone, PCs | BSD-3, MIT |
+| Storage | SQLCipher, sqlite-vec | Hub | BSD style (its notice must ship), MIT or Apache 2.0 |
+| Camera, pairing code | CameraX, ZXing | Phone | Apache 2.0 |
 
 ### Allowed, with conditions
 
-| What | Where | Licence | What it asks for |
-|---|---|---|---|
-| Liquid LFM2 family | The voice model (Syrinx is a fine-tune of it) | LFM Open License v1.0 | Free for selling only while the company, with everything under common control, makes under $10M a year; above that a paid licence. A fine-tune carries the same cap. Ship a copy of the licence with the model. Its sound tokenizer (Kyutai Mimi) is CC-BY-4.0: credit |
-| Supertonic 3 | The voice, on the phone | OpenRAIL-M (model), MIT (code) | Its use rules must be an enforceable part of our own terms with users, and users must be told. In the list: say when speech is machine made, no impersonation without consent, no medical advice. Ship the licence copy |
-| NVIDIA Parakeet TDT 0.6B v2 and v3 | The hub's ears (v2), the interpreter (v3) | CC-BY-4.0 | Credit NVIDIA with a link to the licence, and say the file is a converted (int8 ONNX) version |
-| SenseVoice Small | Interpreter ears for Japanese, Chinese, Korean | FunASR Model License 1.1 | Credit and keep the model name. Selling is not named in so many words; Alibaba can change the terms; the licence is lost for "malicious smearing" of the software |
-| Google ML Kit GenAI (Gemini Nano on the phone) | In the app's build, for on-device summaries and picture descriptions | Google's service terms, not a licence | No app aimed at under 18s, no medical use, tell users about Google's metrics; both features are marked Beta |
-| AutoHotkey v2 | A helper on the owner's Windows PCs (`service/bin`), not part of a buyer's phone or hub | GPL-2.0 | Shipping the program means shipping its licence and source or an offer of it. Our own code beside it stays ours ("mere aggregation") |
+| What | Licence | What it asks for |
+|---|---|---|
+| Liquid LFM2 family (Syrinx) | LFM Open License v1.0 | Free for selling only while the company, with everything under common control, makes under $10M a year; above that a paid licence. A fine-tune carries the same cap. Ship a copy of the licence with the model. Its sound tokenizer (Kyutai Mimi) is CC-BY-4.0: credit |
+| Supertonic 3 | OpenRAIL-M (model), MIT (code) | Its use rules must be an enforceable part of our own terms with users, and users must be told. In the list: say when speech is machine made, no impersonation without consent, no medical advice. Ship the licence copy |
+| NVIDIA Parakeet TDT 0.6B v2 and v3 | CC-BY-4.0 | Credit NVIDIA with a link to the licence, and say the file is a converted (int8 ONNX) version |
+| SenseVoice Small | FunASR Model License 1.1 | Credit and keep the model name. Selling is not named in so many words; Alibaba can change the terms; the licence is lost for "malicious smearing" of the software |
 
-### Plain MIT, BSD or Apache
+The owner's word (2026-11-17): everyone who has to be credited gets credited.
 
-Phi-4-mini (MIT). Gemma 4 E2B (Apache 2.0; older Gemma sizes are under Google's own terms, which is
-why the hub uses 4). Smart Turn v3 (BSD-2). Silero VAD (MIT). The streaming zipformer English model
-(Apache 2.0 on its card). 3D-Speaker CAM++ (Apache 2.0). MADLAD-400 (Apache 2.0). Moondream 2 (Apache
-2.0). Kokoro-82M (Apache 2.0). Whisper tiny (MIT). sherpa-onnx (Apache 2.0, see espeak above). ONNX
-Runtime (MIT). Ollama (MIT). Vosk (Apache 2.0). Tailscale's Go module (BSD-3) and wireguard-go (MIT).
-SQLCipher (BSD style: its notice has to be in what we ship) and sqlite-vec (MIT or Apache 2.0). ZXing,
-CameraX and TensorFlow Lite (Apache 2.0). faster-whisper and CTranslate2 (MIT).
+### Taken out or never part of it
 
-### Not checked yet
+| What | Why it is not in ΠAN |
+|---|---|
+| Piper voices (Amy, Lessac), Kokoro, espeak-ng data | Removed from the app in 0.5.5. Nothing used them; espeak-ng is GPL-3 and Lessac's training data is non-commercial |
+| Google ML Kit GenAI (Gemini Nano on the phone) | Removed in 0.5.5. Google's terms: no app aimed at under 18s, no medical use; ΠAN is for everybody |
+| Vosk | Removed in 0.5.5, never wired in |
+| Qwen2.5-VL 3B | Never the model in use. Non-commercial licence, so it must never go into an install. A copy sits on the owner's hub from tests |
+| `qwen3:4b`, `qwen3.5:4b`, `granite4.2:3b`, `minicpm-v`, `llava-phi3`, Moondream, the older Syrinx rounds | Test copies on the owner's hub; not loaded by anything and not part of an install |
+| Whisper and AutoHotkey | The owner's own dictation helper on his PCs (`service/bin`), not part of the product. AutoHotkey is GPL-2 |
 
-On the hub's disk and not looked up: `qwen3-embedding` (the memory search model, in use), `qwen3:4b`,
-`qwen3.5:4b`, `granite4.2:3b`, `minicpm-v`, `llava-phi3`. In the app: `yamnet.tflite`. Also open: the
-exact sherpa-onnx version inside the app's `.aar`, and the data licence behind the zipformer model
-(its card names none).
+### Still open
 
+The data licence behind the phone's zipformer model (its card names none). Before a first install is
+built: read this list again against the installer's own download list, and put the credits and
+licence copies in the app.

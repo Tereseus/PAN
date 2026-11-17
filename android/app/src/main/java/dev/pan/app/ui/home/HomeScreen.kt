@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -256,6 +257,13 @@ private fun NeedsYouCard(title: String, body: String, yes: String?, no: String, 
 @Composable
 private fun TalkLine(line: ConversationEntity) {
     val context = LocalContext.current
+    // Why PAN stayed out of the line above: small, slanted, on his side, no bubble.
+    if (line.role == "note") {
+        Text(line.text, modifier = Modifier.fillMaxWidth().padding(end = 6.dp, bottom = 2.dp),
+            textAlign = TextAlign.End, style = MaterialTheme.typography.labelSmall,
+            fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
     val mine = line.role == "user"
     // The app's own notes ("[PAN muted]") are not something anyone said: small, in the middle.
     if (!mine && line.text.startsWith("[") && line.text.endsWith("]")) {

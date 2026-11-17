@@ -126,6 +126,9 @@ from the 0.4 builds.
   the hub's words, the drop-down notification redone.
 - **0.5.3** (code 132): words said before ΠAN answers join the turn in place of cancelling it; the
   live box reads as a sentence.
+- **0.5.4** (code 133): an empty reply is not kept as a blank line.
+- **0.5.5** (code 134): the unused voices, espeak, Vosk and Google's on-phone AI are out; a line ΠAN
+  stays out of gets a small "Not for ΠAN" note with the reason.
 
 ## Every feature and where it shows
 

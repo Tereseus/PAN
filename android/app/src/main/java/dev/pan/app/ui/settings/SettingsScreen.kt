@@ -248,9 +248,7 @@ fun SettingsScreen(
             ) }
             var voiceStatus by remember { mutableStateOf("") }
             val voiceOptions = listOf(
-                // The Piper voices (low, medium, high) speak nothing on sherpa-onnx 2.x (Nov 15).
                 "android" to "Default (Android)",
-                "kokoro" to "Kokoro Natural (140MB)",
                 "supertonic" to "Supertonic Fast (81MB)",
                 "supertonic3" to "Supertonic 3 Clear (129MB)"
             )

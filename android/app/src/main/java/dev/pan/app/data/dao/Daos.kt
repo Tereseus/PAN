@@ -40,6 +40,10 @@ interface ConversationDao {
     @Query("DELETE FROM conversations WHERE id = (SELECT id FROM conversations WHERE role = 'user' AND text = :text ORDER BY id DESC LIMIT 1)")
     suspend fun dropUserLine(text: String)
 
+    // The "Not for PAN" note that belongs to that line, if it has one (the row right after it).
+    @Query("DELETE FROM conversations WHERE role = 'note' AND id = (SELECT MIN(id) FROM conversations WHERE id > (SELECT id FROM conversations WHERE role = 'user' AND text = :text ORDER BY id DESC LIMIT 1))")
+    suspend fun dropNoteAfterUserLine(text: String)
+
     // Forgetting in Memory also takes the phone's own copy of the talk.
     @Query("DELETE FROM conversations WHERE text LIKE '%' || :word || '%'")
     suspend fun deleteContaining(word: String)

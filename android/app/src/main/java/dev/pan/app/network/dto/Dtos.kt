@@ -82,7 +82,9 @@ data class QueryResponse(
     val addressed: Double? = null,
     val hold_ms: Long = 0L,
     // The hub decided answering needs a look: take a photo and answer from it.
-    val camera: Boolean = false
+    val camera: Boolean = false,
+    // When PAN stayed out of it (intent ambient): the hub's one word for why.
+    val reason: String? = null
 )
 
 data class DeviceRegisterRequest(
