@@ -89,7 +89,9 @@ From the owner (2026-11-17): nobody who picks up the phone should get into Memor
 be an emergency way to shut everything.
 
 The rule: **anyone can lock, only the owner can unlock.** Locking is always the safe direction, so
-it needs no proof. Unlocking always needs the phone's fingerprint or face check.
+it needs no proof. Unlocking after a lockdown needs the phone's PIN or password, not a fingerprint or
+face: a finger or a face can be put to the phone by someone else, and Android's own Lockdown works
+the same way. Opening Memory on a normal day stays fingerprint or face.
 
 - **By voice:** "PAN, lock down" (the words can be changed). **By hand:** a lock button on Home and
   in the notification.
