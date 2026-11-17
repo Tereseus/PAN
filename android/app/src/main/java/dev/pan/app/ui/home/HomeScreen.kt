@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -156,17 +157,24 @@ fun HomeScreen(viewModel: MainViewModel) {
                     modifier = Modifier.align(Alignment.Center).padding(32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(if (micOn) "PAN is listening." else "PAN is muted.",
+                    Text(if (micOn) "ΠAN is listening." else "ΠAN is muted.",
                         style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
-                    Text(if (micOn) "Just talk. What you say and what PAN answers shows up here."
+                    Text(if (micOn) "Just talk. What you say and what ΠAN answers shows up here."
                          else "Tap the mic to talk, or tap the box to type.",
                         style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
+                // Follow the talk: a new line arrives at the bottom, and the list goes there unless he
+                // has scrolled up to read (0.5.1 stayed where it was, so the answer came in off screen).
+                val listState = rememberLazyListState()
+                LaunchedEffect(talk.firstOrNull()?.id, thinking) {
+                    if (listState.firstVisibleItemIndex <= 4) listState.animateScrollToItem(0)
+                }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
+                    state = listState,
                     reverseLayout = true,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -293,7 +301,7 @@ private fun TalkPhoto(path: String) {
     }
     bitmap?.let {
         Image(
-            bitmap = it.asImageBitmap(), contentDescription = "Picture PAN took",
+            bitmap = it.asImageBitmap(), contentDescription = "Picture ΠAN took",
             contentScale = ContentScale.Crop,
             modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth().heightIn(max = 190.dp).clip(RoundedCornerShape(12.dp))
         )
@@ -370,7 +378,7 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
                     keyboardActions = KeyboardActions(onSend = { send() }),
                     decorationBox = { inner ->
                         if (typed.isEmpty()) {
-                            Text("Type to PAN", style = MaterialTheme.typography.bodyLarge,
+                            Text("Type to ΠAN", style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         inner()

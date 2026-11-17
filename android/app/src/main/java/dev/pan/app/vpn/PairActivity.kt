@@ -46,7 +46,7 @@ class PairActivity : ComponentActivity() {
         // The name comes from whoever made the code, so it vouches for nothing. What keeps
         // a link from pairing the phone on its own is that a person has to say yes.
         val name = runCatching { Uri.parse(code).getQueryParameter("n") }.getOrNull()
-            ?.trim()?.takeIf { it.isNotEmpty() }?.take(60) ?: "a PAN computer"
+            ?.trim()?.takeIf { it.isNotEmpty() }?.take(60) ?: "a ΠAN computer"
         val current = if (link.isPaired()) currentHubName() else null
         setContent {
             PanTheme {
@@ -56,8 +56,8 @@ class PairActivity : ComponentActivity() {
                         title = { Text("Pair with \"$name\"?") },
                         text = {
                             Text(buildString {
-                                append("Only use a code shown by PAN on your own computer. ")
-                                append("This phone will send what you say and do in PAN to that computer.")
+                                append("Only use a code shown by ΠAN on your own computer. ")
+                                append("This phone will send what you say and do in ΠAN to that computer.")
                                 if (current != null) append("\n\nThis replaces the pairing with \"$current\".")
                             })
                         },
@@ -71,7 +71,7 @@ class PairActivity : ComponentActivity() {
 
     private fun currentHubName(): String =
         runCatching { JSONObject(link.status()).optString("hub_name") }.getOrNull()
-            ?.takeIf { it.isNotBlank() } ?: "your PAN computer"
+            ?.takeIf { it.isNotBlank() } ?: "your ΠAN computer"
 
     private fun pair(code: String, name: String) {
         if (!asking) return
@@ -82,7 +82,7 @@ class PairActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { link.pair(code) } }
             result
-                .onSuccess { toast("Paired. This phone reaches PAN over PAN Link now.") }
+                .onSuccess { toast("Paired. This phone reaches ΠAN over ΠAN Link now.") }
                 .onFailure {
                     Log.e("PanLink", "pairing failed: ${it.message}")
                     toast("Pairing failed: ${it.message}")

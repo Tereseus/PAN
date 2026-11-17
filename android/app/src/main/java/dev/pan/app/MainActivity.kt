@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
                         val done = updateChecker.checkAndInstall(this@MainActivity)
                         if (done is UpdateChecker.Result.Error) toast("Update failed: ${done.message}")
                     }
-                    is UpdateChecker.Result.UpToDate -> toast("PAN ${BuildConfig.VERSION_NAME} is up to date")
+                    is UpdateChecker.Result.UpToDate -> toast("ΠAN ${BuildConfig.VERSION_NAME} is up to date")
                     is UpdateChecker.Result.Error -> toast("Couldn't check for updates: ${found.message}")
                     else -> {}
                 }

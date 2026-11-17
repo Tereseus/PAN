@@ -1043,15 +1043,11 @@ class PanForegroundService : Service() {
                     val now = serverClient.api.getIntuitionCurrent().body()?.snapshot?.now
                     if (now != null) {
                         fun clean(s: String?) = s?.trim()?.takeIf { it.isNotEmpty() }
-                        intuitionSummary = listOfNotNull(clean(now.mood), clean(now.focus), clean(now.activity))
-                            .joinToString(" · ").ifEmpty { null }
+                        intuitionSummary = listOfNotNull(clean(now.activity), clean(now.focus))
+                            .joinToString(", ").ifEmpty { null }
                         val lines = mutableListOf<String>()
-                        clean(now.activity)?.let { lines.add("Activity: $it") }
-                        clean(now.focus)?.let { lines.add("Focus: $it") }
-                        clean(now.mood)?.let { m -> lines.add("Mood: $m" + (clean(now.mood_detail)?.let { " — $it" } ?: "")) }
-                        clean(now.direction)?.let { lines.add("Direction: $it") }
-                        clean(now.need)?.let { lines.add("Need: $it") }
-                        clean(now.urgency)?.takeIf { !it.equals("normal", true) }?.let { lines.add("Urgency: $it") }
+                        clean(now.mood)?.let { m -> lines.add("Mood: $m") }
+                        now.social?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }?.let { lines.add("With: " + it.joinToString(", ")) }
                         intuitionFull = lines.joinToString("\n").ifEmpty { null }
                         notificationManager?.notify(
                             Constants.NOTIFICATION_ID,
@@ -1099,7 +1095,7 @@ class PanForegroundService : Service() {
         )
 
         val notification = NotificationCompat.Builder(this, permChannelId)
-            .setContentTitle("Π Permission Required")
+            .setContentTitle("ΠAN: Claude is asking")
             .setContentText(perm.prompt)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -1153,7 +1149,7 @@ class PanForegroundService : Service() {
             SLACK_CHANNEL_ID, "Slack",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "Slack messages relayed through PAN — reply by voice or text"
+            description = "Slack messages that come through ΠAN. Reply by voice or text"
             enableVibration(true)
         }
         notificationManager?.createNotificationChannel(channel)
@@ -1231,10 +1227,10 @@ class PanForegroundService : Service() {
     // Retires ntfy — meeting/other pushes now ride the existing device queue.
     private fun ensureAlertChannel() {
         val channel = NotificationChannel(
-            ALERT_CHANNEL_ID, "PAN",
+            ALERT_CHANNEL_ID, "ΠAN alerts",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "PAN alerts (meeting reminders and other notifications)"
+            description = "Reminders and other things ΠAN tells you"
             enableVibration(true)
         }
         notificationManager?.createNotificationChannel(channel)
@@ -1249,7 +1245,7 @@ class PanForegroundService : Service() {
 
         val title = note.title?.takeIf { it.isNotBlank() }
             ?: note.type?.replaceFirstChar { it.uppercase() }
-            ?: "PAN"
+            ?: "ΠAN"
         val body = note.body ?: ""
 
         // Tap → open the app (reuse the ongoing-notification launch pattern).
@@ -1970,6 +1966,9 @@ class PanForegroundService : Service() {
                         heardText = heard
                         // History keeps what the hub heard, not the phone's rougher guess.
                         mainHandler.post { replaceUserLine(text, heard) }
+                        // The talk on Home too (0.5.2): it showed the phone's rough words while the
+                        // hub had heard the line right.
+                        serviceScope.launch { runCatching { dataRepository.correctUserLine(text, heard) } }
                     },
                     onInterpreting = { tts.interpreting = true },
                     onInterpreter = { lang -> setInterpreter(lang) },
@@ -3164,10 +3163,10 @@ class PanForegroundService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             Constants.NOTIFICATION_CHANNEL_ID,
-            "PAN Service",
+            "ΠAN",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "PAN is always listening and remembering"
+            description = "Shows whether ΠAN is listening and connected"
             setShowBadge(false)
         }
         notificationManager?.createNotificationChannel(channel)
@@ -3188,30 +3187,42 @@ class PanForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = if (listening) "Π Active" else "Π Muted"
-        val statusParts = mutableListOf<String>()
-        statusParts.add(if (listening) "Listening" else "Silent")
-        statusParts.add(if (connected) "Server OK" else "Offline")
-        val toggleLabel = if (listening) "Mute All" else "Unmute All"
+        // The same words Home uses (0.5.2): is it listening, is it connected (and if not, whether it
+        // is the phone's internet or the computer), and what PAN thinks is going on.
+        val title = if (listening) "ΠAN is listening" else "ΠAN is muted"
+        val online = runCatching {
+            val cm = getSystemService(android.net.ConnectivityManager::class.java)
+            cm?.getNetworkCapabilities(cm.activeNetwork)
+                ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        }.getOrDefault(true)
+        val connection = when {
+            connected -> "Connected"
+            !online -> "No internet on this device"
+            else -> "Your computer is not answering"
+        }
+        val toggleLabel = if (listening) "Mute" else "Unmute"
 
-        val statusLine = statusParts.joinToString(" | ")
+        val statusLine = listOfNotNull(connection, intuitionSummary).joinToString(" · ")
         val builder = NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(intuitionSummary ?: statusLine)   // collapsed lock-screen line = live intuition
+            .setContentText(statusLine)
             .setSmallIcon(if (listening) android.R.drawable.ic_btn_speak_now else android.R.drawable.ic_media_pause)
             .setOngoing(true)
             .setSilent(true)
             .setContentIntent(pendingIntent)
             .addAction(0, toggleLabel, togglePendingIntent)
-            .addAction(0, "Stop", PendingIntent.getService(
+            .addAction(0, "Stop talking", PendingIntent.getService(
                 this, 2,
                 Intent(this, PanForegroundService::class.java).apply { action = "STOP_TTS" },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             ))
-        // Expanded view = the full read PAN fused this tick + service status.
-        intuitionFull?.let {
-            builder.setStyle(NotificationCompat.BigTextStyle().bigText(it + "\n\n· " + statusLine))
-        }
+        // Pulled down: the last thing said each way, then the fuller read of what is going on.
+        val last = listOfNotNull(
+            lastQueryText.value.takeIf { it.isNotBlank() }?.let { "You: ${it.take(140)}" },
+            lastResponseText.value.takeIf { it.isNotBlank() }?.let { "ΠAN: ${it.take(200)}" },
+        )
+        val big = (listOf(connection) + last + listOfNotNull(intuitionFull)).joinToString("\n")
+        builder.setStyle(NotificationCompat.BigTextStyle().bigText(big))
         return builder.build()
     }
 

@@ -122,6 +122,8 @@ from the 0.4 builds.
 - **0.5.1** (code 130): the three tabs. Home with the talk, the live box and "Needs you"; Memory with
   the fingerprint lock, search, days and delete; Settings as a tab. What it does not have yet is
   listed at the end of its entry in docs/FEATURES.md.
+- **0.5.2** (code 131): the name written ΠAN, the Mm-hm switch out, Home follows the talk and shows
+  the hub's words, the drop-down notification redone.
 
 ## Every feature and where it shows
 

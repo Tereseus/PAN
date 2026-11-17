@@ -51,7 +51,7 @@ class ScanPairActivity : ComponentActivity() {
 
     private val askCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startCamera() else {
-            Toast.makeText(this, "PAN needs the camera to read the code.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "ΠAN needs the camera to read the code.", Toast.LENGTH_LONG).show()
             finish()
         }
     }
@@ -64,7 +64,7 @@ class ScanPairActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize()) {
                     AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
                     Text(
-                        "Point the camera at the pairing code PAN shows on your computer",
+                        "Point the camera at the pairing code ΠAN shows on your computer",
                         modifier = Modifier.align(Alignment.TopCenter).padding(32.dp),
                         color = Color.White,
                         textAlign = TextAlign.Center,

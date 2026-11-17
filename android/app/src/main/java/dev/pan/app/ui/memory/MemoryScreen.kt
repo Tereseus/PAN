@@ -59,7 +59,7 @@ fun MemoryScreen(viewModel: MemoryViewModel = hiltViewModel()) {
     val canCheck = remember { Fingerprint.ready(context) }
     var unlocked by remember { mutableStateOf(!lockOn) }
 
-    val ask = { Fingerprint.ask(context, "Open Memory", "Your fingerprint opens what PAN has kept") { ok -> if (ok) unlocked = true } }
+    val ask = { Fingerprint.ask(context, "Open Memory", "Your fingerprint opens what ΠAN has kept") { ok -> if (ok) unlocked = true } }
 
     // Lock again when the tab is left, and when the app goes to the background.
     val owner = LocalLifecycleOwner.current
@@ -104,7 +104,7 @@ private fun LockedPane(canCheck: Boolean, onUnlock: () -> Unit) {
         Text("Memory is locked", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
         if (canCheck) {
-            Text("Only your fingerprint opens what PAN has kept.",
+            Text("Only your fingerprint opens what ΠAN has kept.",
                 style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(22.dp))
@@ -254,11 +254,11 @@ private fun OpenMemory(viewModel: MemoryViewModel, lockOn: Boolean) {
 
     forget?.let { what ->
         val (title, body) = when (what) {
-            is Forget.One -> "Delete this?" to "PAN forgets it. This cannot be undone."
+            is Forget.One -> "Delete this?" to "ΠAN forgets it. This cannot be undone."
             Forget.Search -> "Delete everything found?" to
-                "PAN forgets all $total things found for \"${query.trim()}\". This cannot be undone."
+                "ΠAN forgets all $total things found for \"${query.trim()}\". This cannot be undone."
             Forget.Day -> "Delete this day?" to
-                "PAN forgets everything it kept on ${dayWords(day, today).lowercase()}. This cannot be undone."
+                "ΠAN forgets everything it kept on ${dayWords(day, today).lowercase()}. This cannot be undone."
         }
         AlertDialog(
             onDismissRequest = { forget = null },
@@ -295,7 +295,7 @@ private fun MemoryCard(item: MemoryItem, showDate: Boolean, viewModel: MemoryVie
                     var bitmap by remember(path) { mutableStateOf<android.graphics.Bitmap?>(null) }
                     LaunchedEffect(path) { bitmap = viewModel.thumb(path) }
                     bitmap?.let {
-                        Image(bitmap = it.asImageBitmap(), contentDescription = "Picture PAN kept",
+                        Image(bitmap = it.asImageBitmap(), contentDescription = "Picture ΠAN kept",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.padding(vertical = 6.dp).fillMaxWidth().heightIn(max = 180.dp).clip(RoundedCornerShape(12.dp)))
                     }

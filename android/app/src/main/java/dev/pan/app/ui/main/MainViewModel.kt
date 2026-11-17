@@ -47,7 +47,7 @@ class MainViewModel @Inject constructor(
     fun linkLine(): String? {
         val link = remoteAccessManager.link
         if (link.baseUrlIfConnected() == null) return null
-        return "PAN Link" + (link.pathWords()?.let { ", $it" } ?: "")
+        return "ΠAN Link" + (link.pathWords()?.let { ", $it" } ?: "")
     }
     val lastAction: StateFlow<String> = PanForegroundService.lastAction
     val sttStatus: StateFlow<String> = PanForegroundService.sttStatus

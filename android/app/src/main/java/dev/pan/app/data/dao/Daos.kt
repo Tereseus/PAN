@@ -33,6 +33,10 @@ interface ConversationDao {
     @Query("DELETE FROM conversations WHERE timestamp < :before")
     suspend fun cleanOld(before: Long)
 
+    // The hub heard the line better than the phone did: the newest line with the rough words gets the good ones.
+    @Query("UPDATE conversations SET text = :better WHERE id = (SELECT id FROM conversations WHERE role = 'user' AND text = :rough ORDER BY id DESC LIMIT 1)")
+    suspend fun correctUserLine(rough: String, better: String)
+
     // Forgetting in Memory also takes the phone's own copy of the talk.
     @Query("DELETE FROM conversations WHERE text LIKE '%' || :word || '%'")
     suspend fun deleteContaining(word: String)

@@ -40,8 +40,12 @@ const CUES = {
     [/\bwhy (?:does|did|is|are|do|would|will)(?:n'?t| not)? (?:it|this|that|they|you|he|she)\b[^.?!]{0,40}\b(?:fail|break|broke|crash|stop|work|keep|do that|so bad|wrong)/, 0.7],
     [/\b(?:waste|wasting|wasted) (?:of )?my time\b/, 0.8],
     [/\b(?:i told you|how many times|i already (?:said|told))\b/, 0.7],
-    [/\bfor fuck'?s sake\b|\bwhat the (?:fuck|hell)\b|\bwtf\b|\bffs\b/, 0.6],
-    [/\bfuck(?:ing)? (?:this|that|it)\b|\bthis (?:shit|crap)\b|\bso much (?:shit|crap)\b/, 0.6],
+    [/\bfor fuck'?s sake\b|\bffs\b/, 0.6],
+    // Swearing by itself is how some people talk, not a mood: "what the fuck happened to it, I just
+    // saw it" is surprise, and the owner's reading sat on Frustrated all day because of lines like
+    // it (2026-11-17). 'register' cues count only on a line that also has a real cue of 0.4 or more.
+    [/\bwhat the (?:fuck|hell)\b|\bwtf\b/, 0.6, 'register'],
+    [/\bfuck(?:ing)? (?:this|that|it)\b|\bthis (?:shit|crap)\b|\bso much (?:shit|crap)\b/, 0.6, 'register'],
     [/\b(?:annoying|annoyed|pissed|frustrat\w*|fed up|sick of|tired of (?:this|it|that))\b/, 0.6],
     [/\b(?:still|again)\b[^.?!]{0,25}\b(?:not|broken|failing|fails|wrong|doesn'?t|isn'?t|won'?t|same)\b/, 0.5],
     [/\b(?:not|isn'?t|aren'?t|doesn'?t|don'?t|won'?t|stopped) work(?:ing|s)?\b|\bdoes not work\b/, 0.4],
@@ -165,11 +169,17 @@ function cueScores(text) {
   const out = {};
   const hits = [];
   for (const [label, list] of Object.entries(CUES)) {
-    let s = 0;
-    for (const [re, w] of list) {
+    let s = 0, top = 0;
+    const register = [];
+    for (const [re, w, kind] of list) {
       const m = t.match(re);
-      if (m) { s += w; hits.push({ label, cue: m[0].trim().slice(0, 40) }); }
+      if (!m) continue;
+      const hit = { label, cue: m[0].trim().slice(0, 40) };
+      if (kind === 'register') { register.push([w, hit]); continue; }
+      s += w; top = Math.max(top, w); hits.push(hit);
     }
+    // Swearing adds to a line that already says something is wrong; alone it says nothing.
+    if (top >= 0.4) for (const [w, hit] of register) { s += w; hits.push(hit); }
     if (s) out[label] = Math.min(1, s);
   }
   // Shouting and stacked marks push whatever he is feeling a bit further.

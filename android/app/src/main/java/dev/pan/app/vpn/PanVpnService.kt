@@ -315,15 +315,15 @@ class PanVpnService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(CHANNEL_ID, "PAN VPN", NotificationManager.IMPORTANCE_LOW)
-            .apply { description = "PAN remote access status" }
+        val channel = NotificationChannel(CHANNEL_ID, "ΠAN connection", NotificationManager.IMPORTANCE_LOW)
+            .apply { description = "The secure route to your computer" }
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
     }
 
     private fun buildNotification(status: String) =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("PAN Remote Access")
+            .setContentTitle("ΠAN connection")
             .setContentText(status)
             .setOngoing(true)
             .build()

@@ -66,6 +66,10 @@ class DataRepository @Inject constructor(
         conversationDao.insert(ConversationEntity(role = "pan", text = text, photo = photo))
     }
 
+    suspend fun correctUserLine(rough: String, better: String) {
+        if (rough != better && better.isNotBlank()) conversationDao.correctUserLine(rough, better)
+    }
+
     suspend fun forgetTalkContaining(word: String) = conversationDao.deleteContaining(word)
     suspend fun forgetTalkBetween(from: Long, to: Long) = conversationDao.deleteBetween(from, to)
 

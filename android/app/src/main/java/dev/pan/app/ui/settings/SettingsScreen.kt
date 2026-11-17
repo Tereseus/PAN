@@ -146,10 +146,10 @@ fun SettingsScreen(
             Text(
                 when {
                     !conn.loaded -> "Checking…"
-                    conn.viaLink -> "Using PAN Link" + (conn.linkWay?.let { ", $it" } ?: "")
-                    proxyUrl != null && linkPaired -> "Using the backup route: PAN Link isn't reaching your computer"
+                    conn.viaLink -> "Using ΠAN Link" + (conn.linkWay?.let { ", $it" } ?: "")
+                    proxyUrl != null && linkPaired -> "Using the backup route: ΠAN Link isn't reaching your computer"
                     proxyUrl != null -> "Using the backup route"
-                    else -> "Not connected to PAN yet, connecting…"
+                    else -> "Not connected to ΠAN yet, connecting…"
                 },
                 style = MaterialTheme.typography.bodyLarge,
                 color = if (proxyUrl != null || !conn.loaded) MaterialTheme.colorScheme.primary
@@ -159,14 +159,14 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = proxyUrl ?: serverUrl.ifEmpty { "Not found yet" },
                     onValueChange = { },
-                    label = { Text("PAN Server") },
+                    label = { Text("ΠAN Server") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     readOnly = true
                 )
             }
 
-            Text("PAN Link", style = MaterialTheme.typography.titleSmall)
+            Text("ΠAN Link", style = MaterialTheme.typography.titleSmall)
             Text(conn.linkSummary,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -190,7 +190,7 @@ fun SettingsScreen(
                                 }
                                 pairing = false
                                 snackbarHostState.showSnackbar(r.fold(
-                                    { "Paired. This phone uses PAN Link now." },
+                                    { "Paired. This phone uses ΠAN Link now." },
                                     { "Pairing failed: ${it.message}" }))
                             }
                         }
@@ -201,7 +201,7 @@ fun SettingsScreen(
                 AlertDialog(
                     onDismissRequest = { confirmForget = false },
                     title = { Text("Forget the pairing?") },
-                    text = { Text("This phone stops using PAN Link and goes back to the backup route. To use the link again, scan a new pairing code, or tap Pair this phone.") },
+                    text = { Text("This phone stops using ΠAN Link and goes back to the backup route. To use the link again, scan a new pairing code, or tap Pair this phone.") },
                     confirmButton = {
                         TextButton(onClick = {
                             confirmForget = false
@@ -228,7 +228,7 @@ fun SettingsScreen(
                 color = if (remoteAccessStatus == "Connected") MaterialTheme.colorScheme.primary
                        else MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Text("Stays on as a backup. The app uses it when PAN Link can't reach your computer, and away from home PAN Link travels through it.",
+            Text("Stays on as a backup. The app uses it when ΠAN Link can't reach your computer, and away from home ΠAN Link travels through it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             TailscaleSignIn(snackbarHostState)
@@ -236,15 +236,8 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Voice
-            Text("Voice", style = MaterialTheme.typography.titleMedium)
-
-            SettingToggle(
-                title = "Mm-hm while you think",
-                description = "A soft \"mm-hm\" when you pause in the middle of a long thought",
-                checked = backchannelEnabled,
-                onToggle = { viewModel.setBackchannel(it) }
-            )
+            // Sounds
+            Text("Sounds", style = MaterialTheme.typography.titleMedium)
 
             // Voice picker: developers only. Buyers get one voice.
             if (developerMode) {
@@ -313,14 +306,14 @@ fun SettingsScreen(
 
             SettingToggle(
                 title = "Sound Effects",
-                description = "A tone when PAN hears a command",
+                description = "A tone when ΠAN hears a command",
                 checked = beepEnabled,
                 onToggle = { viewModel.setBeep(it) }
             )
 
             SettingToggle(
                 title = "Vibration",
-                description = "A short buzz when PAN starts listening or something fails",
+                description = "A short buzz when ΠAN starts listening or something fails",
                 checked = vibrationEnabled,
                 onToggle = { viewModel.setVibration(it) }
             )
@@ -393,7 +386,7 @@ fun SettingsScreen(
                 OutlinedButton(
                     onClick = { viewModel.stopPanService() },
                     modifier = Modifier.weight(1f)
-                ) { Text("Stop PAN Service") }
+                ) { Text("Stop ΠAN Service") }
                 Button(
                     onClick = { viewModel.forceRestartApp() },
                     modifier = Modifier.weight(1f)
@@ -412,7 +405,7 @@ fun SettingsScreen(
             // Personality (PAN voice/character — empty = default/off)
             Text("Personality", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Describe how PAN should talk. Leave it empty for the usual PAN.",
+                "Describe how ΠAN should talk. Leave it empty for the usual ΠAN.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -420,7 +413,7 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = personalityInput,
                 onValueChange = { personalityInput = it },
-                label = { Text("How PAN talks") },
+                label = { Text("How ΠAN talks") },
                 placeholder = { Text("e.g. Sarcastic, witty, like Tony Stark") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
@@ -588,7 +581,7 @@ private fun AccessoriesSection(hub: dev.pan.app.accessory.AccessoryHub) {
     val routed by hub.routed.collectAsState()
 
     Text("Accessories", style = MaterialTheme.typography.titleMedium)
-    Text("Glasses, headphones and earbuds that work with Android work with PAN. Pick one to talk to PAN through it.",
+    Text("Glasses, headphones and earbuds that work with Android work with ΠAN. Pick one to talk to ΠAN through it.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
 
@@ -600,7 +593,7 @@ private fun AccessoriesSection(hub: dev.pan.app.accessory.AccessoryHub) {
                     dev.pan.app.accessory.AccessoryHub.Slot.GLASSES -> "None connected. Android XR glasses pair in Bluetooth settings."
                     dev.pan.app.accessory.AccessoryHub.Slot.WATCH -> "None paired."
                     dev.pan.app.accessory.AccessoryHub.Slot.MEDALLION -> "Not connected."
-                    dev.pan.app.accessory.AccessoryHub.Slot.CAR -> "None connected. When the phone joins a car's Bluetooth, PAN talks through the car and listens on the phone."
+                    dev.pan.app.accessory.AccessoryHub.Slot.CAR -> "None connected. When the phone joins a car's Bluetooth, ΠAN talks through the car and listens on the phone."
                     else -> "None connected."
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -611,7 +604,7 @@ private fun AccessoriesSection(hub: dev.pan.app.accessory.AccessoryHub) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(a.name, style = MaterialTheme.typography.bodyMedium)
                     val parts = listOfNotNull(a.how, "mic".takeIf { a.mic }, "speaker".takeIf { a.speaker },
-                        "PAN is using it".takeIf { routed == a.key })
+                        "ΠAN is using it".takeIf { routed == a.key })
                     Text(parts.joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -624,7 +617,7 @@ private fun AccessoriesSection(hub: dev.pan.app.accessory.AccessoryHub) {
         }
     }
     if (chosen != null && routed == null) {
-        Text("The one you picked is not connected. PAN is using the phone until it comes back.",
+        Text("The one you picked is not connected. ΠAN is using the phone until it comes back.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -665,7 +658,7 @@ private fun TailscaleSignIn(snackbarHostState: SnackbarHostState) {
     }
     when {
         st.authUrl.isNotEmpty() -> {
-            Text("Sign in to Tailscale so this device can reach PAN away from your home network.",
+            Text("Sign in to Tailscale so this device can reach ΠAN away from your home network.",
                 style = MaterialTheme.typography.bodyMedium)
             Button(onClick = {
                 if (!dev.pan.app.vpn.PanVpn.openLoginUrl(context, st.authUrl)) scope.launch {
