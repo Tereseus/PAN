@@ -180,7 +180,8 @@ fun HomeScreen(viewModel: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (thinking) item(key = "thinking") { ThinkingBubble() }
-                    items(talk, key = { it.id }) { line -> TalkLine(line) }
+                    // Blank lines from before 0.5.4 stay in the store; they are not shown.
+                    items(talk.filter { it.text.isNotBlank() || it.photo != null }, key = { it.id }) { line -> TalkLine(line) }
                 }
             }
         }

@@ -2093,7 +2093,10 @@ class PanForegroundService : Service() {
                         feedbackSounds.onCommandSent()
                     }
 
-                    if (responseText != "[AMBIENT]") {
+                    // Nothing said is nothing to keep: an empty reply used to go in as an empty PAN line,
+                    // which showed on Home as a blank bubble and gave the model a blank turn of its own
+                    // to read back (owner, 2026-11-17).
+                    if (responseText != "[AMBIENT]" && responseText.isNotBlank()) {
                         // No "(1234ms)" suffix: the model reads this history, and its
                         // training data has none.
                         addToHistory("PAN", responseText)
