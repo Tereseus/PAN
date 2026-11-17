@@ -1647,6 +1647,21 @@ router.post('/api/projects/:id/tasks', (req, res) => {
 });
 
 // PUT /dashboard/api/tasks/:id — update a task (status, title, etc.)
+// GET /api/tasks — every task, or one project's with ?project_id=. The phone page's Tasks tab asked
+// for this and no route answered it (404), so the tab was always empty.
+router.get('/api/tasks', (req, res) => {
+  const pid = parseInt(req.query.project_id);
+  const tasks = allScoped(req,
+    `SELECT t.*, u.display_name as assigned_name
+     FROM project_tasks t
+     LEFT JOIN users u ON t.assigned_to = u.id
+     WHERE t.org_id = :org_id${Number.isFinite(pid) ? ' AND t.project_id = :pid' : ''}
+     ORDER BY t.project_id, t.milestone_id, t.sort_order, t.title`,
+    Number.isFinite(pid) ? { ':pid': pid } : {}
+  );
+  res.json({ tasks });
+});
+
 router.put('/api/tasks/:id', (req, res) => {
   const id = parseInt(req.params.id);
   const { title, description, status, priority, milestone_id } = req.body;

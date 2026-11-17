@@ -38,6 +38,8 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 
 /* Content spacer — push page content below fixed topbar+session+tabs */
 .content-spacer { height:114px; }
+/* Tabs for building PAN, not for using it: shown only with the developer switch in Settings. */
+body:not(.dev-tabs) .tab.dev-tab { display:none; }
 .tab { padding:10px 14px; color:var(--text2); cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; font-size:13px; font-weight:500; }
 .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
 
@@ -253,17 +255,17 @@ body { background:#0a0a0f; color:#cdd6f4; font-family:-apple-system,system-ui,sa
 <!-- Tabs — same widget names as desktop -->
 <div class="tabs" id="tab-bar">
   <div class="tab active" data-tab="chat">Chat</div>
-  <div class="tab" data-tab="intuition">🧠 Intuition</div>
-  <div class="tab" data-tab="dashboards">Dashboards</div>
-  <div class="tab" data-tab="status">Usage</div>
+  <div class="tab dev-tab" data-tab="intuition">🧠 Intuition</div>
+  <div class="tab dev-tab" data-tab="dashboards">Dashboards</div>
+  <div class="tab dev-tab" data-tab="status">Usage</div>
   <div class="tab" data-tab="alerts">Alerts</div>
-  <div class="tab" data-tab="tasks">Tasks</div>
+  <div class="tab dev-tab" data-tab="tasks">Tasks</div>
   <div class="tab" data-tab="devices">Devices</div>
-  <div class="tab" data-tab="services">Services</div>
+  <div class="tab dev-tab" data-tab="services">Services</div>
   <div class="tab" data-tab="library">Library</div>
-  <div class="tab" data-tab="projects">Projects</div>
+  <div class="tab dev-tab" data-tab="projects">Projects</div>
   <div class="tab" data-tab="sensors">Sensors</div>
-  <div class="tab" data-tab="data">Data</div>
+  <div class="tab dev-tab" data-tab="data">Data</div>
   <div class="tab" data-tab="settings">Settings</div>
 </div>
 
@@ -628,7 +630,7 @@ async function init() {
 
 // ========== CHAT / TERMINAL ==========
 // Settings — same keys as desktop terminal
-const PAN_USER = (localStorage.getItem('pan_username') || 'Tereseus').replace(/[^a-zA-Z0-9_-]/g, '');
+const PAN_USER = (localStorage.getItem('pan_username') || 'You').replace(/[^a-zA-Z0-9_-]/g, '');
 const PAN_LLM = (localStorage.getItem('pan_llm_name') || 'Claude').replace(/[^a-zA-Z0-9_-]/g, '');
 function firstCap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 const USERNAME = firstCap(PAN_USER);
@@ -1312,15 +1314,14 @@ async function loadSensors() {
         const arr = Array.isArray(assignments) ? assignments : (assignments.sensors || []);
         if (arr.length) {
           for (const s of arr) {
-            const key = s.sensor_key || s.key || s.name || 'unknown';
-            const sid = s.id || 0;
+            const key = s.id || s.sensor_key || s.key || s.name || 'unknown';
             const enabled = s.enabled ? true : false;
             const val = s.latest_value != null ? s.latest_value : '';
             html += '<div class="sensor-row"><span class="sensor-name">' + esc(key);
             if (val) html += ' <span style="font-size:11px;color:var(--text2)">' + esc(String(val)) + '</span>';
             html += '</span>';
             html += '<label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">';
-            html += '<input type="checkbox" ' + (enabled ? 'checked' : '') + ' onchange="toggleSensor(' + dev.id + ',\'' + esc(key) + '\',this.checked,' + sid + ')" style="opacity:0;width:0;height:0">';
+            html += '<input type="checkbox" ' + (enabled ? 'checked' : '') + ' onchange="toggleSensor(' + dev.id + ',\'' + esc(key) + '\',this.checked)" style="opacity:0;width:0;height:0">';
             html += '<span style="position:absolute;inset:0;background:' + (enabled ? 'var(--accent)' : 'var(--bg3)') + ';border-radius:12px;transition:0.2s"></span>';
             html += '<span style="position:absolute;top:2px;left:' + (enabled ? '22px' : '2px') + ';width:20px;height:20px;background:#fff;border-radius:50%;transition:0.2s"></span>';
             html += '</label></div>';
@@ -1681,15 +1682,16 @@ async function loadServices() {
     const services = data.services || [];
 
     let html = '';
-    const running = services.filter(s => s.status === 'running' || s.healthy);
-    const stopped = services.filter(s => s.status !== 'running' && !s.healthy);
+    const up = (s) => s.status === 'running' || s.status === 'up' || s.healthy;
+    const running = services.filter(up);
+    const stopped = services.filter(s => !up(s));
     html += '<div class="stat-grid">';
     html += '<div class="stat-card"><div class="stat-val" style="color:var(--green)">' + running.length + '</div><div class="stat-label">Running</div></div>';
     html += '<div class="stat-card"><div class="stat-val" style="color:' + (stopped.length ? 'var(--red)' : 'var(--text2)') + '">' + stopped.length + '</div><div class="stat-label">Stopped</div></div>';
     html += '</div>';
 
     for (const s of services) {
-      const isUp = s.status === 'running' || s.healthy;
+      const isUp = up(s);
       const dot = isUp ? 'var(--green)' : 'var(--red)';
       html += '<div class="card">';
       html += '<div class="setting-row"><span class="setting-label"><span style="color:' + dot + '">&#9679;</span> ' + esc(s.name || s.id) + '</span><span class="setting-val" style="color:' + dot + '">' + (s.status || (isUp ? 'running' : 'stopped')) + '</span></div>';
@@ -1818,9 +1820,9 @@ async function loadData() {
   } catch(e) { el.innerHTML = '<div class="muted">Error: '+e.message+'</div>'; }
 }
 
-async function toggleSensor(deviceId, sensorKey, enabled, assignmentId) {
+async function toggleSensor(deviceId, sensorId, enabled) {
   try {
-    await fetch(API + '/api/sensors/devices/' + deviceId + '/' + sensorKey, {
+    await fetch(API + '/api/sensors/devices/' + deviceId + '/' + encodeURIComponent(sensorId), {
       method: 'PUT',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ enabled: enabled })
@@ -1879,8 +1881,19 @@ async function loadSettings() {
     html += '</div>';
   }
 
-  // Add Device
-  html += '<div class="section-title">Devices</div><div class="card">';
+  // Your devices: the list and the way to add one, in one place. "Online" = seen in the last 5 minutes,
+  // the same rule as the Devices tab (this list used to say Online for any device ever seen).
+  html += '<div class="section-title">Your devices</div><div class="card">';
+  try {
+    const res = await fetch(API + '/api/v1/devices/list');
+    const devs = await res.json();
+    for (const d of (Array.isArray(devs) ? devs : [])) {
+      const name = d.name || d.device_name || d.device_id || 'Device';
+      const seen = d.last_seen ? new Date(d.last_seen) : null;
+      const on = seen && (Date.now() - seen.getTime()) < 300000;
+      html += '<div class="setting-row"><span class="setting-label"><span style="color:' + (on ? 'var(--green)' : 'var(--red)') + '">&#9679;</span> ' + esc(name) + '</span><span class="setting-val">' + (on ? 'Online' : seen ? fmtAgo(seen) : 'never') + '</span></div>';
+    }
+  } catch {}
   html += '<div style="padding:8px 12px 4px;font-size:13px;color:var(--text2)">Add a new computer to PAN. Scan the QR code on the new device.</div>';
   html += '<div style="padding:8px 12px"><button onclick="generateInstallQR()" style="background:var(--accent);color:#000;border:none;border-radius:var(--radius);padding:10px 18px;font-size:14px;font-weight:600;width:100%;cursor:pointer">+ Add Device</button></div>';
   html += '<div id="install-qr-area" style="display:none;padding:8px 12px 12px;text-align:center"></div>';
@@ -1925,16 +1938,9 @@ async function loadSettings() {
   }
   html += '</div>';
 
-  // Devices
-  html += '<div class="section-title">Devices</div><div class="card">';
-  try {
-    const res = await fetch(API + '/api/v1/devices/list');
-    const devs = await res.json();
-    for (const d of devs) {
-      const name = d.name || d.device_name || d.device_id || 'Device';
-      html += '<div class="setting-row"><span class="setting-label">' + esc(name) + '</span><span class="setting-val">' + (d.last_seen ? 'Online' : '—') + '</span></div>';
-    }
-  } catch {}
+  // Developer: the tabs for building PAN (Intuition, Dashboards, Usage, Tasks, Services, Projects, Data).
+  html += '<div class="section-title">Developer</div><div class="card">';
+  html += captureRow('Developer tabs', 'tools for building PAN', document.body.classList.contains('dev-tabs'), 'setDeveloperTabs(this.checked)', false);
   html += '</div>';
 
   // Phone
@@ -2101,7 +2107,7 @@ async function generateInstallQR() {
   area.style.display = 'block';
   area.innerHTML = '<div style="color:var(--text2);font-size:13px">Generating...</div>';
   try {
-    const res = await fetch(API + '/api/v1/client/invite?name=new-device&ttl_hours=24');
+    const res = await fetch(API + '/api/v1/client/invite?name=new-device&ttl_minutes=30');
     const data = await res.json();
     if (!data.ok) throw new Error('Failed to generate token');
     const installUrl = data.install.url;
@@ -2114,7 +2120,7 @@ async function generateInstallQR() {
       <div style="font-size:12px;color:var(--text2);margin-bottom:8px">New device must be on the same WiFi. Scan to install.</div>
       <div id="qr-canvas" style="background:#fff;display:inline-block;padding:10px;border-radius:8px"></div>
       <div style="font-size:11px;color:var(--text2);margin-top:8px;word-break:break-all">${installUrl}</div>
-      <div style="font-size:11px;color:var(--text2);margin-top:4px">⏱ Expires in 24 hours · Single use</div>`;
+      <div style="font-size:11px;color:var(--text2);margin-top:4px">⏱ Expires in 30 minutes · Single use</div>`;
     // Load qrcode library from CDN then generate
     if (!window.QRCode) {
       await new Promise((resolve, reject) => {
@@ -2379,7 +2385,7 @@ async function loadIntuitionTab() {
     h += '<div class="section-title" style="margin:14px 12px 4px">PAN health</div><div class="card" style="margin:0 12px 8px"><div style="display:flex;flex-wrap:wrap;gap:6px">';
     for (const s of pan.services) {
       const st = (s.status || '').toLowerCase();
-      const c = st === 'running' ? 'var(--green)' : st === 'down' ? 'var(--red)' : st === 'degraded' ? '#f9e2af' : 'var(--text2)';
+      const c = (st === 'running' || st === 'up') ? 'var(--green)' : st === 'down' ? 'var(--red)' : st === 'degraded' ? '#f9e2af' : 'var(--text2)';
       h += '<span style="display:inline-flex;align-items:center;gap:5px;background:var(--bg3);border-radius:8px;padding:3px 9px;font-size:11px"><span style="width:7px;height:7px;border-radius:50%;background:' + c + ';flex-shrink:0"></span>' + esc(s.name || '?') + '</span>';
     }
     h += '</div></div>';
@@ -2670,6 +2676,23 @@ async function loadDynamicModels() {
     panToast('Model load failed: ' + e.message);
   }
 }
+
+// Developer tabs: one hub setting, so every device that opens this page agrees.
+function isOn(v) { return v === true || v === 1 || v === '1' || v === 'true'; }
+async function applyDeveloperTabs() {
+  try {
+    const st = await (await fetch(API + '/api/v1/settings')).json();
+    document.body.classList.toggle('dev-tabs', isOn(st.mobile_developer_tabs));
+  } catch {}
+}
+async function setDeveloperTabs(on) {
+  document.body.classList.toggle('dev-tabs', !!on);
+  try {
+    await fetch(API + '/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mobile_developer_tabs: on ? '1' : '0' }) });
+  } catch (e) { console.error('Developer tabs switch failed:', e); }
+}
+applyDeveloperTabs();
 
 init();
 document.title = 'PAN v3.' + Date.now();

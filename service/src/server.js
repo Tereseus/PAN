@@ -4137,6 +4137,9 @@ app.post('/api/v1/terminal/set-model', (req, res) => {
 // Permission response — mobile user tapped Allow or Deny
 // Sets the response on the pending permission so the blocking PermissionRequest hook can return
 app.post('/api/v1/terminal/permissions/respond', (req, res) => {
+  // Allow or deny decides what Claude does on his machines: the owner's call only. This route used to
+  // take an answer from anyone who could reach it.
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
   const { response, perm_id } = req.body;
   if (!response) return res.status(400).json({ error: 'response required (allow or deny)' });
   if (!perm_id) return res.status(400).json({ error: 'perm_id required' });
