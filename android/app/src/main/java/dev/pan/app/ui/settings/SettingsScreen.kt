@@ -54,6 +54,9 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    // Developer options (About, at the bottom): the tools for building PAN stay out of a buyer's way.
+    val uiPrefs = remember { context.getSharedPreferences("pan_ui", android.content.Context.MODE_PRIVATE) }
+    var developerMode by remember { mutableStateOf(uiPrefs.getBoolean("developer", false)) }
 
     // Show toast messages from ViewModel
     LaunchedEffect(toastMessage) {
@@ -94,7 +97,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Device
-            Text("Device", style = MaterialTheme.typography.titleMedium)
+            Text("This device", style = MaterialTheme.typography.titleMedium)
 
             OutlinedTextField(
                 value = deviceName,
@@ -103,7 +106,7 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-            Text("How this phone appears in the PAN network",
+            Text("The name your other devices see",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
 
@@ -147,14 +150,16 @@ fun SettingsScreen(
                 color = if (proxyUrl != null || !conn.loaded) MaterialTheme.colorScheme.primary
                        else MaterialTheme.colorScheme.error
             )
-            OutlinedTextField(
-                value = proxyUrl ?: serverUrl.ifEmpty { "Not found yet" },
-                onValueChange = { },
-                label = { Text("PAN Server") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                readOnly = true
-            )
+            if (developerMode) {
+                OutlinedTextField(
+                    value = proxyUrl ?: serverUrl.ifEmpty { "Not found yet" },
+                    onValueChange = { },
+                    label = { Text("PAN Server") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    readOnly = true
+                )
+            }
 
             Text("PAN Link", style = MaterialTheme.typography.titleSmall)
             Text(conn.linkSummary,
@@ -191,7 +196,7 @@ fun SettingsScreen(
                 AlertDialog(
                     onDismissRequest = { confirmForget = false },
                     title = { Text("Forget the pairing?") },
-                    text = { Text("This phone stops using PAN Link and goes back to Tailscale only. To use the link again, scan a new pairing code, or tap Pair this phone.") },
+                    text = { Text("This phone stops using PAN Link and goes back to the backup route. To use the link again, scan a new pairing code, or tap Pair this phone.") },
                     confirmButton = {
                         TextButton(onClick = {
                             confirmForget = false
@@ -205,11 +210,7 @@ fun SettingsScreen(
             // Tailscale stays on underneath: the fallback, and PAN Link's way in from outside.
             // Behind Advanced, closed: people never have to see or sign in to it (the owner, Nov 15).
             // The hub hands the phone a key through PAN Link, so it joins by itself.
-            var advanced by remember { mutableStateOf(false) }
-            TextButton(onClick = { advanced = !advanced }) {
-                Text(if (advanced) "Advanced ▲" else "Advanced ▼")
-            }
-            if (advanced) {
+            if (developerMode) {
             Text("Tailscale (backup)", style = MaterialTheme.typography.titleSmall)
             Text(
                 if (remoteAccessEnabled && remoteAccessStatus == "Connected")
@@ -230,15 +231,8 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Feedback
-            Text("Feedback", style = MaterialTheme.typography.titleMedium)
-
-            SettingToggle(
-                title = "Voice Responses",
-                description = "PAN speaks responses aloud via TTS",
-                checked = voiceResponseEnabled,
-                onToggle = { viewModel.setVoiceResponse(it) }
-            )
+            // Voice
+            Text("Voice", style = MaterialTheme.typography.titleMedium)
 
             SettingToggle(
                 title = "Mm-hm while you think",
@@ -247,7 +241,8 @@ fun SettingsScreen(
                 onToggle = { viewModel.setBackchannel(it) }
             )
 
-            // Voice Quality dropdown
+            // Voice picker: developers only. Buyers get one voice.
+            if (developerMode) {
             var voiceExpanded by remember { mutableStateOf(false) }
             var currentVoice by remember { mutableStateOf(
                 context.getSharedPreferences("pan_tts_prefs", android.content.Context.MODE_PRIVATE)
@@ -309,48 +304,21 @@ fun SettingsScreen(
                     color = if (voiceStatus.contains("Ready")) MaterialTheme.colorScheme.primary
                            else MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            }
 
             SettingToggle(
                 title = "Sound Effects",
-                description = "Audio tone when a command is detected",
+                description = "A tone when PAN hears a command",
                 checked = beepEnabled,
                 onToggle = { viewModel.setBeep(it) }
             )
 
             SettingToggle(
                 title = "Vibration",
-                description = "Haptic feedback on commands",
+                description = "A short buzz when PAN starts listening or something fails",
                 checked = vibrationEnabled,
                 onToggle = { viewModel.setVibration(it) }
             )
-
-            HorizontalDivider()
-
-            // Device Preference
-            Text("Device Preference", style = MaterialTheme.typography.titleMedium)
-            Text("Where should PAN execute actions by default?",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-            val deviceOptions = listOf(
-                "auto" to "Auto (Nearest Device)",
-                "phone" to deviceName
-            ) + devices.filter { it.device_type != "phone" }
-                .map { it.hostname to "${it.name} (${it.device_type.replaceFirstChar { c -> c.uppercase() }})" }
-
-            deviceOptions.forEach { (value, label) ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = deviceTarget == value,
-                        onClick = { viewModel.setDeviceTarget(value) }
-                    )
-                    Text(label, modifier = Modifier.padding(start = 8.dp))
-                }
-            }
 
             HorizontalDivider()
 
@@ -358,144 +326,24 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // App Preferences
-            Text("App Preferences", style = MaterialTheme.typography.titleMedium)
-
-            SettingDropdown(
-                title = "Music App",
-                description = "Preferred app for playing music",
-                selected = preferredMusicApp,
-                options = listOf("Auto", "Spotify", "YouTube", "YouTube Music"),
-                onSelect = { viewModel.setPreferredMusicApp(it) }
-            )
-
-            SettingDropdown(
-                title = "Messaging App",
-                description = "Preferred app for sending messages",
-                selected = preferredMessagingApp,
-                options = listOf("Auto", "SMS", "WhatsApp", "Instagram", "Telegram"),
-                onSelect = { viewModel.setPreferredMessagingApp(it) }
-            )
-
-            val queryAnswerSource by viewModel.queryAnswerSource.collectAsState()
-            SettingDropdown(
-                title = "Query Answers",
-                description = "How to answer questions (Local = on-device, Cloud = API)",
-                selected = queryAnswerSource,
-                options = listOf("Cloud", "Local", "Auto"),
-                onSelect = { viewModel.setQueryAnswerSource(it) }
-            )
-
-            HorizontalDivider()
-
-            // Local LLM
-            Text("Local AI Model", style = MaterialTheme.typography.titleMedium)
-
-            // Status indicator
-            val statusColor = when (llmStatus) {
-                "loaded" -> MaterialTheme.colorScheme.primary
-                "downloaded" -> MaterialTheme.colorScheme.tertiary
-                "downloading" -> MaterialTheme.colorScheme.secondary
-                else -> MaterialTheme.colorScheme.error
-            }
-            val statusText = when (llmStatus) {
-                "loaded" -> "Installed & Running"
-                "downloaded" -> "Installed (not loaded)"
-                "downloading" -> "Downloading... ${(llmDownloadProgress * 100).toInt()}%"
-                "not_downloaded" -> "Not installed"
-                else -> llmStatus
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = statusColor.copy(alpha = 0.15f),
-                    modifier = Modifier.padding(end = 8.dp)
-                ) {
-                    Text(
-                        statusText,
-                        color = statusColor,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
-                }
-            }
-
-            // Progress bar when downloading
-            if (llmStatus == "downloading") {
-                LinearProgressIndicator(
-                    progress = { llmDownloadProgress },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                )
-            }
-
-            // AI runs on server via Cerebras/Gemini through Tailscale
-            Text("AI Backend: Server (Cerebras)", style = MaterialTheme.typography.bodyMedium)
-            Text("All AI processing via Tailscale — ~580ms responses, free",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary)
-
-            // Custom model input
-            var showCustom by remember { mutableStateOf(false) }
-            var customName by remember { mutableStateOf("") }
-            var customUrl by remember { mutableStateOf("") }
-
-            if (showCustom) {
-                OutlinedTextField(
-                    value = customName,
-                    onValueChange = { customName = it },
-                    label = { Text("Model Name") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = customUrl,
-                    onValueChange = { customUrl = it },
-                    label = { Text("GGUF URL (HuggingFace)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            if (customName.isNotBlank() && customUrl.isNotBlank()) {
-                                viewModel.addCustomModel(customName, customUrl)
-                                showCustom = false
-                                customName = ""
-                                customUrl = ""
-                            }
-                        }
-                    ) { Text("Add Model") }
-                    TextButton(onClick = { showCustom = false }) { Text("Cancel") }
-                }
-            } else {
-                TextButton(onClick = { showCustom = true }) {
-                    Text("+ Add Custom Model")
-                }
-            }
-
-            HorizontalDivider()
-
-            HorizontalDivider()
-
-            // Incognito mode + service controls — top of the list because the
-            // user explicitly asked for these to be discoverable.
-            Text("Privacy & Service", style = MaterialTheme.typography.titleMedium)
+            // Privacy
+            Text("Privacy", style = MaterialTheme.typography.titleMedium)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Incognito Mode",
+                        "Incognito",
                         style = MaterialTheme.typography.bodyLarge,
                         color = if (incognitoAllowed) MaterialTheme.colorScheme.onSurface
                                 else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
                         when {
-                            !incognitoAllowed -> "Disabled by your organization's policy."
-                            incognitoMode -> "ON — phone events go to a separate database. Toggle off to wipe."
-                            else -> "Routes all phone-originated events to a separate, wipeable database."
+                            !incognitoAllowed -> "Turned off by your organization."
+                            incognitoMode -> "On. What this phone sends is kept apart and erased when you turn this off."
+                            else -> "Keeps what this phone sends apart from your memory, and erases it when you turn it off."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -507,6 +355,7 @@ fun SettingsScreen(
                     enabled = incognitoAllowed
                 )
             }
+            if (developerMode) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -526,11 +375,14 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            }
+
+            HorizontalDivider()
 
             // Personality (PAN voice/character — empty = default/off)
             Text("Personality", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Describe how PAN should talk. Leave empty for the default PAN voice (no personality).",
+                "Describe how PAN should talk. Leave it empty for the usual PAN.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -538,7 +390,7 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = personalityInput,
                 onValueChange = { personalityInput = it },
-                label = { Text("Personality prompt") },
+                label = { Text("How PAN talks") },
                 placeholder = { Text("e.g. Sarcastic, witty, like Tony Stark") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
@@ -563,27 +415,6 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f)
                     ) { Text("Turn Off") }
                 }
-            }
-
-            // Gemini API Key
-            Text("Gemini API Key", style = MaterialTheme.typography.titleMedium)
-            Text("Optional — for Google Gemini as AI backend",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-            var geminiKeyInput by remember { mutableStateOf(geminiKey) }
-            OutlinedTextField(
-                value = geminiKeyInput,
-                onValueChange = { geminiKeyInput = it },
-                label = { Text("API Key") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            if (geminiKeyInput != geminiKey) {
-                Button(
-                    onClick = { viewModel.setGeminiKey(geminiKeyInput) },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Save Key") }
             }
 
             HorizontalDivider()
@@ -611,10 +442,19 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(
-                "Pulls the latest APK from the PAN server. If an update is found, " +
-                "the system installer dialog will appear.",
+                "Gets the newest app from your computer. If there is one, Android asks to install it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            HorizontalDivider()
+
+            Text("About", style = MaterialTheme.typography.titleMedium)
+            SettingToggle(
+                title = "Developer options",
+                description = "Tools for building PAN: server address, backup route, voice picker, service controls",
+                checked = developerMode,
+                onToggle = { developerMode = it; uiPrefs.edit().putBoolean("developer", it).apply() }
             )
 
         }

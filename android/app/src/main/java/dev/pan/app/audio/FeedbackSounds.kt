@@ -26,6 +26,16 @@ class FeedbackSounds @Inject constructor(
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // The Sound Effects and Vibration switches in Settings. Until 0.5.0 nothing read them: sounds and
+    // vibration played whatever the switches said. Kept in SharedPreferences so the service has them at once.
+    private val prefs = context.getSharedPreferences("pan_feedback", Context.MODE_PRIVATE)
+    @Volatile var soundOn: Boolean = prefs.getBoolean("sound", true)
+        private set
+    @Volatile var vibrationOn: Boolean = prefs.getBoolean("vibration", true)
+        private set
+    fun setSound(on: Boolean) { soundOn = on; prefs.edit().putBoolean("sound", on).apply() }
+    fun setVibration(on: Boolean) { vibrationOn = on; prefs.edit().putBoolean("vibration", on).apply() }
+
     fun onWakeWord() {
         Log.i(TAG, "Playing wake word feedback")
         mainHandler.post {
@@ -49,6 +59,7 @@ class FeedbackSounds @Inject constructor(
     }
 
     private fun playSystemSound() {
+        if (!soundOn) return
         try {
             // Use the default notification sound — guaranteed to play
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -65,6 +76,7 @@ class FeedbackSounds @Inject constructor(
     }
 
     private fun vibrate(ms: Long) {
+        if (!vibrationOn) return
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager

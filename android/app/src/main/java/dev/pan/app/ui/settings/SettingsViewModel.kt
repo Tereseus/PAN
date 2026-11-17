@@ -31,6 +31,7 @@ class SettingsViewModel @Inject constructor(
     private val updateChecker: UpdateChecker,
     val remoteAccessManager: RemoteAccessManager,
     val accessoryHub: dev.pan.app.accessory.AccessoryHub,
+    private val feedbackSounds: dev.pan.app.audio.FeedbackSounds,
 ) : ViewModel() {
 
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
@@ -149,9 +150,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             dataRepository.getSetting("server_url")?.let { _serverUrl.value = it }
             dataRepository.getSetting("trigger_word")?.let { _triggerWord.value = it }
-            dataRepository.getSetting("beep_enabled")?.let { _beepEnabled.value = it == "true" }
+            dataRepository.getSetting("beep_enabled")?.let { _beepEnabled.value = it == "true"; feedbackSounds.setSound(it == "true") }
             dataRepository.getSetting("backchannel_enabled")?.let { _backchannelEnabled.value = it == "true" }
-            dataRepository.getSetting("vibration_enabled")?.let { _vibrationEnabled.value = it == "true" }
+            dataRepository.getSetting("vibration_enabled")?.let { _vibrationEnabled.value = it == "true"; feedbackSounds.setVibration(it == "true") }
             dataRepository.getSetting("voice_response_enabled")?.let { _voiceResponseEnabled.value = it == "true" }
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
             dataRepository.getSetting("device_name")?.let { _deviceName.value = it }
@@ -169,7 +170,7 @@ class SettingsViewModel @Inject constructor(
             dataRepository.getSetting("incognito_mode")?.let {
                 val on = it == "true"
                 _incognitoMode.value = on
-                dev.pan.app.di.ScopeHolder.scope = if (on) "incognito" else "main"
+                dev.pan.app.di.ScopeHolder.set(application, on)
             }
         }
 
@@ -266,11 +267,13 @@ class SettingsViewModel @Inject constructor(
 
     fun setBeep(enabled: Boolean) {
         _beepEnabled.value = enabled
+        feedbackSounds.setSound(enabled)
         viewModelScope.launch { dataRepository.setSetting("beep_enabled", enabled.toString()) }
     }
 
     fun setVibration(enabled: Boolean) {
         _vibrationEnabled.value = enabled
+        feedbackSounds.setVibration(enabled)
         viewModelScope.launch { dataRepository.setSetting("vibration_enabled", enabled.toString()) }
     }
 
@@ -448,7 +451,7 @@ class SettingsViewModel @Inject constructor(
             return
         }
         _incognitoMode.value = enabled
-        dev.pan.app.di.ScopeHolder.scope = if (enabled) "incognito" else "main"
+        dev.pan.app.di.ScopeHolder.set(application, enabled)
         viewModelScope.launch {
             dataRepository.setSetting("incognito_mode", enabled.toString())
             if (!enabled) {

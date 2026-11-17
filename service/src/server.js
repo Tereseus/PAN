@@ -6444,10 +6444,17 @@ app.post('/api/v1/logs', (req, res) => {
     const stmt = db.prepare(`INSERT INTO client_logs (device_id, device_type, level, source, message, meta, created_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'))`);
 
+    // Incognito: the app's own log lines carry what was heard ("Heard: ...") and what PAN said, and this
+    // table is in the main store, so in incognito they are not kept at all. The device still counts as seen.
+    const incognito = String(req.headers['x-pan-scope'] || '').trim() === 'incognito';
     let inserted = 0;
     const seenDevices = new Set();
     for (const e of entries) {
       if (!e.message) continue;
+      if (incognito) {
+        if (e.device_id && e.device_id !== 'unknown' && e.device_id !== 'phone-dashboard') seenDevices.add(e.device_id);
+        continue;
+      }
       stmt.run(
         e.device_id || 'unknown',
         e.device_type || 'browser',

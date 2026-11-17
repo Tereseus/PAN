@@ -33,6 +33,24 @@ object DeviceNameHolder {
  */
 object ScopeHolder {
     @Volatile var scope: String = "main"
+
+    // The switch is also kept in SharedPreferences because that can be read at once, before anything
+    // sends: PanApplication.onCreate calls restore(). Until 0.5.0 the scope was only put back when the
+    // Settings screen (or the Dashboard) was opened, so after an app restart events went to the main
+    // database while the switch still showed incognito ON.
+    private const val PREFS = "pan_scope"
+    private const val KEY = "incognito"
+
+    /** null = never written on this install (an older build kept it only in the settings table). */
+    fun saved(context: android.content.Context): Boolean? {
+        val p = context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+        return if (p.contains(KEY)) p.getBoolean(KEY, false) else null
+    }
+
+    fun set(context: android.content.Context, incognito: Boolean) {
+        scope = if (incognito) "incognito" else "main"
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).edit().putBoolean(KEY, incognito).commit()
+    }
 }
 
 /** Holds the current Tailscale hostname (e.g. "pan-632ad7") so the server can track
