@@ -9,4 +9,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 object LiveWords {
     val text = MutableStateFlow("")
+    /** Interpreting is on: the language code, "?" when none is named yet, null when off. Home shows it. */
+    val interpreting = MutableStateFlow<String?>(null)
 }

@@ -1323,6 +1323,7 @@ class PanForegroundService : Service() {
 
     private fun setInterpreter(lang: String?) {
         sttEngine.interpreting = lang != null
+        dev.pan.app.stt.LiveWords.interpreting.value = lang
         interpreterVolume(lang != null)
         if (lang == null) {
             sttEngine.ear = null
@@ -1362,9 +1363,18 @@ class PanForegroundService : Service() {
         addToHistory("PAN", line.say)
         persistHistoryTurn("user", line.heard)
         persistHistoryTurn("assistant", line.say)
+        // From the moment he stopped talking to the line being ready to say, like a hub reply's wait.
+        val waited = (System.currentTimeMillis() - line.stoppedAt).takeIf { line.stoppedAt > 0 && it in 1..60_000 }
+        val detail = runCatching {
+            org.json.JSONObject().apply {
+                waited?.let { put("first_ms", it) }
+                put("interp", "phone")
+                intuitionSummary?.let { put("read", it) }
+            }.toString()
+        }.getOrNull()
         serviceScope.launch {
             dataRepository.addUserMessage(line.heard)
-            dataRepository.addPanResponse(line.say)
+            dataRepository.addPanResponse(line.say, ms = waited, detail = detail)
         }
     }
 

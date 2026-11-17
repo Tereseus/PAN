@@ -83,6 +83,7 @@ fun HomeScreen(viewModel: MainViewModel) {
     // Is it the phone's internet, or the computer? Asked every few seconds; cheap.
     var online by remember { mutableStateOf(true) }
     var incognito by remember { mutableStateOf(ScopeHolder.scope == "incognito") }
+    val interpreting by dev.pan.app.stt.LiveWords.interpreting.collectAsState()
     LaunchedEffect(Unit) {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         while (true) {
@@ -114,6 +115,16 @@ fun HomeScreen(viewModel: MainViewModel) {
                 Spacer(Modifier.width(8.dp))
                 Text(words, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // Interpreting stays on until he ends it, and every line is then translated, not answered:
+                // he forgot it was on and asked ΠAN its name (2026-11-17). Say so where he looks.
+                interpreting?.let { lang ->
+                    val name = if (lang == "?") "" else runCatching { java.util.Locale(lang).getDisplayLanguage(java.util.Locale.ENGLISH) }.getOrDefault("")
+                    Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                        modifier = Modifier.padding(end = if (incognito) 6.dp else 0.dp)) {
+                        Text(if (name.isBlank()) "Interpreting" else "Interpreting: $name", modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
                 if (incognito) {
                     Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.18f)) {
                         Text("Incognito", modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -329,7 +340,7 @@ private fun replyBreakdown(d: org.json.JSONObject): List<String> {
     )
     if (parts.isNotEmpty()) out += "On your computer: " + parts.joinToString(", ")
     if (first != null && hubFirst != null && first > hubFirst) out += "On the way to and from this device: " + secs(first - hubFirst)
-    val who = when (d.optString("path", "")) {
+    val who = if (d.optString("interp", "") == "phone") "Translated on this device" else when (d.optString("path", "")) {
         "" -> if (d.has("model")) "Answered by the voice model" else null
         "world" -> "Answered by the bigger model (a question that needs knowledge)"
         "self" -> "Answered by the bigger model (a question about ΠAN or you)"
