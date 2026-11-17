@@ -83,6 +83,40 @@ box. It is where his line shows up while he is saying it.
 - What the hub can do today: delete one item, a list, a day, a photo, or everything. Not built:
   delete by word, keeping time, timed erase, the lock.
 
+## Lockdown
+
+From the owner (2026-11-17): nobody who picks up the phone should get into Memory, and there should
+be an emergency way to shut everything.
+
+The rule: **anyone can lock, only the owner can unlock.** Locking is always the safe direction, so
+it needs no proof. Unlocking always needs the phone's fingerprint or face check.
+
+- **By voice:** "PAN, lock down" (the words can be changed). **By hand:** a lock button on Home and
+  in the notification.
+- **By itself:** when the fingerprint or face check at Memory fails too many times. The app takes a
+  picture with the front camera of whoever tried and puts an alert on his other devices.
+- **What a lockdown does:** Memory closes, the talk on Home is hidden, "Needs you" answers nothing,
+  and PAN gives no answer from his memory by voice, on any of his devices, until he unlocks. The hub
+  holds the lock, so the computer dashboard and the car lock with the phone.
+- **Locking the phone itself:** Android lets an app lock the screen at once if the owner gives it
+  that right one time (device admin, lock only). Offered as a switch, off by default. PAN never
+  wipes anything in a lockdown.
+- **Voice is the other door.** A lock on the screen means little if anyone can ask out loud what he
+  said on Friday. Answers from memory go only to his own voice (the hub already tells voices apart),
+  and to nobody in a lockdown.
+
+## Who shows in the talk
+
+A crowd would fill Home with strangers. Home shows the talk PAN is part of: his lines, PAN's lines,
+and another person's line only when it belongs to that exchange (an interpreted conversation, or the
+line PAN answered). The rest of what was heard is not on Home. A name shows only when more than one
+person is in the talk.
+
+## Versions
+
+The first build of this redesign is 0.5.0 (owner, 2026-11-17). The version code keeps counting up
+from the 0.4 builds.
+
 ## Every feature and where it shows
 
 | Feature that exists | Where a buyer meets it |
@@ -97,6 +131,7 @@ box. It is where his line shows up while he is saying it.
 | Music, directions | Voice; the result is a line in the talk |
 | Mute | Home, the mic button; by voice once the app can be told to mute |
 | Incognito | Settings > Privacy; a badge on Home while it is on |
+| Lockdown | Not built. Voice, a button on Home, or failed checks at Memory; see "Lockdown" |
 | Car and hands-busy mode | Automatic; Settings > Voice |
 | Places where PAN does not record (zones) | Settings > Privacy |
 | Devices, accessories, pairing | Settings > Your devices, Connection |
@@ -249,5 +284,4 @@ Every app build is tried on the test tablet first and goes out over the air like
    the colours from the website.
 4. **The Memory lock.** This plan asks for fingerprint or face every time Memory opens. The other
    way is only when something is deleted.
-5. **Who said it, for buyers.** This plan shows a name on every line. The other way is to show it
-   only when more than one person is talking.
+5. **Who said it, for buyers.** Settled 2026-11-17: a name only when more than one person is in the talk.
