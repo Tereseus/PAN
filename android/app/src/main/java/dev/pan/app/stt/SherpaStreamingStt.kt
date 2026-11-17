@@ -1399,7 +1399,7 @@ class SherpaStreamingStt @Inject constructor(
                                     backWords = -1
                                 }
                                 val pcm = if (turnClipped || backed) null else toPcm16(turnAudio, turnLen)
-                                val heardBy = listener?.onCommit(turnAudio.copyOf(turnLen), heardAt) == true
+                                val heardBy = listener?.onCommit(turnAudio.copyOf(turnLen), heardAt, text) == true
                                 stopAt = heardAt
                                 turnLen = 0
                                 turnClipped = false

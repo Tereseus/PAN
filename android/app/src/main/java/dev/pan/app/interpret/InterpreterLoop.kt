@@ -143,6 +143,8 @@ class InterpreterLoop @Inject constructor(
     /** A translation, before anyone knows the turn is over. It may never be said. */
     var onDraft: ((String, Int?) -> Unit)? = null
     var onHandOver: ((String) -> Unit)? = null
+    /** A line for the app's own log, which reaches the hub: what was heard, said or left out. */
+    var onNote: ((String) -> Unit)? = null
 
     private class Heard(val text: String, val lang: String, val say: String?, val handOver: Boolean,
                         val who: VoiceBook.Pick? = null, val voice: Int? = null)
@@ -438,7 +440,7 @@ class InterpreterLoop @Inject constructor(
         VoiceEvents.emit("interp_pause", "samples" to pcm.size)
     }
 
-    override fun onCommit(pcm: FloatArray, stoppedAt: Long): Boolean {
+    override fun onCommit(pcm: FloatArray, stoppedAt: Long, liveWords: String): Boolean {
         if (language == null) return false
         committed = stoppedAt
         val p = pending
@@ -447,6 +449,19 @@ class InterpreterLoop @Inject constructor(
         pending = null
         scope.launch {
             val h = runCatching { job.await() }.getOrNull() ?: return@launch
+            val secs = "%.1f s".format(pcm.size / SAMPLE_RATE.toFloat())
+            // One or two English words that the live English ear wrote nothing of were not said.
+            // This ear makes "Yeah." out of a breath or the tail of PAN's own voice: a "yeah" he
+            // never said turned up in the talk and was translated (2026-11-17). His real "yeah"
+            // is written by both ears.
+            if (h.lang == "en" && liveWords.isBlank() && h.text.isNotBlank() &&
+                h.text.split(' ').count { w -> w.any { it.isLetterOrDigit() } } <= 2) {
+                onNote?.invoke("Interpreter left out \"${h.text}\" ($secs): the live ear heard no words")
+                VoiceEvents.emit("interp_one_ear", "text" to h.text, "samples" to pcm.size)
+                return@launch
+            }
+            if (h.text.isNotBlank()) onNote?.invoke("Interpreter ${h.lang} \"${h.text.take(80)}\" -> " +
+                (if (h.handOver) "to the hub" else "\"${h.say.orEmpty().take(80)}\"") + " ($secs, live ear \"${liveWords.take(40)}\")")
             when {
                 h.handOver -> onHandOver?.invoke(h.text)
                 h.say != null -> {

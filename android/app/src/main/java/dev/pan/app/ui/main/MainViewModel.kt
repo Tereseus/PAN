@@ -132,6 +132,13 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /** The "Interpreting" badge on Home, tapped. */
+    fun stopInterpreting() {
+        application.startForegroundService(android.content.Intent(application, PanForegroundService::class.java).apply {
+            action = PanForegroundService.ACTION_STOP_INTERPRETING
+        })
+    }
+
     /** A line typed, or fixed by hand, in the box on Home. Goes the same way as a spoken one. */
     fun sendTyped(text: String) {
         val line = text.trim()

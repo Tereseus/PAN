@@ -102,6 +102,6 @@ interface TurnEar {
     /** First silence after speech. The turn may be over: start on it, nobody has heard anything. */
     fun onPause(pcm: FloatArray, stoppedAt: Long)
 
-    /** The turn is over. True if this ear has it. */
-    fun onCommit(pcm: FloatArray, stoppedAt: Long): Boolean
+    /** The turn is over. True if this ear has it. liveWords: what the live English ear wrote for the same sound. */
+    fun onCommit(pcm: FloatArray, stoppedAt: Long, liveWords: String): Boolean
 }

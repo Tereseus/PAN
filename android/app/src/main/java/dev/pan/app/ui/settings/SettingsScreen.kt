@@ -481,6 +481,9 @@ fun SettingsScreen(
             HorizontalDivider()
 
             Text("About", style = MaterialTheme.typography.titleMedium)
+            Text("\u03A0AN " + dev.pan.app.BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Credits()
             SettingToggle(
                 title = "Developer options",
                 description = "Tools for building PAN: server address, backup route, voice picker, service controls",

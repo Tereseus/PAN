@@ -119,9 +119,12 @@ fun HomeScreen(viewModel: MainViewModel) {
                 // he forgot it was on and asked ΠAN its name (2026-11-17). Say so where he looks.
                 interpreting?.let { lang ->
                     val name = if (lang == "?") "" else runCatching { java.util.Locale(lang).getDisplayLanguage(java.util.Locale.ENGLISH) }.getOrDefault("")
+                    // A tap ends it: saying "stop translating" was the only way out, and it did not
+                    // always take (2026-11-17).
                     Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                        modifier = Modifier.padding(end = if (incognito) 6.dp else 0.dp)) {
-                        Text(if (name.isBlank()) "Interpreting" else "Interpreting: $name", modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(end = if (incognito) 6.dp else 0.dp).clip(RoundedCornerShape(10.dp))
+                            .clickable { viewModel.stopInterpreting() }) {
+                        Text((if (name.isBlank()) "Interpreting" else "Interpreting: $name") + "  \u2715", modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }

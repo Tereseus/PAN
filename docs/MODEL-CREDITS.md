@@ -35,6 +35,7 @@ today. Whatever is not in it is not part of ΠAN, even if a copy still sits on t
 | Talks (the voice model) | Syrinx, a fine-tune of Liquid LFM2 | Hub | LFM Open License v1.0 (see conditions) |
 | Answers what the voice model hands up | Phi-4-mini | Hub | MIT |
 | Splits Japanese into words with their readings | kuromoji 0.1.2 with the IPADIC dictionary | Hub | Apache 2.0 (code), NAIST / ICOT notice (dictionary, see conditions) |
+| What each Japanese word means | A meanings file made from JMdict | Hub | CC BY-SA 4.0 (see conditions) |
 | Long prompts, background jobs, pictures and screens | Gemma 4 E2B | Hub | Apache 2.0 |
 | Memory search (embeddings) | Qwen3-Embedding 0.6B | Hub | Apache 2.0 |
 | Ears on the hub | NVIDIA Parakeet TDT 0.6B v2 | Hub | CC-BY-4.0 (see conditions) |
@@ -59,10 +60,11 @@ today. Whatever is not in it is not part of ΠAN, even if a copy still sits on t
 | Liquid LFM2 family (Syrinx) | LFM Open License v1.0 | Free for selling only while the company, with everything under common control, makes under $10M a year; above that a paid licence. A fine-tune carries the same cap. Ship a copy of the licence with the model. Its sound tokenizer (Kyutai Mimi) is CC-BY-4.0: credit |
 | Supertonic 3 | OpenRAIL-M (model), MIT (code) | Its use rules must be an enforceable part of our own terms with users, and users must be told. In the list: say when speech is machine made, no impersonation without consent, no medical advice. Ship the licence copy |
 | NVIDIA Parakeet TDT 0.6B v2 and v3 | CC-BY-4.0 | Credit NVIDIA with a link to the licence, and say the file is a converted (int8 ONNX) version |
+| JMdict (EDRDG), the word meanings for the Japanese reading | CC BY-SA 4.0 with EDRDG's terms | Owner said yes (2026-11-17). Selling is allowed and our code stays ours. Credit with the link to the licence on the About screen (done in app 0.5.10); the meanings file stays share-alike and nobody may claim it; the file has to be rebuilt from the newest JMdict regularly (servers: at least monthly; `service/scripts/build-reading-gloss.mjs`, NOT scheduled yet) |
 | IPADIC dictionary inside kuromoji (mecab-ipadic 2.7.0) | NAIST and ICOT notices (permissive, selling allowed) | Every copy must carry the notice: ship kuromoji's `NOTICE.md` with the product |
 | SenseVoice Small | FunASR Model License 1.1 | Credit and keep the model name. Selling is not named in so many words; Alibaba can change the terms; the licence is lost for "malicious smearing" of the software |
 
-The owner's word (2026-11-17): everyone who has to be credited gets credited.
+The owner's word (2026-11-17): everyone who has to be credited gets credited. The list is in the app since 0.5.10: Settings, About, "Credits and licences" (`android/.../ui/settings/Credits.kt`). Change that file in the same commit as the table above.
 
 ### Taken out or never part of it
 
@@ -76,8 +78,6 @@ The owner's word (2026-11-17): everyone who has to be credited gets credited.
 | Whisper and AutoHotkey | The owner's own dictation helper on his PCs (`service/bin`), not part of the product. AutoHotkey is GPL-2 |
 
 ### Still open
-
-**Word meanings for the Japanese reading come from JMdict (EDRDG), CC BY-SA 4.0. Owner decides (asked 2026-11-17).** Selling is allowed and the software does not have to be open. It asks for: a credit with links on an About screen; the meanings file itself stays share-alike (nobody may claim it); and the file has to be rebuilt from the newest JMdict regularly (servers: at least monthly). It is on the owner's own hub only, as a data file outside the repo; the reading works without it (then only particles and endings get a note).
 
 The data licence behind the phone's zipformer model (its card names none). Before a first install is
 built: read this list again against the installer's own download list, and put the credits and

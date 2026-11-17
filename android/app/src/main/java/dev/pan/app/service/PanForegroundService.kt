@@ -57,6 +57,8 @@ class PanForegroundService : Service() {
         const val ACTION_ADDRESS_PAN = "ADDRESS_PAN"
         /** A line typed (or fixed by hand) in the box on Home. Extra "text". */
         const val ACTION_TYPED_LINE = "TYPED_LINE"
+        /** The "Interpreting" badge on Home was tapped: stop here at once, and tell the hub. */
+        const val ACTION_STOP_INTERPRETING = "STOP_INTERPRETING"
         private const val TAG = "PanService"
         val lastAction = MutableStateFlow("")
         val micEnabled = MutableStateFlow(false) // Start muted — user unmutes when ready
@@ -728,6 +730,7 @@ class PanForegroundService : Service() {
             interpreter.onLine = { line -> mainHandler.post { speakInterpreted(line) } }
             interpreter.onDraft = { say, voice -> if (!isMuted) tts.prepareLine(say, voice) }
             interpreter.onHandOver = { text -> mainHandler.post { onSpeech(text) } }
+            interpreter.onNote = { note -> panLog(note) }
             tts.onSpeakingStateChanged = { speaking ->
                 if (speaking) {
                     // Switch to telephony communication mode so AEC gets the speaker
@@ -3107,6 +3110,19 @@ class PanForegroundService : Service() {
                     }
                 }
             }
+        }
+
+        if (intent?.action == ACTION_STOP_INTERPRETING) {
+            // Here first, so it ends even when the hub cannot be reached; the line then tells the
+            // hub, which would otherwise switch the phone back on with its next reply.
+            panLog("Interpreting stopped from the badge")
+            setInterpreter(null)
+            tts.stop()
+            lastProcessedText = ""
+            lastProcessedTime = 0L
+            lastTtsDoneTime = 0L
+            addressedUntil = System.currentTimeMillis() + 20_000L
+            mainHandler.post { onSpeech("Stop translating.") }
         }
 
         if (intent?.action == ACTION_TYPED_LINE) {

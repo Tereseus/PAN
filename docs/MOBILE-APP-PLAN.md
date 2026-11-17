@@ -133,6 +133,7 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
+- **0.5.10** (code 139): tap the Interpreting badge to stop; a short word only one ear heard is left out; Settings, About has the credits list.
 - **0.5.9** (code 138): a Japanese line shows its Latin letters under it, and a tap opens it word by word with meanings (the hub works the reading out).
 
 ## Every feature and where it shows

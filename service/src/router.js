@@ -847,6 +847,12 @@ const STANDING_SET_RE = /\b(from now on|from this moment on|from here on|until i
 const STANDING_CLEAR_RE = /\b(stop translating|stop interpreting|interpreter off|translation off|back to normal|normal mode|cancel (that|the) instruction|forget (that|the) instruction|stop doing that)\b/i;
 // A standing instruction that is a translation: the interpreting path in routeStream.
 const INTERPRET_RE = /\b(translat\w*|interpret\w*)\b/i;
+// The whole line is "translate to Greek" / "interpret now into Japanese": nothing in it to
+// translate, so it starts interpreting. Such a line with "now" in it came back as the word "now"
+// in Greek, twice (2026-11-17). With something to translate in it ("translate that to Greek",
+// "translate to Greek: where is the station") it stays a single translation.
+const BARE_INTERPRET_RE = /^\W*(?:(?:okay|ok|so|now|please|and|just|hey|pan)\W+)*(?:translat\w*|interpret\w*)\s+(?:(?:now|please)\s+)?(?:in)?to\s+\w+(?:\s+(?:now|please))?\W*$/i;
+const setsStanding = (t) => STANDING_SET_RE.test(t) || (BARE_INTERPRET_RE.test(t) && !!languageNamed(t));
 // Greek, Cyrillic, Hebrew, Arabic, Indic, Thai, Japanese, Chinese and Korean scripts: not English.
 const NON_LATIN_RE = /[Ͱ-ϿЀ-ӿ֐-ۿऀ-෿฀-๿぀-ヿ㐀-鿿가-힯]/;
 // Plainly English: two of these words, or one in a line of four words or fewer. Words that are
@@ -1050,12 +1056,18 @@ function interpreterAck(key, text) {
   const t = String(text || '');
   const s = standing().get(key);
   const on = inForce(s) && INTERPRET_RE.test(s.text);
-  if (STANDING_CLEAR_RE.test(t)) {
-    return on && onlyInstruction(t.replace(new RegExp(STANDING_CLEAR_RE.source, 'gi'), '')) ? "Okay, I've stopped." : null;
-  }
   const named = languageNamed(t);
-  if (STANDING_SET_RE.test(t) && INTERPRET_RE.test(t)) {
-    if (!onlyInstruction(t.replace(new RegExp(STANDING_SET_RE.source, 'gi'), ''), named)) return null;
+  if (STANDING_CLEAR_RE.test(t)) {
+    // With the language in it too: a stop line that named the language fell through here, was translated
+    // into Japanese as a line of its own and left the phone interpreting (2026-11-17). And with
+    // nothing in force on the hub: the phone may still think it is interpreting, and the event
+    // after this reply is what ends it there.
+    if (!onlyInstruction(t.replace(new RegExp(STANDING_CLEAR_RE.source, 'gi'), ''), named)) return null;
+    return on ? "Okay, I've stopped." : "I'm not interpreting.";
+  }
+  if (setsStanding(t) && INTERPRET_RE.test(t)) {
+    const rest = STANDING_SET_RE.test(t) ? t.replace(new RegExp(STANDING_SET_RE.source, 'gi'), '') : '';
+    if (!onlyInstruction(rest, named)) return null;
     return interpretAck(named?.name);
   }
   if (named && on && !languageNamed(s.text) && !s.lang && onlyInstruction(t, named)) return `Okay, ${named.name}.`;
@@ -1069,7 +1081,7 @@ function interpreterAck(key, text) {
 function standingInstruction(key, text) {
   const t = String(text || '');
   if (STANDING_CLEAR_RE.test(t)) { standing().delete(key); dropMode(key); return null; }
-  if (STANDING_SET_RE.test(t)) {
+  if (setsStanding(t)) {
     const entry = { text: t.trim(), at: Date.now() };
     standing().set(key, entry);
     saveMode(key, entry);
@@ -3412,7 +3424,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // One line to translate, no instruction in force: "so translate that in Greek", "how do you say
   // thank you in Japanese". The local model answered "I can't find the specific line you're
   // talking about" (2026-11-03). The voice chain's cloud model, with the last few lines.
-  const oneOffLang = !standing && !wordSearch && (INTERPRET_RE.test(String(text || '')) || /\bhow (?:do|would|can) (?:you|i|we) say\b/i.test(String(text || ''))) ? languageNamed(text) : null;
+  const oneOffLang = !standing && !wordSearch && !STANDING_CLEAR_RE.test(String(text || '')) && (INTERPRET_RE.test(String(text || '')) || /\bhow (?:do|would|can) (?:you|i|we) say\b/i.test(String(text || ''))) ? languageNamed(text) : null;
   const translatePrompt = oneOffLang ? [
     'You are PAN, his voice assistant. Reply ONLY as JSON: {"intent":"translate","addressed":0.9,"response":"..."}',
     context.conversation_history ? `Last few lines:\n${String(context.conversation_history).trim().split('\n').slice(-4).join('\n')}` : '',
