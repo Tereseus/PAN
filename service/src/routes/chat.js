@@ -342,47 +342,10 @@ router.post('/threads/:threadId/read', (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── Incoming message from Hub relay ───
-router.post('/incoming', (req, res) => {
-  
-  const { from_instance_id, body, body_type, metadata, message_id } = req.body;
-
-  // Find or create contact for sender
-  let contact = db.prepare('SELECT id FROM contacts WHERE pan_instance_id = ?').get(from_instance_id);
-  if (!contact) {
-    const contactId = 'contact_' + crypto.randomBytes(8).toString('hex');
-    db.prepare(`
-      INSERT INTO contacts (id, pan_instance_id, display_name) VALUES (?, ?, ?)
-    `).run(contactId, from_instance_id, from_instance_id);
-    contact = { id: contactId };
-  }
-
-  // Find or create DM thread
-  let thread = db.prepare(`
-    SELECT t.id FROM chat_threads t
-    JOIN chat_thread_members tm ON tm.thread_id = t.id
-    WHERE t.type = 'dm' AND tm.contact_id = ?
-  `).get(contact.id);
-
-  if (!thread) {
-    const threadId = 'thread_' + crypto.randomBytes(8).toString('hex');
-    db.prepare('INSERT INTO chat_threads (id, type) VALUES (?, ?)').run(threadId, 'dm');
-    db.prepare('INSERT INTO chat_thread_members (thread_id, contact_id) VALUES (?, ?)').run(threadId, contact.id);
-    thread = { id: threadId };
-  }
-
-  // Insert message
-  const id = message_id || ('cmsg_' + crypto.randomBytes(8).toString('hex'));
-  const now = Date.now();
-  db.prepare(`
-    INSERT OR IGNORE INTO chat_messages (id, thread_id, sender_id, body, body_type, metadata, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, thread.id, contact.id, body, body_type || 'text', metadata ? JSON.stringify(metadata) : null, now);
-
-  db.prepare('UPDATE chat_threads SET updated_at = ? WHERE id = ?').run(now, thread.id);
-
-  res.json({ ok: true, thread_id: thread.id, message_id: id });
-});
+// POST /incoming is gone (2026-11-18). It was written for a relay server between hubs that never
+// ran: it took any body's word for who sent it, made a contact for that name and filed the
+// message under it. Nothing called it. Hubs never pair (docs/PEOPLE-PLAN.md): two devices do,
+// and what one sends the other arrives signed with that session's key.
 
 // ─── WebRTC Signaling ───
 

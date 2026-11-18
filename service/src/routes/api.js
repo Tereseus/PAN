@@ -885,6 +885,26 @@ function carrierRelay(payload, timeoutMs = 10000) {
 // this module) still mints ids higher than the phone's last-seen high-water mark.
 let slackQueue = [];
 let slackSeq = Date.now();
+// WHO SENT A NOTE is what PAN Link says, never what the note says about itself: the device whose
+// key carried the request (server.js sets req.panLinkDevice), or null for the hub's own notes and
+// for a request that did not come through the link. A device limited to sending notes
+// (LIMITED_ALLOW) could make the phone read out 2,000 characters as often as it liked with nothing
+// recording that it was the one (docs/PEOPLE-PLAN.md, holes). Now every note carries `from`, the
+// log names it, and one device gets SPEAK_PER_MINUTE spoken notes a minute.
+const SPEAK_PER_MINUTE = 6;
+const spokenBy = new Map();
+export function noteSender(req) {
+  const d = req?.panLinkDevice;
+  return d?.id ? { device: String(d.id), name: String(d.name || '').slice(0, 60) } : null;
+}
+export function maySpeakNow(from, now = Date.now()) {
+  if (!from) return true;
+  const recent = (spokenBy.get(from.device) || []).filter((t) => now - t < 60_000);
+  if (recent.length >= SPEAK_PER_MINUTE) { spokenBy.set(from.device, recent); return false; }
+  recent.push(now);
+  spokenBy.set(from.device, recent);
+  return true;
+}
 router.post('/slack/inbound', async (req, res) => {
   try {
     const { message } = req.body || {};
@@ -892,7 +912,7 @@ router.post('/slack/inbound', async (req, res) => {
     const note = {
       id: ++slackSeq, type: 'slack', channelId: message.channelId, channel: message.channel || null,
       sender: message.sender || 'Slack', text: message.text || '',
-      kind: message.kind || null, received: message.received || null,
+      kind: message.kind || null, received: message.received || null, from: noteSender(req),
     };
     slackQueue.push(note);
     if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);   // bound backlog
@@ -904,17 +924,22 @@ router.post('/slack/inbound', async (req, res) => {
 // go to ntfy) POST here with a type. Shares the same queue as slack; the phone drains it
 // and renders by type ('slack' = reply notification, 'speak' = read aloud + notification,
 // 'meeting'/other = plain notification).
-export function enqueuePhoneNote({ type = 'info', title = 'PAN', body = '', data = null } = {}) {
+export function enqueuePhoneNote({ type = 'info', title = 'PAN', body = '', data = null } = {}, from = null) {
   const limit = type === 'speak' ? 2000 : 500;
-  const note = { id: ++slackSeq, type, title: String(title).slice(0, 200), body: String(body).slice(0, limit), data };
+  const note = { id: ++slackSeq, type: String(type).slice(0, 20), title: String(title).slice(0, 200), body: String(body).slice(0, limit), data, from };
   slackQueue.push(note);
   if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);
-  console.log(`[notify] queued #${note.id} [${type}] ${title}: ${String(body).slice(0, 50)}`);
+  console.log(`[notify] queued #${note.id} [${note.type}] from ${from ? `${from.name || 'a device'} (${from.device})` : 'the hub'} ${title}: ${String(body).slice(0, 50)}`);
   return note;
 }
 router.post('/notify/inbound', (req, res) => {
   try {
-    const note = enqueuePhoneNote(req.body || {});
+    const from = noteSender(req);
+    if (String(req.body?.type) === 'speak' && !maySpeakNow(from)) {
+      console.warn(`[notify] ${from.name || 'a device'} (${from.device}) is over ${SPEAK_PER_MINUTE} spoken notes a minute: refused`);
+      return res.status(429).json({ ok: false, error: 'too many spoken notes, wait a minute' });
+    }
+    const note = enqueuePhoneNote(req.body || {}, from);
     res.json({ ok: true, queued: note.id });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });

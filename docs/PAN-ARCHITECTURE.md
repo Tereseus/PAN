@@ -209,7 +209,7 @@ Hardware reach. Where work executes.
 | Pendant (ESP32-S3, in dev) | `docs/PENDANT*`, BLE → phone |
 | Home Assistant bridge | `home-assistant` skill |
 | Cross-platform abstractions | `platform.js` |
-| Discovery / handoff | `discovery.js`, `hub-client.js`, `hub-crypto.js` |
+| Discovery / handoff | `discovery.js` |
 | Process tiers | `super-carrier.js`, `carrier.js`, `server.js` (Craft) — see `docs/SUPER-CARRIER.md` |
 
 ---
@@ -289,7 +289,7 @@ Wraps every other section. Two adjacent concerns kept together:
 | `memory/`, `memory-search.js`, `evolution/`, `dream.js`, `db.js`, `org-db.js`, `db-registry.js`, `schema.sql`, `migrations/` | Memory |
 | `skills/`, `skills.js`, `modules/`, `modules.js`, `wrappers/`, `mcp-server.js`, `router.js`, `context-router.js`, `hooks/skill-learner.js` | Capabilities |
 | `jobs.js`, `orchestrator.js`, `steward.js`, `dashboard-watchdog.js`, `project-runner.js`, `routes/runner.js` | Jobs |
-| `terminal.js`, `super-carrier.js`, `carrier.js`, `platform.js`, `wezterm.js`, `playwright-bridge.js`, `discovery.js`, `hub-client.js`, `hub-crypto.js`, `client-manager.js`, `routes/client.js`, `routes/devices.js`, `screen-recorder.js`, `screen-buffer.js`, `remote-screen-watcher.js`, `pan-client/` | Devices |
+| `terminal.js`, `super-carrier.js`, `carrier.js`, `platform.js`, `wezterm.js`, `playwright-bridge.js`, `discovery.js`, `client-manager.js`, `routes/client.js`, `routes/devices.js`, `screen-recorder.js`, `screen-buffer.js`, `remote-screen-watcher.js`, `pan-client/` | Devices |
 | `tts.js`, `tts-worker.py`, `whisper-server.py`, `dictate-vad.py`, `audio-recorder.py`, `pan-voice.cs/.exe`, `pan-notify.js`, `routes/email.js`, `routes/chat.js`, `routes/messaging-prefs.js`, `email.js` | Comms |
 | `scout.js`, `dream.js`, `evolution/`, `autodev.js`, `benchmark.js`, `perf/`, `stack-scanner.js`, `github-monitor.js`, `issue-checker.js`, `hooks/skill-learner.js`, `mode.js`, `resistance.js` | Learning |
 | `routes/orgs.js`, `routes/auth.js`, `routes/audit.js`, `routes/privacy.js`, `routes/incognito.js`, `routes/zones.js`, `routes/guardian.js`, `routes/preferences.js`, `routes/hooks.js`, `anonymize.js`, `anonymizer.js`, `sensitivity.js`, `permissions.js`, `org-policy.js`, `guardian.js`, `cloudflare-tunnel.js` | Security + Governance |

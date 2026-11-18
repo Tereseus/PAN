@@ -135,7 +135,7 @@ Rules:
 - **Preserves:** Call history in `chat_calls`. Existing chat send flow continues
   to work alongside an active call.
 - **Pre-gate:** None for ΠΑΝ thread. PAN↔PAN federated calls (future) go through
-  `trust-ladder.js` evaluation.
+  the session rules of `docs/PEOPLE-PLAN.md` (the old `trust-ladder.js` was removed on 2026-11-18).
 
 ---
 
@@ -151,7 +151,9 @@ Rules:
 
 ---
 
-## Trust ladder (`service/src/trust-ladder.js`)
+## Trust ladder (`service/src/trust-ladder.js`) — REMOVED 2026-11-18
+
+Removed with the old relay between hubs (`hub/`, `hub-client.js`, `hub-crypto.js`, `POST /api/v1/chat/incoming`): nothing called it. Who may do what is `service/src/people.js` now (`docs/PEOPLE-PLAN.md`). What follows describes the removed code, kept for the idea.
 
 - **Purpose:** Gate PAN↔PAN federated communication. Composes three axes
   (org relationship × sender power_lvl × scope sensitivity) into one of:

@@ -167,7 +167,7 @@ First test inside step 1: Pkarr lookup speed and relay availability from the hub
 - A plain text settings dump at the repo root held the Tailscale OAuth secret. It was gitignored, so it never reached GitHub. Deleted on 2026-11-08; it never left the owner's machines.
 - The fallback key handout was lost on the hub (see "What exists today"). The recovered copy waits in `docs/legacy/` for the Tailscale fallback work.
 - Invite tokens starting with `dev-` were always accepted and skipped approval, and any PAN client could register under another computer's name and get its commands. Fixed 2026-11-08 (`client-claim.js`, FEATURES.md "PAN client names"): `dev-` is gone, and a name belongs to the computer that first used it. The token `local` is still accepted but waits for approval.
-- `hub-crypto.js` `deriveSharedSecret` is a hash of two public keys, not a key exchange. Do not use it for pairing.
+- `hub-crypto.js` `deriveSharedSecret` was a hash of two public keys, not a key exchange. Removed 2026-11-18 with the rest of the old relay code.
 
 ## Found while testing (2026-11-08, dev PAN run)
 
