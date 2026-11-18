@@ -579,8 +579,9 @@ def main():
         got = {"his": pending(OWNER, PHONE), "the child's": pending(quill["device"]), "her own": pending(zora["device"])}
         check("messages", "his device gets it as her words, and no other device does", got["his"] == (200, ["Zora says: I am on my way."]) and got["the child's"][1] == [] and got["her own"][1] == [], got)
         s, done, said = turn("PAN, tell %s I want ice cream." % boss, quill["device"])
-        check("messages", "a child, who may not send messages, is told so", s == 200 and (done or {}).get("refused") == "messages", (s, done))
-        check("messages", "and nothing reached the owner", pending(OWNER, PHONE)[1] == [], None)
+        check("messages", "a child can message the owner too", s == 200 and (done or {}).get("intent") == "message" and not (done or {}).get("refused"), (s, done))
+        got = {"his": pending(OWNER, PHONE), "the adult's": pending(zora["device"])}
+        check("messages", "and it reaches the owner's device only", got["his"] == (200, ["Quill says: I want ice cream."]) and got["the adult's"][1] == [], got)
         s, done, said = turn("Tell %s dinner is ready." % boss, zora["device"])
         check("messages", "the same words not said to PAN send nothing", (done or {}).get("intent") != "message" and pending(OWNER, PHONE)[1] == [], done)
         jobs_before = (queued("people-suite"), queued(zora["host"]))

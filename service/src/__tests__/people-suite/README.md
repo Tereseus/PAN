@@ -58,8 +58,7 @@ The hub part, by group:
   answer and queue nothing; a child with a computer gets silence; the owner asks about a
   person's thread by her name; a removed computer's threads are gone.
 - **messages**: the owner tells a person something by voice and only her device gets it, as
-  his words; a person tells the owner; a child, who may not send, is told so and nothing
-  goes out; the same words not said to PAN send nothing; an order inside a message is only
+  his words; a person tells the owner; a child can too, and only the owner's device gets it; the same words not said to PAN send nothing; an order inside a message is only
   words on the other device and queues no job; a test turn sends nothing.
 - **admin**: no role can add, rename, promote or remove people, pair a device, free their own
   device or change the limits; the owner can; handing over and taking back; removal.

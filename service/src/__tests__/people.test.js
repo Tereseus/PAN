@@ -63,8 +63,8 @@ test('a code that ran out is still honoured for a day, then forgotten', () => {
 
 test('what a child, an adult and the owner may do', () => {
   const mia = people.personOfDevice('d00000000000b');
-  for (const a of ['talk', 'camera', 'own_memory']) eq(people.may(mia, a), true, `child ${a}`);
-  for (const a of ['home', 'messages', 'computer', 'thread', 'lend_device', 'others_memory', 'pair_device', 'set_limits']) eq(people.may(mia, a), false, `child ${a}`);
+  for (const a of ['talk', 'camera', 'own_memory', 'messages']) eq(people.may(mia, a), true, `child ${a}`);
+  for (const a of ['home', 'computer', 'thread', 'lend_device', 'others_memory', 'pair_device', 'set_limits']) eq(people.may(mia, a), false, `child ${a}`);
   people.setDevicePerson('d00000000000d', adult);
   const sam = people.personOfDevice('d00000000000d');
   for (const a of ['talk', 'home', 'messages']) eq(people.may(sam, a), true, `adult ${a}`);
@@ -76,7 +76,7 @@ test('what a child, an adult and the owner may do', () => {
 
 test('every role by every action: allowed exactly when the role\'s power reaches the limit', () => {
   const powers = { removed: 0, child: 5, guest: 15, user: 25, manager: 50, admin: 75 };
-  const need = { talk: 0, camera: 5, own_memory: 5, home: 15, messages: 15, lend_device: 50, approve_device: 75,
+  const need = { talk: 0, camera: 5, own_memory: 5, home: 15, messages: 5, lend_device: 50, approve_device: 75,
     computer: 100, thread: 100, own_thread: 25, others_memory: 100, pair_device: 100, set_limits: 100 };
   eq(Object.keys(people.LIMITS).sort().join(), Object.keys(need).sort().join(), 'the list of actions changed: add the new one here');
   let n = 0;
@@ -103,7 +103,7 @@ test('the owner changes a limit, and nonsense in the setting changes nothing', (
   eq(people.may(mia, 'home'), true, 'home opened to a child');
   eq(people.may(mia, 'computer'), false, 'a word is not a power');
   eq(people.may(mia, 'made_up'), false, 'an action that does not exist');
-  eq(people.limits().messages, 15, 'a power over 100 is ignored');
+  eq(people.limits().messages, 5, 'a power over 100 is ignored');
   eq(people.may({ power: 25 }, 'thread'), true, 'the owner opened threads to an adult');
   run(`DELETE FROM settings WHERE key = 'people_limits'`);
 });

@@ -22,7 +22,9 @@ export const LIMITS = Object.freeze({
   camera: 5,           // "what is this"
   own_memory: 5,       // recall what they themselves said
   home: 15,            // lights, heating, the TV
-  messages: 15,        // send a message to a person
+  // Anyone on the hub may message anyone else on it (the owner, 2026-11-18: someone in your own
+  // organization can always send you a message). The owner can still close it for a role.
+  messages: 5,         // send a message to a person on this hub
   // The computers and the Claude threads on them are the owner's until a computer can belong to
   // a person: a thread runs anything, as the owner, on the owner's machine.
   computer: 100,       // run a job on a computer, the terminal

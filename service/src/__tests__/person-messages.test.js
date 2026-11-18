@@ -114,15 +114,16 @@ test('a person to the owner, by the name PAN calls him; and to another person', 
   ok(pm.parseMessage('Tell Mia hello.', { from: mia, addressed: true }) === null, 'a message to herself');
 });
 
-test('a person who may not send messages is told so, and nothing is sent', () => {
+test('anyone on the hub may send, a child too; the owner can close it for a role', () => {
   const r = pm.messageTurn('PAN, tell Alex I want ice cream.', { person: kit, addressed: true });
-  ok(r.refused === 'messages' && /can't send messages/.test(r.response), J(r));
-  ok(notes.notesWaiting().length === 0, 'the message went out anyway');
-  // The owner can open it to a child.
-  run(`INSERT INTO settings (key, value) VALUES ('people_limits', :v) ON CONFLICT(key) DO UPDATE SET value = :v`, { ':v': JSON.stringify({ messages: 5 }) });
+  ok(!r.refused && notes.notesWaiting().length === 1 && notes.notesWaiting()[0].to_user === 1, J(r));
+  notes.resetNotes();
+  // The owner raises the limit above a child: the child is told so, and nothing is sent.
+  run(`INSERT INTO settings (key, value) VALUES ('people_limits', :v) ON CONFLICT(key) DO UPDATE SET value = :v`, { ':v': JSON.stringify({ messages: 15 }) });
   people.resetPeopleCache();
   const r2 = pm.messageTurn('PAN, tell Alex I want ice cream.', { person: kit, addressed: true });
-  ok(!r2.refused && notes.notesWaiting().length === 1, J(r2));
+  ok(r2.refused === 'messages' && /can't send messages/.test(r2.response), J(r2));
+  ok(notes.notesWaiting().length === 0, 'the message went out anyway');
   run(`DELETE FROM settings WHERE key = 'people_limits'`);
   people.resetPeopleCache();
 });
