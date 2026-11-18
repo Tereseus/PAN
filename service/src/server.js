@@ -21,7 +21,8 @@ import hooksRouter, { injectSessionContext } from './routes/hooks.js';
 import apiRouter from './routes/api.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
-import linkRouter from './routes/link.js';
+import linkRouter, { callAdmin as linkAdmin } from './routes/link.js';
+import { personOfDevice, pairingsWaiting, claimPairings, personMaySend, asUser } from './people.js';
 import { tailscaleKeyRouter } from './routes/tailscale-key.js';
 import dashboardRouter, { createAlert } from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
@@ -394,10 +395,18 @@ app.use('/api', (req, res, next) => {
 app.use('/api/v1/auth', (req, res, next) => {
   const publicPaths = ['/oauth', '/google-callback', '/github-callback', '/dev-token'];
   if (publicPaths.includes(req.path)) return next();
-  // A device paired through pan-link (identified above).
+  // A device paired through pan-link (identified above): the owner's, or a person's (people.js).
   if (req.panLinkDevice) {
-    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
-    return next();
+    return linkPerson(req.panLinkDevice.id).then((person) => {
+      if (person === undefined) return res.status(503).json({ error: 'PAN Link is not answering, try again' });
+      if (person && person.role !== 'owner') {
+        if (!personMaySend(req.method, req.baseUrl + req.path)) return res.status(403).json({ error: 'not open to this person' });
+        req.user = asUser(person);
+        return next();
+      }
+      req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner' };
+      next();
+    }).catch(next);
   }
   // GET /users is public (list users for login chooser), mutations need auth
   if (req.path === '/users' && req.method === 'GET') return next();
@@ -413,6 +422,18 @@ app.use('/api/v1/auth', (req, res, next) => {
   }
   extractUser(req, res, next);
 }, authRouter);
+
+// The person a paired device belongs to: null for the owner's own. undefined when a code made
+// for a person is waiting for its device and pan-link cannot be asked which device used it; the
+// request is then refused, because guessing "the owner" there is the one mistake that matters.
+async function linkPerson(linkDeviceId) {
+  const known = personOfDevice(linkDeviceId);
+  if (known || !pairingsWaiting()) return known;
+  const { status, body } = await linkAdmin('/admin/devices').catch(() => ({ status: 0 }));
+  if (status !== 200 || !Array.isArray(body)) return undefined;
+  claimPairings(body);
+  return personOfDevice(linkDeviceId);
+}
 
 // Phone screenshot upload — saves image to temp file so Claude Code can view it
 // Phone sends base64 image data. Returns the local file path for Claude to read.
@@ -690,12 +711,22 @@ function apiAuth(req, res, next) {
     req.user = { id: 1, email: 'bootstrap@localhost', display_name: 'Bootstrap', role: 'owner' };
     return next();
   }
-  // A device paired through pan-link (identified by the pan-link middleware above).
+  // A device paired through pan-link (identified by the pan-link middleware above). It is the
+  // owner's unless it was paired for, or handed to, another person (people.js): then the request
+  // is that person's, and only the paths listed for people get through.
   if (req.panLinkDevice) {
-    const imp = getImpersonation();
-    req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner',
-      realPower: 100, power: imp !== null ? imp.power : 100, isImpersonating: imp !== null, impersonation: imp };
-    return next();
+    return linkPerson(req.panLinkDevice.id).then((person) => {
+      if (person === undefined) return res.status(503).json({ error: 'PAN Link is not answering, try again' });
+      if (person && person.role !== 'owner') {
+        if (!personMaySend(req.method, req.baseUrl + req.path)) return res.status(403).json({ error: 'not open to this person' });
+        req.user = asUser(person);
+        return next();
+      }
+      const imp = getImpersonation();
+      req.user = { id: 1, email: 'owner@localhost', display_name: 'Owner', role: 'owner',
+        realPower: 100, power: imp !== null ? imp.power : 100, isImpersonating: imp !== null, impersonation: imp };
+      next();
+    }).catch(next);
   }
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
   const deviceName = req.headers['x-device-name'];

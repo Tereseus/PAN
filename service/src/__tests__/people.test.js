@@ -104,6 +104,28 @@ test('a person who was removed leaves a device that is nobody', () => {
   eq(people.may(p, 'talk'), true, 'can still be told so');
 });
 
+test('what a person\'s device may send: the listed paths and nothing shaped like them', () => {
+  eq(people.personMaySend('GET', '/health'), true, 'health');
+  eq(people.personMaySend('POST', '/api/v1/logs'), true, 'logs');
+  eq(people.personMaySend('GET', '/api/v1/logs'), false, 'the other method');
+  eq(people.personMaySend('GET', '/api/v1/auth/me?x=1'), true, 'a query string');
+  for (const p of ['/api/v1/query/stream', '/dashboard/api/mem', '/api/v1/link/pair', '/api/v1/settings', '/api/v1/auth/users',
+    '/health/../api/v1/settings', '/health//x', '/health%2f..', 'health', '']) {
+    eq(people.personMaySend('POST', p), false, p);
+    eq(people.personMaySend('GET', p), false, 'GET ' + p);
+  }
+  eq(people.allowFor(null).length, 0, 'the owner has no limit');
+  eq(people.allowFor({ role: 'owner' }).length, 0, 'an owner by role has none');
+  eq(people.allowFor({ role: 'child' }).join(), people.PERSON_ALLOW.join(), 'a child gets the list');
+});
+
+test('a person\'s memory is a database of their own', () => {
+  eq(people.scopeFor(null), null, 'the owner');
+  eq(people.scopeFor({ id: 1, role: 'owner' }), null, 'an owner by role');
+  eq(people.scopeFor({ id: 7, role: 'child' }), 'person-7', 'a child');
+  eq(people.scopeFor({ id: 0, role: 'guest' }), 'person-0', 'nobody never writes to the owner');
+});
+
 test('taking a device back, and a removed device', () => {
   people.setDevicePerson('d00000000000b', null);
   eq(people.personOfDevice('d00000000000b'), null, 'the owner\'s again');

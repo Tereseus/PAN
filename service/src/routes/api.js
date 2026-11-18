@@ -15,6 +15,7 @@ import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
+import { scopeFor } from '../people.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -421,6 +422,9 @@ router.use((req, res, next) => {
     res.setHeader('X-PAN-Scope-Denied', 'incognito');
     scope = 'main';
   }
+  // A person other than the owner has a database of their own, whatever the device asks for:
+  // the header could name the owner's.
+  if (req.user?.person) scope = scopeFor(req.user) || scope;
 
   req.panScope = scope;
   next();

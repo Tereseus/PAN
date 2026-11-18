@@ -176,6 +176,9 @@ const kid = Number(run(`INSERT INTO users (email, display_name, role, power_lvl,
 await test('a code made for a person binds the device that pairs with it', async () => {
   const r = await post('/pair', { name: 'Kid tablet', for_user: kid });
   ok(r.status === 200, `status ${r.status}`);
+  const sent = JSON.parse(calls.at(-1).body);
+  ok(Array.isArray(sent.allow) && sent.allow.join() === people.PERSON_ALLOW.join(), `the code was not limited to the people's paths: ${calls.at(-1).body}`);
+  ok(!sent.allow.some((x) => x.includes('query') || x.includes('/dashboard') || x.includes('*')), 'the list opens more than it should');
   ok(people.pairingsWaiting(), 'nothing is waiting for the device');
   ok(people.claimPairings([{ id: 'd1', tunnel_ip: '10.77.0.9' }]) === 1, 'the device was not bound');
   const p = people.personOfDevice('d1');
@@ -194,19 +197,39 @@ await test('only the owner makes a code for a person or hands a device over', as
   ok((await fetch(`${base}/people`)).status === 403, 'an admin read who has what');
 });
 
-await test('handing a device over, the list, and taking it back', async () => {
-  let r = await post('/devices/d2/person', { user_id: kid, shared: true }, 'PUT');
+await test('handing a device over limits it first; taking it back lifts the limit', async () => {
+  people.setDevicePerson('d1', null);
+  let r = await post('/devices/d1/person', { user_id: kid, shared: true }, 'PUT');
   ok(r.status === 200 && (await r.json()).person.shared === true, 'not handed over as shared');
+  let asked = calls.at(-1);
+  ok(asked.method === 'PUT' && asked.url === '/admin/devices/d1/allow', `pan-link was not asked to limit it: ${asked.method} ${asked.url}`);
+  ok(JSON.parse(asked.body).allow.join() === people.PERSON_ALLOW.join(), `limited to ${asked.body}`);
   const list = (await (await fetch(`${base}/people`)).json()).devices;
-  ok(list.some((d) => d.link_device_id === 'd2' && d.display_name === 'Kid'), `list ${JSON.stringify(list)}`);
-  ok((await post('/devices/d2/person', { user_id: 'kid' }, 'PUT')).status === 400, 'a name was taken for an id');
-  ok((await post('/devices/d2/person', { user_id: 424242 }, 'PUT')).status === 404, 'handed to nobody');
-  r = await post('/devices/d2/person', { user_id: null }, 'PUT');
+  ok(list.some((d) => d.link_device_id === 'd1' && d.display_name === 'Kid'), `list ${JSON.stringify(list)}`);
+  ok((await post('/devices/d1/person', { user_id: 'kid' }, 'PUT')).status === 400, 'a name was taken for an id');
+  ok((await post('/devices/d1/person', { user_id: 424242 }, 'PUT')).status === 404, 'handed to nobody');
+  r = await post('/devices/d1/person', { user_id: null }, 'PUT');
   ok(r.status === 200 && (await r.json()).person === null, 'not taken back');
+  asked = calls.at(-1);
+  ok(JSON.parse(asked.body).allow.length === 0, 'the limit was not lifted for the owner');
+});
+
+await test('a device pan-link cannot limit is not handed over', async () => {
+  const r = await post('/devices/d2/person', { user_id: kid }, 'PUT');   // the stand-in has no d2
+  ok(r.status === 404, `status ${r.status}`);
+  ok(people.personOfDevice('d2') === null, 'it was bound without a wall');
+});
+
+await test('a code for the owner himself is not limited', async () => {
+  const r = await post('/pair', { name: 'His own', for_user: 1 });
+  ok(r.status === 200, `status ${r.status}`);
+  ok(!('allow' in JSON.parse(calls.at(-1).body)), `limited: ${calls.at(-1).body}`);
+  people.claimPairings([{ id: 'd9', tunnel_ip: '10.77.0.9' }]);
 });
 
 await test('removing a device removes whose it was', async () => {
-  ok(people.personOfDevice('d1') !== null, 'd1 should still be the child\'s');
+  people.setDevicePerson('d1', kid);
+  ok(people.personOfDevice('d1') !== null, 'd1 should be the child\'s');
   const r = await fetch(`${base}/devices/d1`, { method: 'DELETE' });
   ok(r.status === 200, `status ${r.status}`);
   ok(people.personOfDevice('d1') === null, 'the binding outlived the device');

@@ -32,6 +32,49 @@ export const LIMITS = Object.freeze({
   set_limits: 100,     // change this list
 });
 
+// What a device that belongs to a person other than the owner may reach, as pan-link allow rules
+// (pan-link/allow.go). pan-link refuses everything else before PAN sees it, WebSockets and
+// pages included; PAN checks the same list again for /api. A path nobody listed is closed.
+// Short on purpose: a path joins this list when what it answers is that person's own, not the
+// owner's. Talking (/api/v1/query/stream) is not on it yet: the voice path still builds its
+// prompt from the owner's situation, memory and name (docs/PEOPLE-PLAN.md, Progress).
+export const PERSON_ALLOW = Object.freeze([
+  'GET /health',
+  'GET /api/v1/auth/me',
+  'GET /api/v1/apk/version',
+  'GET /apk/latest',
+  'POST /api/v1/logs',
+]);
+
+/** The allow rules for a device of this person's: none for the owner (no limit). */
+export function allowFor(person) {
+  return !person || person.role === 'owner' ? [] : [...PERSON_ALLOW];
+}
+
+/** Whether a person's device may send this request (the same rules pan-link applies). */
+export function personMaySend(method, path) {
+  const m = String(method || '').toUpperCase();
+  const p = String(path || '').split('?')[0];
+  if (!p.startsWith('/') || p.includes('//') || p.includes('/.') || p.includes('%')) return false;
+  return PERSON_ALLOW.some((rule) => {
+    const [rm, rp] = rule.split(' ');
+    if (rm !== '*' && rm !== m) return false;
+    return rp.endsWith('/*') ? p.startsWith(rp.slice(0, -1)) : p === rp;
+  });
+}
+
+/** The memory a person's words go to: a database of their own (db-registry.js). null: the owner's. */
+export function scopeFor(person) {
+  return !person || person.role === 'owner' ? null : `person-${Number(person.id) || 0}`;
+}
+
+/** The person as a request's user (req.user). */
+export function asUser(person) {
+  return { id: person.id, email: person.email, display_name: person.display_name, role: person.role,
+    realPower: person.power, power: person.power, isImpersonating: false, impersonation: null,
+    person: true, shared: !!person.shared };
+}
+
 const ROLE_POWER = Object.freeze({ owner: 100, admin: 75, manager: 50, user: 25, viewer: 0, guest: 15, child: 5 });
 
 let schemaReady = false;
@@ -69,17 +112,22 @@ export function notePairingFor(deviceIp, userId, { shared = false, expires = Dat
   run(`INSERT INTO pairing_for (device_ip, user_id, shared, expires) VALUES (:ip, :u, :s, :e)
        ON CONFLICT(device_ip) DO UPDATE SET user_id = :u, shared = :s, expires = :e`,
     { ':ip': String(deviceIp), ':u': userId, ':s': shared ? 1 : 0, ':e': expires });
+  waiting = { at: 0, any: true };
   return true;
 }
 
 /** Whether any code made for a person is still waiting for its device. */
 export function pairingsWaiting(now = Date.now()) {
   ensurePeopleSchema();
+  // Asked on every request from a paired device, so the answer is kept for a few seconds.
+  if (waiting.at && now >= waiting.at && now - waiting.at < 5000) return waiting.any;
   // A code that ran out is kept a while longer: the device may have paired in its last second
   // and not sent anything yet. Forgetting it would make that device the owner's.
   run('DELETE FROM pairing_for WHERE expires < :t', { ':t': now - 24 * 3600_000 });
-  return (get('SELECT COUNT(*) AS n FROM pairing_for')?.n || 0) > 0;
+  waiting = { at: now, any: (get('SELECT COUNT(*) AS n FROM pairing_for')?.n || 0) > 0 };
+  return waiting.any;
 }
+let waiting = { at: 0, any: false };
 
 /**
  * Binds the devices that used a code made for a person. [devices] is pan-link's list
@@ -99,6 +147,7 @@ export function claimPairings(devices, now = Date.now()) {
     bound++;
   }
   if (bound) cache.clear();
+  waiting = { at: 0, any: false };
   return bound;
 }
 
@@ -186,7 +235,7 @@ export function limits(now = Date.now()) {
   return value;
 }
 
-export function resetPeopleCache() { cache.clear(); limitsCache = { at: 0, value: LIMITS }; }
+export function resetPeopleCache() { cache.clear(); limitsCache = { at: 0, value: LIMITS }; waiting = { at: 0, any: false }; }
 
 /** Whether [person] may do [action]. An action nobody has named is refused. No person is the owner. */
 export function may(person, action) {

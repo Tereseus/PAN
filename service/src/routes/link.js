@@ -9,7 +9,8 @@
 // the owner, so only the owner gets one.
 
 import { Router } from 'express';
-import { notePairingFor, setDevicePerson, personOfDevice, forgetDevice, devicePeople } from '../people.js';
+import { notePairingFor, setDevicePerson, personOfDevice, forgetDevice, devicePeople, allowFor, PERSON_ALLOW } from '../people.js';
+import { get as dbGet } from '../db.js';
 import { getDataDir } from '../platform.js';
 import { linkSecret, HEADER_SECRET } from '../pan-link-auth.js';
 
@@ -70,9 +71,13 @@ router.post('/pair', async (req, res) => {
   const ttl = Number.isInteger(req.body?.ttl_minutes) ? Math.min(Math.max(req.body.ttl_minutes, 1), 60) : 0;
   const limited = req.body?.limited === true;
   const forUser = Number.isInteger(req.body?.for_user) ? req.body.for_user : null;
+  // A device for anyone but the owner is paired limited from its first request: pan-link holds
+  // the wall, so nothing depends on PAN having worked out whose it is yet.
+  const forOther = forUser !== null && dbGet('SELECT role FROM users WHERE id = :id AND is_active = 1', { ':id': forUser })?.role !== 'owner';
+  const allow = limited ? [...LIMITED_ALLOW] : forOther ? [...PERSON_ALLOW] : null;
   const { status, body } = await callAdmin('/admin/pair', {
     method: 'POST',
-    body: { name, ttl_minutes: ttl, ...(limited ? { allow: [...LIMITED_ALLOW] } : {}) },
+    body: { name, ttl_minutes: ttl, ...(allow ? { allow } : {}) },
   });
   if (status !== 200 || typeof body?.uri !== 'string') return res.status(status || 503).json(body);
   if (forUser !== null) {
@@ -110,11 +115,18 @@ router.delete('/devices/:id', async (req, res) => {
 
 // Hands a paired device to a person, or takes it back. Body: { user_id: number | null, shared? }.
 // null makes it the owner's own again.
-router.put('/devices/:id/person', (req, res) => {
+router.put('/devices/:id/person', async (req, res) => {
   const id = String(req.params.id || '');
   if (!/^[a-z0-9]{1,64}$/i.test(id)) return res.status(400).json({ error: 'bad device id' });
   const userId = req.body?.user_id;
   if (userId !== null && !Number.isInteger(userId)) return res.status(400).json({ error: 'user_id must be a number or null' });
+  const to = userId === null ? null : dbGet('SELECT role FROM users WHERE id = :id AND is_active = 1', { ':id': userId });
+  if (userId !== null && !to) return res.status(404).json({ error: 'no such person' });
+  // The wall first, then the name on it: pan-link limits the device before PAN calls it theirs,
+  // and lifts the limit only when it is the owner's again. A device handed over is never, even
+  // for a moment, somebody else's with the owner's reach.
+  const { status, body } = await callAdmin(`/admin/devices/${id}/allow`, { method: 'PUT', body: { allow: allowFor(to) } });
+  if (status !== 200) return res.status(status || 503).json(body);
   if (!setDevicePerson(id, userId, { shared: req.body?.shared === true })) return res.status(404).json({ error: 'no such person' });
   console.log(`[PAN Link] device ${id} ${userId === null ? 'taken back by the owner' : `handed to user ${userId}`}`);
   res.json({ ok: true, person: personOfDevice(id) });
