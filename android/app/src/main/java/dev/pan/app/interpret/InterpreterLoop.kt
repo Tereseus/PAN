@@ -136,12 +136,13 @@ class InterpreterLoop @Inject constructor(
             "zh" to "你好,你好吗?", "ko" to "안녕하세요, 잘 지내세요?", "yue" to "你好,你好嗎?")
     }
 
-    /** What was said, what to say, and the moment he stopped, for the card. */
-    data class Line(val heard: String, val lang: String, val say: String, val stoppedAt: Long, val voice: Int? = null)
+    /** What was said, what to say, and the moment he stopped, for the card. [out] is the language [say] is in. */
+    data class Line(val heard: String, val lang: String, val say: String, val stoppedAt: Long, val voice: Int? = null,
+                    val out: String? = null)
 
     var onLine: ((Line) -> Unit)? = null
     /** A translation, before anyone knows the turn is over. It may never be said. */
-    var onDraft: ((String, Int?) -> Unit)? = null
+    var onDraft: ((String, Int?, String) -> Unit)? = null
     var onHandOver: ((String) -> Unit)? = null
     /** A line for the app's own log, which reaches the hub: what was heard, said or left out. */
     var onNote: ((String) -> Unit)? = null
@@ -364,7 +365,7 @@ class InterpreterLoop @Inject constructor(
         // A word the translator does not know comes back in English letters, with junk after it
         // (a mangled greeting, 2026-11-06). The hub's model can do better.
         if (lang == "en" && target in OTHER_SCRIPTS && mostlyLatin(say)) return Heard(text, lang, null, true, who, voice)
-        if (say.isNotBlank() && latest == id && !PeerLink.on) onDraft?.invoke(say, voice)
+        if (say.isNotBlank() && latest == id && !PeerLink.on) onDraft?.invoke(say, voice, if (lang == "en") target else "en")
         return Heard(text, lang, say.ifBlank { null }, say.isBlank(), who, voice)
     }
 
@@ -420,7 +421,7 @@ class InterpreterLoop @Inject constructor(
             val t0 = SystemClock.elapsedRealtime()
             val say = sentences(text, lang).mapNotNull { one(model, it.trim(), lang) }.joinToString(" ")
             VoiceEvents.emit("peer_line", "text" to text, "say" to say, "mt_ms" to (SystemClock.elapsedRealtime() - t0))
-            if (say.isNotBlank()) onLine?.invoke(Line(text, lang, say, System.currentTimeMillis(), VOICES[1]))
+            if (say.isNotBlank()) onLine?.invoke(Line(text, lang, say, System.currentTimeMillis(), VOICES[1], "en"))
         }
     }
 
@@ -473,7 +474,7 @@ class InterpreterLoop @Inject constructor(
                     lastSaid = h.say
                     lastSaidAt = System.currentTimeMillis()
                     lastVoice = h.voice
-                    onLine?.invoke(Line(h.text, h.lang, h.say, stoppedAt, h.voice))
+                    onLine?.invoke(Line(h.text, h.lang, h.say, stoppedAt, h.voice, if (h.lang == "en") language else "en"))
                 }
             }
         }

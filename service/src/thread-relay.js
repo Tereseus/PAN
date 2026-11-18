@@ -554,8 +554,11 @@ function cleanBody(s) {
 const PASS_ON = /(?<!\b(?:i|we|he|she|they|i'll|we'll|i'd|who|don't|didn't|not|never|already)\s+)\b(?:tell|ask|send|push|ping|forward|notify|(?<!\b(?:a|an|the|new|any|another|that|this|my|your|voice)\s+)(?:message|update|pass|relay)(?=\s+(?:the|my|this|that|it|on|along)\b))\b/i;
 const NAMED = /((?:[\p{L}\p{N}'-]+\s+){0,3}[\p{L}\p{N}'-]+)\s+(?:thread|session)\b(?:\s+(?:on|in|at)\s+(?:the\s+|my\s+)?([\p{L}\p{N}]+(?:\s?\d+)?))?/giu;
 
+// Asking whether it was done ("did you send that to the X thread?") is a question for PAN, not a new send.
+const WAS_IT_DONE = /\b(?:did|didn't|have|haven't|has|hasn't|was|wasn't)\s+(?:you|it|pan|that|this|anything)\s+(?:\w+\s+){0,2}?(?:tell|told|ask|asked|send|sent|push|pushed|message|messaged|ping|pinged|forward|forwarded|pass|passed|relay|relayed|notify|notified|update|updated|go|gone|get|got|reach|reached)\b/i;
+
 function namedAnywhere(text, threads) {
-  if (!PASS_ON.test(text) || !threads.length) return null;
+  if (!PASS_ON.test(text) || WAS_IT_DONE.test(text) || !threads.length) return null;
   const machines = spokenMachines();
   let ambiguous = null;
   for (const m of text.matchAll(NAMED)) {

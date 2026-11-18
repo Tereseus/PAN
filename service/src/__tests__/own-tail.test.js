@@ -60,7 +60,8 @@ console.log('mute-ask');
 
 test('told to mute', () => {
   for (const line of ['Mute yourself.', 'Pan, mute yourself.', 'Hey Pan, mute yourself.', 'Uh Pam, mute yourself.',
-    'Pan, mute mute yourself, Pan.', 'Wait, hold on. Mute yourself.', 'Shut up.', 'Okay Pan, stop listening please.', 'mute']) {
+    'Pan, mute mute yourself, Pan.', 'Wait, hold on. Mute yourself.', 'Shut up.', 'Okay Pan, stop listening please.', 'mute',
+    'Can you mute yourself for a bit?', 'Pan, could you please be quiet for a minute.']) {
     eq(asksToMute(line), true, line);
   }
 });

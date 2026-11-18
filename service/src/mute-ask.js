@@ -14,7 +14,7 @@ const NAME = /(?:pan|pam|pann)/.source;
 const COMMAND = new RegExp(
   /^(?:(?:uh+|um+|hey|ok|okay|oh|so|alright|now|just),?\s+)*/.source
   + `(?:${NAME},?\\s+)?`
-  + /(?:please\s+)?(?:(?:mute,?\s+)*mute(?:\s+your\s?self)?|be quiet|shut up|stop listening|go quiet)(?:\s+(?:please|now))?/.source
+  + /(?:(?:can|could|would|will) you\s+)?(?:please\s+)?(?:just\s+)?(?:(?:mute,?\s+)*mute(?:\s+your\s?self)?|be quiet|shut up|stop listening|go quiet)(?:\s+for (?:a (?:bit|minute|moment|second|while)|now))?(?:\s+(?:please|now))?/.source
   + `(?:,?\\s+${NAME})?$`, 'i');
 
 export function asksToMute(text) {

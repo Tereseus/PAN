@@ -3838,6 +3838,13 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     // #996: streaming fallback wrapper. Connect-time failures cascade through
     // chain (cerebras → claude → ollama); mid-stream failures propagate as
     // truncation (no mid-stream switching — would corrupt the chunk sequence).
+    // The language an interpreted reply is in, when the direction is known. The device picked its
+    // voice's language from the letters of the line, so a language in Latin letters went to the
+    // voice as English (the car, 2026-11-18: Vietnamese). App 0.5.13 on; older apps ignore it.
+    if (standing && interpreting) {
+      const out = interpretOut();
+      if (out) yield { type: 'line_lang', lang: out };
+    }
     for await (const chunk of replyStream()) {
       fullBuf += chunk;
       if (gate === null) {

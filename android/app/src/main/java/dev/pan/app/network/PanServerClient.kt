@@ -359,6 +359,7 @@ class PanServerClient @Inject constructor(
         onHeard: ((String) -> Unit)? = null,
         onInterpreting: (() -> Unit)? = null,
         onInterpreter: ((String?) -> Unit)? = null,
+        onLineLang: ((String) -> Unit)? = null,
         onChunk: (String) -> Unit
     ): QueryResponse? = withContext(Dispatchers.IO) {
         try {
@@ -426,6 +427,8 @@ class PanServerClient @Inject constructor(
                         }
                         // Sent before any chunk while he has PAN interpreting.
                         "interpreting" -> onInterpreting?.invoke()
+                        // Before the chunks of an interpreted reply: the language it is in (hub of 2026-11-18 on).
+                        "line_lang" -> json.optString("lang", "").takeIf { it.isNotBlank() }?.let { onLineLang?.invoke(it) }
                         // After the reply: whether he has PAN interpreting now, and into what.
                         "interpreter" -> onInterpreter?.invoke(json.optString("lang", "").ifBlank { null })
                         "ambient" -> {

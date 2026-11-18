@@ -358,6 +358,7 @@ class TtsManager @Inject constructor(
             piper.plainPath = (value || carMode) && piperActive
             androidOnMedia = value || carMode
             lineVoice = null
+            lineLang = null
         }
 
     /**
@@ -375,6 +376,15 @@ class TtsManager @Inject constructor(
 
     /** Whose voice the interpreted line goes out in, set after [interpreting]. Null is PAN's own. */
     @Volatile var lineVoice: Int? = null
+
+    /**
+     * The language the interpreted line going out is in, when whoever translated it says so (the
+     * hub's line_lang event, or the phone's own interpreter). Set after [interpreting]. Without
+     * it the language is read off the letters of the line ([scriptLocale]), and a language written
+     * in Latin letters looks like English: Vietnamese, Spanish, French and the rest went to the
+     * voice as English, and Vietnamese came out as nothing he could use (the car, 2026-11-18).
+     */
+    @Volatile var lineLang: String? = null
 
     /** The line going out now is on the normal audio path: no call mode. */
     val plainPath: Boolean get() = androidOnMedia
@@ -395,8 +405,8 @@ class TtsManager @Inject constructor(
             piper.onPlayStart = value
         }
 
-    private fun lineLanguage(foreign: Locale?) = when {
-        foreign == null -> "en"
+    private fun lineLanguage(foreign: Locale?, said: String? = lineLang) = when {
+        foreign == null -> said?.takeIf { interpreting } ?: "en"
         foreign.language == "zh" && otherLanguage == "ja" -> "ja"
         else -> foreign.language
     }
@@ -405,10 +415,10 @@ class TtsManager @Inject constructor(
         SpokenNumbers.say(if (foreign == null) latinGreek(text) else text, lang)
 
     /** An interpreted line that will probably be said next. See PiperTtsEngine.prepare. */
-    fun prepareLine(text: String, voice: Int? = null) {
+    fun prepareLine(text: String, voice: Int? = null, said: String? = null) {
         if (!piperActive) return
         val foreign = scriptLocale(text)
-        val lang = lineLanguage(foreign)
+        val lang = if (foreign == null && said != null) said else lineLanguage(foreign)
         if (piper.speaks(lang)) piper.prepare(LineClauses.split(lineText(text, foreign, lang)).first(), lang, voice)
     }
 
@@ -431,6 +441,12 @@ class TtsManager @Inject constructor(
         }
         if (foreign != null && ready) {
             speakForeign(text, foreign)
+            return
+        }
+        // A Latin-letter language this voice cannot read: the Android voice for that language, not the English one.
+        val said = lineLang
+        if (interpreting && said != null && said != "en" && ready) {
+            speakForeign(text, Locale(said))
             return
         }
 

@@ -728,7 +728,7 @@ class PanForegroundService : Service() {
                 }
             }
             interpreter.onLine = { line -> mainHandler.post { speakInterpreted(line) } }
-            interpreter.onDraft = { say, voice -> if (!isMuted) tts.prepareLine(say, voice) }
+            interpreter.onDraft = { say, voice, out -> if (!isMuted) tts.prepareLine(say, voice, out) }
             interpreter.onHandOver = { text -> mainHandler.post { onSpeech(text) } }
             interpreter.onNote = { note -> panLog(note) }
             tts.onSpeakingStateChanged = { speaking ->
@@ -1357,6 +1357,7 @@ class PanForegroundService : Service() {
         voiceFrom = line.stoppedAt
         tts.interpreting = true
         tts.lineVoice = line.voice
+        tts.lineLang = line.out
         // With a PAN on the far side the mic hears them finishing, which is not him still talking:
         // waiting for that held every reply back 0.85 s (2026-11-06).
         if (dev.pan.app.interpret.PeerLink.on) panSpeak(line.say) else speakReply(mySeq, line.say)
@@ -2017,6 +2018,7 @@ class PanForegroundService : Service() {
                         serviceScope.launch { runCatching { dataRepository.correctUserLine(text, heard) } }
                     },
                     onInterpreting = { tts.interpreting = true },
+                    onLineLang = { lang -> tts.lineLang = lang },
                     onInterpreter = { lang -> setInterpreter(lang) },
                     onChunk = { chunk ->
                         if (firstChunkTime == 0L) {
