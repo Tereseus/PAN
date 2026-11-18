@@ -623,6 +623,25 @@ def main():
                  "a conversation with nobody": call("GET", "/api/v1/people/messages?with=99999", device=zora["device"])[0]}
         check("messages", "a message to nobody, to oneself or with nothing in it is refused", tries == {"to nobody": 404, "to herself": 404, "with nothing in it": 400, "a conversation with nobody": 404}, tries)
 
+        # The owner can read a child's conversations (his call), and nobody else anybody's.
+        s, before = call("GET", "/api/v1/people", device=quill["device"])
+        s, j = call("GET", "/api/v1/people?of=%s" % quill["id"], device=OWNER, headers=PHONE)
+        check("messages", "the owner sees who a child has talked with", s == 200 and j.get("of", {}).get("id") == quill["id"] and row(j, 1).get("last", {}).get("body") == "I want ice cream.", (s, j))
+        s, j = call("GET", "/api/v1/people/messages?with=1&of=%s" % quill["id"], device=OWNER, headers=PHONE)
+        check("messages", "and reads that conversation, as the child's side of it", s == 200 and [(m.get("from_me"), m.get("body")) for m in j.get("messages", [])] == [(True, "I want ice cream.")], (s, j))
+        s, after = call("GET", "/api/v1/people", device=quill["device"])
+        s2, mine = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)
+        check("messages", "his looking opens nothing: what was new stays new", [p.get("unread") for p in before.get("people", [])] == [p.get("unread") for p in after.get("people", [])] and row(mine, quill["id"]).get("unread") == 1, (before, after, mine))
+        check("messages", "the child's own list says who can read it; an adult's says nobody", before.get("me", {}).get("read_by") == boss and call("GET", "/api/v1/people", device=zora["device"])[1].get("me", {}).get("read_by") is None, before.get("me"))
+        tries = {"the owner, an adult's list": call("GET", "/api/v1/people?of=%s" % zora["id"], device=OWNER, headers=PHONE)[0],
+                 "the owner, an adult's conversation": call("GET", "/api/v1/people/messages?with=1&of=%s" % zora["id"], device=OWNER, headers=PHONE)[0],
+                 "the owner, his own": call("GET", "/api/v1/people?of=1", device=OWNER, headers=PHONE)[0],
+                 "an adult, the child's list": call("GET", "/api/v1/people?of=%s" % quill["id"], device=zora["device"])[0],
+                 "an adult, the child's conversation": call("GET", "/api/v1/people/messages?with=1&of=%s" % quill["id"], device=zora["device"])[0],
+                 "the child, an adult's conversation": call("GET", "/api/v1/people/messages?with=1&of=%s" % zora["id"], device=quill["device"])[0],
+                 "the child, her own by that door": call("GET", "/api/v1/people?of=%s" % quill["id"], device=quill["device"])[0]}
+        check("messages", "nobody else reads anybody's, and the owner only a child's", all(v == 403 for v in tries.values()), tries)
+
         # Removing the computer takes its threads with it.
         s, j = call("DELETE", "/api/v1/link/devices/%s" % quill["device"], device=OWNER)
         s2, reg = call("GET", "/api/v1/threads", device=OWNER)

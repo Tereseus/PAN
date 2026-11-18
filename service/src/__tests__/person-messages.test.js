@@ -22,6 +22,7 @@ let failed = 0;
 const take = (dev, now) => [...notes.takeNotesFor(dev, now), ...pm.takeMessagesFor(dev, now)];
 function clear() {
   notes.resetNotes();
+  pm.resetAsked();
   pm.ensureMessagesSchema();
   run(`DELETE FROM person_messages`);
 }
@@ -218,6 +219,55 @@ test('pages of a long conversation, and a message with nothing in it', () => {
   ok(earlier.messages.map((m) => m.body).join() === 'line 2,line 3,line 4' && earlier.more === true, J(earlier));
   ok(pm.sendMessage({ to: { id: mia.id }, body: '  ...  ' }).reason === 'empty', 'an empty message was kept');
   ok(pm.sendMessage({ to: { id: gone }, body: 'hello' }).reason === 'nobody', 'a message to someone removed');
+});
+
+test('two people with one first name: PAN asks which, and the whole name answers', () => {
+  const stone = { id: addUser('Mia Stone', 'user', 25), role: 'user', power: 25, person: true };
+  const STONE_PHONE = { key: '', linkDevice: 'd0000000000c4', person: stone };
+  people.setDevicePerson('d0000000000c4', stone.id);
+  try {
+    const r = pm.messageTurn('PAN, tell Mia dinner is ready.', { addressed: true });
+    ok(r.intent === 'message' && r.response === 'Which Mia: Mia Test or Mia Stone?' && pm.messagesWaiting().length === 0, J(r));
+    ok(pm.messageTurn('What time is it?', { addressed: true }) === null, 'another line was taken as the answer');
+    const r2 = pm.messageTurn('Mia Stone.', { addressed: true });
+    ok(r2 && /^I told Mia: dinner is ready\.$/.test(r2.response) || /not on right now/.test(r2?.response || ''), J(r2));
+    ok(bodies(take(STONE_PHONE, Date.now())) === 'Alex says: dinner is ready.' && take(MIA_PHONE, Date.now()).length === 0, 'it went to the wrong one');
+    ok(pm.messageTurn('Mia Stone.', { addressed: true }) === null, 'the answer worked twice');
+    // The rest of the name is enough, and so is saying the whole name to begin with.
+    pm.messageTurn('PAN, ask Mia if she is home', { addressed: true });
+    const r3 = pm.messageTurn('Test', { addressed: true });
+    ok(r3 && bodies(take(MIA_PHONE, Date.now())) === 'Alex asks: if she is home?', J(r3));
+    const r4 = pm.messageTurn('PAN, tell Mia Stone the car is fixed.', { addressed: true });
+    ok(r4 && !r4.message_which && bodies(take(STONE_PHONE, Date.now())) === 'Alex says: the car is fixed.', J(r4));
+    ok(pm.parseMessage('Tell mia   stone hello', { addressed: true }).to.id === stone.id, 'the whole name in other letters');
+    // The question does not wait for ever, and a test turn leaves nothing waiting.
+    pm.messageTurn('PAN, tell Mia hello.', { addressed: true });
+    ok(pm.parseMessage('Mia Stone', { addressed: true, now: Date.now() + 61_000 }) === null, 'an answer a minute late');
+    pm.resetAsked();
+    pm.messageTurn('PAN, tell Mia hello.', { addressed: true, test: true });
+    ok(pm.parseMessage('Mia Stone', { addressed: true }) === null, 'a test turn left a question waiting');
+    // Nothing to say yet: the answer picks the person and PAN asks for the words.
+    pm.messageTurn('PAN, tell Mia.', { addressed: true });
+    ok(/What should I tell Mia\?/.test(pm.messageTurn('Stone', { addressed: true })?.response || ''), 'no words yet');
+    // Her side: she is one of the two, so "Mia" from her means the other one.
+    ok(pm.parseMessage('Tell Mia hello.', { from: stone, addressed: true }).to.id === mia.id, 'from one of the two');
+  } finally {
+    run(`UPDATE users SET is_active = 0 WHERE id = :i`, { ':i': stone.id });
+  }
+  ok(pm.parseMessage('Tell Mia hello.', { addressed: true }).to.id === mia.id, 'one Mia again');
+});
+
+test('the owner can read a child\'s conversations, and only a child\'s', () => {
+  ok(pm.ownerMayRead(kit.id) === true && pm.ownerMayRead(mia.id) === false && pm.ownerMayRead(1) === false
+    && pm.ownerMayRead(gone) === false && pm.ownerMayRead(9999) === false, 'who may be read');
+  const t = Date.now() - 60_000;
+  pm.sendMessage({ from: mia, to: { id: kit.id }, body: 'bedtime soon' }, t);
+  pm.sendMessage({ from: kit, to: { id: mia.id }, body: 'five more minutes' }, t + 1000);
+  // Looking does not open anything for either of them.
+  const seen = pm.conversation(kit.id, mia.id, { mark: false });
+  ok(seen.messages.length === 2 && seen.messages[0].from_me === false && seen.messages[1].from_me === true, J(seen));
+  ok(pm.peopleFor(kit.id).find((p) => p.id === mia.id).unread === 1 && pm.peopleFor(mia.id).find((p) => p.id === kit.id).unread === 1, 'looking marked it opened');
+  ok(pm.peopleFor(kit.id).find((p) => p.id === mia.id).last.body === 'five more minutes', 'the child\'s list');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

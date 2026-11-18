@@ -52,6 +52,15 @@ class PeopleViewModel @Inject constructor(
     val canSend: StateFlow<Boolean> = _canSend
     private val _unread = MutableStateFlow(0)
     val unread: StateFlow<Int> = _unread
+    /** On a child's device: the owner's name, who can read these conversations. null: nobody else can. */
+    private val _readBy = MutableStateFlow<String?>(null)
+    val readBy: StateFlow<String?> = _readBy
+
+    /** The owner reading a child's conversations: whose, and who that child has talked with. */
+    private val _watching = MutableStateFlow<PersonLine?>(null)
+    val watching: StateFlow<PersonLine?> = _watching
+    private val _watchPeople = MutableStateFlow<List<PersonLine>?>(null)
+    val watchPeople: StateFlow<List<PersonLine>?> = _watchPeople
 
     private val _open = MutableStateFlow<PersonLine?>(null)
     val open: StateFlow<PersonLine?> = _open
@@ -77,13 +86,59 @@ class PeopleViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            PeopleSignal.arrived.drop(1).collect {
-                if (_open.value != null) loadTalk() else load(withDevices = false)
-            }
+            PeopleSignal.arrived.drop(1).collect { tick() }
         }
     }
 
     fun clearMessage() { _message.value = null }
+
+    /** Whatever is on screen, fresh: the open conversation, the child's list, or the list. */
+    suspend fun tick() {
+        when {
+            _open.value != null -> loadTalk()
+            _watching.value != null -> loadWatch()
+            else -> load(withDevices = false)
+        }
+    }
+
+    private fun rows(j: JSONObject, withDevices: Boolean): List<PersonLine> {
+        val out = ArrayList<PersonLine>()
+        val list = j.optJSONArray("people") ?: return out
+        for (i in 0 until list.length()) {
+            val p = list.optJSONObject(i) ?: continue
+            val last = p.optJSONObject("last")
+            out.add(PersonLine(
+                id = p.optInt("id"), name = p.optString("name"), role = p.optString("role"),
+                last = last?.optString("body"), lastFromMe = last?.optBoolean("from_me") == true, lastAt = last?.optLong("at") ?: 0L,
+                unread = p.optInt("unread"), devices = if (withDevices) devices[p.optInt("id")] ?: emptyList() else emptyList(),
+            ))
+        }
+        return out
+    }
+
+    /** The owner opens a child's conversations to read. The hub refuses it for anyone who is not a child. */
+    fun watch(child: PersonLine) {
+        _watching.value = child
+        _watchPeople.value = null
+        viewModelScope.launch { loadWatch() }
+    }
+
+    fun stopWatching() {
+        _watching.value = null
+        _watchPeople.value = null
+    }
+
+    suspend fun loadWatch() {
+        val child = _watching.value ?: return
+        val r = hub("GET", "/api/v1/people?of=${child.id}")
+        if (_watching.value?.id != child.id) return
+        if (r == null || r.first != 200) {
+            if (r?.first == 403) { _message.value = "ΠAN does not let you read ${child.name}'s messages."; stopWatching() }
+            return
+        }
+        // Only the people this child has a message with.
+        _watchPeople.value = rows(r.second, withDevices = false).filter { it.last != null }
+    }
     suspend fun hub(method: String, path: String, body: JSONObject? = null) = serverClient.hubJson(method, path, body)
 
     /** The list. withDevices: also whose device is whose, which only the owner's device may ask. */
@@ -94,6 +149,7 @@ class PeopleViewModel @Inject constructor(
         val isOwner = r.second.optJSONObject("me")?.optBoolean("owner") == true
         _owner.value = isOwner
         _canSend.value = r.second.optBoolean("can_send", true)
+        _readBy.value = r.second.optJSONObject("me")?.optString("read_by")?.takeIf { it.isNotBlank() && it != "null" }
         if (isOwner && (withDevices || devices.isEmpty())) {
             val list = hub("GET", "/api/v1/link/people")?.takeIf { it.first == 200 }?.second?.optJSONArray("devices")
             if (list != null) {
@@ -105,20 +161,10 @@ class PeopleViewModel @Inject constructor(
                 devices = byUser
             }
         }
-        val rows = ArrayList<PersonLine>()
-        val list = r.second.optJSONArray("people")
-        if (list != null) for (i in 0 until list.length()) {
-            val p = list.optJSONObject(i) ?: continue
-            val last = p.optJSONObject("last")
-            rows.add(PersonLine(
-                id = p.optInt("id"), name = p.optString("name"), role = p.optString("role"),
-                last = last?.optString("body"), lastFromMe = last?.optBoolean("from_me") == true, lastAt = last?.optLong("at") ?: 0L,
-                unread = p.optInt("unread"), devices = devices[p.optInt("id")] ?: emptyList(),
-            ))
-        }
+        val rows = rows(r.second, withDevices = true)
         _people.value = rows
         _unread.value = r.second.optInt("unread")
-        _open.value?.let { was -> rows.firstOrNull { it.id == was.id }?.let { _open.value = it } }
+        if (_watching.value == null) _open.value?.let { was -> rows.firstOrNull { it.id == was.id }?.let { _open.value = it } }
     }
 
     fun refresh(withDevices: Boolean = false) { viewModelScope.launch { load(withDevices) } }
@@ -133,7 +179,7 @@ class PeopleViewModel @Inject constructor(
     fun closeTalk() {
         _open.value = null
         _talk.value = emptyList()
-        refresh()
+        viewModelScope.launch { tick() }
     }
 
     private fun lines(j: JSONObject): List<TalkLine> {
@@ -149,7 +195,9 @@ class PeopleViewModel @Inject constructor(
     /** The newest page, kept together with any earlier pages already on screen. Opening it marks it seen on the hub. */
     suspend fun loadTalk() {
         val who = _open.value ?: return
-        val r = hub("GET", "/api/v1/people/messages?with=${who.id}")
+        // Reading a child's: the hub is told whose it is, and marks nothing as seen.
+        val of = _watching.value?.id
+        val r = hub("GET", "/api/v1/people/messages?with=${who.id}" + (if (of != null) "&of=$of" else ""))
         if (r == null || r.first != 200) return
         if (_open.value?.id != who.id) return
         val newest = lines(r.second)
@@ -157,6 +205,7 @@ class PeopleViewModel @Inject constructor(
         val earlier = if (first == null) emptyList() else _talk.value.filter { it.id < first }
         if (earlier.isEmpty()) _more.value = r.second.optBoolean("more")
         _talk.value = earlier + newest
+        if (of != null) return
         _people.value = _people.value?.map { if (it.id == who.id) it.copy(unread = 0) else it }
         _unread.value = _people.value?.sumOf { it.unread } ?: 0
     }
@@ -165,7 +214,8 @@ class PeopleViewModel @Inject constructor(
         val who = _open.value ?: return
         val before = _talk.value.firstOrNull()?.id ?: return
         viewModelScope.launch {
-            val r = hub("GET", "/api/v1/people/messages?with=${who.id}&before=$before")
+            val of = _watching.value?.id
+            val r = hub("GET", "/api/v1/people/messages?with=${who.id}&before=$before" + (if (of != null) "&of=$of" else ""))
             if (r == null || r.first != 200 || _open.value?.id != who.id) return@launch
             _talk.value = lines(r.second) + _talk.value
             _more.value = r.second.optBoolean("more")
@@ -176,7 +226,7 @@ class PeopleViewModel @Inject constructor(
     fun send(text: String, done: (Boolean) -> Unit) {
         val who = _open.value ?: return
         val body = text.trim()
-        if (body.isEmpty() || _sending.value) return
+        if (body.isEmpty() || _sending.value || _watching.value != null) return
         _sending.value = true
         viewModelScope.launch {
             val r = hub("POST", "/api/v1/people/messages", JSONObject().put("to", who.id).put("body", body))

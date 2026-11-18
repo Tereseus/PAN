@@ -1,6 +1,7 @@
 package dev.pan.app.ui.settings
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -8,8 +9,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.clickable
@@ -18,6 +27,20 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlinx.coroutines.launch
+
+/**
+ * Settings opens on a short list of pages (0.5.18): it was one long scroll of ten sections.
+ * What is on each page is in SettingsScreen below, in an `if (page == "...")` block per page.
+ */
+private data class SettingsPage(val key: String, val title: String, val about: String, val icon: ImageVector)
+
+private val SETTINGS_PAGES = listOf(
+    SettingsPage("connection", "This device", "Its name, and how it reaches ΠAN", Icons.Default.Phone),
+    SettingsPage("voice", "Voice and sounds", "How ΠAN talks, where it reads reminders out, tones and vibration", Icons.Default.Notifications),
+    SettingsPage("accessories", "Accessories", "Glasses, headphones, a watch", Icons.Default.Star),
+    SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use", Icons.Default.Lock),
+    SettingsPage("about", "Updates and about", "This version, new versions, credits", Icons.Default.Info),
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,13 +102,23 @@ fun SettingsScreen(
         }
     }
 
+    // Which page is open: "" is the list of pages. Back goes to the list first.
+    var page by rememberSaveable { mutableStateOf("") }
+    val scroll = rememberScrollState()
+    LaunchedEffect(page) { scroll.scrollTo(0) }
+    BackHandler(enabled = page.isNotEmpty()) { page = "" }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text(SETTINGS_PAGES.firstOrNull { it.key == page }?.title ?: "Settings") },
                 navigationIcon = {
-                    if (onBack != null) {
+                    if (page.isNotEmpty()) {
+                        IconButton(onClick = { page = "" }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Settings")
+                        }
+                    } else if (onBack != null) {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
@@ -99,9 +132,28 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(scroll),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // The first screen: one row per group. Each opens its own page, so nothing is a long scroll.
+            if (page.isEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    SETTINGS_PAGES.forEachIndexed { i, entry ->
+                        if (i > 0) HorizontalDivider()
+                        ListItem(
+                            headlineContent = { Text(entry.title) },
+                            supportingContent = { Text(entry.about) },
+                            leadingContent = { Icon(entry.icon, contentDescription = null) },
+                            trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                            colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+                            modifier = Modifier.clickable { page = entry.key }
+                        )
+                    }
+                }
+                Text("\u03A0AN " + dev.pan.app.BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (page == "connection") {
             // Device
             Text("This device", style = MaterialTheme.typography.titleMedium)
 
@@ -119,7 +171,7 @@ fun SettingsScreen(
             HorizontalDivider()
 
             // Connection: which way this phone reaches PAN right now, said first and plainly.
-            Text("Connection", style = MaterialTheme.typography.titleMedium)
+            Text("How it reaches ΠAN", style = MaterialTheme.typography.titleMedium)
 
             val link = viewModel.remoteAccessManager.link
             // The way in the app uses now (PAN Link's port while it works, else Tailscale's),
@@ -234,8 +286,50 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             TailscaleSignIn(snackbarHostState)
             }
+            }
+            if (page == "voice") {
+            // Personality (PAN voice/character — empty = default/off)
+            Text("Personality", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Describe how ΠAN should talk. Leave it empty for the usual ΠAN.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            var personalityInput by remember(personality) { mutableStateOf(personality) }
+            OutlinedTextField(
+                value = personalityInput,
+                onValueChange = { personalityInput = it },
+                label = { Text("How ΠAN talks") },
+                placeholder = { Text("e.g. Sarcastic, witty, like Tony Stark") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                maxLines = 5
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (personalityInput != personality) {
+                    Button(
+                        onClick = { viewModel.setPersonality(personalityInput) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Save") }
+                }
+                if (personality.isNotEmpty() || personalityInput.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = {
+                            personalityInput = ""
+                            viewModel.clearPersonality()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Turn Off") }
+                }
+            }
 
             HorizontalDivider()
+
+            // It draws its own line under itself, and nothing at all on a person's device.
+            NotesDeviceSection(viewModel, snackbarHostState)
 
             // Sounds
             Text("Sounds", style = MaterialTheme.typography.titleMedium)
@@ -316,17 +410,12 @@ fun SettingsScreen(
                 checked = vibrationEnabled,
                 onToggle = { viewModel.setVibration(it) }
             )
-
-            HorizontalDivider()
-
+            }
+            if (page == "accessories") {
             AccessoriesSection(viewModel.accessoryHub)
-
-            HorizontalDivider()
-
-            NotesDeviceSection(viewModel, snackbarHostState)
-
+            }
+            if (page == "privacy") {
             // Privacy
-            Text("Privacy", style = MaterialTheme.typography.titleMedium)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -385,70 +474,18 @@ fun SettingsScreen(
                     viewModel = mainViewModel
                 )
             }
-            if (developerMode) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { viewModel.stopPanService() },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Stop ΠAN Service") }
-                Button(
-                    onClick = { viewModel.forceRestartApp() },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Force Restart") }
-            }
+
+            HorizontalDivider()
+
+            Text("Data dividend", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Stop = kills the foreground service (voice triggers, log shipping). " +
-                "Force Restart = stop service, kill process, cold-start the app.",
+                "Get paid when you choose to share parts of your data. Not ready yet. " +
+                "Nothing is shared, and it stays off until you turn it on here.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             }
-
-            HorizontalDivider()
-
-            // Personality (PAN voice/character — empty = default/off)
-            Text("Personality", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "Describe how ΠAN should talk. Leave it empty for the usual ΠAN.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            var personalityInput by remember(personality) { mutableStateOf(personality) }
-            OutlinedTextField(
-                value = personalityInput,
-                onValueChange = { personalityInput = it },
-                label = { Text("How ΠAN talks") },
-                placeholder = { Text("e.g. Sarcastic, witty, like Tony Stark") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2,
-                maxLines = 5
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (personalityInput != personality) {
-                    Button(
-                        onClick = { viewModel.setPersonality(personalityInput) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Save") }
-                }
-                if (personality.isNotEmpty() || personalityInput.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = {
-                            personalityInput = ""
-                            viewModel.clearPersonality()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Turn Off") }
-                }
-            }
-
-            HorizontalDivider()
-
+            if (page == "about") {
             // App Updates — manual OTA pull. The app auto-checks ~8s after
             // launch; this button lets the user pull the update immediately.
             Text("App Updates", style = MaterialTheme.typography.titleMedium)
@@ -479,16 +516,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            Text("Data dividend", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "Get paid when you choose to share parts of your data. Not ready yet. " +
-                "Nothing is shared, and it stays off until you turn it on here.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            HorizontalDivider()
-
             Text("About", style = MaterialTheme.typography.titleMedium)
             Text("\u03A0AN " + dev.pan.app.BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -504,6 +531,31 @@ fun SettingsScreen(
                     OutlinedButton(onClick = onOpenDashboard, modifier = Modifier.weight(1f)) { Text("Dashboard") }
                     OutlinedButton(onClick = onOpenCommands, modifier = Modifier.weight(1f)) { Text("Command log") }
                 }
+            }
+
+            HorizontalDivider()
+
+            if (developerMode) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { viewModel.stopPanService() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Stop ΠAN Service") }
+                Button(
+                    onClick = { viewModel.forceRestartApp() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Force Restart") }
+            }
+            Text(
+                "Stop = kills the foreground service (voice triggers, log shipping). " +
+                "Force Restart = stop service, kill process, cold-start the app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            }
             }
 
         }

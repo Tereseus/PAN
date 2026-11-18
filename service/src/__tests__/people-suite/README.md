@@ -21,7 +21,7 @@ change to `people.js`, `routes/link.js`, the person branch of `server.js`, `rout
 | unit | `../pan-link-routes.test.js` | Pairing codes for a person are limited from the start; handing a device over sets the limit first; taking it back lifts it; a device PAN Link does not know cannot be handed over. |
 | unit | `../pan-link-auth.test.js` | A device's identity comes from PAN Link's secret, and forged headers are refused. |
 | unit | `../notes-sender.test.js` | A note's sender is the PAN Link device, not what the note says; six spoken notes a minute per device; a note goes to the device of the person it is for (pinned device, the device he last talked on, the asker of a thread, what happens when that device is away, expiry). |
-| unit | `../person-messages.test.js` | What counts as a message to someone on the hub and what does not; whose device says it; a person to the owner and to another person; who may send; a device that is off; six a minute. Kept in the database: a restart loses nothing; one device says it, once; the conversation both people see and nobody else; what is too old to read out; pages. |
+| unit | `../person-messages.test.js` | What counts as a message to someone on the hub and what does not; whose device says it; a person to the owner and to another person; who may send; a device that is off; six a minute. Kept in the database: a restart loses nothing; one device says it, once; the conversation both people see and nobody else; what is too old to read out; pages. Two people with one first name: ΠAN asks which, and the whole name or the rest of it answers. The owner may read a child's and nobody else's, and looking opens nothing. |
 | unit | `../thread-people.test.js` | Whose a relay host is; which threads the owner and each person can reach; the owner's own thread first; what one person heard or asked never reaches another; a job is taken only by the computer that holds its host; handing over, taking back, removing. |
 | link | `pan-link/allow_test.go` | PAN Link's own wall (runs when Go is installed). |
 | hub | `hub_suite.py` | A dev hub with its own port and database and a stand-in for PAN Link's admin. Five people (child, guest, adult, manager, admin), each with a paired device, plus the owner's two devices, a device whose person was removed and a device nobody knows. |
@@ -63,7 +63,9 @@ The hub part, by group:
   calls: a person's list of the others and what is new, her conversation with the owner in
   order, opening it marks it seen, nobody opens a conversation they are not in, a typed
   message is said on the owner's device only, the owner's list, and messages to nobody, to
-  oneself or with nothing in them are refused.
+  oneself or with nothing in them are refused. The owner reads a child's list and
+  conversation and it opens nothing; the child's list says who can read; an adult's, the
+  owner's own, and any try from a person's device are refused.
 - **admin**: no role can add, rename, promote or remove people, pair a device, free their own
   device or change the limits; the owner can; handing over and taking back; removal.
 

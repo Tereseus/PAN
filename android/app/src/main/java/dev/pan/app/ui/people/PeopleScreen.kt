@@ -95,25 +95,31 @@ private fun whenText(at: Long): String {
 @Composable
 fun PeopleScreen(viewModel: PeopleViewModel) {
     val open by viewModel.open.collectAsState()
+    val watching by viewModel.watching.collectAsState()
     val message by viewModel.message.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(message) { message?.let { snackbar.showSnackbar(it); viewModel.clearMessage() } }
 
     // Fresh while the tab is on screen and the app is in front; nothing is asked otherwise.
     val lifecycle = LocalLifecycleOwner.current
-    LaunchedEffect(open?.id) {
+    LaunchedEffect(open?.id, watching?.id) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            if (viewModel.open.value == null) viewModel.load(withDevices = true)
+            if (viewModel.open.value == null && viewModel.watching.value == null) viewModel.load(withDevices = true)
             while (true) {
                 delay(5000)
-                if (viewModel.open.value != null) viewModel.loadTalk() else viewModel.load(withDevices = false)
+                viewModel.tick()
             }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         val person = open
-        if (person != null) Conversation(viewModel, person) else PeopleList(viewModel, snackbar)
+        val child = watching
+        when {
+            person != null -> Conversation(viewModel, person, readingFor = child)
+            child != null -> ChildMessages(viewModel, child)
+            else -> PeopleList(viewModel, snackbar)
+        }
         SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp))
     }
 }
@@ -124,6 +130,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
     val failed by viewModel.failed.collectAsState()
     val owner by viewModel.owner.collectAsState()
     val canSend by viewModel.canSend.collectAsState()
+    val readBy by viewModel.readBy.collectAsState()
     val scope = rememberCoroutineScope()
 
     var adding by remember { mutableStateOf(false) }
@@ -158,6 +165,14 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             }
+            // Said plainly on a child's own device: nothing is read behind their back.
+            readBy?.let { who ->
+                item {
+                    Text("$who can read your messages here.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+                }
+            }
             if (rows.isEmpty() && canSend) item {
                 Text(if (owner) "Nobody else is on your ΠAN yet. Add family or others: each person's device talks to ΠAN as them and cannot reach your memory, your computers or your settings."
                     else "Nobody else is on this ΠAN yet.",
@@ -167,6 +182,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
             items(rows, key = { it.id }) { person ->
                 PersonRow(person, owner = owner, busy = busy,
                     onOpen = { viewModel.openTalk(person) },
+                    onRead = { viewModel.watch(person) },
                     onAddDevice = { scope.launch { codeFor(person.id, person.name) } },
                     onRename = { renaming = person },
                     onRemove = { removing = person })
@@ -298,7 +314,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
 @Composable
 private fun PersonRow(
     person: PersonLine, owner: Boolean, busy: Boolean,
-    onOpen: () -> Unit, onAddDevice: () -> Unit, onRename: () -> Unit, onRemove: () -> Unit,
+    onOpen: () -> Unit, onRead: () -> Unit, onAddDevice: () -> Unit, onRename: () -> Unit, onRemove: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
     Row(
@@ -335,6 +351,8 @@ private fun PersonRow(
                 Icon(Icons.Default.MoreVert, contentDescription = "More for ${person.name}")
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                // A child's conversations with others are the owner's to read (the hub holds this to children).
+                if (person.role == "child") DropdownMenuItem(text = { Text("${firstName(person.name)}'s messages") }, onClick = { menu = false; onRead() })
                 DropdownMenuItem(text = { Text("Add device") }, onClick = { menu = false; onAddDevice() })
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
                 DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
@@ -343,12 +361,55 @@ private fun PersonRow(
     }
 }
 
+/** The owner reading a child's conversations: who the child has talked with. Read only. */
 @Composable
-private fun Conversation(viewModel: PeopleViewModel, person: PersonLine) {
+private fun ChildMessages(viewModel: PeopleViewModel, child: PersonLine) {
+    val rows by viewModel.watchPeople.collectAsState()
+    val first = firstName(child.name)
+    BackHandler { viewModel.stopWatching() }
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { viewModel.stopWatching() }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to People")
+            }
+            Text("$first's messages", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text("You can read these because $first is a child on your ΠAN. $first's device says that you can.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+        HorizontalDivider()
+        val list = rows ?: return@Column
+        if (list.isEmpty()) {
+            Text("$first has not sent or been sent anything yet.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+            return@Column
+        }
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(list, key = { it.id }) { person ->
+                Row(modifier = Modifier.fillMaxWidth().clickable { viewModel.openTalk(person) }.padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(person.name, style = MaterialTheme.typography.bodyLarge)
+                        Text((if (person.lastFromMe) "$first: " else "") + (person.last ?: ""), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text(whenText(person.lastAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                HorizontalDivider(modifier = Modifier.padding(start = 20.dp))
+            }
+        }
+    }
+}
+
+/** readingFor: the child whose conversation the owner is reading (their lines on the right, nothing can be sent). */
+@Composable
+private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, readingFor: PersonLine? = null) {
     val talk by viewModel.talk.collectAsState()
     val more by viewModel.more.collectAsState()
     val sending by viewModel.sending.collectAsState()
-    val canSend by viewModel.canSend.collectAsState()
+    val mayType by viewModel.canSend.collectAsState()
+    val canSend = mayType && readingFor == null
     var draft by remember(person.id) { mutableStateOf("") }
     val list = rememberLazyListState()
     val first = firstName(person.name)
@@ -363,12 +424,13 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine) {
             IconButton(onClick = { viewModel.closeTalk() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to People")
             }
-            Text(person.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(if (readingFor != null) "${firstName(readingFor.name)} and $first" else person.name,
+                style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         HorizontalDivider()
         if (talk.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                Text("Nothing here yet. Say \"ΠAN, tell $first ...\" or type below. $first's device says it out loud, and it stays here.",
+                Text(if (readingFor != null) "Nothing here." else "Nothing here yet. Say \"ΠAN, tell $first ...\" or type below. $first's device says it out loud, and it stays here.",
                     style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

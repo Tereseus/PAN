@@ -10,8 +10,12 @@
 //     never an order to the ΠAN that reads it out.
 //   - It is a message only when the line is said to ΠAN (its name, or ΠAN spoke a moment ago).
 //     "Tell Maria dinner is ready" said across the room to someone else sends nothing.
-//   - The name is the first name of a person on this hub. Anyone else ("tell my boss ...") is
-//     not a message of this kind and the line goes on as ordinary talk.
+//   - The name is the first name of a person on this hub, or their whole name. Anyone else
+//     ("tell my boss ...") is not a message of this kind and the line goes on as ordinary talk.
+//     When two people here share a first name, ΠAN asks which one and the next line answers
+//     it with the whole name or the rest of it ("Lopez").
+//   - The owner can read a child's conversations (the owner's call, 2026-11-18): only a person
+//     whose role is child, only the owner, and the child's own People tab says so.
 //   - A person needs the `messages` limit (people.js). The owner always may.
 //   - One sender, six messages a minute.
 //
@@ -54,7 +58,7 @@ export function ensureMessagesSchema() {
 const firstWord = (name) => String(name || '').trim().split(/\s+/)[0] || '';
 const key = (word) => String(word || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
-/** Everyone on this hub: [{ id, name, first, key, role }]. The owner goes by the name ΠAN calls him. */
+/** Everyone on this hub: [{ id, name, first, key, full, rest, role }]. The owner goes by the name ΠAN calls him. */
 export function peopleHere() {
   let rows = [];
   try { rows = all(`SELECT id, display_name, role FROM users WHERE is_active = 1 ORDER BY id`); } catch {}
@@ -63,8 +67,22 @@ export function peopleHere() {
   return rows.map((r) => {
     const name = Number(r.id) === OWNER_ID && ownerName ? ownerName : String(r.display_name || '');
     const first = firstWord(name);
-    return { id: Number(r.id), name, first, key: key(first), role: r.role };
+    const whole = name.trim().replace(/\s+/g, ' ');
+    return { id: Number(r.id), name: whole, first, key: key(first), full: key(whole), rest: key(whole.slice(first.length)), role: r.role };
   }).filter((p) => p.key.length >= 2);
+}
+
+// "Which Maria?" asked of a sender, waiting for the answer: sender id -> { kind, body, among, at }.
+const asked = new Map();
+const ASKED_MS = 60_000;
+function answerToWhich(said, senderId, now) {
+  const q = asked.get(senderId);
+  if (!q || now - q.at > ASKED_MS) return null;
+  const k = key(said.replace(new RegExp(LEAD, 'iu'), ''));
+  if (!k) return null;
+  const hit = q.among.filter((p) => p.full === k || (p.rest && p.rest === k));
+  if (hit.length !== 1) return null;
+  return q.body.replace(/[^\p{L}\p{N}]/gu, '') ? { to: hit[0], kind: q.kind, body: q.body } : { to: hit[0], empty: true };
 }
 
 const LEAD = String.raw`^(?:(?:hey|hi|ok|okay|yo)[,\s]+)?(?:(?:pan|pam)[,.!\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?`;
@@ -73,18 +91,28 @@ const NOT_A_PERSON = /^(?:thread|session|chat|computer|pc|laptop|desktop|machine
 /**
  * Is this line a message for someone on this hub?
  * from: the person speaking (null: the owner). addressed: the line was said to ΠAN.
- * -> null | { to, kind: 'says' | 'asks', body } | { to, empty: true }
+ * -> null | { to, kind: 'says' | 'asks', body } | { to, empty: true } | { which: [people], kind, body }
+ * which: two or more people here go by the name that was said.
  */
-export function parseMessage(text, { from = null, addressed = false } = {}) {
+export function parseMessage(text, { from = null, addressed = false, now = Date.now() } = {}) {
   if (!addressed) return null;
   const said = String(text || '').trim().replace(/[,\s]+(?:pan|pam)[.!?\s]*$/i, '').trim();
   if (!said) return null;
   const me = from ? Number(from.id) : OWNER_ID;
   const others = peopleHere().filter((p) => p.id !== me);
   if (!others.length) return null;
+  const answered = answerToWhich(said, me, now);
+  if (answered) return answered;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // The name as it is written on the hub, letters only on both sides ("Mary-Ann" and "mary ann").
-  const name = `(${[...new Set(others.map((p) => p.first))].sort((a, b) => b.length - a.length).map(esc).join('|')})`;
+  // The name as it is written on the hub, whole or the first word of it, letters only on both
+  // sides ("Mary-Ann" and "mary ann"). The longest spelling is tried first.
+  const spellings = new Set();
+  for (const p of others) {
+    spellings.add(esc(p.first));
+    const words = p.name.split(/[\s-]+/).filter(Boolean);
+    if (words.length > 1) spellings.add(words.map(esc).join('[\\s-]+'));
+  }
+  const name = `(${[...spellings].sort((a, b) => b.length - a.length).join('|')})`;
   const after = String.raw`(?!['’]s|s['’])(?![\p{L}\p{N}])`;
   const forms = [
     [new RegExp(`${LEAD}(?:tell|text|message|ping)\\s+${name}${after}[\\s,:]*(?:that\\s+)?(.*)$`, 'iu'), 'says'],
@@ -96,10 +124,14 @@ export function parseMessage(text, { from = null, addressed = false } = {}) {
   for (const [re, kind] of forms) {
     const m = re.exec(said);
     if (!m) continue;
-    const to = others.find((p) => p.key === key(m[1]));
-    if (!to) return null;
+    const k = key(m[1]);
+    const whole = others.filter((p) => p.full === k);
+    const named = whole.length ? whole : others.filter((p) => p.key === k);
+    if (!named.length) return null;
+    const to = named[0];
     const body = String(m[2] || '').trim().replace(/\s+/g, ' ').slice(0, MAX_BODY);
     if (NOT_A_PERSON.test(body)) return null;     // "tell Maria's computer ..." is the thread relay's
+    if (named.length > 1) return { which: named, kind, body };
     if (!body.replace(/[^\p{L}\p{N}]/gu, '')) return { to, empty: true };
     return { to, kind, body };
   }
@@ -190,11 +222,19 @@ export function peopleFor(meId) {
     .sort((a, b) => (b.last?.at || 0) - (a.last?.at || 0) || a.name.localeCompare(b.name));
 }
 
+/** Whether the owner may read this person's conversations: only a person whose role is child. */
+export function ownerMayRead(userId) {
+  return peopleHere().some((p) => p.id === Number(userId) && p.id !== OWNER_ID && p.role === 'child');
+}
+
+/** For the tests: forget every "which one?" that waits for an answer. */
+export function resetAsked() { asked.clear(); }
+
 /**
  * The conversation between two people, oldest first, and it marks what the other one sent as
  * opened. before: a message id, for the page before it. -> { with, messages, more } | null
  */
-export function conversation(meId, otherId, { before = 0, limit = PAGE, now = Date.now() } = {}) {
+export function conversation(meId, otherId, { before = 0, limit = PAGE, now = Date.now(), mark = true } = {}) {
   const me = Number(meId) || OWNER_ID;
   const other = peopleHere().find((p) => p.id === Number(otherId) && p.id !== me);
   if (!other) return null;
@@ -204,7 +244,8 @@ export function conversation(meId, otherId, { before = 0, limit = PAGE, now = Da
     WHERE ((from_user = :a AND to_user = :b) OR (from_user = :b AND to_user = :a)) AND (:before = 0 OR id < :before)
     ORDER BY id DESC LIMIT :n`, { ':a': me, ':b': other.id, ':before': Number(before) || 0, ':n': n + 1 });
   const more = rows.length > n;
-  run(`UPDATE person_messages SET read_at = :t WHERE to_user = :a AND from_user = :b AND read_at IS NULL`, { ':t': now, ':a': me, ':b': other.id });
+  // mark false: someone other than the two is looking (the owner at a child's), so nothing is marked opened.
+  if (mark) run(`UPDATE person_messages SET read_at = :t WHERE to_user = :a AND from_user = :b AND read_at IS NULL`, { ':t': now, ':a': me, ':b': other.id });
   return { with: { id: other.id, name: other.name, role: other.role }, more,
     messages: rows.slice(0, n).reverse().map((r) => ({ id: Number(r.id), from_me: Number(r.from_user) === me, kind: r.kind, body: r.body,
       how: r.how, at: Number(r.created_at), said: r.delivered_at != null, opened: r.read_at != null })) };
@@ -218,8 +259,18 @@ export function messageTurn(text, { person = null, addressed = false, test = fal
   const msg = parseMessage(text, { from: person, addressed });
   if (!msg) return null;
   const base = { intent: 'message', speech_act: 'command', addressed: 1, importance: 0.5 };
-  const whom = msg.to.first;
+  const senderId = person ? Number(person.id) : OWNER_ID;
   if (person && !may(person, 'messages')) return { ...base, response: `I can't send messages for you. Whoever set me up decides that.`, refused: 'messages' };
+  if (msg.which) {
+    const names = msg.which.map((p) => p.name);
+    const same = new Set(names).size < names.length;
+    if (!test && !same) asked.set(senderId, { kind: msg.kind, body: msg.body, among: msg.which, at: Date.now() });
+    return { ...base, message_which: msg.which.map((p) => p.id),
+      response: same ? `There are ${names.length} people called ${names[0]} here. Give one of them a different name first.`
+        : `Which ${msg.which[0].first}: ${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}?` };
+  }
+  asked.delete(senderId);
+  const whom = msg.to.first;
   if (msg.empty) return { ...base, response: `What should I tell ${whom}?` };
   if (test) {
     return { ...base, response: `[benchmark: message for ${whom} parsed (${msg.kind}), nothing sent]`,

@@ -17,7 +17,7 @@ import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
-import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere } from '../person-messages.js';
+import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead } from '../person-messages.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
 
@@ -952,20 +952,44 @@ router.get('/slack/pending', (req, res) => {
 // The People tab (person-messages.js): the other people on this hub with the newest message
 // from each, one conversation, and a typed message. Each call is held to the caller: the owner
 // on his devices, a person on theirs (who that is comes from PAN Link's key). Nobody opens a
-// conversation they are not in, the owner included.
+// conversation they are not in. The one exception is the owner's call (2026-11-18): the owner
+// can read a child's conversations, with ?of=<the child's id>. Only the owner's own devices,
+// only a person whose role is child, nothing is marked opened by it, and the child's own list
+// says who can read (me.read_by).
 const callerId = (req) => (req.user?.person ? Number(req.user.id) : 1);
+function childToRead(req, res) {
+  const of = Number(req.query.of);
+  if (!req.user?.person && ownerMayRead(of)) return of;
+  res.status(403).json({ ok: false, error: 'not yours to read' });
+  return 0;
+}
 router.get('/people', (req, res) => {
   const me = callerId(req);
   const person = req.user?.person ? req.user : null;
+  if (req.query.of !== undefined) {
+    const of = childToRead(req, res);
+    if (!of) return;
+    const child = peopleHere().find((p) => p.id === of);
+    return res.json({ ok: true, of: { id: of, name: child.name, role: child.role }, people: peopleFor(of) });
+  }
   const self = peopleHere().find((p) => p.id === me);
   const canSend = !person || may(person, 'messages');
   const people = canSend ? peopleFor(me) : [];
-  res.json({ ok: true, me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person },
+  const owner = peopleHere().find((p) => p.id === 1);
+  res.json({ ok: true, me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person,
+      read_by: person && ownerMayRead(me) ? (owner?.first || 'the owner') : null },
     can_send: canSend, people, unread: people.reduce((n, p) => n + p.unread, 0) });
 });
 router.get('/people/messages', (req, res) => {
   const person = req.user?.person ? req.user : null;
   if (person && !may(person, 'messages')) return res.status(403).json({ ok: false, error: refusal('messages') });
+  if (req.query.of !== undefined) {
+    const of = childToRead(req, res);
+    if (!of) return;
+    const theirs = conversation(of, Number(req.query.with), { before: Number(req.query.before) || 0, mark: false });
+    if (!theirs) return res.status(404).json({ ok: false, error: 'nobody by that id on this hub' });
+    return res.json({ ok: true, of, ...theirs });
+  }
   const talk = conversation(callerId(req), Number(req.query.with), { before: Number(req.query.before) || 0 });
   if (!talk) return res.status(404).json({ ok: false, error: 'nobody by that id on this hub' });
   res.json({ ok: true, ...talk });
