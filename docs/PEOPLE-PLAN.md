@@ -117,3 +117,8 @@ Two phones are free for this without the owner's own: the test tablet and an old
 - Family: a child's pairing on the test tablet; every voice action tried and refused where it should be.
 - Talking together: the test tablet and a second phone, with recorded speech in two languages (the interpreter bench already has it).
 - The crowd: the conversation bench with other ΠAN voices and other people's voices played at the phone.
+
+## Progress
+
+- **2026-11-18, the base of step 2, not live.** `service/src/people.js`: a pairing code can be made for a person (`POST /api/v1/link/pair` with `for_user`, and `shared` for a TV or the car); pan-link already says which tunnel address a code reserves, so the device that pairs is bound to that person with no change in pan-link. A device nobody was named for is the owner's, as before. `PUT /api/v1/link/devices/:id/person` hands a device over or takes it back, `GET /api/v1/link/people` lists whose is whose, and removing a device removes its binding. `may(person, action)` is the one check, with a starting list of twelve actions and the least power each needs; the owner changes it in the setting `people_limits`. Tests: `__tests__/people.test.js` (9) and five more in `pan-link-routes.test.js` (16).
+- **Next, and where the work is:** a request from a bound device must arrive as that person and not as the owner (`server.js`), and such a device must reach only what its person needs. The phone app calls about forty hub paths, some outside the login check altogether (`/dashboard/api/mem` is how Memory is read, so today any paired device reads the owner's). Each has to be decided: closed to others, or answered per person. Then the voice path asks `may` before it acts.

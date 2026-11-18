@@ -9,6 +9,7 @@
 // the owner, so only the owner gets one.
 
 import { Router } from 'express';
+import { notePairingFor, setDevicePerson, personOfDevice, forgetDevice, devicePeople } from '../people.js';
 import { getDataDir } from '../platform.js';
 import { linkSecret, HEADER_SECRET } from '../pan-link-auth.js';
 
@@ -59,18 +60,28 @@ function ownerOnly(req, res, next) {
 
 router.use(ownerOnly);
 
-// A new pairing code. Body: { name?, ttl_minutes?, limited? } (pan-link's default is 10
-// minutes; limited: true pairs a device that may only send LIMITED_ALLOW).
+// A new pairing code. Body: { name?, ttl_minutes?, limited?, for_user?, shared? } (pan-link's
+// default is 10 minutes; limited: true pairs a device that may only send LIMITED_ALLOW).
+// for_user: the id of the person the device is for (people.js); without it the device is the
+// owner's, as before. shared: a device several people use (a TV, the car), kept by for_user.
 // Answers { uri, expires, svg }: the pan://pair link and the same as a QR image.
 router.post('/pair', async (req, res) => {
   const name = typeof req.body?.name === 'string' ? req.body.name.slice(0, 60) : '';
   const ttl = Number.isInteger(req.body?.ttl_minutes) ? Math.min(Math.max(req.body.ttl_minutes, 1), 60) : 0;
   const limited = req.body?.limited === true;
+  const forUser = Number.isInteger(req.body?.for_user) ? req.body.for_user : null;
   const { status, body } = await callAdmin('/admin/pair', {
     method: 'POST',
     body: { name, ttl_minutes: ttl, ...(limited ? { allow: [...LIMITED_ALLOW] } : {}) },
   });
   if (status !== 200 || typeof body?.uri !== 'string') return res.status(status || 503).json(body);
+  if (forUser !== null) {
+    // pan-link says which tunnel address the code reserves; the device that pairs gets it.
+    const expires = Date.parse(body.expires) || Date.now() + 10 * 60_000;
+    if (!body.device_ip || !notePairingFor(body.device_ip, forUser, { shared: req.body?.shared === true, expires })) {
+      return res.status(400).json({ error: 'no such person, or this PAN Link cannot make a code for a person' });
+    }
+  }
   let svg = null;
   try {
     const QR = (await import('qrcode')).default;
@@ -93,8 +104,25 @@ router.delete('/devices/:id', async (req, res) => {
   const id = String(req.params.id || '');
   if (!/^[a-z0-9]{1,64}$/i.test(id)) return res.status(400).json({ error: 'bad device id' });
   const { status, body } = await callAdmin(`/admin/devices/${id}`, { method: 'DELETE' });
-  if (status === 200) console.log(`[PAN Link] device ${id} removed by the owner`);
+  if (status === 200) { forgetDevice(id); console.log(`[PAN Link] device ${id} removed by the owner`); }
   res.status(status || 503).json(body);
+});
+
+// Hands a paired device to a person, or takes it back. Body: { user_id: number | null, shared? }.
+// null makes it the owner's own again.
+router.put('/devices/:id/person', (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[a-z0-9]{1,64}$/i.test(id)) return res.status(400).json({ error: 'bad device id' });
+  const userId = req.body?.user_id;
+  if (userId !== null && !Number.isInteger(userId)) return res.status(400).json({ error: 'user_id must be a number or null' });
+  if (!setDevicePerson(id, userId, { shared: req.body?.shared === true })) return res.status(404).json({ error: 'no such person' });
+  console.log(`[PAN Link] device ${id} ${userId === null ? 'taken back by the owner' : `handed to user ${userId}`}`);
+  res.json({ ok: true, person: personOfDevice(id) });
+});
+
+// Which devices belong to whom. Devices not listed are the owner's.
+router.get('/people', (req, res) => {
+  res.json({ devices: devicePeople() });
 });
 
 // Limits a paired device to LIMITED_ALLOW, or lifts the limit. Body: { limited: boolean }.

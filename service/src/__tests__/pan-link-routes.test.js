@@ -166,6 +166,52 @@ await test('pan-link not running: status 0 and a plain reason', async () => {
   }
 });
 
+// A device for a person (people.js). The stand-in's code reserves 10.77.0.9.
+const { run } = await import('../db.js');
+const people = await import('../people.js');
+const post = (path, body, method = 'POST') => fetch(`${base}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+run(`INSERT OR IGNORE INTO users (id, email, display_name, role) VALUES (1, 'owner@localhost', 'owner', 'owner')`);
+const kid = Number(run(`INSERT INTO users (email, display_name, role, power_lvl, is_active) VALUES ('kid@local', 'Kid', 'child', 5, 1)`).lastInsertRowid);
+
+await test('a code made for a person binds the device that pairs with it', async () => {
+  const r = await post('/pair', { name: 'Kid tablet', for_user: kid });
+  ok(r.status === 200, `status ${r.status}`);
+  ok(people.pairingsWaiting(), 'nothing is waiting for the device');
+  ok(people.claimPairings([{ id: 'd1', tunnel_ip: '10.77.0.9' }]) === 1, 'the device was not bound');
+  const p = people.personOfDevice('d1');
+  ok(p?.display_name === 'Kid' && p.power === 5, `bound to ${JSON.stringify(p)}`);
+});
+
+await test('a code for a person who does not exist is refused', async () => {
+  const r = await post('/pair', { for_user: 424242 });
+  ok(r.status === 400, `status ${r.status}`);
+});
+
+await test('only the owner makes a code for a person or hands a device over', async () => {
+  role = 'admin';
+  ok((await post('/pair', { for_user: kid })).status === 403, 'an admin made a code');
+  ok((await post('/devices/d1/person', { user_id: null }, 'PUT')).status === 403, 'an admin took a device');
+  ok((await fetch(`${base}/people`)).status === 403, 'an admin read who has what');
+});
+
+await test('handing a device over, the list, and taking it back', async () => {
+  let r = await post('/devices/d2/person', { user_id: kid, shared: true }, 'PUT');
+  ok(r.status === 200 && (await r.json()).person.shared === true, 'not handed over as shared');
+  const list = (await (await fetch(`${base}/people`)).json()).devices;
+  ok(list.some((d) => d.link_device_id === 'd2' && d.display_name === 'Kid'), `list ${JSON.stringify(list)}`);
+  ok((await post('/devices/d2/person', { user_id: 'kid' }, 'PUT')).status === 400, 'a name was taken for an id');
+  ok((await post('/devices/d2/person', { user_id: 424242 }, 'PUT')).status === 404, 'handed to nobody');
+  r = await post('/devices/d2/person', { user_id: null }, 'PUT');
+  ok(r.status === 200 && (await r.json()).person === null, 'not taken back');
+});
+
+await test('removing a device removes whose it was', async () => {
+  ok(people.personOfDevice('d1') !== null, 'd1 should still be the child\'s');
+  const r = await fetch(`${base}/devices/d1`, { method: 'DELETE' });
+  ok(r.status === 200, `status ${r.status}`);
+  ok(people.personOfDevice('d1') === null, 'the binding outlived the device');
+});
+
 // Close everything and let Node exit on its own: process.exit() while sockets are still
 // closing trips a libuv assertion on Windows.
 for (const s of [pan, admin]) {
