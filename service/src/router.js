@@ -346,12 +346,26 @@ async function* plainAsReply(stream, maxSentences = 0) {
     while ((m = re.exec(said))) if (++n >= maxSentences) return said.slice(from, m.index + m[0].length).trimEnd();
     return null;
   };
+  // A spoken reply has no square brackets: a tuned hub model sometimes adds the quiet tag AFTER an
+  // answer ("I don't know. [AMBIENT]"), and that would be read out. The reply ends at the bracket.
+  // A quote mark at the very end is held back until more words come; one left open is dropped
+  // (it ended a question with a lone ").
+  let cut = false, held = '', quotes = 0;
+  const tidy = (piece) => {
+    if (cut) return '';
+    let p = held + piece; held = '';
+    const b = p.indexOf('[');
+    if (b >= 0) { cut = true; p = p.slice(0, b).trimEnd(); }
+    else { const q = p.match(/"\s*$/); if (q) { held = p.slice(q.index); p = p.slice(0, q.index); } }
+    quotes += (p.match(/"/g) || []).length;
+    return p;
+  };
   for await (const chunk of stream) {
     if (mode === 'json') { yield chunk; continue; }
     if (mode === 'plain') {
       const c = clip(chunk);
-      yield esc(c !== null ? c : chunk);
-      if (c !== null) break;
+      yield esc(tidy(c !== null ? c : chunk));
+      if (c !== null || cut) break;
       continue;
     }
     head += chunk;
@@ -365,10 +379,11 @@ async function* plainAsReply(stream, maxSentences = 0) {
     if (!t) continue;
     mode = 'plain';
     const c = clip(t);
-    yield '{"to":"pan","response":"' + esc(c !== null ? c : t);
-    if (c !== null) break;
+    yield '{"to":"pan","response":"' + esc(tidy(c !== null ? c : t));
+    if (c !== null || cut) break;
   }
-  if (!mode && head.trim()) { mode = 'plain'; yield '{"to":"pan","response":"' + esc(head.trim()); }
+  if (!mode && head.trim()) { mode = 'plain'; yield '{"to":"pan","response":"' + esc(tidy(head.trim())); }
+  if (mode === 'plain' && held && !cut && quotes % 2 === 1) yield esc(held.trimEnd());   // it closes a quote that was opened
   if (mode === 'plain') yield '","intent":"query","addressed":0.9}';
 }
 
