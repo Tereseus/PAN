@@ -40,6 +40,9 @@ class SyncManager @Inject constructor(
     private suspend fun sync() {
         // Check server connectivity first
         if (!serverClient.checkHealth()) return
+        // Uploads go to the owner's memory. A device that is another person's keeps its own until
+        // that person has a memory of their own on the hub (docs/PEOPLE-PLAN.md).
+        if (!serverClient.ownersDevice()) return
 
         // Drain pending uploads
         val pending = dataRepository.getPendingUploads()

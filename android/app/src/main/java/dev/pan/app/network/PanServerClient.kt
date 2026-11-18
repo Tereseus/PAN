@@ -269,6 +269,9 @@ class PanServerClient @Inject constructor(
     }
 
     suspend fun registerDevice(deviceId: String, deviceName: String): Boolean {
+        // A person's device is known to the hub by its PAN Link key: it has nothing to register,
+        // and the hub refuses it.
+        if (!ownersDevice()) return true
         return try {
             val resp = api.registerDevice(
                 dev.pan.app.network.dto.DeviceRegisterRequest(

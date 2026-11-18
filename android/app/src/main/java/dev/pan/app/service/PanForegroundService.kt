@@ -511,6 +511,7 @@ class PanForegroundService : Service() {
 
     /** Load recent history from server into in-memory conversationHistory on startup */
     private suspend fun loadHistory() {
+        if (!serverClient.ownersDevice()) return   // the hub keeps no history of a person's talk yet
         try {
             val resp = serverClient.api.getHistory(getPanDeviceId(), limit = MAX_HISTORY)
             if (resp.isSuccessful) {
