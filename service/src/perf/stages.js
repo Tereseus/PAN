@@ -278,7 +278,7 @@ export const STAGES = [
     budget: { warn_ms: 500, bad_ms: 2000, hard_ms: 10_000 },
     required: false,
     schedule: 'service',
-    help: 'Cerebras 120B background worker. Runs research tasks.',
+    help: 'Background worker. Runs research tasks.',
   },
   {
     id: 'svc.orchestrator',

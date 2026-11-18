@@ -307,7 +307,7 @@ function transitionServiceState(svc, newState, reason) {
 const MODEL_TIERS = {
   none:        { label: 'None',        color: '#6c7086', description: 'No AI model needed' },
   local:       { label: 'Local',       color: '#a6e3a1', description: 'Local Ollama (qwen3:4b / qwen3-embedding)' },
-  reasoning:   { label: 'Cloud 30B+',  color: '#89b4fa', description: 'Cerebras (Qwen 3 235B / GPT-OSS 120B)' },
+  reasoning:   { label: 'Cloud 30B+',  color: '#89b4fa', description: "The default model (ai_model), or the job's own in job_models" },
   interactive: { label: 'Claude CLI',  color: '#f9e2af', description: 'Claude via CLI subscription (terminal + automation)' },
 };
 
@@ -527,7 +527,7 @@ const services = [
     description: 'Event processor — marks events, triggers Dream when enough accumulate',
     modelTier: 'reasoning',
     modelMinSize: '8B',
-    modelCurrent: 'cerebras:qwen-3-235b',
+    modelCurrent: 'default model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 5,
@@ -548,7 +548,7 @@ const services = [
     description: 'Live situational state — fuses events+wrap+sensors into what Commander is doing right now. Read by PAN voice layer, Forge/AutoDev, and Atlas.',
     modelTier: 'reasoning',
     modelMinSize: '8B',
-    modelCurrent: 'cerebras:qwen-3-235b',
+    modelCurrent: 'default model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 5,
@@ -591,7 +591,7 @@ const services = [
     description: 'Consolidates events into living state document (.pan-state.md)',
     modelTier: 'reasoning',
     modelMinSize: '30B+',
-    modelCurrent: 'cerebras:qwen-3-235b',
+    modelCurrent: 'default model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 7,
@@ -614,7 +614,7 @@ const services = [
     description: 'Extracts episodes, facts, procedures from events into vector memory',
     modelTier: 'reasoning',
     modelMinSize: '30B+',
-    modelCurrent: 'cerebras:qwen-3-235b',
+    modelCurrent: 'default model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 8,
@@ -732,7 +732,7 @@ const services = [
     description: 'Tool discovery — GitHub trending, MCP servers, AI agents, CLI tools',
     modelTier: 'reasoning',
     modelMinSize: '8B',
-    modelCurrent: 'cerebras:qwen-3-235b',
+    modelCurrent: 'default model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 9,
@@ -754,7 +754,7 @@ const services = [
     description: 'Autonomous agent — processes findings, generates tasks, identifies gaps',
     modelTier: 'reasoning',
     modelMinSize: '30B+',
-    modelCurrent: 'cerebras:qwen-3-235b',
+    modelCurrent: 'default model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 10,
@@ -776,7 +776,7 @@ const services = [
     description: 'Self-improvement — observes behavior, critiques, generates config changes',
     modelTier: 'reasoning',
     modelMinSize: '70B+',
-    modelCurrent: 'cerebras:qwen-3-235b',
+    modelCurrent: 'default model',
     port: null,
     healthCheck: 'interval',
     bootOrder: 11,
@@ -2031,10 +2031,9 @@ async function getAtlasSummary() {
 
   // AI settings
   const aiModel  = q(() => get(`SELECT value FROM settings WHERE key='ai_model'`)?.value)   || '?';
-  const cerebras = q(() => get(`SELECT value FROM settings WHERE key='cerebras_api_key'`)?.value);
   const groq     = q(() => get(`SELECT value FROM settings WHERE key='groq_api_key'`)?.value);
   const ollamaUrl = q(() => get(`SELECT value FROM settings WHERE key='ollama_url'`)?.value) || 'NONE';
-  lines.push(`AI       default=${aiModel} | cerebras=${cerebras ? 'YES' : 'NO_KEY'} | groq=${groq ? 'YES' : 'NO_KEY'} | ollama=${ollamaUrl}`);
+  lines.push(`AI       default=${aiModel} | groq=${groq ? 'YES' : 'NO_KEY'} | ollama=${ollamaUrl}`);
 
   // Devices
   const devices = q(() => all(`SELECT hostname, name, device_type, online, trusted, tailscale_ip FROM devices`)) || [];

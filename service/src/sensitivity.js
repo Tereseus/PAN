@@ -46,7 +46,6 @@ function ensureSensitivitySchema() {
     const existing = get("SELECT value FROM settings WHERE key = 'sensitivity_enabled'");
     if (!existing) {
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('sensitivity_enabled', '1')");
-      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('sensitivity_model', 'cerebras:qwen-3-235b')");
     }
   } catch {}
 }
@@ -62,10 +61,10 @@ export function getSensitivityConfig() {
     const model = get("SELECT value FROM settings WHERE key = 'sensitivity_model'");
     return {
       enabled: enabled?.value !== '0',
-      model: model?.value || 'cerebras:qwen-3-235b',
+      model: model?.value || null,   // null: askAI uses the caller's model (job_models, else ai_model)
     };
   } catch {
-    return { enabled: true, model: 'cerebras:qwen-3-235b' };
+    return { enabled: true, model: null };
   }
 }
 

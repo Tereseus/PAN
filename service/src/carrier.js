@@ -585,12 +585,10 @@ async function runPipelineBenchmarks() {
   pipeline = { ...pipeline, status: 'benchmarking' };
   broadcastPipelineEvent('benchmarks_started');
 
-  // Use the current reasoning_cloud model rather than the retired qwen-3-235b.
-  // The benchmark suite runs against beta Craft pre-promotion — using a dead
-  // model meant every Pipeline run 404'd after Cerebras retired qwen-235b on
-  // 2026-05-27. Read live from settings.ai_model so benchmark target == prod
-  // target.
-  let _benchModel = 'cerebras:zai-glm-4.7';
+  // The benchmark suite runs against beta Craft pre-promotion. Read the model
+  // live from settings.ai_model so benchmark target == prod target. With none
+  // read, no model is sent and the Craft uses its own default.
+  let _benchModel;
   try {
     const _row = await new Promise((resolve) => {
       const r = http.request({ hostname: '127.0.0.1', port: betaCraft.port, path: '/api/v1/settings', method: 'GET', timeout: 3000 }, (res) => {

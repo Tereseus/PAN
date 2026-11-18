@@ -10,6 +10,5 @@ export {
   getConfiguredModel,
   getCustomModelConfig,
   getModelForCaller,
-  MODEL_PRICING,
-  CEREBRAS_MODELS
+  MODEL_PRICING
 } from './llm.js';

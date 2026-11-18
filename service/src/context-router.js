@@ -3,7 +3,7 @@
 // The final piece of the privacy pipeline. Uses sensitivity tags from
 // the classifier to decide HOW to process each request:
 //
-//   Sensitivity 0 (public)   → Any model: Cerebras, Claude, cloud. Fast path.
+//   Sensitivity 0 (public)   → Any model, cloud included. Fast path.
 //   Sensitivity 1 (internal) → Cloud OK but context is filtered. No raw events sent.
 //   Sensitivity 2 (sensitive)→ Hybrid: local summarize → anonymized summary to cloud.
 //   Sensitivity 3 (critical) → Local-only: Ollama. Nothing leaves the machine.
@@ -39,8 +39,6 @@ function ensureRoutingSchema() {
     const existing = get("SELECT value FROM settings WHERE key = 'routing_enabled'");
     if (!existing) {
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('routing_enabled', '1')");
-      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('routing_local_model', 'cerebras:qwen-3-235b')");
-      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('routing_cloud_model', 'cerebras:qwen-3-235b')");
     }
   } catch {}
 }
@@ -55,13 +53,14 @@ export function getRoutingConfig() {
     const enabled = get("SELECT value FROM settings WHERE key = 'routing_enabled'");
     const localModel = get("SELECT value FROM settings WHERE key = 'routing_local_model'");
     const cloudModel = get("SELECT value FROM settings WHERE key = 'routing_cloud_model'");
+    // No setting = null: askAI then uses the caller's model (job_models, else ai_model).
     return {
       enabled: enabled?.value !== '0',
-      localModel: localModel?.value || 'cerebras:qwen-3-235b',
-      cloudModel: cloudModel?.value || 'cerebras:qwen-3-235b',
+      localModel: localModel?.value || null,
+      cloudModel: cloudModel?.value || null,
     };
   } catch {
-    return { enabled: true, localModel: 'cerebras:qwen-3-235b', cloudModel: 'cerebras:qwen-3-235b' };
+    return { enabled: true, localModel: null, cloudModel: null };
   }
 }
 

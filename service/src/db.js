@@ -422,28 +422,14 @@ if (!defaultUser) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_team ON project_tasks(team_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_team ON projects(team_id)`);
 
-  // Backfill Cerebras cost_cents — previous records were logged at $0 because pricing
-  // was hardcoded as free. Recalculate using current best-estimate prices.
-  // Prices in cents/token: $0.30/1M input, $0.60/1M output for qwen-3-235b
-  const CEREBRAS_PRICING = {
-    'cerebras:qwen-3-235b':  { input: 0.000030, output: 0.000060 },
-    'cerebras:gpt-oss-120b': { input: 0.000060, output: 0.000060 },
-    'cerebras:llama3.1-8b':  { input: 0.000010, output: 0.000010 },
-    'cerebras:zai-glm-4.7':  { input: 0.000060, output: 0.000060 },
-  };
-  const backfillStmt = db.prepare(`UPDATE ai_usage SET cost_cents = ? WHERE model = ? AND cost_cents = 0 AND input_tokens > 0`);
-  for (const [model, pricing] of Object.entries(CEREBRAS_PRICING)) {
-    // Use a single UPDATE with expression for efficiency
-    try {
-      const result = db.prepare(
-        `UPDATE ai_usage SET cost_cents = (input_tokens * ${pricing.input} + output_tokens * ${pricing.output})
-         WHERE model = '${model}' AND cost_cents = 0 AND input_tokens > 0`
-      ).run();
-      if (result.changes > 0) {
-        console.log(`[PAN DB] Backfilled Cerebras costs: ${result.changes} rows for ${model}`);
-      }
-    } catch {}
-  }
+  // Cerebras is gone from the code (2026-11-18). Settings that still point a job at
+  // it are dropped, so the job falls back to ai_model (or the built-in default).
+  // llm_billing_blocked was only written by the Cerebras calls.
+  try {
+    db.exec(`DELETE FROM settings WHERE key = 'llm_billing_blocked'
+             OR (key IN ('ai_model','routing_local_model','routing_cloud_model','sensitivity_model','guardian_model')
+                 AND replace(value, '"', '') LIKE 'cerebras:%')`);
+  } catch {}
 }
 
 // Migration: Atlas v2 Step 7 — add verifier metadata columns to ai_benchmark
@@ -924,8 +910,7 @@ function insertScoped(req, sql, params = {}) {
 //
 // Every consumer of an LLM (embeddings, intuition, vision, voice routing,
 // dream/evolution cycles, etc.) used to hardcode model names as module
-// constants. When a provider retired a name (Cerebras dropping
-// qwen-3-235b-a22b-instruct-2507) or a device's installed tags changed
+// constants. When a provider retired a name or a device's installed tags changed
 // (the the local Ollama box having qwen3-embedding:latest instead of :0.6b), every
 // caller broke in a slightly different way and we had to grep + edit.
 //
@@ -941,8 +926,7 @@ function insertScoped(req, sql, params = {}) {
 // Provider naming convention is "provider[@device]":
 //   'ollama@local'        — Ollama on the same machine as PAN (single-PC setup)
 //   'ollama@<hostname>'   — Ollama on another device, e.g. 'ollama@my-mini-pc'
-//   'cerebras'            — cloud, no device suffix needed
-//   'groq', 'anthropic', 'openai' — same
+//   'gemini', 'groq', 'anthropic', 'openai' — cloud, no device suffix needed
 //
 // This naming is what scout.js's findDeviceWithModel + scanDeviceModels keys
 // on, so swapping the the local Ollama box for a new machine is just changing the suffix.
@@ -980,7 +964,6 @@ try {
     // 5.5GB and a 2.5GB model on every alternating call. gemma4 additionally
     // accepts audio (<=30s clips), which nothing in the old stack could do.
     ['vision',               'ollama@local', 'gemma4:e2b',           null, null,  'Screen + webcam + audio understanding'],
-    ['reasoning_cloud',      'cerebras',          'qwen-3-235b',          null, null,  'Smart cloud reasoning (substituted by Scout if retired)'],
     ['chat_cloud_fallback',  'anthropic',         'claude-haiku-4-5-20251001', null, null, 'Universal fallback when local + reasoning_cloud both fail'],
   ];
   for (const [purpose, provider, model, dim, ctx, notes] of seeds) {
@@ -988,6 +971,9 @@ try {
          VALUES (:p, :pr, :m, :d, :c, :n)`,
       { ':p': purpose, ':pr': provider, ':m': model, ':d': dim, ':c': ctx, ':n': notes });
   }
+  // No reasoning_cloud seed: it named Cerebras, which is gone (2026-11-18). With no
+  // row the voice chain is chat_cloud_fallback then chat_local. Old rows are dropped.
+  try { run(`DELETE FROM model_selections WHERE provider = 'cerebras'`); } catch {}
   // ── Migration: upgrade moondream → minicpm-v ──
   // INSERT OR IGNORE above skips updating already-inserted rows, so existing
   // installs are stuck on whatever seed shipped originally. The first seed was

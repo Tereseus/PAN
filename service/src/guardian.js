@@ -5,7 +5,7 @@
 //
 // Layers:
 //   1. Pattern Scan   — regex for known injection patterns, encoded payloads, script tags
-//   2. LLM Classifier — Cerebras fast model classifies intent (safe/suspicious/hostile)
+//   2. LLM Classifier — a fast model classifies intent (safe/suspicious/hostile)
 //   3. Capability Gate — restricts what context the content can enter based on risk
 //   4. Audit Log      — immutable record of every decision (uses HMAC-chained audit)
 //   5. Memory         — feeds back into PAN's memory for pattern learning
@@ -48,7 +48,6 @@ function ensureGuardianSchema() {
     if (!existing) {
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('guardian_enabled', '1')");
       run("INSERT OR IGNORE INTO settings (key, value) VALUES ('guardian_mode', 'warn')");
-      run("INSERT OR IGNORE INTO settings (key, value) VALUES ('guardian_model', 'cerebras:llama3.1-8b')");
     }
   } catch {}
 }
@@ -66,10 +65,10 @@ function getConfig() {
     return {
       enabled: enabled?.value !== '0',
       mode: mode?.value || 'warn',       // 'off' | 'warn' | 'block'
-      model: model?.value || 'cerebras:llama3.1-8b',
+      model: model?.value || null,   // null: askAI uses the caller's model (job_models, else ai_model)
     };
   } catch {
-    return { enabled: true, mode: 'warn', model: 'cerebras:llama3.1-8b' };
+    return { enabled: true, mode: 'warn', model: null };
   }
 }
 
@@ -128,7 +127,7 @@ function patternScan(content) {
 }
 
 // ============================================================
-// Layer 2 — LLM Classifier (Cerebras, ~500ms)
+// Layer 2 — LLM Classifier
 // ============================================================
 const CLASSIFIER_PROMPT = `You are a security classifier for a personal AI system. Analyze the following message and classify its intent.
 

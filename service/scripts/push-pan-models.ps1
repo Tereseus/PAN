@@ -430,10 +430,6 @@ if (-not $gemHtml) { $gemHtml = 'Not in the voice chain right now' }
 Add-Row $cloud 'Google Gemini (AI Studio free tier)' $gemHtml 'cloud' "500 requests a day per model, resets $resetText" (E 'Paid would be 0.30 dollars in and 2.50 out per million tokens for 3.5 Flash-Lite, 0.25 and 1.50 for 3.1 (checked Nov 4 2026)')
 $term = [string](Setting 'terminal_ai_model')
 Add-Row $cloud 'Anthropic Claude' (E ("PAN's terminal sessions run $term. Your Claude Code threads too")) 'cloud' 'your Claude subscription'
-$rc = [string](Setting 'routing_cloud_model')
-if ($rc -match '^cerebras:') {
-    Add-Row $cloud 'Cerebras' (E "Still named in routing_cloud_model ($rc), but the account needs billing (402) and that model is retired. Nothing runs there") 'dead' ''
-}
 
 if ($modelHosts) {
     Add-Row 'On this laptop (the G16)' 'Talks to you' (E 'Syrinx on its RTX 4070, reached through a tunnel from the hub') 'local' 'free' 'If the G16 is off, the same model on the hub answers'
@@ -625,7 +621,7 @@ td.ok{color:#3fb950}td.slow{color:#d29922}td.over{color:#f85149;font-weight:600}
     <tr class="muted"><td>Service (gpt-oss-120b unless named)</td><td class="num">In / out, per 1M tokens</td><td class="num">First word</td><td class="num">Tokens/s</td><td class="num">Normal month</td><td class="num">Heavy month</td></tr>
     $cloudRows
   </table></div>
-  <div class="note">Normal month: 130 turns a day, what PAN did this week. Heavy month: 500 turns a day. A turn is PAN's average, about 2,800 tokens in and 150 out. First word and tokens/s are OpenRouter's live medians on Nov 4, measured at their servers, so add your network. Cerebras takes 0.55 s for a whole reply. These are stock models: Syrinx cannot run on them, and what you say goes to them. PAN already streams from Cerebras, so it only needs billing turned on (adding a card gives a one time 5 dollar credit). OpenRouter is one key for all of these and moves to the next if one fails (99.6% served, 91.2% without it), for a 5.5% fee on credit. Everything PAN ran this week would be about 10 dollars a month on Cerebras, but background jobs read your private memory, so they stay local.</div>
+  <div class="note">Normal month: 130 turns a day, what PAN did this week. Heavy month: 500 turns a day. A turn is PAN's average, about 2,800 tokens in and 150 out. First word and tokens/s are OpenRouter's live medians on Nov 4, measured at their servers, so add your network. Cerebras takes 0.55 s for a whole reply. These are stock models: Syrinx cannot run on them, and what you say goes to them. Of these PAN has code only for Gemini: the Cerebras code was removed on Nov 18, it had not answered since August. OpenRouter is one key for all of these and moves to the next if one fails (99.6% served, 91.2% without it), for a 5.5% fee on credit. Everything PAN ran this week would be about 10 dollars a month on Cerebras, but background jobs read your private memory, so they stay local.</div>
 </div>
 
 <div class="card">

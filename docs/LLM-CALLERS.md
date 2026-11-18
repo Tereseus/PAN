@@ -2,7 +2,9 @@
 
 > **What runs where TODAY is on the hub's `/pan-models.html`** (built from the live
 > settings, see docs/FEATURES.md "PAN Models page"). The "Current routing" lines
-> below are history: Cerebras is dead (402) and most callers now run local.
+> below are history: Cerebras stopped answering in August 2026 and its code was removed
+> from the hub on 2026-11-18 (docs/FEATURES.md "Cerebras removed"). A `cerebras:` model
+> id is now an unknown model. Most callers run local.
 
 This doc maps every `caller:` string in PAN to its purpose, prompt shape, and
 the routing decision behind which model handles it. It exists because the

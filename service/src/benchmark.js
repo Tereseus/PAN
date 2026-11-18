@@ -17,7 +17,7 @@
 // Usage: runBenchmark(suite, model) → { scores, passed, details, elapsed_ms }
 
 import { run, get, insert, all } from './db.js';
-import { claude } from './llm.js';
+import { claude, getConfiguredModel } from './llm.js';
 import { readFileSync, existsSync, appendFileSync, mkdirSync, statSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -683,7 +683,6 @@ export async function runScoutBenchmark(model) {
   const prevTopics = config.scout_topics || [];
 
   const testTopics = [
-    'Cerebras qwen-3-235b benchmark performance 2026',
     'BLE mesh peer-to-peer Android implementation',
     'SQLCipher performance Node.js better-sqlite3',
   ];
@@ -1113,8 +1112,8 @@ export async function runSensorBenchmark(model) {
 // Thresholds: local/small ≤800ms · mid-tier (Haiku, Cerebras small) ≤1200ms · large (235B, Sonnet+) ≤1600ms
 function getPipelineFloor(model = '') {
   const m = (model || '').toLowerCase();
-  if (m.includes('haiku') || m.includes('cerebras:qwen-3-32') || m.includes('small')) return 1200;
-  if (m.includes('cerebras') || m.includes('sonnet') || m.includes('claude') || m.includes('235b')) return 1600;
+  if (m.includes('haiku') || m.includes('small')) return 1200;
+  if (m.includes('sonnet') || m.includes('claude') || m.includes('235b')) return 1600;
   return 800; // local / fast models
 }
 
@@ -1674,7 +1673,7 @@ function _storeResult(suite, model, scores, passed, details) {
 // UNIFIED RUNNER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export async function runBenchmark(suite, model = 'cerebras:qwen-3-235b') {
+export async function runBenchmark(suite, model = getConfiguredModel()) {
   const runners = {
     intuition:     () => runIntuitionBenchmark(model),
     dream:         () => runDreamBenchmark(model),
@@ -1716,7 +1715,7 @@ const delay_ms = ms => new Promise(r => setTimeout(r, ms));
  * @param {object} options - { maxAttempts: 2 }
  * @returns {Promise<object>} Full result with verifier, corrected, attempts fields
  */
-export async function runBenchmarkWithVerification(suite, model = 'cerebras:qwen-3-235b', options = {}) {
+export async function runBenchmarkWithVerification(suite, model = getConfiguredModel(), options = {}) {
   const { maxAttempts = 2 } = options;
   const { verify } = await import('./verifier.js');
 

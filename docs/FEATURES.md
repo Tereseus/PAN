@@ -551,6 +551,29 @@ around a query does not change that.
   rebuild. The Stop watermark compares against it, so a long session rebuilds its recap
   every 30 minutes or 10 turns as designed. It used `created_at`, which the upsert never
   moves, so every Stop on any session older than 30 minutes rebuilt the recap.
+- **Cerebras removed** (2026-11-18): the hub has no Cerebras code path any more. No call
+  to it had worked since 2026-08-07 (402 on every model), and no chain, job or model slot
+  on the hub pointed at it.
+  - Gone from `llm.js`: `callCerebras`, `callCerebrasStream`, `CEREBRAS_MODELS`, its prices,
+    its key lookup, and the billing-blocked list that only those calls wrote
+    (`llm_billing_blocked`). A `cerebras:` model id now fails as "Unknown model" and the
+    fallback chain moves on.
+  - Gone from `scout.js`: its model list scan, completion probe and replacement list. Groq
+    and Gemini are still scanned.
+  - Defaults that named it now name nothing, so the job uses its caller's model
+    (`job_models`, else `ai_model`): `routing_local_model`, `routing_cloud_model`,
+    `sensitivity_model`, `guardian_model`, the recall answer in `routes/api.js`, the
+    benchmark routes, the Carrier's pipeline benchmark.
+  - At boot `db.js` drops what still points at it: those settings (and `ai_model`) when the
+    value starts with `cerebras:`, the `llm_billing_blocked` row, `model_selections` rows
+    with provider `cerebras`. No `reasoning_cloud` seed on a new install.
+  - `hooks/skill-learner.js` no longer carries a key in the source. It only runs with
+    `CEREBRAS_API_KEY` in the environment, so today it does nothing.
+  - Kept: `cerebras_api_key` stays in `SECRET_KEYS` (`secrets.js`) so a key still stored
+    in an old database is never returned by the settings API.
+  - Not done here, they need a dashboard build or are another change's files: the
+    Cerebras caps in `/api/v1/usage/llm-routing` and the Usage panel, the Atlas pages,
+    the setup page's key field, one unreachable default in `router.js` and `server.js`.
 - **Recap text is a plain list, no model** (2026-11-18): `session-summary.js` no longer
   asks a cloud model to rewrite the recap as a paragraph. The model it named (Cerebras
   qwen-3-235b) was retired, the retired-model resolver in `llm.js` swapped in an archived

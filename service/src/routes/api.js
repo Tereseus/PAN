@@ -1206,9 +1206,9 @@ ${snippetText}
 Answer in 1-3 sentences, conversational tone. Be specific — mention dates and exact details if present. If the answer isn't in the data, say so.`;
 
     const startTime = Date.now();
-    // Use llama3.1-8b for fast recall — no thinking overhead, short lookup task
+    // No model named: the 'recall' caller's model applies (job_models, else ai_model)
     const { claude: claudeCall } = await import('../claude.js');
-    const fullText = await claudeCall(prompt, { model: 'cerebras:llama3.1-8b', maxTokens: 400, timeout: 15000, caller: 'recall', _skipAnonymize: true }) || '';
+    const fullText = await claudeCall(prompt, { maxTokens: 400, timeout: 15000, caller: 'recall', _skipAnonymize: true }) || '';
     const elapsed = Date.now() - startTime;
     if (fullText.trim()) send({ type: 'chunk', text: fullText.trim() });
     console.log(`[PAN Recall/stream] "${text}" → ${count} entries (${memHits.length} semantic hits), ${elapsed}ms`);

@@ -13,16 +13,12 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-// Hook runs out-of-process (SessionStart/End hook spawned by the Claude SDK)
-// so it cannot import db.js or read PAN settings. The model + key are kept
-// here as constants but updated to the current free-tier reality:
-//   - Old key (csk-5r22jpknp…) was on the org tier and started returning 402
-//     on every model in 2026-05.
-//   - Old model qwen-3-235b-a22b-instruct-2507 was retired by Cerebras on
-//     2026-05-27 and now 404s on every account.
-// Defer to env var first so this hook stays bullet-proof when the user
-// rotates the key; only fall through to the in-line default as a last resort.
-const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY || 'csk-2hpd6cpd4wttce9n32v5ymytywcxfwf5frpf8ep9jj8j2vhe';
+// Hook runs out-of-process (spawned by Claude Code), so it cannot import db.js or
+// read PAN settings. It needs a model to judge the session, and the only one it
+// knew was Cerebras, which stopped serving this account in 2026 (402 on every
+// model). No key lives in this file any more: without CEREBRAS_API_KEY in the
+// environment the hook does nothing.
+const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY || '';
 const CEREBRAS_MODEL = process.env.CEREBRAS_MODEL || 'gpt-oss-120b';
 const SKILLS_DIR = path.join(os.homedir(), '.claude', 'plugins', 'local');
 const MARKETPLACE_JSON = path.join(SKILLS_DIR, '.claude-plugin', 'marketplace.json');
@@ -31,6 +27,7 @@ const MARKETPLACE_JSON = path.join(SKILLS_DIR, '.claude-plugin', 'marketplace.js
 const MIN_TURNS = 4;
 
 async function callCerebras(messages) {
+  if (!CEREBRAS_API_KEY) throw new Error('no model configured');
   const res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
     method: 'POST',
     headers: {

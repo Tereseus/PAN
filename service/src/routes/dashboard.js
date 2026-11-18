@@ -1171,7 +1171,7 @@ router.get('/api/services', async (req, res) => {
     { id: 'intuition',     name: 'Intuition',       role: 'Situational awareness · who/where/what/mood' },
     { id: 'dream',         name: 'Dream',            role: 'Memory consolidation cycle · runs every 6h' },
     { id: 'consolidation', name: 'Archivist',        role: 'Episodic + semantic memory builder' },
-    { id: 'scout',         name: 'Scout',            role: 'Background research · Cerebras 120B' },
+    { id: 'scout',         name: 'Scout',            role: 'Background research' },
     { id: 'orchestrator',  name: 'Orchestrator',     role: 'Task planning + execution coordinator' },
     { id: 'evolution',     name: 'Evolution Engine', role: 'Memory decay + reinforcement · runs every 6h' },
     { id: 'classifier',   name: 'Augur',             role: 'Event classification · runs every 5m' },
@@ -1250,24 +1250,11 @@ router.get('/api/services', async (req, res) => {
     }
   }
 
-  // Cerebras — check via a settings key or just show config status
-  const cerebrasKey = get(`SELECT value FROM settings WHERE key = 'cerebras_api_key'`);
   const aiModel = get(`SELECT value FROM settings WHERE key = 'ai_model'`);
-  const usingCerebras = aiModel?.value?.startsWith('cerebras:');
-  const cerebrasModel = aiModel?.value?.replace('cerebras:', '') || '';
-  const cerebrasCalls = usageRows.filter(r => r.model?.includes('cerebras') || r.caller === 'router').reduce((s, r) => s + r.calls, 0);
-  services.push({
-    category: 'AI Models', name: 'Cerebras',
-    status: cerebrasKey ? (usingCerebras ? 'up' : 'unknown') : 'unknown',
-    role: 'Voice router · classifies every voice command (~580ms)',
-    detail: usingCerebras
-      ? `Active model · ${cerebrasModel}${cerebrasCalls ? ` · ${cerebrasCalls} calls today` : ''}`
-      : (cerebrasKey ? 'Configured · not current model' : 'No API key · falling back to Claude')
-  });
 
   // Claude CLI
   const claudeModel = aiModel?.value;
-  const isClaudeActive = claudeModel && !claudeModel.startsWith('cerebras:') && !claudeModel.startsWith('ollama:');
+  const isClaudeActive = claudeModel && !claudeModel.startsWith('ollama:');
   const claudeCalls = usageRows.filter(r => r.caller === 'terminal' || r.caller === 'session').reduce((s, r) => s + r.calls, 0);
   services.push({
     category: 'AI Models', name: 'Claude CLI',
@@ -2306,7 +2293,7 @@ const ALERT_TYPES = {
   dashboard_render:     { label: 'Dashboard Render',     category: 'ui',        defaultSeverity: 'warning',  source: 'dashboard-render-health', description: 'A dashboard widget reported state=empty/error/stale for too long (L3 of self-heal stack)' },
   ai_backend_degraded:  { label: 'AI Backend Degraded',  category: 'service',   defaultSeverity: 'critical', source: 'scout',    description: 'A configured cloud model (e.g. voice reasoning_cloud) is no longer in the provider\'s live model list — retired/404' },
   vision_failed:        { label: 'Vision Analysis Failed', category: 'service',  defaultSeverity: 'warning',  source: 'vision',   description: 'A user photo got no answer — the mini PC Ollama vision model was unreachable/too slow and no cloud vision fallback (Claude/Gemini) was available' },
-  voice_failed:         { label: 'Voice Turn Failed',     category: 'service',   defaultSeverity: 'warning',  source: 'router',   description: 'A voice/router turn could not be answered — all AI backends (Cerebras → Claude → local Ollama) failed to produce a response' },
+  voice_failed:         { label: 'Voice Turn Failed',     category: 'service',   defaultSeverity: 'warning',  source: 'router',   description: 'A voice/router turn could not be answered — all AI backends in the chain failed to produce a response' },
   service_down:         { label: 'Service Down',          category: 'service',   defaultSeverity: 'critical', source: 'steward',  description: 'A monitored service failed its health check and transitioned to DOWN — includes the mini PC Ollama going unreachable, which underlies vision/embeddings/intuition' },
   memory_critical:      { label: 'Memory Critical',       category: 'resource',  defaultSeverity: 'critical', source: 'server',   description: 'Craft heap exceeded the critical threshold — risk of GC stalls / OOM' },
   memory_high:          { label: 'Memory High',           category: 'resource',  defaultSeverity: 'warning',  source: 'steward',  description: 'Process RSS is elevated — worth watching before it becomes critical' },

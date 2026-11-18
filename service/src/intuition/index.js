@@ -237,7 +237,7 @@ const TOPIC_KEYWORDS = {
   'preference': 'messaging preferences',
   'whisper': 'speech-to-text',
   'atlas': 'atlas knowledge graph',
-  'scout': 'scout / cerebras',
+  'scout': 'scout',
   'installer': 'installer / distribution',
 };
 

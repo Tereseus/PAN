@@ -48,7 +48,7 @@ import { askAI, askAIStream, getModelForCaller } from './llm.js';
 //                 quota the voice path lives on. A background job with no local model
 //                 waits for one; it is background.
 // Each entry is collapsed back into the provider-prefixed name format
-// the rest of the LLM dispatch path expects (e.g. "cerebras:qwen-3-235b",
+// the rest of the LLM dispatch path expects (e.g. "gemini:gemini-3.5-flash-lite",
 // "ollama:qwen3:4b", "claude-haiku-4-5-20251001").
 function _formatModelRef(sel) {
   if (!sel) return null;
@@ -58,7 +58,6 @@ function _formatModelRef(sel) {
   if (p === 'ollama' || p.startsWith('ollama@')) return `ollama:${sel.model}`;
   // Cloud providers — prefix is the provider name except for Anthropic
   // (claude-*) which the dispatcher recognises by model-id prefix.
-  if (p === 'cerebras') return `cerebras:${sel.model}`;
   if (p === 'groq')     return `groq:${sel.model}`;
   if (p === 'openai')   return `openai:${sel.model}`;
   if (p === 'gemini')   return `gemini:${sel.model}`;
@@ -87,7 +86,7 @@ const MAX_ATTEMPTS = 3;
 // rate-limiting starving the account — we abort the attempt after this many ms
 // and fall through to the next tier. Sized so a stall + one backup attempt still
 // fit inside the phone's 30s stream cap (a healthy Cerebras first token lands in
-// <1s). Applied to the streaming cloud attempts only, cerebras and gemini (see
+// <1s). Applied to the streaming cloud attempts only, which today is gemini (see
 // askAIStreamWithFallback): for the non-streaming backends the first `yield` is the COMPLETE answer and legitimately
 // takes longer than this window (CPU Ollama inference / SDK subprocess spin-up).
 const FIRST_TOKEN_TIMEOUT_MS = 7000;
@@ -423,14 +422,14 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
       }
     }
 
-    // First-token watchdog — cerebras (true streaming) attempts only. See the
+    // First-token watchdog — streaming cloud attempts only. See the
     // FIRST_TOKEN_TIMEOUT_MS comment: a 429 already fails over on its own (the
     // fetch rejects fast, before the watchdog fires), so this only rescues the
     // "200 then stall" case that used to hang the phone the full 30s.
     // Gemini streams too (generateContentStream), and its free tier stalls the same way under
     // load: gemini-3.1-flash-lite answered 503 after 2-8 s, then once sent nothing for 81 s
     // (2026-11-03, 9 PM ET).
-    const firstTokenWatchdog = /^(cerebras|gemini):/.test(String(model)) || (watchFirstToken && i < chain.length - 1);
+    const firstTokenWatchdog = /^gemini:/.test(String(model)) || (watchFirstToken && i < chain.length - 1);
     const firstTokenDeadline = Date.now() + firstTokenMs;
 
     let yieldedAny = false;

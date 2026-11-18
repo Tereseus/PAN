@@ -8,6 +8,7 @@ import { Router } from 'express';
 import { all, get } from '../db.js';
 import { runBenchmark, runBenchmarkWithVerification, BENCHMARK_SUITES, benchmarkLogPath } from '../benchmark.js';
 import { panNotify } from '../pan-notify.js';
+import { getConfiguredModel } from '../llm.js';
 import { appendFileSync } from 'fs';
 
 // Headless logging — mirror benchmark.js bmLog/bmErr so route handlers don't
@@ -41,10 +42,10 @@ benchmarkApiRouter.get('/benchmark/floors', async (req, res) => {
 });
 
 // POST /api/v1/ai/benchmark
-// Body: { suite: 'intuition', model: 'cerebras:qwen-3-235b' }
+// Body: { suite: 'intuition', model: 'ollama:gemma4:e2b' }   (model optional: ai_model)
 // Query: ?verify=1  — run with independent Verifier agent (Atlas v2 two-agent framework)
 benchmarkApiRouter.post('/benchmark', async (req, res) => {
-  const { suite = 'intuition', model = 'cerebras:qwen-3-235b' } = req.body || {};
+  const { suite = 'intuition', model = getConfiguredModel() } = req.body || {};
   const withVerification = req.query.verify === '1' || req.query.verify === 'true';
 
   if (!BENCHMARK_SUITES.includes(suite)) {
@@ -73,7 +74,7 @@ benchmarkApiRouter.post('/benchmark', async (req, res) => {
 // POST /api/v1/ai/benchmark/all
 // Runs all suites sequentially — long-running, returns when done
 benchmarkApiRouter.post('/benchmark/all', async (req, res) => {
-  const { model = 'cerebras:qwen-3-235b' } = req.body || {};
+  const { model = getConfiguredModel() } = req.body || {};
 
   try {
     bmLog(`[PAN Benchmark] Running all suites — model=${model}`);

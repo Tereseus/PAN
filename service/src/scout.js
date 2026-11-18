@@ -632,16 +632,15 @@ async function scanLocalApps() {
 }
 
 // ── Provider model discovery ─────────────────────────────────────────────────
-// Cerebras and Groq both expose OpenAI-compatible /v1/models endpoints. We
-// fetch the live list per provider and store the model IDs in
+// Groq exposes an OpenAI-compatible /v1/models endpoint and Gemini its own
+// shape. We fetch the live list per provider and store the model IDs in
 // provider_models. llm.js uses getKnownProviderModels(provider) to short-circuit
-// calls to retired models (e.g. when Cerebras renames qwen-3-235b-a22b-instruct-2507).
+// calls to retired models.
 //
-// Returns counts by provider. Failures per-provider are isolated — a Groq
-// key with no Cerebras key still scans Groq cleanly.
+// Returns counts by provider. Failures per-provider are isolated — a provider
+// with no key is skipped and the others still scan cleanly.
 
 const PROVIDER_ENDPOINTS = {
-  cerebras: 'https://api.cerebras.ai/v1/models',
   groq:     'https://api.groq.com/openai/v1/models',
   gemini:   'https://generativelanguage.googleapis.com/v1beta/models',
 };
@@ -709,11 +708,6 @@ async function _fetchProviderModels(provider, apiKey, timeoutMs = 8000) {
 // Returns { ok } on success, or { ok: false, status, unusable } where unusable
 // means the provider refused us outright rather than glitched.
 const PROVIDER_COMPLETION = {
-  cerebras: {
-    url:  () => 'https://api.cerebras.ai/v1/chat/completions',
-    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
-    body: (m) => JSON.stringify({ model: m, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
-  },
   groq: {
     url:  () => 'https://api.groq.com/openai/v1/chat/completions',
     headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
@@ -760,7 +754,6 @@ function _getProviderApiKey(provider) {
   // catch. getSecret() resolves env first, database second, so both layouts
   // work. secrets.js only imports db.js, so this adds no circular dependency.
   const keyMap = {
-    cerebras: 'cerebras_api_key',
     groq:     'groq_api_key',
     gemini:   'gemini_api_key',
   };
@@ -852,15 +845,11 @@ async function scanProviderModels() {
 // freshly-scanned live list and, if it's gone, raise a DEGRADED alert and
 // self-heal to a live model.
 //
-// Replacement preference — all confirmed live on Cerebras free tier as of
-// 2026-07: gpt-oss-120b (the current voice default), then zai-glm-4.7, then
-// gemma-4-31b. Falls back to any live model if none of those are present.
-// Replacement preference PER PROVIDER. This used to be a single Cerebras-only
-// list, which broke the moment reasoning_cloud moved to Gemini: a retired
-// Gemini model would have been "healed" by writing a Cerebras model id that
-// does not exist there. Ordered best-first; falls back to any live model.
+// Replacement preference PER PROVIDER. This used to be a single list for one
+// provider, which broke the moment reasoning_cloud moved to Gemini: a retired
+// Gemini model would have been "healed" by writing another provider's model id
+// that does not exist there. Ordered best-first; falls back to any live model.
 const REASONING_CLOUD_PREFERRED = {
-  cerebras: ['gpt-oss-120b', 'zai-glm-4.7', 'gemma-4-31b'],
   groq:     ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'gpt-oss-20b'],
   gemini:   ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-2.0-flash-lite'],
 };
@@ -920,7 +909,7 @@ async function checkReasoningCloudHealth() {
   const retired = sel.model;
   console.error(`[PAN Scout] DEGRADED: reasoning_cloud model "${provider}:${retired}" is not in ${provider}'s live model list — voice path will 404 until switched.`);
 
-  // Pick a live replacement, preferring gpt-oss-120b.
+  // Pick a live replacement, preferred ones first.
   let replacement = (REASONING_CLOUD_PREFERRED[provider] || []).find(m => live.has(m));
   if (!replacement) replacement = [...live].sort()[0] || null; // deterministic last resort
 

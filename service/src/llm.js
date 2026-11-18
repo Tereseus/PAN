@@ -1,5 +1,5 @@
 // PAN LLM Interface — unified entry point for all AI providers
-// Supports Anthropic, Gemini, Cerebras, Ollama, and LM Studio.
+// Supports Anthropic, Gemini, Ollama, and LM Studio.
 // Routes based on Settings > AI & Usage.
 
 import { insert, get, run, getOllamaUrl, getConfiguredOllamaUrl, getModelForPurpose, pickHealthyOllama, reportOllamaLatency, isOllamaDegraded } from './db.js';
@@ -11,7 +11,6 @@ import { anonymizeForAI } from './anonymize.js';
 import { getSecret } from './secrets.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-const CEREBRAS_URL  = 'https://api.cerebras.ai/v1/chat/completions';
 const GROQ_URL      = 'https://api.groq.com/openai/v1/chat/completions';
 const OPENAI_URL    = 'https://api.openai.com/v1/chat/completions';
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
@@ -36,13 +35,6 @@ const MODEL_PRICING = {
   // Gemini (via CLI)
   'cli:gemini-1.5-pro':          { input: 0, output: 0 },
   
-  // Cerebras — cents per token (0.000030 = $0.30/1M, 0.000060 = $0.60/1M)
-  // Verify against https://cloud.cerebras.ai — these are best estimates, update if wrong
-  'cerebras:llama3.1-8b':        { input: 0.000010,  output: 0.000010  }, // ~$0.10/1M
-  'cerebras:gpt-oss-120b':       { input: 0.000060,  output: 0.000060  }, // ~$0.60/1M
-  'cerebras:qwen-3-235b':        { input: 0.000030,  output: 0.000060  }, // ~$0.30 in / $0.60 out per 1M
-  'cerebras:zai-glm-4.7':        { input: 0.000060,  output: 0.000060  }, // ~$0.60/1M
-
   // Groq (free tier available)
   'groq:gpt-oss-20b':            { input: 0.00013,  output: 0.00013  },
   'groq:llama-3.3-70b':          { input: 0.00059,  output: 0.00079  },
@@ -55,13 +47,6 @@ const MODEL_PRICING = {
 
   // Generic custom endpoint (OpenAI-compatible)
   'custom:*':                    { input: 0,        output: 0        },
-};
-
-const CEREBRAS_MODELS = {
-  'cerebras:llama3.1-8b':    'llama3.1-8b',
-  'cerebras:gpt-oss-120b':   'gpt-oss-120b',
-  'cerebras:qwen-3-235b':    'qwen-3-235b-a22b-instruct-2507',
-  'cerebras:zai-glm-4.7':    'zai-glm-4.7',
 };
 
 // --- Helper Functions ---
@@ -104,7 +89,6 @@ function getApiKey(provider) {
     const keyMap = {
       anthropic: 'anthropic_api_key',
       gemini:    'gemini_api_key',
-      cerebras:  'cerebras_api_key',
       groq:      'groq_api_key',
       openai:    'openai_api_key',
     };
@@ -502,85 +486,9 @@ function _classifyModel(modelId) {
   return { tier: 'chat', sizeB };
 }
 
-// Models blocked by the user's current billing tier — per-provider.
-//
-// Populated when a provider returns HTTP 402 ("payment required"). We
-// remember them so the substitute picker doesn't keep choosing the same
-// paid-tier model over and over after the first 402.
-//
-// PERSISTENCE (added with task #60 fix): the in-memory Map used to be cleared
-// on every Craft swap, which meant every fresh Craft re-discovered the same
-// 402s on its first call to each model — typically 3-5 round-trips through
-// the retry chain per LLM invocation for the first 60 seconds. With a paid
-// tier locked out this was free taxes on every voice prompt, every Intuition
-// classify, every Dream/Evolution/Orchestrator cycle. Now we mirror to the
-// `settings` table so subsequent Crafts skip them on first try.
-//
-// When the user pays the bill: clear the row via DELETE FROM settings WHERE
-// key = 'llm_billing_blocked', then restart Craft (or call
-// `_clearBillingBlocked()` via dev MCP).
-const _billingBlockedModels = new Map(); // provider -> Set<modelId>
-let _billingBlockedHydrated = false;
-
-function _hydrateBillingBlockedFromDb() {
-  if (_billingBlockedHydrated) return;
-  _billingBlockedHydrated = true;
-  try {
-    const row = get("SELECT value FROM settings WHERE key = 'llm_billing_blocked'");
-    if (!row?.value) return;
-    const parsed = JSON.parse(row.value);
-    if (parsed && typeof parsed === 'object') {
-      for (const [provider, ids] of Object.entries(parsed)) {
-        if (Array.isArray(ids) && ids.length) {
-          _billingBlockedModels.set(provider, new Set(ids));
-        }
-      }
-      const totalCount = Array.from(_billingBlockedModels.values()).reduce((a, s) => a + s.size, 0);
-      if (totalCount) console.log(`[LLM] Hydrated ${totalCount} billing-blocked model(s) from settings`);
-    }
-  } catch {}
-}
-
-function _persistBillingBlockedToDb() {
-  try {
-    const obj = {};
-    for (const [provider, set] of _billingBlockedModels.entries()) {
-      if (set.size) obj[provider] = Array.from(set);
-    }
-    const json = JSON.stringify(obj);
-    // Upsert into settings — works on every PAN install (settings table is
-    // part of the base schema).
-    run(`INSERT INTO settings (key, value) VALUES ('llm_billing_blocked', :v)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      { ':v': json });
-  } catch {} // settings write is best-effort; in-memory state always wins
-}
-
-function _markBillingBlocked(provider, modelId) {
-  _hydrateBillingBlockedFromDb();
-  if (!_billingBlockedModels.has(provider)) _billingBlockedModels.set(provider, new Set());
-  const set = _billingBlockedModels.get(provider);
-  if (set.has(modelId)) return; // already marked + persisted
-  set.add(modelId);
-  _persistBillingBlockedToDb();
-}
-function _isBillingBlocked(provider, modelId) {
-  _hydrateBillingBlockedFromDb();
-  return _billingBlockedModels.get(provider)?.has(modelId) || false;
-}
-
-// Exposed for ops / dev use — call after the user pays their bill.
-export function _clearBillingBlocked(provider = null) {
-  _hydrateBillingBlockedFromDb();
-  if (provider) _billingBlockedModels.delete(provider);
-  else _billingBlockedModels.clear();
-  _persistBillingBlockedToDb();
-}
-
 // Pick the most-similar live model when no exact / prefix match was found.
 // Order:
-//   1. Same tier as the requested model, closest by parameter count —
-//      excluding any model the provider has already 402'd this Craft session.
+//   1. Same tier as the requested model, closest by parameter count.
 //   2. If the request was 'reasoning' but nothing in the live list is
 //      classified that way, fall back to the LARGEST 'chat' model (still
 //      better than a 404).
@@ -591,9 +499,7 @@ function _findSubstitute(provider, modelId, knownSet) {
   const target = _classifyModel(modelId);
   if (target.tier === 'embedding' || target.tier === 'vision') return null;
 
-  const classified = [...knownSet]
-    .filter(id => !_isBillingBlocked(provider, id))
-    .map(id => ({ id, ...(_classifyModel(id)) }));
+  const classified = [...knownSet].map(id => ({ id, ...(_classifyModel(id)) }));
   const sameTier = classified.filter(c => c.tier === target.tier);
 
   if (sameTier.length > 0) {
@@ -620,22 +526,18 @@ function _findSubstitute(provider, modelId, knownSet) {
 
 // Resolve & validate a model ID against Scout's live source of truth.
 //
-// Scout's scanProviderModels() runs after Craft boot + every 6h, hitting
-// Cerebras /v1/models and Groq /v1/models, and writes the live list to
-// provider_models. llm.js consults that table on every provider call to
-// avoid hammering Intuition / Orchestrator / Dream / voice-router with
-// HTTP round-trips + 404 log lines every cycle when a provider retires a
-// model (e.g. qwen-3-235b-a22b-instruct-2507 → 404 model_not_found).
+// Scout's scanProviderModels() runs after Craft boot + every 6h, asks each
+// cloud provider for its model list, and writes it to provider_models. llm.js
+// consults that table before a Groq call so a retired model does not cost an
+// HTTP round-trip and a 404 log line on every cycle.
 //
 // Resolution order:
 //   1. Exact match in live list → use as-is.
-//   2. Prefix family match (qwen-3-235b-…-2507 → qwen-3-235b-…-2509) →
+//   2. Prefix family match (name-…-2507 → name-…-2509) →
 //      use the longest matching candidate (most-specific / likely newest).
 //   3. Smart substitution by tier (see _findSubstitute): pick the closest
-//      live model in the same class. So when Cerebras retires the whole
-//      qwen-3-235b family, the resolver auto-routes to gpt-oss-120b (or
-//      whatever the largest reasoning model is in the live list) rather
-//      than throwing and falling through to claude-haiku.
+//      live model in the same class. A list can still hold models the account
+//      may not use: this step once picked an archived one and every call 404'd.
 //   4. No match found → throw, fallback chain takes over.
 //
 // Permissive on cold boots: if Scout hasn't populated the table yet
@@ -649,19 +551,12 @@ async function _resolveModelLive(provider, modelId) {
   try {
     const known = _scoutModForValidation.getKnownProviderModels(provider);
     if (!known) return { live: modelId, reason: null }; // cold boot, trust caller
-    // Exact match: model is live AND not billing-blocked → use as-is.
-    // Pre-emptive billing-blocked check: skip the 402 round-trip if we already
-    // know the user can't access this model. Previously the resolver returned
-    // the model as-is here, the API call fired, returned 402, marked the model,
-    // then the next call substituted — which meant every cold-boot Craft paid
-    // 3-5 retry cycles before settling. Now the persisted state (see
-    // _hydrateBillingBlockedFromDb) carries forward and the very first call
-    // routes to a live, accessible substitute.
-    if (known.has(modelId) && !_isBillingBlocked(provider, modelId)) {
+    // Exact match: the model is live → use as-is.
+    if (known.has(modelId)) {
       return { live: modelId, reason: null };
     }
 
-    // (2) Prefix family match — handles "qwen-3-235b-…-2507" → "qwen-3-235b-…-2509"
+    // (2) Prefix family match — handles "name-…-2507" → "name-…-2509"
     const baseFamily = modelId.replace(/-\d{4}$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
     const candidates = [...known].filter(id => id.startsWith(baseFamily));
     if (candidates.length > 0) {
@@ -670,231 +565,20 @@ async function _resolveModelLive(provider, modelId) {
       return { live: candidates[0], reason: null };
     }
 
-    // (3) Smart tier-based substitution (filters out billing-blocked models)
+    // (3) Smart tier-based substitution
     const sub = _findSubstitute(provider, modelId, known);
     if (sub) {
       console.warn(`[LLM] ${provider} model "${modelId}" retired; substituting "${sub}" (same tier classification)`);
       return { live: sub, reason: null };
     }
 
-    return { live: null, reason: `${provider} model "${modelId}" not in live list (no tier substitute available — billing tier may be limiting choices)` };
+    return { live: null, reason: `${provider} model "${modelId}" not in live list (no tier substitute available)` };
   } catch { return { live: modelId, reason: null }; }
-}
-
-async function callCerebras(prompt, messages, cerebrasModel, maxTokens, signal) {
-  const apiKey = getApiKey('cerebras');
-  if (!apiKey) throw new Error('No Cerebras API key found.');
-
-  const mappedId = CEREBRAS_MODELS[cerebrasModel] || cerebrasModel.replace('cerebras:', '');
-
-  // Resolve against Scout's live /v1/models list — auto-route to the
-  // current name if the static map is stale, or fast-fail if no match.
-  const { live: modelId, reason } = await _resolveModelLive('cerebras', mappedId);
-  if (reason) throw new Error(`Cerebras 404 (pre-check): ${reason}`);
-
-  const oaiMessages = messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n') }));
-
-  // Thinking-model adaptation. Both current free Cerebras models — gpt-oss-120b
-  // and zai-glm-4.7 — are reasoning/thinking models that consume part of the
-  // max_completion_tokens budget on internal chain-of-thought BEFORE emitting
-  // user-visible content. With the router's default 300-token cap the thinking
-  // phase routinely ate the whole budget, leaving empty content (`message.content
-  // = ""`) and the chain rejecting the empty reply as failure.
-  //   - For gpt-oss: pass `reasoning_effort: 'low'` so the model doesn't burn
-  //     tokens on deep CoT for what's usually a one-paragraph response.
-  //   - For all reasoning Cerebras models: keep a floor on max_completion_tokens
-  //     so even a heavy thinking pass leaves headroom for actual output.
-  // Both are no-ops on non-thinking Cerebras models (the API ignores fields it
-  // doesn't recognise) so this is safe to apply unconditionally.
-  // Floor max_completion_tokens by model. zai-glm-4.7 burns ~150 tokens of
-  // verbose reasoning even on trivial prompts; gpt-oss with reasoning_effort
-  // 'low' uses ~10. So zai-glm needs a much bigger floor to leave room for
-  // actual content after the reasoning tax. 1000 is the empirical sweet
-  // spot from a series of router-style prompts.
-  const tokenFloor = modelId.startsWith('zai-glm-') ? 1000
-                   : modelId.startsWith('gpt-oss-')  ? 600
-                   : maxTokens;
-  const body = { model: modelId, messages: oaiMessages, max_completion_tokens: Math.max(maxTokens, tokenFloor), temperature: 0.7, stream: false };
-  if (modelId.startsWith('gpt-oss-')) body.reasoning_effort = 'low';
-
-  const response = await fetch(CEREBRAS_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  if (!response.ok) {
-    const errText = await Promise.race([response.text(), new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000))]).catch(() => 'error body unreadable');
-    // 404 — model retired. Kick a Scout refresh so the live-list table
-    // catches up before the next caller's resolver runs.
-    if (response.status === 404 && /model_not_found|does not exist/.test(errText)) {
-      console.warn(`[LLM] Cerebras model ${modelId} returned 404 — triggering Scout refresh`);
-      import('./scout.js')
-        .then(m => m.scanProviderModels?.().catch(() => {}))
-        .catch(() => {});
-    }
-    // 402 — payment required (model is on a paid tier the user isn't on).
-    // Remember this so the resolver's tier-based substitution stops picking
-    // it on subsequent calls. The substitution will fall through to the
-    // next-closest live model (e.g. a free-tier llama variant).
-    if (response.status === 402 || /payment_required|payment required|billing/i.test(errText)) {
-      _markBillingBlocked('cerebras', modelId);
-      console.warn(`[LLM] Cerebras model ${modelId} returned 402 (paid tier) — marking billing-blocked, future calls will substitute elsewhere`);
-    }
-    throw new Error(`Cerebras ${response.status}: ${errText}`);
-  }
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
-  // Thinking-model empty-content guard. Both gpt-oss and especially zai-glm
-  // can return a successful 200 with `content: ""` when the reasoning phase
-  // consumed the entire max_completion_tokens budget (zai-glm has been
-  // observed burning 157 reasoning tokens on a trivial "say hi" prompt).
-  // From PAN's perspective an empty reply is indistinguishable from a 5xx
-  // — the router's JSON.parse('') throws "Unexpected end of JSON input"
-  // and the user sees "PAN is having trouble thinking right now" even
-  // though the network round-trip succeeded.
-  //
-  // Treat empty content as a retriable failure so askAIWithFallback's
-  // chain advances to the next backend. Logs the usage so we can see in
-  // ai_fallback_attempt events that the model exhausted budget on
-  // reasoning. classifyError in llm-fallback already buckets generic
-  // throws as retriable=true; this just keeps the error message explicit.
-  if (!content) {
-    const reasoning = data.usage?.completion_tokens_details?.reasoning_tokens ?? null;
-    const total    = data.usage?.completion_tokens ?? null;
-    const err = new Error(
-      `Cerebras ${modelId} returned empty content` +
-      (reasoning !== null ? ` (${reasoning}/${total} completion tokens spent on reasoning — raise max_completion_tokens or use reasoning_effort:'low')` : '')
-    );
-    err.code = 'empty_content';
-    throw err;
-  }
-  return {
-    text: content,
-    usage: { input_tokens: data.usage?.prompt_tokens || 0, output_tokens: data.usage?.completion_tokens || 0 },
-  };
-}
-
-// Streaming variant — yields raw text chunks from Cerebras SSE.
-// usageOut: optional { input_tokens, output_tokens } object that gets populated
-// from the final SSE frame (Cerebras emits usage when stream_options.include_usage=true).
-async function* callCerebrasStream(messages, cerebrasModel, maxTokens, signal, usageOut = null) {
-  const apiKey = getApiKey('cerebras');
-  if (!apiKey) throw new Error('No Cerebras API key found.');
-
-  const mappedId = CEREBRAS_MODELS[cerebrasModel] || cerebrasModel.replace('cerebras:', '');
-  // Streaming uses the same Scout-backed resolver as non-streaming — voice
-  // routing hits Cerebras stream every utterance, so a dead model would
-  // otherwise spam 404s into the SSE response.
-  const { live: modelId, reason } = await _resolveModelLive('cerebras', mappedId);
-  if (reason) throw new Error(`Cerebras 404 (pre-check): ${reason}`);
-  const oaiMessages = messages.map(m => ({
-    role: m.role,
-    content: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
-  }));
-
-  // Mirror the thinking-model adaptations from the non-streaming path so
-  // streamed router calls don't starve on token budget either. Per-model
-  // floor: zai-glm 1000 (verbose CoT), gpt-oss 600 (with reasoning_effort:'low').
-  const streamTokenFloor = modelId.startsWith('zai-glm-') ? 1000
-                         : modelId.startsWith('gpt-oss-')  ? 600
-                         : maxTokens;
-  const streamBody = {
-    model: modelId, messages: oaiMessages,
-    max_completion_tokens: Math.max(maxTokens, streamTokenFloor),
-    temperature: 0.7, stream: true,
-    stream_options: { include_usage: true }, // #465: surface tokens so we can logUsage
-  };
-  if (modelId.startsWith('gpt-oss-')) streamBody.reasoning_effort = 'low';
-
-  const response = await fetch(CEREBRAS_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify(streamBody),
-    signal,
-  });
-
-  if (!response.ok) {
-    const errText = await response.text().catch(() => 'error body unreadable');
-    // Same 402 detection as the non-streaming path — mark the model
-    // billing-blocked so the next resolver call picks a free-tier sub.
-    if (response.status === 402 || /payment_required|payment required|billing/i.test(errText)) {
-      _markBillingBlocked('cerebras', modelId);
-      console.warn(`[LLM] Cerebras stream model ${modelId} returned 402 — marking billing-blocked`);
-    }
-    if (response.status === 404 && /model_not_found|does not exist/.test(errText)) {
-      import('./scout.js').then(m => m.scanProviderModels?.().catch(() => {})).catch(() => {});
-    }
-    throw new Error(`Cerebras stream ${response.status}: ${errText}`);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  let chunksYielded = 0; // empty-stream guard (see end of finally)
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') {
-          // Mirror the non-streaming empty-content guard. zai-glm-4.7 stream
-          // can return 0 content chunks when the entire max_completion_tokens
-          // budget is consumed by verbose reasoning. The fallback chain saw
-          // it as "stream finished cleanly" and never advanced to the next
-          // backend — phone call 2026-06-05 09:32:33 hit this exact path
-          // (3,108ms for an empty stream, then chain marched on to a dead
-          // Ollama). Throw so askAIStreamWithFallback's catch recognises it
-          // as retriable (classifyError already buckets unknown throws to
-          // retriable=true).
-          if (chunksYielded === 0) {
-            const reasoning = usageOut?.completion_tokens_details?.reasoning_tokens ?? null;
-            const total    = usageOut?.output_tokens ?? null;
-            const err = new Error(
-              `Cerebras stream ${modelId} returned empty content` +
-              (reasoning !== null ? ` (${reasoning}/${total} completion tokens went to reasoning)` : '')
-            );
-            err.code = 'empty_stream';
-            throw err;
-          }
-          return;
-        }
-        try {
-          const parsed = JSON.parse(data);
-          const chunk = parsed.choices?.[0]?.delta?.content;
-          if (chunk) { yield chunk; chunksYielded++; }
-          if (usageOut && parsed.usage) {
-            usageOut.input_tokens = parsed.usage.prompt_tokens || 0;
-            usageOut.output_tokens = parsed.usage.completion_tokens || 0;
-            if (parsed.usage.completion_tokens_details) {
-              usageOut.completion_tokens_details = parsed.usage.completion_tokens_details;
-            }
-          }
-        } catch {}
-      }
-    }
-    // Stream ended without [DONE] AND we yielded nothing → same empty-content
-    // path. Network glitch or upstream bug; treat as retriable so the chain
-    // advances rather than returning silently to the caller.
-    if (chunksYielded === 0) {
-      const err = new Error(`Cerebras stream ${modelId} closed without content`);
-      err.code = 'empty_stream';
-      throw err;
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }
 
 // Public streaming API — yields text chunks. Falls back to single yield for non-streaming models.
 // #986 batch 2: accept an external `signal` (AbortSignal) so callers (router /chat/stream,
-// /cancel endpoint) can abort the in-flight Cerebras fetch mid-stream. The internal
+// /cancel endpoint) can abort the in-flight fetch mid-stream. The internal
 // timeout controller still fires, and either abort source short-circuits the fetch.
 export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxTokens = 300, caller = 'unknown', _skipAnonymize = false, source, device_id, signal: externalSignal = null, readerOpts, temperature = null } = {}) {
   const prompt = _skipAnonymize ? rawPrompt : anonymizeForAI(rawPrompt);
@@ -906,7 +590,7 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
   // Wire external abort: if the caller's signal fires (user said "cancel", new
   // utterance, route swap), forward to the internal controller so the underlying
   // fetch unwinds and the generator's finally{} flushes logUsage with whatever
-  // tokens Cerebras had sent before the cut.
+  // tokens the model had sent before the cut.
   let externalAbortHandler = null;
   if (externalSignal) {
     if (externalSignal.aborted) controller.abort();
@@ -919,26 +603,21 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
   // when the consumer break-s out of `for await` early (router does this once it
   // has parsed enough JSON). Otherwise the generator's return() short-circuits
   // logUsage and the row never lands in ai_usage.
-  let cerebrasUsage = null;
+  let streamUsage = null;
   try {
-    if (model.startsWith('cerebras:')) {
-      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
-      for await (const chunk of callCerebrasStream([{ role: 'user', content: prompt }], model, maxTokens, controller.signal, cerebrasUsage)) {
-        yield chunk;
-      }
-    } else if (model.startsWith('gemini:')) {
-      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
-      for await (const chunk of callGeminiStream(prompt, model, maxTokens, controller.signal, cerebrasUsage)) {
+    if (model.startsWith('gemini:')) {
+      streamUsage = { input_tokens: 0, output_tokens: 0 };
+      for await (const chunk of callGeminiStream(prompt, model, maxTokens, controller.signal, streamUsage)) {
         yield chunk;
       }
     } else if (model.startsWith('ollama:')) {
-      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
-      for await (const chunk of callOllamaStream(prompt, model.replace('ollama:', ''), maxTokens, controller.signal, cerebrasUsage, temperature)) {
+      streamUsage = { input_tokens: 0, output_tokens: 0 };
+      for await (const chunk of callOllamaStream(prompt, model.replace('ollama:', ''), maxTokens, controller.signal, streamUsage, temperature)) {
         yield chunk;
       }
     } else if (model.startsWith('reader:')) {
-      cerebrasUsage = { input_tokens: 0, output_tokens: 0 };
-      for await (const chunk of callReaderStream(prompt, model.replace('reader:', ''), maxTokens, controller.signal, cerebrasUsage, readerOpts)) {
+      streamUsage = { input_tokens: 0, output_tokens: 0 };
+      for await (const chunk of callReaderStream(prompt, model.replace('reader:', ''), maxTokens, controller.signal, streamUsage, readerOpts)) {
         yield chunk;
       }
     } else {
@@ -951,11 +630,11 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
     if (externalSignal && externalAbortHandler) {
       try { externalSignal.removeEventListener('abort', externalAbortHandler); } catch {}
     }
-    if (cerebrasUsage) {
+    if (streamUsage) {
       // Always log — even on early break (router) or abort (timeout). usage tokens
-      // may be 0 if cerebras hadn't sent the final SSE frame yet, which is fine —
+      // may be 0 if the final frame had not arrived yet, which is fine —
       // the row still gets source / device_id tagged for routing telemetry.
-      logUsage(caller, model, cerebrasUsage, prompt.slice(0, 100), { source, device_id, started_at: startedAt });
+      logUsage(caller, model, streamUsage, prompt.slice(0, 100), { source, device_id, started_at: startedAt });
     }
   }
 }
@@ -1019,7 +698,6 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
   // Determine Provider
   let provider = 'sdk';
   if      (model.startsWith('gemini:'))    provider = 'gemini';
-  else if (model.startsWith('cerebras:')) provider = 'cerebras';
   else if (model.startsWith('groq:'))     provider = 'groq';
   else if (model.startsWith('openai:'))   provider = 'openai';
   else if (model.startsWith('ollama:'))   provider = 'ollama';
@@ -1049,15 +727,12 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
     let result;
     if (provider === 'gemini') {
       result = await callGemini(prompt, model, maxTokens, controller.signal);
-    } else if (provider === 'cerebras') {
-      result = await callCerebras(prompt, [{ role: 'user', content: prompt }], model, maxTokens, controller.signal);
     } else if (provider === 'groq') {
       const key = getApiKey('groq');
       if (!key) throw new Error('No Groq API key in Settings. Add groq_api_key.');
       const groqRequested = model.replace('groq:', '');
-      // Same Scout-backed resolver as Cerebras — auto-route to current
-      // model name when ours has retired, fast-fail when there's no
-      // prefix family match.
+      // Scout-backed resolver: auto-route to the current model name when ours
+      // has retired, fast-fail when there's no prefix family match.
       const { live: groqModelId, reason } = await _resolveModelLive('groq', groqRequested);
       if (reason) throw new Error(`Groq 404 (pre-check): ${reason}`);
       result = await callOpenAIEndpoint(
@@ -1398,4 +1073,4 @@ export function logUsage(caller, model, usage, promptPreview, opts = {}) {
   }
 }
 
-export { getConfiguredModel, getCustomModelConfig, getModelForCaller, MODEL_PRICING, CEREBRAS_MODELS };
+export { getConfiguredModel, getCustomModelConfig, getModelForCaller, MODEL_PRICING };
