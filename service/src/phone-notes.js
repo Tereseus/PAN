@@ -126,6 +126,19 @@ export function takeNotesFor({ key = '', linkDevice = '', person = null } = {}, 
 }
 
 /**
+ * Whether something for the owner that has waited since [at] goes to this device of his right
+ * now: the same rule as his notes (pinned device, else the one he last spoke on, else any after
+ * a wait). For what waits somewhere other than this queue (person-messages.js).
+ */
+export function ownerTakesHere({ key = '', linkDevice = '' } = {}, at, now = Date.now()) {
+  const keys = [String(key || '').toLowerCase(), String(linkDevice || '').toLowerCase()].filter(Boolean);
+  return ownerDeviceTakes({ at: Number(at) || now, to_device: null }, { keys }, now);
+}
+
+/** The next note id: one rising series for everything a device is handed, whatever kept it. */
+export function nextNoteId() { return ++seq; }
+
+/**
  * For the owner's "notes come to this device" control: the devices of his that have asked for
  * notes lately (by the name each sends), which one is pinned, and which he last talked on.
  */

@@ -54,6 +54,11 @@ export const PERSON_ALLOW = Object.freeze([
   'POST /api/v1/reading',
   'POST /api/v1/vision',
   'GET /api/v1/slack/pending',     // their own notes only (phone-notes.js)
+  // The People tab: the others on this hub, their own conversations, a typed message
+  // (person-messages.js). Each handler keeps the caller to what they are part of.
+  'GET /api/v1/people',
+  'GET /api/v1/people/messages',
+  'POST /api/v1/people/messages',
   // A person's computer is that person's client: its thread relay reports that computer's
   // threads and takes the jobs for them. routes/threads.js holds each call to the hosts the
   // calling device itself holds, so it never sees a thread or a job of anyone else's.

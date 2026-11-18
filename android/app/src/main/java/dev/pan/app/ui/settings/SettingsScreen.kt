@@ -323,10 +323,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            PeopleSection(viewModel, snackbarHostState)
-
-            HorizontalDivider()
-
             NotesDeviceSection(viewModel, snackbarHostState)
 
             // Privacy

@@ -591,6 +591,38 @@ def main():
         s, done, said = turn("Hey PAN, tell Zora hello.", OWNER, extra={"bench": True}, headers={"x-device-id": "suite-owner-phone"})
         check("messages", "a test turn parses and sends nothing", "nothing sent" in str((done or {}).get("response")) and pending(zora["device"])[1] == [], done)
 
+        # The People tab: each of the two can open their conversation, and nobody else can.
+        def row(j_, uid):
+            return next((p for p in (j_ or {}).get("people", []) if p.get("id") == uid), {})
+        s, j = call("GET", "/api/v1/people", device=zora["device"])
+        check("messages", "a person's device lists the others on the hub and what is new for her",
+              s == 200 and j.get("me", {}).get("id") == zora["id"] and j.get("me", {}).get("owner") is False and row(j, 1).get("unread") == 2
+              and row(j, quill["id"]).get("unread") == 0 and row(j, quill["id"]).get("last") is None and not row(j, zora["id"]), (s, j))
+        s, j = call("GET", "/api/v1/people/messages?with=1", device=zora["device"])
+        talk = [(m.get("from_me"), m.get("body")) for m in j.get("messages", [])]
+        check("messages", "her conversation with the owner, both sides, oldest first",
+              s == 200 and talk[:2] == [(False, "the bus leaves at eight."), (True, "I am on my way.")] and len(talk) == 3 and talk[2][0] is False, (s, talk))
+        s, j = call("GET", "/api/v1/people", device=zora["device"])
+        check("messages", "opening it marks it as seen", row(j, 1).get("unread") == 0 and j.get("unread") == 0, j)
+        s, j = call("GET", "/api/v1/people/messages?with=%s" % quill["id"], device=zora["device"])
+        check("messages", "the child's conversation with the owner is not hers to open", s == 200 and j.get("messages") == [], (s, j))
+        s, j = call("GET", "/api/v1/people/messages?with=%s" % zora["id"], device=quill["device"])
+        check("messages", "nor is hers the child's", s == 200 and j.get("messages") == [], (s, j))
+        pending(OWNER, PHONE)
+        s, j = call("POST", "/api/v1/people/messages", {"to": 1, "body": "See you at six."}, device=zora["device"])
+        got = {"his": pending(OWNER, PHONE), "the child's": pending(quill["device"])}
+        check("messages", "a typed message is said on the owner's device and nobody else's",
+              s == 200 and j.get("id") and got["his"] == (200, ["Zora says: See you at six."]) and got["the child's"][1] == [], (s, j, got))
+        s, j = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)
+        check("messages", "the owner's list: who wrote, and how many he has not opened",
+              s == 200 and j.get("me", {}).get("owner") is True and row(j, zora["id"]).get("unread") == 2 and row(j, quill["id"]).get("unread") == 1
+              and row(j, zora["id"]).get("last", {}).get("body") == "See you at six.", (s, j))
+        tries = {"to nobody": call("POST", "/api/v1/people/messages", {"to": 99999, "body": "hello"}, device=zora["device"])[0],
+                 "to herself": call("POST", "/api/v1/people/messages", {"to": zora["id"], "body": "hello"}, device=zora["device"])[0],
+                 "with nothing in it": call("POST", "/api/v1/people/messages", {"to": 1, "body": "   "}, device=zora["device"])[0],
+                 "a conversation with nobody": call("GET", "/api/v1/people/messages?with=99999", device=zora["device"])[0]}
+        check("messages", "a message to nobody, to oneself or with nothing in it is refused", tries == {"to nobody": 404, "to herself": 404, "with nothing in it": 400, "a conversation with nobody": 404}, tries)
+
         # Removing the computer takes its threads with it.
         s, j = call("DELETE", "/api/v1/link/devices/%s" % quill["device"], device=OWNER)
         s2, reg = call("GET", "/api/v1/threads", device=OWNER)

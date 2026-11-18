@@ -1154,6 +1154,8 @@ class PanForegroundService : Service() {
                             val say = note.body?.trim().orEmpty()
                             if (say.isNotEmpty()) mainHandler.post { panSpeak(say) }
                             showAlertNotification(note)
+                            // A message from someone on this ΠAN: the People tab shows it at once.
+                            if (note.data?.get("kind") == "message") dev.pan.app.ui.people.PeopleSignal.bump()
                         } else {
                             showAlertNotification(note)
                         }

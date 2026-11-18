@@ -17,6 +17,7 @@ import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
+import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere } from '../person-messages.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
 
@@ -940,7 +941,43 @@ router.post('/notify/inbound', (req, res) => {
 router.get('/slack/pending', (req, res) => {
   const person = req.user?.person ? req.user : null;
   const key = person ? '' : String(req.headers['x-device-id'] || req.query.device_id || '');
-  res.json({ ok: true, notifications: takeNotesFor({ key, linkDevice: req.panLinkDevice?.id || '', person }) });
+  const dev = { key, linkDevice: req.panLinkDevice?.id || '', person };
+  // Notes first: it is what records that this device is asking. Then the messages from other
+  // people on this hub that wait for its person (person-messages.js keeps those in the database).
+  const notifications = takeNotesFor(dev);
+  try { notifications.push(...takeMessagesFor(dev)); } catch (e) { console.warn('[/slack/pending] messages:', e.message); }
+  res.json({ ok: true, notifications });
+});
+
+// The People tab (person-messages.js): the other people on this hub with the newest message
+// from each, one conversation, and a typed message. Each call is held to the caller: the owner
+// on his devices, a person on theirs (who that is comes from PAN Link's key). Nobody opens a
+// conversation they are not in, the owner included.
+const callerId = (req) => (req.user?.person ? Number(req.user.id) : 1);
+router.get('/people', (req, res) => {
+  const me = callerId(req);
+  const person = req.user?.person ? req.user : null;
+  const self = peopleHere().find((p) => p.id === me);
+  const canSend = !person || may(person, 'messages');
+  const people = canSend ? peopleFor(me) : [];
+  res.json({ ok: true, me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person },
+    can_send: canSend, people, unread: people.reduce((n, p) => n + p.unread, 0) });
+});
+router.get('/people/messages', (req, res) => {
+  const person = req.user?.person ? req.user : null;
+  if (person && !may(person, 'messages')) return res.status(403).json({ ok: false, error: refusal('messages') });
+  const talk = conversation(callerId(req), Number(req.query.with), { before: Number(req.query.before) || 0 });
+  if (!talk) return res.status(404).json({ ok: false, error: 'nobody by that id on this hub' });
+  res.json({ ok: true, ...talk });
+});
+router.post('/people/messages', (req, res) => {
+  const person = req.user?.person ? req.user : null;
+  if (person && !may(person, 'messages')) return res.status(403).json({ ok: false, error: refusal('messages') });
+  const sent = sendMessage({ from: person, to: { id: Number(req.body?.to) }, kind: 'says', body: req.body?.body, how: 'typed' });
+  if (!sent.ok) {
+    return res.status(sent.reason === 'too_many' ? 429 : sent.reason === 'nobody' ? 404 : 400).json({ ok: false, error: sent.reason });
+  }
+  res.json({ ok: true, id: sent.id, reachable: sent.reachable });
 });
 // Which of the owner's devices his notes go to (phone-notes.js). Not open to a person's device.
 router.get('/notify/devices', (req, res) => {

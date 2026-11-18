@@ -15,16 +15,41 @@
 //   - A person needs the `messages` limit (people.js). The owner always may.
 //   - One sender, six messages a minute.
 //
-// Kept in the notes queue, which is in memory: a message waits up to twelve hours for the
-// other person's device, and a Craft swap in that time loses it.
+// Kept in the hub's own database (person_messages), so a restart loses nothing. Two things
+// happen to a message, and they are separate:
+//   - It is handed to a device of the person it is for, which says it and shows it. A device
+//     asks for what waits every few seconds; a message waits twelve hours to be said, after
+//     that it is too old to read out and only sits in the conversation.
+//   - It stays in the conversation between the two people (the app's People tab), marked new
+//     until that person opens it. Only those two people can open it.
 
-import { get, all } from './db.js';
-import { addNote, maySpeakNow, userAsking } from './phone-notes.js';
+import { get, all, run } from './db.js';
+import { maySpeakNow, userAsking, ownerTakesHere, nextNoteId } from './phone-notes.js';
 import { may } from './people.js';
 
 const OWNER_ID = 1;
 const KEEP_MS = 12 * 3600_000;
 const MAX_BODY = 500;
+const PAGE = 60;
+
+let schemaReady = false;
+export function ensureMessagesSchema() {
+  if (schemaReady) return;
+  run(`CREATE TABLE IF NOT EXISTS person_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_user INTEGER NOT NULL,
+    to_user INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'says',
+    body TEXT NOT NULL,
+    how TEXT NOT NULL DEFAULT 'voice',
+    created_at INTEGER NOT NULL,
+    delivered_at INTEGER,
+    read_at INTEGER
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS idx_person_messages_to ON person_messages (to_user, delivered_at)`);
+  run(`CREATE INDEX IF NOT EXISTS idx_person_messages_pair ON person_messages (from_user, to_user, id)`);
+  schemaReady = true;
+}
 
 const firstWord = (name) => String(name || '').trim().split(/\s+/)[0] || '';
 const key = (word) => String(word || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
@@ -92,18 +117,97 @@ export function spokenLine(senderFirst, kind, body) {
   return /^to\s/i.test(b) ? `${senderFirst} says ${b}${stop}` : `${senderFirst} says: ${b}${stop}`;
 }
 
-/** Put the message on the other person's device. -> { ok, reachable, line } | { ok: false, reason } */
-export function sendMessage({ from = null, to, kind = 'says', body }, now = Date.now()) {
+/**
+ * Keep the message for the other person. how: 'voice' (said to ΠAN) or 'typed' (the app).
+ * -> { ok, id, reachable, line } | { ok: false, reason: 'nobody' | 'too_many' | 'empty' }
+ */
+export function sendMessage({ from = null, to, kind = 'says', body, how = 'voice' }, now = Date.now()) {
   const senderId = from ? Number(from.id) : OWNER_ID;
-  const sender = peopleHere().find((p) => p.id === senderId);
-  if (!sender || !to?.id || to.id === senderId) return { ok: false, reason: 'nobody' };
+  const here = peopleHere();
+  const sender = here.find((p) => p.id === senderId);
+  const other = here.find((p) => p.id === Number(to?.id));
+  if (!sender || !other || other.id === senderId) return { ok: false, reason: 'nobody' };
+  const text = String(body || '').trim().replace(/\s+/g, ' ').slice(0, MAX_BODY);
+  if (!text.replace(/[^\p{L}\p{N}]/gu, '')) return { ok: false, reason: 'empty' };
   if (!maySpeakNow({ device: `user-${senderId}`, name: sender.first }, now)) return { ok: false, reason: 'too_many' };
-  const line = spokenLine(sender.first, kind, body);
-  const note = addNote({ type: 'speak', title: `${sender.first} ${kind === 'asks' ? 'asks' : 'says'}`, body: line,
-    data: { kind: 'message', from_user: senderId } }, { toUser: to.id, keepMs: KEEP_MS, now });
-  const reachable = userAsking(to.id, now);
-  console.log(`[message] person ${senderId} -> person ${to.id}, ${String(body).length} characters${reachable ? '' : ' (their device is not asking right now)'}`);
-  return { ok: true, id: note.id, reachable, line };
+  ensureMessagesSchema();
+  const id = Number(run(`INSERT INTO person_messages (from_user, to_user, kind, body, how, created_at) VALUES (:f, :t, :k, :b, :h, :at)`,
+    { ':f': senderId, ':t': other.id, ':k': kind === 'asks' ? 'asks' : 'says', ':b': text, ':h': how === 'typed' ? 'typed' : 'voice', ':at': now }).lastInsertRowid);
+  const reachable = userAsking(other.id, now);
+  console.log(`[message] person ${senderId} -> person ${other.id}, ${text.length} characters${reachable ? '' : ' (their device is not asking right now)'}`);
+  return { ok: true, id, reachable, line: spokenLine(sender.first, kind, text) };
+}
+
+/**
+ * The messages waiting to be said on the device that is asking, as notes; each is handed over
+ * once. dev: as for takeNotesFor (phone-notes.js). A person's device gets that person's; the
+ * owner's go to the one device his notes go to.
+ */
+export function takeMessagesFor({ key = '', linkDevice = '', person = null } = {}, now = Date.now()) {
+  const me = person ? Number(person.id) : OWNER_ID;
+  if (!me) return [];
+  ensureMessagesSchema();
+  const rows = all(`SELECT id, from_user, kind, body, created_at FROM person_messages
+    WHERE to_user = :u AND delivered_at IS NULL AND created_at > :t ORDER BY id LIMIT 20`, { ':u': me, ':t': now - KEEP_MS });
+  if (!rows.length) return [];
+  const names = new Map(peopleHere().map((p) => [p.id, p.first]));
+  const out = [];
+  for (const r of rows) {
+    if (!person && !ownerTakesHere({ key, linkDevice }, r.created_at, now)) continue;
+    const first = names.get(Number(r.from_user)) || 'Someone';
+    run(`UPDATE person_messages SET delivered_at = :n WHERE id = :i AND delivered_at IS NULL`, { ':n': now, ':i': r.id });
+    out.push({ id: nextNoteId(), type: 'speak', title: `${first} ${r.kind === 'asks' ? 'asks' : 'says'}`, body: spokenLine(first, r.kind, r.body),
+      data: { kind: 'message', from_user: Number(r.from_user), message_id: Number(r.id) }, from: null });
+  }
+  return out;
+}
+
+/** For the tests and the log: the messages not yet said on a device. */
+export function messagesWaiting(now = Date.now()) {
+  ensureMessagesSchema();
+  return all(`SELECT id, from_user, to_user FROM person_messages WHERE delivered_at IS NULL AND created_at > :t ORDER BY id`, { ':t': now - KEEP_MS })
+    .map((r) => ({ id: Number(r.id), from_user: Number(r.from_user), to_user: Number(r.to_user) }));
+}
+
+/**
+ * The People tab's list for one person: everyone else on the hub, with the newest message
+ * between the two and how many they have not opened. Newest talk first, then by name.
+ */
+export function peopleFor(meId) {
+  const me = Number(meId) || OWNER_ID;
+  ensureMessagesSchema();
+  const last = new Map();
+  for (const r of all(`SELECT m.id, m.from_user, m.to_user, m.kind, m.body, m.created_at FROM person_messages m
+      JOIN (SELECT MAX(id) AS id FROM person_messages WHERE from_user = :u OR to_user = :u
+            GROUP BY CASE WHEN from_user = :u THEN to_user ELSE from_user END) x ON x.id = m.id`, { ':u': me })) {
+    const other = Number(r.from_user) === me ? Number(r.to_user) : Number(r.from_user);
+    last.set(other, { id: Number(r.id), from_me: Number(r.from_user) === me, kind: r.kind, body: r.body, at: Number(r.created_at) });
+  }
+  const unread = new Map(all(`SELECT from_user, COUNT(*) AS n FROM person_messages WHERE to_user = :u AND read_at IS NULL GROUP BY from_user`, { ':u': me })
+    .map((r) => [Number(r.from_user), Number(r.n)]));
+  return peopleHere().filter((p) => p.id !== me)
+    .map((p) => ({ id: p.id, name: p.name, role: p.role, last: last.get(p.id) || null, unread: unread.get(p.id) || 0 }))
+    .sort((a, b) => (b.last?.at || 0) - (a.last?.at || 0) || a.name.localeCompare(b.name));
+}
+
+/**
+ * The conversation between two people, oldest first, and it marks what the other one sent as
+ * opened. before: a message id, for the page before it. -> { with, messages, more } | null
+ */
+export function conversation(meId, otherId, { before = 0, limit = PAGE, now = Date.now() } = {}) {
+  const me = Number(meId) || OWNER_ID;
+  const other = peopleHere().find((p) => p.id === Number(otherId) && p.id !== me);
+  if (!other) return null;
+  ensureMessagesSchema();
+  const n = Math.min(Math.max(Number(limit) || PAGE, 1), 200);
+  const rows = all(`SELECT id, from_user, kind, body, how, created_at, delivered_at, read_at FROM person_messages
+    WHERE ((from_user = :a AND to_user = :b) OR (from_user = :b AND to_user = :a)) AND (:before = 0 OR id < :before)
+    ORDER BY id DESC LIMIT :n`, { ':a': me, ':b': other.id, ':before': Number(before) || 0, ':n': n + 1 });
+  const more = rows.length > n;
+  run(`UPDATE person_messages SET read_at = :t WHERE to_user = :a AND from_user = :b AND read_at IS NULL`, { ':t': now, ':a': me, ':b': other.id });
+  return { with: { id: other.id, name: other.name, role: other.role }, more,
+    messages: rows.slice(0, n).reverse().map((r) => ({ id: Number(r.id), from_me: Number(r.from_user) === me, kind: r.kind, body: r.body,
+      how: r.how, at: Number(r.created_at), said: r.delivered_at != null, opened: r.read_at != null })) };
 }
 
 /**
