@@ -31,6 +31,26 @@ class PanServerClient @Inject constructor(
     // Prevent connection flapping — only flip to disconnected after 3 consecutive failures
     private var consecutiveFailures = 0
 
+    // Whose device this is at the hub. A device paired for a person other than the owner
+    // (docs/PEOPLE-PLAN.md) is refused the owner's things (approvals, alerts, Intuition, the
+    // device list), so the app does not keep asking for them. Asked again every minute: the
+    // owner can take a device back or hand it over at any time.
+    @Volatile private var person: Boolean? = null
+    @Volatile private var personAskedAt = 0L
+
+    /** False only when the hub has said this device belongs to a person other than the owner. */
+    suspend fun ownersDevice(): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (personAskedAt == 0L || now - personAskedAt > (if (person == null) 5_000L else 60_000L)) {
+            personAskedAt = now
+            try {
+                val r = api.getMe()
+                if (r.isSuccessful) person = r.body()?.person == true
+            } catch (_: Exception) {}
+        }
+        return person != true
+    }
+
     suspend fun checkHealth(): Boolean {
         return try {
             val response = api.health()

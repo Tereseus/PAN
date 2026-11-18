@@ -112,7 +112,12 @@ router.delete('/devices/:id', async (req, res) => {
   const id = String(req.params.id || '');
   if (!/^[a-z0-9]{1,64}$/i.test(id)) return res.status(400).json({ error: 'bad device id' });
   const { status, body } = await callAdmin(`/admin/devices/${id}`, { method: 'DELETE' });
-  if (status === 200) { forgetDevice(id); console.log(`[PAN Link] device ${id} removed by the owner`); }
+  if (status === 200) {
+    forgetDevice(id);
+    // A person's computer that is gone takes its threads with it (thread-relay.js).
+    try { (await import('../thread-relay.js')).forgetHostsOf(id); } catch {}
+    console.log(`[PAN Link] device ${id} removed by the owner`);
+  }
   res.status(status || 503).json(body);
 });
 

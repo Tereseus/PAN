@@ -18,10 +18,15 @@ import { Router } from 'express';
 import {
   ensureThreadRelaySchema, reportThreads, listThreads, relayStatus, matchThread, enqueueJob,
   claimNext, markDelivered, postReply, markFailed, getJob, listJobs, waitForOutcome, spokenOutcome,
-  relayHeartbeat,
+  relayHeartbeat, holdHost, holdsJob,
 } from '../thread-relay.js';
 
 const router = Router();
+
+// Who is calling: a person's computer (docs/PEOPLE-PLAN.md) speaks only for the relay hosts its
+// own PAN Link device holds. The owner's computers are not held to that among themselves.
+const caller = (req) => ({ person: req.user?.person ? req.user : null, linkDevice: req.panLinkDevice?.id || null });
+const NOT_YOURS = { ok: false, error: 'this computer does not hold that name' };
 
 try { ensureThreadRelaySchema(); } catch (e) { console.warn('[Threads] schema init failed:', e?.message); }
 
@@ -33,6 +38,7 @@ router.get('/', (req, res) => {
 router.post('/report', (req, res) => {
   const { host, threads } = req.body || {};
   if (!host || !Array.isArray(threads)) return res.status(400).json({ ok: false, error: 'host and threads[] required' });
+  if (!holdHost(String(host), caller(req))) return res.status(403).json(NOT_YOURS);
   try { reportThreads(String(host), threads); res.json({ ok: true, count: threads.length }); }
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
@@ -40,6 +46,7 @@ router.post('/report', (req, res) => {
 router.post('/heartbeat', (req, res) => {
   const { host, info } = req.body || {};
   if (!host) return res.status(400).json({ ok: false, error: 'host required' });
+  if (!holdHost(String(host), caller(req))) return res.status(403).json(NOT_YOURS);
   relayHeartbeat(String(host), info || {});
   res.json({ ok: true });
 });
@@ -70,12 +77,16 @@ router.post('/ask', async (req, res) => {
 });
 
 router.get('/jobs', (req, res) => {
+  // A person's relay sees the jobs of a host it holds, and has to say which.
+  const who = caller(req);
+  if (who.person && (!req.query.host || !holdHost(String(req.query.host), who))) return res.status(403).json(NOT_YOURS);
   res.json({ ok: true, jobs: listJobs({ host: req.query.host || null, status: req.query.status || null, limit: req.query.limit }) });
 });
 
 router.get('/jobs/next', async (req, res) => {
   const host = String(req.query.host || '');
   if (!host) return res.status(400).json({ ok: false, error: 'host required' });
+  if (!holdHost(host, caller(req))) return res.status(403).json(NOT_YOURS);
   let closed = false;
   req.on('close', () => { closed = true; });
   try {
@@ -89,6 +100,13 @@ router.get('/jobs/next', async (req, res) => {
     }
     res.json({ ok: true, job });
   } catch (e) { if (!closed) res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// A job on a host the caller does not hold does not exist for it.
+router.use('/jobs/:id', (req, res, next) => {
+  const who = caller(req);
+  if (who.person && req.params.id !== 'next' && !holdsJob(getJob(req.params.id), who)) return res.status(404).json({ ok: false, error: 'no such job' });
+  next();
 });
 
 router.get('/jobs/:id', (req, res) => {

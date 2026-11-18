@@ -1038,6 +1038,7 @@ class PanForegroundService : Service() {
             while (isActive) {
                 delay(5000)
                 try {
+                    if (!serverClient.ownersDevice()) continue   // approvals are the owner's
                     val response = serverClient.api.getPermissions()
                     val perms = response.body()?.permissions ?: continue
                     if (perms.isEmpty()) continue
@@ -1056,7 +1057,8 @@ class PanForegroundService : Service() {
         serviceScope.launch {
             while (isActive) {
                 try {
-                    val now = serverClient.api.getIntuitionCurrent().body()?.snapshot?.now
+                    // Intuition is the owner's: a person's device does not ask for it.
+                    val now = if (serverClient.ownersDevice()) serverClient.api.getIntuitionCurrent().body()?.snapshot?.now else null
                     if (now != null) {
                         fun clean(s: String?) = s?.trim()?.takeIf { it.isNotEmpty() }
                         intuitionSummary = listOfNotNull(clean(now.activity), clean(now.focus))

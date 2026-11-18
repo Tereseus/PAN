@@ -21,6 +21,7 @@ change to `people.js`, `routes/link.js`, the person branch of `server.js`, `rout
 | unit | `../pan-link-routes.test.js` | Pairing codes for a person are limited from the start; handing a device over sets the limit first; taking it back lifts it; a device PAN Link does not know cannot be handed over. |
 | unit | `../pan-link-auth.test.js` | A device's identity comes from PAN Link's secret, and forged headers are refused. |
 | unit | `../notes-sender.test.js` | A note's sender is the PAN Link device, not what the note says; six spoken notes a minute per device; a note goes to the device of the person it is for (pinned device, the device he last talked on, the asker of a thread, what happens when that device is away, expiry). |
+| unit | `../thread-people.test.js` | Whose a relay host is; which threads the owner and each person can reach; the owner's own thread first; what one person heard or asked never reaches another; a job is taken only by the computer that holds its host; handing over, taking back, removing. |
 | link | `pan-link/allow_test.go` | PAN Link's own wall (runs when Go is installed). |
 | hub | `hub_suite.py` | A dev hub with its own port and database and a stand-in for PAN Link's admin. Five people (child, guest, adult, manager, admin), each with a paired device, plus the owner's two devices, a device whose person was removed and a device nobody knows. |
 
@@ -46,6 +47,15 @@ The hub part, by group:
   sends; the owner's own note stays his; a note for nobody is refused; a device limited to
   sending notes cannot say who a note is for; with a device pinned, the owner's notes go to
   it and not to whichever asks first. The old door for another hub's messages is gone.
+- **computers**: two more people get a computer each. Each reports its own threads; nobody
+  (the other person, the owner's second device) can report under a name another computer
+  holds; a person's computer sees no registry and none of another host's jobs; a job the
+  owner sends to a person's thread can be read, answered or failed only by that person's
+  computer, which is told the owner is asking. By voice: an adult reaches her own threads
+  and her list is her own; "the notes thread" from her is her Notes and from the owner is
+  his; the owner's thread, another person's and one nobody has get her one and the same
+  answer and queue nothing; a child with a computer gets silence; the owner asks about a
+  person's thread by her name; a removed computer's threads are gone.
 - **admin**: no role can add, rename, promote or remove people, pair a device, free their own
   device or change the limits; the owner can; handing over and taking back; removal.
 

@@ -112,6 +112,7 @@ class MainViewModel @Inject constructor(
     val alerts: StateFlow<List<dev.pan.app.network.dto.AlertItem>> = _alerts
 
     private suspend fun pollNeedsYou() {
+        if (!serverClient.ownersDevice()) return   // approvals and alerts are the owner's
         try { api.getPermissions().body()?.permissions?.let { _approvals.value = it } } catch (_: Exception) {}
         try { api.getAlerts().body()?.let { _alerts.value = it } } catch (_: Exception) {}
     }
@@ -333,6 +334,7 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun refreshDevices() {
+        if (!serverClient.ownersDevice()) return
         try {
             val res = api.deviceList()
             if (res.isSuccessful) {
@@ -497,6 +499,7 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun pollIntuition() {
+        if (!serverClient.ownersDevice()) return
         try {
             val res = api.getIntuitionCurrent()
             if (res.isSuccessful) {

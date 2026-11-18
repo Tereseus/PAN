@@ -77,7 +77,7 @@ test('what a child, an adult and the owner may do', () => {
 test('every role by every action: allowed exactly when the role\'s power reaches the limit', () => {
   const powers = { removed: 0, child: 5, guest: 15, user: 25, manager: 50, admin: 75 };
   const need = { talk: 0, camera: 5, own_memory: 5, home: 15, messages: 15, lend_device: 50, approve_device: 75,
-    computer: 100, thread: 100, others_memory: 100, pair_device: 100, set_limits: 100 };
+    computer: 100, thread: 100, own_thread: 25, others_memory: 100, pair_device: 100, set_limits: 100 };
   eq(Object.keys(people.LIMITS).sort().join(), Object.keys(need).sort().join(), 'the list of actions changed: add the new one here');
   let n = 0;
   for (const [role, power] of Object.entries(powers)) for (const [action, least] of Object.entries(need)) {
@@ -85,7 +85,7 @@ test('every role by every action: allowed exactly when the role\'s power reaches
     eq(people.may({ id: 9, role, power }, action), power >= least, `${role} ${action}`);
     n++;
   }
-  eq(n, 72, 'pairs checked');
+  eq(n, 78, 'pairs checked');
   // Nothing but the owner reaches what is the owner's alone, whatever the role is called.
   for (const action of ['computer', 'thread', 'others_memory', 'pair_device', 'set_limits']) {
     for (const power of [0, 5, 15, 25, 50, 75, 99]) eq(people.may({ power }, action), false, `power ${power} ${action}`);

@@ -223,7 +223,7 @@ def main():
 
         # ── owner ────────────────────────────────────────────────────────────────
         s, me = call("GET", "/api/v1/auth/me", device=OWNER)
-        check("owner", "the owner's device is the owner", s == 200 and (me.get("user") or me).get("role") == "owner", (s, me))
+        check("owner", "the owner's device is the owner, and is not told it is a person's", s == 200 and (me.get("user") or me).get("role") == "owner" and (me.get("user") or me).get("person") is False, (s, me))
         s, st = call("GET", "/api/v1/settings", device=OWNER)
         check("owner", "the owner's device reads the settings", s == 200, s)
         restore_name = st.get("display_name") if isinstance(st, dict) else None
@@ -243,13 +243,13 @@ def main():
             s, j = call("POST", "/api/v1/link/pair", {"name": "%s device" % role, "for_user": uid}, device=OWNER)
             pair = admin.pairs[-1] if admin.pairs else {}
             check("pairing", "a code for the %s is made limited from the start" % role,
-                  s == 200 and isinstance(pair.get("allow"), list) and len(pair["allow"]) > 0 and not any("*" in r for r in pair["allow"]), (s, j, pair))
+                  s == 200 and isinstance(pair.get("allow"), list) and len(pair["allow"]) > 0 and all(r.split(" ")[1] == "/api/v1/threads/jobs/*" for r in pair["allow"] if "*" in r), (s, j, pair))
             dev = device_id(10 + i)
             admin.add(dev, "%s device" % role, pair.get("ip"))
             people[role] = {"id": uid, "name": name, "device": dev}
             s, me = call("GET", "/api/v1/auth/me", device=dev)
             who = (me.get("user") or me) if isinstance(me, dict) else {}
-            check("pairing", "the %s's device arrives as that person" % role, s == 200 and who.get("id") == uid and who.get("role") == role, (s, me))
+            check("pairing", "the %s's device arrives as that person, and is told so" % role, s == 200 and who.get("id") == uid and who.get("role") == role and who.get("person") is True, (s, me))
         s, j = call("POST", "/api/v1/link/pair", {"name": "ghost", "for_user": 987654}, device=OWNER)
         check("pairing", "a code for someone who does not exist is refused", s == 400, (s, j))
         s, j = call("POST", "/api/v1/link/pair", {"name": "his own second phone", "for_user": 1}, device=OWNER)
@@ -315,11 +315,14 @@ def main():
             for n, (method, path) in enumerate(routes):
                 devices = [kid] + ([people[ROLES[1 + (n // 4) % 4]]["device"]] if n % 4 == 0 else [])
                 for dev in devices:
-                    if (method, path) in allow:
+                    listed = any(m == method and (path == r or (r.endswith("/*") and path.startswith(r[:-1]))) for m, r in allow)
+                    if listed:
                         if path == "/api/v1/query/stream":
                             continue                    # talking has its own checks below
                         s, j = call(method, path, device=dev, timeout=20)
-                        if s in (403, 0):
+                        # Open means the wall let it through. A route can still say no for its own
+                        # reason (a relay host this device does not hold): the computers group checks those.
+                        if s == 0 or (s == 403 and isinstance(j, dict) and j.get("error") == "not open to this person"):
                             closed_wrongly.append((method, path, s))
                     else:
                         s, j = call(method, path, device=dev, timeout=20)
@@ -453,6 +456,119 @@ def main():
             call("GET", "/api/v1/slack/pending", device=people[role]["device"])
         s, j = call("POST", "/api/v1/chat/incoming", {"from_instance_id": "stranger", "body": "hello"}, device=OWNER)
         check("notes", "the old door for another hub's messages is gone", s == 404, (s, j))
+
+        # ── computers: a person's computer is that person's client ───────────────
+        ms = lambda: int(time.time() * 1000)
+        pcs = {}
+        for n, (first, role) in enumerate((("Zora", "user"), ("Quill", "child"))):
+            s, u = call("POST", "/api/v1/auth/users", {"display_name": "%s Suite %d" % (first, stamp), "role": role}, device=OWNER)
+            uid = (u.get("user") or {}).get("id")
+            call("POST", "/api/v1/link/pair", {"name": "%s computer" % first, "for_user": uid}, device=OWNER)
+            dev = device_id(60 + n)
+            admin.add(dev, "%s computer" % first, admin.pairs[-1]["ip"])
+            call("GET", "/api/v1/auth/me", device=dev)
+            pcs[first] = {"id": uid, "device": dev, "host": "suite-%s-pc" % first.lower(), "name": first}
+            people["pc-" + first] = {"id": uid, "name": first, "device": dev}
+        zora, quill = pcs["Zora"], pcs["Quill"]
+        call("POST", "/api/v1/threads/report", {"host": "people-suite", "threads": [
+            {"session_id": "suite-garden", "title": "Garden", "cwd": "C:/x", "last_activity": ms()},
+            {"session_id": "suite-notes", "title": "Notes", "cwd": "C:/x", "last_activity": ms()}]}, device=OWNER)
+        s, j = call("POST", "/api/v1/threads/report", {"host": zora["host"], "threads": [
+            {"session_id": "zora-homework", "title": "Homework", "cwd": "C:/z", "last_activity": ms()},
+            {"session_id": "zora-notes", "title": "Notes", "cwd": "C:/z", "last_activity": ms()}]}, device=zora["device"])
+        check("computers", "an adult's computer reports its own threads", s == 200 and j.get("count") == 2, (s, j))
+        s, j = call("POST", "/api/v1/threads/report", {"host": quill["host"], "threads": [
+            {"session_id": "quill-drawing", "title": "Drawing", "cwd": "C:/q", "last_activity": ms()}]}, device=quill["device"])
+        check("computers", "a child's computer reports its own threads", s == 200, (s, j))
+        planted = {"session_id": "planted", "title": "Planted", "cwd": "C:/p", "last_activity": ms()}
+        tries = {"another person's computer": call("POST", "/api/v1/threads/report", {"host": zora["host"], "threads": [planted]}, device=quill["device"])[0],
+                 "the owner's computer": call("POST", "/api/v1/threads/report", {"host": "people-suite", "threads": [planted]}, device=zora["device"])[0],
+                 "a person's computer, from the owner's second device": call("POST", "/api/v1/threads/report", {"host": zora["host"], "threads": [planted]}, device=own2)[0]}
+        s, reg = call("GET", "/api/v1/threads", device=OWNER)
+        listed = reg.get("threads", []) if isinstance(reg, dict) else []
+        check("computers", "nobody reports threads under a name another computer holds", all(v == 403 for v in tries.values()) and not any(t.get("title") == "Planted" for t in listed), (tries, [t.get("title") for t in listed]))
+        hw = next((t for t in listed if t.get("session_id") == "zora-homework"), {})
+        check("computers", "the owner sees a person's threads, marked as that person's", hw.get("theirs") == 1 and str(hw.get("owner_name", "")).startswith("Zora"), hw)
+        seen = {"the registry": call("GET", "/api/v1/threads", device=zora["device"])[0],
+                "a name looked up": call("GET", "/api/v1/threads/match?name=garden", device=zora["device"])[0],
+                "a job asked for over the API": call("POST", "/api/v1/threads/ask", {"target": "garden", "text": "hi"}, device=zora["device"])[0],
+                "jobs with no host named": call("GET", "/api/v1/threads/jobs", device=zora["device"])[0],
+                "the owner's jobs": call("GET", "/api/v1/threads/jobs?host=people-suite", device=zora["device"])[0],
+                "another person's jobs": call("GET", "/api/v1/threads/jobs?host=%s" % quill["host"], device=zora["device"])[0],
+                "the owner's next job": call("GET", "/api/v1/threads/jobs/next?host=people-suite&wait=1000", device=zora["device"])[0],
+                "another person's next job": call("GET", "/api/v1/threads/jobs/next?host=%s&wait=1000" % zora["host"], device=quill["device"])[0]}
+        check("computers", "a person's computer sees no registry, no other host's jobs and cannot ask over the API", all(v == 403 for v in seen.values()), seen)
+        s, j = call("GET", "/api/v1/threads/jobs?host=%s" % zora["host"], device=zora["device"])
+        check("computers", "it sees the jobs of its own host", s == 200 and isinstance(j.get("jobs"), list), (s, j))
+
+        # The owner asks a person's thread: only that person's computer can take the job and answer it.
+        s, j = call("POST", "/api/v1/threads/ask", {"session_id": "zora-homework", "text": "How far along is it?"}, device=OWNER)
+        job_id = (j.get("job") or {}).get("id") if isinstance(j, dict) else None
+        check("computers", "the owner sends a job to a person's thread", s == 200 and bool(job_id), (s, j))
+        other = {"read": call("GET", "/api/v1/threads/jobs/%s" % job_id, device=quill["device"])[0],
+                 "answer": call("POST", "/api/v1/threads/jobs/%s/reply" % job_id, {"text": "forged"}, device=quill["device"])[0],
+                 "fail": call("POST", "/api/v1/threads/jobs/%s/fail" % job_id, {"error": "forged"}, device=quill["device"])[0],
+                 "mark delivered": call("POST", "/api/v1/threads/jobs/%s/delivered" % job_id, {}, device=quill["device"])[0]}
+        check("computers", "another person's computer cannot read, answer or fail that job", all(v == 404 for v in other.values()), other)
+        s, got = call("GET", "/api/v1/threads/jobs/next?host=%s&wait=2000" % zora["host"], device=zora["device"])
+        msg = (got.get("job") or {}).get("message", "") if isinstance(got, dict) else ""
+        check("computers", "the person's own computer takes it, and is told the owner is asking", s == 200 and (got.get("job") or {}).get("id") == job_id and "The owner of this" in msg, (s, msg[:200]))
+        s, j = call("POST", "/api/v1/threads/jobs/%s/reply" % job_id, {"text": "Two tasks are left."}, device=zora["device"])
+        check("computers", "and answers it", s == 200 and j.get("ok") is True, (s, j))
+        s, j = call("GET", "/api/v1/threads/jobs/%s" % job_id, device=OWNER)
+        check("computers", "the answer is the one its own computer gave", (j.get("job") or {}).get("reply") == "Two tasks are left.", j)
+        call("GET", "/api/v1/slack/pending", device=OWNER, headers={"x-device-id": "suite-owner-phone"})
+
+        # By voice. The adult asks her own thread; her computer answers while the turn is open.
+        def answer(host, device, text, box):
+            s_, got_ = call("GET", "/api/v1/threads/jobs/next?host=%s&wait=20000" % host, device=device, timeout=40)
+            job_ = (got_.get("job") or {}) if isinstance(got_, dict) else {}
+            box["job"] = job_
+            if job_.get("id"):
+                call("POST", "/api/v1/threads/jobs/%s/reply" % job_["id"], {"text": text}, device=device)
+        box = {}
+        t = threading.Thread(target=answer, args=(zora["host"], zora["device"], "The essay is half done.", box))
+        t.start()
+        time.sleep(0.5)
+        s, done, said = turn("Tell the homework thread to say how far the essay is.", zora["device"])
+        t.join(60)
+        check("computers", "an adult talks to a thread on her own computer by voice", s == 200 and (done or {}).get("intent") == "thread" and "half done" in str((done or {}).get("response")), (s, done))
+        check("computers", "that job says she asked, and went to her own computer", box.get("job", {}).get("asked_by") == zora["id"] and box.get("job", {}).get("host") == zora["host"] and "Your user is talking to you" in box.get("job", {}).get("message", ""), box.get("job"))
+        s, done, said = turn("List my open Claude threads.", zora["device"])
+        reply = str((done or {}).get("response", ""))
+        check("computers", "her list is her own threads and none of the owner's", "Homework" in reply and "Notes" in reply and "Garden" not in reply and "Drawing" not in reply, reply)
+
+        def queued(host):
+            s_, j_ = call("GET", "/api/v1/threads/jobs?host=%s" % host, device=OWNER)
+            return len(j_.get("jobs", [])) if isinstance(j_, dict) else -1
+        before = (queued("people-suite"), queued(quill["host"]))
+        s, done, said = turn("Tell the notes thread to add milk.", zora["device"], extra={"bench": True})
+        parse = (done or {}).get("thread_parse") or {}
+        check("computers", "\"the notes thread\" from her is her own Notes, never the owner's", parse.get("title") == "Notes" and "thread relay parsed send" in str((done or {}).get("response")), done)
+        r1 = turn("Tell the garden thread to water the plants.", zora["device"])
+        r2 = turn("Tell the zebra crossing thread to water the plants.", zora["device"])
+        r3 = turn("Tell the drawing thread hello.", zora["device"])
+        same = [str((r[1] or {}).get("response", "")).replace("garden", "X").replace("zebra crossing", "X").replace("drawing", "X") for r in (r1, r2, r3)]
+        check("computers", "the owner's thread, another person's and one nobody has get her the same answer", len(set(same)) == 1 and "couldn't find" in same[0], same)
+        check("computers", "and nothing was queued on the owner's computer or the other person's", (queued("people-suite"), queued(quill["host"])) == before, (before, queued("people-suite"), queued(quill["host"])))
+        # A child has a computer too, but may not use threads by voice: no answer, nothing queued.
+        kq = queued(quill["host"])
+        for ask in ("What is the drawing thread doing?", "List my open Claude threads.", "Tell the garden thread hello."):
+            s, done, said = turn(ask, quill["device"])
+            check("computers", "the child: \"%s\" gets no answer" % ask, s == 200 and (done or {}).get("intent") == "ambient" and not said, (s, done, said))
+        check("computers", "and nothing was queued for the child", queued(quill["host"]) == kq and queued("people-suite") == before[0], (kq, queued(quill["host"])))
+        # The owner, by voice (a bench turn: parsed, nothing sent).
+        s, done, said = turn("What is Zora's homework thread doing?", OWNER, extra={"bench": True}, headers={"x-device-id": "suite-owner-phone"})
+        check("computers", "the owner asks about a person's thread by her name", ((done or {}).get("thread_parse") or {}).get("title") == "Homework", done)
+        s, done, said = turn("Tell the notes thread to add milk.", OWNER, extra={"bench": True}, headers={"x-device-id": "suite-owner-phone"})
+        check("computers", "the owner's \"notes thread\" is his own Notes", "thread relay parsed send" in str((done or {}).get("response")) and ((done or {}).get("thread_parse") or {}).get("title") == "Notes", done)
+        s, j = call("GET", "/api/v1/threads/match?name=notes", device=OWNER)
+        check("computers", "and it is the one on his own computer", (j.get("thread") or {}).get("host") == "people-suite", j)
+        # Removing the computer takes its threads with it.
+        s, j = call("DELETE", "/api/v1/link/devices/%s" % quill["device"], device=OWNER)
+        s2, reg = call("GET", "/api/v1/threads", device=OWNER)
+        check("computers", "a removed computer's threads are gone from the registry", s == 200 and not any(t.get("host") == quill["host"] for t in reg.get("threads", [])), (s, [t.get("host") for t in reg.get("threads", [])]))
+        call("DELETE", "/api/v1/link/devices/%s" % zora["device"], device=OWNER)
 
         # ── admin ────────────────────────────────────────────────────────────────
         target = people["guest"]

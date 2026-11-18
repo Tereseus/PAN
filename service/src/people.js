@@ -27,6 +27,7 @@ export const LIMITS = Object.freeze({
   // a person: a thread runs anything, as the owner, on the owner's machine.
   computer: 100,       // run a job on a computer, the terminal
   thread: 100,         // talk to a Claude thread
+  own_thread: 25,      // talk to a Claude thread on their own computer (thread-relay.js holdHost)
   lend_device: 50,     // lend a shared device to someone
   approve_device: 75,  // let a new computer in
   others_memory: 100,  // read what someone else said
@@ -51,6 +52,13 @@ export const PERSON_ALLOW = Object.freeze([
   'POST /api/v1/reading',
   'POST /api/v1/vision',
   'GET /api/v1/slack/pending',     // their own notes only (phone-notes.js)
+  // A person's computer is that person's client: its thread relay reports that computer's
+  // threads and takes the jobs for them. routes/threads.js holds each call to the hosts the
+  // calling device itself holds, so it never sees a thread or a job of anyone else's.
+  'POST /api/v1/threads/report',
+  'GET /api/v1/threads/jobs',
+  'GET /api/v1/threads/jobs/*',
+  'POST /api/v1/threads/jobs/*',
 ]);
 
 /** The allow rules for a device of this person's: none for the owner (no limit). */

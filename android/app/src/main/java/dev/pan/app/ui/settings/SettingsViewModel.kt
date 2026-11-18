@@ -37,6 +37,9 @@ class SettingsViewModel @Inject constructor(
     /** A plain call to the hub for a settings section that only shows what the hub decides (People). */
     suspend fun hub(method: String, path: String, body: org.json.JSONObject? = null) = serverClient.hubJson(method, path, body)
 
+    /** False on a device paired for a person other than the owner: the owner's sections are not shown. */
+    suspend fun ownersDevice() = serverClient.ownersDevice()
+
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
     val serverUrl: StateFlow<String> = _serverUrl
 
@@ -237,6 +240,7 @@ class SettingsViewModel @Inject constructor(
 
     fun refreshDevices() {
         viewModelScope.launch {
+            if (!serverClient.ownersDevice()) return@launch
             try {
                 val res = api.deviceList()
                 if (res.isSuccessful) {

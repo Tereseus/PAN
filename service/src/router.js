@@ -2886,26 +2886,49 @@ async function* personTurn(text, context, withProsody) {
   }
   if (!may(person, 'talk')) { yield* say(refusal('talk')); return; }
 
-  // A Claude thread or a computer: the owner's, unless the owner opened it to this person.
-  let cmd = null;
-  try { cmd = (await import('./thread-relay.js')).parseThreadCommand(text); } catch (e) { console.warn('[person] thread parse failed:', e.message); }
-  if (cmd) {
-    const action = /computer/.test(String(cmd.kind)) || cmd.computer ? 'computer' : 'thread';
-    if (!may(person, action) || !may(person, 'thread')) {
-      // Not answered at all (the owner, 2026-11-18: "why would you even say a no to somebody
-      // else"). A line about the owner's threads or computers from someone who may not use them
-      // gets silence: a spoken no would confirm they are there. The hub's log keeps who asked.
-      console.log(`[person] ${person.id} (${person.role}) asked for a ${action} on ${context.device_id} - not theirs, no answer: ${JSON.stringify(String(text).slice(0, 80))}`);
-      notePath('person_refused');
-      yield* quiet('not_theirs');
-      return;
-    }
+  // A Claude thread or a computer. A person's own computer is that person's client
+  // (docs/PEOPLE-PLAN.md): the threads on it are theirs to use (own_thread). Every other thread
+  // and computer is the owner's, unless the owner opened them to this person (thread).
+  let tr = null;
+  try { tr = await import('./thread-relay.js'); } catch (e) { console.warn('[person] thread-relay unavailable:', e.message); }
+  if (tr && may(person, 'thread') && may(person, 'computer')) {
     let handled = false;
     for await (const ev of _threadRelayFastPath(text, context)) {
       handled = true;
       yield ev.type === 'done' ? { type: 'done', result: withProsody(ev.result) } : ev;
     }
     if (handled) return;
+  } else if (tr) {
+    let mine = null;
+    try {
+      if (may(person, 'own_thread') && tr.listThreads({ person }).length) mine = tr.parseThreadCommand(text, { person });
+    } catch (e) { console.warn('[person] thread parse failed:', e.message); }
+    if (mine) {
+      notePath('person_thread');
+      if (isTestTurn(context)) {
+        const response = `[benchmark: thread relay parsed ${mine.kind}${mine.thread ? ' -> ' + mine.thread.title : ''} — no thread touched]`;
+        yield { type: 'chunk', text: response };
+        yield { type: 'done', result: withProsody({ intent: 'thread', speech_act: 'command', response, thread_parse: { kind: mine.kind, title: mine.thread?.title || null, text: mine.text || null } }) };
+        return;
+      }
+      console.log(`[person] ${person.id} (${person.role}) on ${context.device_id}: own thread, ${mine.kind}${mine.thread ? ' ' + JSON.stringify(mine.thread.title) : ''}`);
+      for await (const ev of tr.handleThreadCommand(mine, text, { ...context, person })) {
+        yield ev.type === 'done' ? { type: 'done', result: withProsody(ev.result) } : ev;
+      }
+      return;
+    }
+    // What the line would mean to the owner, with nothing remembered from the look.
+    let theirs = null;
+    try { theirs = tr.parseThreadCommand(text, { peek: true }); } catch (e) { console.warn('[person] thread parse failed:', e.message); }
+    if (theirs) {
+      // Not answered at all (the owner, 2026-11-18: "why would you even say a no to somebody
+      // else"). A line about the owner's threads or computers from someone who may not use them
+      // gets silence: a spoken no would confirm they are there. The hub's log keeps who asked.
+      console.log(`[person] ${person.id} (${person.role}) asked for a thread or computer on ${context.device_id} - not theirs, no answer: ${JSON.stringify(String(text).slice(0, 80))}`);
+      notePath('person_refused');
+      yield* quiet('not_theirs');
+      return;
+    }
   }
 
   // A look through the camera: the device takes the photo and asks /vision, which keeps nothing

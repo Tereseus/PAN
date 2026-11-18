@@ -56,8 +56,8 @@ export function maySpeakNow(from, now = Date.now()) {
   return true;
 }
 
-function pinnedDevice(now) {
-  if (now - pinned.at < 10_000) return pinned.value;
+function pinnedDevice(now, fresh = false) {
+  if (!fresh && now - pinned.at < 10_000) return pinned.value;
   let value = '';
   try { value = String(get("SELECT value FROM settings WHERE key = 'notes_device'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase(); } catch {}
   pinned = { at: now, value };
@@ -130,7 +130,7 @@ export function takeNotesFor({ key = '', linkDevice = '', person = null } = {}, 
 export function notesDevices(now = Date.now()) {
   const asking = [...lastAsked].filter(([k, t]) => now - t < 10 * 60_000 && !/^d[0-9a-f]{12}$/.test(k))
     .map(([key, t]) => ({ key, away: now - t > AWAY_MS })).sort((a, b) => a.key.localeCompare(b.key));
-  return { pinned: pinnedDevice(now) || null, last_spoke: lastSpoke && now - lastSpoke.at < LAST_SPOKE_MS ? lastSpoke.key : null, asking };
+  return { pinned: pinnedDevice(now, true) || null, last_spoke: lastSpoke && now - lastSpoke.at < LAST_SPOKE_MS ? lastSpoke.key : null, asking };
 }
 
 /** For the tests and the log: how many notes wait, and for whom. */

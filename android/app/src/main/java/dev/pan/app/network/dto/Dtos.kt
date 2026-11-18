@@ -17,6 +17,8 @@ data class MeResponse(
     val display_nickname: String? = null,
     val role: String? = null,
     val org: OrgInfo? = null,
+    // True when this device was paired for a person other than the owner (docs/PEOPLE-PLAN.md).
+    val person: Boolean? = null,
 )
 
 // Tier 0 Phase 4: /api/v1/org/policy response

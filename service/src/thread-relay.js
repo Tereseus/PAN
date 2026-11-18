@@ -77,6 +77,12 @@ export function ensureThreadRelaySchema() {
   // from the thread's transcript without disturbing it.
   try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN kind TEXT DEFAULT 'send'`); } catch {}
   try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN convo TEXT`); } catch {}
+  // Whose computer a host is (docs/PEOPLE-PLAN.md): owner_user_id is the person it belongs to
+  // (null: the owner), link_device_id the PAN Link device that holds the name. asked_by: who
+  // asked a job (null: the owner).
+  try { db.exec(`ALTER TABLE thread_relay_hosts ADD COLUMN owner_user_id INTEGER`); } catch {}
+  try { db.exec(`ALTER TABLE thread_relay_hosts ADD COLUMN link_device_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN asked_by INTEGER`); } catch {}
   _schemaReady = true;
 }
 
@@ -87,6 +93,64 @@ export function relayHeartbeat(host, info = {}) {
   run(`INSERT INTO thread_relay_hosts (host, last_seen, info) VALUES (:h, :t, :i)
        ON CONFLICT(host) DO UPDATE SET last_seen = :t, info = :i`,
     { ':h': host, ':t': Date.now(), ':i': JSON.stringify(info || {}) });
+}
+
+/**
+ * May this caller speak for this relay host, and whose computer is it?
+ *
+ * A person's computer is that person's client: its relay reports that computer's threads and
+ * takes the jobs for them, and nothing else. A host name belongs to the PAN Link device that
+ * first used it, so a person's computer can never report threads as one of the owner's
+ * computers or another person's, or take their jobs. The owner's own computers are not held to
+ * this among themselves (they are all his), but none of them can take a name a person's
+ * computer holds. A device the owner hands to a person, or takes back, carries its host with it.
+ * who: { person, linkDevice }: person is req.user when it is a person's device, else null.
+ */
+export function holdHost(host, { person = null, linkDevice = null } = {}) {
+  ensureThreadRelaySchema();
+  const name = String(host || '').trim();
+  if (!name) return false;
+  const uid = person ? Number(person.id) || 0 : null;
+  if (person && (!uid || !linkDevice)) return false;
+  const row = get(`SELECT owner_user_id, link_device_id FROM thread_relay_hosts WHERE host = :h`, { ':h': name });
+  if (!row) {
+    run(`INSERT INTO thread_relay_hosts (host, last_seen, info, owner_user_id, link_device_id) VALUES (:h, 0, '{}', :u, :l)`,
+      { ':h': name, ':u': uid, ':l': linkDevice || null });
+    return true;
+  }
+  const sameDevice = !!linkDevice && row.link_device_id === linkDevice;
+  if (person) {
+    if (!sameDevice) return false;
+    if (row.owner_user_id !== uid) run(`UPDATE thread_relay_hosts SET owner_user_id = :u WHERE host = :h`, { ':u': uid, ':h': name });
+    return true;
+  }
+  if (row.owner_user_id != null) {
+    if (!sameDevice) return false;   // a person's computer holds this name
+    run(`UPDATE thread_relay_hosts SET owner_user_id = NULL WHERE host = :h`, { ':h': name });   // taken back
+    return true;
+  }
+  if (linkDevice && row.link_device_id !== linkDevice) run(`UPDATE thread_relay_hosts SET link_device_id = :l WHERE host = :h`, { ':l': linkDevice, ':h': name });
+  return true;
+}
+
+/** Whether a job is on a host this caller holds (a person's relay sees no other job). */
+export function holdsJob(job, who) {
+  if (!job) return false;
+  if (!who?.person) return true;
+  const row = get(`SELECT owner_user_id, link_device_id FROM thread_relay_hosts WHERE host = :h`, { ':h': job.host });
+  return !!row && !!who.linkDevice && row.link_device_id === who.linkDevice && row.owner_user_id === Number(who.person.id);
+}
+
+/** A paired device was removed: the hosts it held, and their threads, go with it. */
+export function forgetHostsOf(linkDevice) {
+  ensureThreadRelaySchema();
+  if (!linkDevice) return 0;
+  const hosts = all(`SELECT host FROM thread_relay_hosts WHERE link_device_id = :l AND owner_user_id IS NOT NULL`, { ':l': linkDevice });
+  for (const h of hosts) {
+    run(`DELETE FROM thread_relay_threads WHERE host = :h`, { ':h': h.host });
+    run(`DELETE FROM thread_relay_hosts WHERE host = :h`, { ':h': h.host });
+  }
+  return hosts.length;
 }
 
 export function relayStatus() {
@@ -120,12 +184,34 @@ export function reportThreads(host, threads) {
   relayHeartbeat(host, { threads: (threads || []).length });
 }
 
-export function listThreads() {
+/**
+ * The threads one viewer can reach. The owner (no person) sees every computer's, with `theirs`
+ * set on those of a person's computer and `owner_name` saying whose. A person sees the threads
+ * on that person's own computers and nothing else.
+ */
+export function listThreads({ person = null } = {}) {
   ensureThreadRelaySchema();
-  return all(`SELECT t.host, t.session_id, t.title, t.cwd, t.last_activity, t.pinned,
-                     CASE WHEN h.last_seen > :alive THEN 1 ELSE 0 END AS host_alive
-                FROM thread_relay_threads t LEFT JOIN thread_relay_hosts h ON h.host = t.host
-               ORDER BY host_alive DESC, t.last_activity DESC`, { ':alive': Date.now() - RELAY_ALIVE_MS });
+  let rows;
+  try {
+    rows = all(`SELECT t.host, t.session_id, t.title, t.cwd, t.last_activity, t.pinned,
+                       CASE WHEN h.last_seen > :alive THEN 1 ELSE 0 END AS host_alive,
+                       h.owner_user_id, u.display_name AS owner_name, u.is_active AS owner_active
+                  FROM thread_relay_threads t LEFT JOIN thread_relay_hosts h ON h.host = t.host
+                  LEFT JOIN users u ON u.id = h.owner_user_id
+                 ORDER BY host_alive DESC, t.last_activity DESC`, { ':alive': Date.now() - RELAY_ALIVE_MS });
+  } catch {
+    // No users table (a bare test database): every thread is the owner's.
+    rows = all(`SELECT t.host, t.session_id, t.title, t.cwd, t.last_activity, t.pinned,
+                       CASE WHEN h.last_seen > :alive THEN 1 ELSE 0 END AS host_alive, NULL AS owner_user_id
+                  FROM thread_relay_threads t LEFT JOIN thread_relay_hosts h ON h.host = t.host
+                 ORDER BY host_alive DESC, t.last_activity DESC`, { ':alive': Date.now() - RELAY_ALIVE_MS });
+  }
+  // A computer whose person is gone is nobody's: its threads are not offered to anyone.
+  rows = rows.filter(r => r.owner_user_id == null || r.owner_active === 1)
+    .map(({ owner_active, ...r }) => ({ ...r, theirs: r.owner_user_id != null ? 1 : 0 }));
+  if (!person) return rows;
+  const uid = Number(person.id) || 0;
+  return rows.filter(r => uid && r.owner_user_id === uid).map(r => ({ ...r, theirs: 0 }));
 }
 
 // ── Fuzzy title matching ─────────────────────────────────────────────────────
@@ -153,6 +239,35 @@ function spokenAliases() { return { ...BASE_ALIASES, ...installJson('thread-alia
 // Threads are named for their machine ("Mint PC Stuff", "G16 PC Stuff"). thread-machines.json says
 // which relay host each of those words means, as { "mint": "<host>" }.
 function spokenMachines() { return installJson('thread-machines.json'); }
+
+// For the owner a person's first name means that person's computer: "what is Maria's homework
+// thread doing", "list Maria's threads". Only while the person has one computer, and never over
+// a machine word of the owner's own.
+function machinesFor(threads) {
+  const machines = { ...spokenMachines() };
+  const hosts = new Map();
+  for (const t of threads || []) {
+    if (!t.theirs || !t.owner_name) continue;
+    const w = tokens(t.owner_name)[0];
+    if (!w || FILLER.has(w)) continue;
+    if (!hosts.has(w)) hosts.set(w, new Set());
+    hosts.get(w).add(t.host);
+  }
+  const people = [];
+  for (const [w, set] of hosts) {
+    if (set.size !== 1 || machines[w]) continue;
+    machines[w] = [...set][0];
+    people.push(w);
+    if (!w.endsWith('s') && !machines[w + 's']) machines[w + 's'] = machines[w];   // "marias", as STT often writes it
+  }
+  return { machines, people };
+}
+// "maria's homework" is said of Maria's computer: the 's is no part of the thread's name.
+function dropPossessive(text, people) {
+  let out = String(text || '');
+  for (const w of people) out = out.replace(new RegExp(`\\b(${w})(?:['’]s|s['’])(?=\\s|$)`, 'gi'), '$1');
+  return out;
+}
 
 const FILLER = new Set(['the', 'a', 'an', 'my', 'our', 'that', 'this', 'thread', 'threads', 'session', 'sessions',
   'chat', 'claude', 'tab', 'one', 'please', 'and', 'uh', 'um', 'umm', 'er', 'erm', 'hmm']);
@@ -243,11 +358,21 @@ function numberRef(name) {
   const w = m[1].toLowerCase();
   return (NUMBER_WORDS[w] || Number(w)) - 1;
 }
-let _lastList = null;   // { threads, at }: the numbered list ΠAN last read out
+// What one listener was last told, kept per person (key 0: the owner): `list` is the numbered
+// list ΠAN last read out ({ threads, at }), `pending` the choice it offered. One person's list
+// must never be what another person's "number two" counts in.
+const _heard = new Map();
+function heardBy(person) {
+  const key = person ? Number(person.id) || -1 : 0;
+  let st = _heard.get(key);
+  if (!st) { st = { list: null, pending: null }; _heard.set(key, st); }
+  return st;
+}
+let _st = heardBy(null);   // whose is in use for the length of one parse (parseThreadCommand is not async)
 const LIST_WINDOW_MS = 15 * 60_000;
 // The order a number counts in: the list he heard, else the order a list would be read in now.
 function numberedThreads(threads) {
-  if (_lastList && Date.now() - _lastList.at < LIST_WINDOW_MS) return _lastList.threads;
+  if (_st.list && Date.now() - _st.list.at < LIST_WINDOW_MS) return _st.list.threads;
   return distinctThreads(threads);
 }
 
@@ -259,8 +384,8 @@ export function matchThread(spokenName, threads = listThreads(), { ordered = fal
     return th ? { ok: true, thread: th, score: 1, by_number: at + 1, candidates: [{ title: th.title, score: 1 }] }
       : { ok: false, reason: 'no_number', number: at + 1, candidates: [] };
   }
-  const machines = spokenMachines();
-  let { t: said, joined } = spokenTokens(spokenName);
+  const { machines, people } = machinesFor(threads);
+  let { t: said, joined } = spokenTokens(dropPossessive(spokenName, people));
   // "pan, not mint pan": what follows "not" is ruled out, never a target. A machine after "not"
   // excludes that machine. Before this, "not mint pan" made Mint the hard limit (2026-11-11).
   let excludeHost = null;
@@ -273,8 +398,17 @@ export function matchThread(spokenName, threads = listThreads(), { ordered = fal
     joined = said.slice(0, -1).map((w, i) => w + said[i + 1]);
   }
   const { machine, rest: words } = machineSaid(said, joined, machines);
+  // The owner's own threads come first. A thread on a person's computer is meant when he says
+  // whose ("Maria's homework thread"), or when nothing of his own fits the name.
+  if (!machine && threads.some(t => t.theirs) && threads.some(t => !t.theirs)) {
+    const mine = matchThread(spokenName, threads.filter(t => !t.theirs), { ordered });
+    if (mine.ok || mine.reason === 'ambiguous') return mine;
+    const other = matchThread(spokenName, threads.filter(t => t.theirs), { ordered });
+    return other.ok || other.reason === 'ambiguous' ? other : mine;
+  }
   // A machine said out loud is a hard limit: "mint music" must never reach the G16's Music thread.
-  const pool = distinctThreads(threads).filter(th => (!machine || th.host === machines[machine]) && (!excludeHost || th.host !== excludeHost));
+  // The machine first, then one row per title: two computers can each have a thread called "Notes".
+  const pool = distinctThreads(threads.filter(th => (!machine || th.host === machines[machine]) && (!excludeHost || th.host !== excludeHost)));
   if (!said.length || !pool.length) return { ok: false, reason: said.length ? 'no_threads' : 'no_name', candidates: [] };
 
   // An exact title wins. "PAN" scored the same as "Mint PAN" (the machine word is no part of
@@ -354,26 +488,31 @@ export function listJobs({ host = null, status = null, limit = 50 } = {}) {
 
 // The text the target thread receives. It names the request id so the relay
 // can find this exact turn in the thread's transcript.
-export function composeMessage(job) {
+export function composeMessage(job, { fromOwner = false } = {}) {
+  // fromOwner: the thread is on a person's computer and the one asking is the owner of this ΠAN.
+  const who = fromOwner
+    ? `The owner of this ΠAN, who is in charge of this computer, is talking to you by voice through PAN. This is not the person who uses this computer.`
+    : `Your user is talking to you by voice through PAN on their phone, away from the computer.`;
   const said = job.utterance && job.utterance !== job.text
     ? `They said to PAN: "${job.utterance}"\nThe part meant for you: "${job.text}"`
     : `They say: "${job.text}"`;
-  return `[PAN voice relay · req ${job.id}] Your user is talking to you by voice through PAN on their phone, away from the computer.\n`
+  return `[PAN voice relay · req ${job.id}] ${who}\n`
     + `${said}\n`
     + (job.convo ? `What they had just been talking about with PAN, oldest first:\n${job.convo}\n` : '')
     + `Handle it as if they typed it here. Your final message is read aloud to them, so open it with a short plain spoken answer (one to three sentences, no markdown); details can follow below that.`;
 }
 
-export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null, kind = 'send', convo = null }) {
+export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null, kind = 'send', convo = null, asked_by = null }) {
   ensureThreadRelaySchema();
   const job = {
     id: newId(), host: thread.host, session_id: thread.session_id, title: thread.title,
     text: String(text).slice(0, 4000), utterance: utterance ? String(utterance).slice(0, 4000) : null,
     status: 'queued', source, device_id, created_at: Date.now(), kind: kind === 'status' ? 'status' : 'send',
-    convo: convo ? String(convo).slice(-3000) : null,
+    convo: convo ? String(convo).slice(-3000) : null, asked_by: asked_by == null ? null : Number(asked_by),
   };
-  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at, kind, convo)
-       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c, :k, :cv)`, {
+  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at, kind, convo, asked_by)
+       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c, :k, :cv, :ab)`, {
+    ':ab': job.asked_by,
     ':id': job.id, ':h': job.host, ':s': job.session_id, ':t': job.title, ':x': job.text,
     ':u': job.utterance, ':src': source, ':d': device_id, ':c': job.created_at, ':k': job.kind, ':cv': job.convo,
   });
@@ -389,7 +528,8 @@ function claimOne(host) {
     { ':t': Date.now(), ':id': row.id });
   if (res && res.changes === 0) return null;
   const job = getJob(row.id);
-  return { ...job, message: composeMessage(job) };
+  const hostOwner = get(`SELECT owner_user_id FROM thread_relay_hosts WHERE host = :h`, { ':h': host })?.owner_user_id ?? null;
+  return { ...job, message: composeMessage(job, { fromOwner: hostOwner != null && job.asked_by == null }) };
 }
 
 // Long-poll: resolve with the next job for this host, or null after waitMs.
@@ -560,7 +700,7 @@ const WAS_IT_DONE = /\b(?:did|didn't|have|haven't|has|hasn't|was|wasn't)\s+(?:yo
 
 function namedAnywhere(text, threads) {
   if (!PASS_ON.test(text) || WAS_IT_DONE.test(text) || !threads.length) return null;
-  const machines = spokenMachines();
+  const { machines } = machinesFor(threads);
   let ambiguous = null;
   for (const m of text.matchAll(NAMED)) {
     const before = m[1].split(/\s+/);
@@ -588,7 +728,7 @@ const MACHINE_NOUN = '(?:\\s+(?:computer|pc|desktop|laptop|machine|box))?';
 function computerRequest(text, machines) {
   const keys = Object.keys(machines);
   if (!keys.length) return null;
-  const name = `(?:the\\s+|my\\s+)?(${keys.map(k => k.replace(/([a-z])(\d)/g, '$1\\s*$2')).join('|')})${MACHINE_NOUN}`;
+  const name = `(?:the\\s+|my\\s+)?(${keys.map(k => k.replace(/([a-z])(\d)/g, '$1\\s*$2')).join('|')})(?:['’]s)?${MACHINE_NOUN}`;
   const front = new RegExp(`${LEAD}(?:on|over on)\\s+${name}[\\s,:.-]+((?:please\\s+)?(?:${ACTION}|${ASKING})\\b.*)$`, 'i').exec(text);
   if (front) return { machine: front[1], body: front[2] };
   const back = new RegExp(`${LEAD}((?:${ACTION}|${ASKING})\\b.+?)\\s+(?:on|in)\\s+${name}\\s*[.!?]*$`, 'i').exec(text);
@@ -599,7 +739,7 @@ function computerRequest(text, machines) {
 }
 
 function computerCommand(text, threads) {
-  const machines = spokenMachines();
+  const { machines } = machinesFor(threads);
   const req = computerRequest(text, machines);
   if (!req) return null;
   if (!threads.length) return { kind: 'no_relay' };
@@ -627,7 +767,7 @@ export function recentConvo(history, utterance, body = '', maxLines = 10) {
 }
 
 // "Which thread, Tasks or Jira Playbook?" → "the tasks one" picks from these.
-let _pendingChoice = null;   // { threads, text, at }
+// Kept per listener as `pending` ({ threads, text, at }), see heardBy.
 const CHOICE_WINDOW_MS = 90_000;
 
 // The two names PAN offered, in the order it said them.
@@ -636,23 +776,43 @@ function offered(candidates, threads) {
   return candidates.slice(0, 2).map(c => pool.find(t => t.title === c.title)).filter(Boolean);
 }
 
-function lastJob() {
-  return get(`SELECT * FROM thread_relay_jobs ORDER BY created_at DESC LIMIT 1`);
+// The newest job this listener asked: nobody's "tell it ..." follows someone else's thread.
+function lastJob(askedBy) {
+  return get(`SELECT * FROM thread_relay_jobs WHERE asked_by IS :w ORDER BY created_at DESC LIMIT 1`, { ':w': askedBy });
 }
 
 // Returns null when the utterance is not about threads, else one of:
 //   { kind: 'send', thread, text }  { kind: 'ambiguous', candidates }
 //   { kind: 'unknown', name }       { kind: 'list' }  { kind: 'last', job }
 //   { kind: 'no_relay' }            { kind: 'no_computer', machine }
-export function parseThreadCommand(utterance) {
+// person: who is asking (null: the owner). A person's words are read against that person's own
+// threads only. peek: read, but remember nothing (a look at what a line would mean to the owner).
+export function parseThreadCommand(utterance, { person = null, peek = false } = {}) {
+  const st = peek ? { list: heardBy(person).list, pending: heardBy(person).pending } : heardBy(person);
+  const before = _st;
+  _st = st;
+  try { return parseFor(utterance, person, st); } finally { _st = before; }
+}
+
+function parseFor(utterance, person, st) {
+  const askedBy = person ? Number(person.id) || -1 : null;
   ensureThreadRelaySchema();
   const text = String(utterance || '').trim()
     // Only after a word that can't be part of a name: "tell the PAN thread one more thing" stays as said.
     .replace(new RegExp(`(?<=\\b(?:what's|whats|what is|did|on|in|to|tell|ask|is|about|from|with|of|check)\\s+)(thread|session|chat)\\s+(?:number\\s+|no\\.?\\s*|#\\s*)?(${NUMBER_RE})\\b`, 'gi'), 'number $2 $1');
   if (!text) return null;
-  const threads = listThreads();
+  const threads = listThreads({ person });
 
-  if (LIST.test(text) && /\b(?:claude|threads|sessions|open)\b/i.test(text)) return { kind: 'list', threads };
+  if (LIST.test(text) && /\b(?:claude|threads|sessions|open)\b/i.test(text)) {
+    // His own, unless he names a person: "list Maria's threads".
+    const { machines, people } = machinesFor(threads);
+    const whose = people.find(w => new RegExp(`\\b${w}(?:['’]s|s['’])?\\b`, 'i').test(text));
+    if (whose) {
+      const theirs = threads.filter(t => t.host === machines[whose]);
+      return { kind: 'list', threads: theirs, whose: theirs[0]?.owner_name || whose };
+    }
+    return { kind: 'list', threads: threads.filter(t => !t.theirs) };
+  }
 
   for (const re of STATUS) {
     const m = re.exec(text);
@@ -661,7 +821,7 @@ export function parseThreadCommand(utterance) {
     const r = matchThread(m[1], threads);
     if (r.ok) return { kind: 'send', status: true, thread: r.thread, text: 'What is this thread doing right now?' };
     if (r.reason === 'ambiguous') {
-      _pendingChoice = { threads: offered(r.candidates, threads), text: 'What is this thread doing right now?', status: true, utterance: text, at: Date.now() };
+      st.pending = { threads: offered(r.candidates, threads), text: 'What is this thread doing right now?', status: true, utterance: text, at: Date.now() };
       return { kind: 'ambiguous', candidates: r.candidates };
     }
     if (r.reason === 'no_number') return { kind: 'no_number', number: r.number };
@@ -682,7 +842,7 @@ export function parseThreadCommand(utterance) {
     const person = /^(?:i|you|we|he|she)(?:\s+(?:just|even|actually|really|guys|two|all))*$/i.test(name);
     const m = pronoun || person ? null : matchThread(name, threads);
     if (m?.ok) {
-      const job = get(`SELECT * FROM thread_relay_jobs WHERE session_id = :s AND status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`, { ':s': m.thread.session_id });
+      const job = get(`SELECT * FROM thread_relay_jobs WHERE session_id = :s AND asked_by IS :w AND status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`, { ':s': m.thread.session_id, ':w': askedBy });
       // Never asked through the relay, or it has worked since: read where it is now (Nov 14).
       if (!job || (m.thread.last_activity || 0) > (job.created_at || 0) + 60_000) return { kind: 'send', status: true, thread: m.thread, text: 'What is this thread doing right now?' };
       return { kind: 'last', job };
@@ -696,26 +856,26 @@ export function parseThreadCommand(utterance) {
       return { kind: 'unknown', name, closest: m.candidates[0]?.score >= 0.2 ? m.candidates[0].title : null };
     }
     if (pronoun || anchored) {
-      const job = get(`SELECT * FROM thread_relay_jobs WHERE status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`);
+      const job = get(`SELECT * FROM thread_relay_jobs WHERE asked_by IS :w AND status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`, { ':w': askedBy });
       if (job && (anchored || Date.now() - job.created_at < FOLLOWUP_WINDOW_MS)) return { kind: 'last', job };
       if (anchored) return { kind: 'last', job: null };
     }
   }
 
-  if (_pendingChoice && Date.now() - _pendingChoice.at < CHOICE_WINDOW_MS && text.split(/\s+/).length <= 6) {
+  if (st.pending && Date.now() - st.pending.at < CHOICE_WINDOW_MS && text.split(/\s+/).length <= 6) {
     // "two", "number two", "what's number two doing", "the second one" pick by place.
     const at = numberRef(text) ?? numberRef((/\bnumber\s+\S+|\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b/i.exec(text) || [])[0]);
-    const r = at != null ? matchThread(`number ${at + 1}`, _pendingChoice.threads, { ordered: true })
-      : matchThread(text.replace(/\b(?:one|the|thread)\b/gi, ' '), _pendingChoice.threads);
+    const r = at != null ? matchThread(`number ${at + 1}`, st.pending.threads, { ordered: true })
+      : matchThread(text.replace(/\b(?:one|the|thread)\b/gi, ' '), st.pending.threads);
     if (r.ok) {
-      const pending = _pendingChoice; _pendingChoice = null;
+      const pending = st.pending; st.pending = null;
       return { kind: 'send', status: !!pending.status, thread: r.thread, text: pending.text, utterance: pending.utterance };
     }
   }
 
   const fu = FOLLOWUP.exec(text);
   if (fu) {
-    const prev = lastJob();
+    const prev = lastJob(askedBy);
     if (prev && Date.now() - prev.created_at < FOLLOWUP_WINDOW_MS) {
       const thread = threads.find(t => t.session_id === prev.session_id) || { host: prev.host, session_id: prev.session_id, title: prev.title };
       return { kind: 'send', thread, text: cleanBody(fu[1]) };
@@ -731,7 +891,7 @@ export function parseThreadCommand(utterance) {
     if (r.ok) return body ? { kind: 'send', thread: r.thread, text: body } : { kind: 'empty', thread: r.thread };
     if (r.reason === 'ambiguous') {
       if (body) {
-        _pendingChoice = { threads: offered(r.candidates, threads), text: body, utterance: text, at: Date.now() };
+        st.pending = { threads: offered(r.candidates, threads), text: body, utterance: text, at: Date.now() };
       }
       return { kind: 'ambiguous', candidates: r.candidates };
     }
@@ -745,7 +905,7 @@ export function parseThreadCommand(utterance) {
   const named = namedAnywhere(text, threads);
   if (named?.ok) return { kind: 'send', thread: named.thread, text: text.replace(new RegExp(LEAD, 'i'), '').trim() };
   if (named) {
-    _pendingChoice = { threads: offered(named.candidates, threads), text, utterance: text, at: Date.now() };
+    st.pending = { threads: offered(named.candidates, threads), text, utterance: text, at: Date.now() };
     return { kind: 'ambiguous', candidates: named.candidates };
   }
 
@@ -771,20 +931,22 @@ export function parseThreadCommand(utterance) {
 // { type:'chunk', text } and finally { type:'done', result }.
 export async function* handleThreadCommand(cmd, utterance, context = {}, inlineWaitMs = 22_000) {
   const done = (response, extra = {}) => ({ type: 'done', result: { intent: 'thread', speech_act: 'command', response, addressed: 1, importance: 0.5, ...extra } });
+  const st = heardBy(context.person || null);
 
   if (cmd.kind === 'list') {
     const listed = distinctThreads(cmd.threads).slice(0, 5);
+    const whose = cmd.whose ? `${String(cmd.whose).split(/\s+/)[0]}'s` : 'Your';
     const say = listed.length
-      ? `Your newest threads: ${listed.map((t, i) => `${['one', 'two', 'three', 'four', 'five'][i]}, ${shortTitle(t.title)}`).join('. ')}. Say a number to check on one.`
-      : `No relay has reported any threads yet.`;
+      ? `${whose} newest threads: ${listed.map((t, i) => `${['one', 'two', 'three', 'four', 'five'][i]}, ${shortTitle(t.title)}`).join('. ')}. Say a number to check on one.`
+      : cmd.whose ? `${whose} computer has not reported any threads.` : `No relay has reported any threads yet.`;
     if (listed.length) {
-      _lastList = { threads: listed, at: Date.now() };
-      _pendingChoice = { threads: listed, text: 'What is this thread doing right now?', status: true, utterance, at: Date.now() };
+      st.list = { threads: listed, at: Date.now() };
+      st.pending = { threads: listed, text: 'What is this thread doing right now?', status: true, utterance, at: Date.now() };
     }
     yield { type: 'chunk', text: say }; yield done(say); return;
   }
   if (cmd.kind === 'no_number') {
-    const n = _lastList && Date.now() - _lastList.at < LIST_WINDOW_MS ? _lastList.threads.length : 0;
+    const n = st.list && Date.now() - st.list.at < LIST_WINDOW_MS ? st.list.threads.length : 0;
     const say = n ? `I only read out ${n}. Which one?` : `There's no thread number ${cmd.number}. Ask me to list your threads first.`;
     yield { type: 'chunk', text: say }; yield done(say); return;
   }
@@ -818,7 +980,8 @@ export async function* handleThreadCommand(cmd, utterance, context = {}, inlineW
   const alive = relayStatus().find(r => r.host === cmd.thread.host)?.alive;
   const said = cmd.utterance || utterance;
   const convo = !cmd.status && REFERS_BACK.test(cmd.text) ? recentConvo(context.conversation_history, said, cmd.text) : null;
-  const job = enqueueJob({ thread: cmd.thread, text: cmd.text, utterance: said, source: context.source || null, device_id: context.device_id || null, kind: cmd.status ? 'status' : 'send', convo });
+  const job = enqueueJob({ thread: cmd.thread, text: cmd.text, utterance: said, source: context.source || null, device_id: context.device_id || null, kind: cmd.status ? 'status' : 'send', convo,
+    asked_by: context.person ? Number(context.person.id) : null });
   const ack = !alive ? `Queued for ${name}, but its relay looks offline.` : cmd.status ? `Checking.` : convo ? `Sent to ${name}, with what we were just talking about.` : `Sent to ${name}.`;
   yield { type: 'chunk', text: ack };
 

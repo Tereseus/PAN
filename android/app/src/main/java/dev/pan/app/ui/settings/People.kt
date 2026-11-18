@@ -54,9 +54,11 @@ internal fun PeopleSection(viewModel: SettingsViewModel, snackbar: SnackbarHostS
     var adding by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf<Pair<String, String>?>(null) }     // whose, the pairing link
     var removing by remember { mutableStateOf<PersonRow?>(null) }
+    var renaming by remember { mutableStateOf<PersonRow?>(null) }
     var busy by remember { mutableStateOf(false) }
 
     suspend fun load() {
+        if (!viewModel.ownersDevice()) { people = null; return }
         val users = viewModel.hub("GET", "/api/v1/auth/users")
         if (users == null || users.first != 200) { people = null; return }
         val devices = viewModel.hub("GET", "/api/v1/link/people")?.takeIf { it.first == 200 }?.second?.optJSONArray("devices")
@@ -103,7 +105,10 @@ internal fun PeopleSection(viewModel: SettingsViewModel, snackbar: SnackbarHostS
                     else -> "${person.devices.size} devices"
                 }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(enabled = !busy, onClick = { scope.launch { codeFor(person) } }) { Text("Add device") }
+            TextButton(enabled = !busy, onClick = { renaming = person }) { Text("Rename") }
             TextButton(enabled = !busy, onClick = { removing = person }) { Text("Remove") }
         }
     }
@@ -159,6 +164,31 @@ internal fun PeopleSection(viewModel: SettingsViewModel, snackbar: SnackbarHostS
                 }
             },
             confirmButton = { TextButton(onClick = { code = null; scope.launch { load() } }) { Text("Done") } },
+        )
+    }
+
+    renaming?.let { person ->
+        var name by remember(person.id) { mutableStateOf(person.name) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("Rename ${person.name}") },
+            text = {
+                OutlinedTextField(value = name, onValueChange = { name = it.take(40) }, label = { Text("Name") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = {
+                TextButton(enabled = name.isNotBlank() && name.trim() != person.name && !busy, onClick = {
+                    renaming = null
+                    scope.launch {
+                        busy = true
+                        val r = viewModel.hub("PUT", "/api/v1/auth/users/${person.id}/name", JSONObject().put("display_name", name.trim()))
+                        busy = false
+                        if (r == null || r.first != 200) snackbar.showSnackbar(r?.second?.optString("error")?.takeIf { it.isNotBlank() } ?: "ΠAN could not rename them right now.")
+                        load()
+                    }
+                }) { Text("Rename") }
+            },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
         )
     }
 

@@ -200,6 +200,9 @@ router.get('/me', (req, res) => {
     display_nickname: user.display_nickname || user.display_name,
     avatar_url: user.avatar_url,
     role: user.role,
+    // True when this call came from a device paired for a person other than the owner
+    // (people.js): the app then leaves the owner's things alone.
+    person: req.user.person === true,
     power: user.power_lvl ?? getRoleLevels()[user.role] ?? 0,
     created_at: user.created_at,
     last_login: user.last_login,

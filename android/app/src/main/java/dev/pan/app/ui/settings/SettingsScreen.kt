@@ -327,6 +327,8 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            NotesDeviceSection(viewModel, snackbarHostState)
+
             // Privacy
             Text("Privacy", style = MaterialTheme.typography.titleMedium)
             Row(
