@@ -437,8 +437,8 @@ CREATE INDEX IF NOT EXISTS idx_session_nudges_pending
 -- and re-injected whatever Claude last said — which fed back into the next
 -- session as "ΠΑΝ Remembers" and created a regurgitation loop (bug discussed
 -- 2026-05-22). Strong signals: completed TodoWrite items, git commits in the
--- session's time window, files touched, project tasks closed. Optional one-line
--- Cerebras polish (qwen-3-235b, default on).
+-- session's time window, files touched, project tasks closed. The recap text is
+-- the plain list of those; the cloud rewrite of it was removed 2026-11-18.
 CREATE TABLE IF NOT EXISTS session_summaries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL UNIQUE,
@@ -450,8 +450,8 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     commits TEXT,           -- JSON array of {sha, subject}
     files_touched TEXT,     -- JSON array of paths (deduped, capped at 20)
     tasks_closed TEXT,      -- JSON array of {id, title, new_status}
-    llm_text TEXT,          -- Optional Cerebras polish: one-paragraph natural-language recap
-    model_used TEXT,        -- which model produced llm_text (or 'deterministic' if no LLM)
+    llm_text TEXT,          -- unused since 2026-11-18 (was a model's rewrite of the recap); NULL on new rows
+    model_used TEXT,        -- unused since 2026-11-18; 'deterministic' on new rows
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_summaries(session_id);

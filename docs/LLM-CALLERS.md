@@ -99,7 +99,10 @@ doesn't have to think about the whole conversation each turn.
 **Prompt size:** ~2,000 tokens (last 10 turns + previous state).
 **Current routing:** default `cerebras:zai-glm-4.7`.
 
-### `session-recap` — end-of-session summary
+### `session-recap` — end-of-session summary (retired 2026-11-18)
+**Retired:** the recap is now the plain list `renderDeterministic()` builds, no model. The
+Cerebras model it named was retired, the last call that worked was 2026-08-07, and the
+reader is the next Claude session, which reads a list fine. The notes below are history.
 **File:** `src/session-summary.js` (line 164)
 **What it does:** On session end (PTY close / explicit /end), writes a
 short recap so the next session can pick up where this one left off.

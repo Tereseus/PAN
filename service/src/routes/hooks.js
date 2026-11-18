@@ -212,8 +212,8 @@ async function injectSessionContext(cwd, orgId = 'org_personal', tabClaudeSessio
     briefing += `**Session context** (for the first message of a fresh session only — see Session Continuity Rule above):\n\n`;
 
     // Part 1 — This tab
-    // PREFER recap from session_summaries (the deterministic + Cerebras-polished
-    // row written at SessionEnd). Falls back to raw event rendering only if no
+    // PREFER recap from session_summaries (the plain list of signals written at
+    // SessionEnd and every few turns). Falls back to raw event rendering only if no
     // summary row exists yet (e.g. session hasn't ended, or it's pre-recap-pipeline).
     let usedRecapTab = false;
     if (tabSessionId) {
@@ -603,19 +603,17 @@ router.get('/internal/recap-inspect', (req, res) => {
   try {
     const limit = Math.min(20, Number(req.query.limit) || 5);
     const rows = all(
-      `SELECT session_id, model_used, completed_todos, commits, files_touched, tasks_closed, llm_text, created_at
+      `SELECT session_id, completed_todos, commits, files_touched, tasks_closed, created_at
        FROM session_summaries ORDER BY id DESC LIMIT :lim`,
       { ':lim': limit }
     );
     const out = rows.map(r => ({
       session_id: r.session_id,
-      model_used: r.model_used,
       created_at: r.created_at,
       completed_todos: JSON.parse(r.completed_todos || '[]').slice(0, 5),
       commits: JSON.parse(r.commits || '[]').slice(0, 5),
       files_touched: JSON.parse(r.files_touched || '[]').slice(0, 8),
       tasks_closed: JSON.parse(r.tasks_closed || '[]').slice(0, 5),
-      llm_text: r.llm_text,
     }));
     res.status(200).json({ ok: true, rows: out });
   } catch (err) {
@@ -627,7 +625,7 @@ router.get('/internal/recap-inspect', (req, res) => {
 // session_summaries rows for any that don't have one. Idempotent. Local-only.
 router.post('/internal/recap-backfill', async (req, res) => {
   try {
-    const { cwd, limit = 10, useLLM = true } = req.body || {};
+    const { cwd, limit = 10 } = req.body || {};
     if (!cwd) return res.status(400).json({ ok: false, error: 'missing cwd' });
     const fwd = cwd.replace(/\\/g, '/');
     const jsonEscaped = cwd.replace(/\\/g, '\\\\');
@@ -652,8 +650,8 @@ router.post('/internal/recap-backfill', async (req, res) => {
     const results = [];
     for (const s of sessions) {
       try {
-        const r = await buildSessionSummary(s.session_id, cwd, orgId, { useLLM });
-        results.push({ session_id: s.session_id, ok: !!r, model: r?.model_used });
+        const r = await buildSessionSummary(s.session_id, cwd, orgId);
+        results.push({ session_id: s.session_id, ok: !!r });
       } catch (err) {
         results.push({ session_id: s.session_id, ok: false, error: err.message });
       }
@@ -1001,7 +999,7 @@ router.post('/:eventType', (req, res) => {
         }
         if (shouldWrite) {
           const orgIdForRecap = req.org_id || 'org_personal';
-          // Fire and forget — never block the Stop response on Cerebras latency
+          // Fire and forget: the Stop response never waits on the recap build
           buildSessionSummary(sessionId, cwd, orgIdForRecap).catch(err => {
             console.error('[PAN] watermark buildSessionSummary failed:', err.message);
           });

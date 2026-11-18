@@ -6,29 +6,29 @@
 // which fed back as "ΠΑΝ Remembers" on the next session and created a
 // regurgitation loop (designed 2026-05-21, implemented 2026-05-22).
 //
-// Signals (all from DB — no LLM required for the core row):
+// Signals (all from the DB and git, no model):
 //   - completed_todos: last TodoWrite snapshot's `completed` items
 //   - commits: git commits during session window
 //   - files_touched: paths from PreToolUse Edit/Write events
 //   - tasks_closed: project_tasks moved to done/in_test in session window
 //
-// Optional polish: a single Cerebras qwen-3-235b call composes a natural-
-// language paragraph from the structured data. Default ON, can be disabled per
-// session via `recap_use_llm = '0'` setting or env CEREBRAS down.
+// The recap is the plain list renderDeterministic() makes from those. A cloud
+// model used to rewrite it as a paragraph (Cerebras qwen-3-235b). That model was
+// retired, the last rewrite that worked was 2026-08-07, and every call after it
+// failed while 98% of recaps were already the plain list. The reader is the next
+// Claude session, which reads a list as well as a paragraph, so the step was
+// removed (2026-11-18) and not moved to the hub's own model: on a hub with no
+// GPU it would be about 50 calls a day sharing the CPU with voice turns.
+// The llm_text, model_used and signal_hash columns stay in old databases. Nothing
+// reads them, and a rebuilt row clears llm_text.
 
-import { run, get, all, insert } from './db.js';
+import { run, get, all } from './db.js';
 import { execSync } from 'child_process';
-import { createHash } from 'crypto';
-import { askAI } from './llm.js';
 
-const RECAP_MODEL = 'cerebras:qwen-3-235b';
-
-// ── DB migration: signal_hash column for #976 (skip re-polish when signals
-// unchanged). Idempotent — duplicate-column error is swallowed. Same pattern
-// used in service/src/client-manager.js.
+// ── DB migration. Idempotent: the duplicate-column error is swallowed. Same
+// pattern as service/src/client-manager.js.
 (function runMigrations() {
   const migrations = [
-    "ALTER TABLE session_summaries ADD COLUMN signal_hash TEXT",
     // When the row was last rebuilt. The upsert leaves created_at alone, so the
     // Stop watermark in routes/hooks.js needs this to know a recap is fresh.
     "ALTER TABLE session_summaries ADD COLUMN updated_at TEXT",
@@ -129,7 +129,7 @@ function getTasksClosed(projectId, startedAt, endedAt) {
   }
 }
 
-// Deterministic text fallback when the LLM polish is unavailable.
+// The recap text: a plain list built from the signals.
 export function renderDeterministic(s) {
   const parts = [];
   if (s.completed_todos?.length) {
@@ -148,49 +148,14 @@ export function renderDeterministic(s) {
   return parts.join('. ') || 'No notable activity recorded.';
 }
 
-// One Cerebras call to compose a natural-language paragraph from the
-// structured data. Returns null if disabled or unavailable.
-async function polishWithCerebras(structured) {
-  try {
-    const setting = get(`SELECT value FROM settings WHERE key = 'recap_use_llm'`);
-    if (setting && String(setting.value) === '0') return null;
-  } catch {}
-
-  const prompt = `You are summarizing a coding session for a memory recap that will be shown to the user at the start of their NEXT session. Be concrete and short — one paragraph, max ~70 words. Lead with what shipped, then what's open. Do NOT use bullet points. Do NOT start with "In this session" or "We". Just state what happened.
-
-Data:
-- Completed todos: ${JSON.stringify(structured.completed_todos || [])}
-- Git commits: ${JSON.stringify((structured.commits || []).map(c => c.subject))}
-- Files touched: ${JSON.stringify(structured.files_touched || [])}
-- Tasks closed: ${JSON.stringify((structured.tasks_closed || []).map(t => `#${t.id} ${t.title} → ${t.new_status}`))}
-
-One paragraph, no lists, no preamble. Just the recap text.`;
-
-  try {
-    const text = await askAI(prompt, {
-      model: RECAP_MODEL,
-      timeout: 10000,
-      maxTokens: 300,
-      caller: 'session-recap',
-      _skipAnonymize: true,
-    });
-    if (typeof text === 'string' && text.trim().length > 10) {
-      return text.trim().substring(0, 800);
-    }
-    return null;
-  } catch (err) {
-    console.error('[session-summary] Cerebras polish failed:', err?.message);
-    return null;
-  }
-}
-
 // Main entry. Idempotent — re-running for the same session_id replaces the row.
-export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal', opts = {}) {
+// Async only because its callers await it or chain .catch(); nothing inside waits.
+export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal') {
   if (!sessionId) return null;
 
   try {
-    // Every step up to the upsert runs on the main thread unless the LLM polish
-    // fires, so time them: a recap that takes 200 ms+ says which step it was.
+    // Every step runs on the main thread, so time them: a recap that takes
+    // 200 ms+ says which step it was.
     const tStart = performance.now();
     // Session window
     const session = get(
@@ -222,53 +187,15 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
 
     const structured = { completed_todos, commits, files_touched, tasks_closed };
 
-    // #975 + #976: gate the Cerebras polish.
-    //   #975 — skip when ALL 4 signal arrays are empty (no content to summarize,
-    //          LLM would just write boilerplate "no tasks were completed").
-    //   #976 — skip when the signal hash matches the existing row (the watermark
-    //          fires every 5 min on long sessions; without this gate it re-polishes
-    //          unchanged data every cycle).
-    const hasAnySignal =
-      completed_todos.length || commits.length || files_touched.length || tasks_closed.length;
-    const signalHash = createHash('sha1')
-      .update(JSON.stringify(structured))
-      .digest('hex');
-
-    const existing = get(
-      `SELECT signal_hash, llm_text, model_used FROM session_summaries WHERE session_id = :sid`,
-      { ':sid': sessionId }
-    );
-
-    // Default: carry forward whatever the prior row had (if any), so an unchanged
-    // hash preserves prior llm_text instead of nulling it out.
-    let llm_text = existing?.llm_text ?? null;
-    let model_used = existing?.model_used ?? 'deterministic';
-    let llmFired = false;
-
-    if (opts.useLLM !== false && hasAnySignal && existing?.signal_hash !== signalHash) {
-      const polished = await polishWithCerebras(structured);
-      llmFired = true;
-      if (polished) {
-        llm_text = polished;
-        model_used = RECAP_MODEL;
-      } else {
-        // polish failed/returned null — keep model_used as 'deterministic' for this attempt
-        // but don't clobber any prior successful llm_text we may have inherited from existing
-        if (!existing?.llm_text) {
-          llm_text = null;
-          model_used = 'deterministic';
-        }
-      }
-    }
-
-    // Upsert (ON CONFLICT replace) — re-running backfill should overwrite
+    // Upsert (ON CONFLICT replace) — re-running backfill should overwrite.
+    // llm_text goes back to NULL so a row that still held an old rewrite drops it.
     const tWrite = performance.now();
     run(
       `INSERT INTO session_summaries
          (session_id, project_id, cwd, started_at, ended_at,
           completed_todos, commits, files_touched, tasks_closed,
-          llm_text, model_used, signal_hash, updated_at)
-       VALUES (:sid, :pid, :cwd, :s, :e, :ct, :co, :ft, :tc, :lt, :mu, :sh, datetime('now','localtime'))
+          llm_text, model_used, updated_at)
+       VALUES (:sid, :pid, :cwd, :s, :e, :ct, :co, :ft, :tc, NULL, 'deterministic', datetime('now','localtime'))
        ON CONFLICT(session_id) DO UPDATE SET
          project_id    = excluded.project_id,
          cwd           = excluded.cwd,
@@ -280,7 +207,6 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
          tasks_closed  = excluded.tasks_closed,
          llm_text      = excluded.llm_text,
          model_used    = excluded.model_used,
-         signal_hash   = excluded.signal_hash,
          updated_at    = excluded.updated_at`,
       {
         ':sid': sessionId,
@@ -292,17 +218,13 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
         ':co': JSON.stringify(commits),
         ':ft': JSON.stringify(files_touched),
         ':tc': JSON.stringify(tasks_closed),
-        ':lt': llm_text,
-        ':mu': model_used,
-        ':sh': signalHash,
       }
     );
 
     const tDone = performance.now();
 
     console.log(`[session-summary] built recap for ${sessionId.slice(0, 8)} ` +
-      `(${completed_todos.length} todos, ${commits.length} commits, ${files_touched.length} files, ${tasks_closed.length} tasks, ` +
-      `model=${model_used}, llm_fired=${llmFired}, hash=${signalHash.slice(0,8)})`);
+      `(${completed_todos.length} todos, ${commits.length} commits, ${files_touched.length} files, ${tasks_closed.length} tasks)`);
     const syncMs = (tTasks - tStart) + (tDone - tWrite);
     if (syncMs >= 200) {
       console.warn(`[session-summary] slow recap for ${sessionId.slice(0, 8)}: ${Math.round(syncMs)}ms on the main thread ` +
@@ -310,24 +232,22 @@ export async function buildSessionSummary(sessionId, cwd, orgId = 'org_personal'
         `tasks=${Math.round(tTasks - tGit)} write=${Math.round(tDone - tWrite)})`);
     }
 
-    return { ...structured, llm_text, model_used };
+    return structured;
   } catch (err) {
     console.error('[session-summary] buildSessionSummary failed:', err?.message);
     return null;
   }
 }
 
-// Read the rendered recap text for a session — prefers llm_text, falls back
-// to deterministic rendering of the structured fields.
+// Read the rendered recap text for a session.
 export function getSessionRecapText(sessionId) {
   try {
     const row = get(
-      `SELECT completed_todos, commits, files_touched, tasks_closed, llm_text
+      `SELECT completed_todos, commits, files_touched, tasks_closed
        FROM session_summaries WHERE session_id = :sid`,
       { ':sid': sessionId }
     );
     if (!row) return null;
-    if (row.llm_text && row.llm_text.length > 10) return row.llm_text;
     return renderDeterministic({
       completed_todos: JSON.parse(row.completed_todos || '[]'),
       commits: JSON.parse(row.commits || '[]'),
@@ -347,21 +267,19 @@ export function getRecentProjectRecap(projectId, excludeSessionIds = []) {
     const params = { ':pid': projectId };
     excludeSessionIds.forEach((id, i) => { params[`:x${i}`] = id; });
     const row = get(
-      `SELECT session_id, llm_text, completed_todos, commits, files_touched, tasks_closed, created_at
+      `SELECT session_id, completed_todos, commits, files_touched, tasks_closed, created_at
        FROM session_summaries
        WHERE project_id = :pid ${exclude}
        ORDER BY created_at DESC LIMIT 1`,
       params
     );
     if (!row) return null;
-    const text = row.llm_text && row.llm_text.length > 10
-      ? row.llm_text
-      : renderDeterministic({
-          completed_todos: JSON.parse(row.completed_todos || '[]'),
-          commits: JSON.parse(row.commits || '[]'),
-          files_touched: JSON.parse(row.files_touched || '[]'),
-          tasks_closed: JSON.parse(row.tasks_closed || '[]'),
-        });
+    const text = renderDeterministic({
+      completed_todos: JSON.parse(row.completed_todos || '[]'),
+      commits: JSON.parse(row.commits || '[]'),
+      files_touched: JSON.parse(row.files_touched || '[]'),
+      tasks_closed: JSON.parse(row.tasks_closed || '[]'),
+    });
     return { session_id: row.session_id, text, created_at: row.created_at };
   } catch {
     return null;

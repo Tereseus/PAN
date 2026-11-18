@@ -551,6 +551,17 @@ around a query does not change that.
   rebuild. The Stop watermark compares against it, so a long session rebuilds its recap
   every 30 minutes or 10 turns as designed. It used `created_at`, which the upsert never
   moves, so every Stop on any session older than 30 minutes rebuilt the recap.
+- **Recap text is a plain list, no model** (2026-11-18): `session-summary.js` no longer
+  asks a cloud model to rewrite the recap as a paragraph. The model it named (Cerebras
+  qwen-3-235b) was retired, the retired-model resolver in `llm.js` swapped in an archived
+  one, and every call failed with a 404 (`[session-summary] Cerebras polish failed`). The
+  last rewrite that worked was 2026-08-07; since then 98% of recaps were already the list
+  from `renderDeterministic()`, and rows that still held an old paragraph showed it in
+  place of fresh data. Not moved to the hub's own model: the reader is the next Claude
+  session, and it would be about 50 CPU calls a day beside voice turns. Gone with it: the
+  `recap_use_llm` setting, the `session-recap` caller, `useLLM` on
+  `/hooks/internal/recap-backfill`. Columns `llm_text`, `model_used`, `signal_hash` stay
+  in old databases, unread.
 - **Evolution window**: "since last evolution" is the later of the last applied change
   (`evolution_versions`) and the last completed cycle (`EvolutionCycle` event). It used
   `evolution_versions` alone, and no change has been applied since 2026-04-09, so every
