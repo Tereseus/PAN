@@ -1389,7 +1389,16 @@ class PanForegroundService : Service() {
     private fun attachReading(id: Long, text: String, detail: String?) {
         if (id <= 0 || text.none { it in '\u3041'..'\u30FF' }) return   // no kana: not Japanese
         serviceScope.launch(Dispatchers.IO) {
-            val r = serverClient.reading(text, "ja") ?: return@launch
+            // One try was not enough on the road: in a talk held while driving through poor coverage
+            // most lines came back without their reading (2026-11-18). Three tries, further apart,
+            // and a line in the shipped log when all three fail.
+            var r: org.json.JSONObject? = null
+            for (waitMs in longArrayOf(0L, 3_000L, 10_000L)) {
+                if (waitMs > 0) kotlinx.coroutines.delay(waitMs)
+                r = serverClient.reading(text, "ja")
+                if (r != null) break
+            }
+            if (r == null) { panLog("Reading not added to line $id (${text.length} characters): the hub did not answer in three tries"); return@launch }
             val d = runCatching { org.json.JSONObject(detail ?: "{}") }.getOrElse { org.json.JSONObject() }
             d.put("romaji", r.optString("romaji"))
             val words = org.json.JSONArray()

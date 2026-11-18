@@ -355,19 +355,21 @@ fun SettingsScreen(
             // The lock on the Memory tab. Turning it off takes the fingerprint too.
             var memoryLock by remember { mutableStateOf(dev.pan.app.ui.memory.Fingerprint.lockOn(context)) }
             val hasFingerprint = remember { dev.pan.app.ui.memory.Fingerprint.ready(context) }
+            val pinAllowed = remember { dev.pan.app.ui.memory.Pin.allowed(context) }
             SettingToggle(
                 title = "Lock Memory",
                 description = if (hasFingerprint) "Memory opens only with your fingerprint, and deleting asks for it again"
-                              else "This device has no fingerprint, so Memory opens with a PIN you set in ΠAN, and deleting asks for it again",
+                              else if (pinAllowed) "This device has no fingerprint, so Memory opens with a PIN you set in ΠAN, and deleting asks for it again"
+                              else "Memory opens only with a fingerprint. This device has none, so Memory stays closed here",
                 checked = memoryLock,
                 onToggle = { on ->
                     if (on) { memoryLock = true; dev.pan.app.ui.memory.Fingerprint.setLock(context, true) }
-                    else dev.pan.app.ui.memory.Fingerprint.ask(context, "Turn off the Memory lock", "Your fingerprint confirms it") { ok ->
+                    else if (hasFingerprint || pinAllowed) dev.pan.app.ui.memory.Fingerprint.ask(context, "Turn off the Memory lock", "Your fingerprint confirms it") { ok ->
                         if (ok) { memoryLock = false; dev.pan.app.ui.memory.Fingerprint.setLock(context, false) }
                     }
                 }
             )
-            if (!hasFingerprint) {
+            if (!hasFingerprint && pinAllowed) {
                 Text("Change the Memory PIN", style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.fillMaxWidth().then(Modifier.clickable { dev.pan.app.ui.memory.Pin.change(context) { } }).padding(vertical = 12.dp))
             }

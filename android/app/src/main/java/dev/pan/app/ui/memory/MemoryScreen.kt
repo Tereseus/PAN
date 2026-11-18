@@ -70,7 +70,7 @@ fun MemoryScreen(viewModel: MemoryViewModel = hiltViewModel()) {
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer); viewModel.hide() }
     }
-    LaunchedEffect(Unit) { if (!unlocked) ask() }
+    LaunchedEffect(Unit) { if (!unlocked && (canCheck || Pin.allowed(context))) ask() }
     LaunchedEffect(unlocked) { if (unlocked) viewModel.load() }
 
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
@@ -110,15 +110,22 @@ private fun LockedPane(canCheck: Boolean, onUnlock: () -> Unit) {
             Spacer(Modifier.height(22.dp))
             Button(onClick = onUnlock) { Text("Unlock with fingerprint") }
         } else {
-            // No fingerprint on this device: a PIN set in ΠAN opens it.
+            // No fingerprint on this device: Memory stays closed here (a PIN only if it was granted).
             val context = LocalContext.current
-            val hasPin = remember { Pin.isSet(context) }
-            Text(if (hasPin) "This device has no fingerprint, so your PIN opens what ΠAN has kept."
-                 else "This device has no fingerprint. Set a PIN to open what ΠAN has kept here.",
-                style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(22.dp))
-            Button(onClick = onUnlock) { Text(if (hasPin) "Unlock with PIN" else "Set a PIN") }
+            if (Pin.allowed(context)) {
+                val hasPin = remember { Pin.isSet(context) }
+                Text(if (hasPin) "This device has no fingerprint, so your PIN opens what ΠAN has kept."
+                     else "This device has no fingerprint. Set a PIN to open what ΠAN has kept here.",
+                    style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(22.dp))
+                Button(onClick = onUnlock) { Text(if (hasPin) "Unlock with PIN" else "Set a PIN") }
+            } else {
+                Text("Memory opens only with a fingerprint, and this device has none, so it stays closed here. " +
+                     "Open Memory on your phone.",
+                    style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

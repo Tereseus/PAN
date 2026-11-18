@@ -17,9 +17,12 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
 /**
- * The lock on Memory for a device that has no fingerprint (a car unit, some tablets): a PIN set in
- * ΠAN itself. A device with a fingerprint never gets here, the fingerprint stays the only way in
- * there (the owner, 2026-11-18: "if no fingerprint, then make it be a PIN").
+ * A PIN for Memory on a device that has no fingerprint (a car unit, a TV, some tablets). SWITCHED
+ * OFF: the owner's call the day it was written (2026-11-18) is that such a device does not open
+ * Memory at all, so a shared screen can never search it. [allowed] is false everywhere and nothing
+ * in the app sets it; the code stays for the day the owner can grant it to one device from his own
+ * phone. It must never become a switch on the device itself: whoever holds the device could turn
+ * it on and set their own PIN. A device with a fingerprint never gets here.
  *
  * The PIN is 4 to 8 digits. Only a salted, slow hash of it is kept (PBKDF2), so the app's own files
  * do not give it away. Five wrong tries in a row and the lock rests, longer each time. There is no
@@ -37,6 +40,9 @@ object Pin {
     private const val MAX = 8
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** Whether this device may use a PIN at all. Off unless granted; nothing grants it yet. */
+    fun allowed(context: Context): Boolean = prefs(context).getBoolean("memory_pin_allowed", false)
 
     fun isSet(context: Context): Boolean = prefs(context).getString(KEY_HASH, null) != null
 
