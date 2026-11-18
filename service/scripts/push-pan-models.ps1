@@ -384,7 +384,7 @@ if ($worldOn -ne 'cloud') {
 } else {
     $worldWho = "<b>$(E $bigName)</b>"; $worldKind = $bigKind
 }
-$worldNote = 'Settings voice_world_questions and voice_world_model. Measured Nov 16 on this CPU: Phi 4 mini gives its first word in 0.3 to 4 s, Gemini took about 1 s. Setting voice_hub_paths sends the other handed-up lines to the same hub model'
+$worldNote = 'Settings voice_world_questions and voice_world_model. Since Nov 18 the hub model is pan-phi-r1, PAN own tuned Phi 4 mini (round 18: 21 to 76 percent of held-out lines right on all four marks, same speed; back: phi4-mini:3.8b). Measured on this CPU: first word about 1.3 s in a talk. Setting voice_hub_paths sends the other handed-up lines to the same hub model'
 if ($worldMod -like 'bench=*') { $worldNote += ". Test devices only: $($worldMod -replace '^bench=', '')" }
 Add-Row $hub 'Real questions: facts, how things work, advice' $worldWho $worldKind '' (E $worldNote)
 Add-Row $hub 'Web search results, tools, questions about PAN itself, rereads' "<b>$(E $bigName)</b> reads the result and answers" $bigKind '' (E 'The hub model when voice_hub_paths is all, else the first cloud model in the voice chain, else the voice model')
