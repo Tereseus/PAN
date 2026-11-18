@@ -12,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
@@ -357,15 +358,19 @@ fun SettingsScreen(
             SettingToggle(
                 title = "Lock Memory",
                 description = if (hasFingerprint) "Memory opens only with your fingerprint, and deleting asks for it again"
-                              else "Memory opens only with a fingerprint. This device has none set up, so Memory stays closed here",
+                              else "This device has no fingerprint, so Memory opens with a PIN you set in ΠAN, and deleting asks for it again",
                 checked = memoryLock,
                 onToggle = { on ->
                     if (on) { memoryLock = true; dev.pan.app.ui.memory.Fingerprint.setLock(context, true) }
-                    else if (hasFingerprint) dev.pan.app.ui.memory.Fingerprint.ask(context, "Turn off the Memory lock", "Your fingerprint confirms it") { ok ->
+                    else dev.pan.app.ui.memory.Fingerprint.ask(context, "Turn off the Memory lock", "Your fingerprint confirms it") { ok ->
                         if (ok) { memoryLock = false; dev.pan.app.ui.memory.Fingerprint.setLock(context, false) }
                     }
                 }
             )
+            if (!hasFingerprint) {
+                Text("Change the Memory PIN", style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.fillMaxWidth().then(Modifier.clickable { dev.pan.app.ui.memory.Pin.change(context) { } }).padding(vertical = 12.dp))
+            }
             if (mainViewModel != null) {
                 val allDevices by mainViewModel.devices.collectAsState()
                 val micOn by mainViewModel.isMicEnabled.collectAsState()

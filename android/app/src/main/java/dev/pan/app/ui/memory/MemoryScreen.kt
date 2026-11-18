@@ -70,7 +70,7 @@ fun MemoryScreen(viewModel: MemoryViewModel = hiltViewModel()) {
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer); viewModel.hide() }
     }
-    LaunchedEffect(Unit) { if (!unlocked && canCheck) ask() }
+    LaunchedEffect(Unit) { if (!unlocked) ask() }
     LaunchedEffect(unlocked) { if (unlocked) viewModel.load() }
 
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
@@ -87,7 +87,7 @@ fun MemoryScreen(viewModel: MemoryViewModel = hiltViewModel()) {
             }
         }
         if (!unlocked) LockedPane(canCheck = canCheck, onUnlock = ask)
-        else OpenMemory(viewModel, lockOn = lockOn && canCheck)
+        else OpenMemory(viewModel, lockOn = lockOn)
     }
 }
 
@@ -110,10 +110,15 @@ private fun LockedPane(canCheck: Boolean, onUnlock: () -> Unit) {
             Spacer(Modifier.height(22.dp))
             Button(onClick = onUnlock) { Text("Unlock with fingerprint") }
         } else {
-            Text("Memory opens with a fingerprint, and this device has none set up. " +
-                 "Open Memory on your phone, or add a fingerprint in this device's settings.",
+            // No fingerprint on this device: a PIN set in ΠAN opens it.
+            val context = LocalContext.current
+            val hasPin = remember { Pin.isSet(context) }
+            Text(if (hasPin) "This device has no fingerprint, so your PIN opens what ΠAN has kept."
+                 else "This device has no fingerprint. Set a PIN to open what ΠAN has kept here.",
                 style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(22.dp))
+            Button(onClick = onUnlock) { Text(if (hasPin) "Unlock with PIN" else "Set a PIN") }
         }
     }
 }

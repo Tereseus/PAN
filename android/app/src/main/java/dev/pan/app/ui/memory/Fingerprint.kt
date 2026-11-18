@@ -6,9 +6,11 @@ import android.hardware.biometrics.BiometricPrompt
 import android.os.CancellationSignal
 
 /**
- * The lock on Memory. Always the phone's own fingerprint (or face, where the phone has that as its
- * biometric). Never the PIN or pattern: the owner's rule (2026-11-17), because a PIN can be watched
- * or handed over. So a device with no fingerprint set up cannot open Memory at all.
+ * The lock on Memory. On a device with a fingerprint (or face, where that is its biometric) it is
+ * always the fingerprint, never the device's PIN or pattern: the owner's rule (2026-11-17), because
+ * a PIN can be watched or handed over. A device with NO fingerprint (a car unit, some tablets) could
+ * not open Memory at all; since 0.5.11 it uses a PIN set in ΠAN itself, see [Pin] (the owner,
+ * 2026-11-18).
  */
 object Fingerprint {
     private const val KINDS = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
@@ -18,9 +20,9 @@ object Fingerprint {
         context.getSystemService(BiometricManager::class.java)?.canAuthenticate(KINDS) == BiometricManager.BIOMETRIC_SUCCESS
     }.getOrDefault(false)
 
-    /** Shows the system sheet. [onResult] gets true only for a real match. */
+    /** Shows the system sheet, or the PIN where there is no fingerprint. [onResult] gets true only for a real match. */
     fun ask(context: Context, title: String, subtitle: String, onResult: (Boolean) -> Unit) {
-        if (!ready(context)) { onResult(false); return }
+        if (!ready(context)) { Pin.ask(context, title, onResult); return }
         runCatching {
             val executor = context.mainExecutor
             BiometricPrompt.Builder(context)
