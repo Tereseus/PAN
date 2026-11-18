@@ -518,7 +518,7 @@ fun SettingsScreen(
             )
             if (developerMode) {
                 OutlinedButton(onClick = onOpenDashboard, modifier = Modifier.fillMaxWidth()) { Text("Hub dashboard") }
-                Text("What is on your hub right now: devices, services and models, your dashboards, what each device captures, the documents, and the data it holds.",
+                Text("What is running on your hub, and what ΠAN reads about you right now.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 

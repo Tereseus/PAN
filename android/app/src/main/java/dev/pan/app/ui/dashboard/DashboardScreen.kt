@@ -43,16 +43,16 @@ import java.io.File
 private const val IN_APP_TRIM = """
 (function () {
   if (document.getElementById('pan-in-app')) return;
-  var gone = ['chat', 'tasks', 'projects'];
+  var gone = ['chat', 'tasks', 'projects', 'devices', 'dashboards', 'sensors'];
   var st = document.createElement('style');
   st.id = 'pan-in-app';
-  var order = ['devices', 'services', 'dashboards', 'alerts', 'sensors', 'library', 'data', 'status', 'intuition', 'settings'];
+  var order = ['services', 'intuition', 'alerts', 'status', 'data', 'library', 'settings'];
   st.textContent = gone.map(function (t) { return '.tab[data-tab="' + t + '"]'; }).join(',') + ',#topbar,#session-row{display:none !important}#tab-bar{top:0 !important}.content-spacer{height:40px !important}'
     + order.map(function (t, i) { return '.tab[data-tab="' + t + '"]{order:' + (i + 1) + '}'; }).join('');
   document.head.appendChild(st);
   var on = document.querySelector('.tab.active');
   if (!on || gone.indexOf(on.dataset.tab) >= 0) {
-    var first = document.querySelector('.tab[data-tab="devices"]');
+    var first = document.querySelector('.tab[data-tab="services"]');
     if (first) first.click();
   }
 })();
@@ -191,8 +191,8 @@ fun DashboardScreen(
                                 Log.w("PAN-DASH", "Loaded: $url")
                                 // Inside the app the page drops what the app does itself or what is empty:
                                 // its old typed chat with the project and session rows above it (Home is
-                                // the talk), Tasks and Projects (nothing in them). Devices comes first:
-                                // what is on the hub.
+                                // the talk), Tasks and Projects (nothing in them), and Devices, Dashboards
+                                // and Sensors (the owner, 2026-11-18). Services and Intuition come first.
                                 view?.evaluateJavascript(IN_APP_TRIM, null)
                             }
                             override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) { Log.e("PAN-DASH", "Error: ${err?.description} ${req?.url}") }
