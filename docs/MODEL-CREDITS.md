@@ -33,7 +33,7 @@ today. Whatever is not in it is not part of ΠAN, even if a copy still sits on t
 | Job | What does it | Where | Licence |
 |---|---|---|---|
 | Talks (the voice model) | Syrinx, a fine-tune of Liquid LFM2 | Hub | LFM Open License v1.0 (see conditions) |
-| Answers what the voice model hands up | Phi-4-mini | Hub | MIT |
+| Answers what the voice model hands up | Phi-4-mini, as PAN's own fine-tune of it (`pan-phi-r1`, round 18) | Hub | MIT |
 | Splits Japanese into words with their readings | kuromoji 0.1.2 with the IPADIC dictionary | Hub | Apache 2.0 (code), NAIST / ICOT notice (dictionary, see conditions) |
 | What each Japanese word means | A meanings file made from JMdict | Hub | CC BY-SA 4.0 (see conditions) |
 | Long prompts, background jobs, pictures and screens | Gemma 4 E2B | Hub | Apache 2.0 |

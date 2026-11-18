@@ -111,12 +111,31 @@ function speedFact() {
  * and given it, OmniΠ named the model from memory hits ("Gemma4 e4b") or skipped its own name.
  * Tested on the hub: this shape answers correctly.
  */
+// The model that answers the lines the voice model hands up, said the way a person would say it.
+// With voice_hub_paths on, that is the hub's own model (voice_world_model), not the first model of
+// the cloud chain: asked what it runs on, PAN named the small Gemma while Phi was answering
+// (2026-11-17), because this line read the chain.
+function handedUpModel() {
+  const clean = (k) => String(readSetting(k) || '').replace(/^"|"$/g, '').trim();
+  const hub = clean('voice_world_model');
+  if (clean('voice_hub_paths').toLowerCase() === 'all' && /^(?:ollama|reader):\S+$/.test(hub)) {
+    const id = hub.replace(/^(?:ollama|reader):/, '');
+    const said = /^pan-phi/i.test(id) ? "PAN's own fine-tune of Microsoft's Phi 4 mini"
+      : /phi-?4/i.test(id) ? "Microsoft's Phi 4 mini"
+      : /gemma/i.test(id) ? "Google's Gemma 4"
+      : /qwen/i.test(id) ? "Alibaba's Qwen"
+      : id;
+    return { back: said, where: 'on the same machine' };
+  }
+  const back = activeChainModel() || 'unknown';
+  return { back, where: isCloud(back) ? 'in the cloud' : 'on the same machine' };
+}
+
 export function buildSelfLine({ viaLink, deviceId } = {}) {
   const student = readSetting('voice_student_model');
   if (!student) return '';
   const { name, base } = studentIdentity(student);
-  const back = activeChainModel() || 'unknown';
-  const where = isCloud(back) ? 'in the cloud' : 'on the same machine';
+  const { back, where } = handedUpModel();
   // Asked "what's my name?" with no line at all, Syrinx answered "I'm LFM, built by Liquid AI"
   // four times running, and said he was talking to it "via the web interface" (2026-11-03).
   const owner = readSetting('display_name');
