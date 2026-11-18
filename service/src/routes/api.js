@@ -17,9 +17,10 @@ import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
-import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, messageMode, setMessageMode, setNicknames } from '../person-messages.js';
+import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, declineTalk, messageMode, setMessageMode, setNicknames } from '../person-messages.js';
 import { recordMet, metFor, forgetMet } from '../met-people.js';
-import { groupsHere, addGroup, renameGroup, removeGroup, moveToGroup } from '../people-groups.js';
+import { groupsHere, addGroup, renameGroup, removeGroup, setInGroup } from '../people-groups.js';
+import { shareAnswerInCall } from '../call-share.js';
 import { whoseLine, speechLevel } from '../same-line.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
@@ -982,14 +983,15 @@ router.get('/people', (req, res) => {
   const canSend = !person || may(person, 'messages');
   // The groups inside the organization (people-groups.js), and which one each person is in.
   const groups = groupsHere();
-  const groupOfUser = new Map(groups.flatMap((g) => g.members.map((u) => [u, g.id])));
-  const people = (canSend ? peopleFor(me) : []).map((p) => ({ ...p, group: groupOfUser.get(p.id) ?? null }));
+  const groupsOfUser = (id) => groups.filter((g) => g.members.includes(id)).map((g) => g.id);
+  // groups: every group the person is in. group: the first of them, for apps before 0.5.25.
+  const people = (canSend ? peopleFor(me) : []).map((p) => ({ ...p, groups: groupsOfUser(p.id), group: groupsOfUser(p.id)[0] ?? null }));
   const owner = peopleHere().find((p) => p.id === 1);
   // group: what the owner calls the people on this hub ("Family", a company's name); '' until named.
   let group = '';
   try { group = String(get("SELECT value FROM settings WHERE key = 'people_group_name'")?.value || '').replace(/^"|"$/g, '').trim().slice(0, 30); } catch {}
   res.json({ ok: true, group, groups: groups.map((g) => ({ id: g.id, name: g.name })), can_meet: !person || may(person, 'meet'), talk: talkState(me),
-    me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person, messages: messageMode(me), group: groupOfUser.get(me) ?? null,
+    me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person, messages: messageMode(me), groups: groupsOfUser(me), group: groupsOfUser(me)[0] ?? null,
       read_by: person && ownerMayRead(me) ? (owner?.first || 'the owner') : null },
     can_send: canSend, people, unread: people.reduce((n, p) => n + p.unread, 0) });
 });
@@ -1048,9 +1050,13 @@ router.post('/people/groups', (req, res) => {
 });
 router.put('/people/groups/member', (req, res) => {
   if (!ownerOnly(req, res)) return;
-  const moved = moveToGroup(Number(req.body?.user), req.body?.group ?? null);
+  // { user, group, in }: into the group (in: true, the default) or out of it. group null: out of
+  // every group. An app before 0.5.25 sends no `in` and means "this group only".
+  const only = req.body?.in === undefined && req.body?.group !== null && req.body?.group !== undefined;
+  let moved = setInGroup(Number(req.body?.user), req.body?.group ?? null, req.body?.in !== false);
   if (!moved.ok) return res.status(groupRefused(moved.reason)).json({ ok: false, error: moved.reason });
-  res.json({ ok: true, user: Number(req.body?.user), group: moved.group });
+  if (only) for (const g of moved.groups) if (g !== Number(req.body.group)) moved = setInGroup(Number(req.body.user), g, false);
+  res.json({ ok: true, user: Number(req.body?.user), groups: moved.groups, group: moved.groups[0] ?? null });
 });
 router.put('/people/groups/:id', (req, res) => {
   if (!ownerOnly(req, res)) return;
@@ -1084,6 +1090,11 @@ router.post('/people/talk', (req, res) => {
 router.delete('/people/talk', (req, res) => {
   endTalk(req.user?.person ? req.user : null);
   res.json({ ok: true, talk: talkState(callerId(req)) });
+});
+// The person being called says no: { from }. The caller is told and their side closes.
+router.post('/people/talk/decline', (req, res) => {
+  const who = declineTalk(req.user?.person ? req.user : null, Number(req.body?.from));
+  res.json({ ok: true, declined: !!who, talk: talkState(callerId(req)) });
 });
 router.post('/people/messages', (req, res) => {
   const person = req.user?.person ? req.user : null;
@@ -2233,6 +2244,12 @@ router.post('/query/stream', async (req, res) => {
             if (spoken && !spoken.startsWith('[') && !['ambient', 'cancelled'].includes(event.result?.intent)) noteSaid(tailKey, spoken);
           }
           if (!bench && !person) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
+          // In a call, a plain answer that is not personal is read out to the other person too
+          // (call-share.js). After the asker's own answer has gone out; nothing waits on it.
+          if (!bench && !interp && event.result?.intent === 'query') {
+            shareAnswerInCall({ person, question: text, answer: event.result?.response, intent: event.result?.intent })
+              .catch((e) => console.warn('[call-share] failed:', e.message));
+          }
           // His notes follow him to the device he is talking to PAN on (phone-notes.js).
           if (!bench && !person && String(event.result?.response || '').trim() && !['ambient', 'cancelled'].includes(event.result?.intent)) noteOwnerSpokeOn(deviceName);
           // The situational state program's turn book: what it saw, what PAN did; the next

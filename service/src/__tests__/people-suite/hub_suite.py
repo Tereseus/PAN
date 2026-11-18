@@ -667,6 +667,14 @@ def main():
         s2, j2 = call("DELETE", "/api/v1/people/talk", device=quill["device"])
         tries = {"a call with nobody": call("POST", "/api/v1/people/talk", {"with": 99999}, device=zora["device"])[0], "a call with herself": call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=zora["device"])[0]}
         check("calls", "the app can open and close a call, and not with nobody", s == 200 and j.get("talk", {}).get("with") == 1 and j2.get("talk", {}).get("with") is None and all(v == 404 for v in tries.values()), (s, j, j2, tries))
+        # Saying no to a call.
+        pending(OWNER, PHONE)
+        call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=OWNER, headers=PHONE)
+        pending(zora["device"])
+        s, j = call("POST", "/api/v1/people/talk/decline", {"from": 1}, device=zora["device"])
+        told = pending(OWNER, PHONE)[1]
+        left = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("talk", {}).get("with")
+        check("calls", "she says no to his call: he is told and his side closes", s == 200 and j.get("declined") is True and told == ["Zora can't talk right now."] and left is None, (s, j, told, left))
         pending(OWNER, PHONE)
         # What the owner's first real call showed (2026-11-18): "hang up" was heard inside one
         # long line and did nothing, and a name came back from the speech model respelled.
@@ -724,6 +732,16 @@ def main():
                  "no name": call("POST", "/api/v1/people/groups", {"name": " "}, device=OWNER, headers=PHONE)[0],
                  "nobody": call("PUT", "/api/v1/people/groups/member", {"user": 99999, "group": gid}, device=OWNER, headers=PHONE)[0],
                  "no such group": call("PUT", "/api/v1/people/groups/member", {"user": zora["id"], "group": 99999}, device=OWNER, headers=PHONE)[0]}
+        # A person in more than one group, and taken out of one.
+        s, j = call("POST", "/api/v1/people/groups", {"name": "Kitchen"}, device=OWNER, headers=PHONE)
+        gid2 = (j.get("group") or {}).get("id")
+        s, j = call("PUT", "/api/v1/people/groups/member", {"user": zora["id"], "group": gid2, "in": True}, device=OWNER, headers=PHONE)
+        both = [p.get("groups") for p in call("GET", "/api/v1/people", device=quill["device"])[1].get("people", []) if p.get("id") == zora["id"]]
+        s2, j2 = call("PUT", "/api/v1/people/groups/member", {"user": zora["id"], "group": gid, "in": False}, device=OWNER, headers=PHONE)
+        one = [p.get("groups") for p in call("GET", "/api/v1/people", device=quill["device"])[1].get("people", []) if p.get("id") == zora["id"]]
+        check("groups", "a person can be in more than one group, and taken out of one", s == 200 and both == [[gid, gid2]] and s2 == 200 and one == [[gid2]], (s, j, both, s2, j2, one))
+        call("PUT", "/api/v1/people/groups/member", {"user": zora["id"], "group": gid, "in": True}, device=OWNER, headers=PHONE)
+        call("DELETE", "/api/v1/people/groups/%s" % gid2, device=OWNER, headers=PHONE)
         s, j = call("PUT", "/api/v1/people/groups/%s" % gid, {"name": "Nights"}, device=OWNER, headers=PHONE)
         s2, j2 = call("DELETE", "/api/v1/people/groups/%s" % gid, device=OWNER, headers=PHONE)
         seen = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1]

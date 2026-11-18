@@ -456,6 +456,23 @@ export function endTalk(person, now = Date.now()) {
 }
 
 /**
+ * The person being called says no: the caller's side closes and the caller is told. Nothing
+ * of the called person's was ever passed on. -> the caller's first name, or null (nobody was calling)
+ */
+export function declineTalk(person, callerId, now = Date.now()) {
+  const me = person ? Number(person.id) : OWNER_ID;
+  const caller = Number(callerId);
+  const t = talkOf(caller, now);
+  if (!t || t.with !== me || talks.get(me)?.with === caller) return null;
+  talks.delete(caller);
+  const here = peopleHere();
+  const mine = here.find((p) => p.id === me);
+  addNote({ type: 'speak', title: mine?.first || 'ΠAN', body: `${mine?.first || 'They'} can't talk right now.`, data: { kind: 'talk', from_user: me } }, { toUser: caller, keepMs: 60_000, now });
+  console.log(`[call] person ${me} declined a call from person ${caller}`);
+  return here.find((p) => p.id === caller)?.first || null;
+}
+
+/**
  * A line heard on the device of someone in a call. Not said to ΠAN by name: it is their words to
  * the other person, passed on as heard. -> null (not in a call, or the line is ΠAN's to handle)
  * | { to, sent } (handled: ΠAN answers nothing). wearer false: the hub is sure it was someone

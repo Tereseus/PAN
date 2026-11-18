@@ -445,5 +445,59 @@ test('hang up inside a longer line, without the name, and a line that grew', () 
   ok(pm.saysHangUp('Hang, hang up') === false && pm.saysHangUp('We should hang up the coats') === false, 'not the command');
 });
 
+test('saying no to a call: the caller is told and their side closes; nothing of hers went anywhere', () => {
+  pm.resetTalks();
+  pm.startTalk(null, mia.id);
+  take(MIA_PHONE, Date.now());
+  ok(pm.declineTalk(mia, 1) === 'Alex' && pm.talkState(1).with === null && pm.talkState(mia.id).calling_me === null, J(pm.talkState(1)));
+  ok(bodies(take(OWNER_PHONE, Date.now())) === "Mia can't talk right now.", 'he was not told');
+  ok(pm.talkLine('Hello?', {}) === null, 'his call is still open');
+  ok(pm.declineTalk(mia, 1) === null && pm.declineTalk(mia, kit.id) === null, 'declining nobody');
+  // A call both are on is not declined: it is ended.
+  pm.startTalk(null, mia.id); pm.startTalk(mia, 1);
+  ok(pm.declineTalk(mia, 1) === null && pm.talkState(1).joined === true, 'a joined call was declined');
+  pm.resetTalks();
+});
+
+await (async () => {
+  const cs = await import('../call-share.js');
+  const yes = async () => true, no = async () => false;
+  const run_ = async (name, fn) => {
+    try { pm.resetTalks(); await fn(); passed++; console.log(`  ✓ ${name}`); }
+    catch (err) { failed++; console.log(`  ✗ ${name}: ${err.message}`); }
+  };
+  await run_('in a call, PAN\'s answer to one is read out to the other when it is not personal', async () => {
+    pm.startTalk(null, mia.id); pm.startTalk(mia, 1);
+    take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now());
+    const r = await cs.shareAnswerInCall({ question: 'PAN, how far is the moon?', answer: 'About 384,000 kilometres.', intent: 'query' }, { judge: yes });
+    ok(r.shared === true && r.to === mia.id, J(r));
+    ok(bodies(take(MIA_PHONE, Date.now())) === 'Asked PAN: PAN, how far is the moon? PAN said: About 384,000 kilometres.', 'what she heard');
+    // From her side too, to him.
+    const back = await cs.shareAnswerInCall({ person: mia, question: 'PAN, what is twelve times twelve?', answer: '144.', intent: 'query' }, { judge: yes });
+    ok(back.shared === true && bodies(take(OWNER_PHONE, Date.now())) === 'Asked PAN: PAN, what is twelve times twelve? PAN said: 144.', J(back));
+  });
+  await run_('personal, or something PAN did, or no call: only the asker hears it', async () => {
+    pm.startTalk(null, mia.id); pm.startTalk(mia, 1);
+    take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now());
+    const personal = await cs.shareAnswerInCall({ question: 'PAN, what is on my calendar?', answer: 'The dentist at three.', intent: 'query' }, { judge: no });
+    const did = await cs.shareAnswerInCall({ question: 'PAN, what did I say about the trip?', answer: 'You said June.', intent: 'memory' }, { judge: yes });
+    const empty = await cs.shareAnswerInCall({ question: 'PAN, hm', answer: '', intent: 'query' }, { judge: yes });
+    const marker = await cs.shareAnswerInCall({ question: 'PAN, hm', answer: '[AMBIENT]', intent: 'query' }, { judge: yes });
+    ok(personal.reason === 'personal' && did.reason === 'not_an_answer' && empty.reason === 'not_an_answer' && marker.reason === 'not_an_answer', J([personal, did, empty, marker]));
+    ok(take(MIA_PHONE, Date.now()).length === 0, 'something reached her');
+    // She has not answered: nothing is shared with someone who is only being called.
+    pm.resetTalks(); pm.startTalk(null, mia.id); take(MIA_PHONE, Date.now());
+    const early = await cs.shareAnswerInCall({ question: 'PAN, how far is the moon?', answer: 'About 384,000 kilometres.', intent: 'query' }, { judge: yes });
+    pm.resetTalks();
+    const none = await cs.shareAnswerInCall({ question: 'PAN, how far is the moon?', answer: 'About 384,000 kilometres.', intent: 'query' }, { judge: yes });
+    ok(early.reason === 'no_call' && none.reason === 'no_call' && take(MIA_PHONE, Date.now()).length === 0, J([early, none]));
+    // The call ended while the model was reading: not sent.
+    pm.startTalk(null, mia.id); pm.startTalk(mia, 1); take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now());
+    const late = await cs.shareAnswerInCall({ question: 'PAN, how far is the moon?', answer: 'Far.', intent: 'query' }, { judge: async () => { pm.endTalk(null); return true; } });
+    take(MIA_PHONE, Date.now());
+    ok(late.reason === 'no_call', J(late));
+  });
+})();
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -27,10 +27,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -109,6 +111,7 @@ fun PeopleScreen(viewModel: PeopleViewModel) {
     val watching by viewModel.watching.collectAsState()
     val message by viewModel.message.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+    val actions = remember { PersonActions() }
     LaunchedEffect(message) { message?.let { snackbar.showSnackbar(it); viewModel.clearMessage() } }
 
     // Fresh while the tab is on screen and the app is in front; nothing is asked otherwise.
@@ -127,16 +130,41 @@ fun PeopleScreen(viewModel: PeopleViewModel) {
         val person = open
         val child = watching
         when {
-            person != null -> Conversation(viewModel, person, readingFor = child)
+            person != null -> Conversation(viewModel, person, actions, snackbar, readingFor = child)
             child != null -> ChildMessages(viewModel, child)
-            else -> PeopleList(viewModel, snackbar)
+            else -> PeopleList(viewModel, snackbar, actions)
         }
+        PersonDialogs(viewModel, actions, snackbar)
         SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp))
     }
 }
 
+/**
+ * What the owner can do to one person. Asked from inside that person's conversation (the "..."
+ * there), shown as dialogs over whatever is on screen.
+ */
+private class PersonActions {
+    var renaming by mutableStateOf<PersonLine?>(null)
+    var removing by mutableStateOf<PersonLine?>(null)
+    var groupsFor by mutableStateOf<PersonLine?>(null)
+    var alsoCalled by mutableStateOf<PersonLine?>(null)
+    var code by mutableStateOf<Pair<String, String>?>(null)      // whose, the pairing link
+    var busy by mutableStateOf(false)
+}
+
+/** A one-time code for a device of this person's. */
+private suspend fun codeFor(viewModel: PeopleViewModel, actions: PersonActions, snackbar: SnackbarHostState, id: Int, name: String) {
+    actions.busy = true
+    val r = viewModel.hub("POST", "/api/v1/link/pair",
+        JSONObject().put("name", "$name's device").put("for_user", id).put("ttl_minutes", 10))
+    actions.busy = false
+    val uri = r?.takeIf { it.first == 200 }?.second?.optString("uri").orEmpty()
+    if (uri.startsWith("pan://pair")) actions.code = name to uri
+    else snackbar.showSnackbar(r?.second?.optString("error")?.takeIf { it.isNotBlank() } ?: "ΠAN could not make a code right now.")
+}
+
 @Composable
-private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) {
+private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, actions: PersonActions) {
     val people by viewModel.people.collectAsState()
     val failed by viewModel.failed.collectAsState()
     val owner by viewModel.owner.collectAsState()
@@ -152,31 +180,16 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
     val myMode by viewModel.myMode.collectAsState()
     val myModeLocked by viewModel.myModeLocked.collectAsState()
     val scope = rememberCoroutineScope()
-    // The two parts of People (the owner, 2026-11-18): the organization on this hub, and Others,
-    // the people with a ΠAN of their own.
-    var part by rememberSaveable { mutableStateOf("group") }
+    // What is being looked at (the owner, 2026-11-18: one drop down): "all" the organization on
+    // this hub, "g<id>" one group in it, "others" the people with a ΠAN of their own.
+    var part by rememberSaveable { mutableStateOf("all") }
+    var picking by remember { mutableStateOf(false) }
     var naming by remember { mutableStateOf(false) }
-    var newGroupFor by remember { mutableStateOf<Int?>(null) }           // -1: a group alone; else the person to put in it
-    var moving by remember { mutableStateOf<PersonLine?>(null) }
-    var renamingGroup by remember { mutableStateOf<GroupLine?>(null) }
-    var alsoCalled by remember { mutableStateOf<PersonLine?>(null) }
-    LaunchedEffect(Unit) { viewModel.loadMet() }
-
     var adding by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf<Pair<String, String>?>(null) }     // whose, the pairing link
-    var removing by remember { mutableStateOf<PersonLine?>(null) }
-    var renaming by remember { mutableStateOf<PersonLine?>(null) }
-    var busy by remember { mutableStateOf(false) }
-
-    suspend fun codeFor(id: Int, name: String) {
-        busy = true
-        val r = viewModel.hub("POST", "/api/v1/link/pair",
-            JSONObject().put("name", "$name's device").put("for_user", id).put("ttl_minutes", 10))
-        busy = false
-        val uri = r?.takeIf { it.first == 200 }?.second?.optString("uri").orEmpty()
-        if (uri.startsWith("pan://pair")) code = name to uri
-        else snackbar.showSnackbar(r?.second?.optString("error")?.takeIf { it.isNotBlank() } ?: "ΠAN could not make a code right now.")
-    }
+    var newGroup by remember { mutableStateOf(false) }
+    var filling by remember { mutableStateOf<GroupLine?>(null) }
+    var renamingGroup by remember { mutableStateOf<GroupLine?>(null) }
+    LaunchedEffect(Unit) { viewModel.loadMet() }
 
     // Mute wherever a call can be taken or made (the owner, 2026-11-18).
     val micOn by PanForegroundService.micEnabled.collectAsState()
@@ -198,21 +211,47 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                 modifier = Modifier.padding(horizontal = 20.dp))
             return@Column
         }
-        // The two parts. The first carries the name the owner gave the people on this hub (a
-        // family, a workplace). Others is there once this person may add people or has any.
+        // The drop down. First the organization by the name the owner gave it (a family, a
+        // workplace), then its groups, then everyone else.
+        val orgName = group.ifBlank { "Family" }
+        val current = groups.firstOrNull { part == "g${it.id}" }
         val showOthers = canMeet || met.isNotEmpty()
-        if (showOthers) {
-            Row(modifier = Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = part == "group", onClick = { part = "group" }, label = { Text(group.ifBlank { "Family" }) })
-                FilterChip(selected = part == "met", onClick = { part = "met" }, label = { Text("Others") })
-            }
-            if (part == "met") { MetPart(viewModel); return@Column }
+        val showing = when {
+            part == "others" && showOthers -> "others"
+            current != null -> part
+            else -> "all"
         }
+        if (groups.isNotEmpty() || showOthers || owner) {
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                OutlinedButton(onClick = { picking = true }) {
+                    Text(when (showing) { "others" -> "Everyone else"; "all" -> orgName; else -> current?.name ?: orgName })
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose who to show")
+                }
+                DropdownMenu(expanded = picking, onDismissRequest = { picking = false }) {
+                    DropdownMenuItem(text = { Text(orgName, fontWeight = if (showing == "all") FontWeight.SemiBold else FontWeight.Normal) },
+                        onClick = { picking = false; part = "all" })
+                    groups.forEach { g ->
+                        DropdownMenuItem(text = { Text(g.name, fontWeight = if (showing == "g${g.id}") FontWeight.SemiBold else FontWeight.Normal) },
+                            onClick = { picking = false; part = "g${g.id}" })
+                    }
+                    if (showOthers) DropdownMenuItem(text = { Text("Everyone else", fontWeight = if (showing == "others") FontWeight.SemiBold else FontWeight.Normal) },
+                        onClick = { picking = false; part = "others" })
+                    if (owner) {
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text("New group") }, onClick = { picking = false; newGroup = true })
+                    }
+                }
+            }
+        }
+        if (showing == "others") { MetPart(viewModel); return@Column }
+        val shown = if (current != null && showing != "all") rows.filter { current.id in it.groups } else rows
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            // A call: who is calling, or who this person is on with.
+            // A call: who is calling, or who this person is on with. Always in view, whatever is picked.
             rows.firstOrNull { it.id == callingMe }?.let { caller ->
                 item(key = "calling") {
-                    CallBar("${firstName(caller.name)} wants to talk.", "Answer") { viewModel.startTalk(caller.id, firstName(caller.name)) }
+                    CallBar("${firstName(caller.name)} wants to talk.", "Answer", second = "Not now", onSecond = { viewModel.declineTalk(caller.id) }) {
+                        viewModel.startTalk(caller.id, firstName(caller.name))
+                    }
                 }
             }
             rows.firstOrNull { it.id == talkWith }?.let { other ->
@@ -239,39 +278,33 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             }
-            // In no group first, then each group under its name. A group with nobody in it shows
-            // to the owner only, who is the one who can fill it.
-            val known = groups.map { it.id }.toSet()
-            val sections = listOf<Pair<GroupLine?, List<PersonLine>>>(null to rows.filter { it.group !in known }) +
-                groups.map { g -> g to rows.filter { it.group == g.id } }
-            sections.forEach { (g, inIt) ->
-                if (g != null && (inIt.isNotEmpty() || owner)) item(key = "group-${g.id}") {
-                    GroupHeader(g, owner = owner, empty = inIt.isEmpty(), onRename = { renamingGroup = g }, onDelete = { viewModel.removeGroup(g.id) })
-                }
-                items(inIt, key = { it.id }) { person ->
-                    PersonRow(person, owner = owner, busy = busy,
-                        onOpen = { viewModel.openTalk(person) },
-                        onRead = { viewModel.watch(person) },
-                        onMode = { mode, locked -> viewModel.setMode(mode, person.id, locked) },
-                        onAddDevice = { scope.launch { codeFor(person.id, person.name) } },
-                        onRename = { renaming = person },
-                        onGroup = { moving = person },
-                        onNames = { alsoCalled = person },
-                        onRemove = { removing = person })
-                    HorizontalDivider(modifier = Modifier.padding(start = 20.dp))
+            if (current != null && showing != "all" && shown.isEmpty()) item {
+                Text("Nobody is in ${current.name} yet.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            }
+            items(shown, key = { it.id }) { person ->
+                PersonRow(person, owner = owner, onOpen = { viewModel.openTalk(person) })
+                HorizontalDivider(modifier = Modifier.padding(start = 20.dp))
+            }
+            // The owner's buttons for what is showing: a group's people and name, or the organization's.
+            if (owner && current != null && showing != "all") item {
+                Row(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { filling = current }) { Text("Choose people") }
+                    TextButton(onClick = { renamingGroup = current }) { Text("Rename") }
+                    TextButton(onClick = { part = "all"; viewModel.removeGroup(current.id) }) { Text("Delete") }
                 }
             }
-            if (owner) item {
-                Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { adding = true }, enabled = !busy) { Text("Add a person") }
-                        OutlinedButton(onClick = { newGroupFor = -1 }, enabled = !busy) { Text("New group") }
-                    }
-                    TextButton(onClick = { naming = true }) { Text(if (group.isBlank()) "Name your organization" else "Rename $group") }
+            if (owner && showing == "all") item {
+                Row(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { adding = true }, enabled = !actions.busy) { Text("Add a person") }
+                    TextButton(onClick = { naming = true }) { Text(if (group.isBlank()) "Name it" else "Rename $group") }
                 }
             }
-            if (rows.isNotEmpty() && canSend) item {
-                Text("Say \"ΠAN, tell ${firstName(rows.first().name)} ...\" for one message, or \"ΠAN, talk to ${firstName(rows.first().name)}\" and then just talk. \"ΠAN, hang up\" ends it.",
+            if (shown.isNotEmpty() && canSend) item {
+                Text("Tap someone to write or call. Or say \"ΠAN, tell ${firstName(shown.first().name)} ...\" for one message, or \"ΠAN, talk to ${firstName(shown.first().name)}\" and then just talk.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             }
@@ -310,14 +343,14 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
         )
     }
 
-    newGroupFor?.let { forPerson ->
+    if (newGroup) {
         var name by remember { mutableStateOf("") }
         AlertDialog(
-            onDismissRequest = { newGroupFor = null },
+            onDismissRequest = { newGroup = false },
             title = { Text("New group") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("A group or a team inside ${group.ifBlank { "your organization" }}. Call it anything. You can move people in and out, rename it or delete it later.",
+                    Text("A group or a team inside ${group.ifBlank { "Family" }}. Call it anything. It shows in the list at the top; pick it there to choose its people.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(value = name, onValueChange = { name = it.take(30) }, label = { Text("Name") },
                         singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -328,34 +361,28 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                     }
                 }
             },
-            confirmButton = {
-                TextButton(enabled = name.isNotBlank(), onClick = {
-                    newGroupFor = null
-                    viewModel.addGroup(name, thenMove = forPerson.takeIf { it > 0 })
-                }) { Text("Make it") }
-            },
-            dismissButton = { TextButton(onClick = { newGroupFor = null }) { Text("Cancel") } },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { newGroup = false; viewModel.addGroup(name) }) { Text("Make it") } },
+            dismissButton = { TextButton(onClick = { newGroup = false }) { Text("Cancel") } },
         )
     }
 
-    moving?.let { person ->
+    filling?.let { g ->
         AlertDialog(
-            onDismissRequest = { moving = null },
-            title = { Text("${firstName(person.name)}'s group") },
+            onDismissRequest = { filling = null },
+            title = { Text("Who is in ${g.name}") },
             text = {
-                Column {
-                    (listOf(GroupLine(0, "No group")) + groups).forEach { g ->
-                        TextButton(onClick = { moving = null; if (g.id != person.group) viewModel.moveTo(person.id, g.id) }, modifier = Modifier.fillMaxWidth()) {
-                            Text(g.name, modifier = Modifier.weight(1f),
-                                fontWeight = if (g.id == person.group || (g.id == 0 && groups.none { it.id == person.group })) FontWeight.SemiBold else FontWeight.Normal)
+                LazyColumn {
+                    items(people.orEmpty(), key = { it.id }) { person ->
+                        val inIt = g.id in person.groups
+                        Row(modifier = Modifier.fillMaxWidth().clickable { viewModel.setInGroup(person.id, g.id, !inIt) },
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = inIt, onCheckedChange = { viewModel.setInGroup(person.id, g.id, it) })
+                            Text(person.name, style = MaterialTheme.typography.bodyLarge)
                         }
-                    }
-                    TextButton(onClick = { moving = null; newGroupFor = person.id }, modifier = Modifier.fillMaxWidth()) {
-                        Text("New group...", modifier = Modifier.weight(1f))
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { moving = null }) { Text("Close") } },
+            confirmButton = { TextButton(onClick = { filling = null }) { Text("Done") } },
         )
     }
 
@@ -372,29 +399,6 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                 TextButton(enabled = name.isNotBlank() && name.trim() != g.name, onClick = { renamingGroup = null; viewModel.renameGroup(g.id, name) }) { Text("Rename") }
             },
             dismissButton = { TextButton(onClick = { renamingGroup = null }) { Text("Cancel") } },
-        )
-    }
-
-    alsoCalled?.let { person ->
-        var names by remember(person.id) { mutableStateOf(person.aka.joinToString(", ")) }
-        AlertDialog(
-            onDismissRequest = { alsoCalled = null },
-            title = { Text("Other names for ${firstName(person.name)}") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("For a name ΠAN mishears, or a name nobody says in full. \"ΠAN, tell ...\" and \"ΠAN, talk to ...\" work with these too. Up to four, with commas between.",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedTextField(value = names, onValueChange = { names = it.take(110) }, label = { Text("Names") },
-                        singleLine = true, modifier = Modifier.fillMaxWidth())
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    alsoCalled = null
-                    viewModel.setNames(person.id, names.split(',').map { it.trim() }.filter { it.isNotEmpty() }.take(4))
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { alsoCalled = null }) { Text("Cancel") } },
         )
     }
 
@@ -418,26 +422,34 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                 }
             },
             confirmButton = {
-                TextButton(enabled = name.isNotBlank() && !busy, onClick = {
+                TextButton(enabled = name.isNotBlank() && !actions.busy, onClick = {
                     scope.launch {
-                        busy = true
+                        actions.busy = true
                         val r = viewModel.hub("POST", "/api/v1/auth/users", JSONObject().put("display_name", name.trim()).put("role", role))
-                        busy = false
+                        actions.busy = false
                         adding = false
                         val user = r?.takeIf { it.first == 200 }?.second?.optJSONObject("user")
                         if (user == null) snackbar.showSnackbar(r?.second?.optString("error")?.takeIf { it.isNotBlank() } ?: "ΠAN could not add them right now.")
-                        else { viewModel.load(withDevices = true); codeFor(user.optInt("id"), user.optString("display_name")) }
+                        else { viewModel.load(withDevices = true); codeFor(viewModel, actions, snackbar, user.optInt("id"), user.optString("display_name")) }
                     }
                 }) { Text("Add") }
             },
             dismissButton = { TextButton(onClick = { adding = false }) { Text("Cancel") } },
         )
     }
+}
 
-    code?.let { (whose, uri) ->
+/** The dialogs for what the owner does to one person. Over the list or over a conversation. */
+@Composable
+private fun PersonDialogs(viewModel: PeopleViewModel, actions: PersonActions, snackbar: SnackbarHostState) {
+    val people by viewModel.people.collectAsState()
+    val groups by viewModel.groups.collectAsState()
+    val scope = rememberCoroutineScope()
+
+    actions.code?.let { (whose, uri) ->
         val qr = remember(uri) { qrBitmap(uri, 640) }
         AlertDialog(
-            onDismissRequest = { code = null; viewModel.refresh(withDevices = true) },
+            onDismissRequest = { actions.code = null; viewModel.refresh(withDevices = true) },
             title = { Text("$whose's device") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -447,38 +459,85 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
-            confirmButton = { TextButton(onClick = { code = null; viewModel.refresh(withDevices = true) }) { Text("Done") } },
+            confirmButton = { TextButton(onClick = { actions.code = null; viewModel.refresh(withDevices = true) }) { Text("Done") } },
         )
     }
 
-    renaming?.let { person ->
+    actions.groupsFor?.let { asked ->
+        // The list keeps loading while this is open: show the person as they are now.
+        val person = people?.firstOrNull { it.id == asked.id } ?: asked
+        AlertDialog(
+            onDismissRequest = { actions.groupsFor = null },
+            title = { Text("${firstName(person.name)}'s groups") },
+            text = {
+                Column {
+                    if (groups.isEmpty()) Text("There are no groups yet. Make one from the list at the top of People.",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    groups.forEach { g ->
+                        val inIt = g.id in person.groups
+                        Row(modifier = Modifier.fillMaxWidth().clickable { viewModel.setInGroup(person.id, g.id, !inIt) },
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = inIt, onCheckedChange = { viewModel.setInGroup(person.id, g.id, it) })
+                            Text(g.name, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { actions.groupsFor = null }) { Text("Done") } },
+        )
+    }
+
+    actions.alsoCalled?.let { person ->
+        var names by remember(person.id) { mutableStateOf(person.aka.joinToString(", ")) }
+        AlertDialog(
+            onDismissRequest = { actions.alsoCalled = null },
+            title = { Text("Other names for ${firstName(person.name)}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("For a name ΠAN mishears, or a name nobody says in full. \"ΠAN, tell ...\" and \"ΠAN, talk to ...\" work with these too. Up to four, with commas between.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(value = names, onValueChange = { names = it.take(110) }, label = { Text("Names") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    actions.alsoCalled = null
+                    viewModel.setNames(person.id, names.split(',').map { it.trim() }.filter { it.isNotEmpty() }.take(4))
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { actions.alsoCalled = null }) { Text("Cancel") } },
+        )
+    }
+
+    actions.renaming?.let { person ->
         var name by remember(person.id) { mutableStateOf(person.name) }
         AlertDialog(
-            onDismissRequest = { renaming = null },
+            onDismissRequest = { actions.renaming = null },
             title = { Text("Rename ${person.name}") },
             text = {
                 OutlinedTextField(value = name, onValueChange = { name = it.take(40) }, label = { Text("Name") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
             },
             confirmButton = {
-                TextButton(enabled = name.isNotBlank() && name.trim() != person.name && !busy, onClick = {
-                    renaming = null
+                TextButton(enabled = name.isNotBlank() && name.trim() != person.name && !actions.busy, onClick = {
+                    actions.renaming = null
                     scope.launch {
-                        busy = true
+                        actions.busy = true
                         val r = viewModel.hub("PUT", "/api/v1/auth/users/${person.id}/name", JSONObject().put("display_name", name.trim()))
-                        busy = false
+                        actions.busy = false
                         if (r == null || r.first != 200) snackbar.showSnackbar(r?.second?.optString("error")?.takeIf { it.isNotBlank() } ?: "ΠAN could not rename them right now.")
                         viewModel.load(withDevices = false)
                     }
                 }) { Text("Rename") }
             },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { actions.renaming = null }) { Text("Cancel") } },
         )
     }
 
-    removing?.let { person ->
+    actions.removing?.let { person ->
         AlertDialog(
-            onDismissRequest = { removing = null },
+            onDismissRequest = { actions.removing = null },
             title = { Text("Remove ${person.name}?") },
             text = {
                 Text(if (person.devices.isEmpty()) "${person.name} will no longer be on your ΠAN."
@@ -486,9 +545,9 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
             },
             confirmButton = {
                 TextButton(onClick = {
-                    removing = null
+                    actions.removing = null
                     scope.launch {
-                        busy = true
+                        actions.busy = true
                         // The devices first: a device left paired after its person is gone is nobody's.
                         var left = 0
                         person.devices.forEach { id ->
@@ -496,28 +555,25 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                             if (r == null || r.first !in listOf(200, 404)) left++
                         }
                         val r = if (left == 0) viewModel.hub("DELETE", "/api/v1/auth/users/${person.id}") else null
-                        busy = false
+                        actions.busy = false
                         if (r == null || r.first != 200) snackbar.showSnackbar(
                             if (left > 0) "ΠAN could not remove ${person.name}'s device, so ${person.name} is still there. Try again."
                             else "ΠAN could not remove ${person.name} right now.")
+                        else viewModel.closeTalk()
                         viewModel.load(withDevices = true)
                     }
                 }) { Text("Remove") }
             },
-            dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { actions.removing = null }) { Text("Cancel") } },
         )
     }
 }
 
+/** One person in the list. Tap to open their conversation; everything else about them is in there. */
 @Composable
-private fun PersonRow(
-    person: PersonLine, owner: Boolean, busy: Boolean,
-    onOpen: () -> Unit, onRead: () -> Unit, onMode: (String, Boolean) -> Unit, onAddDevice: () -> Unit, onRename: () -> Unit,
-    onGroup: () -> Unit, onNames: () -> Unit, onRemove: () -> Unit,
-) {
-    var menu by remember { mutableStateOf(false) }
+private fun PersonRow(person: PersonLine, owner: Boolean, onOpen: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 20.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 20.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -530,66 +586,22 @@ private fun PersonRow(
             }
             // What the owner set for them. A person sees only who the owner is.
             val about = when {
-                owner -> "${roleLabel(person.role)} · " + when (person.devices.size) {
-                    0 -> "no device yet"
-                    1 -> "1 device"
-                    else -> "${person.devices.size} devices"
-                } + (if (person.locked) " · messages ${if (person.mode == "show") "shown only" else "read out"}, set by you" else "")
+                owner -> roleLabel(person.role) + (if (person.devices.isEmpty()) " · no device yet" else "")
                 person.role == "owner" -> "Owner"
                 else -> null
             }
             if (about != null) Text(about, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (person.aka.isNotEmpty()) Text("Also: " + person.aka.joinToString(", "), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 8.dp, end = if (owner) 0.dp else 16.dp)) {
+        Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 8.dp)) {
             val at = whenText(person.lastAt)
             if (at.isNotEmpty()) Text(at, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (person.unread > 0) Badge(modifier = Modifier.padding(top = 4.dp)) { Text("${person.unread}") }
-        }
-        if (owner) Box {
-            IconButton(onClick = { menu = true }, enabled = !busy) {
-                Icon(Icons.Default.MoreVert, contentDescription = "More for ${person.name}")
-            }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                // A child's conversations with others are the owner's to read (the hub holds this to children).
-                if (person.role == "child") DropdownMenuItem(text = { Text("${firstName(person.name)}'s messages") }, onClick = { menu = false; onRead() })
-                // How what is sent to them reaches them: his to set and lock, or theirs to choose.
-                DropdownMenuItem(text = { Text("Messages: read out") }, onClick = { menu = false; onMode("speak", true) })
-                DropdownMenuItem(text = { Text("Messages: show only") }, onClick = { menu = false; onMode("show", true) })
-                if (person.locked) DropdownMenuItem(text = { Text("Let ${firstName(person.name)} choose") }, onClick = { menu = false; onMode(person.mode, false) })
-                DropdownMenuItem(text = { Text("Group") }, onClick = { menu = false; onGroup() })
-                DropdownMenuItem(text = { Text("Other names") }, onClick = { menu = false; onNames() })
-                DropdownMenuItem(text = { Text("Add device") }, onClick = { menu = false; onAddDevice() })
-                DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
-                DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
-            }
         }
     }
 }
 
 // Names offered when the owner makes a group. Only a start: any name works.
-private val GROUP_IDEAS = listOf("Kids", "Team", "Guests", "Family")
-
-/** A group's name above its people. The owner can rename or delete it from here. */
-@Composable
-private fun GroupHeader(group: GroupLine, owner: Boolean, empty: Boolean, onRename: () -> Unit, onDelete: () -> Unit) {
-    var menu by remember { mutableStateOf(false) }
-    Row(modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(modifier = Modifier.weight(1f).padding(vertical = 6.dp)) {
-            Text(group.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            if (empty) Text("Nobody in it yet. Open a person's menu and choose Group.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if (owner) Box {
-            IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More for the group ${group.name}") }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
-                DropdownMenuItem(text = { Text("Delete group") }, onClick = { menu = false; onDelete() })
-            }
-        }
-    }
-}
+private val GROUP_IDEAS = listOf("Kids", "Team", "Guests", "Friends")
 
 /**
  * Others: people with a ΠAN of their own whose code this person scanned. Each of the two scans the
@@ -699,13 +711,14 @@ private fun MetPart(viewModel: PeopleViewModel) {
 
 /** One line about a call, with the one thing to do about it. */
 @Composable
-private fun CallBar(text: String, action: String, onAction: () -> Unit) {
+private fun CallBar(text: String, action: String, second: String? = null, onSecond: () -> Unit = {}, onAction: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Call, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
             Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier.weight(1f).padding(horizontal = 10.dp))
+            if (second != null) TextButton(onClick = onSecond) { Text(second) }
             TextButton(onClick = onAction) { Text(action) }
         }
     }
@@ -754,7 +767,10 @@ private fun ChildMessages(viewModel: PeopleViewModel, child: PersonLine) {
 
 /** readingFor: the child whose conversation the owner is reading (their lines on the right, nothing can be sent). */
 @Composable
-private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, readingFor: PersonLine? = null) {
+private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, actions: PersonActions, snackbar: SnackbarHostState, readingFor: PersonLine? = null) {
+    val owner by viewModel.owner.collectAsState()
+    val menuScope = rememberCoroutineScope()
+    var menu by remember { mutableStateOf(false) }
     val talk by viewModel.talk.collectAsState()
     val more by viewModel.more.collectAsState()
     val sending by viewModel.sending.collectAsState()
@@ -790,6 +806,25 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, reading
             if (readingFor == null) MicButton(on = micOn, diameter = 40.dp, onClick = {
                 context.startService(android.content.Intent(context, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
             })
+            // Everything the owner can do to this person lives here, not on the list.
+            if (owner && readingFor == null && person.role != "owner") Box {
+                IconButton(onClick = { menu = true }, enabled = !actions.busy) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "More for ${person.name}")
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    // A child's conversations with others are the owner's to read (the hub holds this to children).
+                    if (person.role == "child") DropdownMenuItem(text = { Text("$first's messages") }, onClick = { menu = false; viewModel.closeTalk(); viewModel.watch(person) })
+                    DropdownMenuItem(text = { Text("Groups") }, onClick = { menu = false; actions.groupsFor = person })
+                    DropdownMenuItem(text = { Text("Other names") }, onClick = { menu = false; actions.alsoCalled = person })
+                    // How what is sent to them reaches them: the owner's to set and lock, or theirs to choose.
+                    DropdownMenuItem(text = { Text("Messages: read out") }, onClick = { menu = false; viewModel.setMode("speak", person.id, true) })
+                    DropdownMenuItem(text = { Text("Messages: show only") }, onClick = { menu = false; viewModel.setMode("show", person.id, true) })
+                    if (person.locked) DropdownMenuItem(text = { Text("Let $first choose") }, onClick = { menu = false; viewModel.setMode(person.mode, person.id, false) })
+                    DropdownMenuItem(text = { Text("Add device") }, onClick = { menu = false; menuScope.launch { codeFor(viewModel, actions, snackbar, person.id, person.name) } })
+                    DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; actions.renaming = person })
+                    DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; actions.removing = person })
+                }
+            }
         }
         if (readingFor == null && !micOn) Text("Muted: ΠAN cannot hear you, and what $first sends is shown here, not read out. Tap the microphone to unmute.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,

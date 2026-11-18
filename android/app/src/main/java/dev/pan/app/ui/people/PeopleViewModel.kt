@@ -30,8 +30,8 @@ data class PersonLine(
     val mode: String = "speak", val locked: Boolean = false,
     /** Other names they go by, for a name ΠAN mishears. */
     val aka: List<String> = emptyList(),
-    /** The group they are in inside the organization; 0: none. */
-    val group: Int = 0,
+    /** The groups they are in inside the organization. */
+    val groups: List<Int> = emptyList(),
 )
 
 /** A group inside the organization on this ΠAN ("Kids", "Night shift"). */
@@ -153,7 +153,8 @@ class PeopleViewModel @Inject constructor(
                 mode = if (p.optJSONObject("messages")?.optString("mode") == "show") "show" else "speak",
                 locked = p.optJSONObject("messages")?.optBoolean("locked") == true,
                 aka = p.optJSONArray("aka")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } } ?: emptyList(),
-                group = if (p.isNull("group")) 0 else p.optInt("group"),
+                groups = p.optJSONArray("groups")?.let { a -> (0 until a.length()).map { a.optInt(it) } }
+                    ?: if (p.isNull("group") || !p.has("group")) emptyList() else listOf(p.optInt("group")),
             ))
         }
         return out
@@ -236,12 +237,23 @@ class PeopleViewModel @Inject constructor(
         }
     }
 
-    /** Put a person in a group, or in none (group 0). */
-    fun moveTo(personId: Int, group: Int) {
+    /** Put a person in a group, or take them out of it. A person can be in several. */
+    fun setInGroup(personId: Int, group: Int, inIt: Boolean) {
+        // Shown at once, then made true by the hub's answer.
+        _people.value = _people.value?.map { if (it.id == personId) it.copy(groups = if (inIt) (it.groups + group).distinct() else it.groups - group) else it }
         viewModelScope.launch {
-            val r = hub("PUT", "/api/v1/people/groups/member", JSONObject().put("user", personId).put("group", if (group == 0) JSONObject.NULL else group))
-            if (r == null || r.first != 200) _message.value = "ΠAN could not move them right now."
+            val r = hub("PUT", "/api/v1/people/groups/member", JSONObject().put("user", personId).put("group", group).put("in", inIt))
+            if (r == null || r.first != 200) _message.value = "ΠAN could not change that right now."
             load(withDevices = false)
+        }
+    }
+
+    /** Say no to someone who is calling. */
+    fun declineTalk(callerId: Int) {
+        viewModelScope.launch {
+            val r = hub("POST", "/api/v1/people/talk/decline", JSONObject().put("from", callerId))
+            if (r != null && r.first == 200) readTalk(r.second.optJSONObject("talk"))
+            else _message.value = "ΠAN could not do that right now."
         }
     }
 
