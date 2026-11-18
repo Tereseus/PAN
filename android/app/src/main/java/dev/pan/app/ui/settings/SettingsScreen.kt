@@ -47,7 +47,7 @@ private val SETTINGS_PAGES = listOf(
 fun SettingsScreen(
     onBack: (() -> Unit)? = null,            // null = shown as a tab (0.5.1), so no back arrow
     mainViewModel: dev.pan.app.ui.main.MainViewModel? = null,
-    onOpenDashboard: () -> Unit = {},
+    onOpenHub: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val deviceName by viewModel.deviceName.collectAsState()
@@ -517,7 +517,7 @@ fun SettingsScreen(
                 onToggle = { developerMode = it; uiPrefs.edit().putBoolean("developer", it).apply() }
             )
             if (developerMode) {
-                OutlinedButton(onClick = onOpenDashboard, modifier = Modifier.fillMaxWidth()) { Text("Hub dashboard") }
+                OutlinedButton(onClick = onOpenHub, modifier = Modifier.fillMaxWidth()) { Text("Hub") }
                 Text("What is running on your hub, and what ΠAN reads about you right now.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

@@ -31,7 +31,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import dev.pan.app.ui.dashboard.DashboardScreen
+import dev.pan.app.ui.hub.HubScreen
 import dev.pan.app.ui.home.HomeScreen
 import dev.pan.app.ui.main.MainViewModel
 import dev.pan.app.ui.memory.MemoryScreen
@@ -46,7 +46,7 @@ sealed class Screen(val route: String) {
     data object Memory : Screen("memory")
     data object Settings : Screen("settings")
     // Tools for building PAN. Reached from Settings, with the developer switch on.
-    data object Dashboard : Screen("dashboard")
+    data object Hub : Screen("hub")
 }
 
 private data class Tab(val screen: Screen, val label: String, val icon: ImageVector)
@@ -61,9 +61,9 @@ private val TABS = listOf(
 /**
  * The app's frame (docs/MOBILE-APP-PLAN.md): four tabs. Home is the talk and the mic, People is
  * everyone else on this ΠAN and the messages with each (since 0.5.17), Memory is what PAN kept,
- * Settings is everything you set once. The hub's web page is still here, behind the developer
- * switch in Settings, shown without the tab bar. (The command log went in 0.5.29: a debug list of
- * typed questions that Home already shows.)
+ * Settings is everything you set once. Behind the developer switch in Settings is Hub: what is
+ * running on the hub and what ΠAN reads about the owner, shown without the tab bar. (The command
+ * log went in 0.5.29 and the hub's web page in 0.5.32: both repeated what the app already has.)
  */
 @Composable
 fun PanNavGraph() {
@@ -130,11 +130,11 @@ fun PanNavGraph() {
             composable(Screen.Settings.route) {
                 SettingsScreen(
                     mainViewModel = mainViewModel,
-                    onOpenDashboard = { navController.navigate(Screen.Dashboard.route) }
+                    onOpenHub = { navController.navigate(Screen.Hub.route) }
                 )
             }
-            composable(Screen.Dashboard.route) {
-                DashboardScreen(onBack = { navController.popBackStack() })
+            composable(Screen.Hub.route) {
+                HubScreen(onBack = { navController.popBackStack() })
             }
         }
         if (onTab && route != Screen.People.route) CallStrip(peopleViewModel,
