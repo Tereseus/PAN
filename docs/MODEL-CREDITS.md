@@ -1,5 +1,42 @@
 # Model credits
 
+## Where we stand (2026-11-18)
+
+Read this first. The tables below it are the detail and the proof.
+
+**Free to sell with, nothing owed but the credit** (MIT, Apache, BSD, or credit-only CC-BY): Phi-4-mini
+and PAN's own fine-tune of it, Gemma 4, Qwen3-Embedding, Parakeet (credit NVIDIA), CAM++, MADLAD,
+kuromoji, Ollama, ONNX Runtime, SQLCipher, sqlite-vec, the phone's zipformer, Smart Turn, Silero VAD,
+YAMNet, quickmt (credit), the Greek Parakeet (credit), Whisper tiny, CTranslate2, SentencePiece,
+sherpa-onnx, Tailscale's code, wireguard-go, CameraX, ZXing. The credits are in the app: Settings,
+About, "Credits and licences".
+
+**The one with a money limit:** Liquid's LFM licence, which Syrinx (the voice model) is built on. Free
+while the company makes under $10M a year; above that a paid licence, and our fine-tune carries the
+same limit. The owner expects to replace Syrinx's base with something under an open licence in time;
+nothing better has been found yet. Until then a copy of the licence ships with the model.
+
+**Three with conditions that are not about money:**
+
+1. Supertonic 3, the voice (OpenRAIL-M): its use rules have to be part of our own terms with users
+   (the voice is machine made and we say so, no passing as a real person without consent, no medical
+   advice). NOT DONE: PAN has no user terms yet. The machine-made line is in the app's credits.
+2. SenseVoice Small, the ear for Japanese, Chinese and Korean (FunASR Model License 1.1): selling is
+   not named in so many words and Alibaba can change the terms. The weakest licence we rely on;
+   replace it when an ear under a plain open licence is as good.
+3. JMdict, the Japanese word meanings (CC BY-SA 4.0 with EDRDG's terms): the meanings file stays
+   share-alike, credit with the link (done), and the file has to be rebuilt from the newest JMdict
+   about monthly. NOT DONE: the rebuild is not scheduled.
+
+**Still open:** the training data behind the phone's zipformer model (its card names none); the Greek
+ear's podcast training data; the IPADIC notice has to ship with every copy (it is in kuromoji's
+folder, check it again when an installer is built).
+
+**Never in an install:** anything non-commercial or GPL. The list of what was taken out is at the end.
+
+**When a model changes:** change the "What runs today" table, this section and the app's
+`ui/settings/Credits.kt` in the same commit.
+
 The interpreter on the phone runs these. Attribution is a condition of most of them, so this list
 has to reach the app (an About page) before PAN goes to anyone else.
 
