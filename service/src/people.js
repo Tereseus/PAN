@@ -25,6 +25,7 @@ export const LIMITS = Object.freeze({
   // Anyone on the hub may message anyone else on it (the owner, 2026-11-18: someone in your own
   // organization can always send you a message). The owner can still close it for a role.
   messages: 5,         // send a message to a person on this hub
+  group_calls: 5,      // start a call with a whole group they are in (group-calls.js)
   meet: 25,            // add someone with their own ΠAN by scanning their code (met-people.js)
   // The computers and the Claude threads on them are the owner's until a computer can belong to
   // a person: a thread runs anything, as the owner, on the owner's machine.
@@ -64,6 +65,12 @@ export const PERSON_ALLOW = Object.freeze([
   'DELETE /api/v1/people/talk',
   'POST /api/v1/people/talk/decline',   // say no to someone calling them
   'PUT /api/v1/people/calls',           // take calls from one person or not, their own choice
+  // A call with a whole group (group-calls.js): only a group they are in, or everyone here.
+  'POST /api/v1/people/room',
+  'DELETE /api/v1/people/room',
+  'POST /api/v1/people/room/decline',
+  'POST /api/v1/people/room/say',
+  'GET /api/v1/people/room/lines',
   'PUT /api/v1/people/mode',       // read out or shown only, for themselves, unless the owner locked it
   'PUT /api/v1/people/names',      // other names they go by, their own only
   // The people with their own ΠAN that this person has met (met-people.js): their own list only.
@@ -281,7 +288,7 @@ export function may(person, action) {
 /** The plain sentence PAN says when it will not do something for this person. */
 export function refusal(action) {
   const what = { computer: 'run things on a computer', thread: 'talk to a Claude thread', home: 'control the house',
-    messages: 'send messages', meet: 'add people you meet', camera: 'use the camera', own_memory: 'look things up in memory',
+    messages: 'send messages', group_calls: 'call a whole group', meet: 'add people you meet', camera: 'use the camera', own_memory: 'look things up in memory',
     others_memory: "look at someone else's memory", lend_device: 'lend a device', approve_device: 'let a new device in',
     pair_device: 'pair a device', set_limits: 'change what people may do' }[action] || 'do that';
   return `I can't ${what} for you. Whoever set me up decides that.`;

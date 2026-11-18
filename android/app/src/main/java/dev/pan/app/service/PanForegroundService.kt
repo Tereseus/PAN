@@ -1290,6 +1290,9 @@ class PanForegroundService : Service() {
     private fun showCallNotification(note: dev.pan.app.network.dto.SlackNotify) {
         val from = (note.data?.get("from_user") as? Number)?.toInt() ?: 0
         val name = note.title?.takeIf { it.isNotBlank() } ?: "Someone"
+        // A call with a whole group (the hub's group-calls.js): which group, and its name.
+        val room = (note.data?.get("room") as? String).orEmpty()
+        val roomName = (note.data?.get("room_name") as? String).orEmpty()
         val ringing = isMuted
         val channelId = if (ringing) CALL_CHANNEL_ID else CALL_QUIET_CHANNEL_ID
         val channel = NotificationChannel(channelId, if (ringing) "Calls" else "Calls (ΠAN says who)", NotificationManager.IMPORTANCE_HIGH).apply {
@@ -1303,13 +1306,13 @@ class PanForegroundService : Service() {
         }
         notificationManager?.createNotificationChannel(channel)
         fun act(action: String, code: Int) = PendingIntent.getService(this, code,
-            Intent(this, PanForegroundService::class.java).setAction(action).putExtra("from", from),
+            Intent(this, PanForegroundService::class.java).setAction(action).putExtra("from", from).putExtra("room", room),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, CALL_NOTIF_ID,
             Intent(this, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("$name wants to talk")
+            .setContentTitle(if (room.isNotEmpty()) "$name is calling ${roomName.ifBlank { "a group" }}" else "$name wants to talk")
             .setContentText("Answer, then just talk. Or say \"ΠAN, answer\".")
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setCategory(NotificationCompat.CATEGORY_CALL)
@@ -2911,9 +2914,15 @@ class PanForegroundService : Service() {
         // The call notification's buttons.
         if (intent?.action == "CALL_ANSWER" || intent?.action == "CALL_DECLINE") {
             val from = intent.getIntExtra("from", 0)
+            val room = intent.getStringExtra("room").orEmpty()
             val answer = intent.action == "CALL_ANSWER"
             notificationManager?.cancel(CALL_NOTIF_ID)
-            if (from != 0) serviceScope.launch {
+            if (room.isNotEmpty()) serviceScope.launch {
+                val r = serverClient.hubJson("POST", if (answer) "/api/v1/people/room" else "/api/v1/people/room/decline", org.json.JSONObject().put("room", room))
+                panLog("Group call ${if (answer) "answered" else "declined"} from the notification -> ${r?.first}")
+                dev.pan.app.ui.people.PeopleSignal.bump()
+            }
+            else if (from != 0) serviceScope.launch {
                 val r = if (answer) serverClient.hubJson("POST", "/api/v1/people/talk", org.json.JSONObject().put("with", from))
                     else serverClient.hubJson("POST", "/api/v1/people/talk/decline", org.json.JSONObject().put("from", from))
                 panLog("Call ${if (answer) "answered" else "declined"} from the notification -> ${r?.first}")

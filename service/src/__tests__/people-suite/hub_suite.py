@@ -309,7 +309,7 @@ def main():
             allow = set(re.findall(r"'([A-Z]+) (/[^']*)'", block))
         except (OSError, ValueError):
             pass
-        check("wall", "the list of what a person may reach is read from people.js (%d paths)" % len(allow), 5 <= len(allow) <= 30, allow)
+        check("wall", "the list of what a person may reach is read from people.js (%d paths)" % len(allow), 5 <= len(allow) <= 40, allow)
         if safe:
             open_wrongly, closed_wrongly = [], []
             for n, (method, path) in enumerate(routes):
@@ -759,6 +759,94 @@ def main():
         hers = [p.get("group") for p in seen.get("people", []) if p.get("id") == zora["id"]]
         check("groups", "renamed, then deleted: the person stays on the hub, in no group", codes == {"the same name again": 409, "no name": 400, "nobody": 404, "no such group": 404}
               and s == 200 and (j.get("group") or {}).get("name") == "Nights" and s2 == 200 and seen.get("groups") == [] and hers == [None], (codes, s, j, s2, seen.get("groups"), hers))
+
+        # ── a call with a whole group ────────────────────────────────────────────
+        for dev_ in (zora["device"], quill["device"]):
+            pending(dev_)
+        pending(OWNER, PHONE)
+        s, j = call("POST", "/api/v1/people/groups", {"name": "Kitchen crew"}, device=OWNER, headers=PHONE)
+        crew = (j.get("group") or {}).get("id")
+        for who_ in (zora, quill):
+            call("PUT", "/api/v1/people/groups/member", {"user": who_["id"], "group": crew, "in": True}, device=OWNER, headers=PHONE)
+        s, j = call("POST", "/api/v1/people/groups", {"name": "Office"}, device=OWNER, headers=PHONE)
+        office = (j.get("group") or {}).get("id")
+        call("PUT", "/api/v1/people/groups/member", {"user": zora["id"], "group": office, "in": True}, device=OWNER, headers=PHONE)
+        CREW, OFFICE = "g%s" % crew, "g%s" % office
+        ring = "%s is calling Kitchen crew. Say: PAN, answer." % boss
+        s, done, said = turn("Hey PAN, call the Kitchen crew.", OWNER, headers=PHONE)
+        raws = [call("GET", "/api/v1/slack/pending", device=d)[1] for d in (zora["device"], quill["device"])]
+        check("group calls", "the owner calls a group by voice: everyone in it is rung once and asks faster", (done or {}).get("intent") == "talk" and (done or {}).get("talk_room") == CREW
+              and [bodies(r) for r in raws] == [[ring], [ring]] and all(r.get("fast") is True for r in raws), (done, raws))
+        s, done, said = turn("Who keeps calling me?", zora["device"])
+        check("group calls", "being rung passes on nothing she says until she comes on", (done or {}).get("intent") != "talk" and pending(OWNER, PHONE)[1] == [], done)
+        sees = call("GET", "/api/v1/people", device=zora["device"])[1].get("rooms", {})
+        s, j = call("POST", "/api/v1/people/room", {"room": CREW}, device=zora["device"])
+        check("group calls", "the app shows her who is calling which group; she answers there and he is told", [r.get("key") for r in sees.get("ringing", [])] == [CREW] and sees.get("on") is None
+              and s == 200 and j.get("started") is False and (j.get("rooms", {}).get("on") or {}).get("key") == CREW and pending(OWNER, PHONE)[1] == ["Zora is on."], (sees, s, j))
+        s, done, said = turn("Dinner is at eight", OWNER, headers=PHONE)
+        got = {"hers": pending(zora["device"])[1], "the child's": pending(quill["device"])[1]}
+        check("group calls", "his line reaches the one who is on, as words alone, and not the one still being rung", (done or {}).get("intent") == "talk" and (done or {}).get("response") == ""
+              and (done or {}).get("sent") is True and got == {"hers": ["Dinner is at eight."], "the child's": []}, (done, got))
+        s, done, said = turn("PAN, answer.", quill["device"])
+        pending(OWNER, PHONE); pending(zora["device"])
+        s2, done2, said2 = turn("I will bring the bread", zora["device"])
+        got = {"his": pending(OWNER, PHONE)[1], "the child's": pending(quill["device"])[1]}
+        check("group calls", "the child answers by voice; with three on, a line comes with who said it", "on with Kitchen crew" in str((done or {}).get("response"))
+              and (done2 or {}).get("sent") is True and got == {"his": ["Zora: I will bring the bread."], "the child's": ["Zora: I will bring the bread."]}, (done, done2, got))
+        s, j = call("POST", "/api/v1/people/room/say", {"text": "can I have pasta"}, device=quill["device"])
+        got = {"his": pending(OWNER, PHONE)[1], "hers": pending(zora["device"])[1]}
+        on = (call("GET", "/api/v1/people", device=quill["device"])[1].get("rooms", {}).get("on") or {})
+        check("group calls", "a typed line goes to the others who are on, and the app is told who is on", s == 200 and got == {"his": ["Quill: can I have pasta."], "hers": ["Quill: can I have pasta."]}
+              and sorted(x.get("first") for x in on.get("on", [])) == sorted([boss, "Zora", "Quill"]), (s, j, got, on))
+        lines = {who_: [l.get("body") for l in call("GET", "/api/v1/people/room/lines?room=%s" % CREW, device=d, headers=h)[1].get("lines", [])]
+                 for who_, d, h in (("his", OWNER, PHONE), ("hers", zora["device"], None), ("the child's", quill["device"], None))}
+        check("group calls", "each person can read what they said or heard, and nothing from before they came on",
+              lines == {"his": ["Dinner is at eight", "I will bring the bread", "can I have pasta"], "hers": ["Dinner is at eight", "I will bring the bread", "can I have pasta"],
+                        "the child's": ["I will bring the bread", "can I have pasta"]}, lines)
+        tries = {"a group she is not in": call("POST", "/api/v1/people/room", {"room": OFFICE}, device=quill["device"])[0],
+                 "its lines": call("GET", "/api/v1/people/room/lines?room=%s" % OFFICE, device=quill["device"])[0],
+                 "no such group": call("POST", "/api/v1/people/room", {"room": "g99999"}, device=quill["device"])[0],
+                 "a typed line from someone not on": None}
+        s, done, said = turn("Right, see you all. Hang up.", OWNER, headers=PHONE)
+        told = {"hers": pending(zora["device"])[1], "the child's": pending(quill["device"])[1]}
+        s2, j2 = call("DELETE", "/api/v1/people/room", device=zora["device"])
+        last = pending(quill["device"])[1]
+        tries["a typed line from someone not on"] = call("POST", "/api/v1/people/room/say", {"text": "hello"}, device=quill["device"])[0]
+        check("group calls", "\"hang up\" leaves and the others are told; when one is left the call is over", (done or {}).get("ended") is True and "left the call with Kitchen crew" in str((done or {}).get("response"))
+              and told == {"hers": ["%s left the call." % boss], "the child's": ["%s left the call." % boss]} and s2 == 200 and (j2.get("rooms") or {}).get("on") is None
+              and last == ["Zora left. The call with Kitchen crew is over."], (done, told, s2, j2, last))
+        check("group calls", "nobody calls a group they are not in, reads its lines, or types into a call they are not on", tries == {"a group she is not in": 403, "its lines": 404, "no such group": 404, "a typed line from someone not on": 409}, tries)
+        # One call at a time; everyone saying no; someone who takes no calls from the caller.
+        call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=OWNER, headers=PHONE)
+        pending(zora["device"])
+        s, j = call("POST", "/api/v1/people/room", {"room": OFFICE}, device=OWNER, headers=PHONE)
+        seen = j.get("talk", {}).get("with")
+        pending(zora["device"])
+        s2, j2 = call("POST", "/api/v1/people/room/decline", {"room": OFFICE}, device=zora["device"])
+        after = pending(OWNER, PHONE)[1]
+        check("group calls", "calling a group ends his call with one person; when everyone rung says no he is told and it is over", s == 200 and j.get("started") is True and seen is None
+              and s2 == 200 and j2.get("declined") is True and after == ["Nobody in Office can talk right now."]
+              and (call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("rooms") or {}).get("on") is None, (s, j, s2, j2, after))
+        s, j = call("POST", "/api/v1/people/room", {"room": "all"}, device=quill["device"])
+        everyone = len(((j.get("rooms") or {}).get("on") or {}).get("ringing", []))
+        count = len(call("GET", "/api/v1/people", device=quill["device"])[1].get("people", []))
+        call("DELETE", "/api/v1/people/room", device=quill["device"])
+        check("group calls", "anyone can call everyone on the hub: all the others are rung", s == 200 and j.get("started") is True and everyone == count and count >= 3, (s, everyone, count))
+        for role in ROLES:
+            pending(people[role]["device"])
+        pending(zora["device"]); pending(OWNER, PHONE)
+        call("PUT", "/api/v1/people/calls", {"from": 1, "take": False}, device=zora["device"])
+        s, j = call("POST", "/api/v1/people/room", {"room": OFFICE}, device=OWNER, headers=PHONE)
+        s2, j2 = call("POST", "/api/v1/people/room", {"room": CREW}, device=OWNER, headers=PHONE)
+        rung = {"hers": pending(zora["device"])[1], "the child's": pending(quill["device"])[1]}
+        call("DELETE", "/api/v1/people/room", device=OWNER, headers=PHONE)
+        call("PUT", "/api/v1/people/calls", {"from": 1, "take": True}, device=zora["device"])
+        check("group calls", "someone who takes no calls from the caller is not rung", s == 409 and j.get("error") == "not_taking" and s2 == 200 and rung == {"hers": [], "the child's": [ring]}, (s, j, s2, rung))
+        for d in (zora["device"], quill["device"]):
+            pending(d)
+        pending(OWNER, PHONE)
+        for g_ in (crew, office):
+            call("DELETE", "/api/v1/people/groups/%s" % g_, device=OWNER, headers=PHONE)
 
         # ── people met: someone with their own ΠAN whose code was scanned ────────
         key_a, key_b = "A" * 120, "B" * 120

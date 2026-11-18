@@ -36,6 +36,9 @@
 //   - Not taking calls from someone (the owner, 2026-11-18): each person can say they take no
 //     calls from one other person (people_call_block). That person's call is not opened and
 //     they are told so; nothing reaches the one who blocked. Messages still do.
+//   - A call with a whole group ("PAN, call the Kids", "PAN, call everyone") is group-calls.js.
+//     A person's name is tried first, then a group's, then a name as it may have been misheard.
+//     A person is in one call at a time.
 //   - A person needs the `messages` limit (people.js). The owner always may.
 //   - One sender, six messages a minute.
 //
@@ -49,7 +52,8 @@
 
 import { get, all, run } from './db.js';
 import { maySpeakNow, userAsking, ownerTakesHere, nextNoteId, addNote } from './phone-notes.js';
-import { may } from './people.js';
+import { may, refusal } from './people.js';
+import { roomOf, leaveRoom, startRoom, parseRoom, roomState } from './group-calls.js';
 
 const OWNER_ID = 1;
 const KEEP_MS = 12 * 3600_000;
@@ -199,6 +203,7 @@ const NOT_A_PERSON = /^(?:thread|session|chat|computer|pc|laptop|desktop|machine
  * from: the person speaking (null: the owner). addressed: the line was said to ΠAN.
  * -> null | { to, kind: 'says' | 'asks', body } | { to, empty: true } | { which: [people], kind, body }
  *    | { talk: 'start', to } | { talk: 'answer' } | { talk: 'end' } | { talk: 'which', among }
+ *    | { talk: 'room', room, name } | { talk: 'join' }   (a call with a whole group, group-calls.js)
  * which: two or more people here go by the name that was said. talk: a call (see talkTurn).
  */
 export function parseMessage(text, { from = null, addressed = false, now = Date.now() } = {}) {
@@ -208,6 +213,7 @@ export function parseMessage(text, { from = null, addressed = false, now = Date.
   const me = from ? Number(from.id) : OWNER_ID;
   const others = peopleHere().filter((p) => p.id !== me);
   if (!others.length) return null;
+  const inCall = !!talkOf(me, now) || !!roomOf(me, now);
   const answered = answerToWhich(said, me, now);
   if (answered) return answered;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -228,10 +234,15 @@ export function parseMessage(text, { from = null, addressed = false, now = Date.
   // A call: opened, answered or ended. The whole line is the command ("talk to Maria about
   // dinner" is not one), but in a call one sentence of it is enough to end it.
   const tail = String.raw`(?:\s+(?:now|please))?[\s.!?]*$`;
-  if (HANG_UP.test(said.replace(/[\s.!?]+$/, '')) || (talkOf(me, now) && saysHangUp(said))) return { talk: 'end' };
+  if (HANG_UP.test(said.replace(/[\s.!?]+$/, '')) || (inCall && saysHangUp(said))) return { talk: 'end' };
   if (new RegExp(`${LEAD}stop\\s+talking\\s+(?:to|with)\\s+${NAMES[0]}${after}${tail}`, 'iu').test(said)) return { talk: 'end' };
   if (new RegExp(`${LEAD}(?:answer|pick\\s+up|answer\\s+(?:it|the\\s+call))${tail}`, 'iu').test(said)) return { talk: 'answer' };
   for (const loose of [false, true]) {
+    // Between the names as written and a name as it may have been misheard: a group's name.
+    if (loose) {
+      const room = parseRoom(said, me, { lead: LEAD, tail });
+      if (room) return room;
+    }
     const call = new RegExp(`${LEAD}(?:(?:talk|speak)\\s+(?:to|with)|call(?:ed)?|answer|(?:start|open)\\s+a\\s+(?:call|talk)\\s+with)\\s+${NAMES[loose ? 1 : 0]}${after}${tail}`, 'iu').exec(said);
     if (!call) continue;
     const named = who(call[1], others, { loose });
@@ -432,6 +443,8 @@ export function startTalk(person, otherId, now = Date.now()) {
   if (callsBlocked(other.id, me) && talkOf(other.id, now)?.with !== me) return { ok: false, reason: 'not_taking', name: other.first };
   const already = talkOf(me, now);
   if (already && already.with !== other.id) endTalk(person, now);
+  // One call at a time: a call with a whole group is left first.
+  if (roomOf(me, now)) leaveRoom(person, now);
   talks.set(me, { with: other.id, since: now, last: now, heard: [] });
   const joined = talkOf(other.id, now)?.with === me;
   if (joined) talks.get(other.id).last = now;
@@ -622,9 +635,35 @@ export function messageTurn(text, { person = null, addressed = false, test = fal
     if (msg.talk === 'end') {
       if (test) return { ...call, response: '[benchmark: end of call parsed, nothing ended]' };
       const who = endTalk(person);
-      return { ...call, response: who ? `Call with ${who} ended.` : `You're not in a call.` };
+      if (who) return { ...call, response: `Call with ${who} ended.` };
+      const left = leaveRoom(person);
+      return { ...call, response: left ? `You left the call with ${left}.` : `You're not in a call.` };
     }
     let to = msg.to;
+    // A call with a whole group: by its name, "join" for the one that is ringing or going on,
+    // and "answer" when it is a group that rings and no one person is.
+    let room = msg.talk === 'room' ? { key: msg.room, name: msg.name } : null;
+    if (msg.talk === 'join' || (msg.talk === 'answer' && !talkState(senderId).calling_me)) {
+      const st = roomState(senderId);
+      const r = st.ringing[0] || st.open[0] || (msg.talk === 'join' ? st.on : null);
+      if (r) room = { key: r.key, name: r.name };
+      else if (msg.talk === 'join') return { ...call, response: `There's no call going on to join.` };
+    }
+    if (room) {
+      if (test) return { ...call, response: `[benchmark: call with ${room.name} parsed, nothing started]`, talk_parse: { room: room.key } };
+      const got = startRoom(person, room.key);
+      if (!got.ok) {
+        return { ...call, response: got.reason === 'limit' ? refusal('group_calls')
+          : got.reason === 'not_in' ? `You're not in ${room.name}.`
+            : got.reason === 'alone' ? `There's nobody else in ${room.name}.`
+              : got.reason === 'not_taking' ? `Nobody in ${room.name} is taking calls from you right now.` : `I couldn't start that.` };
+      }
+      const names = got.room.on.filter((p) => p.id !== senderId).map((p) => p.first);
+      const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+      return { ...call, talk_room: room.key,
+        response: got.started ? `Calling ${room.name}. Go ahead, I'll pass on what you say.`
+          : names.length ? `You're on with ${room.name}: ${list}.` : `You're on. Nobody else has come on yet.` };
+    }
     if (msg.talk === 'answer') {
       const calling = talkState(senderId).calling_me;
       to = peopleHere().find((p) => p.id === calling);

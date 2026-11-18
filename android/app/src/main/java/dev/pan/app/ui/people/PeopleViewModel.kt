@@ -39,6 +39,12 @@ data class PersonLine(
 /** A group inside the organization on this ΠAN ("Kids", "Night shift"). */
 data class GroupLine(val id: Int, val name: String)
 
+/** A call with a whole group (the hub's group-calls.js). on: who is on it, by first name. ringing: how many are still being rung. */
+data class RoomCall(val key: String, val name: String, val by: Int, val on: List<Pair<Int, String>>, val ringing: Int)
+
+/** One line said in a group's call, that this person said or heard. */
+data class RoomSaid(val id: Long, val fromMe: Boolean, val name: String, val body: String, val at: Long)
+
 /** Someone with their own ΠAN whose code this person scanned. */
 data class MetLine(val id: Long, val name: String, val firstAt: Long, val lastAt: Long, val times: Int)
 
@@ -91,6 +97,22 @@ class PeopleViewModel @Inject constructor(
     val talkJoined: StateFlow<Boolean> = _talkJoined
     private val _callingMe = MutableStateFlow(0)
     val callingMe: StateFlow<Int> = _callingMe
+    /** A call with a whole group: the one this person is on, the ones ringing them, the ones going on they could join, what they may call. */
+    private val _roomOn = MutableStateFlow<RoomCall?>(null)
+    val roomOn: StateFlow<RoomCall?> = _roomOn
+    private val _roomsRinging = MutableStateFlow<List<RoomCall>>(emptyList())
+    val roomsRinging: StateFlow<List<RoomCall>> = _roomsRinging
+    private val _roomsOpen = MutableStateFlow<List<RoomCall>>(emptyList())
+    val roomsOpen: StateFlow<List<RoomCall>> = _roomsOpen
+    private val _roomsCan = MutableStateFlow<Set<String>>(emptySet())
+    val roomsCan: StateFlow<Set<String>> = _roomsCan
+    /** The group whose call is on screen (its key and name), and what was said in its calls. */
+    private val _room = MutableStateFlow<Pair<String, String>?>(null)
+    val room: StateFlow<Pair<String, String>?> = _room
+    private val _roomSaid = MutableStateFlow<List<RoomSaid>>(emptyList())
+    val roomSaid: StateFlow<List<RoomSaid>> = _roomSaid
+    private val _myId = MutableStateFlow(0)
+    val myId: StateFlow<Int> = _myId
     /** Whether what is sent to this person is read out ("speak") or only shown ("show"), and if the owner locked it. */
     private val _myMode = MutableStateFlow("speak")
     val myMode: StateFlow<String> = _myMode
@@ -136,6 +158,7 @@ class PeopleViewModel @Inject constructor(
     /** Whatever is on screen, fresh: the open conversation, the child's list, or the list. */
     suspend fun tick() {
         when {
+            _room.value != null -> { loadRoomSaid(); load(withDevices = false) }
             _open.value != null -> loadTalk()
             _watching.value != null -> loadWatch()
             else -> load(withDevices = false)
@@ -288,6 +311,95 @@ class PeopleViewModel @Inject constructor(
         _callingMe.value = if (t == null || t.isNull("calling_me")) 0 else t.optInt("calling_me")
     }
 
+    private fun roomCall(j: JSONObject?): RoomCall? {
+        if (j == null) return null
+        val on = j.optJSONArray("on")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { it.optInt("id") to it.optString("first") } } ?: emptyList()
+        return RoomCall(j.optString("key"), j.optString("name"), j.optInt("by"), on, j.optJSONArray("ringing")?.length() ?: 0)
+    }
+
+    private fun readRooms(j: JSONObject?) {
+        fun list(name: String) = j?.optJSONArray(name)?.let { a -> (0 until a.length()).mapNotNull { roomCall(a.optJSONObject(it)) } } ?: emptyList()
+        _roomOn.value = roomCall(j?.optJSONObject("on"))
+        _roomsRinging.value = list("ringing")
+        _roomsOpen.value = list("open")
+        _roomsCan.value = j?.optJSONArray("can")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet()
+    }
+
+    /** Call a whole group, or come on to its call: the same as saying "ΠAN, call the <name>". Then they just talk. */
+    fun startRoom(key: String, name: String) {
+        viewModelScope.launch {
+            val r = hub("POST", "/api/v1/people/room", JSONObject().put("room", key))
+            if (r == null || r.first != 200) _message.value = when (r?.second?.optString("error")) {
+                "not_in" -> "You're not in $name."
+                "alone" -> "There's nobody else in $name."
+                "not_taking" -> "Nobody in $name is taking calls from you right now."
+                "group" -> "$name is no longer a group here."
+                else -> if (r?.first == 403) "Whoever set up this ΠAN has not opened group calls for you." else "ΠAN could not start that right now."
+            }
+            else {
+                readRooms(r.second.optJSONObject("rooms"))
+                readTalk(r.second.optJSONObject("talk"))
+                _message.value = if (r.second.optBoolean("started")) "Calling $name. Just talk: what you say is passed on." else "You're on with $name. Just talk."
+                loadRoomSaid()
+            }
+        }
+    }
+
+    fun leaveRoom() {
+        viewModelScope.launch {
+            val r = hub("DELETE", "/api/v1/people/room")
+            if (r != null && r.first == 200) readRooms(r.second.optJSONObject("rooms"))
+        }
+    }
+
+    /** Say no to a group call that is ringing. */
+    fun declineRoom(key: String) {
+        viewModelScope.launch {
+            val r = hub("POST", "/api/v1/people/room/decline", JSONObject().put("room", key))
+            if (r != null && r.first == 200) readRooms(r.second.optJSONObject("rooms"))
+            else _message.value = "ΠAN could not do that right now."
+        }
+    }
+
+    fun openRoom(key: String, name: String) {
+        _room.value = key to name
+        _roomSaid.value = emptyList()
+        viewModelScope.launch { loadRoomSaid() }
+    }
+
+    fun closeRoom() {
+        _room.value = null
+        _roomSaid.value = emptyList()
+        viewModelScope.launch { tick() }
+    }
+
+    /** What this person said or heard in this group's calls, newest page. */
+    suspend fun loadRoomSaid() {
+        val which = _room.value ?: return
+        val r = hub("GET", "/api/v1/people/room/lines?room=${which.first}")
+        if (r == null || r.first != 200 || _room.value?.first != which.first) return
+        val list = r.second.optJSONArray("lines") ?: return
+        _roomSaid.value = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+            .map { RoomSaid(it.optLong("id"), it.optBoolean("from_me"), it.optString("name"), it.optString("body"), it.optLong("at")) }
+    }
+
+    /** A typed line into the call this person is on: the others who are on get it as a spoken one. */
+    fun sayRoom(text: String, done: (Boolean) -> Unit) {
+        val body = text.trim()
+        if (body.isEmpty() || _sending.value) return
+        _sending.value = true
+        viewModelScope.launch {
+            val r = hub("POST", "/api/v1/people/room/say", JSONObject().put("text", body))
+            _sending.value = false
+            when (r?.first) {
+                200 -> { done(true); loadRoomSaid() }
+                429 -> { _message.value = "That's a lot at once. Give it a minute."; done(false) }
+                409 -> { _message.value = "You're not on the call."; done(false) }
+                else -> { _message.value = "ΠAN could not send that right now."; done(false) }
+            }
+        }
+    }
+
     /** Open this person's side of a call: the same as saying "ΠAN, talk to <name>". Then they just talk. */
     fun startTalk(id: Int, name: String) {
         viewModelScope.launch {
@@ -363,6 +475,8 @@ class PeopleViewModel @Inject constructor(
         _myName.value = r.second.optJSONObject("me")?.optString("name").orEmpty()
         _canMeet.value = r.second.optBoolean("can_meet", false)
         readTalk(r.second.optJSONObject("talk"))
+        readRooms(r.second.optJSONObject("rooms"))
+        _myId.value = r.second.optJSONObject("me")?.optInt("id") ?: 0
         r.second.optJSONObject("me")?.optJSONObject("messages")?.let {
             _myMode.value = if (it.optString("mode") == "show") "show" else "speak"
             _myModeLocked.value = it.optBoolean("locked")

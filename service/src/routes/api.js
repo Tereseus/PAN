@@ -21,6 +21,7 @@ import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, owne
 import { recordMet, metFor, forgetMet } from '../met-people.js';
 import { groupsHere, addGroup, renameGroup, removeGroup, setInGroup } from '../people-groups.js';
 import { shareAnswerInCall } from '../call-share.js';
+import { startRoom, leaveRoom, declineRoom, sayInRoom, roomLine, roomLines, roomState, roomFast } from '../group-calls.js';
 import { whoseLine, speechLevel } from '../same-line.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
@@ -952,7 +953,7 @@ router.get('/slack/pending', (req, res) => {
   try { notifications.push(...takeMessagesFor(dev)); } catch (e) { console.warn('[/slack/pending] messages:', e.message); }
   // fast: this person is in a call or being called, so the device asks again in a second, not five.
   let fast = false;
-  try { fast = talkFast(person ? Number(person.id) : 1); } catch {}
+  try { fast = talkFast(person ? Number(person.id) : 1) || roomFast(person ? Number(person.id) : 1); } catch {}
   res.json({ ok: true, notifications, fast });
 });
 
@@ -990,7 +991,7 @@ router.get('/people', (req, res) => {
   // group: what the owner calls the people on this hub ("Family", a company's name); '' until named.
   let group = '';
   try { group = String(get("SELECT value FROM settings WHERE key = 'people_group_name'")?.value || '').replace(/^"|"$/g, '').trim().slice(0, 30); } catch {}
-  res.json({ ok: true, group, groups: groups.map((g) => ({ id: g.id, name: g.name })), can_meet: !person || may(person, 'meet'), talk: talkState(me),
+  res.json({ ok: true, group, groups: groups.map((g) => ({ id: g.id, name: g.name })), can_meet: !person || may(person, 'meet'), talk: talkState(me), rooms: roomState(me, Date.now(), { start: !person || (may(person, 'messages') && may(person, 'group_calls')) }),
     me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person, messages: messageMode(me), groups: groupsOfUser(me), group: groupsOfUser(me)[0] ?? null,
       read_by: person && ownerMayRead(me) ? (owner?.first || 'the owner') : null },
     can_send: canSend, people, unread: people.reduce((n, p) => n + p.unread, 0) });
@@ -1090,6 +1091,38 @@ router.post('/people/talk', (req, res) => {
 router.delete('/people/talk', (req, res) => {
   endTalk(req.user?.person ? req.user : null);
   res.json({ ok: true, talk: talkState(callerId(req)) });
+});
+// A call with a whole group (group-calls.js), from the app: the same thing as "PAN, call the
+// Kids", "PAN, answer" and "PAN, hang up". { room }: 'all' or 'g<group id>'. Opening one that
+// is going on comes on to it. Each call is held to the caller and to the groups they are in.
+router.post('/people/room', (req, res) => {
+  const person = req.user?.person ? req.user : null;
+  const got = startRoom(person, String(req.body?.room || ''));
+  if (!got.ok) {
+    const status = got.reason === 'limit' || got.reason === 'not_in' ? 403 : got.reason === 'group' ? 404 : 409;
+    return res.status(status).json({ ok: false, error: got.reason === 'limit' ? refusal('group_calls') : got.reason, name: got.name });
+  }
+  res.json({ ok: true, started: got.started, rooms: roomState(callerId(req)), talk: talkState(callerId(req)) });
+});
+router.delete('/people/room', (req, res) => {
+  leaveRoom(req.user?.person ? req.user : null);
+  res.json({ ok: true, rooms: roomState(callerId(req)) });
+});
+router.post('/people/room/decline', (req, res) => {
+  const name = declineRoom(req.user?.person ? req.user : null, String(req.body?.room || ''));
+  res.json({ ok: true, declined: !!name, rooms: roomState(callerId(req)) });
+});
+// A typed line from someone who is on: it goes to the others who are on, as a spoken one does.
+router.post('/people/room/say', (req, res) => {
+  const said = sayInRoom(req.user?.person ? req.user : null, req.body?.text);
+  if (!said.ok) return res.status(said.reason === 'limit' ? 403 : said.reason === 'too_many' ? 429 : 409).json({ ok: false, error: said.reason });
+  res.json({ ok: true, id: said.id });
+});
+// The lines of one group's calls that the caller said or heard: ?room=&before=.
+router.get('/people/room/lines', (req, res) => {
+  const out = roomLines(callerId(req), String(req.query.room || ''), { before: Number(req.query.before) || 0 });
+  if (!out) return res.status(404).json({ ok: false, error: 'not yours to read' });
+  res.json({ ok: true, ...out });
 });
 // Take calls from one person or not: { from, take }. Each person's own choice.
 router.put('/people/calls', (req, res) => {
@@ -2166,12 +2199,17 @@ router.post('/query/stream', async (req, res) => {
     let passed = null;
     try { passed = talkLine(text, { person, wearer: person ? undefined : voiceWearer }); }
     catch (e) { console.warn('[/query/stream] call line:', e.message); }
+    // The same for a call with a whole group (group-calls.js): to everyone who is on.
+    if (!passed) {
+      try { passed = roomLine(text, { person, wearer: person ? undefined : voiceWearer }); }
+      catch (e) { console.warn('[/query/stream] group call line:', e.message); }
+    }
     if (passed) {
       recordTiming({ turn: turnId, stage: 'call_line', ms: Date.now() - turnStart });
       // "Hang up" inside the call: it is over, and that is said back.
-      const over = passed.ended ? `Call with ${passed.name || 'them'} ended.` : '';
+      const over = !passed.ended ? '' : passed.room ? `You left the call with ${passed.name || 'them'}.` : `Call with ${passed.name || 'them'} ended.`;
       if (over) send({ type: 'chunk', text: over });
-      send({ type: 'done', result: { intent: 'talk', response: over, talk_with: passed.to, sent: passed.sent, reason: passed.reason, ended: !!passed.ended, addressed: passed.ended ? 1 : undefined } });
+      send({ type: 'done', result: { intent: 'talk', response: over, talk_with: passed.to, talk_room: passed.room, sent: passed.sent, reason: passed.reason, ended: !!passed.ended, addressed: passed.ended ? 1 : undefined } });
       clearInterval(keepaliveInterval);
       if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
       if (!res.writableEnded) res.end();

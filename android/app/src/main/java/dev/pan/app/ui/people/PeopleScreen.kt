@@ -118,6 +118,7 @@ private fun whenText(at: Long): String {
 fun PeopleScreen(viewModel: PeopleViewModel) {
     val open by viewModel.open.collectAsState()
     val watching by viewModel.watching.collectAsState()
+    val room by viewModel.room.collectAsState()
     val message by viewModel.message.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val actions = remember { PersonActions() }
@@ -125,11 +126,12 @@ fun PeopleScreen(viewModel: PeopleViewModel) {
 
     // Fresh while the tab is on screen and the app is in front; nothing is asked otherwise.
     val lifecycle = LocalLifecycleOwner.current
-    LaunchedEffect(open?.id, watching?.id) {
+    LaunchedEffect(open?.id, watching?.id, room?.first) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             if (viewModel.open.value == null && viewModel.watching.value == null) viewModel.load(withDevices = true)
             while (true) {
-                delay(5000)
+                // With a group's call on screen: who is on, and what was said, quickly.
+                delay(if (viewModel.room.value != null) 2000 else 5000)
                 viewModel.tick()
             }
         }
@@ -138,7 +140,9 @@ fun PeopleScreen(viewModel: PeopleViewModel) {
     Box(modifier = Modifier.fillMaxSize()) {
         val person = open
         val child = watching
+        val group = room
         when {
+            group != null -> RoomTalk(viewModel, group.first, group.second)
             person != null -> Conversation(viewModel, person, actions, snackbar, readingFor = child)
             child != null -> ChildMessages(viewModel, child)
             else -> PeopleList(viewModel, snackbar, actions)
@@ -186,6 +190,11 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, 
     val talkWith by viewModel.talkWith.collectAsState()
     val talkJoined by viewModel.talkJoined.collectAsState()
     val callingMe by viewModel.callingMe.collectAsState()
+    val roomOn by viewModel.roomOn.collectAsState()
+    val roomsRinging by viewModel.roomsRinging.collectAsState()
+    val roomsOpen by viewModel.roomsOpen.collectAsState()
+    val roomsCan by viewModel.roomsCan.collectAsState()
+    val myId by viewModel.myId.collectAsState()
     val myMode by viewModel.myMode.collectAsState()
     val myModeLocked by viewModel.myModeLocked.collectAsState()
     val scope = rememberCoroutineScope()
@@ -210,7 +219,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, 
                 micContext.startService(android.content.Intent(micContext, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
             })
         }
-        if (!micOn && (talkWith != 0 || callingMe != 0)) Text("Muted: ΠAN cannot hear you, and nothing is read out. Tap the microphone to unmute.",
+        if (!micOn && (talkWith != 0 || callingMe != 0 || roomOn != null || roomsRinging.isNotEmpty())) Text("Muted: ΠAN cannot hear you, and nothing is read out. Tap the microphone to unmute.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
         val rows = people
@@ -266,6 +275,39 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, 
             rows.firstOrNull { it.id == talkWith }?.let { other ->
                 item(key = "oncall") {
                     CallBar(if (talkJoined) "On with ${firstName(other.name)}. Just talk." else "Calling ${firstName(other.name)}. What you say is passed on.", "End") { viewModel.endTalk() }
+                }
+            }
+            // A call with a whole group: one that rings, the one this person is on, one going on.
+            roomsRinging.forEach { r ->
+                item(key = "roomring-${r.key}") {
+                    val who = rows.firstOrNull { it.id == r.by }?.let { firstName(it.name) } ?: "Someone"
+                    CallBar("$who is calling ${r.name}.", "Answer", second = "Not now", onSecond = { viewModel.declineRoom(r.key) }) {
+                        viewModel.startRoom(r.key, r.name); viewModel.openRoom(r.key, r.name)
+                    }
+                }
+            }
+            roomOn?.let { r ->
+                item(key = "roomon") {
+                    CallBar(roomText(r, myId), "Leave", second = "Open", onSecond = { viewModel.openRoom(r.key, r.name) }) { viewModel.leaveRoom() }
+                }
+            }
+            roomsOpen.filter { o -> roomsRinging.none { it.key == o.key } }.forEach { r ->
+                item(key = "roomopen-${r.key}") {
+                    CallBar("${r.name}: ${namesOn(r, myId).ifBlank { "a call" }} on now.", "Join") { viewModel.startRoom(r.key, r.name); viewModel.openRoom(r.key, r.name) }
+                }
+            }
+            // Call everyone who is showing: the whole organization, or the group picked above.
+            val callKey = if (current != null && showing != "all") "g${current.id}" else "all"
+            val callName = if (callKey == "all") group.ifBlank { "everyone" } else current?.name.orEmpty()
+            val busyHere = roomOn?.key == callKey || roomsRinging.any { it.key == callKey } || roomsOpen.any { it.key == callKey }
+            if (canSend && callKey in roomsCan && !busyHere) item(key = "callgroup") {
+                Row(modifier = Modifier.padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    FilledTonalButton(onClick = { viewModel.startRoom(callKey, callName); viewModel.openRoom(callKey, callName) }) {
+                        Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Call $callName", modifier = Modifier.padding(start = 6.dp))
+                    }
+                    TextButton(onClick = { viewModel.openRoom(callKey, callName) }) { Text("Earlier calls") }
                 }
             }
             if (!canSend) item {
@@ -730,8 +772,33 @@ fun CallStrip(viewModel: PeopleViewModel, modifier: Modifier = Modifier) {
     val talkWith by viewModel.talkWith.collectAsState()
     val talkJoined by viewModel.talkJoined.collectAsState()
     val callingMe by viewModel.callingMe.collectAsState()
+    val roomOn by viewModel.roomOn.collectAsState()
+    val roomsRinging by viewModel.roomsRinging.collectAsState()
     val caller = people?.firstOrNull { it.id == callingMe }
     val other = people?.firstOrNull { it.id == talkWith }
+    val ringing = roomsRinging.firstOrNull()
+    val group = roomOn
+    if (caller == null && other == null && (ringing != null || group != null)) {
+        // A call with a whole group, the same way: who is calling which group, or the one this person is on.
+        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp), shadowElevation = 4.dp, modifier = modifier) {
+            Row(modifier = Modifier.padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Call, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(18.dp))
+                if (ringing != null) {
+                    val who = people?.firstOrNull { it.id == ringing.by }?.let { firstName(it.name) } ?: "Someone"
+                    Text("$who is calling ${ringing.name}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 8.dp).widthIn(max = 170.dp))
+                    TextButton(onClick = { viewModel.declineRoom(ringing.key) }) { Text("Not now") }
+                    TextButton(onClick = { viewModel.startRoom(ringing.key, ringing.name) }) { Text("Answer") }
+                } else if (group != null) {
+                    Text(if (group.on.size > 1) "On with ${group.name}" else "Calling ${group.name}", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 8.dp).widthIn(max = 200.dp))
+                    TextButton(onClick = { viewModel.leaveRoom() }) { Text("Leave") }
+                }
+            }
+        }
+        return
+    }
     if (caller == null && other == null) return
     Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp), shadowElevation = 4.dp, modifier = modifier) {
         Row(modifier = Modifier.padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -760,6 +827,137 @@ private fun CallBar(text: String, action: String, second: String? = null, onSeco
                 modifier = Modifier.weight(1f).padding(horizontal = 10.dp))
             if (second != null) TextButton(onClick = onSecond) { Text(second) }
             TextButton(onClick = onAction) { Text(action) }
+        }
+    }
+}
+
+/** The others who are on a group's call, by first name: "Mia", "Mia and Kit", "Mia, Kit and Sam". */
+private fun namesOn(r: RoomCall, myId: Int): String {
+    val names = r.on.filter { it.first != myId }.map { it.second }
+    return when (names.size) {
+        0 -> ""
+        1 -> names[0]
+        else -> names.dropLast(1).joinToString(", ") + " and " + names.last()
+    }
+}
+
+private fun roomText(r: RoomCall, myId: Int): String {
+    val others = namesOn(r, myId)
+    return if (others.isBlank()) "Calling ${r.name}. What you say is passed on." else "On with ${r.name}: $others. Just talk."
+}
+
+/**
+ * A call with a whole group (the owner, 2026-11-18). The same as a call with one person: what
+ * this person says is heard by their own device and read out by the devices of the others who
+ * are on. What shows here is what this person said or heard in this group's calls.
+ */
+@Composable
+private fun RoomTalk(viewModel: PeopleViewModel, key: String, name: String) {
+    val said by viewModel.roomSaid.collectAsState()
+    val roomOn by viewModel.roomOn.collectAsState()
+    val roomsRinging by viewModel.roomsRinging.collectAsState()
+    val roomsOpen by viewModel.roomsOpen.collectAsState()
+    val roomsCan by viewModel.roomsCan.collectAsState()
+    val myId by viewModel.myId.collectAsState()
+    val mayType by viewModel.canSend.collectAsState()
+    val sending by viewModel.sending.collectAsState()
+    val here = roomOn?.takeIf { it.key == key }
+    val going = roomsRinging.firstOrNull { it.key == key } ?: roomsOpen.firstOrNull { it.key == key }
+    var draft by remember(key) { mutableStateOf("") }
+    val list = rememberLazyListState()
+    val micOn by PanForegroundService.micEnabled.collectAsState()
+    val context = LocalContext.current
+
+    BackHandler { viewModel.closeRoom() }
+    val newest = said.lastOrNull()?.id
+    LaunchedEffect(newest) { if (said.isNotEmpty()) list.scrollToItem(said.size - 1) }
+
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { viewModel.closeRoom() }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to People")
+            }
+            Text(name.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            when {
+                here != null -> FilledTonalButton(onClick = { viewModel.leaveRoom() }) { Text("Leave") }
+                mayType && (key in roomsCan || going != null) -> FilledTonalButton(onClick = { viewModel.startRoom(key, name) }) {
+                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(if (going != null) "Join" else "Call", modifier = Modifier.padding(start = 6.dp))
+                }
+            }
+        }
+        // Where this person's voice is going right now, in words.
+        val others = here?.let { namesOn(it, myId) }.orEmpty()
+        Text(when {
+            here == null && going != null -> "${namesOn(going, myId).ifBlank { "Someone" }} on a call now. Tap Join to come on."
+            here == null -> "Tap Call to ring everyone in $name. Then just talk: what you say goes to whoever comes on. Or say \"ΠAN, call $name\"."
+            !micOn -> "Muted: nobody can hear you. What the others say shows here. Tap the microphone below to talk."
+            others.isBlank() -> "Ringing. What you say is passed on once someone comes on. Start with \"ΠAN\" to ask ΠAN something."
+            else -> "On with $others. What you say goes to all of them. Start with \"ΠAN\" to ask ΠAN something."
+        }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+        if (here == null && going != null && roomsRinging.any { it.key == key }) {
+            CallBar("${going.name} is ringing you.", "Answer", second = "Not now", onSecond = { viewModel.declineRoom(key) }) { viewModel.startRoom(key, name) }
+        }
+        HorizontalDivider()
+        if (said.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                Text("Nothing here yet. What you say and hear in a call with $name stays here, for you.",
+                    style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(said, key = { it.id }) { line ->
+                    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = if (line.fromMe) Alignment.End else Alignment.Start) {
+                        if (!line.fromMe) Text(line.name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp))
+                        Surface(shape = RoundedCornerShape(16.dp),
+                            color = if (line.fromMe) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.widthIn(max = 300.dp)) {
+                            Text(line.body, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                color = if (line.fromMe) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(whenText(line.at), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 6.dp))
+                    }
+                }
+                item(key = "foot") { Spacer(Modifier.size(4.dp)) }
+            }
+        }
+        // The same row as on Home: the words (only while on the call), and the microphone to the right.
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            if (here != null && mayType) {
+                val sendNow = { if (draft.isNotBlank() && !sending) viewModel.sayRoom(draft) { sent -> if (sent) draft = "" } }
+                Row(modifier = Modifier.weight(1f).heightIn(min = 52.dp).clip(RoundedCornerShape(26.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 18.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(
+                        value = draft,
+                        onValueChange = { draft = it.take(500) },
+                        modifier = Modifier.weight(1f),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        maxLines = 4,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { sendNow() }),
+                        decorationBox = { inner ->
+                            if (draft.isEmpty()) Text("Type to $name", style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            inner()
+                        }
+                    )
+                    IconButton(onClick = { sendNow() }, enabled = draft.isNotBlank() && !sending, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send to $name",
+                            tint = if (draft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            } else Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(12.dp))
+            MicButton(on = micOn, onClick = {
+                context.startService(android.content.Intent(context, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
+            })
         }
     }
 }

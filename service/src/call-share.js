@@ -17,6 +17,7 @@
 //   - The asker's own answer is not held up: this runs after it has been sent.
 
 import { talkState, sendMessage, peopleHere } from './person-messages.js';
+import { roomOf, sayInRoom } from './group-calls.js';
 
 const OWNER_ID = 1;
 
@@ -50,10 +51,22 @@ export async function modelSaysShare(question, answer) {
 export async function shareAnswerInCall({ person = null, question, answer, intent }, { judge = modelSaysShare } = {}) {
   const me = person ? Number(person.id) : OWNER_ID;
   const state = talkState(me);
-  if (!state.with || !state.joined) return { shared: false, reason: 'no_call' };
+  const room = roomOf(me);
+  const inRoom = !!room && room.on.size > 1;
+  if (!inRoom && (!state.with || !state.joined)) return { shared: false, reason: 'no_call' };
   const said = String(answer || '').trim();
   if (intent !== 'query' || !said || said.startsWith('[')) return { shared: false, reason: 'not_an_answer' };
   if (!(await judge(question, said))) return { shared: false, reason: 'personal' };
+  if (inRoom) {
+    // A call with a whole group (group-calls.js): everyone who is on hears it.
+    const now_ = roomOf(me);
+    if (!now_ || now_.key !== room.key || now_.on.size < 2) return { shared: false, reason: 'no_call' };
+    const q = String(question || '').trim().replace(/\s+/g, ' ').slice(0, 160);
+    const put = sayInRoom(person, `Asked PAN: ${q} PAN said: ${said.replace(/\s+/g, ' ').slice(0, 300)}`);
+    if (!put.ok) return { shared: false, reason: put.reason };
+    console.log(`[call-share] person ${me}'s answer from PAN was also read out in ${room.key}`);
+    return { shared: true, room: room.key, name: room.name };
+  }
   // The call may have ended while the model was reading.
   const now = talkState(me);
   if (now.with !== state.with || !now.joined) return { shared: false, reason: 'no_call' };

@@ -109,7 +109,9 @@ fun PanNavGraph() {
         // A call shows on every tab, not only People: who is calling, with Answer and Not now.
         val talkWith by peopleViewModel.talkWith.collectAsState()
         val callingMe by peopleViewModel.callingMe.collectAsState()
-        val inCall = talkWith != 0 || callingMe != 0
+        val roomOn by peopleViewModel.roomOn.collectAsState()
+        val roomsRinging by peopleViewModel.roomsRinging.collectAsState()
+        val inCall = talkWith != 0 || callingMe != 0 || roomOn != null || roomsRinging.isNotEmpty()
         LaunchedEffect(inCall, route) {
             // While a call is open or ringing, keep its state fresh off the People tab too.
             while (inCall && route != Screen.People.route) {

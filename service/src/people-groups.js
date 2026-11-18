@@ -6,9 +6,8 @@
 // group, everyone else.
 //
 // The rules:
-//   - A group is a name the owner gives. Nothing else hangs on it yet: it is a way to look at
-//     some of the people. What a group may do (an announcement to it, a call with it) is not
-//     built; it comes with the plan for rooms (docs/PEOPLE-PLAN.md).
+//   - A group is a name the owner gives: a way to look at some of the people, and the people a
+//     call with the whole group rings (group-calls.js).
 //   - A person can be in any number of groups, or in none (the owner, 2026-11-18).
 //   - Deleting a group deletes the name. Its people stay on the hub.
 //   - Only the owner makes, names, deletes and fills. Everyone on the hub sees the groups.
