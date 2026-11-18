@@ -133,6 +133,7 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
+- **0.5.24** (code 153, published on the hub Nov 18; rollback pair v152): the mute button is on the People list too.
 - **0.5.23** (code 152, published on the hub Nov 18; rollback pair v151): the mute button is inside a conversation in People too. The hub side of the same day: a person's device takes only its own person's voice (docs/FEATURES.md "Whose voice on a person's device").
 - **0.5.22** (code 151, published on the hub Nov 18; rollback pair v150): People has two parts, your organization and Others. Groups inside the organization (make, name, move people, delete), and other names for a person whose name ΠAN mishears. Details: docs/FEATURES.md "Groups inside the organization".
 - **0.5.21** (code 150, published on the hub Nov 18; rollback pair v148, 0.5.20 was never published on its own): a call with someone on your ΠAN (say "ΠAN, talk to <name>" or tap the call button, then just talk), and a switch for whether messages are read out or only shown. Details: docs/FEATURES.md "Messages between people".

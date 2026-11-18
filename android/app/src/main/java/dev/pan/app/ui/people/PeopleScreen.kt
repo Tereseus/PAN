@@ -178,9 +178,19 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
         else snackbar.showSnackbar(r?.second?.optString("error")?.takeIf { it.isNotBlank() } ?: "ΠAN could not make a code right now.")
     }
 
+    // Mute wherever a call can be taken or made (the owner, 2026-11-18).
+    val micOn by PanForegroundService.micEnabled.collectAsState()
+    val micContext = LocalContext.current
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-        Text("People", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 8.dp))
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("People", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            MicButton(on = micOn, diameter = 40.dp, onClick = {
+                micContext.startService(android.content.Intent(micContext, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
+            })
+        }
+        if (!micOn && (talkWith != 0 || callingMe != 0)) Text("Muted: ΠAN cannot hear you, and nothing is read out. Tap the microphone to unmute.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
         val rows = people
         if (rows == null) {
             if (failed) Text("ΠAN could not be reached. The people on it show here when it can.",
